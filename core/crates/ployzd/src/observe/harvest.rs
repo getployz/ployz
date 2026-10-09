@@ -12,7 +12,7 @@ use std::{
 use bollard::{
     Docker,
     errors::Error as DockerError,
-    models::{ContainerConfig, ContainerInspectResponse, ContainerState, EventMessage},
+    models::{ContainerConfig, ContainerInspectResponse, EventMessage},
     query_parameters::EventsOptionsBuilder,
 };
 use futures_util::{Stream, StreamExt};
@@ -81,12 +81,9 @@ pub(super) struct Harvester {
     watched: HashMap<WatchDescriptor, Watched>,
     seen: HashMap<ContainerId, Seen>,
     damage: HashMap<ContainerId, DamageCursor>,
-    /// What the latest Docker event said about a Ployz container, kept for
-    /// when Docker removes it before an inspect can answer.
-    last_event: HashMap<ContainerId, ContainerInspectResponse>,
-    /// Containers whose events show a start after a die since their metadata
-    /// was last saved: Docker began a new run, so the saved exit is over.
-    restarted: HashSet<ContainerId>,
+    /// What a Docker event's labels say about a Ployz container, kept for when
+    /// Docker removes it before any inspect saved its metadata.
+    owned_by_event: HashMap<ContainerId, ContainerMeta>,
     /// Inspects in flight; `true` asks for another once this one answers.
     inspecting: HashMap<ContainerId, bool>,
     /// Removed containers whose last damage scan or exit check failed, retried
@@ -173,8 +170,7 @@ impl Harvester {
             watched: HashMap::new(),
             seen: HashMap::new(),
             damage: HashMap::new(),
-            last_event: HashMap::new(),
-            restarted: HashSet::new(),
+            owned_by_event: HashMap::new(),
             inspecting: HashMap::new(),
             unsettled: HashSet::new(),
             inspected,
@@ -222,8 +218,7 @@ impl Harvester {
         }
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
-        self.last_event.retain(|id, _| present.contains(id));
-        self.restarted.retain(|id| present.contains(id));
+        self.owned_by_event.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
         }
@@ -262,6 +257,8 @@ impl Harvester {
         }
     }
 
+    /// A Docker event only asks for an inspect: Docker can send a run's events
+    /// late or out of order, so a run's exit comes from inspect alone.
     fn on_docker_event(&mut self, message: EventMessage) {
         let Some(id) = message
             .actor
@@ -274,19 +271,8 @@ impl Harvester {
         if matches!(self.seen.get(&id), Some(Seen::Ignored)) {
             return;
         }
-        let previous = self.last_event.get(&id);
-        // Docker sends a container's events in order, so a start after a die
-        // is the next run. A start with no die before it is the run inspect
-        // may already have saved.
-        let exited = previous
-            .and_then(|previous| previous.state.as_ref())
-            .is_some_and(|state| state.running == Some(false));
-        if exited && message.action.as_deref() == Some("start") {
-            self.restarted.insert(id);
-        }
-        let described = described_by_event(&message, previous);
-        if container_meta(&described).is_some() {
-            self.last_event.insert(id, described);
+        if let Some(meta) = container_meta(&labelled_by_event(&message)) {
+            self.owned_by_event.insert(id, meta);
         }
         if matches!(
             self.seen.get(&id),
@@ -469,13 +455,8 @@ impl Harvester {
         let store_dir = self.store.container(&id);
         let Seen::Pending = seen else {
             if let Some(meta) = container_meta(&inspected) {
-                match write_meta(&store_dir, &meta) {
-                    Ok(()) => {
-                        self.restarted.remove(&id);
-                    }
-                    Err(error) => {
-                        tracing::warn!(container = %id, %error, "cannot update container metadata");
-                    }
+                if let Err(error) = write_meta(&store_dir, &meta) {
+                    tracing::warn!(container = %id, %error, "cannot update container metadata");
                 }
                 if meta.finished_at.is_some() {
                     self.finish_damage_scan(&id);
@@ -494,7 +475,6 @@ impl Harvester {
             tracing::error!(container = %id, %error, "cannot write container metadata");
             return;
         }
-        self.restarted.remove(&id);
         let max_files = max_files(&inspected);
         let created_nanos = inspected
             .created
@@ -532,9 +512,10 @@ impl Harvester {
         }
     }
 
-    /// Docker removed a container before an inspect could answer. Files of a
-    /// container Ployz is known to own stay: its saved metadata or its last
-    /// event says so. Only a container nothing proves Ployz owns is dropped.
+    /// Docker removed the container. Its saved metadata keeps the run the
+    /// last inspect saw, so an exit no inspect saw stays unknown. Files of a
+    /// container Ployz is known to own stay: its saved metadata or an event's
+    /// labels say so. Only a container nothing proves Ployz owns is dropped.
     fn on_gone(&mut self, id: &ContainerId) {
         self.sync(id);
         let created_nanos = match self.seen.get(id) {
@@ -542,39 +523,20 @@ impl Harvester {
             _ => None,
         };
         let store_dir = self.store.container(id);
-        let event = self.last_event.remove(id);
-        let restarted = self.restarted.remove(id);
-        let from_event = event.as_ref().and_then(container_meta);
-        let meta = match read_meta(&store_dir) {
-            Ok(Some(mut kept)) => {
-                if let Some(from_event) = from_event {
-                    if restarted {
-                        kept.started_at = from_event.started_at;
-                        kept.finished_at = from_event.finished_at;
-                        kept.exit_code = from_event.exit_code;
-                        kept.oom_killed = from_event.oom_killed;
-                    } else if kept.finished_at.is_none() {
-                        kept.started_at = kept.started_at.or(from_event.started_at);
-                        kept.finished_at = from_event.finished_at;
-                        kept.exit_code = from_event.exit_code;
-                        kept.oom_killed |= from_event.oom_killed;
-                    }
+        let owned_by_event = self.owned_by_event.remove(id);
+        match read_meta(&store_dir) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let Some(meta) = owned_by_event else {
+                    return self.discard(id);
+                };
+                if let Err(error) = write_meta(&store_dir, &meta) {
+                    tracing::warn!(container = %id, %error, "cannot save a removed container's metadata");
                 }
-                Some(kept)
             }
-            Ok(None) => match from_event {
-                Some(from_event) => Some(from_event),
-                None => return self.discard(id),
-            },
             Err(error) => {
                 tracing::warn!(container = %id, %error, "cannot read the metadata of a removed container; keeping its files");
-                None
             }
-        };
-        if let Some(meta) = meta
-            && let Err(error) = write_meta(&store_dir, &meta)
-        {
-            tracing::warn!(container = %id, %error, "cannot update a removed container's metadata");
         }
         let mut cursor = self.damage.remove(id).unwrap_or_default();
         self.settle(id, &mut cursor, created_nanos);
@@ -584,8 +546,7 @@ impl Harvester {
     fn forget(&mut self, id: &ContainerId) {
         self.seen.insert(*id, Seen::Ignored);
         self.damage.remove(id);
-        self.last_event.remove(id);
-        self.restarted.remove(id);
+        self.owned_by_event.remove(id);
         self.unwatch_container(id);
     }
 
@@ -1278,61 +1239,16 @@ fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta>
     })
 }
 
-/// What a `start`, `oom`, or `die` event says about a container, shaped like
-/// the inspect it stands in for. Docker puts the labels and the name in the
-/// event's attributes and a `die` its exit code. When it started and whether
-/// it was killed for memory come from the events before, in `previous`.
-fn described_by_event(
-    message: &EventMessage,
-    previous: Option<&ContainerInspectResponse>,
-) -> ContainerInspectResponse {
+/// A Docker event's labels and name, shaped like an inspect that has no
+/// state: an event says nothing about a run's exit.
+fn labelled_by_event(message: &EventMessage) -> ContainerInspectResponse {
     let attributes = message
         .actor
         .as_ref()
         .and_then(|actor| actor.attributes.clone())
         .unwrap_or_default();
-    let at = message.time_nano.map(|nanos| {
-        let mut at = Vec::new();
-        frame::write_rfc3339_nanos(nanos, &mut at).expect("writing to a Vec cannot fail");
-        String::from_utf8(at).expect("an RFC 3339 time is ASCII")
-    });
-    let exit_code = attributes
-        .get("exitCode")
-        .and_then(|code| code.parse().ok());
-    let before = previous
-        .and_then(|previous| previous.state.clone())
-        .unwrap_or_default();
-    let state = match message.action.as_deref() {
-        Some("start") => ContainerState {
-            running: Some(true),
-            started_at: at,
-            oom_killed: Some(false),
-            ..ContainerState::default()
-        },
-        // Docker can send the oom after its die, so the kill changes nothing
-        // else about the run.
-        Some("oom") => ContainerState {
-            running: before.running.or(Some(true)),
-            oom_killed: Some(true),
-            ..before
-        },
-        Some("die") => ContainerState {
-            running: Some(false),
-            finished_at: at,
-            exit_code,
-            ..before
-        },
-        _ => ContainerState {
-            running: Some(true),
-            started_at: before.started_at,
-            exit_code,
-            oom_killed: before.oom_killed,
-            ..ContainerState::default()
-        },
-    };
     ContainerInspectResponse {
         name: attributes.get("name").cloned(),
-        state: Some(state),
         config: Some(ContainerConfig {
             labels: Some(attributes),
             ..ContainerConfig::default()
@@ -2185,356 +2101,161 @@ mod tests {
         assert_eq!(gaps, [(T0 + 3, GapReason::NotCaptured)]);
     }
 
-    #[tokio::test]
-    async fn a_ployz_container_removed_before_its_first_inspect_keeps_its_files() {
+    fn at(nanos: i64) -> String {
+        format!("2025-10-09T08:53:20.{nanos:09}Z")
+    }
+
+    /// Docker's state for the run it started at `T0 + started`, still running.
+    fn running(started: i64) -> ContainerState {
+        ContainerState {
+            running: Some(true),
+            started_at: Some(at(started)),
+            ..ContainerState::default()
+        }
+    }
+
+    /// Docker's state for the run it started at `T0 + started` once it
+    /// exited at `T0 + finished`.
+    fn exited(started: i64, finished: i64, code: i64, oom: bool) -> ContainerState {
+        ContainerState {
+            running: Some(false),
+            started_at: Some(at(started)),
+            finished_at: Some(at(finished)),
+            exit_code: Some(code),
+            oom_killed: Some(oom),
+            ..ContainerState::default()
+        }
+    }
+
+    /// The same exited run while Docker waits to restart it.
+    fn restarting(started: i64, finished: i64, code: i64, oom: bool) -> ContainerState {
+        ContainerState {
+            running: Some(true),
+            restarting: Some(true),
+            ..exited(started, finished, code, oom)
+        }
+    }
+
+    fn inspected(state: &ContainerState) -> Inspected {
+        let Inspected::Found(mut found) = managed(3) else {
+            unreachable!("managed() describes a found container")
+        };
+        found.state = Some(state.clone());
+        Inspected::Found(found)
+    }
+
+    #[derive(Clone)]
+    enum Step {
+        Event(&'static str, i64, Option<&'static str>),
+        Inspect(ContainerState),
+    }
+
+    /// What the store keeps of a container Docker removes after `steps`.
+    fn removed_after(steps: &[Step]) -> (Host, ContainerMeta) {
         let host = host();
         let id = host.container(&[lines(T0 + 1, 3)]);
         let mut running = host.harvester();
         running.harvester.rescan();
-        running.harvester.on_docker_event(event("start", T0, &[]));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "3")]));
+        for step in steps {
+            match step {
+                Step::Event(action, at, code) => {
+                    let code = code.map(|code| ("exitCode", code));
+                    let event = event(action, T0 + at, code.as_slice());
+                    running.harvester.on_docker_event(event);
+                }
+                Step::Inspect(state) => running.harvester.on_inspected(id, inspected(state)),
+            }
+        }
         host.remove_from_docker();
         running.harvester.on_inspected(id, Inspected::Gone);
-
-        assert_eq!(host.held(), 1);
         let meta = host.meta();
+        (host, meta)
+    }
+
+    fn saved_run(meta: &ContainerMeta) -> (Option<&str>, Option<&str>, Option<i64>, bool) {
+        (
+            meta.started_at.as_deref(),
+            meta.finished_at.as_deref(),
+            meta.exit_code,
+            meta.oom_killed,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_removed_container_keeps_the_exit_its_inspect_saw() {
+        let (_, meta) = removed_after(&[
+            Step::Inspect(running(1)),
+            Step::Event("die", 5, Some("3")),
+            Step::Inspect(restarting(1, 5, 3, false)),
+        ]);
+        assert_eq!(
+            saved_run(&meta),
+            (Some(&*at(1)), Some(&*at(5)), Some(3), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oom_kill_is_kept_whatever_order_docker_sends_its_events_in() {
+        let die = Step::Event("die", 5, Some("137"));
+        let oom = Step::Event("oom", 6, None);
+        let killed = Step::Inspect(exited(1, 5, 137, true));
+        for events in [
+            vec![oom.clone(), die.clone(), killed.clone()],
+            vec![die.clone(), oom.clone(), killed.clone()],
+            vec![die.clone(), killed.clone(), oom.clone()],
+            vec![die.clone(), killed.clone()],
+        ] {
+            let steps = [vec![Step::Inspect(running(1))], events].concat();
+            let (_, meta) = removed_after(&steps);
+            assert_eq!(
+                saved_run(&meta),
+                (Some(&*at(1)), Some(&*at(5)), Some(137), true)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_crash_loop_keeps_the_exit_of_its_last_run() {
+        let (_, meta) = removed_after(&[
+            Step::Inspect(running(1)),
+            Step::Event("die", 2, Some("1")),
+            Step::Inspect(restarting(1, 2, 1, false)),
+            Step::Event("start", 3, None),
+            Step::Inspect(running(3)),
+            Step::Event("die", 4, Some("0")),
+            Step::Inspect(exited(3, 4, 0, false)),
+        ]);
+        assert_eq!(
+            saved_run(&meta),
+            (Some(&*at(3)), Some(&*at(4)), Some(0), false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_still_running_at_its_last_inspect_has_an_unknown_exit() {
+        let (_, meta) = removed_after(&[
+            Step::Inspect(running(1)),
+            Step::Event("die", 2, Some("1")),
+            Step::Inspect(restarting(1, 2, 1, false)),
+            Step::Event("start", 3, None),
+            Step::Inspect(running(3)),
+            Step::Event("die", 4, Some("0")),
+        ]);
+        assert_eq!(saved_run(&meta), (Some(&*at(3)), None, None, false));
+    }
+
+    #[tokio::test]
+    async fn a_container_removed_before_any_inspect_keeps_its_files_with_an_unknown_exit() {
+        let (host, meta) = removed_after(&[
+            Step::Event("start", 0, None),
+            Step::Event("die", 5, Some("3")),
+        ]);
+        assert_eq!(host.held(), 1);
         assert_eq!(
             (meta.replica.as_str(), meta.deployment.as_deref()),
             ("web-1", Some("d1"))
         );
-        assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code),
-            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
-        );
-        assert_eq!(host.gaps(), []);
-    }
-
-    #[tokio::test]
-    async fn a_container_removed_before_its_die_inspect_still_records_its_exit() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code),
-            (Some("2025-10-09T08:53:20.000000005Z"), Some(137))
-        );
-        assert_eq!(host.held(), 1);
-        assert_eq!(host.gaps(), []);
-    }
-
-    #[test]
-    fn a_container_docker_is_restarting_has_exited() {
-        let mut restarting = labelled(&WEB);
-        restarting.state = Some(ContainerState {
-            running: Some(true),
-            restarting: Some(true),
-            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
-            exit_code: Some(3),
-            ..ContainerState::default()
-        });
-        let meta = container_meta(&restarting).unwrap();
-        assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code),
-            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
-        );
-    }
-
-    /// Docker restarting a container that exited with `code` at `T0 + 5`,
-    /// which the harvester inspected, then the events after it.
-    fn crash_loop(oom: bool, code: &str, after: &[EventMessage]) -> ContainerMeta {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        if oom {
-            running.harvester.on_docker_event(event("oom", T0 + 4, &[]));
-        }
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", code)]));
-        let Inspected::Found(mut restarting) = managed(3) else {
-            unreachable!("managed() describes a found container")
-        };
-        restarting.state = Some(ContainerState {
-            running: Some(true),
-            restarting: Some(true),
-            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
-            exit_code: code.parse().ok(),
-            oom_killed: Some(oom),
-            ..ContainerState::default()
-        });
-        running
-            .harvester
-            .on_inspected(id, Inspected::Found(restarting));
-        for event in after {
-            running.harvester.on_docker_event(event.clone());
-        }
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-        host.meta()
-    }
-
-    #[tokio::test]
-    async fn a_crash_looping_container_removed_while_restarting_keeps_its_latest_exit() {
-        let meta = crash_loop(
-            false,
-            "3",
-            &[
-                event("start", T0 + 6, &[]),
-                event("die", T0 + 7, &[("exitCode", "9")]),
-            ],
-        );
-        assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code),
-            (Some("2025-10-09T08:53:20.000000007Z"), Some(9))
-        );
-    }
-
-    #[tokio::test]
-    async fn a_clean_exit_after_a_restart_is_not_an_oom_kill() {
-        let meta = crash_loop(
-            true,
-            "137",
-            &[
-                event("start", T0 + 6, &[]),
-                event("die", T0 + 7, &[("exitCode", "0")]),
-            ],
-        );
-        assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code, meta.oom_killed),
-            (Some("2025-10-09T08:53:20.000000007Z"), Some(0), false)
-        );
-    }
-
-    #[tokio::test]
-    async fn a_die_stamped_after_the_saved_exit_keeps_its_oom_kill() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_docker_event(event("start", T0 + 1, &[]));
-        let Inspected::Found(mut exited) = managed(3) else {
-            unreachable!("managed() describes a found container")
-        };
-        exited.state = Some(ContainerState {
-            running: Some(false),
-            started_at: Some("2025-10-09T08:53:20.000000000Z".to_owned()),
-            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
-            exit_code: Some(137),
-            oom_killed: Some(true),
-            ..ContainerState::default()
-        });
-        running.harvester.on_inspected(id, Inspected::Found(exited));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 6, &[("exitCode", "137")]));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!(
-            (
-                meta.started_at.as_deref(),
-                meta.finished_at.as_deref(),
-                meta.oom_killed
-            ),
-            (
-                Some("2025-10-09T08:53:20.000000000Z"),
-                Some("2025-10-09T08:53:20.000000005Z"),
-                true
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn a_start_with_no_die_before_it_keeps_the_saved_exit() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        let Inspected::Found(mut exited) = managed(3) else {
-            unreachable!("managed() describes a found container")
-        };
-        exited.state = Some(ContainerState {
-            running: Some(false),
-            started_at: Some("2025-10-09T08:53:20.000000000Z".to_owned()),
-            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
-            exit_code: Some(3),
-            ..ContainerState::default()
-        });
-        running.harvester.on_inspected(id, Inspected::Found(exited));
-        // Docker stamps a start after the run's StartedAt, and after its exit
-        // when the process exits at once.
-        running
-            .harvester
-            .on_docker_event(event("start", T0 + 9, &[]));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code),
-            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
-        );
-    }
-
-    #[tokio::test]
-    async fn a_clean_exit_after_a_restart_drops_the_oom_kill_a_running_inspect_saw() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_docker_event(event("start", T0 + 1, &[]));
-        running.harvester.on_docker_event(event("oom", T0 + 4, &[]));
-        let Inspected::Found(mut killed) = managed(3) else {
-            unreachable!("managed() describes a found container")
-        };
-        killed.state = Some(ContainerState {
-            running: Some(true),
-            started_at: Some("2025-10-09T08:53:20.000000000Z".to_owned()),
-            oom_killed: Some(true),
-            ..ContainerState::default()
-        });
-        running.harvester.on_inspected(id, Inspected::Found(killed));
-        for (action, at, attributes) in [
-            ("die", 5, &[("exitCode", "137")][..]),
-            ("start", 6, &[]),
-            ("die", 7, &[("exitCode", "0")]),
-        ] {
-            running
-                .harvester
-                .on_docker_event(event(action, T0 + at, attributes));
-        }
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!(
-            (meta.exit_code, meta.oom_killed),
-            (Some(0), false),
-            "the OOM kill belongs to the run before the restart"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_oom_event_after_its_die_does_not_hide_the_restart() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_docker_event(event("start", T0 + 1, &[]));
-        running.harvester.on_inspected(id, managed(3));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
-        let Inspected::Found(mut exited) = managed(3) else {
-            unreachable!("managed() describes a found container")
-        };
-        exited.state = Some(ContainerState {
-            running: Some(false),
-            started_at: Some("2025-10-09T08:53:20.000000001Z".to_owned()),
-            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
-            exit_code: Some(137),
-            ..ContainerState::default()
-        });
-        running.harvester.on_inspected(id, Inspected::Found(exited));
-        for (action, at, attributes) in [
-            ("oom", 6, &[][..]),
-            ("start", 8, &[]),
-            ("die", 9, &[("exitCode", "0")]),
-        ] {
-            running
-                .harvester
-                .on_docker_event(event(action, T0 + at, attributes));
-        }
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!((meta.exit_code, meta.oom_killed), (Some(0), false));
-    }
-
-    #[tokio::test]
-    async fn an_oom_event_after_its_die_keeps_the_exit() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_docker_event(event("start", T0 + 1, &[]));
-        running.harvester.on_inspected(id, managed(3));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
-        running.harvester.on_docker_event(event("oom", T0 + 6, &[]));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code, meta.oom_killed),
-            (Some("2025-10-09T08:53:20.000000005Z"), Some(137), true)
-        );
-    }
-
-    #[tokio::test]
-    async fn an_oom_kill_only_inspect_saw_after_a_restart_is_kept() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        for (action, at, attributes) in [
-            ("start", 1, &[][..]),
-            ("die", 2, &[("exitCode", "1")]),
-            ("start", 3, &[]),
-        ] {
-            running
-                .harvester
-                .on_docker_event(event(action, T0 + at, attributes));
-        }
-        let Inspected::Found(mut killed) = managed(3) else {
-            unreachable!("managed() describes a found container")
-        };
-        killed.state = Some(ContainerState {
-            running: Some(true),
-            started_at: Some("2025-10-09T08:53:20.000000003Z".to_owned()),
-            oom_killed: Some(true),
-            ..ContainerState::default()
-        });
-        running.harvester.on_inspected(id, Inspected::Found(killed));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!((meta.exit_code, meta.oom_killed), (Some(137), true));
-    }
-
-    #[tokio::test]
-    async fn a_container_removed_after_it_restarted_drops_the_earlier_exit() {
-        let meta = crash_loop(false, "3", &[event("start", T0 + 6, &[])]);
-        assert_eq!((meta.finished_at, meta.exit_code), (None, None));
+        assert_eq!(saved_run(&meta), (None, None, None, false));
     }
 
     #[tokio::test]
@@ -2678,7 +2399,7 @@ mod tests {
         GAP_WRITES_FAIL_AFTER.set(Some(9));
         running
             .harvester
-            .on_docker_event(event("die", T0 + 11, &[("exitCode", "0")]));
+            .on_inspected(id, inspected(&exited(1, 11, 0, false)));
         host.remove_from_docker();
         running.harvester.on_inspected(id, Inspected::Gone);
         assert_eq!(host.gaps(), []);
@@ -2744,28 +2465,6 @@ mod tests {
                 .filter(|gap| gap.reason == GapReason::Corrupt)
                 .count(),
             1
-        );
-    }
-
-    #[tokio::test]
-    async fn an_oom_kill_docker_removes_before_its_inspect_is_recorded_as_one() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        running.harvester.on_docker_event(event("start", T0, &[]));
-        running.harvester.on_docker_event(event("oom", T0 + 4, &[]));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let meta = host.meta();
-        assert_eq!(
-            (meta.started_at.as_deref(), meta.exit_code, meta.oom_killed),
-            (Some("2025-10-09T08:53:20.000000000Z"), Some(137), true)
         );
     }
 
