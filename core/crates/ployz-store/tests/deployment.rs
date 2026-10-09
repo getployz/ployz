@@ -412,6 +412,73 @@ fn a_config_deploys_with_the_services_that_mount_it() {
     assert!(changed(&store, &who).is_empty());
 }
 
+fn shared_sentry(store: &ConfigStore, who: &Actor) {
+    sentry(store, who);
+    put_sentry(store, who, "value: old\n");
+    store
+        .write(
+            who,
+            &AttachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+                config: ConfigName::parse("sentry").unwrap(),
+                dir: "/etc/sentry".into(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn an_existing_shared_config_keeps_its_edit_after_a_mounter_fails() {
+    let (store, who) = shop();
+    shared_sentry(&store, &who);
+    backend::deploy(&store, &who, "production", 1);
+    put_sentry(&store, &who, "value: new\n");
+    admit(&store, &who, 2, &[], None).unwrap();
+    fail_api(&store, 2);
+
+    assert_eq!(changed(&store, &who), ["sentry"]);
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Failed),
+            ("sentry".to_owned(), NodeStatus::Failed),
+        ]
+    );
+}
+
+#[test]
+fn an_existing_shared_config_waits_for_pending_mounters() {
+    let (store, who) = shop();
+    shared_sentry(&store, &who);
+    backend::deploy(&store, &who, "production", 1);
+    put_sentry(&store, &who, "value: new\n");
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Pending),
+            ("sentry".to_owned(), NodeStatus::Pending),
+        ]
+    );
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(changed(&store, &who), ["sentry"]);
+}
+
 #[test]
 fn a_narrowed_deploy_leaves_a_shared_config_staged_until_every_mounter_redeploys() {
     let (store, who) = shop();
