@@ -52,7 +52,8 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const { element, virtual } = useLogScroll({
     count: rows.length, getItemKey: index => rows[index]?.id ?? index,
     onChange: (instance, sync) => {
-      stream.follow(instance.isAtEnd());
+      // Lines landing push the end down before the view follows them there; only the reader's scroll stops following.
+      if (sync || instance.isAtEnd()) stream.follow(instance.isAtEnd());
       if (dragging.current && sync && instance.scrollDirection === "backward" && (instance.scrollOffset ?? 0) < 160 && !historyError) void stream.loadOlder();
     },
   });
