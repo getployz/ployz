@@ -13,7 +13,7 @@ use ployzd::machine_pool::{self, MachinePool};
 
 use super::{
     CapacityAdmission, DockerVolumeName, Result, VolumeError, VolumeStorage, checked_command,
-    parse_size,
+    checked_output, parse_size, run_command,
 };
 
 const POOL_BACKING_PATH: &str = "/var/lib/ployz-machine-pool";
@@ -177,22 +177,23 @@ impl PoolStorage {
             })
     }
 
-    /// Selects the sole usable imported Machine Pool, or `None` when none is imported.
+    /// Selects the sole usable imported Machine Pool, or `None` when none is imported or
+    /// the Machine has no ZFS tools.
     ///
     /// # Errors
     ///
     /// Returns an error when Pool inspection fails or imported Pool evidence is unusable.
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
-        let output = checked_command(
-            &self.zpool,
-            &[
-                "list",
-                "-Hp",
-                "-o",
-                "name,size,allocated,free,health,readonly",
-            ],
-        )
-        .await?;
+        let args = [
+            "list",
+            "-Hp",
+            "-o",
+            "name,size,allocated,free,health,readonly",
+        ];
+        let output = match run_command(&self.zpool, &args).await {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            output => checked_output(&self.zpool, &args, output)?,
+        };
         Ok(machine_pool::one_usable(&output)
             .map_err(|error| ployz_core::error_chain::inline(&error))?)
     }

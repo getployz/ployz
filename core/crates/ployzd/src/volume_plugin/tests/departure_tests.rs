@@ -74,6 +74,18 @@ async fn departure_without_a_pool_demotes_nothing() {
 }
 
 #[tokio::test]
+async fn departure_on_a_machine_without_zfs_demotes_nothing() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, "", &[]);
+    fs::remove_file(test.0.join("zpool")).unwrap();
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(response, json!({"Ok": []}));
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert!(capacity.get("Ok").is_some(), "{capacity}");
+    server.abort();
+}
+
+#[tokio::test]
 async fn departure_idles_a_slot_marker_and_keeps_its_data() {
     let test = TestDir::new();
     set_property(&test, "tank/ployz-mirror/copy", "ployz:mirror", "final");
