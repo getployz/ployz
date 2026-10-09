@@ -273,7 +273,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             let namespace = namespace.as_ref().map(|scoped| &scoped.namespace);
             let deployment = deployment.as_ref().map(DeploymentId::as_str);
             let selectors = history_selectors(&scope, &args, namespace, deployment)?;
-            let mut last = None;
+            let mut printed = Printed::default();
             let failures = read_history(
                 client,
                 &scope.answered(),
@@ -281,11 +281,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 window,
                 &cancellation,
                 |record| {
-                    if let HistoryEvent::Line { ts, .. } | HistoryEvent::Exit { ts, .. } =
-                        record.event
-                    {
-                        last = Some(ts);
-                    }
+                    printed.record(&record);
                     print_history(&record, utc)
                 },
             )
@@ -294,10 +290,12 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             missed.extend(&failures, &[]);
             missed.warn();
             gaps.extend(&failures, &[]);
+            if crate::ui::json() && gaps.outcome().is_err() {
+                crate::ui::emit_line(&gaps)?;
+            }
             if options.follow && !cancellation.is_cancelled() {
-                // Live lines start where history stopped, so none prints twice.
-                let since = last
-                    .map_or(started, |ts| ts.saturating_add(1))
+                let since = printed
+                    .since(started)
                     .max(options.since_nanos.unwrap_or(i64::MIN));
                 let live = LogsOptions {
                     tail: -1,
@@ -317,7 +315,9 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 .await
                 {
                     Ok(inputs) => {
-                        print_logs(merge_logs(inputs, cancellation), utc, &deployments).await?;
+                        let entries = merge_logs(inputs, cancellation);
+                        print_logs(entries, utc, &deployments, |entry| printed.covers(entry))
+                            .await?;
                     }
                     // Nothing runs to follow; the history above is the whole log.
                     Err(
@@ -407,7 +407,13 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
             let inputs =
                 open_machine_logs(client, &services, &machines, options, cancellation.clone())
                     .await?;
-            print_logs(merge_logs(inputs, cancellation), utc, &HashMap::new()).await?;
+            print_logs(
+                merge_logs(inputs, cancellation),
+                utc,
+                &HashMap::new(),
+                |_| false,
+            )
+            .await?;
             gaps.outcome()
         })
     })
@@ -669,13 +675,59 @@ fn history_line(record: &HistoryRecord) -> serde_json::Value {
     line
 }
 
+/// What history printed, so `-f` follows on without repeating or skipping a
+/// line. Each container resumes after its own last printed line: one Server's
+/// store can lag another's, so a single cut for all of them drops lines.
+#[derive(Debug, Default)]
+struct Printed {
+    containers: HashMap<ContainerId, i64>,
+    last: Option<i64>,
+}
+
+impl Printed {
+    fn record(&mut self, record: &HistoryRecord) {
+        if let HistoryEvent::Line { ts, .. } | HistoryEvent::Exit { ts, .. } = record.event {
+            let container = self
+                .containers
+                .entry(record.container.container_id)
+                .or_insert(ts);
+            *container = (*container).max(ts);
+            self.last = self.last.max(Some(ts));
+        }
+    }
+
+    /// Where the live read starts: just after the earliest container's last line.
+    fn since(&self, started: i64) -> i64 {
+        self.containers
+            .values()
+            .min()
+            .map_or(started, |ts| ts.saturating_add(1))
+    }
+
+    /// A live line history already printed, or older than history's window
+    /// for a container history printed nothing from.
+    fn covers(&self, entry: &LogEntry) -> bool {
+        let printed = match &entry.metadata.origin {
+            LogOrigin::Service { container_id, .. } => self.containers.get(container_id),
+            LogOrigin::Machine { .. } => None,
+        };
+        printed
+            .or(self.last.as_ref())
+            .is_some_and(|ts| entry.timestamp_unix_nanos <= *ts)
+    }
+}
+
 async fn print_logs(
     mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, String>>,
     utc: bool,
     deployments: &HashMap<ContainerId, String>,
+    printed: impl Fn(&LogEntry) -> bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
         let entry = entry.map_err(Error::unavailable)?;
+        if printed(&entry) {
+            continue;
+        }
         if crate::ui::json() {
             if let Some(line) = log_line(&entry, deployments) {
                 crate::ui::emit_line(&line)?;
@@ -1114,6 +1166,55 @@ mod scope_tests {
         assert_eq!(gaps.failures.len(), 1);
         let partial = gaps.outcome().unwrap_err();
         assert_eq!(partial.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
+    }
+
+    #[test]
+    fn follow_resumes_each_container_after_its_own_last_printed_line() {
+        let container = |c: char| ContainerId::parse(c.to_string().repeat(64)).unwrap();
+        let machine = ployz_core::MachineName::parse("machine-1").unwrap();
+        let mut printed = Printed::default();
+        assert_eq!(printed.since(7), 7);
+        for (id, ts) in [('a', 100), ('b', 50)] {
+            printed.record(&HistoryRecord {
+                machine: machine.clone(),
+                container: std::sync::Arc::new(ployz_core::HistoryContainer {
+                    container_id: container(id),
+                    namespace: None,
+                    service: None,
+                    deployment: None,
+                    replica: String::new(),
+                    kind: HistoryContainerKind::Service,
+                }),
+                event: HistoryEvent::Line {
+                    ts,
+                    stream: HistoryStream::Stdout,
+                    text: Vec::new(),
+                },
+            });
+        }
+        // b's Server stored less than a's; live starts after b's last line.
+        assert_eq!(printed.since(7), 51);
+        let live = |id: char, ts: i64| LogEntry {
+            metadata: ployz_core::LogMetadata {
+                origin: LogOrigin::Service {
+                    service_id: ployz_core::ServiceId::parse("1".repeat(32)).unwrap(),
+                    service_name: ployz_core::ServiceName::parse("web").unwrap(),
+                    container_id: container(id),
+                    hook: None,
+                },
+                machine_id: ployz_core::MachineId::parse("2".repeat(32)).unwrap(),
+                machine_name: machine.clone(),
+            },
+            timestamp_unix_nanos: ts,
+            body: LogBody::Stdout(Vec::new()),
+        };
+        assert!(!printed.covers(&live('b', 60)));
+        assert!(printed.covers(&live('b', 50)));
+        assert!(printed.covers(&live('a', 60)));
+        assert!(!printed.covers(&live('a', 101)));
+        // A container history printed nothing from starts after the last line.
+        assert!(printed.covers(&live('c', 90)));
+        assert!(!printed.covers(&live('c', 101)));
     }
 
     #[test]
