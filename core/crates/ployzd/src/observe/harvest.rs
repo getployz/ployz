@@ -84,6 +84,9 @@ pub(super) struct Harvester {
     /// What the latest Docker event said about a Ployz container, kept for
     /// when Docker removes it before an inspect can answer.
     last_event: HashMap<ContainerId, ContainerInspectResponse>,
+    /// The latest `die`: a container Docker restarts starts again after it,
+    /// and its exit would be lost with the `start` that followed.
+    last_died: HashMap<ContainerId, ContainerInspectResponse>,
     /// Inspects in flight; `true` asks for another once this one answers.
     inspecting: HashMap<ContainerId, bool>,
     /// Removed containers whose last damage scan or exit check failed, retried
@@ -171,6 +174,7 @@ impl Harvester {
             seen: HashMap::new(),
             damage: HashMap::new(),
             last_event: HashMap::new(),
+            last_died: HashMap::new(),
             inspecting: HashMap::new(),
             unsettled: HashSet::new(),
             inspected,
@@ -219,6 +223,7 @@ impl Harvester {
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
         self.last_event.retain(|id, _| present.contains(id));
+        self.last_died.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
         }
@@ -271,6 +276,9 @@ impl Harvester {
         }
         let described = described_by_event(&message, self.last_event.get(&id));
         if container_meta(&described).is_some() {
+            if message.action.as_deref() == Some("die") {
+                self.last_died.insert(id, described.clone());
+            }
             self.last_event.insert(id, described);
         }
         if matches!(
@@ -522,7 +530,8 @@ impl Harvester {
         };
         let store_dir = self.store.container(id);
         let event = self.last_event.remove(id);
-        let from_event = event.as_ref().and_then(container_meta);
+        let died = self.last_died.remove(id);
+        let from_event = died.or(event).as_ref().and_then(container_meta);
         let meta = match read_meta(&store_dir) {
             Ok(Some(mut kept)) => {
                 if kept.finished_at.is_none()
@@ -558,6 +567,7 @@ impl Harvester {
         self.seen.insert(*id, Seen::Ignored);
         self.damage.remove(id);
         self.last_event.remove(id);
+        self.last_died.remove(id);
         self.unwatch_container(id);
     }
 
@@ -1228,7 +1238,10 @@ fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta>
     let finished_at = state
         .and_then(|state| state.finished_at.clone())
         .filter(|at| !at.starts_with("0001-"));
-    let ended = finished_at.is_some() && state.and_then(|state| state.running) != Some(true);
+    // A container Docker is restarting inspects as running, yet it has exited.
+    let ended = finished_at.is_some()
+        && (state.and_then(|state| state.running) != Some(true)
+            || state.and_then(|state| state.restarting) == Some(true));
     Some(ContainerMeta {
         service: labels.get(LABEL_SERVICE_NAME).cloned(),
         namespace: labels.get(LABEL_NAMESPACE).cloned(),
@@ -2189,6 +2202,46 @@ mod tests {
         );
         assert_eq!(host.held(), 1);
         assert_eq!(host.gaps(), []);
+    }
+
+    #[test]
+    fn a_container_docker_is_restarting_has_exited() {
+        let mut restarting = labelled(&WEB);
+        restarting.state = Some(ContainerState {
+            running: Some(true),
+            restarting: Some(true),
+            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
+            exit_code: Some(3),
+            ..ContainerState::default()
+        });
+        let meta = container_meta(&restarting).unwrap();
+        assert_eq!(
+            (meta.finished_at.as_deref(), meta.exit_code),
+            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_crash_looping_container_removed_while_restarting_keeps_its_last_exit() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 5, &[("exitCode", "3")]));
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 6, &[]));
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        let meta = host.meta();
+        assert_eq!(
+            (meta.finished_at.as_deref(), meta.exit_code),
+            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
+        );
     }
 
     #[tokio::test]
