@@ -3290,7 +3290,11 @@ export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
 
-export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
+export type ServiceSettingChange = { path: string,
+/**
+ * The mounted Config's friendly name; its path keeps the exact identity.
+ */
+configName?: ConfigName, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
 /**
  * The Sync row it falls in, which joins it to what moved it; the Store's to fill
  * from the `At` its comparison hands alongside and the node's lineage.

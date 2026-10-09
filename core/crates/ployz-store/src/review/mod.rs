@@ -227,6 +227,11 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                             row.after = crate::config_item::shown_file(row.after, &names);
                             row.path = format!("configs.@{}.{}", group.node.id, row.path);
                         } else {
+                            row.config_name = row
+                                .path
+                                .strip_prefix("configs.")
+                                .and_then(|id| config_name(&intents, id))
+                                .and_then(|name| ployz_core::ConfigName::parse(&name).ok());
                             row.before = shown(&row.path, row.before);
                             row.after = shown(&row.path, row.after);
                             row.path = match setting {
@@ -337,6 +342,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             // Renaming it back undoes it: `discard` takes no name path.
             can_restore: false,
             row: None,
+            config_name: None,
         };
         view.total_count += 1;
         match view

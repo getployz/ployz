@@ -2864,3 +2864,94 @@ fn deleted_config_discard_does_not_target_same_name_replacement() {
         old.contents
     );
 }
+
+#[test]
+fn discard_config_mount_preserves_same_name_replacement() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    let replacement = ConfigId::parse("00000000-0000-4000-8000-000000000010").unwrap();
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: replacement.clone(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/replacement".into(),
+                }],
+            },
+        )
+        .unwrap();
+    put_sentry(&store, &who, "REPLACEMENT_TEXT_MUST_SURVIVE");
+    let query = ployz_store::ConfigItemQuery {
+        environment: EnvironmentRef::default(),
+        config: replacement.clone().into(),
+    };
+    let before = store.read(&who, &query).unwrap();
+    let review = diff(&store, &who);
+    let web = review
+        .changes
+        .iter()
+        .find(|change| change.name == "web")
+        .unwrap();
+    let removed = web
+        .settings
+        .iter()
+        .find(|row| row.before == json!("/etc/sentry") && row.after.is_null())
+        .unwrap();
+    let result = store.write(
+        &who,
+        &Discard {
+            environment: EnvironmentRef::default(),
+            path: Some(SettingPath::parse(&removed.path).unwrap()),
+            version: Some(review.version.clone()),
+        },
+    );
+    assert_eq!(result.unwrap_err().code, ployz_core::RpcErrorCode::Conflict);
+    assert_eq!(removed.config_name.as_ref().unwrap().as_str(), "sentry");
+    let ambiguous = store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse("web.configs.sentry").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(ambiguous.code, ployz_core::RpcErrorCode::Ambiguous);
+    assert_eq!(
+        ambiguous.details["valid_children"],
+        json!([
+            "configs.@00000000-0000-4000-8000-000000000009",
+            "configs.@00000000-0000-4000-8000-000000000010",
+        ])
+    );
+    let after = store.read(&who, &query).unwrap();
+    assert_eq!(diff(&store, &who), review);
+    assert_eq!(after.contents, before.contents);
+    assert_eq!(
+        after.config.mounts, before.config.mounts,
+        "Discarding A's deleted mount must preserve B's independently authored replacement mount"
+    );
+}

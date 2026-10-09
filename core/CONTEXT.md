@@ -250,11 +250,11 @@ A Volume's opt-in to more than one writer: several replicas of one Service, or s
 _Avoid_: Multi-attach, ReadWriteMany, shared volume
 
 **Config**:
-A named Environment Resource holding text files for Services to mount read-only. Its name is a DNS label, unique in its Environment, and the Config is addressed `configs.NAME`, so no Service may be named `configs`. Each file has a relative path of one to four segments, such as `config.d/override.xml` or `.htpasswd`, at most 256 KB of UTF-8 text, a mode up to `0777` (default `0444`), and a uid and gid (default 0). A Config belongs to no Service, so its text references variables only as `${{ SERVICE.KEY }}`; a bare `${{ KEY }}` is refused. References are stored by Service lineage, so renaming the Service re-renders the file. Deleting a Service or variable a Config references is refused, as for a variable's references.
+A named Environment Resource holding text files for Services to mount read-only. Its name is a DNS label, unique in its Environment, and the Config is addressed `configs.NAME` or `configs.@UUID`, so no Service may be named `configs`. A name selects Working State for authoring; Discard refuses a name shared by distinct Working and Head identities. Review paths retain exact identity across rename and same-name replacement. Each file has a relative path of one to four segments, such as `config.d/override.xml` or `.htpasswd`, at most 256 KB of UTF-8 text, a mode up to `0777` (default `0444`), and a uid and gid (default 0). A Config belongs to no Service, so its text references variables only as `${{ SERVICE.KEY }}`; a bare `${{ KEY }}` is refused. References are stored by Service lineage, so renaming the Service re-renders the file. Deleting a Service or variable a Config references is refused, as for a variable's references.
 _Avoid_: Config file (one file of a Config), ConfigMap, Config Store
 
 **Config Mount**:
-A Config attached to a Service at an absolute directory, the Setting `SERVICE.configs.CONFIG`. A Service mounts a Config at most once, and each of its directories holds one mount, a Volume's or a Config's. Several Services may mount one Config. Deleting a Config removes its mounts; unmounting keeps the Config and its files.
+A Config attached to a Service at an absolute directory, the Setting `SERVICE.configs.CONFIG` or `SERVICE.configs.@UUID`. Review and Discard retain the mounted Config identity; names are display labels. A Service mounts a Config at most once, and each of its directories holds one mount, a Volume's or a Config's. Several Services may mount one Config. Deleting a Config removes its mounts; unmounting keeps the Config and its files.
 _Avoid_: Config attachment, file mount, Bind Mount
 
 **Registry Credential**:

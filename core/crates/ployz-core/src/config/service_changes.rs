@@ -24,6 +24,10 @@ pub enum ChangeKind {
 #[serde(rename_all = "camelCase")]
 pub struct ServiceSettingChange {
     pub path: String,
+    /// The mounted Config's friendly name; its path keeps the exact identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub config_name: Option<crate::ConfigName>,
     pub kind: ChangeKind,
     pub before: Value,
     pub after: Value,
@@ -249,6 +253,7 @@ pub(super) fn change(
         after,
         can_restore,
         row: None,
+        config_name: None,
     };
     (change, at)
 }
