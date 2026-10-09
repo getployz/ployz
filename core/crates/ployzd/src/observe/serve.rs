@@ -33,6 +33,9 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// Pages read at once. Each can hold a page's text plus the file it decodes,
 /// and the harvester shares the service's memory.
 const READERS: usize = 2;
+/// How long one written row may wait on a reader that stopped reading. Its
+/// page keeps a reader until it is written.
+const STALL: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +61,7 @@ pub(super) async fn serve(
         store,
         bounds: Arc::new(Bounds::default()),
         readers: Arc::new(Semaphore::new(READERS)),
+        stall: STALL,
     };
     loop {
         match listener.accept().await {
@@ -78,6 +82,7 @@ struct Reading {
     store: StoreRoot,
     bounds: Arc<Bounds>,
     readers: Arc<Semaphore>,
+    stall: Duration,
 }
 
 async fn answer(mut stream: UnixStream, reading: Reading, forgets: mpsc::Sender<ForgetJob>) {
@@ -121,6 +126,7 @@ async fn answer_query(
         }
     };
     let cancel = Arc::new(AtomicBool::new(false));
+    let stall = shared.stall;
     let reading = {
         let cancel = Arc::clone(&cancel);
         async move {
@@ -130,8 +136,8 @@ async fn answer_query(
                 .await
                 .map_err(io::Error::other)?;
             tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                query::page(&shared.store, &query, &shared.bounds, &cancel)
+                let page = query::page(&shared.store, &query, &shared.bounds, &cancel);
+                (page, permit)
             })
             .await
             .map_err(io::Error::other)
@@ -157,18 +163,29 @@ async fn answer_query(
             }
         }
     };
-    let page = match read {
+    // The permit lives until the page is written or dropped.
+    let (page, _permit) = read;
+    let page = match page {
         Ok(page) => page,
         Err(error) => {
             write_row(&mut stream, &HistoryRow::Error(error.to_string())).await?;
             return stream.flush().await;
         }
     };
-    for row in &page.rows {
-        write_row(&mut stream, row).await?;
+    let end = HistoryRow::End { next: page.next };
+    for row in page.rows.iter().chain([&end]) {
+        within(stall, write_row(&mut stream, row)).await?;
     }
-    write_row(&mut stream, &HistoryRow::End { next: page.next }).await?;
-    stream.flush().await
+    within(stall, stream.flush()).await
+}
+
+async fn within(stall: Duration, write: impl Future<Output = io::Result<()>>) -> io::Result<()> {
+    tokio::time::timeout(stall, write).await.map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("the reader took no row for {} s", stall.as_secs()),
+        )
+    })?
 }
 
 async fn answer_forget(
@@ -238,8 +255,14 @@ mod tests {
     use ployz_core::{HistoryRow, LogHistoryRequest, OpaquePayload};
     use tokio::{net::UnixStream, sync::Semaphore};
 
-    use super::{Reading, answer_query, read_frame};
-    use crate::{observe::layout::StoreRoot, test_dir::TestDir};
+    use super::{Reading, STALL, answer_query, read_frame};
+    use crate::{
+        observe::{
+            layout::StoreRoot,
+            query::tests::{Store, T0, line},
+        },
+        test_dir::TestDir,
+    };
 
     #[tokio::test]
     async fn a_query_waits_for_a_free_reader() {
@@ -252,6 +275,7 @@ mod tests {
             store,
             bounds: Arc::default(),
             readers: Arc::clone(&readers),
+            stall: STALL,
         };
         let (mut ours, theirs) = UnixStream::pair().unwrap();
         let request = LogHistoryRequest {
@@ -284,5 +308,46 @@ mod tests {
         }
         answering.await.unwrap().unwrap();
         assert_eq!(readers.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_keeps_its_reader_until_it_is_written() {
+        let store = Store::new();
+        let id = store.container('a', "web");
+        let text = "x".repeat(64 << 10);
+        let frames: Vec<_> = (0..64).map(|i| line(T0 + i, &text)).collect();
+        store.file(&id, 0, &frames);
+        let readers = Arc::new(Semaphore::new(1));
+        let reading = Reading {
+            store: store.root.clone(),
+            bounds: Arc::default(),
+            readers: Arc::clone(&readers),
+            stall: Duration::from_secs(2),
+        };
+        let (mut ours, theirs) = UnixStream::pair().unwrap();
+        let request = LogHistoryRequest {
+            namespace: Some("prod".into()),
+            limit: 100,
+            ..LogHistoryRequest::default()
+        };
+        let answering = tokio::spawn(answer_query(theirs, reading, request));
+
+        // The first row means the page is read; its 4 MiB outgrow the socket.
+        read_frame(&mut ours, 1 << 20).await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            readers.available_permits(),
+            0,
+            "a written page let go of its reader"
+        );
+
+        let error = tokio::time::timeout(Duration::from_secs(10), answering)
+            .await
+            .expect("a stalled reader kept its page")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(readers.available_permits(), 1);
+        drop(ours);
     }
 }
