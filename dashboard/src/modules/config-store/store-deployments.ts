@@ -68,7 +68,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     nodeType: node.type,
     nodeId: node.id,
     nodeName: node.name,
-    discardPath: node.type === "volume" ? `volumes.${node.name}` : node.type === "config" ? `configs.${node.name}` : node.name,
+    discardPath: node.type === "volume" ? `volumes.${node.name}` : node.type === "config" ? `configs.@${node.id}` : node.name,
     row: node.row,
     lifecycle: node.lifecycle,
     changeCount: Math.max(node.settings.length, 1),
@@ -76,7 +76,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     canDiscard: true,
     serviceSourceType: services.find((service) => service.id === node.id)?.source,
     rows: node.settings.map((row) => {
-      const prefix = node.type === "volume" ? `volumes.${node.name}.` : node.type === "config" ? `configs.${node.name}.` : `${node.name}.`;
+      const prefix = node.type === "volume" ? `volumes.${node.name}.` : node.type === "config" ? `configs.@${node.id}.` : `${node.name}.`;
       const setting = row.path.slice(prefix.length);
       const title = settingTitle(setting);
       const label = setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);

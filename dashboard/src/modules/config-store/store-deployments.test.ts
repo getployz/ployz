@@ -27,9 +27,9 @@ it("keeps atomic Config files, literal paths and restart facts in the review", (
   const before = { content: "PORT=80\nTOKEN=${{ web.TOKEN }}\n", mode: "0444", uid: 0, gid: 0 };
   const after = { ...before, mode: "0555", uid: 1000, gid: 1001 };
   const rows: DiffView["changes"][number]["settings"] = [
-    { path: "configs.sentry.files.nested/app.conf", kind: "update", before, after, canRestore: true, row: "c:files.nested/app.conf" as RowId },
-    { path: "configs.sentry.files.empty.conf", kind: "add", before: null, after: { ...before, content: "" }, canRestore: false, row: null },
-    { path: "configs.sentry.files.old.conf", kind: "remove", before, after: null, canRestore: true, row: null },
+    { path: "configs.@c.files.nested/app.conf", kind: "update", before, after, canRestore: true, row: "c:files.nested/app.conf" as RowId },
+    { path: "configs.@c.files.empty.conf", kind: "add", before: null, after: { ...before, content: "" }, canRestore: false, row: null },
+    { path: "configs.@c.files.old.conf", kind: "remove", before, after: null, canRestore: true, row: null },
   ];
   const restarts = ["web", "worker"];
   const [config, web] = changeGroups({ ...diff, changes: [
@@ -37,7 +37,7 @@ it("keeps atomic Config files, literal paths and restart facts in the review", (
     { type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [],
       settings: [{ path: "web.configs.sentry", kind: "add", before: null, after: "/etc/sentry", canRestore: true, row: null }] },
   ] }, services);
-  expect(config).toMatchObject({ discardPath: "configs.sentry", changeCount: 3, restarts });
+  expect(config).toMatchObject({ discardPath: "configs.@c", changeCount: 3, restarts });
   expect(config?.restarts).toBe(restarts);
   expect(config?.rows.map((row) => [row.path, row.label, row.currentValue, row.newValue, row.canDiscard])).toEqual([
     [rows[0]?.path, "nested/app.conf", "File", "File", true],
@@ -55,9 +55,9 @@ it.each(malformedFiles)(
   "refuses a malformed non-null Config file without exposing its value", (value) => {
     const adapt = () => changeGroups({ ...diff, changes: [{
       type: "config", id: "c", row: "c:node" as RowId, name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [],
-      settings: [{ path: "configs.sentry.files.app.conf", kind: "update", before: null, after: value, canRestore: true, row: null }],
+      settings: [{ path: "configs.@c.files.app.conf", kind: "update", before: null, after: value, canRestore: true, row: null }],
     }] }, []);
-    expect(adapt).toThrow("Could not read Config file comparison for configs.sentry.files.app.conf.");
+    expect(adapt).toThrow("Could not read Config file comparison for configs.@c.files.app.conf.");
     expect(adapt).not.toThrow(/private/);
   },
 );
@@ -221,4 +221,17 @@ it("preserves reasons without a cause and outcomes without a reason", () => {
   expect(outcomeReason({ type: "not_executed", reason: "No source", needs_upload: [], cause: [] })).toBe("No source");
   expect(outcomeReason(asTestDouble<Outcome>()({ type: "executed", summary: null, reason: "Old execution failure" }))).toBe("Old execution failure");
   expect(outcomeReason(asTestDouble<Outcome>()({ type: "not_executed", reason: "Old preparation failure", needs_upload: [] }))).toBe("Old preparation failure");
+});
+
+
+it("gives same-name Configs separate whole and file discard targets", () => {
+  const file = { content: "draft", mode: "0444", uid: 0, gid: 0 };
+  const groups = changeGroups({ ...diff, changes: ["old", "new"].map((id) => ({ type: "config", id, row: `${id}:node` as RowId,
+    name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
+      { path: `configs.@${id}.files.app.conf`, kind: "update", before: file, after: file, canRestore: true, row: null },
+    ] })) }, []);
+  expect(groups.map((group) => [group.discardPath, group.rows[0]?.path, group.rows[0]?.label])).toEqual([
+    ["configs.@old", "configs.@old.files.app.conf", "app.conf"],
+    ["configs.@new", "configs.@new.files.app.conf", "app.conf"],
+  ]);
 });

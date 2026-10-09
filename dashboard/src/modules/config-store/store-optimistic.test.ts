@@ -266,3 +266,15 @@ it("waits for the Store when no Config listing establishes an optimistic target 
   await applyOptimistic(queryClient, "acme", { command: "put_config_file", environment: ref, config: "sentry", file: "app.conf", content: "replacement" });
   expect(queryClient.getQueryData(key)).toEqual({ ok: true, value: old });
 });
+
+it("discards one same-name Config by identity while retaining the replacement's changes", async () => {
+  const { queryClient, read } = cached();
+  const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
+  const node = (id: string): DiffView["changes"][number] => ({ type: "config", id, row: `${id}:node` as RowId,
+    name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
+      { path: `configs.@${id}.files.app.conf`, kind: "update", before: null, after: null, canRestore: true, row: null },
+    ] });
+  queryClient.setQueryData<unknown>(key, { ok: true, value: { ...read<DiffView>(diffQuery(ref)), changes: [node("old"), node("new")] } });
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.@old", version: null });
+  expect(read<DiffView>(diffQuery(ref))?.changes).toEqual([node("new")]);
+});

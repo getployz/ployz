@@ -176,7 +176,7 @@ it("summarizes Follow and PR hints attached to a changed Config file", async () 
   const row = { row: id("c:files.app.conf"), node: "configs.app-settings", kind: "config" as const, name: "files.app.conf" };
   const test = open(diff({
     changes: [{ type: "config", id: "c", row: id("c:node"), name: "app-settings", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
-      { path: "configs.app-settings.files.app.conf", kind: "update", before: { ...file, content: "original" }, after: { ...file, content: "own edit" }, canRestore: true, row: row.row },
+      { path: "configs.@c.files.app.conf", kind: "update", before: { ...file, content: "original" }, after: { ...file, content: "own edit" }, canRestore: true, row: row.row },
     ] }], total_count: 1,
     follow_hints: [{ ...row, from: "production", value: { ...file, content: "ATTACHED_FOLLOW_PRIVATE_SENTINEL" } }],
     hints: [{ ...row, conditional_sync: "cs-config", pull_request: 142, value: { ...file, content: "ATTACHED_PR_PRIVATE_SENTINEL" }, landed: "hint" }],
@@ -192,4 +192,16 @@ it("summarizes Follow and PR hints attached to a changed Config file", async () 
     { command: "take", from: "production", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
     { command: "take", from: "cs-config", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
   ]));
+});
+
+
+it("uses the changed Config's identity path for Never sync despite a same-name arrival", async () => {
+  const row = id("old:files.app.conf");
+  const file = { content: "text", mode: "0444", uid: 0, gid: 0 };
+  const test = open(diff({ changes: [{ type: "config", id: "old", row: id("old:node"), name: "sentry", lifecycle: "update",
+    comparison: null, data: null, restarts: [], settings: [
+      { path: "configs.@old.files.app.conf", kind: "update", before: file, after: file, canRestore: true, row },
+    ] }], total_count: 1, incoming: [{ row, node: "configs.sentry", kind: "config", name: "files.app.conf", from: "production" }] }));
+  fireEvent.click((await menuOf("sentry app.conf")).getByRole("menuitem", { name: "Never sync" }));
+  expect(test.neverSync).toHaveBeenCalledWith("configs.@old.files.app.conf", row);
 });

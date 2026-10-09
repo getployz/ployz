@@ -170,7 +170,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const type = node === "volumes" ? "volume" : node === "configs" ? "config" : null;
       const named = type !== null && setting.length === 1 ? setting[0] : null;
       const whole = (change: NodeChange) => path === null
-        || (named !== null ? change.type === type && change.name === named : setting.length === 0 && change.name === node);
+        || (named !== null ? change.type === type && (type === "config" ? named === `@${change.id}` || change.name === named : change.name === named) : setting.length === 0 && change.name === node);
       await views<DiffView>("diff", command.environment, (view) => {
         const changes = view.changes.flatMap((change) => {
           if (whole(change)) return [];
