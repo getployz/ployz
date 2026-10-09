@@ -347,7 +347,7 @@ pub struct Damage {
 /// Walks a container's files in order, a read at a time, and reports each run
 /// of damage once an entry after it closes it. A torn frame that ends one
 /// file is closed by the next file's first entry.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct DamageScan {
     offset: u64,
     last_ts: Option<i64>,
@@ -363,6 +363,12 @@ impl DamageScan {
             last_ts,
             in_damage: false,
         }
+    }
+
+    /// Whether the scan has read damage that no entry has closed yet.
+    #[must_use]
+    pub fn in_damage(&self) -> bool {
+        self.in_damage
     }
 
     /// Moves the scan to the start of the next file.
@@ -789,7 +795,10 @@ pub(crate) mod tests {
                 Event::Corrupt { .. } => None,
             })
             .collect();
-        assert_eq!(decoded, (T0..=torn_after).chain(resumed..end).collect::<Vec<_>>());
+        assert_eq!(
+            decoded,
+            (T0..=torn_after).chain(resumed..end).collect::<Vec<_>>()
+        );
 
         let expected = [Damage {
             after: Some(torn_after),
