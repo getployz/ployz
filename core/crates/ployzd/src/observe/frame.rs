@@ -62,6 +62,10 @@ pub struct Frames<'a> {
     buf: &'a [u8],
     pos: usize,
     tail: usize,
+    /// Docker may still be writing past the end of `buf`, so a frame whose
+    /// claimed end lies past it is unfinished, and the bytes after its header
+    /// are its own, whatever they look like.
+    growing: bool,
 }
 
 impl<'a> Frames<'a> {
@@ -71,6 +75,14 @@ impl<'a> Frames<'a> {
             buf,
             pos: 0,
             tail: 0,
+            growing: false,
+        }
+    }
+
+    fn growing(buf: &'a [u8]) -> Self {
+        Self {
+            growing: true,
+            ..Self::new(buf)
         }
     }
 
@@ -114,8 +126,13 @@ impl<'a> Iterator for Frames<'a> {
             return Some(Event::Entry(entry));
         }
         let offset = self.pos;
-        let resumed = (offset + 1..self.buf.len()).find(|&at| self.frame_at(at).is_some());
-        if resumed.is_none() && self.incomplete_at(offset) {
+        let unfinished = self.incomplete_at(offset);
+        let resumed = if self.growing && unfinished {
+            None
+        } else {
+            (offset + 1..self.buf.len()).find(|&at| self.frame_at(at).is_some())
+        };
+        if resumed.is_none() && unfinished {
             self.tail = self.buf.len() - offset;
             self.pos = self.buf.len();
             return None;
@@ -411,7 +428,11 @@ impl DamageScan {
         } else {
             buf.len().saturating_sub(MAX_FRAME + 2 * HEADER)
         };
-        let mut frames = Frames::new(buf);
+        let mut frames = if whole {
+            Frames::new(buf)
+        } else {
+            Frames::growing(buf)
+        };
         for event in frames.by_ref() {
             match event {
                 Event::Entry(entry) => {
@@ -460,13 +481,7 @@ pub fn last_ts(buf: &[u8]) -> Option<i64> {
     let from_footer = buf.len().checked_sub(HEADER).and_then(|footer| {
         let size = read_size(buf, footer)?;
         let start = footer.checked_sub(size)?.checked_sub(HEADER)?;
-        Frames {
-            buf,
-            pos: start,
-            tail: 0,
-        }
-        .frame_at(start)
-        .map(|(_, entry)| entry.ts)
+        Frames::new(buf).frame_at(start).map(|(_, entry)| entry.ts)
     });
     from_footer.or_else(|| {
         Frames::new(buf)
@@ -804,8 +819,47 @@ pub(crate) mod tests {
             after: Some(torn_after),
             before: resumed,
         }];
-        assert_eq!(scan(&mut DamageScan::default(), &file, false), expected);
         assert_eq!(scan(&mut DamageScan::default(), &file, true), expected);
+
+        let mut growing = DamageScan::default();
+        assert_eq!(scan(&mut growing, &file, false), []);
+        frames_from(end, torn_at + torn.len() + 1000, &mut file);
+        assert_eq!(scan(&mut growing, &file, false), expected);
+    }
+
+    #[test]
+    fn a_frame_docker_is_still_writing_is_not_damage_even_when_it_holds_a_frame() {
+        let mut file = Vec::new();
+        let next = frames_from(T0, 2000, &mut file);
+        let held_at = file.len();
+        let inner = frame(T0 + 9999, Stream::Stdout, b"inner", Piece::Whole);
+        let chunk = [&[b'x'; 64][..], &inner, &[b'y'; 64]].concat();
+        file.extend(frame(next, Stream::Stdout, &chunk, Piece::Whole));
+        let end = frames_from(next + 1, file.len() + 2000, &mut file);
+        let inner_end = held_at
+            + file
+                .get(held_at..)
+                .unwrap()
+                .windows(inner.len())
+                .position(|window| window == inner)
+                .unwrap()
+            + inner.len();
+        let mid_write = file.get(..inner_end + 8).unwrap();
+
+        let mut growing = DamageScan::default();
+        assert_eq!(scan(&mut growing, mid_write, false), []);
+        assert_eq!(scan(&mut growing, &file, false), []);
+        assert_eq!(scan(&mut growing, &file, true), []);
+        assert_eq!(
+            entries(&file)
+                .iter()
+                .map(|event| match event {
+                    Event::Entry(entry) => entry.ts,
+                    Event::Corrupt { .. } => 0,
+                })
+                .collect::<Vec<_>>(),
+            (T0..end).collect::<Vec<_>>()
+        );
     }
 
     #[test]

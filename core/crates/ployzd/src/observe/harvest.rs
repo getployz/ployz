@@ -18,6 +18,7 @@ use bollard::{
 use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use ployz_core::{ContainerId, Namespace};
+use serde::{Deserialize, Serialize};
 use tokio::{net::UnixListener, sync::mpsc};
 
 use super::{
@@ -25,8 +26,8 @@ use super::{
     docker_file_age,
     frame::{self, DamageScan},
     layout::{
-        ContainerKind, ContainerMeta, GAPS_FILE, Gap, GapReason, LINKING_FILE, LogFileName,
-        META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
+        ContainerKind, ContainerMeta, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason, LINKING_FILE,
+        LogFileName, META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
     },
 };
 use crate::docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_NAME};
@@ -57,9 +58,8 @@ enum Seen {
     /// removed it.
     Ignored,
     /// Held while Docker has not yet answered the inspect that says whether
-    /// Ployz owns the container. `first_seen` keeps what the first sync found
-    /// until `max-file` and the creation time arrive to judge it.
-    Pending { first_seen: Option<FirstSeen> },
+    /// Ployz owns the container.
+    Pending,
     Managed {
         max_files: usize,
         created_nanos: Option<i64>,
@@ -85,6 +85,9 @@ pub(super) struct Harvester {
     last_event: HashMap<ContainerId, ContainerInspectResponse>,
     /// Inspects in flight; `true` asks for another once this one answers.
     inspecting: HashMap<ContainerId, bool>,
+    /// Removed containers whose last damage scan or exit check failed, retried
+    /// each maintenance tick and, from the files alone, at startup.
+    unsettled: HashSet<ContainerId>,
     inspected: mpsc::UnboundedSender<(ContainerId, Inspected)>,
 }
 
@@ -103,7 +106,7 @@ impl Harvester {
         let mut docker_events = Some(harvester.docker_events());
         let mut reconnect_at = None;
         harvester.rescan();
-        harvester.close_removed_while_down();
+        harvester.settle_removed_while_down();
         harvester.clean();
 
         let mut maintenance = tokio::time::interval(MAINTENANCE_INTERVAL);
@@ -139,6 +142,7 @@ impl Harvester {
                 }
                 _ = maintenance.tick() => {
                     harvester.rescan();
+                    harvester.settle_unsettled();
                     harvester.clean();
                 }
                 accepted = listener.accept() => drop(accepted),
@@ -165,12 +169,16 @@ impl Harvester {
             damage: HashMap::new(),
             last_event: HashMap::new(),
             inspecting: HashMap::new(),
+            unsettled: HashSet::new(),
             inspected,
         }
     }
 
     fn docker_events(&self) -> DockerEvents {
-        let filters = HashMap::from([("type", vec!["container"]), ("event", vec!["start", "die"])]);
+        let filters = HashMap::from([
+            ("type", vec!["container"]),
+            ("event", vec!["start", "oom", "die"]),
+        ]);
         let options = EventsOptionsBuilder::default().filters(&filters).build();
         Box::pin(self.docker.events(Some(options)))
     }
@@ -247,39 +255,63 @@ impl Harvester {
         if matches!(self.seen.get(&id), Some(Seen::Ignored)) {
             return;
         }
-        let described = described_by_event(&message);
+        let described = described_by_event(&message, self.last_event.get(&id));
         if container_meta(&described).is_some() {
             self.last_event.insert(id, described);
         }
         if matches!(
             self.seen.get(&id),
-            Some(Seen::Pending { .. } | Seen::Managed { .. })
+            Some(Seen::Pending | Seen::Managed { .. })
         ) {
             self.request_inspect(id);
             self.sync(&id);
         }
     }
 
-    fn close_removed_while_down(&self) {
+    /// Settles every container the store keeps that Docker no longer has: it
+    /// may have been removed, or written damage, while the harvester was down.
+    fn settle_removed_while_down(&mut self) {
         let Ok(entries) = fs::read_dir(self.store.containers()) else {
             return;
         };
-        let now = now_nanos();
-        for id in entries
+        let removed: Vec<ContainerId> = entries
             .filter_map(Result::ok)
             .filter_map(|entry| container_id(&entry.file_name()))
-        {
-            if !self.docker_dir_gone(&id) {
-                continue;
+            .filter(|id| self.docker_dir_gone(id))
+            .collect();
+        for id in removed {
+            self.settle(&id, &mut DamageCursor::default(), None);
+        }
+    }
+
+    fn settle_unsettled(&mut self) {
+        for id in std::mem::take(&mut self.unsettled) {
+            if self.store.container(&id).exists() {
+                self.settle(&id, &mut DamageCursor::default(), None);
             }
-            match close_removed_container(&self.store.container(&id), now) {
-                Ok(Some(gap)) => {
-                    tracing::warn!(container = %id, from = gap.from, "Docker removed the container while the harvester was down");
+        }
+    }
+
+    /// Finishes the record of a container Docker has removed. A failure leaves
+    /// it to the next maintenance tick.
+    fn settle(&mut self, id: &ContainerId, cursor: &mut DamageCursor, created_nanos: Option<i64>) {
+        match settle_removed(
+            &self.store.container(id),
+            cursor,
+            created_nanos,
+            now_nanos(),
+        ) {
+            Ok(settled) => {
+                for gap in settled.damage {
+                    tracing::warn!(container = %id, from = gap.from, to = gap.to, "skipped log bytes that held no valid frame");
                 }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(container = %id, %error, "cannot check a removed container")
+                if let Some(gap) = settled.unexited {
+                    tracing::warn!(container = %id, from = gap.from, "Docker removed the container before the store saw it exit");
                 }
+            }
+            Err(error) => {
+                tracing::warn!(container = %id, %error, "cannot settle a removed container; the next maintenance tick retries");
+                self.unsettled.insert(*id);
             }
         }
     }
@@ -304,13 +336,13 @@ impl Harvester {
         match self.seen.get(id) {
             Some(Seen::Ignored) => return,
             Some(Seen::Managed { .. }) => {}
-            Some(Seen::Pending { .. }) => self.request_inspect(*id),
+            Some(Seen::Pending) => self.request_inspect(*id),
             None => {
                 if let Err(error) = create_private_dir(&self.store.container(id)) {
                     tracing::error!(container = %id, %error, "cannot create the container's Log Store dir");
                     return;
                 }
-                self.seen.insert(*id, Seen::Pending { first_seen: None });
+                self.seen.insert(*id, Seen::Pending);
                 self.request_inspect(*id);
             }
         }
@@ -327,7 +359,7 @@ impl Harvester {
                 max_files,
                 created_nanos,
             }) => (Some(max_files), created_nanos),
-            Some(Seen::Pending { .. }) => (None, None),
+            Some(Seen::Pending) => (None, None),
             Some(Seen::Ignored) | None => return,
         };
         let store_dir = self.store.container(id);
@@ -343,18 +375,13 @@ impl Harvester {
                 if let Some(gap) = synced.gap {
                     tracing::warn!(container = %id, from = gap.from, to = gap.to, "Docker deleted log files the store never held");
                 }
-                if let Some(found) = synced.first_seen
-                    && let Some(Seen::Pending { first_seen }) = self.seen.get_mut(id)
-                {
-                    first_seen.get_or_insert(found);
-                }
             }
             Err(error) => {
                 tracing::error!(container = %id, %error, "cannot hold the container's log files")
             }
         }
         let cursor = self.damage.entry(*id).or_default();
-        match record_damage(&store_dir, cursor, created_nanos) {
+        match record_damage(&store_dir, cursor, created_nanos, Newest::Growing) {
             Ok(gaps) => {
                 for gap in gaps {
                     tracing::warn!(container = %id, from = gap.from, to = gap.to, "skipped log bytes that held no valid frame");
@@ -370,7 +397,7 @@ impl Harvester {
         let held: Vec<ContainerId> = self
             .seen
             .iter()
-            .filter(|(_, seen)| matches!(seen, Seen::Pending { .. } | Seen::Managed { .. }))
+            .filter(|(_, seen)| matches!(seen, Seen::Pending | Seen::Managed { .. }))
             .map(|(id, _)| *id)
             .collect();
         for id in held {
@@ -399,14 +426,14 @@ impl Harvester {
             return;
         };
         let inspected = match (inspected, seen) {
-            (Inspected::Found(inspected), Seen::Pending { .. } | Seen::Managed { .. }) => inspected,
-            (Inspected::Gone, Seen::Pending { .. } | Seen::Managed { .. }) => {
+            (Inspected::Found(inspected), Seen::Pending | Seen::Managed { .. }) => inspected,
+            (Inspected::Gone, Seen::Pending | Seen::Managed { .. }) => {
                 return self.on_gone(&id);
             }
             (Inspected::Found(_) | Inspected::Gone | Inspected::Unanswered, _) => return,
         };
         let store_dir = self.store.container(&id);
-        let Seen::Pending { first_seen } = seen else {
+        let Seen::Pending = seen else {
             if let Some(meta) = container_meta(&inspected)
                 && let Err(error) = write_meta(&store_dir, &meta)
             {
@@ -430,16 +457,14 @@ impl Harvester {
             .created
             .as_ref()
             .and_then(|at| rfc3339_nanos(&at.to_string()));
-        if let Some(first_seen) = first_seen {
-            match first_seen_gap(&store_dir, first_seen, max_files, created_nanos) {
-                Ok(Some(gap)) => {
-                    tracing::warn!(container = %id, from = gap.from, to = gap.to, "Docker deleted log files the store never held");
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(container = %id, %error, "cannot record what the store never held; the next inspect retries");
-                    return;
-                }
+        match judge_first_set(&store_dir, max_files, created_nanos) {
+            Ok(Some(gap)) => {
+                tracing::warn!(container = %id, from = gap.from, to = gap.to, "Docker deleted log files the store never held");
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(container = %id, %error, "cannot record what the store never held; the next inspect retries");
+                return;
             }
         }
         self.seen.insert(
@@ -457,6 +482,10 @@ impl Harvester {
     /// event says so. Only a container nothing proves Ployz owns is dropped.
     fn on_gone(&mut self, id: &ContainerId) {
         self.sync(id);
+        let created_nanos = match self.seen.get(id) {
+            Some(Seen::Managed { created_nanos, .. }) => *created_nanos,
+            _ => None,
+        };
         let store_dir = self.store.container(id);
         let event = self.last_event.remove(id);
         let from_event = event.as_ref().and_then(container_meta);
@@ -465,32 +494,29 @@ impl Harvester {
                 if kept.finished_at.is_none()
                     && let Some(from_event) = from_event
                 {
+                    kept.started_at = kept.started_at.or(from_event.started_at);
                     kept.finished_at = from_event.finished_at;
                     kept.exit_code = from_event.exit_code;
+                    kept.oom_killed |= from_event.oom_killed;
                 }
-                kept
+                Some(kept)
             }
             Ok(None) => match from_event {
-                Some(from_event) => from_event,
+                Some(from_event) => Some(from_event),
                 None => return self.discard(id),
             },
             Err(error) => {
                 tracing::warn!(container = %id, %error, "cannot read the metadata of a removed container; keeping its files");
-                return self.forget(id);
+                None
             }
         };
-        if let Err(error) = write_meta(&store_dir, &meta) {
+        if let Some(meta) = meta
+            && let Err(error) = write_meta(&store_dir, &meta)
+        {
             tracing::warn!(container = %id, %error, "cannot update a removed container's metadata");
         }
-        match close_removed_container(&store_dir, now_nanos()) {
-            Ok(Some(gap)) => {
-                tracing::warn!(container = %id, from = gap.from, "Docker removed the container before the store saw it exit");
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(container = %id, %error, "cannot check a removed container");
-            }
-        }
+        let mut cursor = self.damage.remove(id).unwrap_or_default();
+        self.settle(id, &mut cursor, created_nanos);
         self.forget(id);
     }
 
@@ -526,10 +552,15 @@ impl Harvester {
         let limits = Limits::for_filesystem(disk.total_bytes);
         let exists = |id: &ContainerId| !self.docker_dir_gone(id);
         match cleanup::run(&self.store, &limits, disk, SystemTime::now(), exists) {
-            Ok(report) if report.files_deleted > 0 || report.containers_removed > 0 => {
+            Ok(report)
+                if report.files_deleted > 0
+                    || report.symlinks_removed > 0
+                    || report.containers_removed > 0 =>
+            {
                 tracing::info!(
                     files = report.files_deleted,
                     bytes = report.bytes_freed,
+                    symlinks = report.symlinks_removed,
                     containers = report.containers_removed,
                     "cleaned the Log Store"
                 )
@@ -602,14 +633,12 @@ fn container_id(name: &OsStr) -> Option<ContainerId> {
 pub(super) struct Synced {
     pub linked: usize,
     pub gap: Option<Gap>,
-    /// What a sync without `max-file` found the first time it held files.
-    pub first_seen: Option<FirstSeen>,
 }
 
-/// Docker's set as the store first held it, kept until `max-file` says
-/// whether Docker had already deleted files from it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FirstSeen {
+/// Docker's set as the store first held it, kept in `first-set.json` until
+/// `max-file` says whether Docker had already deleted files from it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct FirstSeen {
     files: usize,
     compressed: usize,
     oldest: LogFileName,
@@ -703,9 +732,21 @@ fn sync_pass(
         }
     }
 
-    let mut pass = Ok(Pass::Done);
-    let mut oldest_held = None;
     let last_seq = held.last().map_or(0, |name| name.seq);
+    if held.is_empty() && max_files.is_none() {
+        let first_seen = FirstSeen {
+            files: docker_files.len(),
+            compressed,
+            oldest: LogFileName {
+                seq: last_seq + 1,
+                ino: oldest.ino,
+            },
+        };
+        let json = serde_json::to_vec(&first_seen).map_err(io::Error::other)?;
+        crate::filesystem::atomic_write(&store_dir.join(FIRST_SET_FILE), &json, 0o600)?;
+    }
+
+    let mut pass = Ok(Pass::Done);
     let unheld = docker_files
         .iter()
         .filter(|file| !held_inos.contains(&file.ino));
@@ -723,41 +764,34 @@ fn sync_pass(
             }
         }
         synced.linked += 1;
-        if file.ino == oldest.ino {
-            oldest_held = Some(name);
-        }
-    }
-
-    if held.is_empty()
-        && max_files.is_none()
-        && let Some(oldest) = oldest_held
-    {
-        synced.first_seen = Some(FirstSeen {
-            files: docker_files.len(),
-            compressed,
-            oldest,
-        });
     }
     pass
 }
 
-/// Judges the set the store first held without `max-file`: a full set means
-/// Docker may already have deleted files the store never saw.
-pub(super) fn first_seen_gap(
+/// Judges the set the store first held without `max-file`, then drops its
+/// record: a full set means Docker may already have deleted files the store
+/// never saw. The record outlives a restart, so a failed write is retried.
+pub(super) fn judge_first_set(
     store_dir: &Path,
-    first_seen: FirstSeen,
     max_files: usize,
     created_nanos: Option<i64>,
 ) -> io::Result<Option<Gap>> {
-    if !set_filled(first_seen.files, first_seen.compressed, max_files) {
-        return Ok(None);
-    }
-    let oldest = match fs::File::open(store_dir.join(first_seen.oldest.to_string())) {
-        Ok(oldest) => oldest,
+    let record = store_dir.join(FIRST_SET_FILE);
+    let first_seen = match fs::read(&record) {
+        Ok(json) => serde_json::from_slice::<FirstSeen>(&json).ok(),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    record_not_captured(store_dir, created_nanos.unwrap_or(0), &oldest)
+    let gap = match first_seen.filter(|seen| set_filled(seen.files, seen.compressed, max_files)) {
+        Some(seen) => match fs::File::open(store_dir.join(seen.oldest.to_string())) {
+            Ok(oldest) => record_not_captured(store_dir, created_nanos.unwrap_or(0), &oldest)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        },
+        None => None,
+    };
+    fs::remove_file(record)?;
+    Ok(gap)
 }
 
 /// Records that the lines before `oldest` back to `from` were never held. The
@@ -853,10 +887,19 @@ pub(super) struct DamageCursor {
     scanned: Option<u64>,
 }
 
+/// Whether Docker may still write the newest held file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Newest {
+    Growing,
+    /// Docker removed the container, so every held file is complete.
+    Finished,
+}
+
 pub(super) fn record_damage(
     store_dir: &Path,
     cursor: &mut DamageCursor,
     created_nanos: Option<i64>,
+    newest: Newest,
 ) -> io::Result<Vec<Gap>> {
     let held = held_files(store_dir)?;
     let start = match &cursor.at {
@@ -864,9 +907,13 @@ pub(super) fn record_damage(
         None => {
             cursor.scanned = read_scanned(store_dir)?;
             let scanned = cursor.scanned;
-            held.iter()
-                .position(|name| scanned.is_none_or(|seq| name.seq > seq))
-                .or(held.len().checked_sub(1))
+            let unscanned = held
+                .iter()
+                .position(|name| scanned.is_none_or(|seq| name.seq > seq));
+            match newest {
+                Newest::Growing => unscanned.or(held.len().checked_sub(1)),
+                Newest::Finished => unscanned,
+            }
         }
     };
     let Some((start, &first)) = start.and_then(|start| Some((start, held.get(start)?))) else {
@@ -892,7 +939,7 @@ pub(super) fn record_damage(
         if index > start {
             scan.next_file();
         }
-        let finished = index + 1 < held.len();
+        let finished = index + 1 < held.len() || newest == Newest::Finished;
         let mut opened = fs::File::open(store_dir.join(name.to_string()))?;
         scan.read(&mut opened, finished, &mut found)?;
     }
@@ -910,9 +957,12 @@ pub(super) fn record_damage(
         }
     }
 
-    let read_past = held.len().checked_sub(2).and_then(|index| held.get(index));
-    if let Some(read_past) = read_past
-        && !scan.in_damage()
+    let (read_past, settled) = match newest {
+        Newest::Growing => (held.len().checked_sub(2), !scan.in_damage()),
+        Newest::Finished => (held.len().checked_sub(1), true),
+    };
+    if let Some(read_past) = read_past.and_then(|index| held.get(index))
+        && settled
         && cursor.scanned < Some(read_past.seq)
     {
         let marker = read_past.seq.to_string();
@@ -987,7 +1037,26 @@ fn last_ts_of(path: &Path) -> Option<i64> {
     frame::last_ts(&tail)
 }
 
-pub(super) fn close_removed_container(store_dir: &Path, now: i64) -> io::Result<Option<Gap>> {
+pub(super) struct Settled {
+    damage: Vec<Gap>,
+    unexited: Option<Gap>,
+}
+
+/// Finishes the record of a container Docker removed: reads its now complete
+/// files for damage, then marks the time after its last line missing unless
+/// the store saw it exit.
+pub(super) fn settle_removed(
+    store_dir: &Path,
+    cursor: &mut DamageCursor,
+    created_nanos: Option<i64>,
+    now: i64,
+) -> io::Result<Settled> {
+    let damage = record_damage(store_dir, cursor, created_nanos, Newest::Finished)?;
+    let unexited = close_removed_container(store_dir, now)?;
+    Ok(Settled { damage, unexited })
+}
+
+fn close_removed_container(store_dir: &Path, now: i64) -> io::Result<Option<Gap>> {
     let Some(meta) = read_meta(store_dir)? else {
         return Ok(None);
     };
@@ -1017,15 +1086,43 @@ pub(super) fn close_removed_container(store_dir: &Path, now: i64) -> io::Result<
     Ok(Some(gap))
 }
 
+/// Appends one line to `gaps.jsonl`. A line an earlier append left unfinished
+/// is cut off first, and a failed append is cut back off, so every line the
+/// file ends up with is whole.
 fn append_gap(store_dir: &Path, gap: &Gap) -> io::Result<()> {
-    use std::io::Write as _;
+    use std::{io::Read as _, os::unix::fs::OpenOptionsExt as _};
     let mut line = serde_json::to_vec(gap).map_err(io::Error::other)?;
     line.push(b'\n');
-    fs::OpenOptions::new()
+    let mut file = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
-        .open(store_dir.join(GAPS_FILE))?
-        .write_all(&line)
+        .mode(0o600)
+        .open(store_dir.join(GAPS_FILE))?;
+    let mut recorded = Vec::new();
+    file.read_to_end(&mut recorded)?;
+    let whole = recorded
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |end| end + 1);
+    if whole < recorded.len() {
+        file.set_len(whole as u64)?;
+    }
+    let appended = write_gap_line(&mut file, &line);
+    if appended.is_err() {
+        drop(file.set_len(whole as u64));
+    }
+    appended
+}
+
+fn write_gap_line(file: &mut fs::File, line: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    #[cfg(test)]
+    if let Some(written) = tests::GAP_WRITES_FAIL_AFTER.get() {
+        file.write_all(line.get(..written).unwrap_or(line))?;
+        return Err(io::Error::from(io::ErrorKind::StorageFull));
+    }
+    file.write_all(line)
 }
 
 fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
@@ -1080,29 +1177,48 @@ fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta>
     })
 }
 
-/// What a `start` or `die` event says about a container, shaped like the
-/// inspect it stands in for. Docker puts the labels and the name in the
-/// event's attributes, and a `die` its exit code.
-fn described_by_event(message: &EventMessage) -> ContainerInspectResponse {
+/// What a `start`, `oom`, or `die` event says about a container, shaped like
+/// the inspect it stands in for. Docker puts the labels and the name in the
+/// event's attributes and a `die` its exit code. When it started and whether
+/// it was killed for memory come from the events before, in `previous`.
+fn described_by_event(
+    message: &EventMessage,
+    previous: Option<&ContainerInspectResponse>,
+) -> ContainerInspectResponse {
     let attributes = message
         .actor
         .as_ref()
         .and_then(|actor| actor.attributes.clone())
         .unwrap_or_default();
-    let died = message.action.as_deref() == Some("die");
-    let finished_at = message.time_nano.filter(|_| died).map(|nanos| {
+    let action = message.action.as_deref();
+    let died = action == Some("die");
+    let at = message.time_nano.map(|nanos| {
         let mut at = Vec::new();
         frame::write_rfc3339_nanos(nanos, &mut at).expect("writing to a Vec cannot fail");
         String::from_utf8(at).expect("an RFC 3339 time is ASCII")
     });
+    let before = previous.and_then(|previous| previous.state.as_ref());
+    let (started_at, oom_killed) = match action {
+        Some("start") => (at.clone(), Some(false)),
+        Some("oom") => (
+            before.and_then(|state| state.started_at.clone()),
+            Some(true),
+        ),
+        _ => (
+            before.and_then(|state| state.started_at.clone()),
+            before.and_then(|state| state.oom_killed),
+        ),
+    };
     ContainerInspectResponse {
         name: attributes.get("name").cloned(),
         state: Some(ContainerState {
             running: Some(!died),
-            finished_at,
+            started_at,
+            finished_at: at.filter(|_| died),
             exit_code: attributes
                 .get("exitCode")
                 .and_then(|code| code.parse().ok()),
+            oom_killed,
             ..ContainerState::default()
         }),
         config: Some(ContainerConfig {
@@ -1151,10 +1267,13 @@ fn rfc3339_nanos(at: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use std::{
+        cell::Cell,
         collections::HashMap,
         fs,
+        io::{self, Write},
         os::unix::fs::MetadataExt,
         path::{Path, PathBuf},
+        sync::{Arc, Mutex},
     };
 
     use bollard::{
@@ -1167,11 +1286,12 @@ mod tests {
     use inotify::Inotify;
     use ployz_core::ContainerId;
     use tokio::sync::mpsc;
+    use tracing_subscriber::fmt::MakeWriter;
 
     use super::{
-        DamageCursor, Harvester, Inspected, Link, Synced, close_removed_container, container_meta,
-        first_seen_gap, foreign_log_driver, link_exact, read_meta, record_damage, sync_container,
-        write_meta,
+        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, Synced, container_meta,
+        foreign_log_driver, judge_first_set, link_exact, read_meta, record_damage, settle_removed,
+        sync_container, write_meta,
     };
     use crate::{
         observe::{
@@ -1184,6 +1304,12 @@ mod tests {
     };
 
     const T0: i64 = 1_760_000_000_000_000_000;
+
+    thread_local! {
+        /// When set, each gap append writes this many bytes of its line and
+        /// then fails, as a write that runs out of disk does.
+        pub(super) static GAP_WRITES_FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+    }
 
     struct Dirs {
         _root: TestDir,
@@ -1289,7 +1415,6 @@ mod tests {
             Synced {
                 linked: 2,
                 gap: Some(gap),
-                ..Synced::default()
             }
         );
         assert_eq!(dirs.gaps(), [gap]);
@@ -1322,11 +1447,11 @@ mod tests {
         for ts in [T0 + 2, T0 + 3, T0 + 4] {
             dirs.rotate(2, ts);
         }
-        let gaps_file = dirs.store.join("gaps.jsonl");
-        fs::create_dir(&gaps_file).unwrap();
+        GAP_WRITES_FAIL_AFTER.set(Some(9));
         sync_container(&dirs.docker, &dirs.store, Some(2), Some(T0)).unwrap_err();
+        assert_eq!(dirs.gaps(), []);
 
-        fs::remove_dir(&gaps_file).unwrap();
+        GAP_WRITES_FAIL_AFTER.set(None);
         let gap = Gap {
             from: T0 + 1,
             to: T0 + 3,
@@ -1360,12 +1485,10 @@ mod tests {
         }
         let pending = sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
         assert_eq!((pending.linked, pending.gap), (2, None));
-        let first_seen = pending.first_seen.unwrap();
         assert!(dirs.gaps().is_empty());
 
         dirs.rotate(2, T0 + 8);
-        let next = sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
-        assert_eq!(next.first_seen, None);
+        sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
 
         let gap = Gap {
             from: T0,
@@ -1373,9 +1496,10 @@ mod tests {
             reason: GapReason::NotCaptured,
         };
         assert_eq!(
-            first_seen_gap(&dirs.store, first_seen, 2, Some(T0)).unwrap(),
+            judge_first_set(&dirs.store, 2, Some(T0)).unwrap(),
             Some(gap)
         );
+        assert_eq!(judge_first_set(&dirs.store, 2, Some(T0)).unwrap(), None);
         assert_eq!(dirs.gaps(), [gap]);
     }
 
@@ -1384,11 +1508,8 @@ mod tests {
         let dirs = dirs();
         dirs.rotate(3, T0 + 5);
         dirs.rotate(3, T0 + 6);
-        let pending = sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
-        assert_eq!(
-            first_seen_gap(&dirs.store, pending.first_seen.unwrap(), 3, Some(T0)).unwrap(),
-            None
-        );
+        sync_container(&dirs.docker, &dirs.store, None, None).unwrap();
+        assert_eq!(judge_first_set(&dirs.store, 3, Some(T0)).unwrap(), None);
         assert!(dirs.gaps().is_empty());
     }
 
@@ -1480,7 +1601,7 @@ mod tests {
         dirs.sync(3);
         let mut cursor = DamageCursor::default();
         assert_eq!(
-            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
             []
         );
 
@@ -1493,17 +1614,17 @@ mod tests {
             reason: GapReason::Corrupt,
         };
         assert_eq!(
-            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
             [gap]
         );
         assert_eq!(
-            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
             []
         );
 
         let mut restarted = DamageCursor::default();
         assert_eq!(
-            record_damage(&dirs.store, &mut restarted, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut restarted, Some(T0), Newest::Growing).unwrap(),
             []
         );
         assert_eq!(dirs.gaps(), [gap]);
@@ -1516,7 +1637,7 @@ mod tests {
         fs::write(&active, lines(T0 + 1, 10)).unwrap();
         dirs.sync(3);
         let mut cursor = DamageCursor::default();
-        record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap();
+        record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap();
 
         let mut torn_end = fs::read(&active).unwrap();
         torn_end.extend(torn(T0 + 99));
@@ -1524,7 +1645,7 @@ mod tests {
         dirs.rotate(3, T0 + 11);
         dirs.sync(3);
         assert_eq!(
-            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
             [Gap {
                 from: T0 + 10,
                 to: T0 + 11,
@@ -1539,7 +1660,13 @@ mod tests {
         dirs.rotate(5, T0 + 1);
         dirs.rotate(5, T0 + 2);
         dirs.sync(5);
-        record_damage(&dirs.store, &mut DamageCursor::default(), Some(T0)).unwrap();
+        record_damage(
+            &dirs.store,
+            &mut DamageCursor::default(),
+            Some(T0),
+            Newest::Growing,
+        )
+        .unwrap();
 
         let active = dirs.docker.join("container.log");
         let mut damaged = fs::read(&active).unwrap();
@@ -1557,7 +1684,7 @@ mod tests {
         };
         let mut restarted = DamageCursor::default();
         assert_eq!(
-            record_damage(&dirs.store, &mut restarted, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut restarted, Some(T0), Newest::Growing).unwrap(),
             [gap]
         );
         assert_eq!(dirs.gaps(), [gap]);
@@ -1569,27 +1696,63 @@ mod tests {
         let active = dirs.docker.join("container.log");
         fs::write(
             &active,
-            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
+            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 20)].concat(),
         )
         .unwrap();
         dirs.sync(3);
-        let gaps_file = dirs.store.join("gaps.jsonl");
-        fs::create_dir(&gaps_file).unwrap();
+        GAP_WRITES_FAIL_AFTER.set(Some(9));
         let mut cursor = DamageCursor::default();
-        record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap_err();
+        record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap_err();
+        assert_eq!(dirs.gaps(), []);
 
-        fs::remove_dir(&gaps_file).unwrap();
+        GAP_WRITES_FAIL_AFTER.set(None);
         let gap = Gap {
             from: T0 + 5,
             to: T0 + 6,
             reason: GapReason::Corrupt,
         };
         assert_eq!(
-            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
             [gap]
         );
         assert_eq!(
-            record_damage(&dirs.store, &mut cursor, Some(T0)).unwrap(),
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
+            []
+        );
+        assert_eq!(dirs.gaps(), [gap]);
+    }
+
+    #[test]
+    fn a_gap_line_an_earlier_append_left_unfinished_is_cut_before_the_next() {
+        let dirs = dirs();
+        let active = dirs.docker.join("container.log");
+        fs::write(
+            &active,
+            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
+        )
+        .unwrap();
+        dirs.rotate(3, T0 + 11);
+        dirs.sync(3);
+        let gap = Gap {
+            from: T0 + 5,
+            to: T0 + 6,
+            reason: GapReason::Corrupt,
+        };
+        let line = serde_json::to_vec(&gap).unwrap();
+        fs::write(dirs.store.join(GAPS_FILE), line.get(..20).unwrap()).unwrap();
+
+        let mut cursor = DamageCursor::default();
+        assert_eq!(
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
+            [gap]
+        );
+        assert_eq!(
+            record_damage(&dirs.store, &mut cursor, Some(T0), Newest::Growing).unwrap(),
+            []
+        );
+        let mut restarted = DamageCursor::default();
+        assert_eq!(
+            record_damage(&dirs.store, &mut restarted, Some(T0), Newest::Growing).unwrap(),
             []
         );
         assert_eq!(dirs.gaps(), [gap]);
@@ -1628,8 +1791,13 @@ mod tests {
             exit_code: None,
             oom_killed: false,
         };
+        let unexited = |now| {
+            settle_removed(&dirs.store, &mut DamageCursor::default(), Some(T0), now)
+                .unwrap()
+                .unexited
+        };
         write_meta(&dirs.store, &meta(Some("2026-01-01T00:00:00Z"))).unwrap();
-        assert_eq!(close_removed_container(&dirs.store, T0 + 9).unwrap(), None);
+        assert_eq!(unexited(T0 + 9), None);
 
         write_meta(&dirs.store, &meta(None)).unwrap();
         let gap = Gap {
@@ -1637,11 +1805,8 @@ mod tests {
             to: T0 + 9,
             reason: GapReason::NotCaptured,
         };
-        assert_eq!(
-            close_removed_container(&dirs.store, T0 + 9).unwrap(),
-            Some(gap)
-        );
-        assert_eq!(close_removed_container(&dirs.store, T0 + 10).unwrap(), None);
+        assert_eq!(unexited(T0 + 9), Some(gap));
+        assert_eq!(unexited(T0 + 10), None);
         assert_eq!(dirs.gaps(), [gap]);
     }
 
@@ -1973,21 +2138,191 @@ mod tests {
         let id = host.container(&[lines(T0 + 7, 1), lines(T0 + 6, 1)]);
         let mut running = host.harvester();
         running.harvester.rescan();
-        let gaps_file = host.dir().join("gaps.jsonl");
-        fs::create_dir(&gaps_file).unwrap();
+        GAP_WRITES_FAIL_AFTER.set(Some(9));
         running.harvester.on_inspected(id, managed(2));
+        assert_eq!(host.gaps(), []);
 
-        fs::remove_dir(&gaps_file).unwrap();
+        GAP_WRITES_FAIL_AFTER.set(None);
         running.harvester.on_inspected(id, managed(2));
+        assert_eq!(host.gaps(), [FIRST_SET_GAP]);
+        running.harvester.on_inspected(id, managed(2));
+        assert_eq!(host.gaps(), [FIRST_SET_GAP]);
+    }
+
+    const FIRST_SET_GAP: Gap = Gap {
+        from: T0,
+        to: T0 + 6,
+        reason: GapReason::NotCaptured,
+    };
+
+    #[tokio::test]
+    async fn a_first_set_gap_that_cannot_be_written_is_recorded_after_a_restart() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 7, 1), lines(T0 + 6, 1)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        GAP_WRITES_FAIL_AFTER.set(Some(9));
+        running.harvester.on_inspected(id, managed(2));
+        drop(running);
+
+        GAP_WRITES_FAIL_AFTER.set(None);
+        let mut restarted = host.harvester();
+        restarted.harvester.rescan();
+        restarted.harvester.on_inspected(id, managed(2));
+        assert_eq!(host.gaps(), [FIRST_SET_GAP]);
+    }
+
+    const DAMAGE_GAP: Gap = Gap {
+        from: T0 + 5,
+        to: T0 + 6,
+        reason: GapReason::Corrupt,
+    };
+
+    /// A managed container that wrote a torn frame, removed by Docker after it
+    /// exited while gap appends were failing.
+    fn removed_while_gap_writes_fail(host: &Host) -> Running {
+        let id = host.container(&[lines(T0 + 1, 5)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        fs::write(
+            host.local_logs().join("container.log"),
+            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
+        )
+        .unwrap();
+        GAP_WRITES_FAIL_AFTER.set(Some(9));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 11, &[("exitCode", "0")]));
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+        assert_eq!(host.gaps(), []);
+        GAP_WRITES_FAIL_AFTER.set(None);
+        running
+    }
+
+    #[tokio::test]
+    async fn a_damage_gap_that_cannot_be_written_before_removal_is_recorded_at_the_next_tick() {
+        let host = host();
+        let mut running = removed_while_gap_writes_fail(&host);
+        running.harvester.rescan();
+        running.harvester.settle_unsettled();
+        assert_eq!(host.gaps(), [DAMAGE_GAP]);
+        running.harvester.settle_unsettled();
+        assert_eq!(host.gaps(), [DAMAGE_GAP]);
+    }
+
+    #[tokio::test]
+    async fn a_damage_gap_that_cannot_be_written_before_removal_is_recorded_after_a_restart() {
+        let host = host();
+        drop(removed_while_gap_writes_fail(&host));
+        let mut restarted = host.harvester();
+        restarted.harvester.rescan();
+        restarted.harvester.settle_removed_while_down();
+        assert_eq!(host.gaps(), [DAMAGE_GAP]);
+    }
+
+    #[tokio::test]
+    async fn damage_docker_wrote_while_the_harvester_was_down_is_recorded_once_it_is_removed() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 5)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 11, &[("exitCode", "0")]));
+        running.harvester.on_inspected(id, managed(3));
+        drop(running);
+
+        fs::write(
+            host.local_logs().join("container.log"),
+            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
+        )
+        .unwrap();
+        host.remove_from_docker();
+        let mut restarted = host.harvester();
+        restarted.harvester.rescan();
+        restarted.harvester.settle_removed_while_down();
+        let damage: Vec<Gap> = host
+            .gaps()
+            .into_iter()
+            .filter(|gap| gap.reason == GapReason::Corrupt)
+            .collect();
+        assert_eq!(damage, [DAMAGE_GAP]);
+
+        let mut again = host.harvester();
+        again.harvester.settle_removed_while_down();
         assert_eq!(
-            host.gaps(),
-            [Gap {
-                from: T0,
-                to: T0 + 6,
-                reason: GapReason::NotCaptured,
-            }]
+            host.gaps()
+                .iter()
+                .filter(|gap| gap.reason == GapReason::Corrupt)
+                .count(),
+            1
         );
-        running.harvester.on_inspected(id, managed(2));
-        assert_eq!(host.gaps().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_oom_kill_docker_removes_before_its_inspect_is_recorded_as_one() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        running.harvester.on_docker_event(event("start", T0, &[]));
+        running.harvester.on_docker_event(event("oom", T0 + 4, &[]));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 5, &[("exitCode", "137")]));
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        let meta = host.meta();
+        assert_eq!(
+            (meta.started_at.as_deref(), meta.exit_code, meta.oom_killed),
+            (Some("2025-10-09T08:53:20.000000000Z"), Some(137), true)
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Capture {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn cleaning_reports_the_symlinks_it_removed() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        std::os::unix::fs::symlink(host.local_logs(), host.dir().join("9-9.log")).unwrap();
+
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || running.harvester.clean());
+        let journal = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(journal.contains("symlinks=1"), "{journal}");
+        assert!(exists(&host.local_logs()));
     }
 }

@@ -9,6 +9,7 @@
 //!         gaps.jsonl                    one Gap per line
 //!         scanned                       seq of the newest file the damage
 //!                                       scan has read past
+//!         first-set.json                FirstSeen, until max-file judges it
 //!         <seq>-<ino>.log               a hardlink to one Docker log file, raw
 //! ```
 //!
@@ -35,6 +36,8 @@ pub const GAPS_FILE: &str = "gaps.jsonl";
 pub const LINKING_FILE: &str = "linking.tmp";
 pub const SCANNED_FILE: &str = "scanned";
 pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
+pub const FIRST_SET_FILE: &str = "first-set.json";
+pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
 const LOG_SUFFIX: &str = ".log";
 
 /// The versioned root of the Log Store, `<DockerRootDir>/ployz-observe/v1`.
@@ -129,7 +132,7 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
 }
 
 /// The name of one stored log file, `<seq>-<ino>.log`.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct LogFileName {
     pub seq: u64,
     pub ino: u64,
