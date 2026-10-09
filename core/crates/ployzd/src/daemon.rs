@@ -462,20 +462,19 @@ impl Daemon {
             errors.push(ployz_core::error_chain::inline(&error));
         }
 
-        if resetting
-            && let Some(running) = &mut self.corrosion
-            && let Err(error) = running.cleanup().await
-        {
-            errors.push(ployz_core::error_chain::inline(&error));
-        }
         if let Err(error) = self.ingest.shutdown().await {
             errors.push(ployz_core::error_chain::inline(&error));
         }
         if resetting {
-            match self.local.mutate(|store| store.complete_reset()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => errors.push(ployz_core::error_chain::inline(&error)),
-                Err(error) => errors.push(ployz_core::error_chain::inline(&error)),
+            let corrosion = self.corrosion.as_mut();
+            let removal = async {
+                match corrosion {
+                    Some(running) => running.cleanup().await,
+                    None => Ok(()),
+                }
+            };
+            if let Err(error) = finish_reset(&self.local, removal).await {
+                errors.push(ployz_core::error_chain::inline(&error));
             }
         }
         // Admitted work is detached from its RPC and outlives the server drain. Give
@@ -616,14 +615,22 @@ async fn serve_volume_send(
     }
 }
 
-// Corrosion outlives the daemon and holds files in the data directory, so it goes first.
-// A failed removal keeps the Resetting record, and the next start retries.
+// Corrosion outlives the daemon and holds files in the data directory, so both resets
+// remove it first. A failed removal keeps the Resetting record, and the next start retries.
 async fn finish_interrupted_reset(
     interrupted: InterruptedReset,
     remove_corrosion: impl Future<Output = Result<(), CorrosionError>>,
 ) -> Result<LocalMachineStore, Error> {
     remove_corrosion.await?;
     Ok(interrupted.complete()?)
+}
+
+async fn finish_reset(
+    local: &RecordOwner,
+    remove_corrosion: impl Future<Output = Result<(), CorrosionError>>,
+) -> Result<(), Error> {
+    remove_corrosion.await?;
+    Ok(local.mutate(|store| store.complete_reset()).await??)
 }
 
 async fn start_corrosion(
@@ -760,7 +767,7 @@ mod tests {
     use super::{
         ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
         LocalMachineStore, MachineApiSocket, ManagementConfig, Opened, StoreError,
-        finish_interrupted_reset, wait_for_participation, wait_until_socket_accepts,
+        finish_interrupted_reset, finish_reset, wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -1038,6 +1045,27 @@ mod tests {
             LocalMachineStore::open(&data_dir),
             Err(StoreError::ResetInterrupted(_))
         ));
+        let persisted: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(persisted.id(), old_id);
+        assert_eq!(persisted.phase(), ployz_core::LocalMachinePhase::Resetting);
+    }
+
+    #[tokio::test]
+    async fn failed_corrosion_removal_keeps_a_live_reset_for_retry() {
+        let root = TestDir::new("ployzd-live-reset-retry");
+        let data_dir = root.0.join("data");
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        let old_id = store.record().id();
+        store.begin_reset().unwrap();
+        let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+
+        let result = finish_reset(&owner, async {
+            Err(CorrosionError::Api("docker unavailable".into()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Corrosion(_))));
         let persisted: crate::machine::LocalMachineRecord =
             serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
         assert_eq!(persisted.id(), old_id);
