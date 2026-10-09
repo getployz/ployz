@@ -1,4 +1,4 @@
-//! Departure over fake ZFS: every root becomes a slot, every record moves on, and the
+//! Departure over fake ZFS: every root becomes a slot, every record closes, and the
 //! roles Storage.Inspect and Mount derive from the markers.
 
 use super::lease_tests::{set_property, start};
@@ -6,7 +6,7 @@ use super::mirror_tests::{commands, property, snapshot_names};
 use super::*;
 
 #[tokio::test]
-async fn departure_demotes_each_root_to_a_slot_and_bumps_every_record() {
+async fn departure_demotes_each_root_to_a_slot_and_closes_every_record() {
     let test = TestDir::new();
     set_property(&test, "tank/ployz", "ployz:lease.data", "3:5.2.1:open");
     set_property(&test, "tank/ployz", "ployz:lease.gone", "1:2.0.0:closed");
@@ -46,11 +46,11 @@ async fn departure_demotes_each_root_to_a_slot_and_bumps_every_record() {
     assert!(kept.contains(&"w-3-1".to_owned()), "{kept:?}");
     assert_eq!(
         property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
-        Some("4:2.0.0:closed")
+        Some("3:65535.4294967295.255:closed")
     );
     assert_eq!(
         property(&test, "tank/ployz", "ployz:lease.gone").as_deref(),
-        Some("2:2.0.0:closed")
+        Some("1:65535.4294967295.255:closed")
     );
 
     let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;

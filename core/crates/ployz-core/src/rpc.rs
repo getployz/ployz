@@ -1,5 +1,5 @@
 use crate::{
-    AdoptLeaseRequest, CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
+    CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
     InspectVolumeCopyRequest, MirrorRequest, ReceiveView, ServiceVolumeRequest,
     SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
     WarmRequest,

@@ -137,7 +137,6 @@ pub fn typescript_declarations() -> String {
     declarations.add::<super::CopyObservation>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
     declarations.add::<ployz_core::VolumeCopyView>();
-    declarations.add::<ployz_core::AdoptLeaseRequest>();
     declarations.add::<ployz_core::DeclareMirrorRequest>();
     declarations.add::<ployz_core::MirrorRequest>();
     declarations.add::<ployz_core::CommitRequest>();

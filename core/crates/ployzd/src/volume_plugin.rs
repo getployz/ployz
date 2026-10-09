@@ -171,7 +171,6 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Prepare", post(capacity::prepare))
         .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(lease::inspect))
-        .route("/Volume.AdoptLease", post(lease::adopt_lease))
         .route("/Volume.Withdraw", post(switch_source::withdraw))
         .route(
             "/Volume.MarkContainerStopping",

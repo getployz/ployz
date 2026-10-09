@@ -321,7 +321,6 @@ mod tests {
             switch: Switch {
                 lease: Lease::new(7),
                 pos: Pos::step(5),
-                not_after_unix_seconds: i64::MAX,
             },
             name: "data".parse().unwrap(),
             container_id: ContainerId::parse("a".repeat(64)).unwrap(),

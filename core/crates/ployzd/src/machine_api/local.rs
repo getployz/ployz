@@ -619,15 +619,6 @@ impl MachineRpc for MachineService {
         .await
     }
 
-    async fn adopt_lease(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::AdoptLease>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("AdoptLease", "Volume.AdoptLease", &request)
-            .await
-    }
-
     async fn withdraw(
         &self,
         request: Request<OpaquePayload>,
