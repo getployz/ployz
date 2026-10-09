@@ -6,8 +6,9 @@
 //! so a row's key depends only on its file and paging never repeats or skips
 //! a row. A line Docker split across a rotation reads as two rows. The
 //! unfinished line at the end of a running container's newest file waits
-//! until it ends, so a later page reads it whole, and holds back every row
-//! from its timestamp on, so no cursor passes it in the meantime.
+//! until it ends, so a later page reads it whole. A joined line takes the
+//! timestamp of its last chunk, so it sorts after every cursor issued while
+//! it waited.
 
 use std::{
     cmp::Ordering,
@@ -193,23 +194,10 @@ pub fn page(
         stored.read_files(query, &mut best, cancel)?;
     }
 
-    let (cut, until) = (best.cut, best.until);
+    let cut = best.cut;
     let mut ranked = best.heap.into_vec();
     ranked.sort();
-    // A backward page a held line emptied resumes below the line.
-    let next = cut
-        .and_then(|cut| {
-            ranked
-                .last()
-                .map(|ranked| ranked.key)
-                .or(query.backward.then_some(Key {
-                    ts: until,
-                    seq: 0,
-                    n: 0,
-                    ..cut
-                }))
-        })
-        .map(|key| key.to_string());
+    let next = cut.and(ranked.last()).map(|ranked| ranked.key.to_string());
     let mut rows = Vec::with_capacity(ranked.len());
     let mut introduced = std::collections::HashSet::new();
     for ranked in ranked {
@@ -340,7 +328,7 @@ impl Stored {
             check(cancel)?;
             // Nothing more lands in a rotated file or a stopped container's.
             let ended = Some(file.seq) != newest || self.meta.finished_at.is_some();
-            if best.skips(&self.id, file, ended) {
+            if best.skips(&self.id, file) {
                 continue;
             }
             let bytes = match fs::read(&file.path) {
@@ -348,11 +336,7 @@ impl Stored {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            let (lines, held) = lines(&bytes, ended);
-            if let Some(held) = held {
-                best.hold(held);
-            }
-            for (index, (n, line)) in lines.into_iter().enumerate() {
+            for (index, (n, line)) in lines(&bytes, ended).into_iter().enumerate() {
                 if index % CANCEL_EVERY == 0 {
                     check(cancel)?;
                 }
@@ -378,34 +362,47 @@ impl Stored {
 }
 
 /// A file's lines by timestamp, each with its rank among equal timestamps.
-/// The unfinished line at its end counts only once the file has `ended`;
-/// until then it comes back as the timestamp it holds.
-fn lines(bytes: &[u8], ended: bool) -> (Vec<(u64, frame::Line)>, Option<i64>) {
+/// The unfinished line at its end counts only once the file has `ended`.
+/// A line takes the timestamp of its last chunk.
+fn lines(bytes: &[u8], ended: bool) -> Vec<(u64, frame::Line)> {
     let mut reassembler = Reassembler::default();
     let mut lines = Vec::new();
+    let (mut stdout, mut stderr) = (i64::MIN, i64::MIN);
     for event in Frames::new(bytes) {
         if let Event::Entry(entry) = event {
-            reassembler.push(&entry, |line| lines.push(line));
+            match entry.stream {
+                Stream::Stdout => stdout = entry.ts,
+                Stream::Stderr => stderr = entry.ts,
+            }
+            // Only a chunk of its own stream ends a line.
+            reassembler.push(&entry, |line| {
+                lines.push(frame::Line {
+                    ts: entry.ts,
+                    ..line
+                });
+            });
         }
     }
-    let mut held = None;
     if ended {
-        lines.extend(reassembler.finish());
-    } else {
-        held = reassembler.finish().map(|line| line.ts).min();
+        lines.extend(reassembler.finish().map(|line| frame::Line {
+            ts: match line.stream {
+                Stream::Stdout => stdout,
+                Stream::Stderr => stderr,
+            },
+            ..line
+        }));
     }
     lines.sort_by_key(|line| line.ts);
     let mut previous = None;
     let mut n = 0;
-    let lines = lines
+    lines
         .into_iter()
         .map(|line| {
             n = if previous == Some(line.ts) { n + 1 } else { 0 };
             previous = Some(line.ts);
             (n, line)
         })
-        .collect();
-    (lines, held)
+        .collect()
 }
 
 /// Each stored file's first and last frame timestamps, kept between pages
@@ -524,8 +521,6 @@ struct Best<'q> {
     /// The best row left out for room, or a file's first row where a whole
     /// file was. Every row the page keeps is better.
     cut: Option<Key>,
-    /// The query's `until`, lowered to the earliest held line.
-    until: i64,
 }
 
 struct Ranked {
@@ -580,7 +575,6 @@ impl<'q> Best<'q> {
             heap: BinaryHeap::with_capacity(query.limit + 1),
             bytes: 0,
             cut: None,
-            until: query.until,
         }
     }
 
@@ -597,7 +591,7 @@ impl<'q> Best<'q> {
     }
 
     fn in_range(&self, key: &Key) -> bool {
-        (self.query.since..self.until).contains(&key.ts)
+        (self.query.since..self.query.until).contains(&key.ts)
             && self
                 .query
                 .cursor
@@ -634,33 +628,11 @@ impl<'q> Best<'q> {
         }
     }
 
-    /// Leaves out every row from `ts` on, so the page and its cursor stop
-    /// short of a line still being written.
-    fn hold(&mut self, ts: i64) {
-        if ts >= self.until {
-            return;
-        }
-        self.until = ts;
-        let kept: Vec<_> = self
-            .heap
-            .drain()
-            .filter(|ranked| ranked.key.ts < ts)
-            .collect();
-        self.bytes = kept.iter().map(Ranked::bytes).sum();
-        self.heap = kept.into();
-        // Forward, every row cut was later than one dropped here. Backward,
-        // rows below the line may have lost to rows above it, so the cut
-        // stays and keeps them out of this page for the next one.
-        if !self.query.backward {
-            self.cut = self.cut.filter(|cut| cut.ts < ts);
-        }
-    }
-
     /// Whether no row of `file` can enter the page. A file left out for
     /// room counts as cut, so the page still gets a cursor.
-    fn skips(&mut self, container: &ContainerId, file: &StoredFile, ended: bool) -> bool {
+    fn skips(&mut self, container: &ContainerId, file: &StoredFile) -> bool {
         let query = self.query;
-        let (mut low, mut high) = (query.since, self.until);
+        let (mut low, mut high) = (query.since, query.until);
         if let Some(cursor) = query.cursor {
             if query.backward {
                 high = high.min(cursor.ts.saturating_add(1));
@@ -670,11 +642,6 @@ impl<'q> Best<'q> {
         }
         if file.last < low || file.first >= high {
             return true;
-        }
-        // Backward, a running container's newest file is read for the line it
-        // may hold, which can sit below rows already kept.
-        if query.backward && !ended {
-            return false;
         }
         let Some(edge) = self.edge() else {
             return false;
@@ -930,7 +897,7 @@ pub(crate) mod tests {
             cursor: Some(format!("{T0}:{id}:2:0")),
             ..request(LogDirection::Forward, 100)
         });
-        assert_eq!(texts(&second.rows), ["still going", "half written"]);
+        assert_eq!(texts(&second.rows), ["half written", "still going"]);
         assert!(second.rows.iter().any(|row| matches!(
             row,
             HistoryRow::Line {
@@ -1103,7 +1070,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn no_cursor_passes_a_line_still_being_written() {
+    fn a_line_still_being_written_hides_nothing_and_reads_once_it_ends() {
         let store = Store::new();
         let id = store.container('a', "web");
         let err = |ts, text: &str| frame(ts, Stream::Stderr, text.as_bytes(), Piece::Whole);
@@ -1118,49 +1085,61 @@ pub(crate) mod tests {
                 err(T0 + 2, "d"),
             ],
         );
-        // Newer, so a backward page fills with it before it meets the line.
         let other = store.container('b', "web");
         store.file(&other, 0, &[line(T0 + 5, "x"), line(T0 + 6, "y")]);
-        let ts = |cursor: &String| cursor.split(':').next().unwrap().parse::<i64>().unwrap();
-        let mut resume = None;
-        for (direction, expected) in [
-            (LogDirection::Forward, ["a", "b"]),
-            (LogDirection::Backward, ["b", "a"]),
-        ] {
-            let mut read = Vec::new();
-            for (texts, next) in walk(&store, &request(direction, 1)) {
-                assert!(
-                    texts.iter().all(|text| text == "a" || text == "b"),
-                    "{direction:?} read {texts:?} past the held line"
-                );
-                if let Some(next) = next {
-                    // Backward, a cursor at the line's time reads below it.
-                    let passed = match direction {
-                        LogDirection::Forward => ts(&next) >= T0,
-                        LogDirection::Backward => ts(&next) > T0,
-                    };
-                    assert!(!passed, "{direction:?} cursor {next} passed it");
-                    if direction == LogDirection::Forward {
-                        resume = Some(next);
-                    }
-                }
-                read.extend(texts);
-            }
-            assert_eq!(read, expected, "{direction:?}");
-        }
+        let read = |request: LogHistoryRequest| -> Vec<String> {
+            walk(&store, &request)
+                .into_iter()
+                .flat_map(|(texts, _)| texts)
+                .collect()
+        };
 
-        store.append(&id, 0, &frame(T0 + 3, Stream::Stdout, b"line", Piece::Last));
-        let rest: Vec<_> = walk(
-            &store,
-            &LogHistoryRequest {
-                cursor: resume,
+        let forward = walk(&store, &request(LogDirection::Forward, 1));
+        let walked: Vec<_> = forward
+            .iter()
+            .flat_map(|(texts, _)| texts.clone())
+            .collect();
+        assert_eq!(walked, ["a", "b", "c", "d", "x", "y"]);
+        assert_eq!(
+            read(request(LogDirection::Backward, 1)),
+            ["y", "x", "d", "c", "b", "a"]
+        );
+        for (direction, expected) in [
+            (LogDirection::Forward, ["c", "d", "x", "y"]),
+            (LogDirection::Backward, ["y", "x", "d", "c"]),
+        ] {
+            let page = store.page(LogHistoryRequest {
+                since_nanos: Some(T0 + 1),
+                ..request(direction, 100)
+            });
+            assert_eq!(texts(&page.rows), expected, "{direction:?}");
+        }
+        assert_eq!(
+            texts(&store.page(request(LogDirection::Backward, 5)).rows),
+            ["y", "x", "d", "c", "b"]
+        );
+
+        // Every cursor issued while it waited is below the line once it ends.
+        store.append(&id, 0, &frame(T0 + 7, Stream::Stdout, b"line", Piece::Last));
+        let cursors: Vec<_> = forward.into_iter().filter_map(|(_, next)| next).collect();
+        assert_eq!(
+            read(LogHistoryRequest {
+                cursor: cursors.last().cloned(),
                 ..request(LogDirection::Forward, 1)
-            },
-        )
-        .into_iter()
-        .flat_map(|(texts, _)| texts)
-        .collect();
-        assert_eq!(rest, ["b", "long line", "c", "d", "x", "y"]);
+            }),
+            ["y", "long line"]
+        );
+        assert_eq!(
+            read(LogHistoryRequest {
+                cursor: cursors.first().cloned(),
+                ..request(LogDirection::Forward, 1)
+            }),
+            ["b", "c", "d", "x", "y", "long line"]
+        );
+        assert_eq!(
+            read(request(LogDirection::Backward, 1)),
+            ["long line", "y", "x", "d", "c", "b", "a"]
+        );
     }
 
     #[test]
