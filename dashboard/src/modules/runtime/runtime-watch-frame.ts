@@ -37,11 +37,11 @@ const runtimeWatchIncompleteVolumeIdSchema = Schema.Struct({
   name: Schema.String,
 });
 
-/** A managed Volume's copy on one Machine. An unset Engine role is a writer; `old` is a demoted returning copy. */
+/** A managed Volume's copy on one Machine. An unset Engine role is a writer; a read-only root reports `switching`. */
 const runtimeWatchVolumeCopySchema = Schema.Struct({
   machine_id: Schema.String,
   name: Schema.String,
-  role: Schema.Literals(["writer", "slot", "switching", "old"]),
+  role: Schema.Literals(["writer", "slot", "switching"]),
 });
 
 const runtimeWatchCertificateSchema = Schema.Struct({

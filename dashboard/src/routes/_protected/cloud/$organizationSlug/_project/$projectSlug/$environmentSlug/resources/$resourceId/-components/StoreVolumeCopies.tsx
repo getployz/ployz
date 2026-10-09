@@ -6,12 +6,13 @@ import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/
 import { Item, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { RelativeTime } from "#/components/relative-time";
+import { listNames } from "#/lib/plural";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { runText, volumeCopies, type CopyRole, type Offer, type VolumeCopies, type VolumeCopy } from "#/modules/volume-run/volume-copies";
 import type { VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useRequestVolumeRun } from "#/modules/volume-run/volume-run.hooks";
 import type { VolumeRunRequest } from "#/modules/volume-run/volume-run.functions";
-import { useVolumeRuns } from "#/modules/volume-run/volume-run.queries";
+import { useVolumeMembers, useVolumeRuns } from "#/modules/volume-run/volume-run.queries";
 import { RowWarning } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 const ROLE = {
@@ -30,9 +31,10 @@ export function StoreVolumeCopies({ organizationSlug, environment, volume }: {
 }) {
   const lens = useRuntimeLens(organizationSlug);
   const { data: runs = [] } = useVolumeRuns(organizationSlug, volume.id);
+  const members = useVolumeMembers(organizationSlug, environment, volume.id);
   const { request, pending } = useRequestVolumeRun(organizationSlug, environment, volume);
-  return <VolumeCopiesPanel view={volumeCopies({ volume, copies: lens.volumeCopies, machines: lens.machines, runs })} runs={runs}
-    observed={lens.status === "observed"} pending={pending} request={request} />;
+  return <VolumeCopiesPanel view={volumeCopies({ volume, members: members.data ?? [], machines: lens.machines, runs })} runs={runs}
+    observed={members.data !== undefined} pending={pending} request={request} />;
 }
 
 export function VolumeCopiesPanel({ view, runs, observed, pending, request }: {
@@ -50,6 +52,9 @@ export function VolumeCopiesPanel({ view, runs, observed, pending, request }: {
           {view.copies.map((copy) => <CopyItem key={copy.machineId} copy={copy} />)}
         </div>
       )}
+      {view.unanswered.length > 0 ? (
+        <RowWarning>{listNames([...view.unanswered])} did not answer, so {view.unanswered.length === 1 ? "its copy is" : "their copies are"} unknown. Runs start again once {view.unanswered.length === 1 ? "it answers or you remove it" : "they answer or you remove them"}.</RowWarning>
+      ) : null}
       {view.twoWriters ? (
         <RowWarning>Two servers each hold this volume as the writer, and nothing here says which is newer. Runs start again once one of them is read-only.</RowWarning>
       ) : null}
@@ -97,7 +102,7 @@ function CopyItem({ copy }: { copy: VolumeCopy }) {
     <Item variant="outline" role="listitem">
       <ItemContent>
         <ItemTitle>{copy.label}<Badge variant={role.variant}>{role.text}</Badge></ItemTitle>
-        <ItemDescription>{copy.online ? `on ${copy.server}` : `on ${copy.server}, offline`}</ItemDescription>
+        <ItemDescription>on {copy.server}</ItemDescription>
       </ItemContent>
     </Item>
   );

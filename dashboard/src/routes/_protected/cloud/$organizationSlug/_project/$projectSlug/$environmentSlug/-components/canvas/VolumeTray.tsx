@@ -10,7 +10,8 @@ import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { volumeCopies } from "#/modules/volume-run/volume-copies";
+import { trayCopy } from "#/modules/volume-run/volume-copies";
+import { useActiveVolumeRuns } from "#/modules/volume-run/volume-run.queries";
 import { SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
@@ -32,9 +33,8 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   const lighting = useNodeLighting(volume.id);
   const pick = useNodePick(volume.name);
   const lens = useRuntimeLens(params.organizationSlug);
-  // From the Servers' own report, shared by every tray: no run history, so a Move shows only while a copy is switching.
-  const { copies } = volumeCopies({ volume, copies: lens.volumeCopies, machines: lens.machines, runs: [] });
-  const copy = copies.find((entry) => entry.role === "moving") ?? copies.find((entry) => entry.role === "mirror");
+  const { data: active = [] } = useActiveVolumeRuns(params.organizationSlug);
+  const copy = trayCopy({ volume, copies: lens.volumeCopies, machines: lens.machines, active: active.find((run) => run.volume_id === volume.id) ?? null });
   // Staged by its own lifecycle first, else by the next Deploy adding or changing this mount of it.
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
@@ -55,7 +55,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
     <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
       : surface === "destructive" ? <span>Removing</span>
-      : copy?.role === "moving" ? <span className="shrink-0 text-changed-deep">Moving to {copy.server}</span>
+      : copy?.kind === "moving" ? <span className="shrink-0 text-changed-deep">{copy.text}</span>
       : copy ? <span className="shrink-0 truncate">{copy.label}</span>
       : shared ? <span className="shrink-0 text-warning">shared · {writers} writers</span>
       : alsoMounted ? <LinkIcon className="size-3.5 shrink-0" aria-label={alsoMounted} /> : null}

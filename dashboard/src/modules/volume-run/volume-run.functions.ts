@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { listVolumeRuns, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { inspectVolumeCopies, listActiveVolumeRuns, listVolumeRuns, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const VolumeRef = Schema.Struct({ organizationSlug: Schema.NonEmptyString, volumeId: Schema.NonEmptyString });
@@ -17,11 +17,11 @@ const VolumeRunRequest = Schema.Union([
 ]);
 export type VolumeRunRequest = typeof VolumeRunRequest.Type;
 
-const RequestVolumeRunInput = Schema.Struct({
+const VolumeCopiesInput = Schema.Struct({
   ...VolumeRef.fields,
   environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
-  run: VolumeRunRequest,
 });
+const RequestVolumeRunInput = Schema.Struct({ ...VolumeCopiesInput.fields, run: VolumeRunRequest });
 
 export const listVolumeRunsServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
@@ -38,4 +38,18 @@ export const requestVolumeRunServerFn = createServerFn({ method: "POST" })
       { userId: context.actor.userId, organizationId: organization.id },
       { volumeId: data.volumeId, environment: data.environment, ...data.run },
     )),
+  )));
+
+export const inspectVolumeCopiesServerFn = createServerFn({ method: "GET" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(VolumeCopiesInput))
+  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
+    Effect.flatMap((organization) => inspectVolumeCopies(organization.id, data.environment, data.volumeId)),
+  )));
+
+export const listActiveVolumeRunsServerFn = createServerFn({ method: "GET" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.NonEmptyString })))
+  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
+    Effect.flatMap((organization) => listActiveVolumeRuns(organization.id)),
   )));
