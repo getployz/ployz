@@ -65,8 +65,6 @@ pub(crate) fn freeze(
         .map(|volume| TargetNode::volume(volume, None))
         .collect::<Result<_, _>>()?;
     nodes.extend(kept);
-    // A narrowed Deploy applies a Config its Services mount once no untargeted Service
-    // would keep running an older one. A full Deploy also removes those only Applied holds.
     let applies = |config: &SavedConfigIntent| {
         let targeted: Vec<bool> = saved
             .services
@@ -220,7 +218,6 @@ pub(super) fn lower(
         .collect();
     let mut warnings = Vec::new();
     let mut configs = Vec::new();
-    // Only Configs a lowered Service mounts ship, and only those it deploys warn.
     for config in &saved.configs {
         let mounting: Vec<&str> = saved
             .services

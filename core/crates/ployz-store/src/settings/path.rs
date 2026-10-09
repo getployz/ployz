@@ -194,7 +194,6 @@ pub(crate) enum ConfigField {
 }
 
 impl ConfigField {
-    /// This field of `config`, as JSON.
     fn of(&self, config: &SavedConfigIntent) -> Value {
         match self {
             Self::Name => json!(config.name),
@@ -202,7 +201,6 @@ impl ConfigField {
         }
     }
 
-    /// Give `config` this field as `from` has it: a file `from` lacks goes.
     fn restore(&self, config: &mut SavedConfigIntent, from: &SavedConfigIntent) {
         match self {
             Self::Name => config.name.clone_from(&from.name),

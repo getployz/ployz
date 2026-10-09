@@ -85,7 +85,6 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                     .filter(|service| service.id == node.id())
                     .cloned(),
             ),
-            // A Config the Deployment removes isn't in Saved State.
             TargetNode::Config { .. } => intent.configs.extend(
                 saved
                     .configs

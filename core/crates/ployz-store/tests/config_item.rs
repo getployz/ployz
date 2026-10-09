@@ -40,8 +40,6 @@ fn service(name: &str) -> ServiceName {
     ServiceName::parse(name).unwrap()
 }
 
-/// Project `shop`: Services `web` (`KEY=web-key`) and `worker` (`KEY=worker-key`),
-/// and Volume `data` mounted into `web` at `/data`.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
@@ -212,7 +210,6 @@ fn values(store: &ConfigStore, who: &Actor, name: &str) -> Value {
     )
 }
 
-/// Each file of a Config as (name, mode, uid, gid).
 fn ownership(staged: &ConfigStaged) -> Vec<(String, String, u32, u32)> {
     staged
         .config

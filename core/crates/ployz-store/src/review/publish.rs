@@ -292,7 +292,6 @@ fn restore(
     Ok((restore(working)?, saved))
 }
 
-/// `current` with node `id`'s `field` as `baseline` has it.
 fn restore_field(
     current: &SavedEnvironmentIntent,
     baseline: &SavedEnvironmentIntent,
@@ -337,9 +336,6 @@ fn restore_node(
         .map_err(|error| error.message)
 }
 
-/// Give `service` the variable, its export, or the mount `part` names as Service
-/// `id` in `baseline` has it: absent there, it goes. A mount names Volume or Config
-/// `resource`.
 fn restore_part(
     service: &mut SavedServiceIntent,
     baseline: &SavedEnvironmentIntent,
@@ -439,7 +435,6 @@ fn part_of<'a>(
     }
 }
 
-/// The Volume or Config a mount path names, by ID, as `current` or `baseline` has it.
 fn mounted(
     current: &SavedEnvironmentIntent,
     baseline: &SavedEnvironmentIntent,

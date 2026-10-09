@@ -444,10 +444,9 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
             false,
         )?;
         if service.config_attachments.iter().any(|config| {
-            service
-                .volume_attachments
-                .iter()
-                .any(|volume| cleaned(volume.mount_path.as_str()) == config.mount_dir.as_str())
+            service.volume_attachments.iter().any(|volume| {
+                normalize_container_path(volume.mount_path.as_str()) == config.mount_dir.as_str()
+            })
         }) {
             return Err(ConfigError::at(
                 "mountPath",
@@ -473,9 +472,7 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
     Ok(intent)
 }
 
-/// The directory a container path names once `//`, `.` and `..` resolve, as
-/// the runtime resolves a mount target.
-fn cleaned(path: &str) -> String {
+fn normalize_container_path(path: &str) -> String {
     let mut segments = Vec::new();
     for segment in path.split('/') {
         match segment {
@@ -489,8 +486,6 @@ fn cleaned(path: &str) -> String {
     format!("/{}", segments.join("/"))
 }
 
-/// Refuse a Service whose Config Mounts would put two files at one path, or a
-/// file where another needs a directory.
 fn mounted_files(
     service: &SavedServiceIntent,
     configs: &[SavedConfigIntent],
@@ -527,7 +522,7 @@ fn mounted_files(
         ));
     }
     let volume_on_file = service.volume_attachments.iter().any(|volume| {
-        let at = cleaned(volume.mount_path.as_str());
+        let at = normalize_container_path(volume.mount_path.as_str());
         let at = at.as_str();
         paths.contains(at)
             || at

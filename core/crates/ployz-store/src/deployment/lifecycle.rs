@@ -899,8 +899,6 @@ pub(super) fn node_outcomes(
             NodeStatus::Deployed
         }
     };
-    // A Config follows the targeted Services mounting it, as a kept Volume does,
-    // so Applied State never holds a mount without the Config it names.
     let kept_config = |config: &SavedConfigIntent| {
         let mounting: Vec<NodeStatus> = saved
             .services

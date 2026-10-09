@@ -409,8 +409,6 @@ fn data_effect(
     }
 }
 
-/// The Services of `working` that mount Config `node` and run already, for a Config
-/// `lifecycle` changes in place: they get its new files only by restarting.
 fn restarts(
     node: &ReviewNodeIdentity,
     lifecycle: ReviewLifecycleKind,

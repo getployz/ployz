@@ -454,10 +454,6 @@ fn command_healthcheck(command: &str, timeout_seconds: u16) -> HealthcheckSpec {
     })
 }
 
-/// A deployed Service waits for every deployed Service its variables and mounted Configs
-/// reference, except that
-/// edges inside a reference cycle are dropped. An HTTP or command healthcheck makes the wait for
-/// health.
 fn deployment_dependencies(
     snapshots: &[(ServiceConfig, LowerDeploymentSnapshot)],
     lineages: &BTreeMap<String, String>,

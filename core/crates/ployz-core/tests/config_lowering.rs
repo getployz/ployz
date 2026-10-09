@@ -346,7 +346,6 @@ fn reference_cycles_drop_only_their_own_edges() {
     );
 }
 
-/// Services mounting Configs; each Config is `(id, name, references, files)`.
 fn mounting(services: Value, configs: &[(&str, &str, &[&str], Value)]) -> Value {
     let configs: Vec<Value> = configs
         .iter()
@@ -438,8 +437,6 @@ fn a_config_file_and_a_volume_cannot_share_a_container_path() {
     );
 }
 
-/// `referencing`, with `mounts` naming the Configs each Service mounts and `configs`
-/// the Services each Config's files reference.
 fn referencing_configs(
     edges: &[(&str, &[&str])],
     mounts: &[(&str, &[&str])],

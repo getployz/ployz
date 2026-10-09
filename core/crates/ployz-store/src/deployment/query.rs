@@ -174,7 +174,6 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
         None,
         &removed,
     )?;
-    // A Config left staged still restarts the targeted Services that mount it.
     let changes = review
         .view
         .changes

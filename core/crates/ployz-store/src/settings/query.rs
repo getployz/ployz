@@ -249,7 +249,6 @@ pub(crate) fn mounts(
     mounts
 }
 
-/// Where `service` mounts Configs, as (Config name, directory), sorted by name.
 fn config_mounts(
     service: &SavedServiceIntent,
     intent: &SavedEnvironmentIntent,

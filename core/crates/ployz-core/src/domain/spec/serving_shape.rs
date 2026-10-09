@@ -32,10 +32,9 @@ impl ServingShape {
         Self::resolved_fields(spec, sorted_json(spec.mount_graph.config_graph().configs()))
     }
 
-    /// Observed fields with `configs` already in their hashed form.
     fn resolved_fields(
         spec: &ResolvedServiceSpec,
-        configs: Vec<serde_json::Value>,
+        config_fields: Vec<serde_json::Value>,
     ) -> serde_json::Value {
         let ResolvedServiceSpec {
             service_id: _,
@@ -56,7 +55,7 @@ impl ServingShape {
             ports,
             mount_graph.volume_graph().volumes(),
             mount_graph.volume_graph().mounts(),
-            configs,
+            config_fields,
             mount_graph.config_graph().mounts(),
         )
     }

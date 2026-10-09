@@ -484,8 +484,6 @@ pub(super) fn of_nodes(
     Ok(nodes)
 }
 
-/// One Machine's row for a Volume or Config: the worst of the rows of the Services
-/// mounting it there.
 fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
     let priority = |state: &RowState| match state {
         RowState::Failed { .. } => 6,

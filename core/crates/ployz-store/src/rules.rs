@@ -71,8 +71,6 @@ pub(crate) fn check_write(
         Problem::Broken {
             referrer, wants, ..
         } => {
-            // Every variable or file the write breaks the same way, so one refusal
-            // names them all.
             let keys: Vec<&str> = added
                 .iter()
                 .filter_map(|other| {
@@ -199,11 +197,9 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
         };
         let owner = match (owner, own) {
             (ValuePartOwner::Self_, Some(own)) => own,
-            // A Config's references always name a Service; parsing refuses others.
             (ValuePartOwner::Self_, None) => continue,
             (ValuePartOwner::Service { lineage_id }, _) => match service(working, lineage_id) {
                 Some(owner) => owner,
-                // A node used live: its owner provides its variables.
                 None if live.contains_key(lineage_id) => continue,
                 None => {
                     broken(Wants::Service(lineage_id.clone()));
@@ -346,8 +342,6 @@ impl<'a> Refusing<'a> {
         format!("--env {name} --project {project}")
     }
 
-    /// A lineage's Service name, or `Config NAME` for a Config, in `after` or, once
-    /// removed, in `before`.
     fn name(&self, lineage: &str) -> String {
         [self.after, self.before]
             .iter()
@@ -419,8 +413,6 @@ impl<'a> Refusing<'a> {
         )
     }
 
-    /// Variables or files `keys` of `referrer` (a lineage) reference what isn't there:
-    /// `conflict` once the write removed it, else `invalid_argument` for the value.
     fn broken(&self, referrer: &str, keys: &[&str], wants: &Wants) -> RpcError {
         let referrer = self.name(referrer);
         let removed = |target: String| {

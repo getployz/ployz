@@ -259,7 +259,6 @@ pub(crate) fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowI
     if exact.len() > 1 {
         return Err(several(asked, &exact, rows));
     }
-    // A file's name may hold dots, so `a.conf` names that file and not `a.conf.bak`.
     if exact.iter().any(|row| matches!(row.at(), At::File(_))) {
         return Ok(exact);
     }
@@ -630,8 +629,6 @@ pub(crate) fn lineage_named(
     })
 }
 
-/// Every node of `intent` by name: Services as `SERVICE`, Volumes as `volumes.NAME`,
-/// Configs as `configs.NAME`.
 fn names(intent: &SavedEnvironmentIntent) -> Vec<String> {
     intent
         .services

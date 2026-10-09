@@ -222,7 +222,6 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&view, &table)
 }
 
-/// What the next Deploy does to a Config: `new` until a Deploy applies it, unless it deletes it.
 fn next_deploy(listing: &ConfigListing) -> Option<String> {
     if listing.deployed || listing.change == Some(ReviewLifecycleKind::Delete) {
         return listing.change.as_ref().map(super::store::word);
@@ -320,7 +319,6 @@ fn mounts_word(mounts: &[ConfigMountAt]) -> String {
         .join(",")
 }
 
-/// A staged Config change, its files, and `ployz diff` to review it.
 fn staged(matches: &ArgMatches, result: &ConfigStaged, what: &str) -> Result<(), Error> {
     let hint = store::next(matches, &["diff"]);
     crate::ui::finish(&Next::new(result, Some(hint)), || {

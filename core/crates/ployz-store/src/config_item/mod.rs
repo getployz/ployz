@@ -359,7 +359,6 @@ pub(crate) fn detach_config(
     mounted(environment, &unmount.service, &unmount.config, changed)
 }
 
-/// What mounting or unmounting a Config staged: the mount, when it changed.
 fn mounted(
     environment: Environment,
     service: &ServiceName,
@@ -377,7 +376,6 @@ fn mounted(
     })
 }
 
-/// Refuse a second Config named `name`.
 fn taken(environment: &Environment, name: &ConfigName) -> Result<(), RpcError> {
     if environment.config(name).is_err() {
         return Ok(());
@@ -391,7 +389,6 @@ fn taken(environment: &Environment, name: &ConfigName) -> Result<(), RpcError> {
     ))
 }
 
-/// What changing Config `name` staged: the Config, when anything changed.
 fn staged(
     environment: Environment,
     name: &ConfigName,
@@ -472,8 +469,6 @@ pub(crate) fn attach(
     Ok(true)
 }
 
-/// Why `service`'s Config Mounts cannot all apply: two files land on one path, or a
-/// file sits where another needs a directory.
 fn collision(
     service: &ServiceName,
     node: &SavedServiceIntent,
@@ -532,12 +527,6 @@ pub(crate) fn detach(
     Ok(node.config_attachments.len() != before)
 }
 
-/// `text` as a file's parts, referencing Services by their names in `names`
-/// (lineage → name).
-///
-/// # Errors
-/// `invalid_argument` for text over 256 KB, with a null character, an unfinished
-/// reference, a bare `${{ KEY }}`, or a reference naming no Service.
 fn parts(
     file: &ConfigFileName,
     text: &str,

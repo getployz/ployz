@@ -308,8 +308,6 @@ pub(super) fn live_producers(
     Ok(producers)
 }
 
-/// The template parts `service` reads: its variables and the files of the
-/// Configs it mounts.
 fn parts_read<'a>(
     intent: &'a SavedEnvironmentIntent,
     service: &'a SavedServiceIntent,

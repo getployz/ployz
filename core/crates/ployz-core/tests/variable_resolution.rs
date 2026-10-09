@@ -87,7 +87,6 @@ fn cycle_reports_only_owner_keys_even_after_a_secret_was_resolved() {
     }
 }
 
-/// Resolve Config file `name` written as display text, where `db.KEY` names `db`'s producers.
 fn file(name: &str, text: &str, producers: Value) -> ployz_core::config::ResolvedConfigFile {
     let parsed = parse_variable_template(text, |service| {
         (service == "db").then(|| "db-lineage".to_owned())

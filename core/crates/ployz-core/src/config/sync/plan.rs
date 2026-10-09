@@ -560,7 +560,6 @@ impl Plan {
             next.volumes.push(copy);
             return Ok(());
         }
-        // Its files arrive as rows of their own, so a file left out stays out.
         if let Some(source) = config(&self.from, lineage) {
             if next.configs.iter().any(|c| c.name == source.name) {
                 return Err(clash());
@@ -679,8 +678,6 @@ pub fn unapply(intent: &Intent, suffix: &str, landed: &[Landed]) -> Result<Inten
     Ok(intent)
 }
 
-/// Where `row` lands in a landing: new Volumes and Configs before the Services that
-/// mount them, nodes before their rows. `env` holds the node.
 fn landing_order(env: &Intent, row: &RowId) -> u8 {
     match row.at {
         At::Node if volume(env, &row.lineage).is_some() || config(env, &row.lineage).is_some() => 0,

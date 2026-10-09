@@ -81,7 +81,6 @@ pub fn plan_branch(
         .iter()
         .map(|s| s.lineage_id.as_str())
         .collect();
-    // A used Volume or Config is always an Own Copy, never live.
     let resources: BTreeSet<&str> = parent
         .volumes
         .iter()
@@ -202,8 +201,6 @@ pub fn plan_branch(
     })
 }
 
-/// Every (user, used) lineage pair: variable and Config references to other
-/// services, and mounts.
 fn links(parent: &SavedEnvironmentIntent) -> Vec<(&str, &str)> {
     let mut links = Vec::new();
     for service in &parent.services {

@@ -107,7 +107,6 @@ fn changed(store: &ConfigStore, who: &Actor) -> Vec<String> {
         .collect()
 }
 
-/// Each listed Config: whether a Deploy applied it, and what the next one does.
 fn configs(store: &ConfigStore, who: &Actor) -> Vec<(String, bool, Option<ReviewLifecycleKind>)> {
     store
         .read(who, &ConfigsQuery::default())
@@ -283,7 +282,6 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     );
 }
 
-/// Config `sentry`, mounted into `web` at `/etc/sentry`, whose one file reads `api.PORT`.
 fn sentry(store: &ConfigStore, who: &Actor) {
     store
         .write(
@@ -2674,7 +2672,6 @@ fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
     assert_eq!(changed(&store, &who), ["api"]);
 }
 
-/// Rewrite Deployment `n`'s stored run record, as an earlier Store version could have saved it.
 fn rewrite_run(url: &str, n: u8, rewrite: impl FnOnce(&mut Value)) {
     let id = id(n);
     let select = "SELECT run FROM config_deployment WHERE id = ";

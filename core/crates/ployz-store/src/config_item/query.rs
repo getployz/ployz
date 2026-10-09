@@ -97,7 +97,6 @@ pub(crate) fn config(
     query: &ConfigItemQuery,
 ) -> Result<ConfigItemView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
-    // A name deleted and created again lists twice; the one in Working State wins.
     let found = listed(tx, &environment)?
         .into_iter()
         .filter(|(_, node)| query.config.matches(node))
@@ -133,7 +132,6 @@ pub(crate) fn config(
     })
 }
 
-/// Working State's Configs, then deployed ones it dropped, sorted by name.
 fn listed(
     tx: &mut dyn Tx,
     environment: &scope::Environment,

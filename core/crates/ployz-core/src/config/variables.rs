@@ -127,7 +127,6 @@ pub fn resolve_config_file(
         secret: false,
         fragile: Vec::new(),
     };
-    // Quotes come from the authored text only, so no resolved value moves them.
     let mut quote = None;
     for part in parts {
         let (owner, key) = match part {
@@ -195,7 +194,6 @@ pub fn parse_variable_template(
     let mut malformed = false;
     let mut pending = String::new();
     let mut rest = text;
-    // Found once: rescanning for a `}}` after every `${{` is quadratic in the text.
     let last_close = text.rfind("}}");
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("$${{") {
