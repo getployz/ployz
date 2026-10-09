@@ -48,6 +48,7 @@ export const changeSources = {
   organization_machine: { key: ["machine_id"] },
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
+  volume_run: { key: ["id"] },
   organization_server_upgrades: { key: ["organization_id"] },
   ...storeChangeSources,
 } satisfies Record<string, { organizationColumn?: string; key: readonly string[] }>;

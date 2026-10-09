@@ -9,6 +9,9 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../enviro
 import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { trayCopy } from "#/modules/volume-run/volume-copies";
+import { useActiveVolumeRuns } from "#/modules/volume-run/volume-run.queries";
 import { SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
@@ -21,7 +24,7 @@ export function LitVolumeProvider({ children }: { children: ReactNode }) {
 /**
  * A Volume as a tray tucked under a Service that mounts it: its name, and only what must be said, green or blue when
  * the next Deploy creates or changes it, red, struck and "Removing" when it deletes it, marked when other Services mount
- * it too. Opens its panel; while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims
+ * it too, and its mirror as `data-web-2` or a Move under way. Opens its panel; while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims
  * unless the attempt changed it.
  */
 export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }, selected }: { tray: MountedVolume; selected: boolean }) {
@@ -29,6 +32,9 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   const [litVolumeId, setLitVolumeId] = use(LitVolume);
   const lighting = useNodeLighting(volume.id);
   const pick = useNodePick(volume.name);
+  const lens = useRuntimeLens(params.organizationSlug);
+  const { data: active = [] } = useActiveVolumeRuns(params.organizationSlug);
+  const copy = trayCopy({ volume, copies: lens.volumeCopies, machines: lens.machines, active: active.find((run) => run.volume_id === volume.id) ?? null });
   // Staged by its own lifecycle first, else by the next Deploy adding or changing this mount of it.
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
@@ -49,6 +55,8 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
     <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
       : surface === "destructive" ? <span>Removing</span>
+      : copy?.kind === "moving" ? <span className="shrink-0 text-changed-deep">{copy.text}</span>
+      : copy ? <span className="shrink-0 truncate">{copy.label}</span>
       : shared ? <span className="shrink-0 text-warning">shared · {writers} writers</span>
       : alsoMounted ? <LinkIcon className="size-3.5 shrink-0" aria-label={alsoMounted} /> : null}
   </>;

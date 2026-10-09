@@ -7,6 +7,19 @@ A volume lives on one server. With Ployz Cloud you can keep a read-only copy of 
 server, called a mirror, and move the volume and the service that mounts it to another server.
 Without Cloud, volumes stay on the server that has them.
 
+## In Ployz Cloud
+
+Open a managed volume after its first deploy. **Copies** shows where it is: the volume on the
+server that writes it, and its mirror as `data-web-2`. Copies asks each server for its copy, and
+Mirror, Sync, Move, Release and Restore appear only when Ployz Cloud would run them on what the
+servers answered. A server that doesn't answer is named, and no run is offered until it answers or
+you remove it. **Activity** lists the last runs and how they ended. The volume's tray on the canvas
+shows its mirror too, and "Moving to web-2" during a move.
+
+![A volume's Copies: the writer on web-1, its mirror data-web-2, Sync and Move](../images/volume-copies.png)
+
+The commands below do the same from the CLI. Deleting a mirror is CLI-only.
+
 ## Mirror a volume
 
 A mirror holds the volume's data as of its last sync. It refreshes only when you sync it, and a

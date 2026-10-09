@@ -51,6 +51,7 @@ function observedSnapshot(): RuntimeSnapshot {
         observedAt: "2026-07-01T00:00:00.000Z",
       },
     ],
+    volumeCopies: [{ machineId: "m1", name: "app_vol-1", role: "slot" }],
     certificates: [
       {
         hostname: "api.example.test",
@@ -154,6 +155,7 @@ describe("unreachableRuntimeSnapshot", () => {
       error: CLUSTER_UNREACHABLE_ERROR,
       machines: [],
       services: [],
+      volumeCopies: [],
       certificates: [],
       incompleteIds: {
         machines: [],
