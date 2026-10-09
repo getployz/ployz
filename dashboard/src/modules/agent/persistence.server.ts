@@ -206,6 +206,27 @@ export const threadAvailable = Effect.fn("Agent.threadAvailable")(function* (sco
 const owned = (scope: AgentScope) => and(eq(agentInterrupts.organizationId, scope.organizationId), eq(agentInterrupts.userId, scope.userId));
 
 /**
+ * Takes `runId` for a new turn in `threadId`: `started` when no run holds it yet, otherwise the status of the run that
+ * does, so a retried request answers with that run instead of running it again, and `foreign` when that run is in
+ * another thread or another member's.
+ */
+export const startRun = Effect.fn("Agent.startRun")(function* (scope: AgentScope, threadId: string, runId: string) {
+  const { drizzle } = yield* Database;
+  const record: RunRecord = { runId, threadId, status: "running", startedAt: Date.now() };
+  const [taken] = yield* drizzle.insert(agentRuns)
+    .values({ ...scope, runId, threadId, status: record.status, startedAt: record.startedAt, record })
+    .onConflictDoNothing().returning({ runId: agentRuns.runId });
+  if (taken !== undefined) return "started" as const;
+  const [existing] = yield* drizzle.select({ status: agentRuns.status }).from(agentRuns).where(and(
+    eq(agentRuns.organizationId, scope.organizationId),
+    eq(agentRuns.userId, scope.userId),
+    eq(agentRuns.threadId, threadId),
+    eq(agentRuns.runId, runId),
+  ));
+  return existing?.status ?? "foreign" as const;
+});
+
+/**
  * Whether the request holding `claim` may answer `interruptIds`: `settled` once they are all answered, `busy` while
  * another request holds one, `claimed` once it holds every pending one, and `unchecked` when one is missing so the chat
  * rejects the resume.

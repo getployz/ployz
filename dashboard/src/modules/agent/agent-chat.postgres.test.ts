@@ -170,7 +170,7 @@ it.live("a Deploy that destroys web waits on a human, and runs exactly once afte
     expect(writes.mock.calls.map(([, command, trusted]) => [command.command, trusted?.approval]))
       .toEqual([["admit", { approved: approval.digest }]]);
     expect(resumed.said).toBe("Done.");
-  }));
+  }), 15_000);
 
 const admits = (writes: ReturnType<Effect.Success<ReturnType<typeof sidebar>>["watchWrites"]>) =>
   writes.mock.calls.filter(([, command]) => command.command === "admit");
@@ -293,6 +293,93 @@ const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeo
   });
   return { writes, entered, release: () => release() };
 };
+
+const sendAs = ({ provided, caller }: Effect.Success<ReturnType<typeof sidebar>>, runId: string, threadId = THREAD) =>
+  provided(agentChat(caller, { messages: [{ role: "user", content: "deploy" }], threadId, runId })).pipe(Effect.flatMap(drain));
+
+for (const status of ["completed", "aborted", "failed"] as const) {
+  it.live(`a request repeating the id of a ${status} run replays that run and deploys nothing more`, () =>
+    Effect.gen(function* () {
+      const harness = yield* sidebar({ removeWeb: true });
+      const { provided, userId, persistence, watchWrites, deployments } = harness;
+      yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+      expect((yield* sendAs(harness, "run-once")).said).toBe("Done.");
+      const deployed = yield* deployments;
+      expect(deployed).toHaveLength(1);
+      yield* Effect.promise(() => persistence.stores.runs.update("run-once", { status }));
+      const thread = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+      const writes = watchWrites();
+
+      const again = yield* sendAs(harness, "run-once");
+      expect(again.errors).toEqual([]);
+      expect(again.results).toEqual([]);
+      expect(again.said).toBe("");
+      expect(again.shown).toContain("Done.");
+      expect(writes).not.toHaveBeenCalled();
+      expect(yield* deployments).toEqual(deployed);
+      expect(yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD))).toEqual(thread);
+      expect((yield* Effect.promise(() => persistence.stores.runs.get("run-once")))?.status).toBe(status);
+    }), 15_000);
+}
+
+it.live("a request repeating the id of a run that waits on a human shows the same approval and asks nothing new", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const { pending, watchWrites } = harness;
+    const writes = watchWrites();
+    const asked = yield* sendAs(harness, "run-asks");
+    const approval = yield* waitingApproval(asked, pending);
+
+    const again = yield* sendAs(harness, "run-asks");
+    expect(again.interrupts).toEqual(asked.interrupts);
+    expect(yield* waitingApproval(again, pending)).toEqual(approval);
+    expect(admits(writes)).toHaveLength(1);
+  }));
+
+it.live("a request repeating the id of a run still answering is refused, and only that run deploys", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const { provided, userId, deployments } = harness;
+    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+    const gate = blockFirstAdmit(harness);
+    const first = Effect.runPromise(sendAs(harness, "run-busy"));
+    try {
+      yield* Effect.promise(() => gate.entered);
+      const again = yield* sendAs(harness, "run-busy");
+      expect(again.errors).toEqual(["This message is already being answered."]);
+      expect(again.results).toEqual([]);
+    } finally {
+      gate.release();
+    }
+    expect((yield* Effect.promise(() => first)).said).toBe("Done.");
+    expect(admits(gate.writes)).toHaveLength(1);
+    expect(yield* deployments).toHaveLength(1);
+  }), 15_000);
+
+it.live("a request naming another conversation's run is refused and runs nothing", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const { pending, watchWrites } = harness;
+    yield* waitingApproval(yield* sendAs(harness, "run-elsewhere"), pending);
+    const writes = watchWrites();
+    const other = yield* sendAs(harness, "run-elsewhere", "thread-2");
+    expect(other.errors).toEqual(["This run belongs to another conversation."]);
+    expect(writes).not.toHaveBeenCalled();
+  }));
+
+it.live("a message whose request ends before it streams leaves no run behind, so sending it again answers it", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: true });
+    const { provided, caller, userId, persistence, deployments } = harness;
+    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+    yield* provided(agentChat(caller, { messages: [{ role: "user", content: "deploy" }], threadId: THREAD, runId: "run-dropped" }));
+    expect(yield* Effect.promise(() => persistence.stores.runs.get("run-dropped"))).toBeNull();
+
+    const sent = yield* sendAs(harness, "run-dropped");
+    expect(sent.errors).toEqual([]);
+    expect(sent.said).toBe("Done.");
+    expect(yield* deployments).toHaveLength(1);
+  }), 15_000);
 
 it.live("a second request resuming the same run while the first is mid-Deploy waits for it and shows its result", () =>
   Effect.gen(function* () {
@@ -794,15 +881,17 @@ for (const command of ["deploy", "publish"]) {
     }), 15_000);
 }
 
-it.live("a cancelled approval stays cancelled after the Organization stops asking", () =>
+it.live("a cancelled approval is denied after the Organization stops asking, and a retry under it deploys nothing", () =>
   Effect.gen(function* () {
     const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
-    yield* waitingApproval(yield* say("deploy"), pending);
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
     yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
     const writes = watchWrites();
     const resumed = yield* resume("cancelled");
     expect(resumed.results).toEqual([{ ok: false, cancelled: true }]);
     expect(writes).not.toHaveBeenCalled();
+    expect((yield* provided(getApproval(ORGANIZATION, approval.id))).status).toBe("denied");
+    expect(yield* pending).toEqual([]);
     expect(yield* deployments).toEqual([]);
   }));
 
@@ -819,15 +908,31 @@ it.live("a resume whose approval is still pending asks again under it after the 
     expect(yield* deployments).toEqual([]);
   }), 15_000);
 
-it.live("a cancelled approval answers the agent without touching the Store", () =>
+it.live("cancelling an approval denies it for everyone and answers the agent without touching the Store", () =>
   Effect.gen(function* () {
-    const { say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
-    yield* waitingApproval(yield* say("deploy"), pending);
+    const { provided, say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
     const writes = watchWrites();
     const resumed = yield* resume("cancelled");
     expect(writes).not.toHaveBeenCalled();
     expect(resumed.results).toEqual([{ ok: false, cancelled: true }]);
     expect(resumed.said).toBe("The approval was cancelled, so nothing was deployed.");
+    expect(yield* provided(getApproval(ORGANIZATION, approval.id))).toMatchObject({ status: "denied", reason: null });
+    expect(yield* pending).toEqual([]);
+  }));
+
+it.live("cancelling an approval someone already approved elsewhere leaves it approved and deploys nothing", () =>
+  Effect.gen(function* () {
+    const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const writes = watchWrites();
+    const resumed = yield* resume("cancelled");
+    expect(resumed.errors).toEqual([]);
+    expect(resumed.results).toEqual([{ ok: false, cancelled: true }]);
+    expect(writes).not.toHaveBeenCalled();
+    expect((yield* provided(getApproval(ORGANIZATION, approval.id))).status).toBe("approved");
+    expect(yield* deployments).toEqual([]);
   }));
 
 it.live("a plan that moved while it waited asks again under a new approval", () =>

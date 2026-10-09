@@ -1,7 +1,9 @@
 import type { ModelMessage } from "@tanstack/ai";
 import { runPersistenceConformance } from "@tanstack/ai-persistence/testkit";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { type AgentScope, agentPersistence, threadAvailable } from "#/modules/agent/persistence.server";
+import { type AgentScope, agentPersistence, claimResume, threadAvailable } from "#/modules/agent/persistence.server";
+import { agentRuns } from "#/modules/agent/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -49,4 +51,26 @@ it("keeps one member's thread, runs and interrupts out of another member's reach
   expect(await harness.runEffect(threadAvailable(ada, "thread-ada"))).toBe(true);
   expect(await harness.runEffect(threadAvailable(bob, "thread-ada"))).toBe(false);
   expect(await harness.runEffect(threadAvailable(bob, "thread-new"))).toBe(true);
+});
+
+it("a claim never reopens its own aborted or ordinarily failed run, nor a superseded-coded run no takeover displaced", async () => {
+  const plain = await harness.runEffect(agentPersistence(ada));
+  await plain.stores.interrupts.create({ interruptId: "ask-own", runId: "run-asking", threadId: "thread-own", requestedAt: 1, payload: {} });
+  expect(await harness.runEffect(claimResume(ada, "X", ["ask-own"]))).toBe("claimed");
+  const x = await harness.runEffect(agentPersistence(ada, "X"));
+  await x.stores.runs.createOrResume({ runId: "own-aborted", threadId: "thread-own", startedAt: 1 });
+  await x.stores.runs.update("own-aborted", { status: "aborted", finishedAt: 11 });
+  await x.stores.runs.createOrResume({ runId: "own-failed", threadId: "thread-own", startedAt: 1 });
+  await x.stores.runs.update("own-failed", { status: "failed", finishedAt: 12, error: { message: "boom", code: "overloaded" } });
+  await plain.stores.runs.createOrResume({ runId: "lookalike", threadId: "thread-own", startedAt: 1 });
+  await plain.stores.runs.update("lookalike", { status: "failed", finishedAt: 13, error: { message: "m", code: "superseded" } });
+
+  expect(await x.stores.runs.createOrResume({ runId: "own-aborted", threadId: "thread-own", startedAt: 2 }))
+    .toMatchObject({ status: "aborted", finishedAt: 11 });
+  expect(await x.stores.runs.createOrResume({ runId: "own-failed", threadId: "thread-own", startedAt: 2 }))
+    .toMatchObject({ status: "failed", finishedAt: 12, error: { message: "boom" } });
+  expect(await x.stores.runs.createOrResume({ runId: "lookalike", threadId: "thread-own", startedAt: 2 }))
+    .toMatchObject({ status: "failed", finishedAt: 13, error: { code: "superseded" } });
+  const [lookalike] = await harness.db.select({ claim: agentRuns.claim }).from(agentRuns).where(eq(agentRuns.runId, "lookalike"));
+  expect(lookalike).toEqual({ claim: null });
 });

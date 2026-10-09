@@ -55,8 +55,10 @@ server, like **Remove fra-1**.
   changed, and the agent asks again about the new one.
 - **Turning off asking.** With **Ask before destructive actions** off in
   [Organization → General](organizations.md#ask-before-destructive-actions), the agent deploys
-  removals without stopping.
+  new removals without stopping. A card already waiting still waits for your answer, and a card
+  whose plan changed still asks again about the new one.
 - **Answer anywhere.** An approval is the same in every tab and on every device. Answer it once
-  and every other card for it updates.
+  and every other card for it updates. If you answer a card someone already answered, it says the
+  approval was already decided elsewhere, and how.
 - **Keep backups.** An approved deploy that deletes a volume deletes its data. Keep
   [backups](../services/databases.md#back-up-a-database) of data you can't lose.

@@ -538,9 +538,7 @@ impl Server {
             Ok(()) => {}
             Err(StoreCallError::Refused(error)) if error.code == RpcErrorCode::Conflict => {
                 return Ok(Answer::Refused(refused(format!(
-                    "Approval {} was already decided elsewhere, so this answer was not \
-                     recorded: {} Nothing was {} by this call.",
-                    asked.id,
+                    "{} This answer was not recorded, and nothing was {} by this call.",
                     error.message,
                     verb.past()
                 ))));
@@ -1574,7 +1572,7 @@ mod tests {
                 {
                     (
                         "409 Conflict",
-                        r#"{"error":{"code":"conflict","message":"This approval is already approved."}}"#,
+                        r#"{"error":{"code":"conflict","message":"This approval was already decided elsewhere (approved)."}}"#,
                     )
                 } else {
                     rows.insert(request.clone(), decision.clone());
@@ -2164,8 +2162,8 @@ mod tests {
         assert_eq!(refused["result"]["isError"], true, "{refused}");
         assert_eq!(
             refused["result"]["content"][0]["text"],
-            "Approval apr_1 was already decided elsewhere, so this answer was not recorded: \
-             This approval is already approved. Nothing was deployed by this call."
+            "This approval was already decided elsewhere (approved). This answer was not \
+             recorded, and nothing was deployed by this call."
         );
         assert_eq!(
             decisions

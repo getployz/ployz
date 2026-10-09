@@ -340,7 +340,7 @@ export const decideApproval = <R = never>(
     }
     return current.status === "superseded"
       ? conflict("The plan changed since this was asked; run the command again to review it.", current)
-      : conflict(`This approval is already ${current.status}.`, current);
+      : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
   };
   const row = yield* freshen(found, operationDigest);
   if (row.status !== "pending") return settled(row);

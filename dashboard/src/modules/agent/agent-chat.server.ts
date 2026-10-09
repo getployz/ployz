@@ -8,6 +8,7 @@ import {
   defineChatMiddleware,
   EventType,
   type Interrupt,
+  isTerminalRunStatus,
   type ModelMessage,
   modelMessagesToUIMessages,
   type StreamChunk,
@@ -26,10 +27,11 @@ import {
   claimResume,
   releaseResume,
   renewResume,
+  startRun,
   Superseded,
 } from "#/modules/agent/persistence.server";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
-import { requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
+import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { StoreCall, StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
@@ -131,22 +133,28 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
  */
 const approvalGate = (caller: Caller, run: Run) => {
   const outcomes = new Map<string, ToolOutcome>();
-  const answers = new Map<string, string | null>();
+  const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
   const decide = (call: { id: string; function: { name: string; arguments: string } }, binding: AgentBinding, turn: string) =>
     Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runGated>>, AgentServices> {
-      if (answers.has(call.id) && answers.get(call.id) === null) return { outcome: { ok: false, cancelled: true } };
+      const answer = answers.get(call.id);
+      if (answer?.cancelled === true) {
+        if (answer.approvalId !== null) {
+          yield* decideApproval(caller, answer.approvalId, { reject: {} }).pipe(Effect.catchTag("NotFound", () => Effect.void));
+        }
+        return { outcome: { ok: false, cancelled: true } };
+      }
       const command = yield* Effect.try(() => storeCall(binding, toolInput(call.function.arguments), turn)).pipe(Effect.option);
       if (Option.isNone(command) || command.value.operation !== "write") {
         return { outcome: invalid(`The ${call.function.name} input doesn't match its schema.`) };
       }
-      return yield* runGated(caller, command.value.command, answers.get(call.id) ?? null);
+      return yield* runGated(caller, command.value.command, answer?.approvalId ?? null);
     });
 
   return defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({
     name: "ployz-approval-gate",
     onInterruptResolution: (_ctx, resolutions) => {
       for (const resolution of resolutions.for(approvalInterrupt)) {
-        answers.set(resolution.request.key, resolution.status === "resolved" ? resolution.request.payload?.approvalId ?? null : null);
+        answers.set(resolution.request.key, { approvalId: resolution.request.payload?.approvalId ?? null, cancelled: resolution.status === "cancelled" });
       }
       return { toolResume: "continue" };
     },
@@ -319,6 +327,22 @@ async function* resumeOnce(
   if (finished !== undefined) yield finished;
 }
 
+async function* startOnce(
+  run: Run,
+  persistence: Persistence,
+  scope: AgentScope,
+  request: ChatRequest,
+  turn: (persistence: Persistence) => AsyncIterable<StreamChunk>,
+): AsyncGenerator<StreamChunk> {
+  const { threadId, runId } = request;
+  const status = await run(startRun(scope, threadId, runId));
+  if (status === "started") return yield* turn(persistence);
+  yield { type: EventType.RUN_STARTED, threadId, runId, timestamp: Date.now() };
+  if (status !== "foreign" && (status === "interrupted" || isTerminalRunStatus(status))) return yield* replayed(persistence, request);
+  const message = status === "foreign" ? "This run belongs to another conversation." : "This message is already being answered.";
+  yield { type: EventType.RUN_ERROR, threadId, runId, message, code: "run_exists", timestamp: Date.now() };
+}
+
 /** One sidebar turn, or the resumption of one, as `caller` in their thread: the event stream the client renders. */
 export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, request: ChatRequest) {
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
@@ -342,6 +366,6 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
     if (resume !== undefined) options.resume = resume;
     return chat(options);
   };
-  if (resume === undefined) return turn(persistence);
+  if (resume === undefined) return startOnce(run, persistence, scope, request, turn);
   return resumeOnce(run, persistence, scope, { ...request, resume }, turn);
 });

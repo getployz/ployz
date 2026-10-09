@@ -3541,7 +3541,7 @@ fn without_a_terminal_ctrl_c_stops_the_wait_and_publishes_nothing() {
     stderr.read_to_string(&mut seen).unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(130), "{seen}");
     assert!(
-        seen.contains("Stopped waiting; approval apr_1 stays pending in Ployz Cloud."),
+        seen.contains("Stopped waiting; the approval stays pending in Ployz Cloud."),
         "{seen}"
     );
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
@@ -3649,7 +3649,7 @@ fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
     assert_eq!(code, Some(130), "{screen}");
     assert!(screen.contains("Type production to continue"), "{screen}");
     assert!(
-        screen.contains("Nothing published; approval apr_1 stays pending."),
+        screen.contains("Nothing published; the approval stays pending in Ployz Cloud."),
         "{screen}"
     );
     assert!(approvals.calls().is_empty(), "nothing was decided in Cloud");

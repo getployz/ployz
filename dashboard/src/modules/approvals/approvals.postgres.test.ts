@@ -127,7 +127,7 @@ it.live("a destructive CLI publish waits for a human to approve exactly what it 
     expect(yield* provided(decideApproval(caller, first.approval_id, { approve: { digest: first.approval } })))
       .toMatchObject({ ok: true, approval: { status: "approved" } });
     expect(yield* provided(decideApproval(caller, first.approval_id, { reject: {} })))
-      .toMatchObject({ ok: false, refusal: { code: "conflict" } });
+      .toMatchObject({ ok: false, refusal: { code: "conflict", message: "This approval was already decided elsewhere (approved)." } });
     const trusted = yield* provided(trustedApproval(ORGANIZATION, first.approval_id));
     expect(trusted).toEqual({ ok: true, approval: { approved: first.approval } });
     if (!trusted.ok) return;
