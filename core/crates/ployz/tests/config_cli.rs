@@ -432,7 +432,11 @@ impl Approvals {
                 }),
             ),
             ("GET", ["namespaces", namespace, "clean"]) => {
-                let volume = json!({ "machine_id": CLOUD_SERVER, "name": format!("{namespace}_data") });
+                let volume = json!({
+                    "machine_id": CLOUD_SERVER,
+                    "name": format!("{namespace}_data"),
+                    "label": "used by web at /data on web-1",
+                });
                 (200, json!({ "namespace": namespace, "volumes": [volume] }))
             }
             ("POST", ["namespaces", "slow", "clean"]) => (202, json!({ "id": "cln_slow" })),
@@ -457,6 +461,11 @@ impl Approvals {
         effect: Value,
         started: &str,
     ) -> (u16, Value) {
+        if let Some(id) = approval.filter(|id| self.status(id) == "denied") {
+            let message = format!("A human denied approval {id}: declined");
+            let error = json!({ "code": "approval_denied", "message": message, "details": {} });
+            return (403, json!({ "error": error }));
+        }
         let approved = approval.is_some_and(|id| self.status(id) == "approved");
         if self.rows.is_empty() || approved {
             return (202, json!({ "id": started }));
@@ -3774,22 +3783,29 @@ fn an_agent_gets_the_approval_a_cleanup_needs() {
 fn without_a_terminal_a_cleanup_waits_for_approval_then_retries_with_it() {
     let (target, approvals) = running(&[("apr_1", "approved")]);
     let home = tempfile::tempdir().unwrap();
-    let (code, stderr) = person(
-        &target,
-        home.path(),
-        &[
+    let output = target
+        .command(home.path())
+        .args([
             "server",
             "clean",
             "--namespace",
             "stray",
             "--confirm",
             "stray",
-        ],
-    );
-    assert_eq!(code, Some(0), "{stderr}");
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
     assert!(
         stderr.contains("Waiting for approval in Ployz Cloud"),
         "{stderr}"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout, "Removed Namespace stray and the data of its Volume.\n",
+        "names no Docker Volume"
     );
     let polls: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
     assert_eq!(polls, ["GET", "GET"], "pending, then approved");
@@ -3812,12 +3828,12 @@ fn signed_in_a_cleanup_takes_the_typed_namespace_even_when_nobody_must_approve()
         refused["message"]
             .as_str()
             .unwrap()
-            .contains("the data of Volumes stray_data;"),
-        "{refused}"
+            .contains("Volume used by web at /data on web-1 and its data."),
+        "the Volume reads as Cloud's approval names it: {refused}"
     );
     assert_eq!(
         refused["details"]["volumes"],
-        json!([{ "machine_id": CLOUD_SERVER, "name": "stray_data" }])
+        json!([{ "machine_id": CLOUD_SERVER, "name": "stray_data", "label": "used by web at /data on web-1" }])
     );
     assert_eq!(approvals.runs(), ["GET namespaces/stray/clean"]);
 
@@ -3949,6 +3965,37 @@ fn an_agent_gets_the_approval_a_drain_needs_and_a_person_waits_for_it() {
             "GET server-drains/drn_1".to_owned(),
         ]
     );
+}
+
+#[test]
+fn a_denied_drain_or_cleanup_stops_with_the_reason_and_starts_nothing() {
+    for args in [
+        &["server", "drain", CLOUD_SERVER][..],
+        &[
+            "server",
+            "clean",
+            "--namespace",
+            "stray",
+            "--confirm",
+            "stray",
+        ],
+    ] {
+        let (target, approvals) = running(&[("apr_1", "denied")]);
+        let home = tempfile::tempdir().unwrap();
+        let (code, stderr) = person(&target, home.path(), args);
+        assert_eq!(code, Some(1), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("A human denied approval apr_1: declined"),
+            "{stderr}"
+        );
+        let followed = approvals.runs().into_iter().any(|run| {
+            run.starts_with("GET server-drains") || run.starts_with("GET namespace-cleanups")
+        });
+        assert!(!followed, "{:?}", approvals.runs());
+
+        let refused = error(&target, &[args, &["--approval", "apr_1"]].concat());
+        assert_eq!(refused["code"], json!("approval_denied"), "{refused}");
+    }
 }
 
 #[test]

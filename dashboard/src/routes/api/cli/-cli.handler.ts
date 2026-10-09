@@ -198,7 +198,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "GET namespaces/:id/clean": {
       const namespace = decodeURIComponent(id ?? "");
       const plan = yield* planClean(caller.organization.id, namespace);
-      return { namespace, volumes: plan.confirmDataLoss.map(({ id: volume }) => volume) };
+      return { namespace, volumes: plan.doomed.map(({ identity, label }) => ({ ...identity.id, label })) };
     }
     case "POST namespaces/:id/clean": {
       const namespace = decodeURIComponent(id ?? "");
@@ -207,7 +207,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (!gated.ok) return refusal(gated.refusal);
       return accepted(yield* requestNamespaceCleanup(forgetter(caller), {
         namespace,
-        confirmDataLoss: plan.confirmDataLoss,
+        confirmDataLoss: plan.doomed.map(({ identity }) => identity),
         approvalId: gated.approvalId,
       }));
     }

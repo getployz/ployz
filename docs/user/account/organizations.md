@@ -61,7 +61,8 @@ How you answer depends on where the command runs:
 
 To turn it off, go to **Organization → General** and switch off **Ask before destructive
 actions**. Turning it off stops new questions only. A retry of a command you denied is still
-denied, and a retry of one still waiting for your answer still waits.
+denied, even once it would destroy nothing. A retry of one still waiting for your answer still
+waits, unless it no longer destroys anything.
 
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop one that's
 trying to get around it: anything that holds your login or token can approve its own request.

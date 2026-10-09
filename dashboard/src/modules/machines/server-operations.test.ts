@@ -88,7 +88,10 @@ describe("cleanPlan and removePlan", () => {
       ["deletes_volume", "on fra-1"],
       ["deletes_volume", "on fra-2"],
     ]);
-    expect(plan.confirmDataLoss).toEqual([volume(here, "old_a"), volume(there, "old_b")]);
+    expect(plan.doomed).toEqual([
+      { identity: volume(here, "old_a"), label: "on fra-1" },
+      { identity: volume(there, "old_b"), label: "on fra-2" },
+    ]);
   });
 
   it("a clean names each Volume by the Services that mount it and its Server, never by its Docker name", () => {

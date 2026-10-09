@@ -208,6 +208,8 @@ server once, and approving a removal that keeps the server's data doesn't approv
 Unlike `drain`, `upgrade` and `clean`, removing a server Ployz Cloud manages always goes through
 Ployz Cloud, even with `--context` or `--connect`: Cloud keeps a record of each server it manages,
 and removing one behind its back would leave that record behind.
+Ctrl-C stops following the removal but doesn't stop it: it keeps running in Ployz Cloud, and the
+server stays in your context, since the removal can still fail.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
@@ -224,7 +226,8 @@ ployz server clean
 ployz server clean --namespace my-app-staging --confirm my-app-staging
 ```
 
-When you're signed in, Ployz Cloud does the removal. You still type the name to confirm. Cloud
+When you're signed in, Ployz Cloud does the removal. You still type the name to confirm, and the
+confirmation names each volume as the approval does: by the services that used it and its server. Cloud
 refuses anything an environment owns, including one an environment took over while the removal
 waited, and it asks before it stops services or deletes volume data when your organization
 [asks before destructive actions](../account/organizations.md#ask-before-destructive-actions). The

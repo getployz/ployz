@@ -97,13 +97,15 @@ export function cleanPlan(
   frame: RuntimeWatchView,
   namespace: string,
   volumes: readonly DataLossIdentity[],
-): OperationAsked & { readonly confirmDataLoss: DataLossIdentity[] } {
+): OperationAsked & { readonly doomed: ReadonlyArray<{ readonly identity: DataLossIdentity; readonly label: string }> } {
   const services = frame.services.filter((service) =>
     splitQualifiedService(service.identity).namespace === namespace
     && service.containers.some((container) => container.kind === "service_container"));
   const running = services.filter((service) =>
     service.containers.some((container) => container.kind === "service_container" && container.runtime.state === "running"));
-  const confirmDataLoss = [...volumes].sort((a, b) => byName(volumeName(a), volumeName(b)));
+  const doomed = [...volumes]
+    .sort((a, b) => byName(volumeName(a), volumeName(b)))
+    .map((identity) => ({ identity, label: volumeMountLabel(frame, identity) }));
   return {
     subject: `namespace:${namespace}`,
     verb: "clean",
@@ -111,13 +113,13 @@ export function cleanPlan(
     preview: {
       namespace,
       services: services.map(({ identity }) => identity).sort(byName),
-      volumes: confirmDataLoss.map(volumeName),
+      volumes: doomed.map(({ identity }) => volumeName(identity)),
     },
     effects: [
       ...running.map((service) => removesService(service.identity, service.service_id)).sort((a, b) => byName(a.path, b.path)),
-      ...confirmDataLoss.map((identity) => deletesVolume(identity, volumeMountLabel(frame, identity))),
+      ...doomed.map(({ identity, label }) => deletesVolume(identity, label)),
     ],
-    confirmDataLoss,
+    doomed,
   };
 }
 

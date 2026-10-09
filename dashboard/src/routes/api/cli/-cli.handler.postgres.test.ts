@@ -3,7 +3,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -19,8 +19,9 @@ import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
+import { setOrganizationSettings } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
-import { callStore } from "#/modules/config-store/config-store.server";
+import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -809,7 +810,7 @@ it.live(
 );
 
 it.live(
-  "a clean names the Volumes it would delete before anyone confirms, and plans on one Engine session",
+  "a clean names the Volumes it would delete before anyone confirms, as its approval does, and plans on one Engine session",
   () =>
     Effect.gen(function* () {
       const cluster: LeftBehind = { observesFra1: true, sessionsOpened: 0 };
@@ -818,11 +819,19 @@ it.live(
         const alice = yield* signUp("alice");
         const preview = yield* cli("GET", "namespaces/left-behind/clean", alice);
         assert.strictEqual(preview.status, 200);
-        assert.deepStrictEqual(preview.json, { namespace: "left-behind", volumes: [leftBehind.id] });
+        assert.deepStrictEqual(preview.json, {
+          namespace: "left-behind",
+          volumes: [{ ...leftBehind.id, label: "used by web at /data on fra-1" }],
+        });
         assert.strictEqual(cluster.sessionsOpened, 1);
 
         cluster.sessionsOpened = 0;
-        assert.strictEqual((yield* cli("POST", "namespaces/left-behind/clean", alice)).json.error?.code, "approval_required");
+        const asked = (yield* cli("POST", "namespaces/left-behind/clean", alice)).json.error;
+        assert.strictEqual(asked?.code, "approval_required");
+        assert.deepStrictEqual(
+          asked?.details?.effects?.filter(({ kind }) => kind === "deletes_volume").map(({ name }) => name),
+          ["used by web at /data on fra-1"],
+        );
         assert.strictEqual(cluster.sessionsOpened, 1);
       }).pipe(Effect.provide(layer));
     }),
@@ -841,6 +850,145 @@ it.live(
         assert.strictEqual(refused.json.error?.code, "channel_mismatch");
         assert.deepStrictEqual(refused.json.error?.details, { channel: DEFAULT_SERVER_UPGRADE_SETTINGS.channel });
         assert.strictEqual((yield* cli("GET", "server-upgrades/not-an-attempt", alice)).json.error?.code, "not_found");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+type FraRunsGlobal = { destroys: boolean; namespace: string };
+
+const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRuntime, {
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({
+    status: "connected" as const,
+    connected: asTestDouble<PloyzSession>()({
+      watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        machines: [{ machine: { id: fra1, name: "fra-1" } }],
+        services: plan.destroys
+          ? [{
+            identity: `${plan.namespace}/web`,
+            service_id: "web",
+            containers: [{
+              kind: "service_container", machine_id: fra1, runtime: { state: "running" }, created_at_unix_nanos: 1,
+              resolved_spec: { mode: { mode: "global" }, volumes: [], mounts: [] },
+            }],
+          }]
+          : [],
+      })),
+      dataLossIfNamespaceDestroyed: () => Effect.succeed({ data_loss: [] }),
+    }),
+  }),
+});
+
+const operations = [
+  { verb: "remove", method: "DELETE", path: `servers/${fra1}`, body: { no_reset: true } },
+  { verb: "clean", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
+  { verb: "drain", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
+] as const;
+
+const ownNamespace = Effect.fn(function* (organizationId: string, userId: string) {
+  const { drizzle } = yield* Database;
+  const created = yield* callStore(organizationId, userId, {
+    operation: "write",
+    command: {
+      command: "create_project", id: "00000000-0000-4000-8000-00000000d401", name: "shop",
+      default_environment: "00000000-0000-4000-8000-00000000d402",
+    },
+  });
+  assert.isTrue(created.ok);
+  yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id)
+    values (${organizationId}, 'shop-production', '00000000-0000-4000-8000-00000000d402')`);
+  const owned = yield* readStore(organizationId, { query: "namespaces" });
+  return owned.namespaces[0]?.namespace ?? assert.fail("no owned Namespace");
+});
+
+const ownerOf = Effect.fn(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [owner] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, organizationId));
+  return owner?.userId ?? assert.fail("no member");
+});
+
+for (const operation of operations) {
+  it.live(
+    `a ${operation.verb} that names a denied approval refuses with its reason, asking or not, even once its plan destroys nothing`,
+    () =>
+      Effect.gen(function* () {
+        const inngest = new Inngest({ id: `cli-${operation.verb}-denied-test` });
+        const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+        const plan: FraRunsGlobal = { destroys: true, namespace: "left-behind" };
+        const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest });
+        yield* Effect.gen(function* () {
+          const alice = yield* signUp("alice");
+          const userId = yield* ownerOf(alice.organization.id);
+          if (operation.verb === "drain") plan.namespace = yield* ownNamespace(alice.organization.id, userId);
+          const ask = (askBeforeDestructive: boolean) =>
+            setOrganizationSettings({ userId }, { organizationSlug: alice.organization.slug, askBeforeDestructive });
+
+          for (const asking of [true, false]) {
+            for (const reason of ["declined", "cancelled"]) {
+              const scenario = `asking ${asking}, ${reason}`;
+              plan.destroys = true;
+              yield* ask(true);
+              const asked = yield* cli(operation.method, operation.path, alice, operation.body);
+              assert.strictEqual(asked.status, 409, scenario);
+              const approvalId = asked.json.error?.details.approval_id ?? assert.fail("no approval id");
+              const denied = yield* cli("POST", `approvals/${approvalId}`, alice, { reject: { reason } });
+              assert.strictEqual(denied.json.approval?.status, "denied", scenario);
+              yield* ask(asking);
+
+              const plans = operation.verb === "remove" ? [true] : [true, false];
+              for (const destroys of plans) {
+                plan.destroys = destroys;
+                const retried = yield* cli(operation.method, operation.path, { ...alice, approval: approvalId }, operation.body);
+                assert.deepStrictEqual(
+                  [retried.status, retried.json.error?.code, retried.json.error?.message],
+                  [403, "approval_denied", `A human denied approval ${approvalId}: ${reason}`],
+                  `${scenario}, destroys ${destroys}`,
+                );
+              }
+            }
+          }
+          assert.lengthOf(sent.mock.calls, 0);
+        }).pipe(Effect.provide(layer));
+      }),
+    60_000,
+  );
+}
+
+it.live(
+  "with asking off, an operation naming a pending approval still waits on it, and one naming none runs",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-pending-asking-off-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const plan: FraRunsGlobal = { destroys: true, namespace: "left-behind" };
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const userId = yield* ownerOf(alice.organization.id);
+        const removal = operations[0];
+        const clean = operations[1];
+        const removalId = (yield* cli(removal.method, removal.path, alice, removal.body)).json.error?.details.approval_id
+          ?? assert.fail("no approval id");
+        const cleanId = (yield* cli(clean.method, clean.path, alice)).json.error?.details.approval_id
+          ?? assert.fail("no approval id");
+        yield* setOrganizationSettings({ userId }, { organizationSlug: alice.organization.slug, askBeforeDestructive: false });
+
+        const waiting = yield* cli(removal.method, removal.path, { ...alice, approval: removalId }, removal.body);
+        assert.deepStrictEqual([waiting.status, waiting.json.error?.details.approval_id], [409, removalId]);
+        assert.lengthOf(sent.mock.calls, 0);
+
+        plan.destroys = false;
+        const emptied = yield* cli(clean.method, clean.path, { ...alice, approval: cleanId });
+        assert.strictEqual(emptied.status, 202, emptied.text);
+        plan.destroys = true;
+        const unnamed = yield* cli(clean.method, clean.path, alice);
+        assert.strictEqual(unnamed.status, 202, unnamed.text);
+        assert.lengthOf(sent.mock.calls, 2);
+
+        const approvals = yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status }).from(operationApprovals);
+        assert.sameDeepMembers(approvals, [{ id: removalId, status: "pending" }, { id: cleanId, status: "pending" }]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

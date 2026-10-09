@@ -280,20 +280,14 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
 
 type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
 
-/**
- * Whether an operation from the CLI runs now. It does when it destroys nothing, when the Organization doesn't ask, or
- * when `approvalId` names an approval of exactly this fresh preview, whose ID comes back so the run records it.
- * Otherwise the operation waits on a pending approval and refuses `approval_required`.
- */
 export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   caller: Caller,
   approvalId: string | null,
   asked: OperationAsked,
 ): Effect.fn.Return<Gated, never, Database> {
-  if (asked.effects.length === 0) return { ok: true, approvalId: null };
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
-  if (trusted.approval === "not_required") return { ok: true, approvalId: null };
+  if (asked.effects.length === 0 || trusted.approval === "not_required") return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };

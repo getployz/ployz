@@ -504,7 +504,7 @@ async fn a_context_removes_a_server_cloud_does_not_manage_without_cloud() {
 }
 
 #[tokio::test]
-async fn stopping_a_followed_cloud_removal_still_drops_the_server_from_the_context() {
+async fn stopping_a_followed_cloud_removal_keeps_the_server_in_the_context() {
     let (cloud, _, reads) = fake_cloud(r#"{"state":"running"}"#, false);
     let service = DiscoveryService::new(test_description());
     *service.management_clients.lock().unwrap() =
@@ -567,11 +567,72 @@ async fn stopping_a_followed_cloud_removal_still_drops_the_server_from_the_conte
         "{output:?}"
     );
     assert!(
-        !context.contains(&removed.to_string()),
-        "Cloud finishes the removal, so the context drops the Server now: {context}"
+        context.contains(&removed.to_string()),
+        "Cloud's removal may still fail, so the context keeps the Server: {context}"
     );
     assert!(
         context.contains(&test_description().machine_id.to_string()),
         "{context}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn at_a_terminal_a_managed_removal_dialled_directly_shows_what_cloud_loses() {
+    use tokio::io::AsyncWriteExt;
+    let (cloud, asked, _) = fake_cloud(
+        r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
+        false,
+    );
+    let service = DiscoveryService::new(test_description());
+    *service.management_clients.lock().unwrap() =
+        vec![ployz_core::ManagementClientLabel::parse("cloud").unwrap()];
+    let (address, server) = serve_discovery(service.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let command = shell_words::join([
+        env!("CARGO_BIN_EXE_ployz").to_owned(),
+        "--connect".into(),
+        format!("tcp://{address}"),
+        "--ployz-config".into(),
+        home.path()
+            .join("config.yaml")
+            .to_string_lossy()
+            .into_owned(),
+        "server".into(),
+        "rm".into(),
+        "one".into(),
+    ]);
+    let mut child = tokio::process::Command::new("script")
+        .kill_on_drop(true)
+        .env("TERM", "xterm")
+        .env_remove("CI")
+        .env("PLOYZ_TOKEN", "ployz_acme")
+        .env("PLOYZ_CLOUD_URL", cloud)
+        .args(["--quiet", "--return", "--command", &command, "/dev/null"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"one\n")
+        .await
+        .unwrap();
+    let output = timeout(Duration::from_secs(20), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    let screen = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(0), "{screen}");
+    assert!(
+        screen.contains("Removing Server one through Ployz Cloud:"),
+        "{screen}"
+    );
+    assert!(!screen.contains("through a direct connection"), "{screen}");
+    assert!(!screen.contains("connected Server can see"), "{screen}");
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    server.abort();
 }

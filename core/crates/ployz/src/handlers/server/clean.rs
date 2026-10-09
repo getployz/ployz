@@ -45,6 +45,19 @@ struct Unowned {
     volumes: Vec<DockerVolumeId>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct Doomed {
+    #[serde(flatten)]
+    id: DockerVolumeId,
+    label: Option<String>,
+}
+
+impl Doomed {
+    fn name(&self) -> &str {
+        self.label.as_deref().unwrap_or(self.id.name.as_str())
+    }
+}
+
 /// What `--confirm` removed.
 #[derive(Serialize)]
 struct Cleaned {
@@ -163,13 +176,18 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
         "Namespace",
         next.clone(),
         || {
+            let doomed: Vec<_> = found
+                .volumes
+                .iter()
+                .map(|id| Doomed {
+                    id: id.clone(),
+                    label: None,
+                })
+                .collect();
+            let (message, loss) = deletes(&namespace, &doomed);
             let refusal = Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                format!(
-                    "Removing Namespace {namespace} deletes its containers and the data of Volumes \
-                 {}; this can't be undone. No changes made.",
-                    volume_names(&found.volumes)
-                ),
+                message,
                 json!({
                     "namespace": namespace,
                     "services": found.services,
@@ -177,16 +195,6 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 }),
             )
             .hint(Hint::Retry(next.clone()));
-            let loss = Tree::new(
-                format!("Removing Namespace {namespace} deletes, for good:"),
-                vec![
-                    Tree::leaf("its containers"),
-                    Tree::leaf(format!(
-                        "the data of Volumes {}",
-                        volume_names(&found.volumes)
-                    )),
-                ],
-            );
             Ok((refusal, loss))
         },
     )?;
@@ -242,7 +250,7 @@ fn confirm_in_cloud(
 ) -> Result<(), Error> {
     #[derive(Deserialize)]
     struct Preview {
-        volumes: Vec<DockerVolumeId>,
+        volumes: Vec<Doomed>,
     }
     let next = retry(matches, namespace);
     confirm(
@@ -257,23 +265,13 @@ fn confirm_in_cloud(
                 &format!("namespaces/{namespace}/clean"),
                 None,
             ))?;
+            let (message, loss) = deletes(namespace, &volumes);
             let refusal = Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                format!(
-                    "Removing Namespace {namespace} deletes its containers and the data of Volumes \
-                 {}; this can't be undone. No changes made.",
-                    volume_names(&volumes)
-                ),
+                message,
                 json!({ "namespace": namespace, "volumes": volumes }),
             )
             .hint(Hint::Retry(next.clone()));
-            let loss = Tree::new(
-                format!("Removing Namespace {namespace} deletes, for good:"),
-                vec![
-                    Tree::leaf("its containers"),
-                    Tree::leaf(format!("the data of Volumes {}", volume_names(&volumes))),
-                ],
-            );
             Ok((refusal, loss))
         },
     )
@@ -324,15 +322,33 @@ fn through_cloud(
     ))?;
     let volumes = settled.finished()?.volumes;
     let report = json!({ "namespace": namespace, "volumes": volumes });
-    crate::ui::finish(&report, || {
-        crate::ui::stream(format_args!(
-            "Removed Namespace {namespace} and the data of Volumes {}.",
-            match volumes.is_empty() {
-                true => "(none)".to_owned(),
-                false => super::super::joined(&volumes),
-            }
-        ));
+    crate::ui::finish(&report, || match volumes.len() {
+        0 => crate::ui::stream(format_args!("Removed Namespace {namespace}.")),
+        1 => crate::ui::stream(format_args!(
+            "Removed Namespace {namespace} and the data of its Volume."
+        )),
+        count => crate::ui::stream(format_args!(
+            "Removed Namespace {namespace} and the data of its {count} Volumes."
+        )),
     })
+}
+
+fn deletes(namespace: &Namespace, volumes: &[Doomed]) -> (String, Tree) {
+    let doomed = std::iter::once("its containers".to_owned()).chain(
+        volumes
+            .iter()
+            .map(|volume| format!("Volume {} and its data", volume.name())),
+    );
+    let doomed: Vec<_> = doomed.collect();
+    let message = format!(
+        "Removing Namespace {namespace} deletes {}. This can't be undone. No changes made.",
+        doomed.join("; ")
+    );
+    let tree = Tree::new(
+        format!("Removing Namespace {namespace} deletes, for good:"),
+        doomed.into_iter().map(Tree::leaf).collect(),
+    );
+    (message, tree)
 }
 
 fn owner<'a>(owned: &'a [OwnedNamespace], namespace: &Namespace) -> Option<&'a OwnedNamespace> {
@@ -369,4 +385,44 @@ fn volume_names(volumes: &[DockerVolumeId]) -> String {
     }
     let names: Vec<_> = volumes.iter().map(|volume| &volume.name).collect();
     super::super::joined(&names)
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, Namespace};
+
+    use super::{Doomed, deletes};
+
+    #[test]
+    fn a_clean_names_a_volume_by_its_label_and_falls_back_to_its_docker_name() {
+        let volume = |name: &str, label: Option<&str>| Doomed {
+            id: DockerVolumeId {
+                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+                name: DockerVolumeName::parse(name).unwrap(),
+            },
+            label: label.map(str::to_owned),
+        };
+        let (message, tree) = deletes(
+            &Namespace::parse("stray").unwrap(),
+            &[
+                volume("stray_vol-1", Some("used by web at /data on fra-1")),
+                volume("stray_data", None),
+            ],
+        );
+        assert_eq!(
+            message,
+            "Removing Namespace stray deletes its containers; Volume used by web at /data on \
+             fra-1 and its data; Volume stray_data and its data. This can't be undone. No \
+             changes made."
+        );
+        assert_eq!(
+            anstream::adapter::strip_str(&tree.to_string()).to_string(),
+            concat!(
+                "Removing Namespace stray deletes, for good:\n",
+                "├─ its containers\n",
+                "├─ Volume used by web at /data on fra-1 and its data\n",
+                "└─ Volume stray_data and its data\n",
+            )
+        );
+    }
 }

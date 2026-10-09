@@ -536,3 +536,46 @@ it.live("asking about a Server's drain leaves its pending removal waiting", () =
 it("a removal that resets the Server and one that keeps its data are different approvals", () => {
   expect(operationDigest(removePlan(MACHINE, "fra-1", []))).not.toBe(operationDigest(removePlan(MACHINE, "fra-1", null)));
 });
+
+for (const verb of ["remove", "drain", "clean"] as const) {
+  for (const asking of [true, false]) {
+    for (const reason of ["declined", "cancelled"]) {
+      it.live(`a ${reason} ${verb} refuses its named retry with asking ${asking ? "on" : "off"}, even once it destroys nothing`, () =>
+        Effect.gen(function* () {
+          const { provided, caller, gate, rows } = yield* operationCloud();
+          const plan = { ...drainOf(["shop.web"]), verb };
+          const asked = refusedWith(yield* gate(plan));
+          yield* provided(decideApproval(caller, asked.approval_id, { reject: { reason } }, answers(asked.approval)));
+          yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: asking }));
+
+          const denied = { ok: false, refusal: { code: "approval_denied", message: `A human denied approval ${asked.approval_id}: ${reason}` } };
+          expect(yield* gate(plan, asked.approval_id)).toMatchObject(denied);
+          expect(yield* gate({ ...plan, effects: [] }, asked.approval_id)).toMatchObject(denied);
+          expect(yield* rows).toEqual([{ id: asked.approval_id, status: "denied", subject: `server:${MACHINE}` }]);
+        }));
+    }
+  }
+}
+
+it.live("a named approval no human denied lets an operation that destroys nothing run, and leaves a pending one pending", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate, rows } = yield* operationCloud();
+    const emptied = { ...drainOf(["shop.web"]), effects: [] };
+    const waiting = refusedWith(yield* gate(drainOf(["shop.web"])));
+    expect(yield* gate(emptied, waiting.approval_id)).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([{ id: waiting.approval_id, status: "pending", subject: `server:${MACHINE}` }]);
+
+    yield* provided(decideApproval(caller, waiting.approval_id, { approve: { digest: waiting.approval } }, answers(waiting.approval)));
+    expect(yield* gate(emptied, waiting.approval_id)).toEqual({ ok: true, approvalId: null });
+    expect(yield* gate(emptied, crypto.randomUUID())).toMatchObject({ ok: false, refusal: { code: "invalid_argument" } });
+  }));
+
+it.live("a pending approval named with asking off still waits on the human", () =>
+  Effect.gen(function* () {
+    const { provided, caller, gate, rows } = yield* operationCloud();
+    const waiting = refusedWith(yield* gate(drainOf(["shop.web"])));
+    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
+    expect(refusedWith(yield* gate(drainOf(["shop.web"]), waiting.approval_id)).approval_id).toBe(waiting.approval_id);
+    expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([{ id: waiting.approval_id, status: "pending", subject: `server:${MACHINE}` }]);
+  }));
