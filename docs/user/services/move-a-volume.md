@@ -88,9 +88,6 @@ its last sync, so restoring one loses the writes after it, and the run says when
 `data restored on web-2 from <time>; writes after that time are lost`. Restore doesn't start your service.
 Deploy it next.
 
-If you removed the old server with `--no-reset`, Restore waits until 11 minutes after the removal
-before it acts. See [Remove a server](../servers/manage-servers.md#remove-a-server).
-
 ## Good to know
 
 - **A server must answer for its volume to move.** If the volume's server is down, neither a

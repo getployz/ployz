@@ -243,13 +243,17 @@ function planRestore(name: string, from: string, answered: readonly AnsweredMemb
 
 /**
  * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root whose lease record
- * is lower is old. Records that tie, or two roots without one, leave no way to tell, so neither is old.
+ * is lower is old. A read-only root ranks below every writable one whatever its record: a demote cut short left it so,
+ * and only a writable root can be the writer. Writable roots whose records tie, or two without one, leave no way to
+ * tell, so neither is old.
  */
 function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
   if (roots.some((root) => roleOf(root) !== "writer")) return null;
+  const writable = (root: AnsweredMember) => root.view.copy?.readonly === false;
   const leaseOf = (root: AnsweredMember) => root.view.lease?.lease ?? 0;
-  const [writer, ...rest] = [...roots].sort((a, b) => leaseOf(b) - leaseOf(a));
+  const above = (a: AnsweredMember, b: AnsweredMember) => Number(writable(a)) - Number(writable(b)) || leaseOf(a) - leaseOf(b);
+  const [writer, ...rest] = [...roots].sort((a, b) => above(b, a));
   const old = rest.at(-1);
-  if (writer === undefined || old === undefined || leaseOf(writer) === leaseOf(old)) return null;
+  if (writer === undefined || old === undefined || !writable(writer) || above(writer, old) === 0) return null;
   return { old, writer };
 }

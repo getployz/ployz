@@ -184,7 +184,8 @@ ployz server rm web-2 --no-reset --confirm dead
 A server removed this way doesn't know it was removed. If it comes back, its services may still be
 running on its copy of a volume. When you've restored that volume on another server, the next
 move, mirror, sync or release of that volume marks the returning copy old, makes it read-only and
-stops there; run it again. Anything written to the old copy in between is lost. Reset a server you don't mean to keep:
+stops there; run it again. If a service on the returning server still has the copy open, the copy
+turns read-only but the run fails; run it again once that service stops. Anything written to the old copy in between is lost. Reset a server you don't mean to keep:
 `ployz server rm web-2 --confirm web-2` once it answers.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
