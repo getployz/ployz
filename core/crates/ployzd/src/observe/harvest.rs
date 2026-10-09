@@ -380,8 +380,13 @@ impl Harvester {
                 tracing::error!(container = %id, %error, "cannot hold the container's log files")
             }
         }
+        self.scan_damage(id, created_nanos, Newest::Growing);
+    }
+
+    fn scan_damage(&mut self, id: &ContainerId, created_nanos: Option<i64>, newest: Newest) {
+        let store_dir = self.store.container(id);
         let cursor = self.damage.entry(*id).or_default();
-        match record_damage(&store_dir, cursor, created_nanos, Newest::Growing) {
+        match record_damage(&store_dir, cursor, created_nanos, newest) {
             Ok(gaps) => {
                 for gap in gaps {
                     tracing::warn!(container = %id, from = gap.from, to = gap.to, "skipped log bytes that held no valid frame");
@@ -434,10 +439,13 @@ impl Harvester {
         };
         let store_dir = self.store.container(&id);
         let Seen::Pending = seen else {
-            if let Some(meta) = container_meta(&inspected)
-                && let Err(error) = write_meta(&store_dir, &meta)
-            {
-                tracing::warn!(container = %id, %error, "cannot update container metadata");
+            if let Some(meta) = container_meta(&inspected) {
+                if let Err(error) = write_meta(&store_dir, &meta) {
+                    tracing::warn!(container = %id, %error, "cannot update container metadata");
+                }
+                if meta.finished_at.is_some() {
+                    self.finish_damage_scan(&id);
+                }
             }
             return;
         };
@@ -475,6 +483,18 @@ impl Harvester {
             },
         );
         self.sync(&id);
+        if meta.finished_at.is_some() {
+            self.finish_damage_scan(&id);
+        }
+    }
+
+    /// Docker has stopped the container and will not write its files again
+    /// unless it restarts, so a torn frame the growing scan left waiting at
+    /// the end is damage now.
+    fn finish_damage_scan(&mut self, id: &ContainerId) {
+        if let Some(Seen::Managed { created_nanos, .. }) = self.seen.get(id).copied() {
+            self.scan_damage(id, created_nanos, Newest::Finished);
+        }
     }
 
     /// Docker removed a container before an inspect could answer. Files of a
@@ -891,7 +911,8 @@ pub(super) struct DamageCursor {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Newest {
     Growing,
-    /// Docker removed the container, so every held file is complete.
+    /// Docker stopped or removed the container, so every held file is
+    /// complete.
     Finished,
 }
 
@@ -1057,8 +1078,16 @@ pub(super) fn settle_removed(
 }
 
 fn close_removed_container(store_dir: &Path, now: i64) -> io::Result<Option<Gap>> {
-    let Some(meta) = read_meta(store_dir)? else {
-        return Ok(None);
+    let meta = match read_meta(store_dir) {
+        Ok(Some(meta)) => meta,
+        Ok(None) => return Ok(None),
+        // Retrying cannot mend it: Docker has removed the container, so no
+        // inspect will write it again.
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            tracing::warn!(dir = %store_dir.display(), %error, "cannot read a removed container's metadata; not judging whether it exited");
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
     };
     if meta.finished_at.is_some() {
         return Ok(None);
@@ -1129,7 +1158,7 @@ fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
     match fs::read(dir.join(META_FILE)) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
-            .map_err(io::Error::other),
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -2282,6 +2311,63 @@ mod tests {
             (meta.started_at.as_deref(), meta.exit_code, meta.oom_killed),
             (Some("2025-10-09T08:53:20.000000000Z"), Some(137), true)
         );
+    }
+
+    #[tokio::test]
+    async fn a_stopped_container_reports_the_torn_frame_its_growing_scan_left_waiting() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 5)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        fs::write(
+            host.local_logs().join("container.log"),
+            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
+        )
+        .unwrap();
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 11, &[("exitCode", "0")]));
+        assert_eq!(host.gaps(), []);
+
+        let Inspected::Found(mut stopped) = managed(3) else {
+            unreachable!("managed() describes a found container")
+        };
+        stopped.state = Some(ContainerState {
+            running: Some(false),
+            finished_at: Some("2025-10-09T08:53:20.000000011Z".to_owned()),
+            exit_code: Some(0),
+            ..ContainerState::default()
+        });
+        running
+            .harvester
+            .on_inspected(id, Inspected::Found(stopped));
+        assert_eq!(host.gaps(), [DAMAGE_GAP]);
+    }
+
+    #[tokio::test]
+    async fn a_removed_container_with_unreadable_metadata_is_settled_once() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        fs::write(host.dir().join("meta.json"), b"{not json").unwrap();
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            running.harvester.settle_unsettled();
+            running.harvester.settle_unsettled();
+        });
+        let journal = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(journal, "");
+        assert_eq!(host.held(), 1);
     }
 
     #[derive(Clone, Default)]
