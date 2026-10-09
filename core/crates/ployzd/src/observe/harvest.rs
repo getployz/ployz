@@ -527,11 +527,14 @@ impl Harvester {
         let meta = match read_meta(&store_dir) {
             Ok(Some(mut kept)) => {
                 if let Some(from_event) = from_event {
-                    // A container Docker restarted started a run after the
-                    // one saved here, so that run's exit and OOM kill are
-                    // over. Docker stamps a `die` after the exit it reports,
-                    // so only a newer start marks a new run.
-                    if at(from_event.started_at.as_deref()) > at(kept.started_at.as_deref()) {
+                    // A run that started after the saved one finished means
+                    // Docker restarted the container, so the saved exit and
+                    // its OOM kill are over. Docker stamps its events after
+                    // the times inspect reports, so an event from the saved
+                    // run can carry a later time than that run's start or
+                    // exit, but never a start after its exit.
+                    let saved = at(kept.finished_at.as_deref());
+                    if saved.is_some() && at(from_event.started_at.as_deref()) > saved {
                         kept.started_at = None;
                         kept.finished_at = None;
                         kept.exit_code = None;
@@ -2296,7 +2299,9 @@ mod tests {
         let id = host.container(&[lines(T0 + 1, 3)]);
         let mut running = host.harvester();
         running.harvester.rescan();
-        running.harvester.on_docker_event(event("start", T0, &[]));
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 1, &[]));
         let Inspected::Found(mut exited) = managed(3) else {
             unreachable!("managed() describes a found container")
         };
@@ -2327,6 +2332,36 @@ mod tests {
                 Some("2025-10-09T08:53:20.000000005Z"),
                 true
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_start_stamped_after_the_saved_start_keeps_the_saved_exit() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        let Inspected::Found(mut exited) = managed(3) else {
+            unreachable!("managed() describes a found container")
+        };
+        exited.state = Some(ContainerState {
+            running: Some(false),
+            started_at: Some("2025-10-09T08:53:20.000000000Z".to_owned()),
+            finished_at: Some("2025-10-09T08:53:20.000000005Z".to_owned()),
+            exit_code: Some(3),
+            ..ContainerState::default()
+        });
+        running.harvester.on_inspected(id, Inspected::Found(exited));
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 1, &[]));
+        host.remove_from_docker();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        let meta = host.meta();
+        assert_eq!(
+            (meta.finished_at.as_deref(), meta.exit_code),
+            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
         );
     }
 
