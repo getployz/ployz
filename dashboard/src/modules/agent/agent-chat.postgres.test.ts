@@ -538,9 +538,13 @@ it.live("a request whose claim another took over cannot write its own run, which
     yield* ageClaim(interruptId);
     expect(yield* provided(claimResume(scope, "new", [interruptId]))).toBe("claimed");
     yield* Effect.promise(() => old.stores.runs.update("run-old", { status: "failed", finishedAt: Date.now(), error: { message: "late" } }));
+    const late = yield* Effect.promise(() => old.stores.runs.createOrResume({ runId: "run-late", threadId: THREAD, startedAt: Date.now() + 2 })
+      .then(() => "committed", (error: Error) => error instanceof Superseded ? "superseded" : error.message));
     const fresh = yield* provided(agentPersistence(scope, "new"));
     const created = yield* Effect.promise(() => fresh.stores.runs.createOrResume({ runId: "run-new", threadId: THREAD, startedAt: Date.now() + 1 }));
 
+    expect(late).toBe("superseded");
+    expect(yield* Effect.promise(() => persistence.stores.runs.get("run-late"))).toBeNull();
     expect(created.status).toBe("running");
     expect(yield* Effect.promise(() => persistence.stores.runs.get("run-old"))).toMatchObject({ status: "failed", error: { message: new Superseded().message } });
     expect((yield* Effect.promise(() => persistence.stores.runs.findActiveRun(THREAD)))?.runId).toBe("run-new");
@@ -592,6 +596,48 @@ it.live("a takeover neither reopens nor writes over a run the old request comple
     expect(completed?.status).toBe("completed");
     expect(created).toEqual(completed);
     expect(yield* Effect.promise(() => persistence.stores.runs.get("shared"))).toEqual(completed);
+    expect(yield* Effect.promise(() => persistence.stores.runs.findActiveRun(THREAD))).toBeNull();
+  }));
+
+for (const status of ["aborted", "failed"] as const) {
+  it.live(`a takeover leaves an unrelated ${status} run as it ended, even when asked to resume it`, () =>
+    Effect.gen(function* () {
+      const { provided, userId, persistence, say, waiting } = yield* sidebar({ removeWeb: true });
+      yield* Effect.promise(() => persistence.stores.runs.createOrResume({ runId: "ended", threadId: THREAD, startedAt: Date.now() }));
+      yield* Effect.promise(() => persistence.stores.runs.update("ended", { status, finishedAt: Date.now(), error: { message: "it ended" } }));
+      const ended = yield* Effect.promise(() => persistence.stores.runs.get("ended"));
+      yield* say("deploy");
+      const interruptId = yield* waiting;
+      const scope = { organizationId: ORGANIZATION, userId };
+      expect(yield* provided(claimResume(scope, "unrelated", [interruptId]))).toBe("claimed");
+      const next = yield* provided(agentPersistence(scope, "unrelated"));
+      const resumed = yield* Effect.promise(() => next.stores.runs.createOrResume({ runId: "ended", threadId: THREAD, startedAt: Date.now() }));
+
+      expect(ended).toMatchObject({ status, error: { message: "it ended" } });
+      expect(resumed).toEqual(ended);
+      expect(yield* Effect.promise(() => persistence.stores.runs.findActiveRun(THREAD))).toBeNull();
+    }));
+}
+
+it.live("only the takeover that displaced a run may reopen it", () =>
+  Effect.gen(function* () {
+    const { provided, userId, say, waiting, persistence, ageClaim } = yield* sidebar({ removeWeb: true });
+    yield* say("deploy");
+    const interruptId = yield* waiting;
+    const scope = { organizationId: ORGANIZATION, userId };
+    expect(yield* provided(claimResume(scope, "old", [interruptId]))).toBe("claimed");
+    const old = yield* provided(agentPersistence(scope, "old"));
+    yield* Effect.promise(() => old.stores.runs.createOrResume({ runId: "shared", threadId: THREAD, startedAt: Date.now() }));
+    yield* ageClaim(interruptId);
+    expect(yield* provided(claimResume(scope, "new", [interruptId]))).toBe("claimed");
+    const displaced = yield* Effect.promise(() => persistence.stores.runs.get("shared"));
+    yield* Effect.promise(() => persistence.stores.interrupts.create({ interruptId: "other", runId: "run-other", threadId: THREAD, requestedAt: Date.now(), payload: {} }));
+    expect(yield* provided(claimResume(scope, "unrelated", ["other"]))).toBe("claimed");
+    const unrelated = yield* provided(agentPersistence(scope, "unrelated"));
+    const resumed = yield* Effect.promise(() => unrelated.stores.runs.createOrResume({ runId: "shared", threadId: THREAD, startedAt: Date.now() }));
+
+    expect(displaced).toMatchObject({ status: "failed", error: { message: new Superseded().message } });
+    expect(resumed).toEqual(displaced);
     expect(yield* Effect.promise(() => persistence.stores.runs.findActiveRun(THREAD))).toBeNull();
   }));
 
@@ -733,6 +779,33 @@ it.live("a denied Deploy never reaches the Store, and the agent quotes the reaso
     expect(resumed.said).toBe("I won't retry that. A human denied this deploy: web still serves traffic");
   }));
 
+for (const command of ["deploy", "publish"]) {
+  it.live(`a ${command} the human denied stays denied after the Organization stops asking`, () =>
+    Effect.gen(function* () {
+      const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+      const approval = yield* waitingApproval(yield* say(command), pending);
+      yield* provided(decideApproval(caller, approval.id, { reject: { reason: "web still serves traffic" } }));
+      yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
+      const writes = watchWrites();
+      const resumed = yield* resume("resolved");
+      expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied" } }]);
+      expect(writes).not.toHaveBeenCalled();
+      expect(yield* deployments).toEqual([]);
+    }), 15_000);
+}
+
+it.live("a cancelled approval stays cancelled after the Organization stops asking", () =>
+  Effect.gen(function* () {
+    const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
+    const writes = watchWrites();
+    const resumed = yield* resume("cancelled");
+    expect(resumed.results).toEqual([{ ok: false, cancelled: true }]);
+    expect(writes).not.toHaveBeenCalled();
+    expect(yield* deployments).toEqual([]);
+  }));
+
 it.live("a cancelled approval answers the agent without touching the Store", () =>
   Effect.gen(function* () {
     const { say, resume, watchWrites, pending } = yield* sidebar({ removeWeb: true });
@@ -756,6 +829,20 @@ it.live("a plan that moved while it waited asks again under a new approval", () 
     const fresh = yield* waitingApproval(resumed, pending);
     expect(fresh.id).not.toBe(stale.id);
     expect((yield* provided(getApproval(ORGANIZATION, stale.id))).status).toBe("approved");
+  }));
+
+it.live("a plan that moved while it waited asks again even after the Organization stops asking", () =>
+  Effect.gen(function* () {
+    const { provided, caller, write, say, resume, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const stale = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, stale.id, { approve: { digest: stale.digest } }));
+    yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6104", environment: here, name: "cache", image: "redis:7" });
+    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
+
+    const resumed = yield* resume("resolved");
+    expect(resumed.results).toEqual([]);
+    expect((yield* waitingApproval(resumed, pending)).id).not.toBe(stale.id);
+    expect(yield* deployments).toEqual([]);
   }));
 
 it.live("an Organization that doesn't ask deploys the destructive plan without an interrupt", () =>

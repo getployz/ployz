@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
-import type { ModelMessage, RunRecord, RunStore } from "@tanstack/ai";
+import { isRunStatus, isTerminalRunStatus, type ModelMessage, type RunError, type RunRecord, type RunStatus, type RunStore } from "@tanstack/ai";
 import type { ChatWithInterruptsPersistence, InterruptRecord, InterruptStore, MessageStore } from "@tanstack/ai-persistence";
-import { and, asc, desc, eq, exists, gt, inArray, isNull, ne, or, type SQL, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gt, inArray, isNull, notInArray, or, type SQL, sql } from "drizzle-orm";
 import type { PgColumn, PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import { agentInterrupts, agentRuns, agentThreads } from "#/modules/agent/tables";
@@ -27,6 +27,12 @@ export class Superseded extends Error {
     super("Another request took over this resumed turn.");
   }
 }
+
+const STATUSES = Object.keys({ running: null, interrupted: null, completed: null, failed: null, aborted: null } satisfies Record<RunStatus, null>);
+const TERMINAL = STATUSES.filter(isRunStatus).filter(isTerminalRunStatus);
+
+const supersededError = { message: new Superseded().message, code: "superseded" } satisfies RunError;
+const displaced = and(eq(agentRuns.status, "failed"), sql`${agentRuns.record}->'error'->>'code' = ${supersededError.code}`);
 
 /** How long a resuming request holds its interrupts unrenewed before another may take them over: one that died mid-turn. */
 export const CLAIM_LEASE_MS = 5 * 60 * 1000;
@@ -102,7 +108,7 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
         : insert.onConflictDoUpdate({
           target: agentRuns.runId,
           set: { claim, status: "running", record: merged(agentRuns.record, resumed), updatedAt: new Date() },
-          setWhere: and(runOwned, ne(agentRuns.status, "completed")),
+          setWhere: and(runOwned, or(notInArray(agentRuns.status, TERMINAL), and(eq(agentRuns.claim, claim), displaced))),
         }));
       const existing = await getRun(input.runId);
       if (existing === null) throw new Error(`Run ${input.runId} belongs to another member.`);
@@ -219,16 +225,14 @@ export const claimResume = Effect.fn("Agent.claimResume")(function* (scope: Agen
       .where(and(owned(scope), inArray(agentInterrupts.interruptId, ids), eq(agentInterrupts.status, "pending")));
     const superseded = rows.flatMap((row) => row.status === "pending" && row.claim !== null && row.claim !== claim ? [row.claim] : []);
     if (superseded.length > 0) {
+      const moved = and(eq(agentRuns.organizationId, scope.organizationId), eq(agentRuns.userId, scope.userId), inArray(agentRuns.claim, superseded));
+      yield* drizzle.update(agentRuns).set({ claim, updatedAt: new Date() }).where(and(moved, displaced));
       yield* drizzle.update(agentRuns).set({
+        claim,
         status: "failed",
-        record: merged(agentRuns.record, { status: "failed", finishedAt: Date.now(), error: { message: new Superseded().message } }),
+        record: merged(agentRuns.record, { status: "failed", finishedAt: Date.now(), error: supersededError }),
         updatedAt: new Date(),
-      }).where(and(
-        eq(agentRuns.organizationId, scope.organizationId),
-        eq(agentRuns.userId, scope.userId),
-        eq(agentRuns.status, "running"),
-        inArray(agentRuns.claim, superseded),
-      ));
+      }).where(and(moved, eq(agentRuns.status, "running")));
     }
     return "claimed" as const;
   }));

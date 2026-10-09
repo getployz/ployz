@@ -163,6 +163,17 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   if (approvalId === null) {
     return { ok: true, approval: (yield* askBeforeDestructive(organizationId).pipe(Effect.orDie)) ? "required" : "not_required" };
   }
+  return yield* answeredApproval(organizationId, approvalId);
+});
+
+/**
+ * What a human recorded on `approvalId`, whatever the Organization asks now. A denied approval refuses with its reason,
+ * so the agent hears why.
+ */
+export const answeredApproval = Effect.fn("Approvals.answered")(function* (
+  organizationId: string,
+  approvalId: string,
+): Effect.fn.Return<Trusted, never, Database> {
   const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
     return {
