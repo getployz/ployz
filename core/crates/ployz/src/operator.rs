@@ -342,7 +342,7 @@ pub fn parse_log_time(value: &str, now_unix_seconds: i64) -> Result<Option<i64>,
         .ok_or_else(|| OperatorError::InvalidLogTime(value.to_owned()))
 }
 
-/// Go duration syntax, such as `1m30s` or `500ms`.
+/// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`.
 pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
     let mut remaining = value;
     let mut seconds = 0_f64;
@@ -356,6 +356,7 @@ pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
             .unwrap_or(remaining.len());
         let (unit, rest) = remaining.split_at(unit_end);
         let multiplier = match unit {
+            "d" => 86_400_f64,
             "h" => 3_600_f64,
             "m" => 60_f64,
             "s" => 1_f64,
