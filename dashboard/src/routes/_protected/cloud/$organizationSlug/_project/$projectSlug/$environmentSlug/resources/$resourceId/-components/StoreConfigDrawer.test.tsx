@@ -82,7 +82,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
     return view;
   }
   return {
-    store, write,
+    store, write, router,
     edit(text: string) { act(() => { const view = editor(); view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: "input.type" }); }); },
     complete() { act(() => { const view = editor(); view.dispatch({ selection: { anchor: view.state.doc.length } }); startCompletion(view); }); },
     undo() { act(() => { undo(editor()); }); },
@@ -257,4 +257,24 @@ it("restores a refused mount form without losing its directory", async () => {
   await screen.findByText("Unknown Config reference");
   expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Directory" }).value).toBe("/etc/attempt");
   expect(screen.getByRole("combobox", { name: "Service" }).textContent).toContain("api");
+});
+
+it("guards a pending save and retains its text when persistence is refused", async () => {
+  const test = await openDrawer();
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("valuable unsaved text");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  act(() => { void test.router.navigate({ to: "/" }); });
+  const dialog = await screen.findByRole("alertdialog");
+  expect(dialog.textContent).toContain("config.yml");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+  await act(async () => { pending.resolve(refused); });
+  await screen.findByText("Unknown Config reference");
+  expect(test.text()).toBe("valuable unsaved text");
+  expect(test.router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/config");
+  act(() => { void test.router.navigate({ to: "/" }); });
+  await screen.findByRole("alertdialog");
 });
