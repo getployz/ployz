@@ -212,6 +212,16 @@ The server's page says **Can't reach web-2**. Services that run only there are d
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
    services come back.
 
+## Services can't resolve each other's names
+
+A service on the server gets `NXDOMAIN` or a timeout for a name like `postgres.app.internal`,
+while `ployz service ls` shows the target running.
+
+1. Run `sudo systemctl status ployz-dns`. Its Status line says `serving`, `loading`, or
+   `waiting for the Corrosion token`.
+2. Read its logs with `sudo journalctl -u ployz-dns -n 200`.
+3. If the unit is missing, run `sudo systemctl restart ployz`. Ployz recreates it.
+
 ## The bottom bar shows Add a server instead of Deploy
 
 Your organization has no server, so nothing can deploy.

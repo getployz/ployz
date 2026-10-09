@@ -33,7 +33,8 @@ From 0.2.0: a daemon keeps working, and can be upgraded, across every later
 new major line (1.0 first) may break the promise, and it says so. The promise covers what a
 daemon carries or speaks — the replicated store and its bodies, the local
 Machine record, Machine RPC within `PROTOCOL_MAJOR`, the enrollment protocol,
-and the release source. The CLI surface is a client courtesy with ordinary
+the release source, the `/run/ployz/dns.json` spec a daemon hands its Internal
+DNS process, and `ployzd dns --probe` exiting 0 when a binary can serve it. The CLI surface is a client courtesy with ordinary
 deprecation, not a guarantee. Branch Sync broke it on purpose, with no users yet:
 `env save` and `env update` are gone, and the JSON field `save` is now
 `conditional_sync`.
@@ -302,8 +303,26 @@ command returns, which bet 3 flags. It is bounded: the task ends when Docker
 answers, it never retries or starts other work, and the Volume Run that asked
 keeps asking until it does.
 
+**Serving outlives the daemon.** Corrosion and Internal DNS are daemon-owned but
+not daemon-hosted: a daemon stop, restart, crash or upgrade never stops them. The
+daemon derives what they run from the Machine record and converges them on every
+start. Corrosion is a Docker container carrying a digest of everything it was
+created from, replaced only when that digest changes. Internal DNS is `ployzd
+dns` under a runtime unit the daemon writes to `/run/systemd/system`, serving the
+spec the daemon publishes in `/run/ployz/dns.json` and parking its port-53
+sockets in systemd's fd store, so its own restarts queue queries rather than
+refuse them. The daemon restarts it onto new software only after its own
+Corrosion is ready. Reset and uninstall are the only paths that stop either one.
+If the installed binary cannot serve DNS (`ployzd dns --probe` fails), the
+running DNS process hands port 53 back and stops. This is a process that
+continues after the command that started it returns, which bet 3 flags. It is
+serving, not reconciling: it reads one spec, answers queries, and does no work
+on other Machines or on its own schedule.
+
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
-a client could compute from the observations it already gathers.
+a client could compute from the observations it already gathers, a daemon stop
+path that stops serving infrastructure, a second writer of `dns.json` or the DNS
+unit, DNS answering before its first load.
 
 ## Boundaries
 
