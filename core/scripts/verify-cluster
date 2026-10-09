@@ -253,7 +253,7 @@ def doctor(run, commands, backend):
     def inspect(node):
         names = [name for name in run["binaries"] if name != "ployzd"]
         result = backend.exec(node, ["bash", "-ec", """
-systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket
+systemctl is-active --quiet docker ssh ployz ployz.socket ployz-volume-plugin.socket ployz-dns
 pid=$(systemctl show ployz.service -p MainPID --value)
 sha256sum "/proc/$pid/exe" "$@"
 test -d /sys/module/zfs
@@ -290,12 +290,56 @@ def wait_ready(run, commands, backend):
             time.sleep(0.5)
 
 
+def dns_soak_start(commands, backend, node):
+    spec = json.loads(backend.exec(node, ["cat", "/run/ployz/dns.json"]).stdout)
+    gateway = spec["listen"].rsplit(":", 1)[0]
+    backend.push(node, CORE / "scripts" / "verify" / "dns-soak.sh", "/tmp/dns-soak.sh")
+    backend.exec(node, ["bash", "-ec", f"setsid sh /tmp/dns-soak.sh {gateway} >/tmp/dns-soak-log 2>&1 </dev/null &"])
+
+
+def tcp_answers(stream):
+    answered, bad = [], []
+    while stream:
+        length = int.from_bytes(stream[:2], "big")
+        message, stream = stream[2:2 + length], stream[2 + length:]
+        if len(message) < 12:
+            bad.append("truncated message")
+            break
+        query_id = int.from_bytes(message[:2], "big")
+        rcode, ancount = message[3] & 0x0F, int.from_bytes(message[6:8], "big")
+        if rcode or not ancount:
+            bad.append(f"#{query_id}: rcode {rcode}, {ancount} answers")
+        answered.append(query_id)
+    return sorted(answered), bad
+
+
+def dns_soak_stop(commands, backend, node):
+    backend.exec(node, ["bash", "-ec", """
+touch /tmp/dns-soak.stop
+for loop in tcp udp workload; do
+    while [ ! -e "/tmp/dns-soak.$loop-done" ]; do sleep 0.1; done
+done
+"""], timeout=30)
+    def read(name):
+        return backend.exec(node, ["sh", "-c", f"cat /tmp/dns-soak.{name} 2>/dev/null"], check=False).stdout
+    report = {"machine": node["name"]}
+    for loop in ["udp", "workload"]:
+        report[loop] = {"sent": int(read(loop + "-sent") or 0), "failed": read(loop + "-failed").decode(errors="replace").splitlines()}
+    sent = int(read("tcp-sent") or 0)
+    answered, bad = tcp_answers(read("tcp-out"))
+    report["tcp"] = {"sent": sent, "answered": len(answered), "missing": sorted(set(range(1, sent + 1)) - set(answered)), "bad": bad}
+    (commands.evidence / f"dns-soak-{node['name']}.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report))
+    lost = report["udp"]["failed"] or report["workload"]["failed"] or report["tcp"]["missing"] or report["tcp"]["bad"]
+    return 1 if lost or not sent else 0
+
+
 def teardown(run, commands, backend):
     run["state"] = "tearing-down"
     save(run)
     for node in run["machines"]:
         try:
-            backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
+            backend.exec(node, ["bash", "-c", "journalctl -u ployz -u ployz-dns -u ployz-volume-plugin -u docker -u ssh -u ssh.socket --no-pager -n 300; zpool status; zfs list; wg show"], check=False, timeout=10)
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
     backend.destroy()
@@ -437,14 +481,18 @@ def main():
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
     # dashboard/scripts/verify/up.sh started the dashboard and owns it.
     pairing.add_argument("--cloud-attach", action="store_true", help=argparse.SUPPRESS)
-    for action in ["doctor", "update", "down", "exec", "cli", "power", "partition", "runner", "probe"]:
+    for action in ["doctor", "update", "down", "exec", "cli", "power", "partition", "runner", "probe", "dns-soak"]:
         command = actions.add_parser(action)
         if action in ["power", "partition"]:
             command.add_argument("state", choices=["on", "off"])
         if action == "runner":
             command.add_argument("state", choices=["kill", "start"])
+        if action == "dns-soak":
+            command.add_argument("state", choices=["start", "stop"],
+                                 help="Query the Machine's Internal DNS over UDP and one TCP connection until stop; "
+                                      "stop writes evidence/dns-soak-<machine>.json and fails on any lost lookup")
         command.add_argument("manifest", type=Path)
-        if action in ["power", "partition"]:
+        if action in ["power", "partition", "dns-soak"]:
             command.add_argument("machine", help="machine-1, machine-2, …")
         if action == "probe":
             command.add_argument("service", help="A Postgres Service; acknowledged ids are logged in evidence/")
@@ -486,6 +534,11 @@ def main():
     if args.action == "runner":
         runner(run, commands, args.state == "start")
         return 0
+    if args.action == "dns-soak":
+        if args.state == "start":
+            dns_soak_start(commands, backend, machine)
+            return 0
+        return dns_soak_stop(commands, backend, machine)
     if args.action == "probe":
         ployz, environment, workspace = cli_environment(run)
         result = importlib.import_module("ackprobe").run(
