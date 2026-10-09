@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, AttachConfig, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore,
-    CreateConfig, CreateProject, CreateService, DeleteConfig, Deploy, DeploymentId,
+    ConfigsQuery, CreateConfig, CreateProject, CreateService, DeleteConfig, Deploy, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DetachConfig, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
     PlanQuery, Principal, ProjectId, ProjectName, PutConfigFile, Query, RemoveService,
@@ -104,6 +104,22 @@ fn changed(store: &ConfigStore, who: &Actor) -> Vec<String> {
         .changes
         .into_iter()
         .map(|change| change.name)
+        .collect()
+}
+
+fn configs(store: &ConfigStore, who: &Actor) -> Vec<(String, bool, Option<ReviewLifecycleKind>)> {
+    store
+        .read(who, &ConfigsQuery::default())
+        .unwrap()
+        .configs
+        .into_iter()
+        .map(|listing| {
+            (
+                listing.config.name.to_string(),
+                listing.deployed,
+                listing.change,
+            )
+        })
         .collect()
 }
 
