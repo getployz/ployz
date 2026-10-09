@@ -1524,6 +1524,14 @@ export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" 
 
 export type HintSource = ConditionalSyncId | EnvironmentName;
 
+export type HistoryContainer = { container_id: ContainerId, namespace: string | null, service: string | null, deployment: string | null, replica: string, kind: HistoryContainerKind, };
+
+export type HistoryContainerKind = "service" | "pre_deploy_hook" | "system";
+
+export type HistoryGapReason = "not_captured" | "corrupt";
+
+export type HistoryStream = "stdout" | "stderr";
+
 export type HoldSecret = {
 /**
  * The Destination.
@@ -1671,6 +1679,10 @@ export type LocalMachinePhase = "uninitialized" | "joining" | "participating" | 
 export type LocalMachineRemoved = { reset_warning: string | null, };
 
 export type LogChannel = "stdout" | "stderr" | "error";
+
+export type LogHistoryRecord = { "row": "container" } & HistoryContainer | { "row": "line", container_id: ContainerId, timestamp_nanos: string, stream: HistoryStream, level: LogLevel, message: string, } | { "row": "gap", container_id: ContainerId, from_nanos: string, to_nanos: string, reason: HistoryGapReason, } | { "row": "exit", container_id: ContainerId, timestamp_nanos: string, exit_code: number | null, oom_killed: boolean, } | { "row": "end", next: string | null, };
+
+export type LogLevel = "error" | "warn" | "info" | "debug";
 
 export type LogMetadata = { origin: LogOrigin, machine_id: MachineId, machine_name: MachineName, };
 

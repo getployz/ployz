@@ -19,7 +19,7 @@ use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use ployz_core::{ContainerId, Namespace};
 use serde::{Deserialize, Serialize};
-use tokio::{net::UnixListener, sync::mpsc};
+use tokio::sync::mpsc;
 
 use super::{
     cleanup::{self, Disk, Limits},
@@ -29,6 +29,7 @@ use super::{
         ContainerKind, ContainerMeta, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason, LINKING_FILE,
         LogFileName, META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
     },
+    serve::ForgetJob,
 };
 use crate::docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_NAME};
 
@@ -96,7 +97,7 @@ impl Harvester {
         docker: Docker,
         docker_root: &Path,
         store: StoreRoot,
-        listener: UnixListener,
+        mut forgets: mpsc::Receiver<ForgetJob>,
     ) -> io::Result<()> {
         let inotify = Inotify::init()?;
         let watches = inotify.watches();
@@ -145,7 +146,9 @@ impl Harvester {
                     harvester.settle_unsettled();
                     harvester.clean();
                 }
-                accepted = listener.accept() => drop(accepted),
+                Some(job) = forgets.recv() => {
+                    let _ = job.reply.send(harvester.forget_namespace(&job.namespace));
+                }
                 _ = terminate.recv() => return Ok(()),
                 result = tokio::signal::ctrl_c() => return result,
             }
@@ -532,6 +535,33 @@ impl Harvester {
         if let Err(error) = cleanup::discard(&self.store, id) {
             tracing::warn!(container = %id, %error, "cannot drop a container the store does not keep");
         }
+    }
+
+    /// Discards every stored container whose metadata names `namespace`.
+    fn forget_namespace(&mut self, namespace: &str) -> io::Result<u32> {
+        let mut forgotten = 0;
+        for entry in fs::read_dir(self.store.containers())? {
+            let entry = entry?;
+            let Some(id) = container_id(&entry.file_name()) else {
+                continue;
+            };
+            match read_meta(&entry.path()) {
+                Ok(Some(meta)) if meta.namespace.as_deref() == Some(namespace) => {
+                    self.discard(&id);
+                    forgotten += 1;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(container = %id, %error, "cannot read stored metadata; leaving it to age out");
+                }
+            }
+        }
+        tracing::info!(
+            namespace,
+            containers = forgotten,
+            "forgot a namespace's logs"
+        );
+        Ok(forgotten)
     }
 
     fn docker_dir_gone(&self, id: &ContainerId) -> bool {

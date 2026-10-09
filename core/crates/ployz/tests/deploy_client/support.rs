@@ -277,7 +277,7 @@ impl MachineRpc for DeployService {
             .ok_or_else(|| Status::unimplemented("Build is not used by this fixture"))?
             .stream(request)
     }
-    type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type LogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
@@ -895,10 +895,16 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<Self::ContainerLogsStream>, Status> {
         unused()
     }
-    async fn container_log_history(
+    async fn log_history(
         &self,
         _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        unused()
+    }
+    async fn forget_logs(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
     async fn machine_logs(

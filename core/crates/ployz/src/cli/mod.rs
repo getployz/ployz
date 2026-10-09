@@ -156,11 +156,10 @@ pub(crate) fn log_flags(command: Command) -> Command {
         .arg(switch("follow", Some('f')).help("Keep streaming new lines"))
         .arg(many("machine", Some('m')).help("Only these Servers"))
         .arg(value("since", None).help("Lines after this time: 10m, 2h or an RFC 3339 timestamp"))
-        // Like `docker compose logs --tail`: per Container, not overall.
         .arg(
             value("tail", Some('n'))
                 .default_value("100")
-                .help("Lines from the end of each Container's log; all for everything"),
+                .help("Lines from the end of the log; all for everything"),
         )
         .arg(value("until", None).help("Lines before this time: 10m, 2h or an RFC 3339 timestamp"))
         .arg(switch("utc", None).help("Show times in UTC"))

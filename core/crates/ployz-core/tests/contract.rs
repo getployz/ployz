@@ -1154,7 +1154,7 @@ fn streaming_requests_keep_typed_control_options_outside_raw_frames() {
     let options = LogsOptions {
         follow: true,
         tail: -1,
-        since_unix_seconds: Some(1_786_698_000),
+        since_nanos: Some(1_786_698_000_123_456_789),
         until_unix_seconds: Some(1_786_701_600),
     };
     for request in [
@@ -1168,6 +1168,102 @@ fn streaming_requests_keep_typed_control_options_outside_raw_frames() {
         }),
     ] {
         assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    }
+}
+
+#[test]
+fn history_rows_round_trip_and_reject_other_frames() {
+    use ployz_core::{
+        HistoryContainer, HistoryContainerKind, HistoryGapReason, HistoryRow, HistoryStream,
+        LogEntry, LogHistoryRequest,
+    };
+
+    let container_id = ployz_core::ContainerId::parse("d".repeat(64)).unwrap();
+    let rows = [
+        HistoryRow::Container(HistoryContainer {
+            container_id,
+            namespace: Some("prod".into()),
+            service: Some("web".into()),
+            deployment: Some("dep-1".into()),
+            replica: "web-1".into(),
+            kind: HistoryContainerKind::PreDeployHook,
+        }),
+        HistoryRow::Line {
+            container_id,
+            ts: 1_765_000_000_123_456_789,
+            stream: HistoryStream::Stderr,
+            text: vec![0xff, b'\n', b'x'],
+        },
+        HistoryRow::Gap {
+            container_id,
+            from: 1,
+            to: 2,
+            reason: HistoryGapReason::NotCaptured,
+        },
+        HistoryRow::Exit {
+            container_id,
+            ts: 3,
+            exit_code: Some(137),
+            oom_killed: true,
+        },
+        HistoryRow::End {
+            next: Some("cursor".into()),
+        },
+        HistoryRow::End { next: None },
+        HistoryRow::Heartbeat,
+        HistoryRow::Error("store unreadable".into()),
+    ];
+    for row in &rows {
+        let encoded = row.encode().unwrap();
+        assert_eq!(encoded.json.first(), Some(&0x14));
+        assert_eq!(HistoryRow::decode(&encoded).unwrap(), *row);
+        assert!(LogEntry::decode(&encoded).is_err());
+    }
+    let heartbeat = LogEntry::heartbeat(log_frame_metadata(), 1)
+        .encode()
+        .unwrap();
+    assert!(HistoryRow::decode(&heartbeat).is_err());
+
+    let request = op::LogHistory::into_request(LogHistoryRequest {
+        namespace: Some("prod".into()),
+        service: Some("web".into()),
+        since_nanos: Some(1_765_000_000_123_456_789),
+        limit: 5_000,
+        ..LogHistoryRequest::default()
+    });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+}
+
+#[test]
+fn history_requests_name_what_is_outside_the_contract() {
+    use ployz_core::LogHistoryRequest;
+
+    let selected = LogHistoryRequest {
+        service: Some("web".into()),
+        limit: 1,
+        ..LogHistoryRequest::default()
+    };
+    assert_eq!(selected.validate(), Ok(()));
+    for request in [
+        LogHistoryRequest {
+            limit: 1,
+            ..LogHistoryRequest::default()
+        },
+        LogHistoryRequest {
+            limit: 0,
+            ..selected.clone()
+        },
+        LogHistoryRequest {
+            limit: 5_001,
+            ..selected.clone()
+        },
+        LogHistoryRequest {
+            since_nanos: Some(2),
+            until_nanos: Some(1),
+            ..selected.clone()
+        },
+    ] {
+        assert!(request.validate().is_err(), "{request:?}");
     }
 }
 

@@ -9,8 +9,8 @@ use std::net::IpAddr;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLossConfirmation, MachineId, MachineObservation, Namespace, ObservedDataLoss,
-    PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
+    DataLossConfirmation, ForgetLogsRequest, MachineId, MachineObservation, MachineTarget,
+    Namespace, ObservedDataLoss, PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss, op,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +27,9 @@ use super::{
     DeployWarning, ExecutionError, PlanError, PlanOptions, exec::execute_operation_sequence,
     plan_deploy, planning,
 };
+
+/// ployzd's own deadline for the store is 3 s.
+const FORGET_LOGS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Snapshot or planning failure before a Deploy executes.
 ///
@@ -119,7 +122,35 @@ impl Client {
         let preview = self
             .prepare_namespace_destroy(namespace, confirm_data_loss, volumes)
             .await?;
-        Ok(self.confirm(&preview, cancellation, progress).await)
+        let outcome = self.confirm(&preview, cancellation, progress).await;
+        if matches!(outcome, DeployOutcome::Success { .. }) {
+            self.forget_logs(namespace).await;
+        }
+        Ok(outcome)
+    }
+
+    /// Ask every Server's Log Store to drop `namespace`. A Server that misses
+    /// it ages those logs out under its normal cap, so nothing here can fail
+    /// the destroy.
+    async fn forget_logs(&mut self, namespace: &Namespace) {
+        let Ok(machines) = self.machines().await else {
+            return;
+        };
+        let client = &*self;
+        let forgets =
+            machines
+                .iter()
+                .filter(|machine| machine.invites_rpc())
+                .map(|machine| async move {
+                    let target = MachineTarget::from(&machine.machine.id);
+                    let request = ForgetLogsRequest {
+                        namespace: namespace.to_string(),
+                    };
+                    client
+                        .invoke::<op::ForgetLogs>(request, &target, Some(FORGET_LOGS_TIMEOUT))
+                        .await
+                });
+        futures_util::future::join_all(forgets).await;
     }
 
     /// Execute-time re-read and plan. Confirming runs these operations.

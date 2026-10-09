@@ -88,10 +88,13 @@ fn volume_source(
         })
 }
 
+const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
+
 #[derive(Clone)]
 pub struct MachineService {
     local: LocalMachine,
     ingress_data_dir: Option<PathBuf>,
+    observe: crate::observe::ObserveClient,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
@@ -110,6 +113,7 @@ impl MachineService {
         Self {
             local: LocalMachine::new(owner).with_cluster(cluster),
             ingress_data_dir: None,
+            observe: crate::observe::ObserveClient::new(PathBuf::from(DEFAULT_OBSERVE_SOCKET)),
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
@@ -151,6 +155,13 @@ impl MachineService {
     /// Make exact Ingress Proxy configuration available through the Machine RPC.
     pub fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
         self.ingress_data_dir = Some(path);
+        self
+    }
+
+    /// Serve history from the Log Store whose ployz-observe listens on `socket`.
+    #[must_use]
+    pub fn with_observe_socket(mut self, socket: PathBuf) -> Self {
+        self.observe = crate::observe::ObserveClient::new(socket);
         self
     }
 
@@ -276,7 +287,7 @@ impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type BuildStream = RpcStream;
     type ContainerLogsStream = RpcStream;
-    type ContainerLogHistoryStream = RpcStream;
+    type LogHistoryStream = RpcStream;
     type MachineLogsStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
 
@@ -1017,23 +1028,22 @@ impl MachineRpc for MachineService {
             .map(Response::new)
     }
 
-    async fn container_log_history(
+    async fn log_history(
         &self,
         request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
-        let request = op::ContainerLogHistory::from_request_body(request_body(request)?)
-            .map_err(invalid_request)?;
-        let containers = self
-            .containers()
-            .map_err(|error| Status::unavailable(error.message))?;
-        let record = self.local_record();
-        let machine = record
-            .machine()
-            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
-        containers
-            .container_log_history(&record.id(), &machine.name, request)
-            .await
-            .map(Response::new)
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        let request =
+            op::LogHistory::from_request_body(request_body(request)?).map_err(invalid_request)?;
+        request.validate().map_err(Status::invalid_argument)?;
+        self.observe.history(request).await.map(Response::new)
+    }
+
+    async fn forget_logs(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::ForgetLogs>(request)?;
+        respond(self.observe.forget(request).await?)
     }
 
     async fn machine_logs(

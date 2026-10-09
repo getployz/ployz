@@ -469,21 +469,24 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(!stderr.contains(&"b".repeat(32)), "{args:?}: {stderr}");
     }
 
-    // When logs fail because a Server is down, the failure still names it first.
-    for args in [
-        &["logs", "app/gone"][..],
-        &["logs", "app/api", "--machine", "down"],
-    ] {
-        let output = run_ployz(address, args).await;
-        assert!(!output.status.success(), "{args:?}: {output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        let gap = stderr.find("! down did not answer");
-        let error = stderr.find("error:");
-        assert!(
-            gap.is_some() && error.is_some() && gap < error,
-            "{args:?}: {stderr}"
-        );
-    }
+    // A removed Service prints from the Servers that answered; the down one
+    // is named and the command is partial.
+    let output = run_ployz(address, &["logs", "app/gone"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.ends_with(" one gone/999999999999 | shutting down\n"),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("! down did not answer"), "{stderr}");
+
+    // Asking only the down Server reads nothing and names it.
+    let output = run_ployz(address, &["logs", "app/api", "--machine", "down"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("! down did not answer"), "{stderr}");
     server.abort();
 }
 
@@ -884,7 +887,7 @@ async fn stream_after_redial_uses_the_replaced_channel() {
         LogsOptions {
             follow: false,
             tail: 0,
-            since_unix_seconds: None,
+            since_nanos: None,
             until_unix_seconds: None,
         },
         CancellationToken::new(),

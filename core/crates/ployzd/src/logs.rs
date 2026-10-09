@@ -168,8 +168,8 @@ fn journal_log_command(unit: &str, options: &LogsOptions) -> Command {
         command.arg("-f");
     }
     command.args(["-o", "short-unix"]);
-    if let Some(since) = options.since_unix_seconds {
-        command.args(["-S", &format!("@{since}")]);
+    if let Some(since) = options.since_nanos {
+        command.args(["-S", &format!("@{}", since.div_euclid(1_000_000_000))]);
     }
     if let Some(until) = options.until_unix_seconds {
         command.args(["-U", &format!("@{until}")]);
@@ -234,7 +234,7 @@ mod tests {
             &LogsOptions {
                 follow: false,
                 tail: 100,
-                since_unix_seconds: Some(1_786_698_000),
+                since_nanos: Some(1_786_698_000_123_456_789),
                 until_unix_seconds: Some(1_786_701_600),
             },
         );

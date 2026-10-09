@@ -127,6 +127,7 @@ impl Daemon {
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
+        let observe_socket = run_dir.join(crate::observe::SOCKET_FILE);
         let local = RecordOwner::spawn(LocalMachineStore::open_with_admission(
             &config.data_dir,
             run_dir,
@@ -226,6 +227,7 @@ impl Daemon {
             )
             .with_optional_containers(containers.clone())
             .with_ingress_data_dir(config.data_dir.clone())
+            .with_observe_socket(observe_socket)
             .with_image_ingest(Arc::clone(&ingest))
             .build();
 

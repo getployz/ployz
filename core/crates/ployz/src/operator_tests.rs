@@ -559,6 +559,66 @@ fn logs_ask_a_down_server_so_it_can_be_named_as_a_gap() {
     assert!(asked_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
 }
 
+#[test]
+fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
+    let up = machine_observation(1, "edge");
+    let down = machine_observation(3, "down");
+    let failure = ployz_core::MachineFailure {
+        machine_id: down.machine.id,
+        error: ployz_core::RpcError {
+            code: ployz_core::RpcErrorCode::Unavailable,
+            message: "down".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        },
+    };
+    let running = observed_service();
+    let scope = LogScope {
+        asked: HashSet::from([up.machine.id, down.machine.id]),
+        live: ployz_core::derive_live_services(ployz_core::PartialResult {
+            successes: vec![ployz_core::MachineSuccess {
+                machine_id: up.machine.id,
+                value: running
+                    .containers
+                    .iter()
+                    .map(|container| container.as_observation().clone())
+                    .collect(),
+            }],
+            failures: vec![failure.clone()],
+            omissions: Vec::new(),
+        }),
+        unanswered: Unanswered {
+            failures: vec![failure],
+            omissions: Vec::new(),
+            names: vec![
+                (up.machine.id, up.machine.name.clone()),
+                (down.machine.id, down.machine.name.clone()),
+            ],
+        },
+    };
+    assert_eq!(scope.answered(), vec![(up.machine.id, up.machine.name)]);
+
+    let arg = |service: &str| ServiceArg {
+        service: service_selector(service),
+        containers: Vec::new(),
+    };
+    let selectors = history_selectors(
+        &scope,
+        &[arg("app/api"), arg("app/gone")],
+        None,
+        Some("dep_old"),
+    )
+    .unwrap();
+    let read = |service: &str| HistorySelector {
+        namespace: Some("app".into()),
+        service: Some(service.into()),
+        deployment: Some("dep_old".into()),
+        container_id: None,
+    };
+    assert_eq!(selectors, vec![read("api"), read("gone")]);
+    assert!(history_selectors(&scope, &[arg("gone")], None, None).is_err());
+}
+
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(ToOwned::to_owned).collect()
 }

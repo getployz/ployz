@@ -1,7 +1,8 @@
 //! On-demand Container log transport for SDK readers.
 use ployz_core::{
-    ContainerId, ContainerLogHistoryRequest, ContainerLogsRequest, LogBody, LogEntry, LogMetadata,
-    LogsOptions, MachineId, MachineTarget, OpaquePayload, RpcError, op,
+    ContainerId, ContainerLogsRequest, HistoryContainer, HistoryGapReason, HistoryRow,
+    HistoryStream, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata,
+    LogsOptions, MachineId, MachineTarget, OpaquePayload, RpcError, RpcErrorCode, log_level, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -11,7 +12,7 @@ use ts_rs::TS;
 use super::{Session, invalid_argument};
 use crate::connect::ConnectError;
 
-/// One Machine-local log read. History reads include a complete timestamp boundary.
+/// One running Container's Docker output on one Machine.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerLogInput {
@@ -19,8 +20,63 @@ pub struct ContainerLogInput {
     pub container_id: ContainerId,
     pub tail: i32,
     pub follow: bool,
-    pub before_nanos: Option<String>,
     pub since_unix_seconds: Option<i64>,
+}
+
+/// One page of one Machine's Log Store. Nanosecond bounds are decimal
+/// strings so JavaScript keeps their precision; `since` is inclusive and
+/// `until` exclusive.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogHistoryInput {
+    pub machine_id: MachineId,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default)]
+    pub deployment: Option<String>,
+    #[serde(default)]
+    pub container_id: Option<ContainerId>,
+    #[serde(default)]
+    pub since_nanos: Option<String>,
+    #[serde(default)]
+    pub until_nanos: Option<String>,
+    #[serde(default)]
+    pub direction: LogDirection,
+    pub limit: u16,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// One row of a history page, in the order the store sent it. A page ends
+/// with `end`, whose `next` resumes the read.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(tag = "row", rename_all = "snake_case")]
+pub enum LogHistoryRecord {
+    Container(HistoryContainer),
+    Line {
+        container_id: ContainerId,
+        timestamp_nanos: String,
+        stream: HistoryStream,
+        level: LogLevel,
+        message: String,
+    },
+    Gap {
+        container_id: ContainerId,
+        from_nanos: String,
+        to_nanos: String,
+        reason: HistoryGapReason,
+    },
+    Exit {
+        container_id: ContainerId,
+        timestamp_nanos: String,
+        exit_code: Option<i64>,
+        oom_killed: bool,
+    },
+    End {
+        next: Option<String>,
+    },
 }
 
 /// Decoded output preserving nanosecond precision across JavaScript.
@@ -54,47 +110,30 @@ impl Session {
         &self,
         input: ContainerLogInput,
     ) -> Result<ContainerLogStream, RpcError> {
-        if !(-1..=1000).contains(&input.tail)
-            || input.before_nanos.is_some() && (input.follow || input.tail <= 0)
-        {
-            return Err(invalid_argument(
-                "tail must be -1..1000; history requires a positive tail and follow=false".into(),
-            ));
+        if !(-1..=1000).contains(&input.tail) {
+            return Err(invalid_argument("tail must be -1..1000".into()));
         }
         let client = self.client()?;
         let target = MachineTarget::from(&input.machine_id);
+        let request = op::ContainerLogs::into_request(ContainerLogsRequest {
+            container_id: input.container_id,
+            options: LogsOptions {
+                tail: input.tail,
+                follow: input.follow,
+                since_nanos: input
+                    .since_unix_seconds
+                    .map(|seconds| seconds.saturating_mul(1_000_000_000)),
+                until_unix_seconds: None,
+            },
+        })
+        .encode()
+        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
         let stream = self
             .until_closed(async {
-                let result = if let Some(before_nanos) = input.before_nanos {
-                    let request =
-                        op::ContainerLogHistory::into_request(ContainerLogHistoryRequest {
-                            container_id: input.container_id,
-                            limit: u16::try_from(input.tail)
-                                .expect("validated positive history limit"),
-                            before_nanos,
-                        })
-                        .encode()
-                        .map_err(|error| {
-                            crate::ui::rpc_error(ployz_core::RpcErrorCode::InvalidArgument, &error)
-                        })?;
-                    client.container_log_history_stream(&target, request).await
-                } else {
-                    let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                        container_id: input.container_id,
-                        options: LogsOptions {
-                            tail: input.tail,
-                            follow: input.follow,
-                            since_unix_seconds: input.since_unix_seconds,
-                            until_unix_seconds: None,
-                        },
-                    })
-                    .encode()
-                    .map_err(|error| {
-                        crate::ui::rpc_error(ployz_core::RpcErrorCode::InvalidArgument, &error)
-                    })?;
-                    client.container_logs_stream(&target, request).await
-                };
-                result.map_err(|error| RpcError::from(ConnectError::Rpc(error)))
+                client
+                    .container_logs_stream(&target, request)
+                    .await
+                    .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })
             .await?;
         Ok(ContainerLogStream {
@@ -102,6 +141,139 @@ impl Session {
             stream: Mutex::new(stream),
         })
     }
+    /// Read one page of one Machine's Log Store, removed Containers included.
+    /// # Errors
+    /// Returns invalid input, closed-session, or Machine transport errors.
+    pub async fn log_history(&self, input: LogHistoryInput) -> Result<LogHistoryStream, RpcError> {
+        let request = LogHistoryRequest {
+            namespace: input.namespace,
+            service: input.service,
+            deployment: input.deployment,
+            container_id: input.container_id,
+            since_nanos: nanos(input.since_nanos.as_deref(), "since_nanos")?,
+            until_nanos: nanos(input.until_nanos.as_deref(), "until_nanos")?,
+            direction: input.direction,
+            limit: input.limit,
+            cursor: input.cursor,
+        };
+        request.validate().map_err(invalid_argument)?;
+        let payload = op::LogHistory::into_request(request)
+            .encode()
+            .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+        let client = self.client()?;
+        let target = MachineTarget::from(&input.machine_id);
+        let stream = self
+            .until_closed(async {
+                client
+                    .log_history_stream(&target, payload)
+                    .await
+                    .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
+            })
+            .await?;
+        Ok(LogHistoryStream {
+            cancel: self.inner.cancel.child_token(),
+            stream: Mutex::new(stream),
+        })
+    }
+}
+
+/// Dropping the reader stops the store's read, not the connected session.
+pub struct LogHistoryStream {
+    cancel: CancellationToken,
+    stream: Mutex<tonic::Streaming<OpaquePayload>>,
+}
+
+impl LogHistoryStream {
+    /// The next row, skipping heartbeats. `None` after `end`.
+    /// # Errors
+    /// Returns the store's error row, malformed frames, and transport failures.
+    pub async fn next(&self) -> Result<Option<LogHistoryRecord>, RpcError> {
+        let mut stream = self.stream.lock().await;
+        loop {
+            let payload = tokio::select! {
+                () = self.cancel.cancelled() => return Ok(None),
+                payload = stream.message() => payload.map_err(|error| RpcError::from(ConnectError::from(error)))?,
+            };
+            let Some(payload) = payload else {
+                return Ok(None);
+            };
+            if let Some(record) = history_record(&payload)? {
+                return Ok(Some(record));
+            }
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+}
+
+impl Drop for LogHistoryStream {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+fn nanos(value: Option<&str>, field: &str) -> Result<Option<i64>, RpcError> {
+    value
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|_| invalid_argument(format!("{field} must be a decimal integer")))
+        })
+        .transpose()
+}
+
+fn history_record(payload: &OpaquePayload) -> Result<Option<LogHistoryRecord>, RpcError> {
+    let row = HistoryRow::decode(payload)
+        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+    Ok(Some(match row {
+        HistoryRow::Container(container) => LogHistoryRecord::Container(container),
+        HistoryRow::Line {
+            container_id,
+            ts,
+            stream,
+            text,
+        } => LogHistoryRecord::Line {
+            container_id,
+            timestamp_nanos: ts.to_string(),
+            stream,
+            level: log_level(&text),
+            message: String::from_utf8_lossy(&text).into_owned(),
+        },
+        HistoryRow::Gap {
+            container_id,
+            from,
+            to,
+            reason,
+        } => LogHistoryRecord::Gap {
+            container_id,
+            from_nanos: from.to_string(),
+            to_nanos: to.to_string(),
+            reason,
+        },
+        HistoryRow::Exit {
+            container_id,
+            ts,
+            exit_code,
+            oom_killed,
+        } => LogHistoryRecord::Exit {
+            container_id,
+            timestamp_nanos: ts.to_string(),
+            exit_code,
+            oom_killed,
+        },
+        HistoryRow::End { next } => LogHistoryRecord::End { next },
+        HistoryRow::Heartbeat => return Ok(None),
+        HistoryRow::Error(message) => {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message,
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            });
+        }
+    }))
 }
 impl ContainerLogStream {
     /// Read the next output record, skipping transport heartbeats.
@@ -170,24 +342,34 @@ mod tests {
                 cancel: CancellationToken::new(),
             }),
         };
-        for (tail, follow, before) in [
-            (1001, true, None),
-            (0, false, Some("1")),
-            (200, true, Some("1")),
-        ] {
-            let input = ContainerLogInput {
+        let input = ContainerLogInput {
+            machine_id: MachineId::random(),
+            container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+            tail: 1001,
+            follow: true,
+            since_unix_seconds: None,
+        };
+        let Err(error) = session.container_logs(input).await else {
+            panic!("invalid log options opened a stream");
+        };
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        for (limit, since) in [(0, None), (5001, None), (200, Some("soon"))] {
+            let input = LogHistoryInput {
                 machine_id: MachineId::random(),
-                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
-                tail,
-                follow,
-                before_nanos: before.map(str::to_owned),
-                since_unix_seconds: None,
+                namespace: Some("shop".into()),
+                service: None,
+                deployment: None,
+                container_id: None,
+                since_nanos: since.map(str::to_owned),
+                until_nanos: None,
+                direction: LogDirection::Backward,
+                limit,
+                cursor: None,
             };
-            let error = match session.container_logs(input).await {
-                Err(error) => error,
-                Ok(_) => panic!("invalid log options opened a stream"),
+            let Err(error) = session.log_history(input).await else {
+                panic!("invalid history options opened a stream");
             };
-            assert_eq!(error.code, ployz_core::RpcErrorCode::InvalidArgument);
+            assert_eq!(error.code, RpcErrorCode::InvalidArgument);
         }
     }
 
@@ -195,5 +377,6 @@ mod tests {
     fn malformed_log_frame_is_an_error_not_empty_output() {
         let payload = OpaquePayload { json: vec![0xff] };
         assert!(decode_record(&payload).is_err());
+        assert!(history_record(&payload).is_err());
     }
 }

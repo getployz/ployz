@@ -2,11 +2,14 @@
 //! after Docker would delete them.
 
 pub mod cleanup;
+mod client;
 pub mod frame;
 mod harvest;
 #[cfg(test)]
 mod integration_tests;
 pub mod layout;
+mod query;
+mod serve;
 
 use std::{
     fs,
@@ -18,13 +21,14 @@ use std::{
 };
 
 use bollard::Docker;
+pub use client::ObserveClient;
 use frame::{Event, Frames, Stream};
 use fs2::FileExt;
 use layout::{LogFileName, StoreRoot};
-use tokio::net::UnixListener;
+use tokio::{net::UnixListener, sync::mpsc};
 
 const DOCKER_LOG_FILE: &str = "container.log";
-const SOCKET_FILE: &str = "observe.sock";
+pub const SOCKET_FILE: &str = "observe.sock";
 const LOCK_FILE: &str = "harvester.lock";
 
 /// Runs the harvester: holds the log files of every Ployz container in the
@@ -50,7 +54,9 @@ pub async fn run(run_dir: &Path) -> io::Result<()> {
     store.prepare()?;
     let listener = bind_socket(&run_dir.join(SOCKET_FILE))?;
     tracing::info!(store = %store.path().display(), "holding Ployz container logs");
-    harvest::Harvester::run(docker, &docker_root, store, listener).await
+    let (forget, forgets) = mpsc::channel(16);
+    tokio::spawn(serve::serve(listener, store.clone(), forget));
+    harvest::Harvester::run(docker, &docker_root, store, forgets).await
 }
 
 fn lock_store(store: &StoreRoot) -> io::Result<File> {

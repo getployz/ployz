@@ -482,7 +482,7 @@ fn log_options() -> LogsOptions {
     LogsOptions {
         follow: false,
         tail: -1,
-        since_unix_seconds: None,
+        since_nanos: None,
         until_unix_seconds: None,
     }
 }
