@@ -73,11 +73,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     }
     case "delete_config":
       await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.flatMap((config) =>
-        config.name !== command.config ? [config] : config.change === "create" ? [] : [{ ...config, mounts: [], change: "delete" as const }]) }));
+        config.name !== command.config || config.change === "delete" ? [config] : config.change === "create" ? [] : [{ ...config, mounts: [], change: "delete" as const }]) }));
       return;
     case "attach_config":
     case "detach_config": {
-      const mounts = (config: Pick<ConfigListing, "name" | "mounts">) => config.name !== command.config ? config.mounts : [
+      const mounts = (config: Pick<ConfigListing, "name" | "mounts" | "change">) => config.name !== command.config || config.change === "delete" ? config.mounts : [
         ...config.mounts.filter((mount) => mount.service !== command.service),
         ...command.command === "attach_config" ? [{ service: command.service, dir: command.dir }] : [],
       ];
@@ -86,8 +86,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "put_config_file": {
-      const put = <V extends Pick<ConfigListing, "name" | "files">>(config: V): V => {
-        if (config.name !== command.config) return config;
+      const put = <V extends Pick<ConfigListing, "name" | "files" | "change">>(config: V): V => {
+        if (config.name !== command.config || config.change === "delete") return config;
         const old = config.files.find((file) => file.name === command.file);
         const file = { name: command.file, mode: "0444", uid: 0, gid: 0, references: [], ...old,
           bytes: new TextEncoder().encode(command.content).length };
@@ -95,15 +95,15 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         return { ...config, files: old ? config.files.map((one) => one === old ? file : one) : [...config.files, file] };
       };
       await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(put) }));
-      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config ? view
+      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config || view.change === "delete" ? view
         : { ...put(view), contents: { ...view.contents, [command.file]: command.content } });
       return;
     }
     case "remove_config_file": {
-      const remove = <V extends Pick<ConfigListing, "name" | "files">>(config: V): V => config.name !== command.config ? config
+      const remove = <V extends Pick<ConfigListing, "name" | "files" | "change">>(config: V): V => config.name !== command.config || config.change === "delete" ? config
         : { ...config, files: config.files.filter((file) => file.name !== command.file) };
       await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(remove) }));
-      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config ? view
+      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config || view.change === "delete" ? view
         : { ...remove(view), contents: Object.fromEntries(Object.entries(view.contents).filter(([file]) => file !== command.file)) });
       return;
     }

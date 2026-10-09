@@ -51,7 +51,7 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
   const views = useStoreViews(organizationSlug,
-    [configsQuery(store), servicesQuery(store), diffQuery(store), environmentSettingsQuery(store), configQuery(store, config.name)] as const);
+    [configsQuery(store), servicesQuery(store), diffQuery(store), environmentSettingsQuery(store), configQuery(store, `@${config.id}`)] as const);
   const configs = requireView(views[0]).configs;
   const services = requireView(views[1]).services;
   const diff = requireView(views[2]);
@@ -461,7 +461,7 @@ function ConfigDanger({ state, params, version }: { state: StoreConfig; params: 
         description={removing ? "Keep the config to undo this."
           : mounts > 0 ? `Unmounts from ${mounts} service${mounts === 1 ? "" : "s"} on next deploy.` : "Removed on next deploy."}
         action={removing ? (
-          <Button variant="outline" onClick={() => actions.discard(`configs.${config.name}`)}>Keep config</Button>
+          <Button variant="outline" onClick={() => actions.discard(`configs.@${config.id}`)}>Keep config</Button>
         ) : (
           <Button variant="destructive" onClick={remove}>
             <Trash2Icon data-icon="inline-start" />

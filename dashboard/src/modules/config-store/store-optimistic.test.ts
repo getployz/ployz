@@ -201,3 +201,33 @@ it("removes only the named Config file from both the listing and open item", asy
   expect(shown?.contents).toEqual({ "config.yml": "a" });
   expect(queryClient.getQueryData<{ value: ConfigItemView }>(key(other))?.value).toEqual(config("other"));
 });
+
+
+it("keeps a removed Config's cached files and mounts isolated from its same-name replacement", async () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  const key = (query: Parameters<typeof storeViewOptions>[2]) => storeViewOptions("acme", scope, query).queryKey;
+  const old: ConfigItemView = { environment, id: "old", lineage: "old", name: "sentry", deployed: true, change: "delete", mounts: [],
+    files: [{ name: "app.conf", bytes: 3, mode: "0444", uid: 0, gid: 0, references: [] }], contents: { "app.conf": "old" } };
+  const replacement: ConfigItemView = { ...old, id: "new", lineage: "new", deployed: false, change: "create", contents: { "app.conf": "new" } };
+  const listing = { query: "configs", environment: ref } as const;
+  const oldQuery = { query: "config", environment: ref, config: "@old" } as const;
+  const newQuery = { query: "config", environment: ref, config: "@new" } as const;
+  for (const [query, value] of [[listing, { environment, configs: [old, replacement] }], [oldQuery, old], [newQuery, replacement]] as const) {
+    queryClient.setQueryData<unknown>(key(query), { ok: true, value });
+  }
+  const read = (query: typeof oldQuery | typeof newQuery) => queryClient.getQueryData<{ value: ConfigItemView }>(key(query))?.value;
+  await applyOptimistic(queryClient, "acme", { command: "put_config_file", environment: ref, config: "sentry", file: "app.conf", content: "replacement" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.contents).toEqual({ "app.conf": "replacement" });
+  await applyOptimistic(queryClient, "acme", { command: "attach_config", environment: ref, config: "sentry", service: "web", dir: "/etc/app" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.mounts).toEqual([{ service: "web", dir: "/etc/app" }]);
+  await applyOptimistic(queryClient, "acme", { command: "detach_config", environment: ref, config: "sentry", service: "web" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.mounts).toEqual([]);
+  await applyOptimistic(queryClient, "acme", { command: "remove_config_file", environment: ref, config: "sentry", file: "app.conf" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.contents).toEqual({});
+  expect(queryClient.getQueryData<{ value: ConfigsView }>(key(listing))?.value.configs[0]).toEqual(old);
+});

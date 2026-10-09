@@ -34,17 +34,18 @@ function deferred() {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function openDrawer(item = initial, settings: EnvironmentView["settings"] = []) {
+async function openDrawer(item = initial, settings: EnvironmentView["settings"] = [], replacement?: ConfigItemView) {
   vi.stubGlobal("scrollTo", () => {});
-  vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null }));
+  const discard = vi.fn();
+  vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null, discard }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "s", userId: "u" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
   const store = { item };
   function read(query: ConfigQuery): ConfigView {
     switch (query.query) {
-      case "config": return { view: "config", ...store.item };
-      case "configs": return { view: "configs", environment: env, configs: [store.item] };
+      case "config": return { view: "config", ...(replacement && query.config !== `@${store.item.id}` ? replacement : store.item) };
+      case "configs": return { view: "configs", environment: env, configs: [store.item, ...replacement ? [replacement] : []] };
       case "services": return { view: "services", environment: env, services: [asTestDouble<ServiceListing>()({ id: "api", name: "api", private_dns: "api", change: null })] };
       case "environment": return { view: "environment", environment: env, settings };
       case "diff": return { view: "diff", environment: env, version: "1", saved: 0, published: false, total_count: 0,
@@ -54,7 +55,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
   }
   vi.spyOn(functions, "readStoreViewServerFn").mockImplementation(async ({ data }) => ({ ok: true, value: read(data.query) }));
   const write = vi.spyOn(functions, "writeStoreServerFn");
-  for (const query of [configQuery(environment, "sentry"), configsQuery(environment), servicesQuery(environment), diffQuery(environment), environmentSettingsQuery(environment)]) {
+  for (const query of [configQuery(environment, `@${item.id}`), configsQuery(environment), servicesQuery(environment), diffQuery(environment), environmentSettingsQuery(environment)]) {
     queryClient.setQueryData<unknown>(storeViewOptions("acme", scope, query).queryKey, { ok: true, value: read(query) });
   }
   const root = createRootRoute({ component: Outlet });
@@ -82,7 +83,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
     return view;
   }
   return {
-    store, write, router,
+    store, write, discard, router,
     edit(text: string) { act(() => { const view = editor(); view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: "input.type" }); }); },
     complete() { act(() => { const view = editor(); view.dispatch({ selection: { anchor: view.state.doc.length } }); startCompletion(view); }); },
     undo() { act(() => { undo(editor()); }); },
@@ -358,4 +359,13 @@ it.each(["retry", "discard"].flatMap((action) => ["unchanged", "newer", "returne
   await act(async () => { await test.router.navigate({ to: "/" }); });
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(screen.queryByRole("textbox", { name: "config.yml contents" })).toBeNull();
+});
+
+it("reads the removed Config by ID and keeps that identity when undoing its deletion", async () => {
+  const old: ConfigItemView = { ...initial, deployed: true, change: "delete", contents: { "config.yml": "deployed original" } };
+  const replacement: ConfigItemView = { ...initial, id: "replacement", lineage: "replacement", contents: { "config.yml": "replacement draft" } };
+  const test = await openDrawer(old, [], replacement);
+  expect(test.text()).toBe("deployed original");
+  fireEvent.click(screen.getByRole("button", { name: "Keep config" }));
+  expect(test.discard).toHaveBeenCalledWith("configs.@config");
 });

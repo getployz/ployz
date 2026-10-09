@@ -93,7 +93,7 @@ export async function prefetchStoreConfig(context: RouteDataContext, organizatio
   const scope = scopeOf(context);
   const ready = context.queryClient.ensureQueryData(storeViewOptions(organizationSlug, scope, configsQuery(environment))).then((result) => {
     const config = result.ok ? result.value.configs.find((candidate) => candidate.id === resourceId) : undefined;
-    return config && context.queryClient.prefetchQuery(storeViewOptions(organizationSlug, scope, configQuery(environment, config.name)));
+    return config && context.queryClient.prefetchQuery(storeViewOptions(organizationSlug, scope, configQuery(environment, `@${config.id}`)));
   }).catch(() => {});
   if (environmentManager.isServer()) await ready;
 }
