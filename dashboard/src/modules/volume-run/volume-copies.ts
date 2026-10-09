@@ -22,6 +22,8 @@ export type VolumeCopies = {
   readonly active: VolumeRunView | null;
   /** Two writers and no run says which is newer. */
   readonly twoWriters: boolean;
+  /** An old copy whose Server still serves it as the writer: the next run makes it read-only first, then stops. */
+  readonly sealing: string | null;
   readonly offers: {
     readonly mirror: Offer;
     readonly sync: Offer;
@@ -74,6 +76,8 @@ export function volumeCopies(input: {
   const writers = observed.filter((copy) => copy.role === "writer");
   const newest = writers.length > 1 ? lastWriter(input.runs) : null;
   const known = newest !== null && writers.some((copy) => copy.server === newest);
+  const unsealed = known ? writers.find((copy) => copy.server !== newest) : undefined;
+  const sealing = unsealed === undefined ? null : copyName(input.volume.name, unsealed.server);
   const copies = observed
     .map((copy) => (known && copy.role === "writer" && copy.server !== newest ? { ...copy, role: "old" as const } : copy))
     .map((copy) => ({ ...copy, label: copy.role === "writer" ? input.volume.name : copyName(input.volume.name, copy.server) }))
@@ -82,7 +86,7 @@ export function volumeCopies(input: {
   const active = input.runs.find(isActive) ?? null;
   const twoWriters = copies.filter((copy) => copy.role === "writer").length > 1;
   const none: VolumeCopies["offers"] = { mirror: null, sync: null, move: null, release: null, restore: null };
-  if (active !== null || twoWriters) return { copies, active, twoWriters, offers: none };
+  if (active !== null || twoWriters) return { copies, active, twoWriters, sealing, offers: none };
 
   const writer = copies.find((copy) => copy.role === "writer" && copy.online);
   const mirrors = copies.filter((copy) => copy.role === "mirror");
@@ -98,6 +102,7 @@ export function volumeCopies(input: {
     copies,
     active,
     twoWriters,
+    sealing,
     offers: writer === undefined ? {
       ...none,
       restore: copies.some((copy) => copy.role === "writer") ? null : offer(mirrors.filter((copy) => copy.online).map((copy) => copy.server)),

@@ -51,7 +51,10 @@ export function VolumeCopiesPanel({ view, runs, observed, pending, request }: {
         </div>
       )}
       {view.twoWriters ? (
-        <RowWarning>Two servers each hold this volume as the writer. Nothing starts here until one of them goes.</RowWarning>
+        <RowWarning>Two servers each hold this volume as the writer, and nothing here says which is newer. Runs start again once one of them is read-only.</RowWarning>
+      ) : null}
+      {view.sealing ? (
+        <RowWarning>{view.sealing} came back after another server took over. The next run makes it read-only first, then stops; start that run again.</RowWarning>
       ) : null}
       {view.active ? (
         <p className="text-sm">{runText(view.active).what} · {runText(view.active).state.toLowerCase()} since <RelativeTime date={new Date(view.active.created_at)} /></p>

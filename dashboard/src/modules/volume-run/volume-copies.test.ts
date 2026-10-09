@@ -56,12 +56,15 @@ describe("volumeCopies", () => {
     });
     expect(view.copies.map((entry) => [entry.server, entry.label, entry.role])).toEqual([["web-2", "data", "writer"], ["web-1", "data-web-1", "old"]]);
     expect(view.twoWriters).toBe(false);
+    expect(view.sealing).toBe("data-web-1");
+    expect(view.offers.move).toEqual({ servers: ["web-1", "web-3"] });
   });
 
   it("shows a demoted copy as old", () => {
     const view = volumeCopies({ volume, machines, runs: [], copies: [copy("web-2", "writer"), copy("web-1", "old")] });
     expect(view.copies.map((entry) => [entry.label, entry.role])).toEqual([["data", "writer"], ["data-web-1", "old"]]);
     expect(view.offers.mirror).toEqual({ servers: ["web-3"] });
+    expect(view.sealing).toBeNull();
   });
 
   it("offers nothing for two writers no run tells apart", () => {

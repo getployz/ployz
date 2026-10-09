@@ -57,8 +57,14 @@ describe("VolumeCopiesPanel", () => {
     expect(request).toHaveBeenCalledWith({ kind: "restore", args: { from: "web-2" } });
   });
 
-  it("marks the copy a Restore left behind as old", () => {
+  it("marks the copy a Restore left behind as old, and says the next run seals it", () => {
     panel([copy("web-1", "writer"), copy("web-2", "writer")], [run("restore", { from: "web-2" }, "done")]);
+    expect(copiesShown()).toEqual(["dataWriteron web-2", "data-web-1Oldon web-1"]);
+    expect(screen.getByRole("note").textContent).toContain("data-web-1 came back after another server took over");
+  });
+
+  it("says nothing more of an old copy its Server already made read-only", () => {
+    panel([copy("web-2", "writer"), copy("web-1", "old")]);
     expect(copiesShown()).toEqual(["dataWriteron web-2", "data-web-1Oldon web-1"]);
     expect(screen.queryByRole("note")).toBeNull();
   });
