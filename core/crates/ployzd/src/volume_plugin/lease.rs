@@ -2,8 +2,8 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    AdoptLeaseRequest, Cycle, FenceDecision, InspectVolumeCopyRequest, LeaseRecord, MirrorMarker,
-    RpcError, RpcErrorCode, Snapshot, SnapshotGuid, SnapshotName, Switch, SwitchError, SwitchReply,
+    Cycle, FenceDecision, InspectVolumeCopyRequest, LeaseRecord, MirrorMarker, RpcError,
+    RpcErrorCode, Snapshot, SnapshotGuid, SnapshotName, Switch, SwitchError, SwitchReply,
     VolumeCopy, VolumeCopyView, WriterMarker,
 };
 use ployzd::machine_pool::MachinePool;
@@ -35,14 +35,7 @@ fn lease_property(name: &DockerVolumeName) -> String {
     property
 }
 
-pub(super) fn fence(
-    recorded: Option<LeaseRecord>,
-    request: &Switch,
-    now_unix_seconds: i64,
-) -> FenceDecision {
-    if now_unix_seconds > request.not_after_unix_seconds {
-        return FenceDecision::RefuseExpired;
-    }
+pub(super) fn fence(recorded: Option<LeaseRecord>, request: &Switch) -> FenceDecision {
     let Some(recorded) = recorded else {
         return FenceDecision::Adopt;
     };
@@ -63,7 +56,6 @@ pub(super) fn refusal(
     decision: FenceDecision,
     request: &Switch,
     recorded: Option<LeaseRecord>,
-    now_unix_seconds: i64,
 ) -> Option<RpcError> {
     let recorded = recorded.map_or_else(|| "no record".to_owned(), |record| record.to_string());
     match decision {
@@ -76,12 +68,6 @@ pub(super) fn refusal(
             "step {} of lease {} is behind this Machine's record {recorded}",
             request.pos, request.lease
         ))),
-        FenceDecision::RefuseExpired => {
-            let skew_seconds = now_unix_seconds - request.not_after_unix_seconds;
-            Some(SwitchError::Expired { skew_seconds }.rpc_error(format!(
-                "request expired {skew_seconds} s ago on this Machine's clock"
-            )))
-        }
     }
 }
 
@@ -304,9 +290,8 @@ impl VolumeStorage {
             .lease_record(datasets, pool, name)
             .await
             .map_err(internal)?;
-        let now = chrono::Utc::now().timestamp();
-        let decision = fence(recorded, request, now);
-        if let Some(error) = refusal(decision, request, recorded, now) {
+        let decision = fence(recorded, request);
+        if let Some(error) = refusal(decision, request, recorded) {
             return Err(error);
         }
         let lease = LeaseRecord {
@@ -369,18 +354,6 @@ impl VolumeStorage {
             lease: self.lease_record(&datasets, &pool, name).await?,
         })
     }
-
-    async fn adopt_lease(
-        &self,
-        name: &DockerVolumeName,
-        request: &Switch,
-    ) -> std::result::Result<SwitchReply, RpcError> {
-        let _guard = self.admit_mutation().await.map_err(internal)?;
-        let pool = self.one_pool().await.map_err(internal)?;
-        let datasets = self.datasets(&pool).await.map_err(internal)?;
-        let admitted = self.admit(&pool, &datasets, name, request).await?;
-        self.reply(&pool, name, admitted).await
-    }
 }
 
 /// A fenced request's decision, the record it writes, and the record on disk.
@@ -414,17 +387,6 @@ pub(super) async fn inspect(
     Json(result)
 }
 
-pub(super) async fn adopt_lease(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<AdoptLeaseRequest>,
-) -> Json<std::result::Result<SwitchReply, RpcError>> {
-    let result = match request.name.as_str().parse::<DockerVolumeName>() {
-        Ok(name) => storage.adopt_lease(&name, &request.switch()).await,
-        Err(error) => Err(internal(error)),
-    };
-    Json(result)
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::{Lease, Pos};
@@ -446,45 +408,27 @@ mod tests {
     #[test]
     fn lease_fence_table() {
         let recorded = Some(record(5, pos(4, 2, 5), Cycle::Closed));
+        let departed = Some(record(5, Pos::DEPARTED, Cycle::Closed));
         let rows = [
-            (recorded, 5, pos(5, 0, 0), 100, FenceDecision::Admit),
-            (recorded, 5, pos(4, 2, 5), 100, FenceDecision::Replay),
-            (recorded, 6, pos(2, 0, 0), 100, FenceDecision::Adopt),
-            (None, 1, pos(2, 0, 0), 100, FenceDecision::Adopt),
-            (
-                recorded,
-                4,
-                pos(9, 0, 0),
-                100,
-                FenceDecision::RefuseStaleLease,
-            ),
-            (
-                recorded,
-                5,
-                pos(4, 2, 1),
-                100,
-                FenceDecision::RefuseStaleStep,
-            ),
-            (
-                recorded,
-                5,
-                pos(4, 1, 9),
-                100,
-                FenceDecision::RefuseStaleStep,
-            ),
-            (recorded, 6, pos(2, 0, 0), 101, FenceDecision::RefuseExpired),
-            (recorded, 4, pos(1, 0, 0), 101, FenceDecision::RefuseExpired),
+            (recorded, 5, pos(5, 0, 0), FenceDecision::Admit),
+            (recorded, 5, pos(4, 2, 5), FenceDecision::Replay),
+            (recorded, 6, pos(2, 0, 0), FenceDecision::Adopt),
+            (None, 1, pos(2, 0, 0), FenceDecision::Adopt),
+            (recorded, 4, pos(9, 0, 0), FenceDecision::RefuseStaleLease),
+            (recorded, 5, pos(4, 2, 1), FenceDecision::RefuseStaleStep),
+            (recorded, 5, pos(4, 1, 9), FenceDecision::RefuseStaleStep),
+            (departed, 5, pos(9, 0, 0), FenceDecision::RefuseStaleStep),
+            (departed, 6, pos(3, 0, 0), FenceDecision::Adopt),
         ];
-        for (recorded, lease, pos, now, expected) in rows {
+        for (recorded, lease, pos, expected) in rows {
             let request = Switch {
                 lease: Lease::new(lease),
                 pos,
-                not_after_unix_seconds: 100,
             };
             assert_eq!(
-                fence(recorded, &request, now),
+                fence(recorded, &request),
                 expected,
-                "record {recorded:?}, request {request:?}, now {now}"
+                "record {recorded:?}, request {request:?}"
             );
         }
     }
@@ -493,11 +437,10 @@ mod tests {
     fn refusals_name_their_reason() {
         let request = Switch {
             lease: Lease::new(3),
-            pos: Pos::ADOPT_LEASE,
-            not_after_unix_seconds: 100,
+            pos: Pos::step(2),
         };
-        let recorded = Some(record(4, Pos::ADOPT_LEASE, Cycle::Closed));
-        let error = refusal(FenceDecision::RefuseStaleLease, &request, recorded, 50).unwrap();
+        let recorded = Some(record(4, Pos::step(2), Cycle::Closed));
+        let error = refusal(FenceDecision::RefuseStaleLease, &request, recorded).unwrap();
         assert_eq!(
             SwitchError::from_details(&error.details),
             Some(SwitchError::StaleLease)
@@ -507,17 +450,12 @@ mod tests {
             "{}",
             error.message
         );
-        let error = refusal(FenceDecision::RefuseExpired, &request, recorded, 130).unwrap();
-        assert_eq!(
-            SwitchError::from_details(&error.details),
-            Some(SwitchError::Expired { skew_seconds: 30 })
-        );
         for admitted in [
             FenceDecision::Admit,
             FenceDecision::Replay,
             FenceDecision::Adopt,
         ] {
-            assert!(refusal(admitted, &request, recorded, 50).is_none());
+            assert!(refusal(admitted, &request, recorded).is_none());
         }
     }
 }

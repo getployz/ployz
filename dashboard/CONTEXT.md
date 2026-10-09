@@ -41,7 +41,7 @@ An Environment resource whose files survive deployments and restarts on the Serv
 _Avoid_: Persistent storage as a resource name, network storage, replicated volume, Provisioned in product copy, ZFS in normal product copy except the Add Server opt-out
 
 **Volume Run**:
-One requested, bounded run over one Volume's copies: Mirror (make a read-only copy on another Server), Sync (refresh it) or Delete Mirror. Cloud runs it step by step, one at a time per Volume, and keeps its row as the user-facing record; the copies on the Servers decide what it does. A Mirror shows as `data-<server>`. Cloud also starts a Delete Mirror on its own for a mirror whose Volume no Environment still holds.
+One requested, bounded run over one Volume's copies: Mirror (make a read-only copy on another Server), Sync (refresh it) or Delete Mirror. Cloud runs it step by step, one at a time per Volume, and keeps its row as the user-facing record; each Server admits a step only against its own copy and lease record. A Mirror shows as `data-<server>`. Cloud also starts a Delete Mirror on its own for a mirror whose Volume no Environment still holds.
 _Avoid_: Replication, backup, job, sync job
 
 **Server Policy**:

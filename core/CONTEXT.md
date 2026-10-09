@@ -416,7 +416,7 @@ A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on 
 _Avoid_: replica, standby, backup, secondary
 
 **Lease**:
-The per-Volume record each Machine keeps on its Pool, `<lease>:<seq>.<round>.<sub>:<open|closed>`, that admits a switch request only when its lease and step are not behind what this Machine already did. A newer lease adopts; the same step replays; anything older is refused. It outlives the copy, `docker volume rm` and a Machine reset.
+The per-Volume record each Machine keeps on its Pool, `<lease>:<seq>.<round>.<sub>:<open|closed>`, that admits a switch request only when its lease and step are not behind what this Machine already did. The operator driving the Volume Run numbers the lease from its own store. A newer lease adopts, the same step replays, and anything older is refused. It outlives the copy, `docker volume rm` and a Machine reset, which closes it.
 _Avoid_: lock, fencing token, leader, epoch (as a user-facing word)
 
 **Service Volume Reference**:

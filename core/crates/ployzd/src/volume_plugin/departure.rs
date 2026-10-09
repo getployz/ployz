@@ -1,11 +1,11 @@
 //! Departure: when a Machine leaves its cluster or is installed afresh, every root it
-//! holds becomes a slot and every lease record moves on, so nothing left behind is taken
-//! for the writer and a later restore starts from an ordinary slot.
+//! holds becomes a slot and every lease record closes past its last step, so nothing left
+//! behind is taken for the writer and a later restore starts from an ordinary slot.
 
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{Cycle, Lease, LeaseRecord, MirrorMarker, Pos, RpcError};
+use ployz_core::{Cycle, LeaseRecord, MirrorMarker, Pos, RpcError};
 use ployzd::machine_pool::MachinePool;
 
 use super::{
@@ -27,7 +27,7 @@ enum Departure<'datasets> {
 }
 
 impl VolumeStorage {
-    /// Demotes every root to a slot, idles every slot marker and bumps every lease
+    /// Demotes every root to a slot, idles every slot marker and closes every lease
     /// record. Answers the names demoted, for the daemon to forget in Docker.
     async fn demote_all(&self, now_unix_seconds: i64) -> super::Result<Vec<String>> {
         let _guard = self.admit_mutation().await?;
@@ -81,7 +81,7 @@ impl VolumeStorage {
                 .await?;
             }
         }
-        self.bump_lease_records(&pool, &datasets).await?;
+        self.close_lease_records(&pool, &datasets).await?;
         Ok(demoted)
     }
 
@@ -153,9 +153,9 @@ impl VolumeStorage {
         Ok(())
     }
 
-    /// Every record on the managed root moves to the next lease, closed, at the
-    /// position a new run's `02-lease` would write.
-    async fn bump_lease_records(
+    /// Every record on the managed root keeps its lease and closes at [`Pos::DEPARTED`]:
+    /// each late request of that run is behind it, and the next run's newer lease adopts.
+    async fn close_lease_records(
         &self,
         pool: &MachinePool,
         datasets: &[Dataset],
@@ -186,12 +186,12 @@ impl VolumeStorage {
             let record = value
                 .parse::<LeaseRecord>()
                 .map_err(|error| format!("{error} on {root}"))?;
-            let bumped = LeaseRecord {
-                lease: Lease::new(record.lease.get() + 1),
-                pos: Pos::ADOPT_LEASE,
+            let closed = LeaseRecord {
+                pos: Pos::DEPARTED,
                 cycle: Cycle::Closed,
+                ..record
             };
-            self.zfs(&["set", &format!("{property}={bumped}"), &root])
+            self.zfs(&["set", &format!("{property}={closed}"), &root])
                 .await?;
         }
         Ok(())

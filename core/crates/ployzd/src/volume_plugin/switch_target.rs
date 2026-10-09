@@ -17,24 +17,17 @@ use super::{
     switch_source::{HOLDER_PROPERTY, MountGrant, precondition},
 };
 
-/// `<lease>:<admitted unix seconds>` on the dataset a Promote or Start task works on.
+/// `<lease>:<admitted unix seconds>` on the dataset a Promote or Start task works on. The
+/// time is kept for the format; nothing decides by it.
 const TASK_PROPERTY: &str = "ployz:task";
 /// The guid of the handed-over final snapshot, kept on the promoted root.
 const HANDOFF_PROPERTY: &str = "ployz:handoff";
-/// How long after admission a task may still make the copy writable or start its Container.
-const TASK_BUDGET_SECONDS: i64 = 600;
 const RESTORE_PREFIX: &str = "restore-";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Task {
     lease: Lease,
     admitted_unix_seconds: i64,
-}
-
-impl Task {
-    fn expired(self, now: i64) -> bool {
-        now > self.admitted_unix_seconds + TASK_BUDGET_SECONDS
-    }
 }
 
 impl fmt::Display for Task {
@@ -73,22 +66,14 @@ impl VolumeStorage {
             .transpose()
     }
 
-    /// Admits the task for `lease` on `dataset`: a crashed task of the same lease keeps its
-    /// admission time, so replays cannot stretch the budget.
+    /// Admits the task for `lease` on `dataset`; a crashed task of the same lease is kept.
     async fn admit_task(&self, dataset: &str, lease: Lease) -> Result<(), RpcError> {
-        let now = now();
         match self.task(dataset).await? {
-            Some(task) if task.lease == lease && task.expired(now) => Err(SwitchError::Expired {
-                skew_seconds: now - task.admitted_unix_seconds - TASK_BUDGET_SECONDS,
-            }
-            .rpc_error(format!(
-                "the task of lease {lease} on {dataset} is past its {TASK_BUDGET_SECONDS}s budget"
-            ))),
             Some(task) if task.lease == lease => Ok(()),
             Some(_) | None => {
                 let task = Task {
                     lease,
-                    admitted_unix_seconds: now,
+                    admitted_unix_seconds: now(),
                 };
                 self.zfs(&["set", &format!("{TASK_PROPERTY}={task}"), dataset])
                     .await
@@ -98,28 +83,29 @@ impl VolumeStorage {
         }
     }
 
-    /// This Machine's record of `name` still names `lease`.
+    /// This Machine's record of `name` still names `lease`, and answers it.
     async fn require_recorded(
         &self,
         pool: &MachinePool,
         datasets: &[Dataset],
         name: &DockerVolumeName,
         lease: Lease,
-    ) -> Result<(), RpcError> {
+    ) -> Result<LeaseRecord, RpcError> {
         let record = self
             .lease_record(datasets, pool, name)
             .await
             .map_err(internal)?;
-        if record.map(|record| record.lease) != Some(lease) {
-            return Err(SwitchError::StaleLease.rpc_error(format!(
+        match record {
+            Some(record) if record.lease == lease => Ok(record),
+            _ => Err(SwitchError::StaleLease.rpc_error(format!(
                 "the record of Volume {name} no longer names lease {lease}"
-            )));
+            ))),
         }
-        Ok(())
     }
 
     /// The guard a task passes, under the lock, before its irreversible effect: its marker
-    /// and this Machine's record still name `lease`, and its budget has not run out.
+    /// and this Machine's record still name `lease`, and the record's cycle is still open.
+    /// Departure closes the record at the same lease, so a task it outlived stops here.
     async fn require_task(
         &self,
         pool: &MachinePool,
@@ -128,19 +114,19 @@ impl VolumeStorage {
         dataset: &str,
         lease: Lease,
     ) -> Result<(), RpcError> {
-        let Some(task) = self.task(dataset).await?.filter(|task| task.lease == lease) else {
+        if !self
+            .task(dataset)
+            .await?
+            .is_some_and(|task| task.lease == lease)
+        {
             return Err(precondition(format!(
                 "{dataset} carries no task of lease {lease}"
             )));
-        };
-        self.require_recorded(pool, datasets, name, lease).await?;
-        let now = now();
-        if task.expired(now) {
-            return Err(SwitchError::Expired {
-                skew_seconds: now - task.admitted_unix_seconds - TASK_BUDGET_SECONDS,
-            }
-            .rpc_error(format!(
-                "the task of lease {lease} on {dataset} is past its {TASK_BUDGET_SECONDS}s budget"
+        }
+        let record = self.require_recorded(pool, datasets, name, lease).await?;
+        if record.cycle != Cycle::Open {
+            return Err(SwitchError::StaleStep.rpc_error(format!(
+                "the record of Volume {name} closed at {record}; the task of lease {lease} on {dataset} stops"
             )));
         }
         Ok(())
@@ -385,7 +371,7 @@ impl VolumeStorage {
     }
 
     /// Starts the created handed Container. Runs without the fence: the task's own guard
-    /// decides, so a Start that outlived its lease or budget stops before docker start.
+    /// decides, so a Start that outlived its lease or its open cycle stops before docker start.
     async fn start_handed_container(
         &self,
         request: &SourceContainerRequest,

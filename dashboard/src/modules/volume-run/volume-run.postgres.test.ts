@@ -58,7 +58,7 @@ const sourceCopy = (phase: "stopping" | "frozen" | "handed", guid = "30"): Volum
   readonly: phase !== "stopping",
   newest: { name: "f-1", guid, created_unix_seconds: 1_790_000_000 },
 });
-const busy = { code: "unavailable", message: "busy", details: { reason: "busy", skew_seconds: 0 } };
+const busy = { code: "unavailable", message: "busy", details: { reason: "busy" } };
 const refused = { code: "failed_precondition", message: "precondition", details: { reason: "precondition" } };
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
 const first = <T>(items: readonly T[]): T => {
@@ -68,7 +68,7 @@ const first = <T>(items: readonly T[]): T => {
 };
 
 const ordered = (sent: readonly string[]) => {
-  const keyOf = (verb: string) => verb.startsWith("adopt_lease@") ? "adopt_lease" : verb.replace(/@[^(]*/, "@");
+  const keyOf = (verb: string) => verb.replace(/@[^(]*/, "@");
   const groups: string[][] = [];
   for (const verb of sent) {
     const last = groups.at(-1);
@@ -111,9 +111,6 @@ describe("volume runs", () => {
         fake.receiving = undefined;
         return { round: request.payload.round, status: { state: "done", newest: snap(receiving.guid) } };
       }
-      case "adopt_lease":
-        fake.lease = { lease: request.payload.lease, pos: { seq: 2, round: 0, sub: 0 }, cycle: "closed" };
-        return reply();
       case "declare_mirror":
         fake.copy = slotCopy(null);
         return reply();
@@ -330,7 +327,7 @@ describe("volume runs", () => {
       const output = await execute(run.id, "run-1");
 
       expect(output.error).toBeUndefined();
-      expect(verbs.slice(0, 2).sort()).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2"]);
+      expect(verbs[0]).toBe("declare_mirror@fsn-2(3,0,0)");
       expect(await rows()).toMatchObject([{ state: "done", inngest_run_id: "run-1" }]);
     });
 
@@ -413,10 +410,10 @@ describe("volume runs", () => {
   });
 
   describe("C16", () => {
-    it("lease_from_machines: one above the highest lease a Machine holds, adopted by every Machine with a Pool", async () => {
+    it("lease_from_participants: one above the highest record a participant holds", async () => {
       machines = [
-        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" }, warms: ["10"] },
-        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: { lease: 3, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 3, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" }, warms: ["10"] },
+        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
         { name: "fsn-3", pool: false, copy: null, lease: null },
         { name: "docker-1", pool: false, stateless: true, copy: null, lease: null, silent: true },
       ];
@@ -426,8 +423,64 @@ describe("volume runs", () => {
 
       expect(output.error).toBeUndefined();
       expect(await rows()).toMatchObject([{ lease: "8", state: "done" }]);
-      expect(verbs.filter((verb) => verb.startsWith("adopt_lease")).sort()).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2"]);
-      expect(machines.map((fake) => fake.lease?.lease ?? null)).toEqual([8, 8, null, null]);
+      expect(verbs.filter((verb) => !/@fsn-[12]\b/.test(verb))).toEqual([]);
+    });
+
+    it("a non-participant's record does not raise the lease, and it gets no verb", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" }, warms: ["10"] },
+        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null },
+        { name: "fsn-3", pool: true, copy: null, lease: { lease: 20, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "sync", args: { full: false } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(await rows()).toMatchObject([{ lease: "8", state: "done" }]);
+      expect(verbs.filter((verb) => verb.includes("@fsn-3"))).toEqual([]);
+      expect(machines[2]?.lease?.lease).toBe(20);
+    });
+
+    it("a Move counts the target's record when the target gets a verb", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("handed"), lease: { lease: 3, pos: { seq: 8, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: slotCopy("30", "handed_in"), lease: { lease: 9, pos: { seq: 9, round: 0, sub: 0 }, cycle: "open" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(ordered(verbs)).toContain("promote@fsn-2(10,0,0)");
+      expect(await rows()).toMatchObject([{ lease: "10", state: "done" }]);
+    });
+
+    it("a Move that only closes the source ignores the target's record", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("handed"), lease: { lease: 7, pos: { seq: 8, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: writerCopy("30"), lease: { lease: 20, pos: { seq: 11, round: 0, sub: 0 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(ordered(verbs)).toEqual(["close@fsn-1(12,0,0)"]);
+      expect(await rows()).toMatchObject([{ lease: "8", state: "done" }]);
+    });
+
+    it("an undo that leaves the target alone ignores the target's record", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("stopping"), lease: { lease: 7, pos: { seq: 6, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: null, lease: { lease: 20, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)"]);
+      expect(await rows()).toMatchObject([{ lease: "8", state: "failed" }]);
     });
 
     it("lease_above_records_after_db_reset: above an earlier run's lease when the Machines hold less", async () => {
@@ -443,10 +496,9 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect((await rows()).find((row) => row.id === run.id)).toMatchObject({ lease: "13", state: "done" });
-      expect(machines[0]?.lease?.lease).toBe(13);
     });
 
-    it("a replayed lease step adopts the lease the row already holds", async () => {
+    it("a replayed lease step keeps the lease the row already holds", async () => {
       const run = await requested({ kind: "sync", args: { full: false } });
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1', lease = 40 where id = $1`, [run.id]);
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
@@ -454,7 +506,7 @@ describe("volume runs", () => {
 
       await execute(run.id, "run-1");
 
-      expect(machines.map((fake) => fake.lease?.lease)).toEqual([40, 40]);
+      expect(await rows()).toMatchObject([{ lease: "40", state: "done" }]);
     });
   });
 
@@ -468,7 +520,6 @@ describe("volume runs", () => {
       expect(output.error).toBeUndefined();
       expect(output.result).toEqual({ runId: run.id, rounds: 2 });
       expect(ordered(verbs)).toEqual([
-        "adopt_lease@fsn-1", "adopt_lease@fsn-2",
         "declare_mirror@fsn-2(3,0,0)",
         "begin_round@fsn-2(4,0,0)", "warm_snapshot@fsn-1(4,0,2)", "start_receive@fsn-2(4,0,3)",
         "prune_mirror@fsn-2(4,0,4)", "commit_snapshots@fsn-1(4,0,5)",
@@ -498,7 +549,7 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(ordered(verbs).slice(2, 6)).toEqual([
+      expect(ordered(verbs).slice(0, 4)).toEqual([
         "begin_round@fsn-2(4,0,0)", "warm_snapshot@fsn-1(4,0,2)", "start_receive@fsn-2(4,0,3)", "start_receive@fsn-2(4,0,3)",
       ]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
@@ -523,7 +574,6 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(ordered(verbs)).toEqual([
-        "adopt_lease@fsn-1", "adopt_lease@fsn-2",
         "begin_round@fsn-2(4,0,0)", "commit_snapshots@fsn-1(4,0,1)", "warm_snapshot@fsn-1(4,0,2)", "start_receive@fsn-2(4,0,3)",
         "prune_mirror@fsn-2(4,0,4)", "commit_snapshots@fsn-1(4,0,5)",
         "begin_round@fsn-2(4,1,0)", "commit_snapshots@fsn-1(4,1,1)", "warm_snapshot@fsn-1(4,1,2)",
@@ -537,8 +587,7 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(ordered(verbs).slice(0, 7)).toEqual([
-        "adopt_lease@fsn-1", "adopt_lease@fsn-2",
+      expect(ordered(verbs).slice(0, 5)).toEqual([
         "destroy_mirror@fsn-2(3,0,0)", "forget_snapshots@fsn-1(3,0,1)", "declare_mirror@fsn-2(3,0,2)",
         "begin_round@fsn-2(4,0,0)", "warm_snapshot@fsn-1(4,0,2)",
       ]);
@@ -561,12 +610,13 @@ describe("volume runs", () => {
     });
 
     it("delete_mirror: destroys the slot, forgets on the writer, then clears the slot's lease record", async () => {
+      machines[0] = { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 1, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } };
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
       const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
 
       await execute(run.id);
 
-      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "destroy_mirror@fsn-2(3,0,0)", "forget_snapshots@fsn-1(4,0,0)", "forget_lease@fsn-2(4,0,1)"]);
+      expect(ordered(verbs)).toEqual(["destroy_mirror@fsn-2(3,0,0)", "forget_snapshots@fsn-1(4,0,0)", "forget_lease@fsn-2(4,0,1)"]);
       expect(machines.map((fake) => fake.lease?.lease ?? null)).toEqual([1, null]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
@@ -588,8 +638,8 @@ describe("volume runs", () => {
 
       expect(output.error).toBeUndefined();
       expect(ordered(verbs)).toEqual([
-        "adopt_lease@fsn-1", "adopt_lease@fsn-2", "adopt_lease@fsn-3", "destroy_mirror@fsn-2(3,0,0)", "destroy_mirror@fsn-3(3,0,0)",
-        "forget_lease@fsn-1(4,0,1)", "forget_lease@fsn-2(4,0,1)", "forget_lease@fsn-3(4,0,1)",
+        "destroy_mirror@fsn-2(3,0,0)", "destroy_mirror@fsn-3(3,0,0)",
+        "forget_lease@fsn-2(4,0,1)", "forget_lease@fsn-3(4,0,1)",
       ]);
       expect(machines.map((fake) => fake.lease)).toEqual([null, null, null]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
@@ -608,7 +658,7 @@ describe("volume runs", () => {
 
       expect(output.error).toBeUndefined();
       expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
-      expect(verbs.slice(2, 4)).toEqual(["declare_mirror@fsn-2(3,0,0)", "begin_round@fsn-2(4,0,0)"]);
+      expect(verbs.slice(0, 2)).toEqual(["declare_mirror@fsn-2(3,0,0)", "begin_round@fsn-2(4,0,0)"]);
       expect(afterRounds(verbs)).toEqual([
         "copy_image@fsn-1->fsn-2(web-fsn-1)",
         "withdraw@fsn-1(5,0,0)", "freeze@fsn-1(6,0,0)",
@@ -645,8 +695,7 @@ describe("volume runs", () => {
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
       failNext.set("hand_over@fsn-1", refused);
 
-      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, () =>
-        ({ command: "hand_over", payload: { switch: { lease: 1, pos: { seq: 8, round: 0, sub: 0 }, not_after_unix_seconds: 1 }, name: dockerVolume, guid: "30" } }),
+      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, { command: "hand_over", payload: { switch: { lease: 1, pos: { seq: 8, round: 0, sub: 0 } }, name: dockerVolume, guid: "30" } },
       { onRefusal: "throw" })).then(() => null, (error: Error) => error);
 
       expect(failure).toBeInstanceOf(NonRetriableError);
@@ -718,7 +767,7 @@ describe("volume runs", () => {
 
       expect(output.error).toBeUndefined();
       expect(ordered(verbs)).toEqual([
-        "adopt_lease@fsn-1", "adopt_lease@fsn-2", "copy_image@fsn-1->fsn-2(web-fsn-1)",
+        "copy_image@fsn-1->fsn-2(web-fsn-1)",
         "promote@fsn-2(10,0,0)", "start_handed_container@fsn-2(11,0,0)", "close@fsn-1(12,0,0)",
       ]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
@@ -734,7 +783,7 @@ describe("volume runs", () => {
       await execute(run.id);
 
       expect(ordered(verbs)).toEqual([
-        "adopt_lease@fsn-1", "adopt_lease@fsn-2", "copy_image@fsn-1->fsn-2(web-fsn-1)", "hand_over@fsn-1(8,0,0)",
+        "copy_image@fsn-1->fsn-2(web-fsn-1)", "hand_over@fsn-1(8,0,0)",
         "accept_hand_off@fsn-2(9,0,0)", "promote@fsn-2(10,0,0)", "start_handed_container@fsn-2(11,0,0)", "close@fsn-1(12,0,0)",
       ]);
     });
@@ -748,7 +797,7 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data's earlier move was undone; volume move data --to fsn-2 to move it" }]);
     });
 
@@ -772,7 +821,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
       expect(machines[0]?.copy).toMatchObject({ writer: { phase: "idle" }, readonly: false });
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
@@ -788,7 +837,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2", "thaw@fsn-1(13,0,0)", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
@@ -797,7 +846,7 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(ordered(verbs)).toEqual(["adopt_lease@fsn-1", "adopt_lease@fsn-2"]);
+      expect(verbs).toEqual([]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
   });
@@ -809,8 +858,7 @@ describe("volume runs", () => {
 
       const owned = await harness.runEffect(Effect.exit(requireOwner(run.id, "run-1")));
       const sent = await Effect.runPromiseExit(Effect.tryPromise(() =>
-        runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, () =>
-          ({ command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 }, not_after_unix_seconds: 1 }, name: dockerVolume } })))));
+        runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, { command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 } }, name: dockerVolume } }))));
 
       expect(Exit.isFailure(owned)).toBe(true);
       expect(Exit.isFailure(sent)).toBe(true);
@@ -828,21 +876,20 @@ describe("volume runs", () => {
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
       failNext.set("forget_snapshots@fsn-1", { code: "failed_precondition", message: reason, details: { reason } });
 
-      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, () =>
-        ({ command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 }, not_after_unix_seconds: 1 }, name: dockerVolume } })))
+      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, { command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 } }, name: dockerVolume } }))
         .then(() => null, (error: Error) => error);
 
       expect(failure).toBeInstanceOf(NonRetriableError);
       expect(await rows()).toMatchObject([{ state: "failed", message }]);
     });
 
-    it.each(["busy", "expired"])("%s fails only the attempt, so the step retries", async (reason) => {
+    it("busy fails only the attempt, so the step retries", async () => {
+      const reason = "busy";
       const run = await requested({ kind: "sync", args: { full: false } });
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
-      failNext.set("forget_snapshots@fsn-1", { code: "unavailable", message: reason, details: { reason, skew_seconds: 3 } });
+      failNext.set("forget_snapshots@fsn-1", { code: "unavailable", message: reason, details: { reason } });
 
-      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, () =>
-        ({ command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 }, not_after_unix_seconds: 1 }, name: dockerVolume } })))
+      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, { command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 } }, name: dockerVolume } }))
         .then(() => null, (error: Error) => error);
 
       expect(failure).toBeInstanceOf(Error);
@@ -855,8 +902,7 @@ describe("volume runs", () => {
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
       failNext.set("forget_snapshots@fsn-1", { code: "internal", message: "dataset is busy", details: null });
 
-      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, () =>
-        ({ command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 }, not_after_unix_seconds: 1 }, name: dockerVolume } })))
+      const failure = await runEffect(sendSwitch(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, { command: "forget_snapshots", payload: { switch: { lease: 1, pos: { seq: 4, round: 0, sub: 0 } }, name: dockerVolume } }))
         .then(() => null, (error: Error) => error);
 
       expect(failure).not.toBeInstanceOf(NonRetriableError);

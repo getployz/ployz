@@ -13,8 +13,6 @@ port: number | null, };
 
 export type Admit = { "admit": "deploy" } & Deploy | { "admit": "retry" } & Retry | { "admit": "remove" } & Removal;
 
-export type AdoptLeaseRequest = { lease: Lease, not_after_unix_seconds: number, name: DockerVolumeName, };
-
 export type AdvertisedEndpoint = string;
 
 export type AppliedVolume = { project: ProjectName, environment: EnvironmentName, volume: VolumeName, };
@@ -1385,7 +1383,7 @@ export type ExtraHost = string;
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
-export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step" | "refuse_expired";
+export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step";
 
 export type FollowHint = {
 /**
@@ -3288,13 +3286,9 @@ export type Sweep = {
  */
 now: number, };
 
-export type Switch = { lease: Lease, pos: Pos,
-/**
- * Step deadline: step start plus the request timeout, as Unix seconds.
- */
-not_after_unix_seconds: number, };
+export type Switch = { lease: Lease, pos: Pos, };
 
-export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "expired", skew_seconds: number, } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "no_capacity" };
+export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "no_capacity" };
 
 export type SwitchReply = { decision: FenceDecision,
 /**
