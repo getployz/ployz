@@ -18,10 +18,9 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     cluster
         .machine_shell(
             0,
-            "dnsmasq --conf-file=/dev/null --listen-address=127.0.0.53 --bind-interfaces --address=/#/203.0.113.7 --pid-file=/run/ployz-test-dnsmasq.pid; printf 'nameserver 127.0.0.53\n' >/etc/resolv.conf; old=$(cat /run/ployzd.pid); kill \"$old\"; while [ \"$(cat /run/ployzd.pid)\" = \"$old\" ]; do sleep 0.1; done",
+            "dnsmasq --conf-file=/dev/null --listen-address=127.0.0.53 --bind-interfaces --address=/#/203.0.113.7 --pid-file=/run/ployz-test-dnsmasq.pid; printf 'nameserver 127.0.0.53\n' >/etc/resolv.conf",
         )
         .unwrap();
-    cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = ployz::connect::connect(
@@ -100,7 +99,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
         &expected,
     )
     .await;
-    assert_protocol_contract_and_forwarding(&probe);
+    assert_protocol_contract_and_forwarding(&probe).await;
     assert_membership_filtered_projection(
         &probe,
         third_machine,
@@ -109,6 +108,268 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
         &expected,
     )
     .await;
+}
+
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image"]
+async fn internal_dns_survives_daemon_restart() {
+    let plan = ClusterPlan::new(&format!("l3-dns-restart-{}", process::id()), 2).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    let [first_machine, second_machine] = cluster.initialize_two().await.unwrap();
+    let direct = cluster.api_address(0).unwrap();
+    let mut client = ployz::connect::connect(
+        std::path::Path::new("/missing-ployz-test-config"),
+        Some(&direct),
+        None,
+    )
+    .await
+    .unwrap();
+    let service_id = ServiceId::random();
+    let spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+        "service_id": service_id,
+        "name": "dns-api",
+        "mode": { "mode": "replicated", "replicas": 2 },
+        "container": {
+            "image": "alpine:3.23.3",
+            "command": ["sh", "-c", "touch /tmp/healthy; sleep 300"],
+            "pull_policy": "missing",
+            "healthcheck": {
+                "state": "configured",
+                "test": ["CMD-SHELL", "test -f /tmp/healthy"],
+                "interval_millis": 100,
+                "timeout_millis": 100,
+                "retries": 1
+            }
+        }
+    }))
+    .unwrap();
+    let mut created = Vec::new();
+    for machine in [&first_machine, &second_machine] {
+        let container = client
+            .create_container(
+                machine.id,
+                ContainerKind::ServiceContainer,
+                Namespace::parse("app").unwrap(),
+                spec.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        start_container(&mut client, machine.id, container.container_id).await;
+        created.push(container.container_id);
+    }
+    let [first_container, second_container] = created.as_slice() else {
+        panic!("expected one container per Machine")
+    };
+    let observations = wait_for_dns_observations(&mut client, &service_id, 2).await;
+    let by_machine = observations
+        .iter()
+        .map(|observation| (observation.machine_id, observation.address.unwrap().0))
+        .collect::<BTreeMap<_, _>>();
+    let expected = by_machine.values().copied().collect::<Vec<_>>();
+    let gateway = first_machine.subnet.gateway().0;
+    let probe = DnsProbe {
+        cluster: &cluster,
+        container_id: first_container,
+        gateway,
+    };
+    probe
+        .wait_addresses("dns-api.app.internal", &expected)
+        .await;
+
+    let serving = ServingProcesses::observe(&cluster, 0);
+    let soak = DnsSoak::start(&cluster, 0, gateway, first_container);
+    for _ in 0..3 {
+        cluster
+            .machine_shell(
+                0,
+                "old=$(cat /run/ployzd.pid); kill \"$old\"; while [ \"$(cat /run/ployzd.pid)\" = \"$old\" ]; do sleep 0.1; done",
+            )
+            .unwrap();
+        cluster.wait_ready(Duration::from_secs(60)).await.unwrap();
+        assert_eq!(ServingProcesses::observe(&cluster, 0), serving);
+    }
+    let report = soak.stop();
+    assert!(
+        report.udp.sent > 30 && report.workload.sent > 30 && report.tcp_sent > 30,
+        "the soak must span the restarts: {report:?}"
+    );
+    assert_eq!(report.udp.failed, Vec::<String>::new(), "{report:?}");
+    assert_eq!(report.workload.failed, Vec::<String>::new(), "{report:?}");
+    assert_eq!(
+        report.tcp_answered,
+        (1..=report.tcp_sent).collect::<Vec<_>>(),
+        "every query on the persistent TCP connection is answered once: {report:?}"
+    );
+
+    stop_container(&mut client, second_machine.id, *second_container).await;
+    probe
+        .wait_addresses(
+            "dns-api.app.internal",
+            &[*by_machine.get(&first_machine.id).unwrap()],
+        )
+        .await;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ServingProcesses {
+    dns_pid: String,
+    corrosion_started_at: String,
+}
+
+impl ServingProcesses {
+    fn observe(cluster: &Cluster, index: usize) -> Self {
+        let dns_pid = cluster
+            .machine_shell(index, "cat /run/ployz-dns.pid")
+            .unwrap();
+        let corrosion_started_at = cluster
+            .machine_shell(
+                index,
+                "docker inspect --format '{{.State.StartedAt}}' ployz-corrosion",
+            )
+            .unwrap();
+        assert!(!dns_pid.trim().is_empty() && !corrosion_started_at.trim().is_empty());
+        Self {
+            dns_pid,
+            corrosion_started_at,
+        }
+    }
+}
+
+struct DnsSoak<'a> {
+    cluster: &'a Cluster,
+    index: usize,
+}
+
+#[derive(Debug)]
+struct SoakReport {
+    udp: SoakCounts,
+    workload: SoakCounts,
+    tcp_sent: u16,
+    tcp_answered: Vec<u16>,
+}
+
+#[derive(Debug)]
+struct SoakCounts {
+    sent: u32,
+    failed: Vec<String>,
+}
+
+const DNS_SOAK_SCRIPT: &str = include_str!("../../../scripts/verify/dns-soak.sh");
+
+impl<'a> DnsSoak<'a> {
+    fn start(
+        cluster: &'a Cluster,
+        index: usize,
+        gateway: Ipv4Addr,
+        workload: &ContainerId,
+    ) -> Self {
+        let workload_pid = cluster
+            .machine_shell(
+                index,
+                &format!("docker inspect --format '{{{{.State.Pid}}}}' {workload}"),
+            )
+            .unwrap();
+        assert!(
+            !DNS_SOAK_SCRIPT.contains('\''),
+            "the soak script travels inside single quotes"
+        );
+        cluster
+            .machine_shell(
+                index,
+                &format!(
+                    "nohup sh -c '{DNS_SOAK_SCRIPT}' dns-soak {gateway} {} >/tmp/dns-soak-log 2>&1 &",
+                    workload_pid.trim()
+                ),
+            )
+            .unwrap();
+        Self { cluster, index }
+    }
+
+    fn stop(self) -> SoakReport {
+        self.cluster
+            .machine_shell(
+                self.index,
+                "touch /tmp/dns-soak.stop; while [ ! -e /tmp/dns-soak.tcp-done ] || [ ! -e /tmp/dns-soak.udp-done ] || [ ! -e /tmp/dns-soak.workload-done ]; do sleep 0.1; done",
+            )
+            .unwrap();
+        let tcp_sent = self.read("tcp-sent").trim().parse().unwrap();
+        let stream = self
+            .cluster
+            .machine_shell(
+                self.index,
+                "od -An -tx1 -v /tmp/dns-soak.tcp-out | tr -d ' \\n'",
+            )
+            .unwrap();
+        SoakReport {
+            udp: self.counts("udp"),
+            workload: self.counts("workload"),
+            tcp_sent,
+            tcp_answered: answered_ids(&hex_bytes(stream.trim())),
+        }
+    }
+
+    fn counts(&self, name: &str) -> SoakCounts {
+        SoakCounts {
+            sent: self.read(&format!("{name}-sent")).trim().parse().unwrap(),
+            failed: self
+                .read(&format!("{name}-failed"))
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+        }
+    }
+
+    fn read(&self, name: &str) -> String {
+        self.cluster
+            .machine_shell(
+                self.index,
+                &format!("cat /tmp/dns-soak.{name} 2>/dev/null || true"),
+            )
+            .unwrap()
+    }
+}
+
+fn hex_bytes(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(hex.get(at..at + 2).unwrap(), 16).unwrap())
+        .collect()
+}
+
+fn answered_ids(stream: &[u8]) -> Vec<u16> {
+    let mut ids = Vec::new();
+    let mut rest = stream;
+    while let Some((length, after_length)) = rest.split_first_chunk::<2>() {
+        let length = usize::from(u16::from_be_bytes(*length));
+        let (message, after_message) = after_length.split_at_checked(length).unwrap();
+        let header: &[u8; 12] = message.first_chunk().unwrap();
+        let id = u16::from_be_bytes([header[0], header[1]]);
+        let rcode = header[3] & 0x0f;
+        let answers = u16::from_be_bytes([header[6], header[7]]);
+        assert!(
+            rcode == 0 && answers > 0,
+            "tcp query {id} answered with rcode {rcode} and {answers} records"
+        );
+        ids.push(id);
+        rest = after_message;
+    }
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn answered_ids_reads_a_concurrent_tcp_stream() {
+    let answer = |id: u16| {
+        let mut message = id.to_be_bytes().to_vec();
+        message.extend([0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0]);
+        message.extend([1, b'a', 0, 0, 1, 0, 1]);
+        message.extend([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 10, 0, 0, 1]);
+        let length = u16::try_from(message.len()).unwrap().to_be_bytes();
+        [length.to_vec(), message].concat()
+    };
+    let stream = [answer(2), answer(1), answer(3)].concat();
+    assert_eq!(answered_ids(&stream), vec![1, 2, 3]);
 }
 
 fn assert_managed_container_dns(
@@ -236,7 +497,7 @@ async fn assert_projection_changes(
     probe.wait_addresses("dns-api.app.internal", expected).await;
 }
 
-fn assert_protocol_contract_and_forwarding(probe: &DnsProbe<'_>) {
+async fn assert_protocol_contract_and_forwarding(probe: &DnsProbe<'_>) {
     let missing = probe.dig("missing.internal", "A", false);
     assert!(missing.contains("status: NXDOMAIN"));
     assert!(missing.contains("flags: qr aa"));
@@ -244,12 +505,13 @@ fn assert_protocol_contract_and_forwarding(probe: &DnsProbe<'_>) {
     assert!(non_a.contains("status: NOERROR"));
     assert!(non_a.contains("flags: qr aa"));
 
-    for tcp in [false, true] {
-        assert_eq!(
-            dig_addresses(&probe.dig("forward.test", "A", tcp)),
-            vec![Ipv4Addr::new(203, 0, 113, 7)]
-        );
-    }
+    probe
+        .wait_addresses("forward.test", &[Ipv4Addr::new(203, 0, 113, 7)])
+        .await;
+    assert_eq!(
+        dig_addresses(&probe.dig("forward.test", "A", true)),
+        vec![Ipv4Addr::new(203, 0, 113, 7)]
+    );
     probe
         .cluster
         .machine_shell(0, "kill $(cat /run/ployz-test-dnsmasq.pid)")
