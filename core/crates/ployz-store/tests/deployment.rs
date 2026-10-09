@@ -1136,34 +1136,52 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
 }
 
 #[test]
-fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
-    for api_status in [
-        json!({"type": "completed"}),
-        json!({"type": "pending"}),
-        waiting(1_000),
-    ] {
+fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
+    for (resource, api_status) in ["data", "sentry"].into_iter().flat_map(|resource| {
+        [
+            json!({"type": "completed"}),
+            json!({"type": "pending"}),
+            waiting(1_000),
+        ]
+        .map(|status| (resource, status))
+    }) {
         let api_finished = api_status["type"] == "completed";
         let (store, who) = shop();
-        store
-            .write(
-                &who,
-                &ployz_store::CreateVolume {
-                    id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005")
-                        .unwrap(),
-                    environment: EnvironmentRef::default(),
-                    name: ployz_store::VolumeName::parse("data").unwrap(),
-                    storage: ployz_core::config::VolumeKind::Docker {},
-                    shared_writes: true,
-                    mounts: ["web", "api"]
-                        .into_iter()
-                        .map(|service| ployz_store::Mount {
-                            service: ServiceName::parse(service).unwrap(),
-                            path: "/data".into(),
-                        })
-                        .collect(),
-                },
-            )
-            .unwrap();
+        if resource == "data" {
+            store
+                .write(
+                    &who,
+                    &ployz_store::CreateVolume {
+                        id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005")
+                            .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ployz_store::VolumeName::parse("data").unwrap(),
+                        storage: ployz_core::config::VolumeKind::Docker {},
+                        shared_writes: true,
+                        mounts: ["web", "api"]
+                            .into_iter()
+                            .map(|service| ployz_store::Mount {
+                                service: ServiceName::parse(service).unwrap(),
+                                path: "/data".into(),
+                            })
+                            .collect(),
+                    },
+                )
+                .unwrap();
+        } else {
+            sentry(&store, &who);
+            store
+                .write(
+                    &who,
+                    &AttachConfig {
+                        environment: EnvironmentRef::default(),
+                        service: ServiceName::parse("api").unwrap(),
+                        config: ConfigName::parse("sentry").unwrap(),
+                        dir: "/etc/sentry".into(),
+                    },
+                )
+                .unwrap();
+        }
         admit(&store, &who, 1, &[], None).unwrap();
         let a = runner("runner-a");
         store.claim(&id(1), &a).unwrap();
@@ -1198,7 +1216,7 @@ fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
             .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
             .unwrap();
         let serialized = serde_json::to_value(&deployment).unwrap();
-        for name in ["web", "data"] {
+        for name in ["web", resource] {
             let node = serialized["nodes"]
                 .as_array()
                 .unwrap()
@@ -1235,7 +1253,7 @@ fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
             );
         }
         let view = rows(&store, &who, 1);
-        let volume = &view.iter().find(|(name, _)| name == "data").unwrap().1;
+        let volume = &view.iter().find(|(name, _)| name == resource).unwrap().1;
         assert_eq!(volume.len(), 2, "Machine names are not identities");
         assert!(volume.iter().all(|row| row.server == "same-name"));
         assert!(volume.iter().any(
