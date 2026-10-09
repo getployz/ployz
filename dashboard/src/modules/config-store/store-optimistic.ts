@@ -45,6 +45,16 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     return data?.ok ? data.value.services : [];
   });
 
+  // Item drawers can be inactive and retain names from before a rename or deletion.
+  const workingConfigId = (environment: EnvironmentRef, name: string) => {
+    const ids = new Set(cached("configs", environment).flatMap((query) => {
+      // SAFETY: `cached` found only Configs views.
+      const data = query.state.data as StoreResult<ConfigsView> | undefined;
+      return data?.ok ? data.value.configs.filter((config) => config.name === name && config.change !== "delete").map((config) => config.id) : [];
+    }));
+    return ids.size === 1 ? ids.values().next().value : undefined;
+  };
+
   switch (command.command) {
     case "batch":
       for (const inner of command.commands) await applyOptimistic(queryClient, organizationSlug, inner);
@@ -77,7 +87,9 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     case "attach_config":
     case "detach_config": {
-      const mounts = (config: Pick<ConfigListing, "name" | "mounts" | "change">) => config.name !== command.config || config.change === "delete" ? config.mounts : [
+      const id = workingConfigId(command.environment, command.config);
+      if (!id) return;
+      const mounts = (config: Pick<ConfigListing, "id" | "mounts">) => config.id !== id ? config.mounts : [
         ...config.mounts.filter((mount) => mount.service !== command.service),
         ...command.command === "attach_config" ? [{ service: command.service, dir: command.dir }] : [],
       ];
@@ -86,8 +98,10 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "put_config_file": {
-      const put = <V extends Pick<ConfigListing, "name" | "files" | "change">>(config: V): V => {
-        if (config.name !== command.config || config.change === "delete") return config;
+      const id = workingConfigId(command.environment, command.config);
+      if (!id) return;
+      const put = <V extends Pick<ConfigListing, "id" | "files">>(config: V): V => {
+        if (config.id !== id) return config;
         const old = config.files.find((file) => file.name === command.file);
         const file = { name: command.file, mode: "0444", uid: 0, gid: 0, references: [], ...old,
           bytes: new TextEncoder().encode(command.content).length };
@@ -95,15 +109,17 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         return { ...config, files: old ? config.files.map((one) => one === old ? file : one) : [...config.files, file] };
       };
       await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(put) }));
-      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config || view.change === "delete" ? view
+      await views<ConfigItemView>("config", command.environment, (view) => view.id !== id ? view
         : { ...put(view), contents: { ...view.contents, [command.file]: command.content } });
       return;
     }
     case "remove_config_file": {
-      const remove = <V extends Pick<ConfigListing, "name" | "files" | "change">>(config: V): V => config.name !== command.config || config.change === "delete" ? config
+      const id = workingConfigId(command.environment, command.config);
+      if (!id) return;
+      const remove = <V extends Pick<ConfigListing, "id" | "files">>(config: V): V => config.id !== id ? config
         : { ...config, files: config.files.filter((file) => file.name !== command.file) };
       await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(remove) }));
-      await views<ConfigItemView>("config", command.environment, (view) => view.name !== command.config || view.change === "delete" ? view
+      await views<ConfigItemView>("config", command.environment, (view) => view.id !== id ? view
         : { ...remove(view), contents: Object.fromEntries(Object.entries(view.contents).filter(([file]) => file !== command.file)) });
       return;
     }
