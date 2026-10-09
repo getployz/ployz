@@ -290,11 +290,14 @@ def wait_ready(run, commands, backend):
             time.sleep(0.5)
 
 
-def dns_soak_start(commands, backend, node):
-    spec = json.loads(backend.exec(node, ["cat", "/run/ployz/dns.json"]).stdout)
-    gateway = spec["listen"].rsplit(":", 1)[0]
+def dns_soak_start(commands, backend, node, name, workload):
+    gateway = backend.exec(node, ["bash", "-ec", "ip -4 -o addr show ployz | awk '{print $4}' | cut -d/ -f1"]).stdout.decode().strip()
+    pid = ""
+    if workload:
+        pid = backend.exec(node, ["docker", "inspect", "--format", "{{.State.Pid}}", workload]).stdout.decode().strip()
     backend.push(node, CORE / "scripts" / "verify" / "dns-soak.sh", "/tmp/dns-soak.sh")
-    backend.exec(node, ["bash", "-ec", f"setsid sh /tmp/dns-soak.sh {gateway} >/tmp/dns-soak-log 2>&1 </dev/null &"])
+    backend.exec(node, ["bash", "-ec", f"setsid sh /tmp/dns-soak.sh {shlex.quote(gateway)} {shlex.quote(pid)} {shlex.quote(name)} "
+                                       ">/tmp/dns-soak-log 2>&1 </dev/null &"])
 
 
 def tcp_answers(stream):
@@ -491,6 +494,8 @@ def main():
             command.add_argument("state", choices=["start", "stop"],
                                  help="Query the Machine's Internal DNS over UDP and one TCP connection until stop; "
                                       "stop writes evidence/dns-soak-<machine>.json and fails on any lost lookup")
+            command.add_argument("--name", default="dns-api.app.internal", help="The name to resolve, SERVICE.NAMESPACE.internal")
+            command.add_argument("--workload", help="Also resolve through 127.0.0.11 inside this container")
         command.add_argument("manifest", type=Path)
         if action in ["power", "partition", "dns-soak"]:
             command.add_argument("machine", help="machine-1, machine-2, …")
@@ -536,7 +541,7 @@ def main():
         return 0
     if args.action == "dns-soak":
         if args.state == "start":
-            dns_soak_start(commands, backend, machine)
+            dns_soak_start(commands, backend, machine, args.name, args.workload)
             return 0
         return dns_soak_stop(commands, backend, machine)
     if args.action == "probe":
