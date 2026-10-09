@@ -50,10 +50,10 @@ use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use lifecycle::{ContainerRequest, require_eligible};
-pub(crate) use managed_service::ManagedService;
+pub(crate) use managed_service::{DesiredContainer, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
-pub use unregistry::{ImageIngest, unregistry_matches};
+pub use unregistry::ImageIngest;
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};

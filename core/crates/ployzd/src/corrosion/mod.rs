@@ -25,7 +25,7 @@ pub use certificate::{
 };
 pub use machine_view::{MachineView, MachinesSnapshot};
 pub use publisher::{run_machine_publisher, wait_for_catch_up};
-pub use service::{CorrosionConfig, DEFAULT_CONTAINER_NAME, RunningCorrosion};
+pub use service::{CorrosionConfig, DEFAULT_CONTAINER_NAME, RunningCorrosion, remove_retained};
 pub(crate) use store::{LocalContainerSnapshot, LocalVolumeSnapshot};
 pub use store::{ReplicatedObservations, ReplicatedStore};
 

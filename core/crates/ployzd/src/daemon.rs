@@ -458,15 +458,11 @@ impl Daemon {
             errors.push(ployz_core::error_chain::inline(&error));
         }
 
-        if let Some(running) = &mut self.corrosion {
-            let result = if resetting {
-                running.cleanup().await
-            } else {
-                running.stop().await
-            };
-            if let Err(error) = result {
-                errors.push(ployz_core::error_chain::inline(&error));
-            }
+        if resetting
+            && let Some(running) = &mut self.corrosion
+            && let Err(error) = running.cleanup().await
+        {
+            errors.push(ployz_core::error_chain::inline(&error));
         }
         if let Err(error) = self.ingest.shutdown().await {
             errors.push(ployz_core::error_chain::inline(&error));

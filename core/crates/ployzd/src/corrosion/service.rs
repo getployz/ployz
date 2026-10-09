@@ -1,3 +1,5 @@
+//! Runs the Corrosion agent in a Docker container the daemon creates and keeps.
+
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
@@ -18,7 +20,10 @@ use bollard::{
 };
 use serde::Serialize;
 
-use crate::{docker::ManagedService, filesystem::atomic_write};
+use crate::{
+    docker::{DesiredContainer, ManagedService},
+    filesystem::atomic_write,
+};
 use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
@@ -77,8 +82,8 @@ impl CorrosionConfig {
 
     pub async fn start(&self) -> Result<RunningCorrosion, Error> {
         bounded_start(async {
-            let token = self.install()?;
-            let api = ApiClient::new(self.api_address, &token)?;
+            let files = self.install()?;
+            let api = ApiClient::new(self.api_address, &files.token)?;
             let admin = AdminClient::new(self.run_dir.join("admin.sock"));
             let docker = Docker::connect_with_socket_defaults()?;
             let service = DockerService {
@@ -86,7 +91,7 @@ impl CorrosionConfig {
                 data_dir: self.data_dir.clone(),
                 run_dir: self.run_dir.clone(),
             };
-            service.start().await?;
+            service.start(&files).await?;
             wait_ready(|| async { api.query(Statement::new("SELECT 1", [])).await.is_ok() }).await;
             Ok(RunningCorrosion {
                 store: ReplicatedStore::new(api),
@@ -97,7 +102,7 @@ impl CorrosionConfig {
         .await
     }
 
-    fn install(&self) -> Result<String, Error> {
+    fn install(&self) -> Result<InstalledFiles, Error> {
         create_private_dir(&self.data_dir)?;
         create_private_dir(&self.run_dir)?;
         let token = load_or_create_token(&self.data_dir.join(TOKEN_FILE))?;
@@ -113,7 +118,7 @@ impl CorrosionConfig {
             },
             gossip: GossipConfig {
                 addr: self.gossip_address,
-                bootstrap: self.bootstrap.iter().map(ToString::to_string).collect(),
+                bootstrap: self.sorted_bootstrap(),
                 plaintext: true,
             },
             api: ApiConfig {
@@ -133,7 +138,42 @@ impl CorrosionConfig {
             encoded.as_bytes(),
             0o600,
         )?;
-        Ok(token)
+        Ok(InstalledFiles {
+            token,
+            config: encoded.into_bytes(),
+        })
+    }
+
+    // Peer order varies between record reads; an unsorted list would replace Corrosion on restart.
+    fn sorted_bootstrap(&self) -> Vec<String> {
+        let mut peers = self.bootstrap.clone();
+        peers.sort_unstable();
+        peers.dedup();
+        peers.iter().map(ToString::to_string).collect()
+    }
+}
+
+struct InstalledFiles {
+    token: String,
+    config: Vec<u8>,
+}
+
+/// Removes the Corrosion container and its run directory without a running
+/// handle, for a reset the daemon did not finish before it stopped.
+pub async fn remove_retained(run_dir: &Path) -> Result<(), Error> {
+    let docker = Docker::connect_with_socket_defaults()?;
+    remove(
+        &ManagedService::host(docker, DEFAULT_CONTAINER_NAME, IMAGE),
+        run_dir,
+    )
+    .await
+}
+
+async fn remove(service: &ManagedService, run_dir: &Path) -> Result<(), Error> {
+    service.remove().await?;
+    match fs::remove_dir_all(run_dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+        _ => Ok(()),
     }
 }
 
@@ -158,12 +198,8 @@ impl RunningCorrosion {
         self.admin.membership_states().await
     }
 
-    pub async fn stop(&mut self) -> Result<(), Error> {
-        self.service.stop().await
-    }
-
     pub async fn cleanup(&mut self) -> Result<(), Error> {
-        self.service.cleanup().await
+        remove(&self.service.service, &self.service.run_dir).await
     }
 }
 
@@ -174,7 +210,7 @@ struct DockerService {
 }
 
 impl DockerService {
-    async fn start(&self) -> Result<(), Error> {
+    async fn start(&self, files: &InstalledFiles) -> Result<(), Error> {
         let mounts = [&self.data_dir, &self.run_dir]
             .into_iter()
             .map(|path| Mount {
@@ -214,23 +250,12 @@ impl DockerService {
             ..Default::default()
         };
         self.service
-            .ensure_host(config, |container| {
-                container
-                    .config
-                    .as_ref()
-                    .and_then(|config| config.image.as_deref())
-                    == Some(IMAGE)
-            })
+            .ensure_host(DesiredContainer::new(
+                config,
+                &[&files.config, SCHEMA.as_bytes()],
+            ))
             .await
             .map_err(Into::into)
-    }
-
-    async fn stop(&self) -> Result<(), Error> {
-        self.service.stop().await.map_err(Into::into)
-    }
-
-    async fn cleanup(&self) -> Result<(), Error> {
-        self.service.remove().await.map_err(Into::into)
     }
 }
 
@@ -357,6 +382,32 @@ mod tests {
             started.elapsed() >= Duration::from_secs(16),
             "probe must succeed only after 15 seconds, got {:?}",
             started.elapsed()
+        );
+    }
+
+    #[test]
+    fn install_is_byte_stable() {
+        let root = tempfile::tempdir().unwrap();
+        let peer = |last| SocketAddr::from(([10, 0, 0, last], 51820));
+        let config = |peers: Vec<SocketAddr>| {
+            CorrosionConfig::local(root.path().join("data"), root.path().join("run"))
+                .with_bootstrap(peers)
+        };
+        let first = config(vec![peer(2), peer(1), peer(3)]).install().unwrap();
+        let second = config(vec![peer(3), peer(1), peer(2), peer(1)])
+            .install()
+            .unwrap();
+        assert_eq!(first.token, second.token);
+        assert_eq!(first.config, second.config);
+        assert_eq!(
+            fs::read(root.path().join("data/config.toml")).unwrap(),
+            second.config
+        );
+        let encoded = String::from_utf8(second.config).unwrap();
+        assert!(
+            encoded
+                .contains(r#"bootstrap = ["10.0.0.1:51820", "10.0.0.2:51820", "10.0.0.3:51820"]"#),
+            "{encoded}"
         );
     }
 
