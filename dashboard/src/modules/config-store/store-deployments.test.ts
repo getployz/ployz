@@ -11,14 +11,14 @@ const diff = asTestDouble<DiffView>()({
   total_count: 3,
   changes: [
     {
-      type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null,
+      type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [],
       settings: [
         { path: "web.replicas", kind: "update", before: 1, after: 2, canRestore: true, row: null },
         { path: "web.env.TOKEN", kind: "add", before: null, after: "abc", canRestore: true, row: null },
         { path: "web.mounts.pg-data", kind: "remove", before: "/data", after: null, canRestore: true, row: null },
       ],
     },
-    { type: "volume", id: "v1", row: "v1:node" as RowId, name: "pg-data", lifecycle: "create", comparison: null, data: null, settings: [] },
+    { type: "volume", id: "v1", row: "v1:node" as RowId, name: "pg-data", lifecycle: "create", comparison: null, data: null, restarts: [], settings: [] },
   ],
 });
 const services = [asTestDouble<ServiceListing>()({ id: "s1", source: "image" })];
@@ -36,7 +36,7 @@ it("groups the Store's review by node, labelling rows from the catalog; a whole 
 });
 
 it("lets a deployed Volume's row discard alone when the Store can restore it", () => {
-  const [volume] = changeGroups({ ...diff, changes: [{ type: "volume", id: "v1", row: "v1:node" as RowId, name: "store", lifecycle: "update", comparison: null, data: null, settings: [
+  const [volume] = changeGroups({ ...diff, changes: [{ type: "volume", id: "v1", row: "v1:node" as RowId, name: "store", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
     { path: "volumes.store.name", kind: "update", before: "pg-data", after: "store", canRestore: true, row: null },
     { path: "volumes.store.storage", kind: "update", before: null, after: { kind: "docker" }, canRestore: false, row: null },
   ] }] }, services);
@@ -45,7 +45,7 @@ it("lets a deployed Volume's row discard alone when the Store can restore it", (
 
 it("words a source change that moves only its root directory or its credentials", () => {
   const source = (before: JsonValue, after: JsonValue) => ({ path: "web.source", kind: "update" as const, before, after, canRestore: true, row: null });
-  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
     source({ type: "git", repository: "acme/web", rootDir: "/" }, { type: "git", repository: "acme/web", rootDir: "apps/web" }),
     source({ type: "image", image: "web:2", credentials: false }, { type: "image", image: "web:2", credentials: true }),
   ] }] }, services);

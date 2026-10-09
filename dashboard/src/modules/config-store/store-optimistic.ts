@@ -33,7 +33,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const listing = node ? null : listed(environment).find((one) => one.name === service);
       const changes: NodeChange[] | null = node
         ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== row.path), row] } : change)
-        : listing ? [...view.changes, { name: service, id: listing.id, row: listing.row, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }] : null;
+        : listing ? [...view.changes, { name: service, id: listing.id, row: listing.row, type: "service", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [row] }] : null;
       if (!changes) return view;
       // The count and whether it's published are the Store's to say: they come with the write's answer.
       return { ...view, changes };

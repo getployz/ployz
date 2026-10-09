@@ -32,7 +32,7 @@ describe("Config Store nodes", () => {
     volume("orphan", [{ service: "gone", path: "/data" }]),
   ];
   // The next Deploy mounts `shared` into web; postgres's mount of it stays.
-  const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "web", lifecycle: "update", comparison: "head", data: null,
+  const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "web", lifecycle: "update", restarts: [], comparison: "head", data: null,
     settings: [{ path: "web.mounts.shared", kind: "add", before: null, after: "/srv", canRestore: true }] }] });
   const { trays, unmounted } = volumeTrays(listings, volumes, diff);
   const store = {

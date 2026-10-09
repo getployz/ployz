@@ -20,7 +20,7 @@ const id = (value: string) => value as RowId;
 const setting = (path: string, before: string, after: string, row: string | null = null) =>
   ({ path, kind: "update" as const, before, after, canRestore: true, row: row === null ? null : id(row) });
 const api = (settings: NodeChange["settings"]): NodeChange =>
-  ({ type: "service", id: "api", row: id("a:node"), name: "api", lifecycle: "update", settings }) as NodeChange;
+  ({ type: "service", id: "api", row: id("a:node"), name: "api", lifecycle: "update", comparison: null, data: null, restarts: [], settings });
 const diff = (extra: Partial<DiffView>): DiffView => ({
   environment: { id: "id-fix-api", project: "shop", name: "fix-api", revision: 4 }, version: "4:abc", saved: null,
   published: false, changes: [], total_count: 0, hints: [], incoming: [], follow_hints: [], ...extra,
@@ -87,7 +87,7 @@ it("groups what the Parent's deploy brought apart from the Branch's own, and Nev
 
 it("matches a Volume's setting by the row it falls in", async () => {
   const test = open(diff({
-    changes: [{ type: "volume", id: "data", row: id("d:node"), name: "data", lifecycle: "update", settings: [setting("volumes.data.name", "pg", "pg-2", "d:name")] } as NodeChange],
+    changes: [{ type: "volume", id: "data", row: id("d:node"), name: "data", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [setting("volumes.data.name", "pg", "pg-2", "d:name")] }],
     total_count: 1, incoming: [{ row: id("d:name"), node: "volumes.data", kind: "volume", name: "name", from: "production" }],
   }));
 
