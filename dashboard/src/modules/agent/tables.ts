@@ -27,7 +27,10 @@ export const agentRuns = pgTable("agent_runs", {
   status: text("status").notNull().$type<RunRecord["status"]>(),
   startedAt: bigint("started_at", { mode: "number" }).notNull(),
   record: jsonb("record").notNull().$type<RunRecord>(),
-  /** The resuming request that drives this run, until another takes its interrupts over and resumes the run itself. */
+  /**
+   * The resuming request that drives this run. The run is live only while that claim holds its interrupts under an
+   * unexpired lease, only that claim writes it, and a takeover that moves the interrupts fails the run it leaves behind.
+   */
   claim: text("claim"),
   createdAt,
   updatedAt,

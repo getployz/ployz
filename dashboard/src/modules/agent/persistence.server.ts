@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ModelMessage, RunRecord, RunStore } from "@tanstack/ai";
 import type { ChatWithInterruptsPersistence, InterruptRecord, InterruptStore, MessageStore } from "@tanstack/ai-persistence";
-import { and, asc, desc, eq, inArray, type SQL, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gt, inArray, isNull, ne, or, type SQL, sql } from "drizzle-orm";
 import type { PgColumn, PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
 import { agentInterrupts, agentRuns, agentThreads } from "#/modules/agent/tables";
@@ -18,12 +18,18 @@ const merged = (record: PgColumn, patch: Partial<RunRecord> | Partial<InterruptR
   return sql`(${sql.join([sql`${record}`, ...removed], sql` - `)}) || ${JSON.stringify(set)}::jsonb`;
 };
 
+/** A takeover resuming the run it took over starts it clean, whatever the old claim wrote late. */
+const resumed: Partial<RunRecord> = { status: "running", finishedAt: undefined, error: undefined, detachedSince: undefined };
+
 /** A resumed turn lost its interrupts to another request, which now owns the turn and its result. */
 export class Superseded extends Error {
   constructor() {
     super("Another request took over this resumed turn.");
   }
 }
+
+/** How long a resuming request holds its interrupts unrenewed before another may take them over: one that died mid-turn. */
+export const CLAIM_LEASE_MS = 5 * 60 * 1000;
 
 /**
  * TanStack AI's messages, runs and interrupts stores over Postgres, confined to `scope`. With `claim`, the stores serve
@@ -42,14 +48,17 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
    * `write` committed only while `claim` still holds the interrupts it resumes. The shared lock on them serializes it
    * with a takeover, which locks them for update before it moves the claim.
    */
-  const fenced = async <A, E>(write: Effect.Effect<A, E, Database>) => {
-    if (held === undefined) return run(write);
-    const outcome = await run(database.transaction(Effect.gen(function* () {
-      const holding = yield* drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts)
+  const holding = async <A, E>(write: Effect.Effect<A, E, Database>) => {
+    if (held === undefined) return { held: true, value: await run(write) } as const;
+    return run(database.transaction(Effect.gen(function* () {
+      const holds = yield* drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts)
         .where(and(interruptOwned, held)).limit(1).for("share");
-      return holding.length === 0 ? { superseded: true } as const : { superseded: false, value: yield* write } as const;
+      return holds.length === 0 ? { held: false } as const : { held: true, value: yield* write } as const;
     })));
-    if (outcome.superseded) throw new Superseded();
+  };
+  const fenced = async <A, E>(write: Effect.Effect<A, E, Database>) => {
+    const outcome = await holding(write);
+    if (!outcome.held) throw new Superseded();
     return outcome.value;
   };
 
@@ -90,7 +99,11 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
       const insert = drizzle.insert(agentRuns).values({ ...scope, runId: record.runId, threadId: record.threadId, status: record.status, startedAt: record.startedAt, record, claim });
       await fenced(claim === undefined
         ? insert.onConflictDoNothing()
-        : insert.onConflictDoUpdate({ target: agentRuns.runId, set: { claim, updatedAt: new Date() }, setWhere: runOwned }));
+        : insert.onConflictDoUpdate({
+          target: agentRuns.runId,
+          set: { claim, status: "running", record: merged(agentRuns.record, resumed), updatedAt: new Date() },
+          setWhere: and(runOwned, ne(agentRuns.status, "completed")),
+        }));
       const existing = await getRun(input.runId);
       if (existing === null) throw new Error(`Run ${input.runId} belongs to another member.`);
       return existing;
@@ -99,12 +112,15 @@ export const agentPersistence = Effect.fn("Agent.persistence")(function* (scope:
       const set: PgUpdateSetSource<typeof agentRuns> = { record: merged(agentRuns.record, patch), updatedAt: new Date() };
       if (patch.status !== undefined) set.status = patch.status;
       const driving = claim === undefined ? undefined : eq(agentRuns.claim, claim);
-      await run(drizzle.update(agentRuns).set(set).where(and(runOwned, eq(agentRuns.runId, runId), driving)));
+      await holding(drizzle.update(agentRuns).set(set).where(and(runOwned, eq(agentRuns.runId, runId), driving)));
     },
     get: getRun,
     findActiveRun: async (threadId) => {
+      const leased = gt(agentInterrupts.claimedAt, new Date(Date.now() - CLAIM_LEASE_MS));
+      const driven = or(isNull(agentRuns.claim), exists(drizzle.select({ id: agentInterrupts.interruptId }).from(agentInterrupts)
+        .where(and(interruptOwned, eq(agentInterrupts.claim, agentRuns.claim), leased))));
       const [row] = await run(drizzle.select({ record: agentRuns.record }).from(agentRuns)
-        .where(and(runOwned, eq(agentRuns.threadId, threadId), eq(agentRuns.status, "running")))
+        .where(and(runOwned, eq(agentRuns.threadId, threadId), eq(agentRuns.status, "running"), driven))
         .orderBy(desc(agentRuns.startedAt), desc(agentRuns.runId)).limit(1));
       return row?.record ?? null;
     },
@@ -181,9 +197,6 @@ export const threadAvailable = Effect.fn("Agent.threadAvailable")(function* (sco
   return row === undefined || (row.organizationId === scope.organizationId && row.userId === scope.userId);
 });
 
-/** How long a resuming request holds its interrupts unrenewed before another may take them over: one that died mid-turn. */
-export const CLAIM_LEASE_MS = 5 * 60 * 1000;
-
 const owned = (scope: AgentScope) => and(eq(agentInterrupts.organizationId, scope.organizationId), eq(agentInterrupts.userId, scope.userId));
 
 /**
@@ -204,6 +217,19 @@ export const claimResume = Effect.fn("Agent.claimResume")(function* (scope: Agen
     if (rows.some((row) => row.claim !== null && row.claim !== claim && row.claimedAt !== null && row.claimedAt > leased)) return "busy" as const;
     yield* drizzle.update(agentInterrupts).set({ claim, claimedAt: new Date() })
       .where(and(owned(scope), inArray(agentInterrupts.interruptId, ids), eq(agentInterrupts.status, "pending")));
+    const superseded = rows.flatMap((row) => row.status === "pending" && row.claim !== null && row.claim !== claim ? [row.claim] : []);
+    if (superseded.length > 0) {
+      yield* drizzle.update(agentRuns).set({
+        status: "failed",
+        record: merged(agentRuns.record, { status: "failed", finishedAt: Date.now(), error: { message: new Superseded().message } }),
+        updatedAt: new Date(),
+      }).where(and(
+        eq(agentRuns.organizationId, scope.organizationId),
+        eq(agentRuns.userId, scope.userId),
+        eq(agentRuns.status, "running"),
+        inArray(agentRuns.claim, superseded),
+      ));
+    }
     return "claimed" as const;
   }));
 });
