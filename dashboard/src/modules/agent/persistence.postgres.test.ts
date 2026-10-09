@@ -2,7 +2,7 @@ import type { ModelMessage } from "@tanstack/ai";
 import { runPersistenceConformance } from "@tanstack/ai-persistence/testkit";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { type AgentScope, agentPersistence, claimResume, threadAvailable } from "#/modules/agent/persistence.server";
+import { type AgentScope, agentPersistence, claimResume, startRun, threadAvailable } from "#/modules/agent/persistence.server";
 import { agentRuns } from "#/modules/agent/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -73,4 +73,15 @@ it("a claim never reopens its own aborted or ordinarily failed run, nor a supers
     .toMatchObject({ status: "failed", finishedAt: 13, error: { code: "superseded" } });
   const [lookalike] = await harness.db.select({ claim: agentRuns.claim }).from(agentRuns).where(eq(agentRuns.runId, "lookalike"));
   expect(lookalike).toEqual({ claim: null });
+});
+
+it("a run another member or Organization took is foreign to the caller, and the caller's own retry sees it running", async () => {
+  const [elsewhere] = await harness.db.insert(organization).values({ name: "Other", slug: "other" }).returning();
+  const adaElsewhere = { organizationId: elsewhere?.id ?? "", userId: ada.userId };
+
+  expect(await harness.runEffect(startRun(ada, "thread-run", "run-taken"))).toBe("started");
+  expect(await harness.runEffect(startRun(ada, "thread-run", "run-taken"))).toBe("running");
+  expect(await harness.runEffect(startRun(ada, "thread-elsewhere", "run-taken"))).toBe("foreign");
+  expect(await harness.runEffect(startRun(bob, "thread-run", "run-taken"))).toBe("foreign");
+  expect(await harness.runEffect(startRun(adaElsewhere, "thread-run", "run-taken"))).toBe("foreign");
 });

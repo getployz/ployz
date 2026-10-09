@@ -367,8 +367,10 @@ impl Approvals {
         match approval.map(|id| (id, self.status(id))) {
             Some((_, "approved")) => return None,
             Some((id, "denied")) => {
-                let message = format!("A human denied approval {id}: the worker still drains");
-                let error = json!({ "code": "approval_denied", "message": message, "details": {} });
+                let error = denied(
+                    id,
+                    "A human denied the request to publish production: the worker still drains",
+                );
                 return Some((403, json!({ "error": error })));
             }
             Some((_, "superseded")) => *asking += 1,
@@ -472,8 +474,12 @@ impl Approvals {
         started: &str,
     ) -> (u16, Value) {
         if let Some(id) = approval.filter(|id| self.status(id) == "denied") {
-            let message = format!("A human denied approval {id}: declined");
-            let error = json!({ "code": "approval_denied", "message": message, "details": {} });
+            let message = format!(
+                "A human denied the request to {} {}: declined",
+                operation["verb"].as_str().unwrap(),
+                operation["name"].as_str().unwrap()
+            );
+            let error = denied(id, &message);
             return (403, json!({ "error": error }));
         }
         let approved = approval.is_some_and(|id| self.status(id) == "approved");
@@ -502,6 +508,15 @@ impl Approvals {
             .push((method.to_owned(), id.to_owned(), decision));
         (200, json!({ "approval": { "id": id, "status": status } }))
     }
+}
+
+/// Cloud's `approval_denied` refusal keeps the approval in `details` and out of the message.
+fn denied(id: &str, message: &str) -> Value {
+    json!({
+        "code": "approval_denied",
+        "message": message,
+        "details": { "approval": { "id": id, "status": "denied" } },
+    })
 }
 
 fn asked(id: &str) -> Value {
@@ -3502,9 +3517,11 @@ fn without_a_terminal_a_denied_publish_fails_with_the_reason() {
     let (code, stderr) = person(&target, home.path(), &["publish"]);
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr.contains("A human denied approval apr_1: the worker still drains"),
+        stderr
+            .contains("A human denied the request to publish production: the worker still drains"),
         "{stderr}"
     );
+    assert!(!stderr.contains("apr_1"), "{stderr}");
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
     assert_eq!(diff["published"], json!(false), "nothing was published");
@@ -4064,25 +4081,34 @@ fn an_agent_gets_the_approval_a_drain_needs_and_a_person_waits_for_it() {
 
 #[test]
 fn a_denied_drain_or_cleanup_stops_with_the_reason_and_starts_nothing() {
-    for args in [
-        &["server", "drain", CLOUD_SERVER][..],
-        &[
-            "server",
-            "clean",
-            "--namespace",
-            "stray",
-            "--confirm",
-            "stray",
-        ],
+    for (args, subject) in [
+        (
+            &["server", "drain", CLOUD_SERVER][..],
+            format!("drain {CLOUD_SERVER}"),
+        ),
+        (
+            &[
+                "server",
+                "clean",
+                "--namespace",
+                "stray",
+                "--confirm",
+                "stray",
+            ],
+            "clean stray".to_owned(),
+        ),
     ] {
         let (target, approvals) = running(&[("apr_1", "denied")]);
         let home = tempfile::tempdir().unwrap();
         let (code, stderr) = person(&target, home.path(), args);
         assert_eq!(code, Some(1), "{args:?}: {stderr}");
         assert!(
-            stderr.contains("A human denied approval apr_1: declined"),
+            stderr.contains(&format!(
+                "A human denied the request to {subject}: declined"
+            )),
             "{stderr}"
         );
+        assert!(!stderr.contains("apr_1"), "{stderr}");
         let followed = approvals.runs().into_iter().any(|run| {
             run.starts_with("GET server-drains") || run.starts_with("GET namespace-cleanups")
         });

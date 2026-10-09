@@ -368,16 +368,15 @@ impl Waiting {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Entry::Occupied(found) = waiting.entry(state.to_owned()) else {
             return Err(McpError::invalid_params(
-                format!("no approval waits on {state}"),
+                "no approval waits on this request state".to_owned(),
                 None,
             ));
         };
         if found.get().tool != tool || found.get().argv != argv {
             return Err(McpError::invalid_params(
                 format!(
-                    "approval {} was asked by another call; answer it by calling `{}` again \
+                    "this approval was asked by another call; answer it by calling `{}` again \
                      with the same arguments",
-                    found.get().asked.id,
                     found.get().tool
                 ),
                 None,
@@ -578,11 +577,10 @@ fn reason(content: &Value) -> Option<String> {
 
 fn late(verb: Verb, asked: &Asked, deadline: Duration) -> String {
     format!(
-        "The human answered approval {id} more than {span} after this {noun} was called, so \
-         the answer was not recorded and nothing was {past}. Approval {id} stays pending in \
-         Ployz Cloud; call the tool again to ask again.",
-        id = asked.id,
-        noun = verb.noun(),
+        "The human answered more than {span} after {what} was called, so the answer was not \
+         recorded and nothing was {past}. The approval of {what} stays pending in Ployz \
+         Cloud; call the tool again to ask again.",
+        what = asked.what(verb),
         past = verb.past(),
         span = span(deadline),
     )
@@ -615,9 +613,9 @@ fn form(verb: Verb, asked: &Asked) -> ElicitRequestParams {
 fn cannot_ask(verb: Verb, asked: &Asked) -> CallToolResult {
     refused(format!(
         "A human must approve {what} first, and this agent cannot ask \
-         them. Show them what it destroys, then ask them to approve approval {id} in the \
-         Ployz Cloud sidebar, or to run the command themselves in a terminal. Once they \
-         approve, call this tool again with `approval` set to `{id}`.\n{review}",
+         them. Show them what it destroys, then ask them to approve {what} in the Ployz Cloud \
+         sidebar, or to run the command themselves in a terminal. Once they approve, call \
+         this tool again with `approval` set to `{id}`.\n{review}",
         what = asked.what(verb),
         id = asked.id,
         review = asked.review(verb).join("\n"),
@@ -1866,9 +1864,9 @@ mod tests {
         assert_eq!(late["result"]["isError"], true, "{late}");
         assert_eq!(
             late["result"]["content"][0]["text"],
-            "The human answered approval apr_1 more than 1 seconds after this deploy was \
-             called, so the answer was not recorded and nothing was deployed. Approval apr_1 \
-             stays pending in Ployz Cloud; call the tool again to ask again."
+            "The human answered more than 1 seconds after this deploy to production was called, \
+             so the answer was not recorded and nothing was deployed. The approval of this \
+             deploy to production stays pending in Ployz Cloud; call the tool again to ask again."
         );
         assert!(
             decisions.try_recv().is_err(),
@@ -1920,7 +1918,7 @@ mod tests {
             assert_eq!(refused["error"]["code"], -32602, "{refused}");
             assert_eq!(
                 refused["error"]["message"],
-                "approval apr_1 was asked by another call; answer it by calling `deploy` again \
+                "this approval was asked by another call; answer it by calling `deploy` again \
                  with the same arguments"
             );
         }
@@ -1952,10 +1950,7 @@ mod tests {
             assert_eq!(refused["error"]["code"], -32602, "{refused}");
             assert_eq!(
                 refused["error"]["message"],
-                format!(
-                    "no approval waits on {}",
-                    asking["result"]["requestState"].as_str().unwrap()
-                )
+                "no approval waits on this request state"
             );
         }
         assert_eq!(
@@ -2115,17 +2110,31 @@ mod tests {
         let (server, decisions) = approving(dir.path());
         let mut frames = handshake();
         frames.push(tool_call("deploy"));
+        frames.push(request(
+            3,
+            "tools/call",
+            json!({ "name": "deploy", "arguments": { "approval": "apr_1" } }),
+        ));
         let replies = exchange_with(server, &frames).await;
         let refused = &replies[1];
         assert_eq!(refused["id"], 2, "{refused}");
         assert_eq!(refused["result"]["isError"], true, "{refused}");
+        let text = refused["result"]["content"][0]["text"].as_str().unwrap();
         assert_eq!(
-            refused["result"]["content"][0]["text"],
+            text,
             "A human must approve this deploy to production first, and this agent cannot ask \
-             them. Show them what it destroys, then ask them to approve approval apr_1 in the \
-             Ployz Cloud sidebar, or to run the command themselves in a terminal. Once they \
-             approve, call this tool again with `approval` set to `apr_1`.\n\
+             them. Show them what it destroys, then ask them to approve this deploy to \
+             production in the Ployz Cloud sidebar, or to run the command themselves in a \
+             terminal. Once they approve, call this tool again with `approval` set to `apr_1`.\n\
              This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        );
+        let (for_the_human, argument) = text.split_once("Once they approve").unwrap();
+        assert!(!for_the_human.contains("apr_1"), "{for_the_human}");
+        assert!(argument.contains("`approval` set to `apr_1`"), "{argument}");
+        assert_eq!(replies[2]["result"]["isError"], false, "{}", replies[2]);
+        assert_eq!(
+            runs(dir.path()),
+            ["deploy --json", "deploy --approval=apr_1 --json"]
         );
         assert!(
             decisions.try_recv().is_err(),

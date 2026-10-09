@@ -18,6 +18,14 @@ export type ApprovalReview =
   | { effects: DestructiveEffect[]; diff: DiffView }
   | { effects: DestructiveEffect[]; operation: OperationReview };
 
+const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+
+/** What an approval asks about, as verb and name: "Deploy production", "Publish production" or "Drain fra-1". */
+export function approvalSubject(command: string, review: ApprovalReview) {
+  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
+  return { verb: command === "publish" ? "Publish" : "Deploy", name: review.diff.environment.name };
+}
+
 /** The Organization's settings row as the Org Store reads it. No row reads as the defaults. */
 export type OrganizationSettingsRow = { id: string; askBeforeDestructive: boolean };
 

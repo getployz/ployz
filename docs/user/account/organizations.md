@@ -41,8 +41,8 @@ How you answer depends on where the command runs:
   it and the command carries on. Anything else, or Ctrl-C, leaves the approval pending and
   changes nothing.
 - Without a terminal, such as in a script, it prints the same list and waits until someone
-  approves or denies it in Ployz Cloud. It then carries on, or fails with the reason given.
-  Ctrl-C stops waiting and leaves the approval pending.
+  approves or denies it in Ployz Cloud. It then carries on, or fails naming what was denied and
+  the reason given. Ctrl-C stops waiting and leaves the approval pending.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
 - In an agent that uses `ployz mcp`, the agent's app asks you. See

@@ -18,14 +18,6 @@ export function destroyedLine(effect: DestructiveEffect) {
   return effect.name === undefined ? { verb: `${verb} a ${noun}`, name: null, after: tail } : { verb: `${verb} ${noun}`, name: effect.name, after: tail };
 }
 
-const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
-
-/** What the card asks about, as verb and name: "Deploy production", "Publish production" or "Drain fra-1". */
-export function approvalSubject(command: string, review: ApprovalReview) {
-  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
-  return { verb: command === "publish" ? "Publish" : "Deploy", name: review.diff.environment.name };
-}
-
 export type OtherChange = { key: string; mark: "+" | "~" | "−"; node: string; text: string };
 
 /** Everything else a Publish or Deploy changes, one line per changed node or Setting, minus what a destroyed line already says. */

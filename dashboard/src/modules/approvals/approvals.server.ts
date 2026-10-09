@@ -7,6 +7,7 @@ import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
   type ApprovalReview,
+  approvalSubject,
   DEFAULT_ORGANIZATION_SETTINGS,
   type OperationVerb,
   type SetOrganizationSettingsInput,
@@ -154,6 +155,12 @@ function canonicalJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
+/** "the request to deploy production": a denial names what was asked, never the approval's ID. */
+const denied = (row: ApprovalRow) => {
+  const { verb, name } = approvalSubject(row.command, row.review);
+  return `the request to ${verb.toLowerCase()} ${name}`;
+};
+
 type Trusted = { ok: true; approval: Approval } | { ok: false; refusal: StoreRefusal };
 
 export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
@@ -167,7 +174,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   if (row === undefined) {
     return {
       ok: false,
-      refusal: { code: "invalid_argument", message: `No approval ${approvalId} in this Organization.`, details: { approval_id: approvalId } },
+      refusal: { code: "invalid_argument", message: "No such approval in this Organization.", details: { approval_id: approvalId } },
     };
   }
   switch (row.status) {
@@ -178,7 +185,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
         ok: false,
         refusal: {
           code: "approval_denied",
-          message: `A human denied approval ${row.id}${row.reason === null ? "." : `: ${row.reason}`}`,
+          message: `A human denied ${denied(row)}${row.reason === null ? "." : `: ${row.reason}`}`,
           details: { approval: approvalView(row) },
         },
       };

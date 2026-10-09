@@ -881,9 +881,9 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
 });
 
 const operations = [
-  { verb: "remove", method: "DELETE", path: `servers/${fra1}`, body: { no_reset: true } },
-  { verb: "clean", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
-  { verb: "drain", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
+  { verb: "remove", name: "fra-1", method: "DELETE", path: `servers/${fra1}`, body: { no_reset: true } },
+  { verb: "clean", name: "left-behind", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
+  { verb: "drain", name: "fra-1", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
 ] as const;
 
 const ownNamespace = Effect.fn(function* (organizationId: string, userId: string) {
@@ -934,6 +934,12 @@ for (const operation of operations) {
               const approvalId = asked.json.error?.details.approval_id ?? assert.fail("no approval id");
               const denied = yield* cli("POST", `approvals/${approvalId}`, alice, { reject: { reason } });
               assert.strictEqual(denied.json.approval?.status, "denied", scenario);
+              const approvedLate = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.json.error?.details.approval ?? "" } });
+              assert.deepStrictEqual(
+                [approvedLate.status, approvedLate.json.error?.code, approvedLate.json.error?.message],
+                [409, "conflict", "This approval was already decided elsewhere (denied)."],
+                scenario,
+              );
               yield* ask(asking);
 
               const plans = operation.verb === "remove" ? [true] : [true, false];
@@ -942,7 +948,7 @@ for (const operation of operations) {
                 const retried = yield* cli(operation.method, operation.path, { ...alice, approval: approvalId }, operation.body);
                 assert.deepStrictEqual(
                   [retried.status, retried.json.error?.code, retried.json.error?.message],
-                  [403, "approval_denied", `A human denied approval ${approvalId}: ${reason}`],
+                  [403, "approval_denied", `A human denied the request to ${operation.verb} ${operation.name}: ${reason}`],
                   `${scenario}, destroys ${destroys}`,
                 );
               }
