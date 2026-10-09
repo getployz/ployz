@@ -21,7 +21,7 @@ use bollard::{
 use serde::Serialize;
 
 use crate::{
-    docker::{DesiredContainer, ManagedService},
+    docker::{DesiredContainer, Ensure, ManagedService},
     filesystem::atomic_write,
 };
 use ployz_core::{CORROSION_API_PORT, CORROSION_GOSSIP_PORT};
@@ -33,6 +33,9 @@ pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
 const START_TIMEOUT: Duration = Duration::from_secs(4 * 60 + 30);
+// A daemon restart no longer restarts a running Corrosion, so a kept container that stays
+// silent this long is treated as wedged and replaced once, as every restart used to do.
+const KEPT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct CorrosionConfig {
     data_dir: PathBuf,
@@ -91,8 +94,17 @@ impl CorrosionConfig {
                 data_dir: self.data_dir.clone(),
                 run_dir: self.run_dir.clone(),
             };
-            service.start(&files).await?;
-            wait_ready(|| async { api.query(Statement::new("SELECT 1", [])).await.is_ok() }).await;
+            let ensured = service.start(&files).await?;
+            wait_ready_or_replace(
+                ensured == Ensure::Keep,
+                || async { api.query(Statement::new("SELECT 1", [])).await.is_ok() },
+                async {
+                    service.service.remove().await?;
+                    service.start(&files).await?;
+                    Ok(())
+                },
+            )
+            .await?;
             Ok(RunningCorrosion {
                 store: ReplicatedStore::new(api),
                 admin,
@@ -210,7 +222,7 @@ struct DockerService {
 }
 
 impl DockerService {
-    async fn start(&self, files: &InstalledFiles) -> Result<(), Error> {
+    async fn start(&self, files: &InstalledFiles) -> Result<Ensure, Error> {
         let mounts = [&self.data_dir, &self.run_dir]
             .into_iter()
             .map(|path| Mount {
@@ -271,6 +283,24 @@ where
                 START_TIMEOUT.as_secs(),
             ))
         })?
+}
+
+async fn wait_ready_or_replace<F, Fut, R>(kept: bool, mut ready: F, replace: R) -> Result<(), Error>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+    R: Future<Output = Result<(), Error>>,
+{
+    if kept
+        && tokio::time::timeout(KEPT_READY_TIMEOUT, wait_ready(&mut ready))
+            .await
+            .is_err()
+    {
+        tracing::warn!("kept Corrosion container did not answer; replacing it");
+        replace.await?;
+    }
+    wait_ready(ready).await;
+    Ok(())
 }
 
 async fn wait_ready<F, Fut>(mut ready: F)
@@ -383,6 +413,45 @@ mod tests {
             "probe must succeed only after 15 seconds, got {:?}",
             started.elapsed()
         );
+    }
+
+    async fn start_with(kept: bool, ready_after: Option<Duration>) -> (bool, Duration) {
+        let started = Instant::now();
+        let replaced = std::cell::Cell::new(false);
+        bounded_start(wait_ready_or_replace(
+            kept,
+            || {
+                let ready =
+                    replaced.get() || ready_after.is_some_and(|after| started.elapsed() >= after);
+                async move { ready }
+            },
+            async {
+                replaced.set(true);
+                Ok(())
+            },
+        ))
+        .await
+        .unwrap();
+        (replaced.get(), started.elapsed())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn kept_corrosion_that_never_answers_is_replaced() {
+        let (replaced, elapsed) = start_with(true, None).await;
+        assert!(replaced);
+        assert!(elapsed >= KEPT_READY_TIMEOUT, "{elapsed:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answering_kept_corrosion_is_not_replaced() {
+        assert!(!start_with(true, Some(Duration::from_secs(5))).await.0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn new_corrosion_gets_the_full_wait_without_replacement() {
+        let (replaced, elapsed) = start_with(false, Some(Duration::from_secs(120))).await;
+        assert!(!replaced);
+        assert!(elapsed >= Duration::from_secs(120), "{elapsed:?}");
     }
 
     #[test]

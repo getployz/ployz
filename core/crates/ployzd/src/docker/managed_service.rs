@@ -76,8 +76,8 @@ impl Existing {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Ensure {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ensure {
     Create,
     Replace,
     Start,
@@ -133,7 +133,10 @@ impl ManagedService {
         }
     }
 
-    pub(crate) async fn ensure_host(&self, desired: DesiredContainer) -> Result<(), DockerError> {
+    pub(crate) async fn ensure_host(
+        &self,
+        desired: DesiredContainer,
+    ) -> Result<Ensure, DockerError> {
         let Engine::Host(docker) = &self.engine else {
             unreachable!("endpoint service uses ensure_endpoint")
         };
@@ -150,7 +153,8 @@ impl ManagedService {
         self.ensure(&docker.client, desired, |config| async move {
             self.create_endpoint(config).await
         })
-        .await
+        .await?;
+        Ok(())
     }
 
     async fn ensure<E, F, Fut>(
@@ -158,7 +162,7 @@ impl ManagedService {
         docker: &Docker,
         desired: DesiredContainer,
         create: F,
-    ) -> Result<(), E>
+    ) -> Result<Ensure, E>
     where
         E: From<DockerError>,
         F: FnOnce(ContainerCreateBody) -> Fut,
@@ -169,7 +173,8 @@ impl ManagedService {
             Err(error) if is_not_found(&error) => None,
             Err(error) => return Err(error.into()),
         };
-        match decide(existing.as_ref(), &desired.digest) {
+        let ensure = decide(existing.as_ref(), &desired.digest);
+        match ensure {
             Ensure::Keep => {}
             Ensure::Start => docker.start_container(&self.name, None).await?,
             Ensure::Create => create(desired.body).await?,
@@ -180,7 +185,7 @@ impl ManagedService {
                 create(desired.body).await?;
             }
         }
-        Ok(())
+        Ok(ensure)
     }
 
     async fn create_host(&self, config: ContainerCreateBody) -> Result<(), DockerError> {
