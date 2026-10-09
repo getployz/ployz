@@ -750,7 +750,7 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
                 &who,
                 &ployz_store::ConfigItemQuery {
                     environment: at(environment),
-                    config: config("sentry"),
+                    config: config("sentry").into(),
                 },
             )
             .unwrap()

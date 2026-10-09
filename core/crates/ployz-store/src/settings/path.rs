@@ -10,7 +10,7 @@ use ts_rs::TS;
 
 use super::ServiceSetting;
 use crate::error;
-use crate::id::VolumeName;
+use crate::id::{ConfigRef, VolumeName};
 use crate::variables::VariableKey;
 
 /// A node of an Environment by name: `SERVICE` for a Service, `volumes.VOLUME` for a
@@ -21,11 +21,11 @@ use crate::variables::VariableKey;
 pub enum NodeName {
     Service(ServiceName),
     Volume(VolumeName),
-    Config(ConfigName),
+    Config(ConfigRef),
 }
 
 impl NodeName {
-    /// Parse `SERVICE`, `volumes.VOLUME` or `configs.CONFIG`.
+    /// Parse `SERVICE`, `volumes.VOLUME`, `configs.CONFIG` or `configs.@UUID`.
     ///
     /// # Errors
     /// Returns `invalid_argument` for anything else, never echoing it.
@@ -34,7 +34,7 @@ impl NodeName {
             return Ok(Self::Volume(VolumeName::parse(volume)?));
         }
         if let Some(config) = name.strip_prefix("configs.") {
-            return Ok(Self::Config(config_name(config)?));
+            return Ok(Self::Config(ConfigRef::parse(config)?));
         }
         match name {
             "volumes" => Err(name_a_volume()),
@@ -113,7 +113,7 @@ pub struct SettingPath(Addressed);
 enum Addressed {
     Service(ServiceName, Option<Target>),
     Volume(VolumeName, Option<VolumeField>),
-    Config(ConfigName),
+    Config(ConfigRef),
 }
 
 /// A Volume's field a change row names.
@@ -168,7 +168,7 @@ pub(crate) enum Target {
 impl SettingPath {
     /// Parse `SERVICE`, `SERVICE.SETTING`, `SERVICE.env.KEY`,
     /// `SERVICE.env.KEY.exported`, `SERVICE.mounts.VOLUME`, `SERVICE.configs.CONFIG`,
-    /// `volumes.VOLUME` or `configs.CONFIG`.
+    /// `volumes.VOLUME` or `configs.CONFIG`; use `@UUID` for an exact Config identity.
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed path or an unknown Setting, never
@@ -187,7 +187,7 @@ impl SettingPath {
                     json!({ "example": "configs.sentry" }),
                 ));
             }
-            return Ok(Self(Addressed::Config(config_name(config)?)));
+            return Ok(Self(Addressed::Config(ConfigRef::parse(config)?)));
         }
         if let Some(volume) = path.strip_prefix("volumes.") {
             let (volume, field) = match volume.split_once('.') {
@@ -342,7 +342,7 @@ impl SettingPath {
 
     /// The path of Config `config` as a whole.
     pub(crate) fn config(config: &ConfigName) -> Self {
-        Self(Addressed::Config(config.clone()))
+        Self(Addressed::Config(config.clone().into()))
     }
 
     /// The path of one Setting of `service`.

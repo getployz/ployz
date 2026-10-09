@@ -321,7 +321,7 @@ pub(crate) fn named(intents: &[&SavedEnvironmentIntent], row: &RowId) -> Option<
                 EnvironmentNodeType::Volume,
             ),
             NodeRef::Config(config) => (
-                NodeName::Config(config.name.clone()),
+                NodeName::Config(config.name.clone().into()),
                 EnvironmentNodeType::Config,
             ),
         };
@@ -919,7 +919,7 @@ pub(crate) fn land(
             .iter()
             .any(|old| old.resource_id == config.resource_id)
         {
-            staged.push(NodeName::Config(config.name.clone()));
+            staged.push(NodeName::Config(config.name.clone().into()));
             scope::introduce(tx, who, &id, scope::Node::Config(config))?;
         }
     }

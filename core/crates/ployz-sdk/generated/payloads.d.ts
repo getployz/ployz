@@ -507,9 +507,9 @@ export type ConfigItemQuery = {
  */
 environment: EnvironmentRef,
 /**
- * Its name.
+ * Its name, or `@UUID` for one exact identity.
  */
-config: ConfigName, };
+config: ConfigRef, };
 
 export type ConfigItemView = {
 /**
@@ -596,6 +596,8 @@ export type ConfigName = string;
 export type ConfigNodeConfig = { version: 1, name: ConfigName, files: { [key in ConfigFileName]: SavedConfigFile }, };
 
 export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "configs" } & ConfigsQuery | { "query": "config" } & ConfigItemQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
+
+export type ConfigRef = string;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 

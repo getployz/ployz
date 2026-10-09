@@ -228,7 +228,7 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let view = store::store(root)?.read(&ConfigItemQuery {
         environment: store::environment(matches)?,
-        config: config_name(matches, "config")?,
+        config: config_name(matches, "config")?.into(),
     })?;
     let listing = &view.config;
     let mut record = Fields::new()

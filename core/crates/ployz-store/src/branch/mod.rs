@@ -617,7 +617,7 @@ pub(crate) fn lineage_named(
         NodeName::Config(name) => intent
             .configs
             .iter()
-            .find(|config| config.name == *name)
+            .find(|config| name.matches(config))
             .map(|config| config.resource_lineage_id.clone()),
     };
     found.ok_or_else(|| {
@@ -695,7 +695,7 @@ pub(crate) fn node_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
                     .configs
                     .iter()
                     .find(|config| config.resource_lineage_id == lineage)
-                    .map(|config| NodeName::Config(config.name.clone()))
+                    .map(|config| NodeName::Config(config.name.clone().into()))
             })
     })
 }

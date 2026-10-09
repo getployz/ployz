@@ -184,3 +184,90 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
     let store = ConfigStore::open(&url, backend::key()).unwrap();
     assert_eq!(comparisons(&store, &who), before);
 }
+
+#[test]
+fn a_legacy_configs_service_can_be_renamed_without_losing_data_or_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    for (n, name) in [(3, "web"), (4, "worker")] {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: Some("nginx:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("worker.env.SERVER").unwrap(),
+                    value: json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"),
+                }],
+            },
+        )
+        .unwrap();
+    drop(store);
+    // An older Store admitted this name; only the display slug changes in its persisted document.
+    run(
+        &url,
+        r#"UPDATE config_environment SET working = replace(working, '"slug":"web"', '"slug":"configs"')"#,
+    );
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    let inspect = |name: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::ServiceQuery {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse(name).unwrap(),
+                },
+            )
+            .unwrap()
+    };
+    let before = inspect("configs");
+    let mut worker = inspect("worker");
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("configs").unwrap(),
+                name: ServiceName::parse("settings-service").unwrap(),
+            },
+        )
+        .unwrap();
+    let after = inspect("settings-service");
+    assert_eq!(after.service.service.id, before.service.service.id);
+    assert_eq!(
+        after.service.service.private_dns,
+        before.service.service.private_dns
+    );
+    assert_eq!(after.values, before.values);
+    worker.values.insert(
+        "env".into(),
+        json!({ "SERVER": "${{ settings-service.PLOYZ_PRIVATE_DOMAIN }}" }),
+    );
+    assert_eq!(inspect("worker").values, worker.values);
+}

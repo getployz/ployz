@@ -188,7 +188,7 @@ fn item(store: &ConfigStore, who: &Actor, name: &str) -> Result<ConfigItemView, 
         who,
         &ConfigItemQuery {
             environment: EnvironmentRef::default(),
-            config: config(name),
+            config: config(name).into(),
         },
     )
 }

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{ReviewLifecycleKind, SavedConfigIntent, SavedEnvironmentIntent};
-use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigFileName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -50,15 +50,15 @@ pub struct ConfigListing {
     pub change: Option<ReviewLifecycleKind>,
 }
 
-/// One Config by name, with its files' text.
+/// One Config by name or exact `@UUID`, with its files' text.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigItemQuery {
     /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its name.
-    pub config: ConfigName,
+    /// Its name, or `@UUID` for one exact identity.
+    pub config: crate::ConfigRef,
 }
 
 /// One Config.
@@ -100,13 +100,19 @@ pub(crate) fn config(
     // A name deleted and created again lists twice; the one in Working State wins.
     let found = listed(tx, &environment)?
         .into_iter()
-        .filter(|(listing, _)| listing.config.name == query.config)
+        .filter(|(_, node)| query.config.matches(node))
         .min_by_key(|(listing, _)| listing.change == Some(ReviewLifecycleKind::Delete));
     let Some((listing, node)) = found else {
-        return Err(environment
-            .config(&query.config)
-            .err()
-            .unwrap_or_else(|| error::corrupt("Config listing")));
+        return Err(match &query.config {
+            crate::ConfigRef::Name(name) => environment
+                .config(name)
+                .err()
+                .unwrap_or_else(|| error::corrupt("Config listing")),
+            crate::ConfigRef::Id(id) => error::not_found(
+                "No Config with this identity",
+                serde_json::json!({ "config": id }),
+            ),
+        });
     };
     let names = environment.names();
     Ok(ConfigItemView {

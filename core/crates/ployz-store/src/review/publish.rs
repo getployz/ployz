@@ -206,17 +206,25 @@ fn restore(
                     .err()
                     .unwrap_or_else(|| error::corrupt("Volume"))
             }),
-        NodeName::Config(name) => [working, &head]
-            .into_iter()
-            .flat_map(|intent| &intent.configs)
-            .find(|config| config.name == name)
-            .map(|config| (EnvironmentNodeType::Config, config.resource_id.clone()))
-            .ok_or_else(|| {
-                environment
-                    .config(&name)
-                    .err()
-                    .unwrap_or_else(|| error::corrupt("Config"))
-            }),
+        NodeName::Config(selector) => {
+            let mut matching = [working, &head]
+                .into_iter()
+                .flat_map(|intent| &intent.configs)
+                .filter(|config| selector.matches(config));
+            let Some(first) = matching.next() else {
+                return Err(error::not_found(
+                    "No Config matches this selector",
+                    json!({ "config": selector }),
+                ));
+            };
+            if matching.any(|config| config.resource_id != first.resource_id) {
+                return Err(error::ambiguous(
+                    "More than one Config has this name; select its @ID",
+                    json!({ "config": selector }),
+                ));
+            }
+            Ok((EnvironmentNodeType::Config, first.resource_id.clone()))
+        }
     };
     let (node_type, id) = node?;
     // A part of the source discards with it: the source is one change row.

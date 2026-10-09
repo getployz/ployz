@@ -42,6 +42,15 @@ The rename is staged. Other services keep reaching it at its private name, which
 and [references](variables.md#reference-another-services-variable) to it keep working. To change
 the private name, see [Private Networking](settings.md#private-networking).
 
+If an older environment has a service named `configs`, rename it before editing its settings:
+
+```sh
+ployz service rename configs settings-service
+```
+
+`configs` is now reserved for shared config paths. Renaming preserves the service’s private name,
+data, and references.
+
 ## Delete a service
 
 Right-click the service on the canvas, or open its **Settings**, and click **Delete service**.

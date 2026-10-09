@@ -1430,7 +1430,7 @@ fn a_config_file_syncs_as_one_row_and_a_conflict_replaces_the_whole_file() {
             &who,
             &ployz_store::ConfigItemQuery {
                 environment: at("production"),
-                config: config("sentry"),
+                config: config("sentry").into(),
             },
         )
         .unwrap()
@@ -1503,7 +1503,7 @@ fn picking_a_config_file_by_name_picks_that_file_and_not_one_its_name_prefixes()
             &who,
             &ployz_store::ConfigItemQuery {
                 environment: at("production"),
-                config: config(),
+                config: config().into(),
             },
         )
         .unwrap()
