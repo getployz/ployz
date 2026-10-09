@@ -125,7 +125,11 @@ fn set_replicas(store: &ConfigStore, who: &Actor, service: &str, replicas: u8) {
 
 /// A distinct operation per Service, attributed to it.
 fn operation(service: &str) -> Value {
-    let container = if service == "web" { "a" } else { "b" };
+    let container = match service {
+        "web" => "a",
+        "worker" => "c",
+        _ => "b",
+    };
     json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": container.repeat(64)})
 }
 
@@ -477,6 +481,131 @@ fn an_existing_shared_config_waits_for_pending_mounters() {
     );
     store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
     assert_eq!(changed(&store, &who), ["sentry"]);
+}
+
+#[test]
+fn a_shared_configs_outcome_follows_its_mounters_when_an_unrelated_service_fails() {
+    for confirmed_early in [false, true] {
+        for (completed, unexecuted, expected) in [
+            (vec!["web", "api"], vec![], NodeStatus::Deployed),
+            (vec!["web"], vec!["api"], NodeStatus::NotAttempted),
+        ] {
+            let (store, who) = shop();
+            shared_sentry(&store, &who);
+            store
+                .write(
+                    &who,
+                    &CreateService {
+                        id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005")
+                            .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ServiceName::parse("worker").unwrap(),
+                        image: Some("nginx:1".into()),
+                        template: None,
+                    },
+                )
+                .unwrap();
+            backend::deploy(&store, &who, "production", 1);
+            put_sentry(&store, &who, "value: new\n");
+            admit(&store, &who, 2, &[], None).unwrap();
+            let a = runner("runner-a");
+            store.claim(&id(2), &a).unwrap();
+            store
+                .record(
+                    &id(2),
+                    &a,
+                    RunEvidence::Prepared(preview(&["web", "api", "worker"])),
+                )
+                .unwrap();
+            if confirmed_early {
+                store
+                    .record(
+                        &id(2),
+                        &a,
+                        RunEvidence::Confirmed(
+                            completed
+                                .iter()
+                                .map(|name| ServiceName::parse(*name).unwrap())
+                                .collect(),
+                        ),
+                    )
+                    .unwrap();
+            }
+            store
+                .record(
+                    &id(2),
+                    &a,
+                    RunEvidence::Executed {
+                        progress: Vec::new(),
+                        outcome: Box::new(outcome(json!({
+                            "type": "failed",
+                            "completed": completed.iter().map(|name| operation(name)).collect::<Vec<_>>(),
+                            "failed": {"type": "operation", "operation": operation("worker"),
+                                "error": {"type": "cancelled"}},
+                            "unexecuted": unexecuted.iter().map(|name| operation(name)).collect::<Vec<_>>()
+                        }))),
+                        removed: Vec::new(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+            assert_eq!(
+                nodes(&store, &who, 2)
+                    .into_iter()
+                    .find(|(name, _)| name == "sentry")
+                    .unwrap()
+                    .1,
+                expected,
+            );
+            let expected_changes: &[&str] = if expected == NodeStatus::Deployed {
+                &[]
+            } else {
+                &["sentry"]
+            };
+            assert_eq!(changed(&store, &who), expected_changes);
+        }
+    }
+}
+
+#[test]
+fn a_fresh_shared_config_keeps_a_confirmed_mount_valid_when_its_sibling_fails() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    shared_sentry(&store, &who);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"),
+                        "error": {"type": "cancelled"}},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
+    assert_eq!(changed(&store, &who), ["api"]);
+    let plan = store.read(&who, &PlanQuery::default()).unwrap();
+    assert_eq!(plan.changes[0].name, "api");
 }
 
 #[test]

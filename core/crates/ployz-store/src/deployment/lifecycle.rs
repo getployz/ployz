@@ -794,11 +794,6 @@ pub(super) enum Evidence<'run> {
 /// succeeded. A removed
 /// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
 /// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
-/// A kept Config follows the targeted Services mounting it the same way; one none
-/// of them mounts is Deployed by a Deploy that succeeded. A removed Config is
-/// Removed once the Deploy succeeded, and Not attempted otherwise.
-/// While it runs, a Deployment stores only what is settled; its Pending nodes matter
-/// only to the Volumes they mount.
 pub(super) fn node_outcomes(
     nodes: &[TargetNode],
     saved: &SavedEnvironmentIntent,
@@ -920,7 +915,12 @@ pub(super) fn node_outcomes(
             .map(|mounting| service(&mounting.config.private_dns, true))
             .collect();
         let held = applied.configs.contains(config);
-        if mounting.contains(&NodeStatus::Deployed) && !held {
+        let fresh = !applied
+            .configs
+            .iter()
+            .any(|held| held.resource_id == config.resource_id);
+        let deployed = mounting.contains(&NodeStatus::Deployed);
+        if fresh && deployed {
             NodeStatus::Deployed
         } else if mounting.contains(&NodeStatus::Failed) {
             NodeStatus::Failed
@@ -930,6 +930,8 @@ pub(super) fn node_outcomes(
             NodeStatus::Pending
         } else if held {
             NodeStatus::Unchanged
+        } else if deployed {
+            NodeStatus::Deployed
         } else if matches!(evidence, Evidence::Planned { .. }) {
             NodeStatus::Pending
         } else if succeeded(evidence) {
