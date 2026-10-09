@@ -309,7 +309,7 @@ it("lets the user explicitly discard a pending save without restoring its refuse
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
-it.each(["retry", "discard"])("keeps a refused save guarded when rollback reads fail until %s", async (action) => {
+it.each(["retry", "discard"])("keeps a refused save guarded after returning to submitted text when rollback reads fail until %s", async (action) => {
   const test = await openDrawer();
   const pending = deferred();
   test.write.mockImplementationOnce(() => pending.promise);
@@ -317,6 +317,8 @@ it.each(["retry", "discard"])("keeps a refused save guarded when rollback reads 
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  test.edit("temporary newer text");
+  test.edit("valuable offline text");
   const read = vi.mocked(functions.readStoreViewServerFn).getMockImplementation();
   if (!read) throw new Error("Store test reader did not mount");
   vi.mocked(functions.readStoreViewServerFn).mockRejectedValue(new TypeError("Failed to fetch"));
