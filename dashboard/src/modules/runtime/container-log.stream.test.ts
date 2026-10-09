@@ -284,8 +284,8 @@ it("holds each line once when lines waiting past the limit land after a read of 
     stored.push(...flood);
     await send(flood);
     stream.follow(true);
-    const lines = [...stream.collection.values()].map(row => `${row.containerId} ${row.timestamp}`);
-    expect(lines.length).toBe(new Set(lines).size);
+    const lines = [...stream.collection.values()].map(row => `${row.containerId} ${row.timestamp}`).sort();
+    expect(lines).toEqual(span("busy", 1_401, 11_400).map(({ container, at }) => `${container} ${at}`).sort());
   } finally {
     subscription.unsubscribe();
     await stream.collection.cleanup();
