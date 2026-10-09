@@ -37,9 +37,35 @@ const START_TIMEOUT: Duration = Duration::from_secs(4 * 60 + 30);
 // silent this long is treated as wedged and replaced once, as every restart used to do.
 const KEPT_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Where Corrosion keeps its files under the Ployz data and run directories.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CorrosionPaths {
+    pub data_dir: PathBuf,
+    pub run_dir: PathBuf,
+}
+
+impl CorrosionPaths {
+    #[must_use]
+    pub fn under(ployz_data_dir: &Path, ployz_run_dir: &Path) -> Self {
+        Self {
+            data_dir: ployz_data_dir.join("corrosion"),
+            run_dir: ployz_run_dir.join("corrosion"),
+        }
+    }
+
+    #[must_use]
+    pub fn token_file(&self) -> PathBuf {
+        self.data_dir.join(TOKEN_FILE)
+    }
+
+    #[must_use]
+    pub fn admin_socket(&self) -> PathBuf {
+        self.run_dir.join("admin.sock")
+    }
+}
+
 pub struct CorrosionConfig {
-    data_dir: PathBuf,
-    run_dir: PathBuf,
+    paths: CorrosionPaths,
     api_address: SocketAddr,
     gossip_address: SocketAddr,
     container_name: String,
@@ -57,8 +83,10 @@ impl CorrosionConfig {
         container_name: impl Into<String>,
     ) -> Self {
         Self {
-            data_dir: data_dir.into(),
-            run_dir: run_dir.into(),
+            paths: CorrosionPaths {
+                data_dir: data_dir.into(),
+                run_dir: run_dir.into(),
+            },
             api_address,
             gossip_address,
             container_name: container_name.into(),
@@ -87,12 +115,12 @@ impl CorrosionConfig {
         bounded_start(async {
             let files = self.install()?;
             let api = ApiClient::new(self.api_address, &files.token)?;
-            let admin = AdminClient::new(self.run_dir.join("admin.sock"));
+            let admin = AdminClient::new(self.paths.admin_socket());
             let docker = Docker::connect_with_socket_defaults()?;
             let service = DockerService {
                 service: ManagedService::host(docker, self.container_name.clone(), IMAGE),
-                data_dir: self.data_dir.clone(),
-                run_dir: self.run_dir.clone(),
+                data_dir: self.paths.data_dir.clone(),
+                run_dir: self.paths.run_dir.clone(),
             };
             let ensured = service.start(&files).await?;
             wait_ready_or_replace(
@@ -115,17 +143,17 @@ impl CorrosionConfig {
     }
 
     fn install(&self) -> Result<InstalledFiles, Error> {
-        create_private_dir(&self.data_dir)?;
-        create_private_dir(&self.run_dir)?;
-        let token = load_or_create_token(&self.data_dir.join(TOKEN_FILE))?;
-        let schema_path = self.data_dir.join("schema.sql");
+        create_private_dir(&self.paths.data_dir)?;
+        create_private_dir(&self.paths.run_dir)?;
+        let token = load_or_create_token(&self.paths.token_file())?;
+        let schema_path = self.paths.data_dir.join("schema.sql");
         // TODO: Ployz deliberately has no replicated Store Schema/value evolution contract;
         // mixed-version Machines may omit or fail to read newer data. Do not add migrations or version gates.
         atomic_write(&schema_path, SCHEMA.as_bytes(), 0o644)?;
 
         let config = FileConfig {
             db: DbConfig {
-                path: self.data_dir.join("store.db"),
+                path: self.paths.data_dir.join("store.db"),
                 schema_paths: vec![schema_path],
             },
             gossip: GossipConfig {
@@ -140,13 +168,13 @@ impl CorrosionConfig {
                 },
             },
             admin: AdminConfig {
-                path: self.run_dir.join("admin.sock"),
+                path: self.paths.admin_socket(),
             },
         };
         let encoded = toml::to_string(&config)?;
         // TODO: retain the loose Corrosion-owned config boundary until ownership is decided.
         atomic_write(
-            &self.data_dir.join("config.toml"),
+            &self.paths.data_dir.join("config.toml"),
             encoded.as_bytes(),
             0o600,
         )?;

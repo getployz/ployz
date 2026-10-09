@@ -42,6 +42,7 @@ use crate::corrosion::{
 };
 
 mod query;
+mod spec;
 
 use query::{InternalQuery, MachineServiceTarget, Query, parse};
 

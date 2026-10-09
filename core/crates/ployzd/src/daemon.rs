@@ -26,8 +26,8 @@ use tonic::transport::Server;
 use crate::{
     certificates,
     corrosion::{
-        CorrosionConfig, DEFAULT_CONTAINER_NAME, Error as CorrosionError, MachineView,
-        RunningCorrosion, remove_retained, run_machine_publisher,
+        CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
+        MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
     dns,
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
@@ -130,8 +130,11 @@ impl Daemon {
         let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
             Opened::Ready(store) => store,
             Opened::Resetting(interrupted) => {
-                finish_interrupted_reset(interrupted, remove_retained(&run_dir.join("corrosion")))
-                    .await?
+                finish_interrupted_reset(
+                    interrupted,
+                    remove_retained(&CorrosionPaths::under(&config.data_dir, &run_dir).run_dir),
+                )
+                .await?
             }
         };
         let local = RecordOwner::spawn(store)?;
@@ -648,8 +651,8 @@ async fn start_corrosion(
     let run_dir = config
         .socket
         .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
-        .join("corrosion");
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
+    let paths = CorrosionPaths::under(&config.data_dir, run_dir);
     let bootstrap = record.bootstrap().iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address().0),
@@ -660,8 +663,8 @@ async fn start_corrosion(
     let _extend = extend_systemd_start_timeout();
     Ok(Some(
         CorrosionConfig::new(
-            config.data_dir.join("corrosion"),
-            run_dir,
+            paths.data_dir,
+            paths.run_dir,
             SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
             SocketAddr::new(
                 IpAddr::V6(machine.management_address().0),

@@ -34,9 +34,10 @@ ployz-build.workspace = true
 rcgen = "0.14.6"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls", "stream"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
-sd-notify = "0.5.0"
+sd-notify = { version = "0.5.0", features = ["fdstore"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+socket2 = "0.6.5"
 sha2 = "0.11.0"
 thiserror = "2.0.20"
 tempfile = "3.27.0"
