@@ -287,13 +287,14 @@ it.live(
   60_000,
 );
 
-/** The bodies `ployz volume mirror|sync|mirror rm|move|release` send, pinned the same in the CLI's `each_kind_posts_only_its_own_fields`. */
+/** The bodies `ployz volume mirror|sync|mirror rm|move|release|restore` send, pinned the same in the CLI's `each_kind_posts_only_its_own_fields`. */
 const cliVolumeRunBodies: ReadonlyArray<CliBody> = [
   { environment: { project: "shop", environment: "production" }, kind: "mirror", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "sync", full: false },
   { environment: { project: "shop", environment: "production" }, kind: "delete_mirror", slot: "web-2", confirm: "data" },
   { environment: { project: "shop", environment: "production" }, kind: "move", to: "web-2" },
   { environment: { project: "shop", environment: "production" }, kind: "release" },
+  { environment: { project: "shop", environment: "production" }, kind: "restore", from: "web-2" },
 ];
 
 it.live(

@@ -149,6 +149,13 @@ describe("volume runs", () => {
       case "close":
         fake.copy = slotCopy(fake.copy?.newest?.guid ?? null);
         return reply();
+      case "restore":
+        fake.copy = writerCopy(fake.copy?.newest?.guid ?? null);
+        return reply();
+      case "demote_volume":
+        fake.copy = slotCopy(fake.copy?.newest?.guid ?? null);
+        fake.lease = { ...request.payload.switch, cycle: "closed" };
+        return reply();
       case "start_receive": {
         const frozen = machines.map((entry) => entry.copy).find((copy) => copy?.kind === "root" && copy.writer.phase === "frozen");
         const guid = request.payload.target.startsWith("f-") && frozen?.kind === "root" && frozen.writer.phase === "frozen"
@@ -481,6 +488,19 @@ describe("volume runs", () => {
 
       expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)"]);
       expect(await rows()).toMatchObject([{ lease: "8", state: "failed" }]);
+    });
+
+    it("an undo that clears the target counts the target's record", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("stopping"), lease: { lease: 3, pos: { seq: 6, round: 0, sub: 0 }, cycle: "open" } },
+        { name: "fsn-2", pool: true, copy: slotCopy("30"), lease: { lease: 9, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      await execute(run.id);
+
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(await rows()).toMatchObject([{ lease: "10", state: "failed" }]);
     });
 
     it("lease_above_records_after_db_reset: above an earlier run's lease when the Machines hold less", async () => {
@@ -848,6 +868,82 @@ describe("volume runs", () => {
 
       expect(verbs).toEqual([]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+  });
+
+  describe("restore", () => {
+    const restoreSent = () => sent.find((request) => request.command === "restore");
+
+    beforeEach(() => {
+      holders = ["fsn-1"];
+      machines = [
+        { name: "fsn-1", pool: true, copy: null, lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("11"), lease: null },
+      ];
+    });
+
+    it("a clean Restore makes the lone copy the writer, with the Service spec, and names what is lost", async () => {
+      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual(["restore@fsn-2(3,0,0)"]);
+      expect(restoreSent()?.payload).toMatchObject({ name: dockerVolume, namespace: "shop-production", resolved_spec: { name: "web" } });
+      expect(machines[1]?.copy).toMatchObject({ kind: "root", readonly: false });
+      expect(await rows()).toMatchObject([{
+        state: "done",
+        message: `data restored on fsn-2 from ${new Date(1_790_000_000_000).toISOString()}; writes after that time are lost`,
+      }]);
+    });
+
+    it("a Restore after the Service's Server is gone takes the spec the Mirror saw", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy("11"), lease: null },
+        { name: "fsn-2", pool: true, copy: null, lease: null },
+      ];
+      const mirror = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      expect((await execute(mirror.id, "run-mirror")).error).toBeUndefined();
+      holders = [];
+      machines = [{ name: "fsn-2", pool: true, copy: slotCopy("11"), lease: null }];
+      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
+
+      const output = await execute(run.id, "run-restore");
+
+      expect(output.error).toBeUndefined();
+      expect(restoreSent()?.payload).toMatchObject({ name: dockerVolume, namespace: "shop-production", resolved_spec: { name: "web" } });
+      expect(await rows()).toMatchObject([{ kind: "mirror", state: "done" }, { kind: "restore", state: "done" }]);
+    });
+
+    it("returning_old_copy: a run that finds a root below the restored one demotes it, and only it, then asks for a rerun", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: writerCopy("10"), lease: { lease: 7, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
+        { name: "fsn-2", pool: true, copy: writerCopy("11"), lease: { lease: 8, pos: { seq: 3, round: 0, sub: 0 }, cycle: "closed" } },
+      ];
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(output.result).toEqual({ runId: run.id, demoted: "fsn-1" });
+      expect(verbs).toEqual(["demote_volume@fsn-1(3,0,0)"]);
+      expect(machines[0]?.copy).toMatchObject({ kind: "slot", readonly: true });
+      expect(machines[1]?.copy).toMatchObject({ kind: "root", readonly: false });
+      expect(await rows()).toMatchObject([{
+        lease: "8",
+        state: "failed",
+        message: "data-fsn-1 was older than data-fsn-2 and is now read-only; writes to it since fsn-2 took over are lost. Run this again",
+      }]);
+    });
+
+    it("a Restore with no Service container mounting the Volume is refused before the lease", async () => {
+      holders = [];
+      const run = await requested({ kind: "restore", args: { from: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toMatchObject({ refused: { code: "invalid" } });
+      expect(verbs).toEqual([]);
     });
   });
 

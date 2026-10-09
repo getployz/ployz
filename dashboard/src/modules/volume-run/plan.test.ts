@@ -1,10 +1,10 @@
 import type { LeaseRecord, MachineId, VolumeCopy } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { type PlanInput, planFromCopies, type Role, roleOf } from "#/modules/volume-run/plan";
+import { participantsOf, type PlanInput, planFromCopies, type Role, roleOf } from "#/modules/volume-run/plan";
 import type { Member } from "#/modules/volume-run/volume-run";
 
 const snapshot = { name: "ployz-1", guid: "11", created_unix_seconds: 1_790_000_000 };
-const lease = (cycle: LeaseRecord["cycle"]): LeaseRecord => ({ lease: 4, pos: { seq: 4, round: 0, sub: 5 }, cycle });
+const lease = (cycle: LeaseRecord["cycle"], number = 4): LeaseRecord => ({ lease: number, pos: { seq: 4, round: 0, sub: 5 }, cycle });
 
 const COPIES = {
   writer: { kind: "root", writer: { phase: "idle" }, readonly: false, newest: snapshot },
@@ -22,10 +22,10 @@ const COPIES = {
 
 type Copy = keyof typeof COPIES | "empty" | "unanswered";
 
-function member(server: string, copy: Copy, options: { pool?: boolean; cycle?: LeaseRecord["cycle"] } = {}): Member {
+function member(server: string, copy: Copy, options: { pool?: boolean; cycle?: LeaseRecord["cycle"]; lease?: number } = {}): Member {
   const machine = { id: server.padEnd(32, "0") as MachineId, name: server };
   if (copy === "unanswered") return { machine, answered: false };
-  const view = { copy: copy === "empty" ? null : (COPIES[copy] ?? null), lease: options.cycle === undefined ? null : lease(options.cycle) };
+  const view = { copy: copy === "empty" ? null : (COPIES[copy] ?? null), lease: options.lease !== undefined ? lease(options.cycle ?? "closed", options.lease) : options.cycle === undefined ? null : lease(options.cycle) };
   return { machine, address: "fdcc::1", answered: true, pool: options.pool ?? copy !== "empty", view };
 }
 
@@ -35,6 +35,7 @@ const remove = (slot: string | null, confirmed: string | null = null): PlanInput
   ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed }, volumeName: "data", orphan: false });
 const move = (to: string): PlanInput => ({ kind: "move", args: { to }, volumeName: "data", orphan: false });
 const release: PlanInput = { kind: "release", args: {}, volumeName: "data", orphan: false };
+const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, volumeName: "data", orphan: false });
 const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, volumeName: "ns_vol-1", orphan: true };
 
 function outcome(input: PlanInput, members: Member[]) {
@@ -52,6 +53,10 @@ function outcome(input: PlanInput, members: Member[]) {
       return `move ${phase.writer.machine.name}->${phase.target.machine.name} at ${phase.start}${phase.guid === null ? "" : ` ${phase.guid}`}${phase.declare ? " declare" : ""}`;
     case "release":
       return `release ${phase.source.machine.name}${phase.thaw ? " thaw" : ""} mirror ${phase.mirror?.machine.name ?? "none"}`;
+    case "restore":
+      return `restore ${phase.from.machine.name}${phase.lostAfter === null ? "" : ` ${phase.lostAfter.guid}`}`;
+    case "demote":
+      return `demote ${phase.old.machine.name} below ${phase.writer.machine.name}`;
   }
 }
 
@@ -144,6 +149,31 @@ describe("plan_from_copies_table", () => {
     ["release after handover", release, [member("a", "handed"), member("b", "stale")], "refuse volume_switching"],
     ["release with a Server unanswered", release, [member("a", "switching"), member("b", "unanswered")], "refuse unanswered"],
     ["release with no writer", release, [member("b", "mirror")], "refuse no_writer"],
+    ["restore the only mirror", restore("b"), [member("a", "empty"), member("b", "mirror")], "restore b 11"],
+    ["restore a final mirror", restore("b"), [member("b", "final")], "restore b 11"],
+    ["restore a stale slot", restore("b"), [member("a", "empty"), member("b", "stale")], "restore b 11"],
+    ["restore a slot mid-promote", restore("b"), [member("b", "promoting")], "restore b 11"],
+    ["restore a handed root", restore("a"), [member("a", "handed"), member("b", "empty")], "restore a"],
+    ["restore a frozen root", restore("a"), [member("a", "switching")], "restore a"],
+    ["restore a read-only root", restore("a"), [member("a", "promoted")], "restore a"],
+    ["restore the writable writer", restore("a"), [member("a", "writer"), member("b", "empty")], "refuse invalid"],
+    ["restore while another Server holds the writer", restore("b"), [member("a", "writer"), member("b", "mirror")], "refuse another_copy"],
+    ["restore while another Server holds a mirror", restore("a"), [member("a", "handed"), member("b", "stale")], "refuse another_copy"],
+    ["restore while another Server holds a frozen root", restore("b"), [member("a", "switching"), member("b", "mirror")], "refuse another_copy"],
+    ["restore from a Server with no copy", restore("b"), [member("a", "empty"), member("b", "empty")], "refuse no_copy"],
+    ["restore from a Server not in the cluster", restore("z"), [member("b", "mirror")], "refuse invalid"],
+    ["restore with a Server unanswered", restore("b"), [member("a", "unanswered"), member("b", "mirror")], "refuse unanswered"],
+    ["mirror with a returning root below the restored one", mirror("c"), [member("a", "writer", { lease: 7 }), member("b", "writer", { lease: 8 }), member("c", "empty")], "demote a below b"],
+    ["move with a returning root above in the list", move("c"), [member("b", "writer", { lease: 8 }), member("a", "writer", { lease: 7 }), member("c", "empty")], "demote a below b"],
+    ["sync with a returning root without a record", sync(), [member("a", "writer"), member("b", "writer", { lease: 8 }), member("c", "mirror")], "demote a below b"],
+    ["release with three roots demotes the lowest", release, [member("a", "writer", { lease: 8 }), member("b", "writer", { lease: 3 }), member("c", "writer", { lease: 5 })], "demote b below a"],
+    ["a demote cut short above the restored writer still demotes the old root", sync(), [member("a", "promoted", { lease: 9 }), member("b", "writer", { lease: 8 }), member("c", "mirror", { lease: 8 })], "demote a below b"],
+    ["a demote cut short before its record still demotes the old root", sync(), [member("a", "promoted", { lease: 7 }), member("b", "writer", { lease: 8 }), member("c", "mirror")], "demote a below b"],
+    ["a read-only root tied with the writer is the old one", release, [member("b", "writer", { lease: 8 }), member("a", "promoted", { lease: 8 })], "demote a below b"],
+    ["two read-only roots stay two writers", release, [member("a", "promoted", { lease: 9 }), member("b", "promoted", { lease: 8 })], "refuse two_writers"],
+    ["two roots at the same lease stay two writers", release, [member("a", "writer", { lease: 8 }), member("b", "writer", { lease: 8 })], "refuse two_writers"],
+    ["a lower root beside a frozen one stays two writers", mirror("c"), [member("a", "writer", { lease: 3 }), member("b", "switching", { lease: 8 }), member("c", "empty")], "refuse two_writers"],
+    ["a returning root does not block Restore's refusal", restore("b"), [member("a", "writer", { lease: 3 }), member("b", "writer", { lease: 8 })], "refuse invalid"],
   ])("%s", (_, input, members, expected) => {
     expect(outcome(input, members)).toBe(expected);
   });
@@ -162,10 +192,38 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it("names every other copy Restore would leave behind", () => {
+    expect(planFromCopies(restore("fsn-2"), [member("fsn-1", "handed"), member("fsn-2", "stale"), member("fsn-3", "mirror")])).toEqual({
+      ok: false,
+      refusal: {
+        code: "another_copy",
+        message: "data also has copies on fsn-1, fsn-3; Restore needs data-fsn-2 to be the only copy, so remove the others with server rm or volume mirror rm first",
+      },
+    });
+  });
+
   it("names the Server without managed storage", () => {
     expect(planFromCopies(mirror("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "empty", { pool: false })])).toEqual({
       ok: false,
       refusal: { code: "no_pool", message: "fsn-2 has no managed volume storage yet" },
     });
+  });
+});
+
+describe("participantsOf", () => {
+  const named = (input: PlanInput, members: Member[]) => {
+    const planned = planFromCopies(input, members);
+    if (!planned.ok) throw new Error(planned.refusal.message);
+    return participantsOf(planned.phase).map((member) => member.machine.name).sort();
+  };
+
+  it.each<[string, PlanInput, Member[], string[]]>([
+    ["a Move onto an empty Server names its source and target", move("b"), [member("a", "writer"), member("b", "empty", { pool: true }), member("d", "empty")], ["a", "b"]],
+    ["a Sync names both copies and not the empty Servers", sync(), [member("a", "writer"), member("c", "mirror"), member("d", "empty", { pool: true })], ["a", "c"]],
+    ["a Mirror names the empty Server it builds on", mirror("b"), [member("a", "writer"), member("b", "empty", { pool: true })], ["a", "b"]],
+    ["a Restore names the copy it makes the writer", restore("b"), [member("a", "empty"), member("b", "mirror")], ["b"]],
+    ["a demote names only the old copy", release, [member("a", "writer", { lease: 3 }), member("b", "writer", { lease: 8 })], ["a"]],
+  ])("%s", (_name, input, members, expected) => {
+    expect(named(input, members)).toEqual(expected);
   });
 });

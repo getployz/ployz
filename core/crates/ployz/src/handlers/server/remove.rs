@@ -7,17 +7,18 @@ use super::super::runtime;
 use super::{ConnectionOptions, target};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
-use crate::cluster::{CloudHold, refuse_last_managed};
+use crate::cluster::{CloudHold, copies_left_behind, refuse_last_managed};
 use crate::connect::Remover;
 use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
-    data_loss::{VolumeEffect, VolumeLabels, volume_label},
+    data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
     leaf_matches, store,
 };
-use ployz_core::{EnvironmentValues, ObservedDataLoss};
+use ployz_core::{DataLoss, DockerVolumeName, EnvironmentValues};
 use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
+use std::collections::BTreeSet;
 
 use crate::ui::Hint;
 
@@ -27,49 +28,99 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     let runtime = runtime()?;
-    let (mut client, selected, hold, cloud, observed, services, replicated_services) = runtime.block_on(async {
-        let mut client = super::connect(matches, options.context()).await?;
-        let machines = client.machines().await?;
-        let selected = select_machine(&machines, &selector)?;
+    // Before anything is listed or confirmed: a removal that can't happen asks nothing.
+    let (mut client, machines, selected, answers, current, hold, held) =
+        runtime.block_on(async {
+            let mut client = super::connect(matches, options.context()).await?;
+            let machines = client.machines().await?;
+            let observation =
+                crate::cluster::visible_machine(&MachineTarget::parse(&selector)?, &machines)?;
+            let selected = observation.machine.clone();
+            let answers = observation.invites_rpc();
+            let current = client
+                .call::<op::DescribeContract>(DescribeContractRequest {}, None)
+                .await?
+                .machine_id;
+            if selected.id == current && machines.len() > 1 {
+                return Err(Error::conflict(
+                    "the current entry Server cannot be removed while another Server is visible",
+                ));
+            }
+            let hold = refuse_last_managed(&client, &machines, selected.id).await?;
+            let held = if no_reset {
+                client.held_copies(observation).await
+            } else {
+                BTreeSet::new()
+            };
+            Ok::<_, Error>((client, machines, selected, answers, current, hold, held))
+        })?;
+    if !held.is_empty() {
+        let docker = held
+            .iter()
+            .map(DockerVolumeName::as_str)
+            .collect::<Vec<_>>();
+        let labels = volume_labels(root, &docker);
+        return Err(copies_left_behind(
+            &selected.name,
+            docker
+                .iter()
+                .map(|name| labels.get(*name).map_or(*name, String::as_str)),
+        )
+        .into());
+    }
+    let (cloud, observed, services, replicated_services) = runtime.block_on(async {
         let selected_target = MachineTarget::from(&selected.id);
-        let current = client
-            .call::<op::DescribeContract>(DescribeContractRequest {}, None)
-            .await?
-            .machine_id;
-        if selected.id == current && machines.len() > 1 {
-            return Err(Error::conflict(
-                "the current entry Server cannot be removed while another Server is visible",
-            ));
-        }
-        // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-        let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let entry = machines
             .iter()
             .find(|observed| observed.machine.id == current)
-            .map_or_else(|| current.to_string(), |observed| observed.machine.name.to_string());
+            .map_or_else(
+                || current.to_string(),
+                |observed| observed.machine.name.to_string(),
+            );
         let cloud = if hold == CloudHold::Last || cloud_manages(&client, current, &entry).await? {
             Some(cloud_removal(matches, &selected, hold, no_reset).await?)
         } else {
             None
         };
         let observed = if no_reset {
-            ployz_core::ObservedDataLoss { data_loss: Vec::new() }
+            ployz_core::ObservedDataLoss {
+                data_loss: Vec::new(),
+            }
         } else {
-            client.data_loss_if_machine_removed(&selected_target).await
+            client
+                .data_loss_if_machine_removed(&selected_target)
+                .await
                 .map_err(machine_removal_refusal)?
         };
-        let live = client.live_services_from(&machines, EnvironmentValues::Redacted).await?;
+        let live = client
+            .live_services_from(&machines, EnvironmentValues::Redacted)
+            .await?;
         if !no_reset {
-            if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
-                return Err(Error::caused(RpcErrorCode::Unavailable, format!("Cannot observe Services on Server {}. No changes made.", selected.name), failure.error.clone()));
+            if let Some(failure) = live
+                .containers
+                .failures
+                .iter()
+                .find(|failure| failure.machine_id == selected.id)
+            {
+                return Err(Error::caused(
+                    RpcErrorCode::Unavailable,
+                    format!(
+                        "Cannot observe Services on Server {}. No changes made.",
+                        selected.name
+                    ),
+                    failure.error.clone(),
+                ));
             }
             if live.containers.omissions.contains(&selected.id) {
-                return Err(Error::unavailable(format!("Cannot observe Services on Server {}: no terminal response. No changes made.", selected.name)));
+                return Err(Error::unavailable(format!(
+                    "Cannot observe Services on Server {}: no terminal response. No changes made.",
+                    selected.name
+                )));
             }
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
-        Ok::<_, Error>((client, selected, hold, cloud, observed, services, replicated_services))
+        Ok::<_, Error>((cloud, observed, services, replicated_services))
     })?;
     if !services.is_empty() {
         crate::ui::warn(format!(
@@ -86,12 +137,24 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     // The Store reads block on their own runtime, so they run between the two.
-    let labels = volume_labels(root, &observed);
+    let labels = volume_labels(
+        root,
+        &observed
+            .data_loss
+            .iter()
+            .map(DataLoss::name)
+            .collect::<Vec<_>>(),
+    );
+    let dead = no_reset && !answers;
     let confirmation = super::super::data_loss::confirm_removal(
         root,
         &client,
         &observed,
-        selected.name.as_str(),
+        if dead {
+            Typed::dead(selected.name.as_str())
+        } else {
+            Typed::name(selected.name.as_str())
+        },
         if no_reset {
             VolumeEffect::Preserve
         } else {
@@ -101,10 +164,17 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         |retry| {
             Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                format!(
-                    "Removing Server {} needs its name typed. No changes made.",
-                    selected.name
-                ),
+                if dead {
+                    format!(
+                        "Server {} does not answer; removing it without a reset needs dead typed. No changes made.",
+                        selected.name
+                    )
+                } else {
+                    format!(
+                        "Removing Server {} needs its name typed. No changes made.",
+                        selected.name
+                    )
+                },
                 json!({
                     "server": { "id": selected.id, "name": selected.name },
                     "services": services,
@@ -244,12 +314,12 @@ async fn cloud_manages(
         .any(|label| label.as_str() == "cloud"))
 }
 
-/// Each observed Docker Volume that keeps a Volume's data, by that Volume's name, so
+/// Each of the `docker` Volumes that keeps a Volume's data, by that Volume's name, so
 /// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
 /// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
-fn volume_labels(root: &ArgMatches, observed: &ObservedDataLoss) -> VolumeLabels {
+fn volume_labels(root: &ArgMatches, docker: &[&str]) -> VolumeLabels {
     let mut owners = Vec::new();
-    if observed.data_loss.is_empty() {
+    if docker.is_empty() {
         return VolumeLabels::new();
     }
     let Ok(Some(store)) = store::reachable(root) else {
@@ -260,11 +330,7 @@ fn volume_labels(root: &ArgMatches, observed: &ObservedDataLoss) -> VolumeLabels
     };
     for owned in owned.namespaces {
         let prefix = format!("{}_", owned.namespace);
-        if !observed
-            .data_loss
-            .iter()
-            .any(|loss| loss.name().starts_with(&prefix))
-        {
+        if !docker.iter().any(|name| name.starts_with(&prefix)) {
             continue;
         }
         let environment = EnvironmentRef {
@@ -275,14 +341,11 @@ fn volume_labels(root: &ArgMatches, observed: &ObservedDataLoss) -> VolumeLabels
             continue;
         };
         for listing in view.volumes {
-            if let Ok(docker) = docker_volume(&owned.namespace, listing.volume.id.as_str())
-                && observed
-                    .data_loss
-                    .iter()
-                    .any(|loss| loss.name() == docker.as_str())
+            if let Ok(volume) = docker_volume(&owned.namespace, listing.volume.id.as_str())
+                && docker.contains(&volume.as_str())
             {
                 owners.push(VolumeOwner {
-                    docker: docker.to_string(),
+                    docker: volume.to_string(),
                     project: owned.project.to_string(),
                     environment: owned.environment.to_string(),
                     volume: listing.volume.name.to_string(),

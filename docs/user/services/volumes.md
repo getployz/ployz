@@ -82,12 +82,13 @@ every volume it held into a copy, so the volume keeps its data but has no writer
 service that mounts such a volume refuses and names where the data is:
 
 ```
-Volume data has no writer; it is held as web-2 (copy). Make one the writer: ployz volume restore data --from web-2
+Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz volume restore data --from web-2
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
-A volume that is [mid-move](move-a-volume.md#when-a-move-stops) refuses the same way until the
-move finishes.
+If several servers hold copies, it names the `ployz volume mirror rm` lines to run first. A volume
+that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the move to wait for
+or the `ployz volume release` line to run.
 
 ## When your servers show Docker only
 

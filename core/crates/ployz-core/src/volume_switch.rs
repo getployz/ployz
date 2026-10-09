@@ -677,22 +677,18 @@ pub fn admit_plain_mount(
     }
 }
 
-/// The refusal a plain Deploy of Volume `name` reads when this Machine cannot mount its
-/// writer: the Machine that holds the writer, or else every copy and the restore that would
-/// make one a writer. `name` is the Volume as its owner named it, not its Docker name.
+/// The refusal a plain Deploy of Volume `name` reads when this Server cannot mount its
+/// writer: the Server that holds the writer, the Move a run holds it in, or else how
+/// Restore makes a copy the writer. `name` is the Volume as its owner named it, not its
+/// Docker name.
 #[must_use]
 pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
     if let Some(writer) = copies.iter().find(|copy| copy.role == CopyRole::Writer) {
         return format!(
-            "Volume {name}'s writer is on {}, so this Machine cannot mount it",
+            "Volume {name}'s writer is on {}, so this Server cannot mount it",
             writer.machine
         );
     }
-    let Some(first) = copies.first() else {
-        return format!(
-            "Volume {name} has no writer: no Machine holds a copy and this Machine recorded a run for it; restore it from a backup or remove it before deploying"
-        );
-    };
     let listed = copies
         .iter()
         .map(|copy| {
@@ -705,10 +701,31 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "Volume {name} has no writer; it is held as {listed}. Make one the writer: ployz volume restore {name} --from {}",
-        first.machine
-    )
+    if copies.iter().any(|copy| copy.role == CopyRole::Switching) {
+        return format!(
+            "Volume {name} is mid-Move; it is held as {listed}. Wait for the Move to finish, or run ployz volume release {name}"
+        );
+    }
+    match copies {
+        [] => format!(
+            "Volume {name} has no writer: no Server holds a copy and this Server recorded a run for it; restore it from a backup or remove it before deploying"
+        ),
+        [only] => format!(
+            "Volume {name} has no writer; {} holds its only copy. Make it the writer: ployz volume restore {name} --from {}",
+            only.machine, only.machine
+        ),
+        [first, others @ ..] => {
+            let removals = others
+                .iter()
+                .map(|copy| format!("ployz volume mirror rm {name}-{}", copy.machine))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Volume {name} has no writer; it is held as {listed}. Restore needs a single copy: remove the others with {removals} first, then run ployz volume restore {name} --from {}",
+                first.machine
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -813,43 +830,70 @@ mod tests {
         }
     }
 
+    fn copy(machine: &str, role: CopyRole) -> KnownCopy {
+        KnownCopy {
+            machine: name(machine),
+            role,
+        }
+    }
+
     #[test]
-    fn no_writer_message_names_every_copy_and_the_restore_line() {
-        let volume = "data";
-        let copies = [
-            KnownCopy {
-                machine: name("fsn-2"),
-                role: CopyRole::Slot,
-            },
-            KnownCopy {
-                machine: name("hel-1"),
-                role: CopyRole::Switching,
-            },
-        ];
-        let message = no_writer_message(volume, &copies);
+    fn no_writer_message_restores_a_single_copy_and_mirrors_need_removing_first() {
         assert_eq!(
-            message,
-            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (switching). Make one the writer: ployz volume restore data --from fsn-2"
+            no_writer_message("data", &[copy("fsn-2", CopyRole::Slot)]),
+            "Volume data has no writer; fsn-2 holds its only copy. Make it the writer: ployz volume restore data --from fsn-2"
         );
-        assert!(no_writer_message(volume, &[]).contains("no Machine holds a copy"));
+        assert_eq!(
+            no_writer_message(
+                "data",
+                &[
+                    copy("fsn-2", CopyRole::Slot),
+                    copy("hel-1", CopyRole::Slot),
+                    copy("nbg-3", CopyRole::Slot),
+                ]
+            ),
+            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: remove the others with ployz volume mirror rm data-hel-1, ployz volume mirror rm data-nbg-3 first, then run ployz volume restore data --from fsn-2"
+        );
+        assert_eq!(
+            no_writer_message("data", &[]),
+            "Volume data has no writer: no Server holds a copy and this Server recorded a run for it; restore it from a backup or remove it before deploying"
+        );
+    }
+
+    #[test]
+    fn no_writer_message_sends_a_mid_move_volume_to_its_move_not_to_restore() {
+        for copies in [
+            vec![copy("hel-1", CopyRole::Switching)],
+            vec![
+                copy("fsn-2", CopyRole::Slot),
+                copy("hel-1", CopyRole::Switching),
+            ],
+        ] {
+            let message = no_writer_message("data", &copies);
+            assert!(
+                message.starts_with("Volume data is mid-Move; it is held as "),
+                "{message}"
+            );
+            assert!(message.contains("hel-1 (switching)"), "{message}");
+            assert!(
+                message.ends_with("Wait for the Move to finish, or run ployz volume release data"),
+                "{message}"
+            );
+            assert!(!message.contains("restore"), "{message}");
+        }
     }
 
     #[test]
     fn no_writer_message_names_a_writer_elsewhere_without_a_restore_line() {
-        let volume = "data";
-        let copies = [
-            KnownCopy {
-                machine: name("fsn-2"),
-                role: CopyRole::Slot,
-            },
-            KnownCopy {
-                machine: name("hel-1"),
-                role: CopyRole::Writer,
-            },
-        ];
         assert_eq!(
-            no_writer_message(volume, &copies),
-            "Volume data's writer is on hel-1, so this Machine cannot mount it"
+            no_writer_message(
+                "data",
+                &[
+                    copy("fsn-2", CopyRole::Slot),
+                    copy("hel-1", CopyRole::Writer)
+                ]
+            ),
+            "Volume data's writer is on hel-1, so this Server cannot mount it"
         );
     }
 

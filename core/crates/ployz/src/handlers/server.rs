@@ -427,7 +427,7 @@ pub(crate) fn command() -> Command {
                 .arg(switch("no-reset", None).help(
                     "Remove the Server from the Cluster without resetting it; use when the Server is unreachable",
                 ))
-                .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal"))
+                .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal; dead for a Server removed with --no-reset that does not answer"))
                 .arg(positional("server", true))
                 .arg(
                     volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),

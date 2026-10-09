@@ -125,6 +125,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "volume move",
             "volume release",
             "volume rename",
+            "volume restore",
             "volume rm",
             "volume runs",
             "volume set",

@@ -972,6 +972,15 @@ impl MachineRpc for MachineService {
             .await
     }
 
+    async fn demote_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::DemoteVolume>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("DemoteVolume", "Volume.Demote", &request)
+            .await
+    }
+
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
