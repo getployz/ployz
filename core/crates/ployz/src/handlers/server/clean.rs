@@ -65,7 +65,7 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     if let Some(namespace) = &named {
         let runtime = runtime()?;
         if let Some(credential) = super::cloud_runs(&runtime, matches)? {
-            confirm_in_cloud(matches, namespace)?;
+            confirm_in_cloud(&runtime, matches, &credential, namespace)?;
             return through_cloud(&runtime, matches, &credential, namespace);
         }
     }
@@ -234,7 +234,16 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
-fn confirm_in_cloud(matches: &ArgMatches, namespace: &Namespace) -> Result<(), Error> {
+fn confirm_in_cloud(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    credential: &Credential,
+    namespace: &Namespace,
+) -> Result<(), Error> {
+    #[derive(Deserialize)]
+    struct Preview {
+        volumes: Vec<DockerVolumeId>,
+    }
     let next = retry(matches, namespace);
     confirm(
         matches,
@@ -242,20 +251,27 @@ fn confirm_in_cloud(matches: &ArgMatches, namespace: &Namespace) -> Result<(), E
         "Namespace",
         next.clone(),
         || {
+            let Preview { volumes } = runtime.block_on(cloud_account::refusable(
+                credential,
+                Method::GET,
+                &format!("namespaces/{namespace}/clean"),
+                None,
+            ))?;
             let refusal = Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
                 format!(
-                    "Removing Namespace {namespace} deletes its containers and the data of its \
-                 Volumes; this can't be undone. No changes made."
+                    "Removing Namespace {namespace} deletes its containers and the data of Volumes \
+                 {}; this can't be undone. No changes made.",
+                    volume_names(&volumes)
                 ),
-                json!({ "namespace": namespace }),
+                json!({ "namespace": namespace, "volumes": volumes }),
             )
             .hint(Hint::Retry(next.clone()));
             let loss = Tree::new(
                 format!("Removing Namespace {namespace} deletes, for good:"),
                 vec![
                     Tree::leaf("its containers"),
-                    Tree::leaf("the data of its Volumes"),
+                    Tree::leaf(format!("the data of Volumes {}", volume_names(&volumes))),
                 ],
             );
             Ok((refusal, loss))

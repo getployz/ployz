@@ -418,6 +418,12 @@ impl Approvals {
                     "message": null,
                 }),
             ),
+            ("GET", ["namespaces", namespace, "clean"]) => {
+                let volume = json!({ "machine_id": CLOUD_SERVER, "name": format!("{namespace}_data") });
+                (200, json!({ "namespace": namespace, "volumes": [volume] }))
+            }
+            ("POST", ["namespaces", "slow", "clean"]) => (202, json!({ "id": "cln_slow" })),
+            ("GET", ["namespace-cleanups", "cln_slow"]) => (200, json!({ "state": "running" })),
             ("POST", ["namespaces", namespace, "clean"]) => self.operation(
                 approval,
                 json!({ "verb": "clean", "name": namespace }),
@@ -3420,7 +3426,7 @@ fn without_a_terminal_a_publish_waits_until_a_human_approves_it() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("Waiting for approval in Ployz Cloud"),
+        stderr.contains("Waiting for approval in Ployz Cloud… approved.\n"),
         "{stderr}"
     );
     let polls: Vec<_> = approvals.calls().into_iter().map(|call| call.0).collect();
@@ -3454,10 +3460,13 @@ fn without_a_terminal_ctrl_c_stops_the_wait_and_publishes_nothing() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut stderr = child.stderr.take().unwrap();
     let mut seen = String::new();
+    let mut chunk = [0; 256];
     while !seen.contains("Waiting for approval in Ployz Cloud") {
-        assert_ne!(stderr.read_line(&mut seen).unwrap(), 0, "{seen}");
+        let read = stderr.read(&mut chunk).unwrap();
+        assert_ne!(read, 0, "{seen}");
+        seen.push_str(&String::from_utf8_lossy(&chunk[..read]));
     }
     let pid = child.id().to_string();
     assert!(
@@ -3636,6 +3645,11 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
     let mismatch = error(&target, &["server", "upgrade", "beta", CLOUD_SERVER]);
     assert_eq!(mismatch["code"], json!("channel_mismatch"), "{mismatch}");
     assert_eq!(mismatch["details"]["channel"], json!("stable"));
+    assert_eq!(
+        mismatch["details"]["retry"],
+        json!(format!("ployz server upgrade stable {CLOUD_SERVER}")),
+        "{mismatch}"
+    );
 
     let exact = error(&target, &["server", "upgrade", "0.3.1", CLOUD_SERVER]);
     assert_eq!(exact["code"], json!("invalid_argument"), "{exact}");
@@ -3712,7 +3726,18 @@ fn signed_in_a_cleanup_takes_the_typed_namespace_even_when_nobody_must_approve()
     let (target, approvals) = running(&[]);
     let refused = error(&target, &["server", "clean", "--namespace", "stray"]);
     assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
-    assert!(approvals.runs().is_empty(), "{:?}", approvals.runs());
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("the data of Volumes stray_data;"),
+        "{refused}"
+    );
+    assert_eq!(
+        refused["details"]["volumes"],
+        json!([{ "machine_id": CLOUD_SERVER, "name": "stray_data" }])
+    );
+    assert_eq!(approvals.runs(), ["GET namespaces/stray/clean"]);
 
     let cleaned = ok(
         &target,
@@ -3729,9 +3754,82 @@ fn signed_in_a_cleanup_takes_the_typed_namespace_even_when_nobody_must_approve()
     assert_eq!(
         approvals.runs(),
         [
+            "GET namespaces/stray/clean",
             "POST namespaces/stray/clean",
             "GET namespace-cleanups/cln_1"
         ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_following_a_cleanup_cloud_keeps_running() {
+    let (target, approvals) = running(&[]);
+    let home = tempfile::tempdir().unwrap();
+    let mut child = target
+        .command(home.path())
+        .args([
+            "server",
+            "clean",
+            "--namespace",
+            "slow",
+            "--confirm",
+            "slow",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let following = "GET namespace-cleanups/cln_slow".to_owned();
+    let started = std::time::Instant::now();
+    while !approvals.runs().contains(&following) {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "{:?}",
+            approvals.runs()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let pid = child.id().to_string();
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let interrupted = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if interrupted.elapsed() > std::time::Duration::from_secs(5) {
+            child.kill().unwrap();
+            panic!("still following 5s after Ctrl-C: {:?}", approvals.runs());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert_eq!(status.code(), Some(130), "{stderr}");
+    assert!(
+        stderr.contains(
+            "Stopped following. Removing Namespace slow keeps running in Ployz Cloud and finishes on its own."
+        ),
+        "{stderr}"
+    );
+    assert!(
+        approvals
+            .runs()
+            .iter()
+            .all(|run| !run.starts_with("DELETE")),
+        "nothing cancels the run: {:?}",
+        approvals.runs()
     );
 }
 

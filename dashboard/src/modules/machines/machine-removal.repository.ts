@@ -164,7 +164,12 @@ export const requestMachineRemoveAttempt = Effect.fn(
 
 export const machineRemoveAttemptConsuming = Effect.fn(
   "MachineRemovalRepository.consuming",
-)(function* (organizationId: string, approvalId: string) {
+)(function* (
+  organizationId: string,
+  approvalId: string,
+  machineId: string,
+  noReset: boolean,
+) {
   const { drizzle } = yield* Database;
   const [attempt] = yield* drizzle
     .select({ id: schemaMachineRemoveAttempt.id })
@@ -173,6 +178,8 @@ export const machineRemoveAttemptConsuming = Effect.fn(
       and(
         eq(schemaMachineRemoveAttempt.organizationId, organizationId),
         eq(schemaMachineRemoveAttempt.approvalId, approvalId),
+        eq(schemaMachineRemoveAttempt.machineId, machineId),
+        eq(schemaMachineRemoveAttempt.noReset, noReset),
       ),
     )
     .limit(1);

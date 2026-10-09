@@ -139,6 +139,8 @@ type Reply = {
   readonly disconnected?: { readonly id: number; readonly account: string };
   readonly uninstall_url?: string;
   readonly organization?: string;
+  readonly namespace?: string;
+  readonly volumes?: ReadonlyArray<unknown>;
   readonly approval?: { readonly id: string; readonly status: string; readonly digest: string };
   readonly error?: {
     readonly code: string;
@@ -635,13 +637,15 @@ it.live(
 const fra1 = "f".repeat(32);
 const leftBehind = { kind: "docker_volume" as const, id: { machine_id: fra1 as MachineId, name: "left-behind_data" as DockerVolumeName } };
 
-const leftBehindCluster = Layer.succeed(OrganizationRuntime, {
+type LeftBehind = { observesFra1: boolean; sessionsOpened: number };
+
+const leftBehindClusterOf = (cluster: LeftBehind) => Layer.succeed(OrganizationRuntime, {
   cancel: () => Effect.void,
-  open: () => Effect.succeed({
+  open: () => Effect.sync(() => ({
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
-        machines: [{ machine: { id: fra1, name: "fra-1" } }],
+        machines: cluster.observesFra1 ? [{ machine: { id: fra1, name: "fra-1" } }] : [],
         services: [{
           identity: "left-behind/web",
           service_id: "web",
@@ -653,8 +657,10 @@ const leftBehindCluster = Layer.succeed(OrganizationRuntime, {
       })),
       dataLossIfNamespaceDestroyed: () => Effect.succeed({ data_loss: [leftBehind] }),
     }),
-  }),
+  })).pipe(Effect.tap(() => Effect.sync(() => { cluster.sessionsOpened += 1; }))),
 });
+
+const leftBehindCluster = leftBehindClusterOf({ observesFra1: true, sessionsOpened: 0 });
 
 it.live(
   "the CLI's clean, drain and remove ask a human before they destroy anything, and an approved retry starts one run",
@@ -747,6 +753,63 @@ it.live(
         }).where(eq(machineRemoveAttempt.id, removalId));
         assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep)).json.id, removalId);
         assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`machine-remove-${removalId}`]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a used `server rm` approval answers with its removal once the Server is gone, and a Server Cloud no longer sees is never asked about",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-remove-gone-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const cluster: LeftBehind = { observesFra1: true, sessionsOpened: 0 };
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindClusterOf(cluster), inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const keep = { no_reset: true };
+        const asked = (yield* cli("DELETE", `servers/${fra1}`, alice, keep)).json.error?.details ?? assert.fail("no ask");
+        const approvalId = asked.approval_id ?? assert.fail("no approval id");
+        yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.approval ?? "" } });
+        const removalId = (yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep)).json.id
+          ?? assert.fail("no removal id");
+        const ended = new Date();
+        yield* drizzle.update(machineRemoveAttempt).set({ state: "succeeded", inngestRunId: "run-1", startedAt: ended, terminalAt: ended })
+          .where(eq(machineRemoveAttempt.id, removalId));
+        cluster.observesFra1 = false;
+
+        const retried = yield* cli("DELETE", `servers/${fra1}`, { ...alice, approval: approvalId }, keep);
+        assert.strictEqual(retried.status, 200);
+        assert.strictEqual(retried.json.id, removalId);
+        assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, alice, keep)).status, 404);
+        assert.strictEqual((yield* cli("DELETE", `servers/${fra1}`, alice, { confirm_data_loss: { confirmed: [] } })).status, 404);
+
+        const approvals = yield* drizzle.select({ status: operationApprovals.status }).from(operationApprovals);
+        assert.deepStrictEqual(approvals.map(({ status }) => status), ["approved"]);
+        assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`machine-remove-${removalId}`]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a clean names the Volumes it would delete before anyone confirms, and plans on one Engine session",
+  () =>
+    Effect.gen(function* () {
+      const cluster: LeftBehind = { observesFra1: true, sessionsOpened: 0 };
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindClusterOf(cluster) });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const preview = yield* cli("GET", "namespaces/left-behind/clean", alice);
+        assert.strictEqual(preview.status, 200);
+        assert.deepStrictEqual(preview.json, { namespace: "left-behind", volumes: [leftBehind.id] });
+        assert.strictEqual(cluster.sessionsOpened, 1);
+
+        cluster.sessionsOpened = 0;
+        assert.strictEqual((yield* cli("POST", "namespaces/left-behind/clean", alice)).json.error?.code, "approval_required");
+        assert.strictEqual(cluster.sessionsOpened, 1);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

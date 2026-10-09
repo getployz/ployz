@@ -203,7 +203,16 @@ fn through_cloud(
             Err(StoreCallError::Refused(refused))
                 if refused.code.as_str() == "channel_mismatch" =>
             {
-                return Err(match direct.clone() {
+                let along = refused
+                    .details
+                    .get("channel")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|channel| {
+                        let mut args = vec!["server", "upgrade", channel];
+                        args.extend(selectors.iter().map(String::as_str));
+                        Hint::Retry(super::super::rerun(matches, &args))
+                    });
+                return Err(match along {
                     Some(hint) => Error::from(refused).hint(hint),
                     None => refused.into(),
                 });
@@ -215,13 +224,14 @@ fn through_cloud(
         let settled = runtime.block_on(cloud_account::follow_run::<Settled<CloudUpgrade>>(
             credential,
             &format!("server-upgrades/{run}"),
+            &format!("Upgrading Server {name}"),
             Some(deadline),
         ))?;
         let Some(settled) = settled else {
             return Err(StoreCallError::Refused(ployz_core::RpcError {
                 code: ployz_core::RpcErrorCode::Unavailable,
                 message: format!(
-                    "Cloud has not finished the Upgrade of Server {name} (upgrade {run}). \
+                    "Cloud has not finished the Upgrade of Server {name}. \
                      The dashboard's Servers page shows whether it ran."
                 ),
                 details: serde_json::Value::Null,

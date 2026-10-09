@@ -10,6 +10,7 @@ use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{CloudHold, refuse_last_managed};
 use crate::connect::Remover;
+use crate::context::ConnectionSource;
 use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
@@ -91,6 +92,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let (confirmation, accepting) = super::super::data_loss::confirm_removal(
         root,
         &client,
+        match &cloud {
+            Some(_) => &ConnectionSource::Cloud,
+            None => client.connection_source(),
+        },
         &observed,
         selected.name.as_str(),
         if no_reset {
@@ -142,7 +147,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
         // TODO: do not reroute away from the current entry before removal.
         if let (Some(credential), Some(id)) = (&cloud, &removal) {
-            let removed = cloud_account::follow_removal(credential, &selected.id, id).await?;
+            let removed = cloud_account::follow_removal(credential, &selected.name, id).await?;
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));

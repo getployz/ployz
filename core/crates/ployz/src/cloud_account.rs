@@ -5,7 +5,7 @@
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
-use ployz_core::{MachineId, RpcError};
+use ployz_core::{MachineId, MachineName, RpcError};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -377,14 +377,30 @@ pub(crate) async fn start_run(
 ///
 /// # Errors
 ///
-/// Returns Cloud's refusal, a settled run this can't decode, or a Cloud failure.
+/// Returns Cloud's refusal, a settled run this can't decode, a Cloud failure, or
+/// [`StoreCallError::Stopped`] on Ctrl-C.
 pub(crate) async fn follow_run<T: DeserializeOwned>(
     credential: &Credential,
     path: &str,
+    doing: &str,
     deadline: Option<tokio::time::Instant>,
 ) -> Result<Option<T>, StoreCallError> {
+    let interrupted = crate::cancellation::interrupted()
+        .map_err(|error| StoreCallError::Stopped(crate::failure::Failure::from(error)))?;
+    let stopped = || {
+        StoreCallError::Stopped(
+            crate::failure::Failure::coded(
+                ployz_core::RpcErrorCode::Internal,
+                format!("Stopped following. {doing} keeps running in Ployz Cloud and finishes on its own."),
+            )
+            .interrupted(),
+        )
+    };
     loop {
-        let read: serde_json::Value = refusable(credential, Method::GET, path, None).await?;
+        let read: serde_json::Value = tokio::select! {
+            () = interrupted.cancelled() => return Err(stopped()),
+            read = refusable(credential, Method::GET, path, None) => read?,
+        };
         let state = read.get("state").and_then(serde_json::Value::as_str);
         if !matches!(state, Some("pending" | "running")) {
             return serde_json::from_value(read)
@@ -394,7 +410,10 @@ pub(crate) async fn follow_run<T: DeserializeOwned>(
         if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
             return Ok(None);
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::select! {
+            () = interrupted.cancelled() => return Err(stopped()),
+            () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+        }
     }
 }
 
@@ -418,7 +437,7 @@ async fn follow_operation_until<T: DeserializeOwned>(
     doing: &str,
     deadline: tokio::time::Instant,
 ) -> Result<Settled<T>, StoreCallError> {
-    follow_run(credential, path, Some(deadline))
+    follow_run(credential, path, doing, Some(deadline))
         .await?
         .ok_or_else(|| {
             StoreCallError::Refused(RpcError {
@@ -641,7 +660,7 @@ pub(crate) async fn start_removal(
     .await
 }
 
-/// Wait for Cloud's removal `id` of Server `machine` to settle. Cloud drops its row for
+/// Wait for Cloud's removal `id` of Server `name` to settle. Cloud drops its row for
 /// the Server, and when it saw the last one reset, lets go of the Cluster.
 ///
 /// # Errors
@@ -650,16 +669,24 @@ pub(crate) async fn start_removal(
 /// hasn't settled within [`REMOVAL_WAIT`], or a Cloud failure.
 pub(crate) async fn follow_removal(
     credential: &Credential,
-    machine: &MachineId,
+    name: &MachineName,
     id: &str,
 ) -> Result<CloudRemoval, StoreCallError> {
     let deadline = tokio::time::Instant::now() + REMOVAL_WAIT;
-    match follow_run(credential, &format!("server-removals/{id}"), Some(deadline)).await? {
+    let doing = format!("Removing Server {name}");
+    match follow_run(
+        credential,
+        &format!("server-removals/{id}"),
+        &doing,
+        Some(deadline),
+    )
+    .await?
+    {
         Some(RemovalRun::Succeeded(removal)) => Ok(removal),
         None => Err(StoreCallError::Refused(RpcError {
             code: ployz_core::RpcErrorCode::Unavailable,
             message: format!(
-                "Cloud is still removing Server {machine} (removal {id}); it finishes on its own. \
+                "Cloud is still removing Server {name}; it finishes on its own. \
                  The dashboard's Servers page shows when it's done."
             ),
             details: serde_json::Value::Null,

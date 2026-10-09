@@ -143,11 +143,15 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const machineId = serverIdOf(id);
       if (machineId === null) return yield* new NotFound({ message: "No such Server." });
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
-      const plan = yield* planRemove(caller.organization.id, machineId, "no_reset" in input ? null : input.confirm_data_loss.confirmed);
-      const gated = yield* gateOperation(caller, approvalHeader(request), plan);
-      if (!gated.ok) return refusal(gated.refusal);
-      const consumed = gated.approvalId === null ? null : yield* machineRemoveAttemptConsuming(caller.organization.id, gated.approvalId);
+      const noReset = "no_reset" in input;
+      const approval = approvalHeader(request);
+      const consumed = Schema.is(Uuid)(approval)
+        ? yield* machineRemoveAttemptConsuming(caller.organization.id, approval, machineId, noReset)
+        : null;
       if (consumed !== null) return { id: consumed };
+      const plan = yield* planRemove(caller.organization.id, machineId, noReset ? null : input.confirm_data_loss.confirmed);
+      const gated = yield* gateOperation(caller, approval, plan);
+      if (!gated.ok) return refusal(gated.refusal);
       const started = yield* startMachineRemove({
         organizationId: caller.organization.id,
         requestedByUserId: caller.userId,
@@ -188,6 +192,11 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "GET server-upgrades/:id":
       if (!isUpgradeAttemptId(id)) return missingRefusal("No such upgrade.");
       return yield* readCliServerUpgrade(caller.organization.id, id);
+    case "GET namespaces/:id/clean": {
+      const namespace = decodeURIComponent(id ?? "");
+      const plan = yield* planClean(caller.organization.id, namespace);
+      return { namespace, volumes: plan.confirmDataLoss.map(({ id: volume }) => volume) };
+    }
     case "POST namespaces/:id/clean": {
       const namespace = decodeURIComponent(id ?? "");
       const plan = yield* planClean(caller.organization.id, namespace);

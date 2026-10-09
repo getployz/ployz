@@ -50,9 +50,9 @@ How you answer depends on where the command runs:
 
 - `ployz publish` and `ployz deploy` ask only when the change removes something that's running.
   Rolling out a new image or changing variables never asks.
-- When you're signed in, `ployz server rm` always asks. `ployz server drain` asks when a service
-  runs only on that server, and `ployz server clean` asks when it would stop a service or delete
-  volume data. `ployz server upgrade` never asks.
+- Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
+  asks when a global service would run on no other server, and `ployz server clean` asks when it
+  would stop a service or delete volume data. `ployz server upgrade` never asks.
 - What you do in the dashboard never asks. Neither do settings edits.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
   again about the new one.

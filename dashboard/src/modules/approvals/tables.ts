@@ -9,7 +9,6 @@ import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus, DEFAULT_OR
 export const organizationSettings = pgTable("organization_settings", {
   organizationId: uuid("organization_id").primaryKey()
     .references(() => organization.id, { onDelete: "cascade" }),
-  /** On: a destructive Publish or Deploy from the CLI waits for a human's approval. Dashboard clicks never ask. */
   askBeforeDestructive: boolean("ask_before_destructive").default(DEFAULT_ORGANIZATION_SETTINGS.askBeforeDestructive).notNull(),
   createdAt,
   updatedAt,

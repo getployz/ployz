@@ -3,19 +3,21 @@ import type { DestructiveEffect, QualifiedService, RuntimeWatchView } from "@plo
 import { Effect } from "effect";
 import { operationDigest, type OperationDigest } from "#/modules/approvals/approvals.server";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
+import { readStore } from "#/modules/config-store/config-store.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
+import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { Conflict, NotFound } from "#/server/public-error";
 
 const unreachable = () => new Conflict({ userFacing: true, message: "Your servers aren't answering. Try again once they are." });
 
 const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const volumeName = ({ id }: DataLossIdentity) => `${id.machine_id}/${id.name}`;
-const deletesVolume = (identity: DataLossIdentity): DestructiveEffect => ({
+const deletesVolume = (identity: DataLossIdentity, label = identity.id.name): DestructiveEffect => ({
   kind: "deletes_volume",
-  name: identity.id.name,
+  name: label,
   node: volumeName(identity),
   path: `volumes/${volumeName(identity)}`,
 });
@@ -25,8 +27,8 @@ const removesService = (identity: QualifiedService, serviceId: string): Destruct
   node: serviceId,
   path: `services/${identity}`,
 });
-const serverName = (frame: RuntimeWatchView | null, machineId: string) =>
-  frame?.machines.find(({ machine }) => machine.id === machineId)?.machine.name ?? machineId;
+const serverName = (frame: RuntimeWatchView, machineId: string) =>
+  frame.machines.find(({ machine }) => machine.id === machineId)?.machine.name;
 
 /** An operation as the gate weighs it, with the services a Drain of it acts on. */
 export type DrainPlan = OperationAsked & { readonly targets: QualifiedService[] };
@@ -37,7 +39,8 @@ export type DrainPlan = OperationAsked & { readonly targets: QualifiedService[] 
  * is removed outright. Null when the frame has no such Server.
  */
 export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, machineId: string): DrainPlan | null {
-  if (!frame.machines.some(({ machine }) => machine.id === machineId)) return null;
+  const name = serverName(frame, machineId);
+  if (name === undefined) return null;
   const moves: QualifiedService[] = [];
   const stays: QualifiedService[] = [];
   const retires: QualifiedService[] = [];
@@ -67,7 +70,7 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
   return {
     subject: `server:${machineId}`,
     verb: "drain",
-    name: serverName(frame, machineId),
+    name,
     preview: { server: machineId, moves, stays, retires },
     effects,
     targets: [...moves, ...stays, ...retires].sort(byName),
@@ -97,13 +100,33 @@ export function cleanPlan(
     },
     effects: [
       ...running.map((service) => removesService(service.identity, service.service_id)).sort((a, b) => byName(a.path, b.path)),
-      ...confirmDataLoss.map(deletesVolume),
+      ...confirmDataLoss.map((identity) => deletesVolume(identity)),
     ],
     confirmDataLoss,
   };
 }
 
-export function removePlan(machineId: string, name: string, confirmed: readonly DataLossIdentity[] | null): OperationAsked {
+export type VolumeOwner = { readonly dockerName: string; readonly project: string; readonly environment: string; readonly volume: string };
+
+export function volumeLabels(owners: readonly VolumeOwner[]): ReadonlyMap<string, string> {
+  const unique = (label: (owner: VolumeOwner) => string, owner: VolumeOwner) => owners.every((other) =>
+    label(other) !== label(owner) || (other.project === owner.project && other.environment === owner.environment));
+  const bare = (owner: VolumeOwner) => owner.volume;
+  const inEnvironment = (owner: VolumeOwner) => `${owner.environment}/${owner.volume}`;
+  return new Map(owners.map((owner) => [
+    owner.dockerName,
+    unique(bare, owner) ? bare(owner)
+      : unique(inEnvironment, owner) ? inEnvironment(owner)
+      : `${owner.project}/${owner.environment}/${owner.volume}`,
+  ]));
+}
+
+export function removePlan(
+  machineId: string,
+  name: string,
+  confirmed: readonly DataLossIdentity[] | null,
+  labels: ReadonlyMap<string, string> = new Map(),
+): OperationAsked {
   const volumes = [...(confirmed ?? [])].sort((a, b) => byName(volumeName(a), volumeName(b)));
   return {
     subject: `server:${machineId}`,
@@ -112,7 +135,7 @@ export function removePlan(machineId: string, name: string, confirmed: readonly 
     preview: { server: machineId, reset: confirmed !== null, volumes: volumes.map(volumeName) },
     effects: [
       { kind: "removes_server", name, node: machineId, path: `servers/${machineId}` },
-      ...volumes.map(deletesVolume),
+      ...volumes.map((identity) => deletesVolume(identity, labels.get(identity.id.name))),
     ],
   };
 }
@@ -142,18 +165,43 @@ export const planClean = Effect.fn("ServerOperations.planClean")(function* (orga
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   if (session.status !== "connected") return yield* unreachable();
   const lost = yield* session.connected.dataLossIfNamespaceDestroyed(namespace).pipe(Effect.mapError(unreachable));
-  const frame = yield* observe(organizationId);
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
+    Effect.timeout("5 seconds"),
+    Effect.mapError(unreachable),
+  );
   return cleanPlan(frame, namespace, lost.data_loss);
 }, Effect.scoped);
 
-/** A Server removal; the Server's name from one frame when the Cluster answers, else its ID. */
+const volumeOwners = Effect.fn("ServerOperations.volumeOwners")(function* (
+  organizationId: string,
+  doomed: readonly DataLossIdentity[],
+) {
+  const names = new Set(doomed.map(({ id }) => id.name));
+  const owners: VolumeOwner[] = [];
+  if (names.size === 0) return owners;
+  const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
+  for (const owned of namespaces) {
+    if (![...names].some((name) => name.startsWith(`${owned.namespace}_`))) continue;
+    const { volumes } = yield* readStore(organizationId, {
+      query: "volumes",
+      environment: { project: owned.project, environment: owned.environment },
+    });
+    for (const volume of volumes) {
+      const docker = dockerVolumeName(owned.namespace, volume.id);
+      if (names.has(docker)) owners.push({ dockerName: docker, project: owned.project, environment: owned.environment, volume: volume.name });
+    }
+  }
+  return owners;
+});
+
 export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   organizationId: string,
   machineId: string,
   confirmed: readonly DataLossIdentity[] | null,
 ) {
-  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  return removePlan(machineId, serverName(frame, machineId), confirmed);
+  const name = serverName(yield* observe(organizationId), machineId);
+  if (name === undefined) return yield* new NotFound({ message: "No such Server." });
+  return removePlan(machineId, name, confirmed, volumeLabels(yield* volumeOwners(organizationId, confirmed ?? [])));
 });
 
 /**

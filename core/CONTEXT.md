@@ -384,7 +384,7 @@ Removal of a Service, deletion or detachment of a Volume, or removal of a domain
 _Avoid_: Every container replacement, implicit Volume deletion
 
 **Approval**:
-A human's assent to one exact destructive set, pinned as `version:digest`. The version pins the Working and Saved revisions and the Head reviewed; the digest hashes the Organization, the Environment, and the sorted Destructive Effects. Only Publish and a manual Deploy that publishes ask, and only when Cloud requires it as trusted evidence. Setting edits and Deploys of already-Saved State never ask. A removal not yet deployed asks again on every Publication that still carries it. A stale or different digest refuses with the fresh review. Approval is separate from Data Loss Confirmation, which still names each Volume whose data a Deploy deletes.
+A human's assent to one exact destructive set, pinned as `version:digest`. The version pins the Working and Saved revisions and the Head reviewed; the digest hashes the Organization, the Environment, and the sorted Destructive Effects. Publish and a manual Deploy that publishes ask; so do removing a Server Cloud manages (always), a Drain that leaves a Global Service running on no other Server, and a clean of a Namespace that stops a Service or deletes Volume data. Each asks only when Cloud requires it as trusted evidence. Setting edits and Deploys of already-Saved State never ask. A removal not yet deployed asks again on every Publication that still carries it. A stale or different digest refuses with the fresh review. Approval is separate from Data Loss Confirmation, which still names each Volume whose data a Deploy deletes.
 _Avoid_: Confirmation flag, approval token, caller-asserted approval
 
 **Deploy Progress**:

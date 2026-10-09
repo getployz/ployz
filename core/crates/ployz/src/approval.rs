@@ -175,8 +175,8 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
-    crate::ui::note("Waiting for approval in Ployz Cloud…");
-    runtime.block_on(async {
+    crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
+    let settled = runtime.block_on(async {
         loop {
             tokio::select! {
                 () = interrupted.cancelled() => {
@@ -190,8 +190,9 @@ pub(crate) fn settle(
                     ));
                 }
                 read = status(credential, &asked.id) => {
-                    if read? != Status::Pending {
-                        return Ok(asked.id.clone());
+                    let status = read?;
+                    if status != Status::Pending {
+                        return Ok(status);
                     }
                 }
             }
@@ -200,7 +201,14 @@ pub(crate) fn settle(
                 () = tokio::time::sleep(POLL) => {}
             }
         }
-    })
+    });
+    crate::ui::note(match &settled {
+        Ok(Status::Approved) => "approved.",
+        Ok(Status::Denied) => "denied.",
+        Ok(Status::Superseded) => "superseded; asking again.",
+        Ok(Status::Pending) | Err(_) => "",
+    });
+    settled.map(|_| asked.id.clone())
 }
 
 /// Run `attempt` with `approval` until Cloud stops asking for one: each time it asks,

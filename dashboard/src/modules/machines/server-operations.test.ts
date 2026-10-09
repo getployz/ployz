@@ -1,7 +1,7 @@
 import type { MachineId, RuntimeWatchView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { cleanPlan, drainPlan, removePlan } from "#/modules/machines/server-operations.server";
+import { cleanPlan, drainPlan, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
 
 const here = "a".repeat(32);
 const there = "b".repeat(32);
@@ -86,5 +86,21 @@ describe("cleanPlan and removePlan", () => {
       preview: { server: here, reset: false, volumes: [] },
       effects: [{ kind: "removes_server", name: "fra-1" }],
     });
+  });
+
+  it("a removal names each Volume it deletes as Ployz does, keeping the Docker name as its identity", () => {
+    const docker = "shop-production_vol-1";
+    const plan = removePlan(here, "fra-1", [volume(here, docker)], new Map([[docker, "cache-data"]]));
+    expect(plan.effects[1]).toEqual({ kind: "deletes_volume", name: "cache-data", node: `${here}/${docker}`, path: `volumes/${here}/${docker}` });
+  });
+
+  it("a Volume's name is qualified only as far as it must be to be unique", () => {
+    const owner = (docker: string, project: string, environment: string, volume: string) => ({ dockerName: docker, project, environment, volume });
+    expect(volumeLabels([
+      owner("a", "shop", "production", "cache-data"),
+      owner("b", "shop", "production", "uploads"),
+      owner("c", "shop", "staging", "uploads"),
+      owner("d", "blog", "staging", "uploads"),
+    ])).toEqual(new Map([["a", "cache-data"], ["b", "production/uploads"], ["c", "shop/staging/uploads"], ["d", "blog/staging/uploads"]]));
   });
 });

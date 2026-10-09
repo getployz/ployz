@@ -26,9 +26,14 @@ pub(super) fn volume_label<'a>(labels: &'a VolumeLabels, loss: &'a DataLoss) -> 
 /// every lost Volume named by `--accept-volume-loss` accepts outright; without
 /// `--confirm` a terminal shows the loss and asks for the name, which accepts
 /// them all. Anywhere else, `refusal` gets the full retry.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a managed removal runs through Cloud while its retry keeps the client's connection"
+)]
 pub(super) fn confirm_removal(
     root: &ArgMatches,
     client: &Client,
+    removed_through: &ConnectionSource,
     observed: &ObservedDataLoss,
     server: &str,
     volume_effect: VolumeEffect,
@@ -51,7 +56,7 @@ pub(super) fn confirm_removal(
                 observed,
                 labels,
                 server,
-                client.connection_source(),
+                removed_through,
                 volume_effect,
             ));
             ui::note("Based on what the connected Server can see; other Servers may hold more.");
@@ -99,7 +104,7 @@ fn loss(
         ConnectionSource::Context(name) => format!("context {name}"),
         ConnectionSource::Direct => "a direct connection".into(),
         ConnectionSource::LocalSocket => "the local socket".into(),
-        ConnectionSource::Cloud => "Cloud".into(),
+        ConnectionSource::Cloud => "Ployz Cloud".into(),
     };
     let volumes = match volume_effect {
         VolumeEffect::Preserve => Tree::leaf("Volumes are kept."),
@@ -276,14 +281,39 @@ mod tests {
         labels: &VolumeLabels,
         effect: VolumeEffect,
     ) -> String {
-        let tree = super::loss(
+        loss_through(
             observed,
             labels,
-            "worker",
-            &ConnectionSource::Context("prod".into()),
             effect,
-        );
+            &ConnectionSource::Context("prod".into()),
+        )
+    }
+
+    fn loss_through(
+        observed: &ObservedDataLoss,
+        labels: &VolumeLabels,
+        effect: VolumeEffect,
+        through: &ConnectionSource,
+    ) -> String {
+        let tree = super::loss(observed, labels, "worker", through, effect);
         anstream::adapter::strip_str(&tree.to_string()).to_string()
+    }
+
+    #[test]
+    fn a_removal_cloud_runs_says_cloud_removes_it() {
+        let observed = ObservedDataLoss {
+            data_loss: Vec::new(),
+        };
+        let lost = loss_through(
+            &observed,
+            &VolumeLabels::new(),
+            VolumeEffect::LoseAccess,
+            &ConnectionSource::Cloud,
+        );
+        assert!(
+            lost.starts_with("Removing Server worker through Ployz Cloud:"),
+            "{lost}"
+        );
     }
 
     #[test]
