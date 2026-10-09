@@ -141,13 +141,36 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         None => None,
     };
+    let drop_from_context = |failed: &'static str| -> Result<(), Error> {
+        let mut config = options
+            .load_or_empty_config()
+            .map_err(|error| Error::from(error).context(failed))?;
+        if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
+            && let Some(context) = config.contexts.get_mut(&context_name)
+        {
+            context.drop_machine(&selected.id);
+            config
+                .save()
+                .map_err(|error| Error::from(error).context(failed))?;
+        }
+        Ok(())
+    };
     runtime.block_on(async {
         let mut reset_failure = None;
         let mut cloud_released = None;
 
         // TODO: do not reroute away from the current entry before removal.
         if let (Some(credential), Some(id)) = (&cloud, &removal) {
-            let removed = cloud_account::follow_removal(credential, &selected.name, id).await?;
+            let removed = match cloud_account::follow_removal(credential, &selected.name, id).await {
+                Ok(removed) => removed,
+                Err(stopped @ cloud_account::StoreCallError::Stopped(_)) => {
+                    if let Err(error) = drop_from_context("Local context cleanup failed.") {
+                        crate::ui::warn(error.to_string());
+                    }
+                    return Err(stopped.into());
+                }
+                Err(error) => return Err(error.into()),
+            };
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
@@ -194,15 +217,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             "cloud_released": cloud_released,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
-        // Cleanup failure must not leave the removed Machine named in the
-        // context (#249); after the printed result it is partial, not a failed removal (#449).
-        let mut config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
-        if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
-            && let Some(context) = config.contexts.get_mut(&context_name)
-        {
-            context.drop_machine(&selected.id);
-            config.save().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
-        }
+        drop_from_context("Server removed; local context cleanup failed.")?;
         if reset_failure.is_some() {
             return Err(Error::partial());
         }
@@ -421,7 +436,7 @@ mod tests {
     fn unreachable_removal_names_no_reset() {
         let error = RpcError {
             code: RpcErrorCode::Unavailable,
-            message: "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
+            message: "Server fra-1 did not respond".into(),
             details: Value::Null,
             cause: Vec::new(),
         };
@@ -430,10 +445,7 @@ mod tests {
             refusal.to_string(),
             "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting."
         );
-        assert_eq!(
-            refusal.causes(),
-            ["Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond"]
-        );
+        assert_eq!(refusal.causes(), ["Server fra-1 did not respond"]);
         assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
     }
 

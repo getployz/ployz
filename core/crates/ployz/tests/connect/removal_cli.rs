@@ -1,4 +1,6 @@
 use super::*;
+use std::time::Duration;
+use tokio::time::timeout;
 
 #[tokio::test]
 async fn machine_removal_reports_complete_and_partial_results() {
@@ -247,18 +249,19 @@ async fn last_cloud_managed_server_asks_for_cloud_before_any_confirmation() {
     assert!(service.reset_machines.lock().unwrap().is_empty());
 }
 
-/// Cloud's `/api/cli`: a Server removal it's asked for (recorded with its body) settles
-/// at once as `settled`; anything else (the Store's Volume names) isn't offered.
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+type Reads = std::sync::Arc<std::sync::atomic::AtomicUsize>;
 
 const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
-fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked) {
+fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let cloud = format!("http://{}", listener.local_addr().unwrap());
     let asked = std::sync::Arc::new(std::sync::Mutex::new(
         Vec::<(String, serde_json::Value)>::new(),
     ));
     let seen = asked.clone();
+    let reads = Reads::default();
+    let read = reads.clone();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader, Read, Write};
         for stream in listener.incoming() {
@@ -290,6 +293,7 @@ fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked) {
                     ("200 OK", r#"{"id":"r1"}"#)
                 }
             } else if line.starts_with("GET /api/cli/server-removals/r1 ") {
+                read.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 ("200 OK", settled)
             } else {
                 ("404 Not Found", r#"{"code":"NOT_FOUND"}"#)
@@ -303,12 +307,12 @@ fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked) {
         }
     });
 
-    (cloud, asked)
+    (cloud, asked, reads)
 }
 
 #[tokio::test]
 async fn cloud_removes_its_last_server_for_the_cli() {
-    let (cloud, asked) = fake_cloud(
+    let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
         false,
     );
@@ -356,7 +360,7 @@ async fn cloud_removes_its_last_server_for_the_cli() {
 
 #[tokio::test]
 async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
-    let (cloud, asked) = fake_cloud(
+    let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"others_remain"}}"#,
         false,
     );
@@ -392,7 +396,7 @@ async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
 
 #[tokio::test]
 async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
-    let (cloud, asked) = fake_cloud(
+    let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"others_remain"}}"#,
         true,
     );
@@ -430,7 +434,7 @@ async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
 
 #[tokio::test]
 async fn a_context_still_removes_a_server_cloud_manages_through_cloud_and_its_approval() {
-    let (cloud, asked) = fake_cloud(
+    let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
         true,
     );
@@ -477,7 +481,7 @@ async fn a_context_still_removes_a_server_cloud_manages_through_cloud_and_its_ap
 
 #[tokio::test]
 async fn a_context_removes_a_server_cloud_does_not_manage_without_cloud() {
-    let (cloud, removals) = fake_cloud(
+    let (cloud, removals, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
         true,
     );
@@ -496,5 +500,78 @@ async fn a_context_removes_a_server_cloud_does_not_manage_without_cloud() {
         removals.lock().unwrap().is_empty(),
         "{:?}",
         removals.lock().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn stopping_a_followed_cloud_removal_still_drops_the_server_from_the_context() {
+    let (cloud, _, reads) = fake_cloud(r#"{"state":"running"}"#, false);
+    let service = DiscoveryService::new(test_description());
+    *service.management_clients.lock().unwrap() =
+        vec![ployz_core::ManagementClientLabel::parse("cloud").unwrap()];
+    let (address, _server) = serve_discovery(service.clone()).await;
+    let removed = machine_id('a');
+    let config = std::env::temp_dir().join(format!("ployz-stopped-{}.yaml", MachineId::random()));
+    std::fs::write(
+        &config,
+        format!(
+            "contexts:\n  lab:\n    connections:\n      - tcp: {address}\n        machine_id: {entry}\n      - tcp: {address}\n        machine_id: {removed}\n",
+            entry = test_description().machine_id,
+        ),
+    )
+    .unwrap();
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("PLOYZ_TOKEN", "ployz_acme")
+        .env("PLOYZ_CLOUD_URL", &cloud)
+        .args([
+            "--ployz-config",
+            config.to_str().unwrap(),
+            "--json",
+            "server",
+            "rm",
+            "one",
+        ])
+        .args([
+            "--context",
+            "lab",
+            "--confirm",
+            "one",
+            "--accept-volume-loss",
+            "data",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let followed = timeout(Duration::from_secs(30), async {
+        while reads.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if followed.is_err() {
+        let _ = std::fs::remove_file(&config);
+        panic!(
+            "the CLI never followed Cloud's removal: {:?}",
+            child.wait_with_output().await
+        );
+    }
+    let pid = rustix::process::Pid::from_raw(child.id().unwrap().try_into().unwrap()).unwrap();
+    rustix::process::kill_process(pid, rustix::process::Signal::INT).unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    let context = std::fs::read_to_string(&config).unwrap();
+    let _ = std::fs::remove_file(&config);
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("keeps running in Ployz Cloud"),
+        "{output:?}"
+    );
+    assert!(
+        !context.contains(&removed.to_string()),
+        "Cloud finishes the removal, so the context drops the Server now: {context}"
+    );
+    assert!(
+        context.contains(&test_description().machine_id.to_string()),
+        "{context}"
     );
 }

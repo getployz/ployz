@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
-import { and, desc, eq, isNotNull, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -187,8 +187,7 @@ export const listServersBehind = Effect.fn("ServerUpgrade.listBehind")(function*
 /**
  * Write the attempt's row before its request. Its target starts as the release `channel` names for the Server's line,
  * so an attempt whose request never gets an answer still halts that release; the Server's answer replaces it with
- * the exact version it resolved. A row the CLI's request wrote first is claimed by the run: its observation limit
- * counts from here, not from the request that queued it.
+ * the exact version it resolved.
  */
 export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* (input: {
   readonly request: ServerUpgradeRequestedEventData & { readonly machineId: string };
@@ -216,12 +215,10 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   }).onConflictDoUpdate({
     target: [serverUpgradeAttempt.organizationId, serverUpgradeAttempt.machineId, serverUpgradeAttempt.attemptId],
     set: { inngestRunId: input.inngestRunId, startedAt },
-    // A retried step finds the row it already claimed.
-    setWhere: and(eq(serverUpgradeAttempt.outcome, "running"), sql`${serverUpgradeAttempt.inngestRunId} <> ${input.inngestRunId}`),
+    setWhere: and(eq(serverUpgradeAttempt.outcome, "running"), ne(serverUpgradeAttempt.inngestRunId, input.inngestRunId)),
   });
 });
 
-/** A refused request is no attempt: drop its row. */
 export const dropUpgradeAttempt = Effect.fn("ServerUpgrade.drop")(function* (organizationId: string, attemptId: string) {
   const { drizzle } = yield* Database;
   yield* drizzle.delete(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
@@ -421,12 +418,11 @@ export const mintAttemptId = () =>
   // SAFETY: a UUID without its dashes is 32 lowercase hex digits, the daemon's attempt ID form.
   randomUUID().replaceAll("-", "") as MachineUpgradeAttemptId;
 
+const UNCLAIMED = "";
+
 /**
  * `server upgrade` from the signed-in CLI: one Server, along the Organization's Release Channel. A `channel` other than
- * the Organization's refuses `channel_mismatch` naming it; a Server that can't take an Upgrade now refuses
- * `unavailable`. A Server already upgrading answers with that attempt, so the CLI follows it rather than queueing one
- * its run would find busy. Otherwise the attempt's row is written here, before its event, under an ID the event
- * carries: the run claims the row, or drops it when it skips the Server, so the CLI's poll always settles.
+ * the Organization's refuses `channel_mismatch` naming it.
  */
 export const requestCliServerUpgrade = Effect.fn("ServerUpgrade.requestCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
@@ -468,18 +464,13 @@ export const requestCliServerUpgrade = Effect.fn("ServerUpgrade.requestCli")(fun
     userId: caller.userId,
     attemptId: mintAttemptId(),
   } as const;
-  // The run that claims the row writes its own run ID over this placeholder.
-  yield* recordUpgradeAttempt({ request, attemptId: request.attemptId, channel, fromVersion: fromVersion.value, inngestRunId: "" });
+  yield* recordUpgradeAttempt({ request, attemptId: request.attemptId, channel, fromVersion: fromVersion.value, inngestRunId: UNCLAIMED });
   yield* sendInngestEvent(createServerUpgradeRequestedEvent(request)).pipe(
     Effect.tapError(() => dropUpgradeAttempt(caller.organizationId, request.attemptId)),
   );
   return { ok: true, id: request.attemptId } as const;
 });
 
-/**
- * One Upgrade attempt as the CLI polls it. Its row exists from the request on, so a missing one is an attempt its
- * run skipped and dropped. One running past the observation limit reads `unknown`, as the hourly sweep will record it.
- */
 export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function* (organizationId: string, attemptId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({

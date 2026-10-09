@@ -102,7 +102,7 @@ describe("cleanPlan and removePlan", () => {
       [`${here}/old_vol_b`, "on fra-1"],
       [`${there}/old_vol_a`, "used by db at /data on fra-2"],
       [`${"c".repeat(32)}/old_vol_c`, "on a Server Cloud can't see"],
-    ].sort(([a], [b]) => (a < b ? -1 : 1)));
+    ]);
   });
 
   it("removing a Server always destroys the Server, and each Volume it confirms losing", () => {

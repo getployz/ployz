@@ -30,10 +30,6 @@ const removesService = (identity: QualifiedService, serviceId: string): Destruct
 const serverName = (frame: RuntimeWatchView, machineId: string) =>
   frame.machines.find(({ machine }) => machine.id === machineId)?.machine.name;
 
-/**
- * A Volume named by what the frame shows of it: the Services that mount it, where, and on which Server. The Store's
- * name for it is gone once no Environment owns its Namespace.
- */
 export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdentity): string {
   const users = frame.services.flatMap((service) => service.containers.flatMap(({ machine_id, resolved_spec }) => {
     if (machine_id !== id.machine_id) return [];
@@ -164,7 +160,6 @@ const observe = (organizationId: string) => firstRuntimeFrame(organizationId).pi
   Effect.flatMap((frame) => frame === null ? Effect.fail(unreachable()) : Effect.succeed(frame)),
 );
 
-/** A Drain of `machineId` as it stands now; null when Cloud doesn't observe that Server. */
 export const planDrain = Effect.fn("ServerOperations.planDrain")(function* (organizationId: string, machineId: string) {
   const frame = yield* observe(organizationId);
   return drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
@@ -211,7 +206,6 @@ const volumeOwners = Effect.fn("ServerOperations.volumeOwners")(function* (
   return owners;
 });
 
-/** A removal of `machineId` as it stands now; null when Cloud doesn't observe that Server. */
 export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
   organizationId: string,
   machineId: string,

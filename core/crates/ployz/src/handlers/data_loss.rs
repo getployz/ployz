@@ -59,7 +59,6 @@ pub(super) fn confirm_removal(
                 removed_through,
                 volume_effect,
             ));
-            ui::note("Based on what the connected Server can see; other Servers may hold more.");
         }
         ui::confirm_name(server, || refusal(retry), "Cancelled. Nothing was removed.")?;
     }
@@ -92,14 +91,13 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
     args
 }
 
-/// What removing `server` takes, as the tree shown before asking.
 fn loss(
     observed: &ObservedDataLoss,
     labels: &VolumeLabels,
     server: &str,
     source: &ConnectionSource,
     volume_effect: VolumeEffect,
-) -> Tree {
+) -> String {
     let context = match source {
         ConnectionSource::Context(name) => format!("context {name}"),
         ConnectionSource::Direct => "a direct connection".into(),
@@ -116,22 +114,23 @@ fn loss(
             observed
                 .data_loss
                 .iter()
-                .map(|loss| {
-                    let DataLoss::DockerVolume { id } = loss;
-                    Tree::leaf(format!(
-                        "{} (machine ID: {})",
-                        volume_label(labels, loss),
-                        id.machine_id
-                    ))
-                })
+                .map(|loss| Tree::leaf(volume_label(labels, loss)))
                 .collect(),
         ),
     };
-    Tree::new(
+    let tree = Tree::new(
         format!("Removing Server {server} through {context}:"),
         vec![volumes],
-    )
+    );
+    match (volume_effect, source) {
+        (VolumeEffect::Preserve, _) | (VolumeEffect::LoseAccess, ConnectionSource::Cloud) => {
+            tree.to_string()
+        }
+        (VolumeEffect::LoseAccess, _) => format!("{tree}{CAVEAT}\n"),
+    }
 }
+
+const CAVEAT: &str = "Based on what the connected Server can see; other Servers may hold more.";
 
 /// What the flags of one `server rm` say.
 struct Request<'a> {
@@ -266,14 +265,17 @@ mod tests {
             lost.contains("only the Server's disk keeps their data"),
             "{lost}"
         );
-        assert!(
-            lost.contains(&format!("pgdata (machine ID: {})", "a".repeat(32))),
-            "{lost}"
-        );
+        assert!(lost.contains("└─ pgdata\n"), "{lost}");
+        assert!(!lost.contains(&"a".repeat(32)), "ids are machinery: {lost}");
         assert!(!lost.contains("not be erased"), "{lost}");
+        assert!(lost.ends_with(&format!("{CAVEAT}\n")), "{lost}");
         let kept = loss_text(&observed, &labels, VolumeEffect::Preserve);
         assert!(kept.contains("Volumes are kept."), "{kept}");
         assert!(!kept.contains("pgdata"), "{kept}");
+        assert!(
+            !kept.contains(CAVEAT),
+            "nothing lost, nothing to qualify: {kept}"
+        );
     }
 
     fn loss_text(
@@ -295,8 +297,8 @@ mod tests {
         effect: VolumeEffect,
         through: &ConnectionSource,
     ) -> String {
-        let tree = super::loss(observed, labels, "worker", through, effect);
-        anstream::adapter::strip_str(&tree.to_string()).to_string()
+        let shown = super::loss(observed, labels, "worker", through, effect);
+        anstream::adapter::strip_str(&shown).to_string()
     }
 
     #[test]
@@ -313,6 +315,10 @@ mod tests {
         assert!(
             lost.starts_with("Removing Server worker through Ployz Cloud:"),
             "{lost}"
+        );
+        assert!(
+            !lost.contains(CAVEAT),
+            "Cloud reads the loss itself, not the connected Server: {lost}"
         );
     }
 

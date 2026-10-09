@@ -407,6 +407,19 @@ impl Approvals {
                     json!({ "code": "channel_mismatch", "message": message, "details": details });
                 (409, json!({ "error": error }))
             }
+            ("POST", ["servers", OFFLINE_SERVER, "upgrade"]) => {
+                let message = "This Server isn't online and idle, so it can't take an Upgrade now.";
+                (503, json!({ "error": { "code": "unavailable", "message": message } }))
+            }
+            ("POST", ["servers", OLD_CLOUD_SERVER, "upgrade"]) => (
+                409,
+                json!({ "_tag": "PublicError", "code": "CONFLICT", "message": "Your servers aren't answering. Try again once they are." }),
+            ),
+            ("POST", ["servers", BUSY_SERVER, "upgrade"]) => (202, json!({ "id": "upg_busy" })),
+            ("GET", ["server-upgrades", "upg_busy"]) => (
+                200,
+                json!({ "state": "ended", "code": "busy", "message": "The Server was busy with a build or another Upgrade, or went offline, so it took no Upgrade." }),
+            ),
             ("POST", ["servers", _, "upgrade"]) => (202, json!({ "id": "upg_1" })),
             ("GET", ["server-upgrades", "upg_1"]) => (
                 200,
@@ -540,6 +553,9 @@ fn approve_in_cloud(target: &Target, id: &str) {
 }
 
 const CLOUD_SERVER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OFFLINE_SERVER: &str = "cccccccccccccccccccccccccccccccc";
+const BUSY_SERVER: &str = "dddddddddddddddddddddddddddddddd";
+const OLD_CLOUD_SERVER: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 fn cloud_server() -> ployz_core::Machine {
     ployz_core::Machine {
@@ -3657,6 +3673,72 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
         approvals.runs().len(),
         3,
         "an exact version never reaches Cloud"
+    );
+}
+
+#[test]
+fn a_cloud_upgrade_skips_an_offline_or_busy_server_by_name_and_upgrades_the_rest() {
+    let (target, approvals) = running(&[]);
+    let (code, upgraded) = ployz(
+        Some(&target),
+        &[
+            "server",
+            "upgrade",
+            "stable",
+            OFFLINE_SERVER,
+            CLOUD_SERVER,
+            BUSY_SERVER,
+        ],
+    );
+    assert_eq!(
+        code,
+        Some(3),
+        "a partial Upgrade exits as a partial result: {upgraded}"
+    );
+    assert_eq!(
+        upgraded["attempts"][0]["server"],
+        json!(CLOUD_SERVER),
+        "{upgraded}"
+    );
+    assert_eq!(upgraded["attempts"][0]["outcome"], json!("succeeded"));
+    assert_eq!(
+        upgraded["skipped"],
+        json!([
+            { "server": OFFLINE_SERVER, "reason": "This Server isn't online and idle, so it can't take an Upgrade now." },
+            { "server": BUSY_SERVER, "reason": "The Server was busy with a build or another Upgrade, or went offline, so it took no Upgrade." },
+        ])
+    );
+    let skipped = &upgraded["follow_up_error"];
+    assert_eq!(
+        skipped["message"],
+        json!(format!(
+            "Skipped Servers {OFFLINE_SERVER}, {BUSY_SERVER}; they took no Upgrade."
+        )),
+        "{skipped}"
+    );
+    assert_eq!(
+        skipped["details"]["retry"],
+        json!(format!(
+            "ployz server upgrade stable {OFFLINE_SERVER} {BUSY_SERVER}"
+        ))
+    );
+    assert_eq!(
+        approvals.runs(),
+        [
+            format!("POST servers/{OFFLINE_SERVER}/upgrade"),
+            format!("POST servers/{CLOUD_SERVER}/upgrade"),
+            "GET server-upgrades/upg_1".to_owned(),
+            format!("POST servers/{BUSY_SERVER}/upgrade"),
+            "GET server-upgrades/upg_busy".to_owned(),
+        ],
+        "a busy Server's run is read once, not polled"
+    );
+
+    let refused = error(&target, &["server", "upgrade", "stable", OLD_CLOUD_SERVER]);
+    assert_eq!(
+        refused["message"],
+        json!("Your servers aren't answering. Try again once they are."),
+        "Cloud's own failure reads as its sentence, not its JSON: {refused}"
     );
 }
 

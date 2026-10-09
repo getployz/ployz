@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { asTestDouble } from "#/lib/test-double";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { InngestClient } from "#/modules/inngest/client";
+import type { ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import {
@@ -105,7 +106,7 @@ describe("roll-out-server-upgrade", () => {
   /** Upgrade on a Server page names its Server; Upgrade and Upgrade the rest on the Servers page name none. */
   const rollOut = (target: string | null = machineId, trigger: "manual" | "automatic" = "manual") =>
     rollOutRequested({ organizationId, machineId: target, trigger, userId: trigger === "manual" ? userId : null });
-  const rollOutRequested = (data: Record<string, unknown>) => new InngestTestEngine({
+  const rollOutRequested = (data: ServerUpgradeRequestedEventData) => new InngestTestEngine({
     function: createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "server/upgrade.requested", data }],
     // Each poll's sleep ends at once; `outliveAfterInspects` moves the clock instead.
@@ -593,8 +594,10 @@ describe("roll-out-server-upgrade", () => {
   describe("`server upgrade` from the CLI", () => {
     const requestCli = () => runEffect(requestCliServerUpgrade({ organizationId, userId }, { machineId, channel: undefined }));
     const readCli = (attemptId: string) => runEffect(readCliServerUpgrade(organizationId, attemptId));
-    /** The run of the event the CLI's request sent. */
-    const rollOutSent = () => rollOutRequested((send.mock.calls.at(-1)?.[0] as { data: Record<string, unknown> }).data);
+    const rollOutSent = () => {
+      const [event] = send.mock.lastCall ?? [];
+      return rollOutRequested((event as { data: ServerUpgradeRequestedEventData }).data);
+    };
     const requested = async () => {
       const answer = await requestCli();
       if (!answer.ok) throw new Error(answer.refusal.message);

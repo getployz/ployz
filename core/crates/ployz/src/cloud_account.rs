@@ -485,6 +485,11 @@ async fn store_answer<T: DeserializeOwned>(
     struct Refusal {
         error: RpcError,
     }
+    #[derive(Deserialize)]
+    #[serde(tag = "_tag")]
+    enum Public {
+        PublicError { code: String, message: String },
+    }
     let status = response.status();
     let bytes = response
         .bytes()
@@ -493,6 +498,22 @@ async fn store_answer<T: DeserializeOwned>(
     if !status.is_success() {
         if let Ok(refusal) = serde_json::from_slice::<Refusal>(&bytes) {
             return Err(StoreCallError::Refused(refusal.error));
+        }
+        if !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+            && let Ok(Public::PublicError { code, message }) = serde_json::from_slice(&bytes)
+        {
+            let code = match code.as_str() {
+                "CONFLICT" => ployz_core::RpcErrorCode::Conflict,
+                "NOT_FOUND" => ployz_core::RpcErrorCode::NotFound,
+                "VALIDATION_FAILED" => ployz_core::RpcErrorCode::InvalidArgument,
+                _ => ployz_core::RpcErrorCode::Internal,
+            };
+            return Err(StoreCallError::Refused(RpcError {
+                code,
+                message,
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            }));
         }
         if status == StatusCode::NOT_FOUND {
             return Err(LoginError::Unsupported(credential.cloud().to_owned()).into());

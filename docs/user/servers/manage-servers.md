@@ -158,6 +158,11 @@ the release it ran before.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
 
+With Ployz Cloud, a server that's offline, building, or already taking another upgrade is skipped
+instead: Ployz names it and says why, upgrades the rest, exits 3, and prints the command that
+upgrades the skipped servers once they're free. A server already upgrading isn't upgraded twice;
+the command follows the upgrade that's running.
+
 ## Remove a server
 
 > [!WARNING]

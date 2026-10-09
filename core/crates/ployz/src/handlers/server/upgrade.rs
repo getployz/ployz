@@ -190,6 +190,11 @@ fn through_cloud(
     }
     let servers = cloud_servers(runtime, matches, selectors)?;
     let mut attempts = Vec::new();
+    let mut skipped = Vec::new();
+    let skip = |id: &MachineId, name: &String, reason: String| {
+        crate::ui::warn(format!("Skipped Server {name}: {reason}"));
+        (*id, name.clone(), reason)
+    };
     for (index, (id, name)) in servers.iter().enumerate() {
         let started = runtime.block_on(cloud_account::start_run(
             credential,
@@ -217,29 +222,28 @@ fn through_cloud(
                     None => refused.into(),
                 });
             }
+            Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Unavailable => {
+                skipped.push(skip(id, name, refused.message));
+                continue;
+            }
             Err(error) => return Err(error.into()),
         };
         crate::ui::stream(format_args!("Upgrading Server {name}."));
-        let deadline = Instant::now() + UPGRADE_WAIT;
-        let settled = runtime.block_on(cloud_account::follow_run::<Settled<CloudUpgrade>>(
-            credential,
-            &format!("server-upgrades/{run}"),
-            &format!("Upgrading Server {name}"),
-            Some(deadline),
-        ))?;
-        let Some(settled) = settled else {
-            return Err(StoreCallError::Refused(ployz_core::RpcError {
-                code: ployz_core::RpcErrorCode::Unavailable,
-                message: format!(
-                    "Cloud has not finished the Upgrade of Server {name}. \
-                     The dashboard's Servers page shows whether it ran."
-                ),
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            })
-            .into());
+        let settled = runtime
+            .block_on(cloud_account::follow_run::<Settled<CloudUpgrade>>(
+                credential,
+                &format!("server-upgrades/{run}"),
+                &format!("Upgrading Server {name}"),
+                None,
+            ))?
+            .expect("a run followed without a deadline settles or fails");
+        let upgrade = match settled {
+            Settled::Ended { code, message } if code == "busy" => {
+                skipped.push(skip(id, name, message));
+                continue;
+            }
+            settled @ (Settled::Finished(_) | Settled::Ended { .. }) => settled.finished()?,
         };
-        let upgrade = settled.finished()?;
         let stopped = stopped(name, &upgrade);
         attempts.push(json!({
             "server": id,
@@ -260,14 +264,34 @@ fn through_cloud(
         let result = json!({
             "attempts": attempts,
             "unattempted": unattempted.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            "skipped": skipped_json(&skipped),
         });
         return crate::ui::emit_committed(result, Err(stopped));
     }
-    crate::ui::emit(&json!({ "attempts": attempts, "unattempted": [] }))
+    let result =
+        json!({ "attempts": attempts, "unattempted": [], "skipped": skipped_json(&skipped) });
+    let names = skipped
+        .iter()
+        .map(|(_, name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    let message = match names.as_slice() {
+        [] => return crate::ui::emit(&result),
+        [one] => format!("Skipped Server {one}; it took no Upgrade."),
+        many => format!("Skipped Servers {}; they took no Upgrade.", many.join(", ")),
+    };
+    let mut args = vec!["server", "upgrade", channel.as_str()];
+    args.extend(names);
+    let skipped = Error::coded(RpcErrorCode::Unavailable, message)
+        .hint(Hint::Retry(super::super::rerun(matches, &args)));
+    crate::ui::emit_committed(result, Err(skipped))
 }
 
-// A run that skips a Server it found busy or offline records no attempt, so its poll never settles.
-const UPGRADE_WAIT: Duration = Duration::from_secs(1800);
+fn skipped_json(skipped: &[(MachineId, String, String)]) -> serde_json::Value {
+    skipped
+        .iter()
+        .map(|(id, _, reason)| json!({ "server": id, "reason": reason }))
+        .collect()
+}
 
 fn cloud_servers(
     runtime: &tokio::runtime::Runtime,
