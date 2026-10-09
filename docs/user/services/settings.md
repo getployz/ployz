@@ -202,6 +202,14 @@ to leave it down. **Always** restarts it whenever it stops. See
 Shown with **On failure**. 10 by default, from 0 to 100; after that many restarts, the replica
 stays stopped.
 
+## Storage
+
+### Mount a config
+
+Choose a **Config** and an absolute **Directory**, then click **Mount** to stage its read-only
+files in the service. The default directory is `/etc/CONFIG-NAME`; deployed files appear after
+your next deploy. See [Configs](configs.md) to create files, share them, and review changes.
+
 ## Danger
 
 ### Delete service

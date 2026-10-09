@@ -26,6 +26,9 @@ environment's canvas is a service, and Ployz runs it as one or more replicas on 
 The new service shows **New** on the canvas until you deploy. It has no public address until you
 [generate a domain](domains.md#generate-a-domain).
 
+For shared settings files or startup scripts, [create a config](configs.md) and mount it into
+the services that need it.
+
 ## Find your way around a service
 
 Click a service on the canvas to open its panel. **Deployments** lists its
