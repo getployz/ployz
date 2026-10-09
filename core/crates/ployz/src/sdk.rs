@@ -118,7 +118,6 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
     match body {
         Body::InspectVolumeCopy(_)
-        | Body::AdoptLease(_)
         | Body::DeclareMirror(_)
         | Body::BeginRound(_)
         | Body::CommitSnapshots(_)

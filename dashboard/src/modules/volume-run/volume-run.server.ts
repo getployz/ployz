@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, max, notExists, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -8,7 +8,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type InngestRunStatus, sendInngestEvent } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent } from "#/modules/inngest/events";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
-import { machineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
+import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { Refusal } from "#/modules/volume-run/plan";
@@ -51,7 +51,6 @@ export type RunContext = {
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 
-const SWITCH_STEP_SECONDS = 60;
 const OBSERVE_TIMEOUT = "10 seconds";
 
 const clip = (text: string) =>
@@ -242,7 +241,7 @@ const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId
 
 const SwitchErrorDetails = Schema.Struct({
   details: Schema.Struct({
-    reason: Schema.Literals(["stale_lease", "stale_step", "expired", "precondition", "busy", "volume_switching", "no_writer", "no_capacity"]),
+    reason: Schema.Literals(["stale_lease", "stale_step", "precondition", "busy", "volume_switching", "no_writer", "no_capacity"]),
   }),
 });
 const decodeSwitchError = Schema.decodeUnknownOption(SwitchErrorDetails);
@@ -277,7 +276,6 @@ export function switchFailureMessage(
     case "no_capacity":
       return `${machine.name} has no room for ${name}'s mirror`;
     case "busy":
-    case "expired":
       return undefined;
   }
 }
@@ -299,14 +297,13 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
   ctx: RunContext,
   inngestRunId: string,
   machine: MachineRef,
-  build: (notAfterUnixSeconds: number) => R,
+  request: R,
   options: SwitchOptions = {},
 ) => {
   // SAFETY: a Machine answers each Volume Switch verb with that verb's reply; the session types the pair loosely.
   return Effect.gen(function* () {
     yield* requireOwner(ctx.id, inngestRunId);
     const session = yield* openSession(ctx.organizationId);
-    const request = build(Math.floor(Date.now() / 1000) + SWITCH_STEP_SECONDS);
     return yield* session.volumeSwitch(machine.id, request).pipe(
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
         const reason = switchErrorOf(error);
@@ -365,44 +362,6 @@ export const findSpec = Effect.fn("VolumeRun.findSpec")(function* (ctx: RunConte
   return { ok: true, spec: kept.spec } as const;
 }, Effect.scoped);
 
-/** A removed Server's last answer came before its removal; past that plus the grace and the Machine task budget, its Promote or Start can no longer run. */
-export const DEPARTED_GRACE_MS = 60_000;
-export const MACHINE_TASK_BUDGET_MS = 10 * 60_000;
-
-/**
- * Cloud can't see the copies of a Server it no longer reaches, so Restore waits out every `--no-reset` removal in the
- * Organization: the deadline is the latest one's end plus the grace and the task budget, or null once it has passed.
- */
-export const departedDeadline = Effect.fn("VolumeRun.departedDeadline")(function* (ctx: RunContext, inngestRunId: string) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  const { drizzle } = yield* Database;
-  const [latest] = yield* drizzle.select({ at: max(machineRemoveAttempt.terminalAt) }).from(machineRemoveAttempt)
-    .where(and(
-      eq(machineRemoveAttempt.organizationId, ctx.organizationId),
-      eq(machineRemoveAttempt.noReset, true),
-      eq(machineRemoveAttempt.state, "succeeded"),
-    ));
-  if (latest?.at === null || latest?.at === undefined) return null;
-  const deadline = latest.at.getTime() + DEPARTED_GRACE_MS + MACHINE_TASK_BUDGET_MS;
-  return deadline > Date.now() ? new Date(deadline).toISOString() : null;
-});
-
-/** Why `server rm` must wait: an open run names this Machine. Null when none does. */
-export const openRunNaming = Effect.fn("VolumeRun.openRunNaming")(function* (organizationId: string, machineId: MachineId) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ volumeName: volumeRun.volumeName, kind: volumeRun.kind }).from(volumeRun)
-    .where(and(
-      eq(volumeRun.organizationId, organizationId),
-      inArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES]),
-      sql`${volumeRun.machineIds} @> array[${machineId}]::text[]`,
-    ))
-    .limit(1);
-  if (row === undefined) return null;
-  const label = row.kind === "delete_mirror" ? "mirror removal" : row.kind;
-  const release = row.kind === "move" ? `, or volume release ${row.volumeName}` : "";
-  return `${row.volumeName}'s ${label} uses this Server; wait for it to end${release}`;
-});
-
 export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunContext, inngestRunId: string, from: MachineRef, holder: Holder, to: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
@@ -419,7 +378,7 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   from: MachineRef,
   holder: Holder,
   to: MachineRef,
-  stamp: (notAfter: number) => StartHanded["payload"]["switch"],
+  stamp: StartHanded["payload"]["switch"],
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
@@ -427,15 +386,15 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
     Effect.mapError((error) => new Error(`reading ${holder.redactedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
-  yield* sendSwitch(ctx, inngestRunId, to, (notAfter): StartHanded => ({
+  yield* sendSwitch(ctx, inngestRunId, to, {
     command: "start_handed_container",
     payload: {
-      switch: stamp(notAfter),
+      switch: stamp,
       name: ctx.dockerVolume,
       namespace: holder.namespace,
       resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
     },
-  }), { onRefusal: "throw" });
+  } satisfies StartHanded, { onRefusal: "throw" });
 }, Effect.scoped);
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
@@ -463,49 +422,25 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
 
-/** Above every lease the Machines hold and every lease this Volume's runs took, so a Cloud database reset can't reuse one. */
+/** Above every lease this Volume's runs took and every record its participants hold, so a Cloud database reset can't reuse one. */
 export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   ctx: RunContext,
   inngestRunId: string,
-  members: readonly Member[],
-  participants: readonly MachineId[],
+  participants: readonly AnsweredMember[],
   spec: ServiceSpec | null,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const { drizzle } = yield* Database;
-  const answered = members.filter((member): member is AnsweredMember => member.answered);
-  const pooled = answered.filter((member) => member.pool);
-  const held = Math.max(0, ...answered.map((member) => member.view.lease?.lease ?? 0));
+  const held = Math.max(0, ...participants.map((member) => member.view.lease?.lease ?? 0));
   const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
-  // A removal reads machine_ids, which a run only names from here; one that began or ended since the request beats the run.
-  const removing = (since: Date | typeof volumeRun.createdAt) => drizzle.select({ machineId: machineRemoveAttempt.machineId })
-    .from(machineRemoveAttempt).where(and(
-      eq(machineRemoveAttempt.organizationId, ctx.organizationId),
-      inArray(machineRemoveAttempt.machineId, [...participants]),
-      or(
-        inArray(machineRemoveAttempt.state, ["pending", "running"]),
-        and(eq(machineRemoveAttempt.state, "succeeded"), gte(machineRemoveAttempt.terminalAt, since)),
-      ),
-    ));
   yield* drizzle.update(volumeRun)
-    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, machineIds: [...participants], serviceSpec: spec ?? undefined, updatedAt: new Date() })
-    .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease), notExists(removing(volumeRun.createdAt))));
+    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, serviceSpec: spec ?? undefined, updatedAt: new Date() })
+    .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease)));
   const row = yield* readRow(ctx.id);
   const lease = row?.lease;
-  if (row === undefined || lease === null || lease === undefined) {
-    const [gone] = row === undefined ? [] : yield* removing(row.createdAt);
-    if (gone === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no lease.`));
-    const name = members.find((member) => member.machine.id === gone.machineId)?.machine.name ?? gone.machineId;
-    return { ok: false, refusal: { code: "server_removing", message: `${name} is being removed from the Cluster; run this again once the removal ends` } } as const;
-  }
-  yield* Effect.forEach(pooled, (member) =>
-    sendSwitch(ctx, inngestRunId, member.machine, (notAfter) => ({
-      command: "adopt_lease",
-      payload: { lease, not_after_unix_seconds: notAfter, name: ctx.dockerVolume },
-    })), { concurrency: "unbounded", discard: true });
-  const skipped = answered.filter((member) => !member.pool).map((member) => member.machine.name);
-  return { ok: true, lease, skipped } as const;
+  if (lease === null || lease === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no lease.`));
+  return { lease };
 });
 
 const CLOSED_BY = {

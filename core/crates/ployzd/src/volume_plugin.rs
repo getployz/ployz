@@ -33,7 +33,7 @@ mod transfer;
 
 use storage::{
     CapacityAdmission, DATASET_ROOT, Dataset, MIRROR_ROOT, MOUNT_ROOT, Place, VolumeStorage,
-    checked_command, parse_size,
+    checked_command, checked_output, parse_size, run_command,
 };
 
 type Result<T> = std::result::Result<T, VolumeError>;
@@ -171,7 +171,6 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Prepare", post(capacity::prepare))
         .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(lease::inspect))
-        .route("/Volume.AdoptLease", post(lease::adopt_lease))
         .route("/Volume.Withdraw", post(switch_source::withdraw))
         .route(
             "/Volume.MarkContainerStopping",

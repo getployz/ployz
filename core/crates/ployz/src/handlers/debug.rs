@@ -43,7 +43,7 @@ mod enabled {
             .hide(true)
             .subcommand(
                 base("volume-rpc", "Send one unary Machine RPC as JSON and print its response")
-                    .long_about("Send one unary Machine RPC to a Server and print the response body. REQUEST is the JSON request body, for example {\"command\":\"adopt_lease\",\"payload\":{...}}. An error response fails the command with the error's code and details.")
+                    .long_about("Send one unary Machine RPC to a Server and print the response body. REQUEST is the JSON request body, for example {\"command\":\"inspect_volume_copy\",\"payload\":{\"name\":\"data\"}}. An error response fails the command with the error's code and details.")
                     .arg(positional("server", true))
                     .arg(positional("request", true).value_name("REQUEST")),
             )

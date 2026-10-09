@@ -179,12 +179,13 @@ ployz server rm web-2 --no-reset --confirm dead
 ```
 
 `--no-reset` is refused while the server answers and holds a copy of any volume: drop
-`--no-reset`, and the reset makes its copies read-only. Removing a server is also refused while a
-volume move, mirror or other volume run uses it; wait for the run to end, or release the move.
+`--no-reset`, and the reset makes its copies read-only.
 
-A server removed this way may still be running somewhere you can't reach. Before
-`ployz volume restore` makes another copy the writer, it waits until 11 minutes after the removal,
-long enough for that server to give up anything it was doing.
+A server removed this way doesn't know it was removed. If it comes back, its services may still be
+running on its copy of a volume. When you've restored that volume on another server, the next
+move, mirror, sync or release of that volume marks the returning copy old, makes it read-only and
+stops there; run it again. Anything written to the old copy in between is lost. Reset a server you don't mean to keep:
+`ployz server rm web-2 --confirm web-2` once it answers.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume

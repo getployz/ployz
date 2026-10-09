@@ -655,16 +655,19 @@ async fn volume_switch_verbs_refuse_a_machine_outside_the_cluster() {
     let inspect = op::InspectVolumeCopy::into_request(ployz_core::InspectVolumeCopyRequest {
         name: name.clone(),
     });
-    let adopt = op::AdoptLease::into_request(ployz_core::AdoptLeaseRequest {
-        lease: ployz_core::Lease::new(1),
-        not_after_unix_seconds: i64::MAX,
+    let declare = op::DeclareMirror::into_request(ployz_core::DeclareMirrorRequest {
+        switch: ployz_core::Switch {
+            lease: ployz_core::Lease::new(1),
+            pos: ployz_core::Pos::step(3),
+        },
         name,
+        refquota_bytes: 1,
     });
-    for (verb, request) in [("InspectVolumeCopy", inspect), ("AdoptLease", adopt)] {
+    for (verb, request) in [("InspectVolumeCopy", inspect), ("DeclareMirror", declare)] {
         let request = Request::new(request.encode().unwrap());
         let response = match verb {
             "InspectVolumeCopy" => service.inspect_volume_copy(request).await,
-            _ => service.adopt_lease(request).await,
+            _ => service.declare_mirror(request).await,
         }
         .unwrap()
         .into_inner()
@@ -935,7 +938,7 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
     let service = service.with_volume_plugin(crate::storage::Plugin::at(socket));
     let request: SourceContainerRequest = serde_json::from_value(json!({
         "name":"data", "container_id":created.container_id,
-        "switch":{"lease":1,"pos":{"seq":5,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+        "switch":{"lease":1,"pos":{"seq":5,"round":0,"sub":0}}
     }))
     .unwrap();
     let withdraw = tokio::spawn({
@@ -1021,12 +1024,25 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
         .unwrap()
         .decode::<op::MarkContainerStopping>()
         .unwrap();
-    let replay = service.thaw(Request::new(op::Thaw::into_request(
-        serde_json::from_value(json!({
-            "name":"data", "container_id":created.container_id,
-            "switch":{"lease":1,"pos":{"seq":13,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
-        })).unwrap()
-    ).encode().unwrap())).await.unwrap().into_inner().decode_response().unwrap().decode::<op::Thaw>().unwrap();
+    let replay = service
+        .thaw(Request::new(
+            op::Thaw::into_request(
+                serde_json::from_value(json!({
+                    "name":"data", "container_id":created.container_id,
+                    "switch":{"lease":1,"pos":{"seq":13,"round":0,"sub":0}}
+                }))
+                .unwrap(),
+            )
+            .encode()
+            .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::Thaw>()
+        .unwrap();
     assert_eq!(replay.decision, ployz_core::FenceDecision::Replay);
     let details = service
         .inspect_container(Request::new(
@@ -1052,11 +1068,9 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
 }
 
 #[tokio::test]
-async fn recovery_thaw_restores_ingress_after_adopting_a_newer_lease() {
+async fn recovery_thaw_restores_ingress_under_a_newer_lease() {
     use axum::{Json, Router, routing::post};
-    use ployz_core::{
-        AdoptLeaseRequest, CreateContainerRequest, InspectContainerRequest, SourceContainerRequest,
-    };
+    use ployz_core::{CreateContainerRequest, InspectContainerRequest, SourceContainerRequest};
     use serde_json::json;
 
     let (data_dir, _store, service, fake) = fake_docker_service("ployzd-source-recovery").await;
@@ -1096,13 +1110,6 @@ async fn recovery_thaw_restores_ingress_after_adopting_a_newer_lease() {
             Json(json!({"Ok": {
                 "decision":"adopt",
                 "lease":{"lease":request.switch.lease,"pos":request.switch.pos,"cycle":"open"},
-                "copy":{"kind":"root","writer":{"phase":"idle"},"readonly":false,"newest":null}
-            }}))
-        }))
-        .route("/Volume.AdoptLease", post(|Json(request): Json<AdoptLeaseRequest>| async move {
-            Json(json!({"Ok": {
-                "decision":"adopt",
-                "lease":{"lease":request.lease,"pos":{"seq":2,"round":0,"sub":0},"cycle":"open"},
                 "copy":{"kind":"root","writer":{"phase":"idle"},"readonly":false,"newest":null}
             }}))
         }))
@@ -1149,7 +1156,7 @@ async fn recovery_thaw_restores_ingress_after_adopting_a_newer_lease() {
     assert_eq!(inspect().await, vec![created.container_id]);
     let withdraw: SourceContainerRequest = serde_json::from_value(json!({
         "name":"data", "container_id":created.container_id,
-        "switch":{"lease":1,"pos":{"seq":5,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+        "switch":{"lease":1,"pos":{"seq":5,"round":0,"sub":0}}
     }))
     .unwrap();
     service
@@ -1168,27 +1175,6 @@ async fn recovery_thaw_restores_ingress_after_adopting_a_newer_lease() {
     assert!(
         inspect().await.is_empty(),
         "Withdraw must remove the source from ingress"
-    );
-    service
-        .adopt_lease(Request::new(
-            op::AdoptLease::into_request(AdoptLeaseRequest {
-                lease: ployz_core::Lease::new(2),
-                not_after_unix_seconds: i64::MAX,
-                name: withdraw.name.clone(),
-            })
-            .encode()
-            .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::AdoptLease>()
-        .unwrap();
-    assert!(
-        inspect().await.is_empty(),
-        "AdoptLease alone must not restore ingress"
     );
     let mut thaw = withdraw.clone();
     thaw.switch.lease = ployz_core::Lease::new(2);
@@ -1383,7 +1369,7 @@ fn handed_volume_request() -> serde_json::Value {
     serde_json::json!({
         "name":"app_data", "namespace":"app",
         "resolved_spec": spec_with_sources(vec![provisioned_source("data", 1_073_741_824)]),
-        "switch":{"lease":1,"pos":{"seq":11,"round":0,"sub":0},"not_after_unix_seconds":i64::MAX}
+        "switch":{"lease":1,"pos":{"seq":11,"round":0,"sub":0}}
     })
 }
 

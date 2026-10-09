@@ -1,4 +1,4 @@
-import type { MachineId, Snapshot, SnapshotGuid } from "@ployz/sdk";
+import type { Snapshot, SnapshotGuid } from "@ployz/sdk";
 import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
@@ -15,8 +15,7 @@ export type RefusalCode =
   | "no_mirror"
   | "no_copy"
   | "another_copy"
-  | "confirm_required"
-  | "server_removing";
+  | "confirm_required";
 
 /** Where a Move continues from the copies it finds; every step after `handover` is past the point of no return. */
 export type MoveStart = "rounds" | "handover" | "accept" | "promote" | "start" | "close" | "undo";
@@ -40,15 +39,44 @@ export type Planned =
     }
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly source: AnsweredMember; readonly mirror: AnsweredMember | null; readonly thaw: boolean } }
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
+  | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: false; readonly refusal: Refusal };
 
-export type Phase = Extract<Planned, { ok: true }>["phase"];
+type Phase = Extract<Planned, { ok: true }>["phase"];
+type MovePhase = Extract<Phase, { kind: "move" }>;
 
-/** Every Server holding a copy, plus the Server a Mirror or Move builds one on: `server rm` waits while an open run names one. */
-export function participantsOf(phase: Phase, members: readonly Member[]): MachineId[] {
-  const target = phase.kind === "mirror" || phase.kind === "move" ? [phase.target.machine.id] : [];
-  const holders = members.filter((member) => member.answered && member.view.copy !== null).map((member) => member.machine.id);
-  return [...new Set([...holders, ...target])];
+/** Undo clears the target's final only when the target holds a slot that this or an earlier attempt filled. */
+export const undoClearsTarget = (phase: MovePhase) => phase.start === "rounds" || phase.target.view.copy?.kind === "slot";
+
+/** The Machines the planned phase sends a verb to; only their records may raise the next lease. */
+export function participantsOf(phase: Phase): readonly AnsweredMember[] {
+  switch (phase.kind) {
+    case "mirror":
+      return [phase.writer, phase.target];
+    case "move":
+      switch (phase.start) {
+        case "close":
+          return [phase.writer];
+        case "undo":
+          return undoClearsTarget(phase) ? [phase.writer, phase.target] : [phase.writer];
+        case "rounds":
+        case "handover":
+        case "accept":
+        case "promote":
+        case "start":
+          return [phase.writer, phase.target];
+      }
+    case "sync":
+      return [phase.writer, phase.mirror];
+    case "release":
+      return [...(phase.thaw ? [phase.source] : []), ...(phase.mirror === null ? [] : [phase.mirror])];
+    case "delete_mirror":
+      return [...phase.destroy, ...(phase.forget === null ? [] : [phase.forget]), ...phase.forgetLease];
+    case "restore":
+      return [phase.from];
+    case "demote":
+      return [phase.old];
+  }
 }
 
 export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
@@ -124,7 +152,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     if (input.orphan) {
       if (roots.length > 0) return refuse("invalid", `${name} still has a writer on ${roots.map(named).join(", ")}`);
       if (slots.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null, forgetLease: answered.filter((member) => member.pool) } };
+      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null, forgetLease: answered.filter((member) => slots.includes(member) || member.view.lease !== null) } };
     }
     if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
     if (switching.length > 0 || writer?.view.lease?.cycle === "open") return midRun();
@@ -161,6 +189,10 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       const start = holder === target && target.view.copy?.kind === "slot" ? "handover" : "undo";
       return { ok: true, phase: { kind: "move", writer: source, target, start, guid, declare: false } };
     }
+  }
+  if (roots.length > 1) {
+    const old = oldCopy(roots);
+    if (old !== null) return { ok: true, phase: { kind: "demote", ...old } };
   }
   if (roots.length > 1) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
   if (switching.length > 0) return midRun();
@@ -207,4 +239,17 @@ function planRestore(name: string, from: string, answered: readonly AnsweredMemb
   }
   // A slot holds the data as of its newest snapshot; a root holds every write, so restoring it loses none.
   return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
+}
+
+/**
+ * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root whose lease record
+ * is lower is old. Records that tie, or two roots without one, leave no way to tell, so neither is old.
+ */
+function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
+  if (roots.some((root) => roleOf(root) !== "writer")) return null;
+  const leaseOf = (root: AnsweredMember) => root.view.lease?.lease ?? 0;
+  const [writer, ...rest] = [...roots].sort((a, b) => leaseOf(b) - leaseOf(a));
+  const old = rest.at(-1);
+  if (writer === undefined || old === undefined || leaseOf(writer) === leaseOf(old)) return null;
+  return { old, writer };
 }

@@ -430,7 +430,7 @@ def main():
     actions = parser.add_subparsers(dest="action", required=True)
     launch = actions.add_parser("up", help="Boot a new disposable cluster")
     launch.add_argument("--provider", choices=["incus"], default="incus")
-    launch.add_argument("--machines", type=int, choices=range(1, 9), default=2)
+    launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
     launch.add_argument("--daemon", default="checkout", help="checkout (default), stable, beta or an exact release version")
     pairing = launch.add_mutually_exclusive_group()
     pairing.add_argument("--cloud", action="store_true",

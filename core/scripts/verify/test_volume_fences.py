@@ -44,12 +44,14 @@ class CommandModel:
         if args[1:3] == ["debug", "volume-rpc"]:
             request = json.loads(args[-1])
             payload = request["payload"]
-            if request["command"] == "adopt_lease":
+            if request["command"] in ("declare_mirror", "destroy_mirror"):
+                switch = payload["switch"]
                 prior = 0 if self.record == "-" else int(self.record.split(":")[0])
-                if payload["lease"] < prior and self.mutation != "stale-admitted":
-                    reason = "expired" if self.mutation == "wrong-refusal" else "stale_lease"
+                if switch["lease"] < prior and self.mutation != "stale-admitted":
+                    reason = "stale_step" if self.mutation == "wrong-refusal" else "stale_lease"
                     return 1, json.dumps(dict(error=dict(details=dict(reason=reason))))
-                self.record = f"{payload['lease']}:2.0.0:closed"
+                pos = switch["pos"]
+                self.record = f"{switch['lease']}:{pos['seq']}.{pos['round']}.{pos['sub']}:closed"
                 body = dict(decision="adopt")
             elif request["command"] == "inspect_volume_copy":
                 assert self.slot == payload["name"]
@@ -62,6 +64,8 @@ class CommandModel:
             if verb == "rm":
                 if self.mutation != "remove-noop":
                     self.joined = False
+                    if self.record != "-":
+                        self.record = self.record.split(":")[0] + ":65535.4294967295.255:closed"
                 if self.mutation == "reset-deleted-record":
                     self.record = "-"
                 return 0, "{}"
@@ -162,7 +166,7 @@ class VolumeFenceTests(unittest.TestCase):
 
     def test_lease_survives_remove_reset_and_rejects_old_request(self):
         result = self.check_scenario("lease")
-        self.assertEqual(result["after_rejoin"], "2:2.0.0:closed")
+        self.assertEqual(result["after_rejoin"], "2:65535.4294967295.255:closed")
         self.assertEqual(result["stale_lease"], "refused")
         self.assertEqual(result["old_machine_id"], "original-id")
         self.assertEqual(result["new_machine_id"], "rejoined-id")

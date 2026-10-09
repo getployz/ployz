@@ -9,7 +9,7 @@ import {
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
-import { participantsOf, type PlanInput, type Planned, planFromCopies, type Refusal } from "#/modules/volume-run/plan";
+import { participantsOf, type PlanInput, type Planned, planFromCopies, undoClearsTarget } from "#/modules/volume-run/plan";
 import { copyName, type Member } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -17,7 +17,6 @@ import {
   closeStaleVolumeRuns,
   closeVolumeRun,
   copyImage,
-  departedDeadline,
   endRun,
   failRun,
   findHolder,
@@ -45,7 +44,7 @@ export const RUN_VOLUME_FUNCTION_ID = "run-volume";
 export const MAX_ROUNDS = 3;
 const POLL_INTERVAL = "5s";
 const MAX_POLLS = 500;
-// Promote's task has a 10 minute budget on the Machine; past it the task stops and only a replay finishes it.
+// Cloud's own patience for Promote's task on the target: 120 checks five seconds apart, ten minutes.
 const PROMOTE_CHECKS = 120;
 // Docker decides how long a Container step takes; 120 checks five seconds apart wait out ten minutes of it.
 const CONTAINER_CHECKS = 120;
@@ -57,8 +56,8 @@ const VolumeRunRequestedData = Schema.Struct({
 });
 
 type Pos = { readonly seq: number; readonly round: number; readonly sub: number };
-type At = (pos: Pos) => (notAfter: number) => { lease: number; pos: Pos; not_after_unix_seconds: number };
-type MirrorAt = (pos: Pos) => (notAfter: number) => { switch: ReturnType<ReturnType<At>>; name: string };
+type At = (pos: Pos) => { lease: number; pos: Pos };
+type MirrorAt = (pos: Pos) => { switch: ReturnType<At>; name: string };
 type PhaseOf<K> = Extract<Extract<Planned, { ok: true }>["phase"], { kind: K }>;
 type RunSteps = {
   readonly step: StepTools;
@@ -104,7 +103,8 @@ export async function runVolume(
     return { runId: run.id, refused: plan.refusal };
   }
   const { phase } = plan;
-  if (phase.kind === "restore") return restoreVolume({ step, runEffect, run, runId, input }, members, phase);
+  if (phase.kind === "restore") return restoreVolume({ step, runEffect, run, runId }, phase);
+  if (phase.kind === "demote") return demoteVolume({ step, runEffect, run, runId }, phase);
   const source = phase.kind === "move" ? (phase.start === "close" ? null : phase.writer) : phase.kind === "release" && phase.thaw ? phase.source : null;
   let holder: Holder | null = null;
   if (source !== null) {
@@ -118,14 +118,9 @@ export async function runVolume(
   const spec = holder === null
     ? await step.run("02-spec", () => runEffect(findSpec(run, runId).pipe(Effect.map((found) => found.ok ? found.spec : null))))
     : { namespace: holder.namespace, redactedSpec: holder.redactedSpec };
-  const taken = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members), spec)));
-  if (!taken.ok) {
-    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, taken.refusal)));
-    return { runId: run.id, refused: taken.refusal };
-  }
-  const { lease } = taken;
-  const at = (pos: Pos) => (notAfter: number) => ({ lease, pos, not_after_unix_seconds: notAfter });
-  const mirrorRequest = (pos: Pos) => (notAfter: number) => ({ switch: at(pos)(notAfter), name: run.dockerVolume });
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), spec)));
+  const at = (pos: Pos) => ({ lease, pos });
+  const mirrorRequest = (pos: Pos) => ({ switch: at(pos), name: run.dockerVolume });
   const verb = (id: string, effect: ReturnType<typeof sendSwitch>) => step.run(id, () => runEffect(effect.pipe(Effect.asVoid)));
   const steps: RunSteps = { step, runEffect, run, runId, at, mirrorRequest };
 
@@ -133,33 +128,33 @@ export async function runVolume(
   if (phase.kind === "release") {
     if (holder !== null) {
       const thaw = sourceRequest(steps, holder, { seq: 13, round: 0, sub: 0 });
-      await containerStep(steps, "13-thaw", sendSwitch(run, runId, phase.source.machine, (notAfter) => ({ command: "thaw", payload: thaw(notAfter) })), `${phase.source.machine.name} is still starting ${holder.redactedSpec.name}`);
+      await containerStep(steps, "13-thaw", sendSwitch(run, runId, phase.source.machine, { command: "thaw", payload: thaw }), `${phase.source.machine.name} is still starting ${holder.redactedSpec.name}`);
     }
     if (phase.mirror !== null) {
       const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
-      await verb("14-clear-final", sendSwitch(run, runId, phase.mirror.machine, (notAfter) => ({ command: "clear_final", payload: clear(notAfter) })));
+      await verb("14-clear-final", sendSwitch(run, runId, phase.mirror.machine, { command: "clear_final", payload: clear }));
     }
     await step.run("15-finish", () => runEffect(endRun(run, runId, "done", null)));
     return { runId: run.id, released: phase.source.machine.name };
   }
   if (phase.kind === "delete_mirror") {
     for (const slot of phase.destroy) {
-      await verb(`03-destroy-${slot.machine.name}`, sendSwitch(run, runId, slot.machine, (notAfter) => ({
+      await verb(`03-destroy-${slot.machine.name}`, sendSwitch(run, runId, slot.machine, {
         command: "destroy_mirror",
-        payload: mirrorRequest({ seq: 3, round: 0, sub: 0 })(notAfter),
-      })));
+        payload: mirrorRequest({ seq: 3, round: 0, sub: 0 }),
+      }));
     }
     if (phase.forget !== null) {
-      await verb("04-forget", sendSwitch(run, runId, phase.forget.machine, (notAfter) => ({
+      await verb("04-forget", sendSwitch(run, runId, phase.forget.machine, {
         command: "forget_snapshots",
-        payload: mirrorRequest({ seq: 4, round: 0, sub: 0 })(notAfter),
-      })));
+        payload: mirrorRequest({ seq: 4, round: 0, sub: 0 }),
+      }));
     }
     for (const member of phase.forgetLease) {
-      await verb(`04-forget-lease-${member.machine.name}`, sendSwitch(run, runId, member.machine, (notAfter) => ({
+      await verb(`04-forget-lease-${member.machine.name}`, sendSwitch(run, runId, member.machine, {
         command: "forget_lease",
-        payload: mirrorRequest({ seq: 4, round: 0, sub: 1 })(notAfter),
-      })));
+        payload: mirrorRequest({ seq: 4, round: 0, sub: 1 }),
+      }));
     }
     await step.run("05-finish", () => runEffect(endRun(run, runId, "done", null)));
     return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
@@ -170,21 +165,21 @@ export async function runVolume(
   const A = writer.machine;
   const B = mirror.machine;
   const declare = (id: string, pos: Pos) =>
-    verb(id, sendSwitch(run, runId, B, (notAfter) => ({
+    verb(id, sendSwitch(run, runId, B, {
       command: "declare_mirror",
-      payload: { switch: at(pos)(notAfter), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
-    })));
+      payload: { switch: at(pos), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
+    }));
 
   if (phase.kind === "mirror" && phase.declare) await declare("03-declare", { seq: 3, round: 0, sub: 0 });
   if (phase.kind === "sync" && phase.full) {
-    await verb("03-reset-destroy", sendSwitch(run, runId, B, (notAfter) => ({
+    await verb("03-reset-destroy", sendSwitch(run, runId, B, {
       command: "destroy_mirror",
-      payload: mirrorRequest({ seq: 3, round: 0, sub: 0 })(notAfter),
-    })));
-    await verb("03-reset-forget", sendSwitch(run, runId, A, (notAfter) => ({
+      payload: mirrorRequest({ seq: 3, round: 0, sub: 0 }),
+    }));
+    await verb("03-reset-forget", sendSwitch(run, runId, A, {
       command: "forget_snapshots",
-      payload: mirrorRequest({ seq: 3, round: 0, sub: 1 })(notAfter),
-    })));
+      payload: mirrorRequest({ seq: 3, round: 0, sub: 1 }),
+    }));
     await declare("03-reset-declare", { seq: 3, round: 0, sub: 2 });
   }
 
@@ -193,41 +188,22 @@ export async function runVolume(
   return { runId: run.id, rounds };
 }
 
-type RestoreSteps = Pick<RunSteps, "step" | "runEffect" | "run" | "runId"> & { readonly input: PlanInput };
+type RestoreSteps = Pick<RunSteps, "step" | "runEffect" | "run" | "runId">;
 
 /** Restore makes the one copy left the writer; it starts no Container, so the next Deploy runs the Service on it. */
-async function restoreVolume({ step, runEffect, run, runId, input }: RestoreSteps, observed: Member[], planned: PhaseOf<"restore">) {
-  const refused = async (refusal: Refusal) => {
-    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, refusal)));
-    return { runId: run.id, refused: refusal };
-  };
-  let members = observed;
-  let phase = planned;
-  const deadline = await step.run("02-departed", () => runEffect(departedDeadline(run, runId)));
-  if (deadline !== null) {
-    await step.sleepUntil("02-departed-wait", deadline);
-    members = await step.run("02-reobserve", () => runEffect(observeMembers(run, runId)));
-    const replanned = planFromCopies(input, members);
-    if (!replanned.ok) return refused(replanned.refusal);
-    if (replanned.phase.kind !== "restore") throw new NonRetriableError(`a restore planned a ${replanned.phase.kind}`);
-    phase = replanned.phase;
-  }
+async function restoreVolume({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"restore">) {
   const found = await step.run("02-spec", () => runEffect(findSpec(run, runId)));
-  if (!found.ok) return refused(found.refusal);
+  if (!found.ok) {
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
+    return { runId: run.id, refused: found.refusal };
+  }
   const { spec } = found;
   const from = phase.from.machine;
-  const taken = await step.run("02-lease", () => runEffect(takeLease(run, runId, members, participantsOf(phase, members), spec)));
-  if (!taken.ok) return refused(taken.refusal);
-  const { lease } = taken;
-  await step.run("03-restore", () => runEffect(sendSwitch(run, runId, from, (notAfter) => ({
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), spec)));
+  await step.run("03-restore", () => runEffect(sendSwitch(run, runId, from, {
     command: "restore",
-    payload: {
-      switch: { lease, pos: { seq: 3, round: 0, sub: 0 }, not_after_unix_seconds: notAfter },
-      name: run.dockerVolume,
-      namespace: spec.namespace,
-      resolved_spec: spec.redactedSpec,
-    },
-  })).pipe(Effect.asVoid)));
+    payload: { switch: { lease, pos: { seq: 3, round: 0, sub: 0 } }, name: run.dockerVolume, namespace: spec.namespace, resolved_spec: spec.redactedSpec },
+  }).pipe(Effect.asVoid)));
   const lostAfter = phase.lostAfter;
   const message = lostAfter === null
     ? `data restored on ${from.name}`
@@ -236,11 +212,25 @@ async function restoreVolume({ step, runEffect, run, runId, input }: RestoreStep
   return { runId: run.id, restored: from.name };
 }
 
-const sourceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => (notAfter: number) =>
-  ({ switch: at(pos)(notAfter), name: run.dockerVolume, container_id: holder.containerId });
+/** An old copy takes writes no other copy will see, so the run seals it before anything else and asks for a rerun. */
+async function demoteVolume({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"demote">) {
+  const old = phase.old.machine;
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), null)));
+  await step.run("03-demote", () => runEffect(sendSwitch(run, runId, old, {
+    command: "demote_volume",
+    payload: { switch: { lease, pos: { seq: 3, round: 0, sub: 0 } }, name: run.dockerVolume },
+  }).pipe(Effect.asVoid)));
+  const message = `${copyName(run.volumeName, old.name)} was older than ${copyName(run.volumeName, phase.writer.machine.name)} and is now read-only; `
+    + `writes to it since ${phase.writer.machine.name} took over are lost. Run this again`;
+  await step.run("04-finish", () => runEffect(endRun(run, runId, "failed", message)));
+  return { runId: run.id, demoted: old.name };
+}
 
-const serviceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => (notAfter: number) => ({
-  switch: at(pos)(notAfter),
+const sourceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) =>
+  ({ switch: at(pos), name: run.dockerVolume, container_id: holder.containerId });
+
+const serviceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) => ({
+  switch: at(pos),
   name: run.dockerVolume,
   namespace: holder.namespace,
   resolved_spec: holder.redactedSpec,
@@ -256,9 +246,9 @@ async function attempt(
   { step, runEffect, run, runId }: RunSteps,
   id: string,
   machine: MachineRef,
-  build: (notAfter: number) => Exclude<VolumeSwitchRequest, { command: "inspect_volume_copy" | "inspect_receive" }>,
+  request: Exclude<VolumeSwitchRequest, { command: "inspect_volume_copy" | "inspect_receive" }>,
 ) {
-  const result = await step.run(id, () => runEffect(sendSwitch(run, runId, machine, build, { onRefusal: "throw" }).pipe(
+  const result = await step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, { onRefusal: "throw" }).pipe(
     Effect.map((reply) => ({ ok: true as const, reply })),
     Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed({ ok: false as const, message: error.message })),
   )));
@@ -293,8 +283,8 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
   const name = run.volumeName;
   const from = (start: (typeof MOVE_STARTS)[number]) =>
     phase.start !== "undo" && MOVE_STARTS.indexOf(phase.start) <= MOVE_STARTS.indexOf(start);
-  const switchStep = <R extends VolumeSwitchRequest>(id: string, machine: MachineRef, build: (notAfter: number) => R, options?: SwitchOptions) =>
-    step.run(id, () => runEffect(sendSwitch(run, runId, machine, build, options)));
+  const switchStep = <R extends VolumeSwitchRequest>(id: string, machine: MachineRef, request: R, options?: SwitchOptions) =>
+    step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, options)));
   const fail = (id: string, message: string) =>
     step.run(id, () => runEffect(failRun(run, runId, message))).then(() => {
       throw new NonRetriableError(message);
@@ -308,15 +298,15 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
   const undo = async (message: string) => {
     try {
       const thaw = sourceRequest(steps, required(holder), { seq: 13, round: 0, sub: 0 });
-      await containerStep(steps, "13-thaw", sendSwitch(run, runId, A, (notAfter) => ({ command: "thaw", payload: thaw(notAfter) }), {
+      await containerStep(steps, "13-thaw", sendSwitch(run, runId, A, { command: "thaw", payload: thaw }, {
         messages: { precondition: `${name} is handed to ${B.name}; ${forward}` },
       }), `${A.name} is still starting ${required(holder).redactedSpec.name}`);
     } catch {
       return fail("13-unanswered", `${A.name} did not answer; volume move ${name} --to ${B.name} or volume release ${name} when it is back`);
     }
-    if (phase.start === "rounds" || phase.target.view.copy?.kind === "slot") {
+    if (undoClearsTarget(phase)) {
       const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
-      await switchStep("14-clear-final", B, (notAfter) => ({ command: "clear_final", payload: clear(notAfter) }));
+      await switchStep("14-clear-final", B, { command: "clear_final", payload: clear });
     }
     return fail("14-undone", message);
   };
@@ -326,10 +316,10 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
   let guid = phase.guid;
   if (phase.start === "rounds") {
     if (phase.declare) {
-      await switchStep("03-declare", B, (notAfter) => ({
+      await switchStep("03-declare", B, {
         command: "declare_mirror",
-        payload: { switch: at({ seq: 3, round: 0, sub: 0 })(notAfter), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
-      }));
+        payload: { switch: at({ seq: 3, round: 0, sub: 0 }), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
+      });
     }
     await runRounds(steps, { A, B, writerAddress: phase.writer.address });
   }
@@ -338,14 +328,14 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
   if (from("handover")) {
     try {
       if (phase.start === "rounds") {
-        await attempt(steps, "05-withdraw", A, (notAfter) => ({
+        await attempt(steps, "05-withdraw", A, {
           command: "withdraw",
-          payload: sourceRequest(steps, required(holder), { seq: 5, round: 0, sub: 0 })(notAfter),
-        }));
-        const frozen = await containerStep(steps, "06-freeze", sendSwitch(run, runId, A, (notAfter) => ({
+          payload: sourceRequest(steps, required(holder), { seq: 5, round: 0, sub: 0 }),
+        });
+        const frozen = await containerStep(steps, "06-freeze", sendSwitch(run, runId, A, {
           command: "freeze",
-          payload: sourceRequest(steps, required(holder), { seq: 6, round: 0, sub: 0 })(notAfter),
-        }), { onRefusal: "throw" }), `${A.name} is still stopping ${required(holder).redactedSpec.name}`);
+          payload: sourceRequest(steps, required(holder), { seq: 6, round: 0, sub: 0 }),
+        }, { onRefusal: "throw" }), `${A.name} is still stopping ${required(holder).redactedSpec.name}`);
         const writer = frozen.copy?.kind === "root" ? frozen.copy.writer : null;
         if (writer?.phase !== "frozen") throw new NonRetriableError(`${name} on ${A.name} did not freeze`);
         const frozenGuid = writer.guid;
@@ -354,10 +344,10 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
       }
       if (guid === null) throw new NonRetriableError(`${name} on ${A.name} has no final snapshot`);
       const handed = guid;
-      await attempt(steps, "08-handover", A, (notAfter) => ({
+      await attempt(steps, "08-handover", A, {
         command: "hand_over",
-        payload: { switch: at({ seq: 8, round: 0, sub: 0 })(notAfter), name: run.dockerVolume, guid: handed },
-      }));
+        payload: { switch: at({ seq: 8, round: 0, sub: 0 }), name: run.dockerVolume, guid: handed },
+      });
     } catch (error) {
       return undo(error instanceof Error ? error.message : String(error));
     }
@@ -367,16 +357,16 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
     if (from("accept")) {
       if (guid === null) throw new NonRetriableError(`${name} on ${A.name} has no final snapshot`);
       const handed = guid;
-      await attempt(steps, "09-accept", B, (notAfter) => ({
+      await attempt(steps, "09-accept", B, {
         command: "accept_hand_off",
-        payload: { switch: at({ seq: 9, round: 0, sub: 0 })(notAfter), name: run.dockerVolume, guid: handed },
-      }));
+        payload: { switch: at({ seq: 9, round: 0, sub: 0 }), name: run.dockerVolume, guid: handed },
+      });
     }
     if (from("promote")) await promote(steps, B, required(holder));
     if (from("start")) {
       await containerStep(steps, "11-start", startHanded(run, runId, A, required(holder), B, at({ seq: 11, round: 0, sub: 0 })), `${B.name} is still starting ${required(holder).redactedSpec.name}`);
     }
-    await attempt(steps, "12-close", A, (notAfter) => ({ command: "close", payload: mirrorRequest({ seq: 12, round: 0, sub: 0 })(notAfter) }));
+    await attempt(steps, "12-close", A, { command: "close", payload: mirrorRequest({ seq: 12, round: 0, sub: 0 }) });
   } catch (error) {
     return fail("12-stopped", `${error instanceof Error ? error.message : String(error)}; ${forward}`);
   }
@@ -390,10 +380,10 @@ async function promote(steps: RunSteps, B: MachineRef, holder: Holder) {
   for (let check = 0; check < PROMOTE_CHECKS; check += 1) {
     if (check > 0) await step.sleep(`10-promote-wait-${check}`, POLL_INTERVAL);
     const checked = await step.run(`10-promote-${check}`, () => runEffect(
-      sendSwitch(run, runId, B, (notAfter) => ({
+      sendSwitch(run, runId, B, {
         command: "promote",
-        payload: serviceRequest(steps, holder, { seq: 10, round: 0, sub: 0 })(notAfter),
-      }), { onRefusal: "throw" }).pipe(
+        payload: serviceRequest(steps, holder, { seq: 10, round: 0, sub: 0 }),
+      }, { onRefusal: "throw" }).pipe(
         Effect.map((reply) => ({ ok: true as const, promoted: reply.copy?.kind === "root" && !reply.copy.readonly })),
         Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed({ ok: true as const, promoted: false })),
         Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed({ ok: false as const, message: error.message })),
@@ -412,33 +402,33 @@ async function sendFinal(
 ) {
   const { run, at, mirrorRequest } = steps;
   const { B, guid } = ctx;
-  const begun = await attempt(steps, "07-final-0-begin", B, (notAfter) => ({
+  const begun = await attempt(steps, "07-final-0-begin", B, {
     command: "begin_round",
-    payload: mirrorRequest({ seq: 7, round: 0, sub: 0 })(notAfter),
-  }));
+    payload: mirrorRequest({ seq: 7, round: 0, sub: 0 }),
+  });
   const base = begun.copy?.newest?.guid ?? null;
   const receive = (id: string, token: string | null) =>
-    attempt(steps, id, B, (notAfter) => ({
+    attempt(steps, id, B, {
       command: "start_receive",
       payload: {
-        switch: at({ seq: 7, round: 0, sub: 3 })(notAfter),
+        switch: at({ seq: 7, round: 0, sub: 3 }),
         name: run.dockerVolume,
         from: ctx.writerAddress,
         base,
         target: `f-${ctx.lease}`,
         resume_token: token,
       },
-    }));
+    });
   await receive("07-final-3-receive", null);
   const received = await pollReceive(steps, B, 0, "07-final", receive);
   if (!received.ok) throw new NonRetriableError(received.message);
   if (received.guid !== guid) {
     throw new NonRetriableError(`${copyName(run.volumeName, B.name)} received ${received.guid}, not the frozen ${guid}`);
   }
-  await attempt(steps, "07-final-4-prune", B, (notAfter) => ({
+  await attempt(steps, "07-final-4-prune", B, {
     command: "prune_mirror",
-    payload: mirrorRequest({ seq: 7, round: 0, sub: 4 })(notAfter),
-  }));
+    payload: mirrorRequest({ seq: 7, round: 0, sub: 4 }),
+  });
 }
 
 async function runRounds(
@@ -447,29 +437,29 @@ async function runRounds(
 ) {
   const { step, runEffect, run, runId, at, mirrorRequest } = steps;
   const { A, B } = ctx;
-  const switchStep = (id: string, machine: MachineRef, build: Parameters<typeof sendSwitch>[3], options?: SwitchOptions) =>
-    step.run(id, () => runEffect(sendSwitch(run, runId, machine, build, options).pipe(
+  const switchStep = (id: string, machine: MachineRef, request: Parameters<typeof sendSwitch>[3], options?: SwitchOptions) =>
+    step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, options).pipe(
       Effect.map((reply) => ("copy" in reply ? { newest: newestOf(reply.copy?.newest) } : { newest: newestOf(null) })),
     )));
 
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     const prefix = `04-r${round}`;
-    const begun = await switchStep(`${prefix}-0-begin`, B, (notAfter) => ({
+    const begun = await switchStep(`${prefix}-0-begin`, B, {
       command: "begin_round",
-      payload: mirrorRequest({ seq: 4, round, sub: 0 })(notAfter),
-    }));
+      payload: mirrorRequest({ seq: 4, round, sub: 0 }),
+    });
     const mirrored = begun.newest;
     if (mirrored !== null) {
       const diverged = `${copyName(run.volumeName, B.name)} diverged at ${new Date(mirrored.created_unix_seconds * 1000).toISOString()}; volume sync --full to rebuild`;
-      await switchStep(`${prefix}-1-commit`, A, (notAfter) => ({
+      await switchStep(`${prefix}-1-commit`, A, {
         command: "commit_snapshots",
-        payload: { switch: at({ seq: 4, round, sub: 1 })(notAfter), name: run.dockerVolume, mirror_newest: mirrored.guid },
-      }), { messages: { precondition: diverged } });
+        payload: { switch: at({ seq: 4, round, sub: 1 }), name: run.dockerVolume, mirror_newest: mirrored.guid },
+      }, { messages: { precondition: diverged } });
     }
-    const warmed = await switchStep(`${prefix}-2-warm`, A, (notAfter) => ({
+    const warmed = await switchStep(`${prefix}-2-warm`, A, {
       command: "warm_snapshot",
-      payload: mirrorRequest({ seq: 4, round, sub: 2 })(notAfter),
-    }));
+      payload: mirrorRequest({ seq: 4, round, sub: 2 }),
+    });
     const target = warmed.newest;
     if (target === null) {
       await step.run(`${prefix}-2-no-snapshot`, () =>
@@ -479,17 +469,17 @@ async function runRounds(
     if (mirrored !== null && mirrored.guid === target.guid) return round;
 
     const receive = (id: string, token: string | null) =>
-      switchStep(id, B, (notAfter) => ({
+      switchStep(id, B, {
         command: "start_receive",
         payload: {
-          switch: at({ seq: 4, round, sub: 3 })(notAfter),
+          switch: at({ seq: 4, round, sub: 3 }),
           name: run.dockerVolume,
           from: ctx.writerAddress,
           base: mirrored?.guid ?? null,
           target: target.name,
           resume_token: token,
         },
-      }));
+      });
     await receive(`${prefix}-3-receive`, null);
     const received = await pollReceive(steps, B, round, prefix, receive);
     if (!received.ok) {
@@ -497,14 +487,14 @@ async function runRounds(
       throw new Error("unreachable: failRun ends the run");
     }
 
-    await switchStep(`${prefix}-4-prune`, B, (notAfter) => ({
+    await switchStep(`${prefix}-4-prune`, B, {
       command: "prune_mirror",
-      payload: mirrorRequest({ seq: 4, round, sub: 4 })(notAfter),
-    }));
-    await switchStep(`${prefix}-5-commit`, A, (notAfter) => ({
+      payload: mirrorRequest({ seq: 4, round, sub: 4 }),
+    });
+    await switchStep(`${prefix}-5-commit`, A, {
       command: "commit_snapshots",
-      payload: { switch: at({ seq: 4, round, sub: 5 })(notAfter), name: run.dockerVolume, mirror_newest: received.guid },
-    }));
+      payload: { switch: at({ seq: 4, round, sub: 5 }), name: run.dockerVolume, mirror_newest: received.guid },
+    });
   }
   return MAX_ROUNDS;
 }
@@ -520,7 +510,7 @@ async function pollReceive(
   for (let poll = 0; poll < MAX_POLLS; poll += 1) {
     await step.sleep(`${prefix}-3-wait-${poll}`, POLL_INTERVAL);
     const status = await step.run(`${prefix}-3-inspect-${poll}`, () =>
-      runEffect(sendSwitch(run, runId, B, () => ({ command: "inspect_receive", payload: { name: run.dockerVolume, round } }))
+      runEffect(sendSwitch(run, runId, B, { command: "inspect_receive", payload: { name: run.dockerVolume, round } })
         .pipe(Effect.map((view) => view.status))));
     switch (status.state) {
       case "running":

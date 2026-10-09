@@ -11,7 +11,7 @@ use crate::{CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError
 /// mounts a handed-over Volume and starts its Container.
 pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Lease number of one Volume run, decided on the Machines (max over their records plus one).
+/// Lease number of one Volume run, numbered by the operator driving the run.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct Lease(u64);
@@ -45,8 +45,13 @@ pub struct Pos {
 }
 
 impl Pos {
-    /// Position of `02-lease`, the step that writes every member's record.
-    pub const ADOPT_LEASE: Self = Self::step(2);
+    /// Where departure leaves a record: past every step a run can send, so each late
+    /// request of that run meets `stale_step` and only a newer lease is admitted.
+    pub const DEPARTED: Self = Self {
+        seq: u16::MAX,
+        round: u32::MAX,
+        sub: u8::MAX,
+    };
 
     #[must_use]
     pub const fn step(seq: u16) -> Self {
@@ -132,13 +137,11 @@ impl FromStr for LeaseRecord {
     }
 }
 
-/// What every switch request carries. The Machine compares `not_after` with its own clock.
+/// What every switch request carries. The Machine compares it with its own record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Switch {
     pub lease: Lease,
     pub pos: Pos,
-    /// Step deadline: step start plus the request timeout, as Unix seconds.
-    pub not_after_unix_seconds: i64,
 }
 
 /// What the fence rule decided for a request, under the dataset lock.
@@ -153,7 +156,6 @@ pub enum FenceDecision {
     Adopt,
     RefuseStaleLease,
     RefuseStaleStep,
-    RefuseExpired,
 }
 
 /// ZFS `guid` of a snapshot; stable across send and receive.
@@ -408,28 +410,6 @@ pub struct InspectVolumeCopyRequest {
     pub name: DockerVolumeName,
 }
 
-/// `02-lease`: record `<lease>:2.0.0` on this Machine, keeping an open cycle open.
-///
-/// Carries no position: the step is always [`Pos::ADOPT_LEASE`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct AdoptLeaseRequest {
-    pub lease: Lease,
-    pub not_after_unix_seconds: i64,
-    pub name: DockerVolumeName,
-}
-
-impl AdoptLeaseRequest {
-    /// The request the fence admits, at [`Pos::ADOPT_LEASE`].
-    #[must_use]
-    pub const fn switch(&self) -> Switch {
-        Switch {
-            lease: self.lease,
-            pos: Pos::ADOPT_LEASE,
-            not_after_unix_seconds: self.not_after_unix_seconds,
-        }
-    }
-}
-
 /// `03-declare`: create the slot parent for a mirror bounded by `refquota_bytes`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeclareMirrorRequest {
@@ -621,10 +601,6 @@ pub struct SwitchReply {
 pub enum SwitchError {
     StaleLease,
     StaleStep,
-    /// `not_after` passed on the Machine's clock; `skew_seconds` is how long ago.
-    Expired {
-        skew_seconds: i64,
-    },
     Precondition,
     Busy,
     VolumeSwitching,
@@ -654,7 +630,6 @@ impl SwitchError {
         match self {
             Self::StaleLease
             | Self::StaleStep
-            | Self::Expired { .. }
             | Self::Precondition
             | Self::Busy
             | Self::VolumeSwitching
@@ -765,7 +740,7 @@ mod tests {
     fn plain_mount_admission_table() {
         let record = |cycle| LeaseRecord {
             lease: Lease(3),
-            pos: Pos::ADOPT_LEASE,
+            pos: Pos::step(2),
             cycle,
         };
         let root = |writer, readonly| {
@@ -968,7 +943,8 @@ mod tests {
         };
         assert!(earlier_round_later_sub < later_round);
         assert!(Pos::step(5) > later_round);
-        assert!(Pos::ADOPT_LEASE < Pos::step(3));
+        assert!(Pos::step(2) < Pos::step(3));
+        assert!(later_round < Pos::DEPARTED && Pos::step(u16::MAX - 1) < Pos::DEPARTED);
     }
 
     #[test]
@@ -1047,15 +1023,12 @@ mod tests {
 
     #[test]
     fn switch_errors_carry_their_reason_in_details() {
-        let error = SwitchError::Expired { skew_seconds: 61 }.rpc_error("too late");
+        let error = SwitchError::StaleStep.rpc_error("too late");
         assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(
-            error.details,
-            serde_json::json!({ "reason": "expired", "skew_seconds": 61 })
-        );
+        assert_eq!(error.details, serde_json::json!({ "reason": "stale_step" }));
         assert_eq!(
             SwitchError::from_details(&error.details),
-            Some(SwitchError::Expired { skew_seconds: 61 })
+            Some(SwitchError::StaleStep)
         );
         assert_eq!(
             SwitchError::from_details(&SwitchError::StaleLease.rpc_error("").details),
