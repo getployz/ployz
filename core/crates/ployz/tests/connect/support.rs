@@ -173,6 +173,7 @@ pub(super) struct DiscoveryService {
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) list_machines_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
+    pub(super) created_containers: Arc<Mutex<Vec<ployz_core::CreateContainerRequest>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
@@ -226,6 +227,7 @@ impl DiscoveryService {
             create_container_blocked: None,
             list_machines_blocked: None,
             created_volumes: Arc::new(Mutex::new(Vec::new())),
+            created_containers: Arc::default(),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
             reset_machines: Arc::new(Mutex::new(Vec::new())),
@@ -918,8 +920,13 @@ impl MachineRpc for DiscoveryService {
 
     async fn create_container(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let request = request.into_inner().decode_request().unwrap();
+        let RpcRequestBody::CreateContainer(create) = request.body else {
+            return Err(Status::invalid_argument("expected create_container"));
+        };
+        self.created_containers.lock().unwrap().push(create);
         if let Some(builds) = &self.builds
             && builds.retain_images
         {
