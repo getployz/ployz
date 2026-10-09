@@ -13,8 +13,8 @@ use crate::error;
 use crate::id::{ConfigRef, VolumeName};
 use crate::variables::VariableKey;
 
-/// A node of an Environment by name: `SERVICE` for a Service, `volumes.VOLUME` for a
-/// Volume, `configs.CONFIG` for a Config.
+/// A node of an Environment: `SERVICE` for a Service, `volumes.VOLUME` for a
+/// Volume, `configs.CONFIG` for a Config by name or `configs.@UUID` by identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]

@@ -225,7 +225,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                         } else if group.node.node_type == EnvironmentNodeType::Config {
                             row.before = crate::config_item::shown_file(row.before, &names);
                             row.after = crate::config_item::shown_file(row.after, &names);
-                            row.path = format!("configs.{name}.{}", row.path);
+                            row.path = format!("configs.@{}.{}", group.node.id, row.path);
                         } else {
                             row.before = shown(&row.path, row.before);
                             row.after = shown(&row.path, row.after);

@@ -485,9 +485,18 @@ fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
     assert_eq!(
         rows,
         [
-            ("configs.errors.name".to_owned(), true),
-            ("configs.errors.files.config.yml".to_owned(), true),
-            ("configs.errors.files.extra.yml".to_owned(), true),
+            (
+                "configs.@00000000-0000-4000-8000-000000000009.name".to_owned(),
+                true
+            ),
+            (
+                "configs.@00000000-0000-4000-8000-000000000009.files.config.yml".to_owned(),
+                true
+            ),
+            (
+                "configs.@00000000-0000-4000-8000-000000000009.files.extra.yml".to_owned(),
+                true
+            ),
         ]
     );
     for (path, _) in &rows {
@@ -503,10 +512,10 @@ fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
             },
         )
     };
-    discard("configs.errors.files.extra.yml").unwrap();
-    discard("configs.errors.files.config.yml").unwrap();
+    discard(&rows[2].0).unwrap();
+    discard(&rows[1].0).unwrap();
     assert_eq!(changed(&store, &who), ["errors"], "the rename stays staged");
-    discard("configs.errors.name").unwrap();
+    discard(&rows[0].0).unwrap();
     assert!(diff(&store, &who).changes.is_empty());
     assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
     assert_eq!(
@@ -2753,4 +2762,105 @@ fn a_preview_recorded_with_hook_environment_still_matches_its_replay_and_outcome
         )
         .unwrap();
     assert_eq!(executed.status, DeploymentStatus::Applied);
+}
+
+#[test]
+fn deleted_config_discard_does_not_target_same_name_replacement() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    let query = |selector: &str| ployz_store::ConfigItemQuery {
+        environment: EnvironmentRef::default(),
+        config: ployz_store::ConfigRef::parse(selector).unwrap(),
+    };
+    let old = store.read(&who, &query("sentry")).unwrap();
+    let old_selector = format!("@{}", old.config.config.id);
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    let replacement = ConfigId::parse("00000000-0000-4000-8000-000000000010").unwrap();
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: replacement.clone(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![],
+            },
+        )
+        .unwrap();
+    put_sentry(&store, &who, "REPLACEMENT_TEXT_MUST_SURVIVE");
+    let before = store.read(&who, &ConfigsQuery::default()).unwrap();
+    assert_eq!(
+        before
+            .configs
+            .iter()
+            .filter(|c| c.config.name.as_str() == "sentry")
+            .count(),
+        2
+    );
+    let replacement_before = store.read(&who, &query("sentry")).unwrap();
+    assert_eq!(replacement_before.config.config.id, replacement);
+    assert_eq!(
+        store.read(&who, &query(&old_selector)).unwrap().contents,
+        old.contents
+    );
+    let discard = |path: &str| {
+        store.write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse(path).unwrap()),
+                version: None,
+            },
+        )
+    };
+    assert_eq!(
+        discard("configs.sentry").unwrap_err().code,
+        RpcErrorCode::Ambiguous
+    );
+    assert_eq!(
+        discard(&format!("configs.{old_selector}"))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(store.read(&who, &ConfigsQuery::default()).unwrap(), before);
+    assert_eq!(
+        store.read(&who, &query("sentry")).unwrap(),
+        replacement_before
+    );
+    let missing = "@00000000-0000-4000-8000-000000000099";
+    assert_eq!(
+        store.read(&who, &query(missing)).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+    discard(&format!("configs.@{replacement}")).unwrap();
+    assert_eq!(
+        store
+            .read(&who, &query(&format!("@{replacement}")))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    discard(&format!("configs.{old_selector}")).unwrap();
+    assert_eq!(
+        store.read(&who, &query(&old_selector)).unwrap().contents,
+        old.contents
+    );
 }
