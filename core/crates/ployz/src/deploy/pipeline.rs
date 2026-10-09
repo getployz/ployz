@@ -132,7 +132,7 @@ impl Client {
     /// Ask every Server's Log Store to drop `namespace`. A Server that misses
     /// it ages those logs out under its normal cap, so nothing here can fail
     /// the destroy.
-    async fn forget_logs(&mut self, namespace: &Namespace) {
+    pub(crate) async fn forget_logs(&mut self, namespace: &Namespace) {
         let Ok(machines) = self.machines().await else {
             return;
         };

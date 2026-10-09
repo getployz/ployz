@@ -66,6 +66,8 @@ pub(super) struct DeployService {
     pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
     /// Volume copies every Machine reports from storage.
     pub(super) copies: Arc<Mutex<BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>>>,
+    /// Namespaces whose logs a forget asked the Server to drop.
+    pub(super) forgotten: Arc<Mutex<Vec<String>>>,
 }
 
 impl DeployService {
@@ -94,6 +96,7 @@ impl DeployService {
             listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
+            forgotten: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -122,6 +125,7 @@ impl DeployService {
             listing_blocked: None,
             volumes: Arc::new(Mutex::new(Vec::new())),
             copies: Arc::new(Mutex::new(BTreeMap::new())),
+            forgotten: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -903,9 +907,17 @@ impl MachineRpc for DeployService {
     }
     async fn forget_logs(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let RpcRequestBody::ForgetLogs(forget) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected forget_logs"));
+        };
+        self.forgotten.lock().unwrap().push(forget.namespace);
+        encoded(RpcResponse::from(ployz_core::LogsForgotten {
+            containers: 1,
+        }))
     }
     async fn machine_logs(
         &self,

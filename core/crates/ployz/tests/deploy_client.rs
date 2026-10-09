@@ -1139,6 +1139,98 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
 }
 
 #[tokio::test]
+async fn cloud_runner_forgets_an_environment_s_logs_once_its_removal_applies() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
+        Removal, RunnerId, SealingKey, ServiceLineageId, Trusted,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let service = DeployService::new(machine('a', "one"));
+    let forgotten = Arc::clone(&service.forgotten);
+    let (address, server) = listening(service).await;
+    let run = |id: DeploymentId, runner: &str| {
+        ployz::sdk::run_deployment(
+            Arc::clone(&store),
+            id,
+            RunnerId::parse(runner).unwrap(),
+            vec![ployz::context::Connection::tcp(address)],
+            Ok(Default::default()),
+        )
+    };
+
+    let deployed = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: deployed.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let ran = run(deployed, "cloud-run-1").await.unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    assert!(
+        forgotten.lock().unwrap().is_empty(),
+        "a deploy keeps its logs"
+    );
+
+    let removal = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Remove(Removal {
+                id: removal.clone(),
+                environment: EnvironmentRef::default(),
+                version: None,
+                accept_volume_loss: Vec::new(),
+                close: false,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let ran = run(removal, "cloud-run-2").await.unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    assert!(ran.remove);
+    assert_eq!(*forgotten.lock().unwrap(), ["shop-production"]);
+    server.abort();
+}
+
+#[tokio::test]
 async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
