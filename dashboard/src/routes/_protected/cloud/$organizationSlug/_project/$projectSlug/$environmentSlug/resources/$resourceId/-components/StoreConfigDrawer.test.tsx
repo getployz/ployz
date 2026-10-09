@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { EditorView } from "@codemirror/view";
+import { undo } from "@codemirror/commands";
 import type { ConfigItemView, ConfigQuery, ConfigView, ConfigWritten, ServiceListing } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
 import * as functions from "#/modules/config-store/store.functions";
-import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, storeViewOptions, useStoreViews } from "#/modules/config-store/store-view.queries";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { InspectorPresentation } from "../../../-components/CanvasInspectorHeader";
 import * as changes from "../../../-components/canvas/useStoreChangeActions";
@@ -32,13 +33,13 @@ function deferred() {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function openDrawer() {
+async function openDrawer(item = initial) {
   vi.stubGlobal("scrollTo", () => {});
   vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "s", userId: "u" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
-  const store = { item: initial };
+  const store = { item };
   function read(query: ConfigQuery): ConfigView {
     switch (query.query) {
       case "config": return { view: "config", ...store.item };
@@ -60,11 +61,15 @@ async function openDrawer() {
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
   const project = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
   const environmentRoute = createRoute({ getParentRoute: () => project, path: "$projectSlug/$environmentSlug", loader: () => ({ store: environment }), component: Outlet });
-  const resource = createRoute({ getParentRoute: () => environmentRoute, path: "resources/$resourceId", component: () => (
-    <InspectorPresentation value={{ takeover: false, toggleFullscreen() {}, returnTo: null }}>
-      <StoreConfigDrawer params={params} config={initial} />
-    </InspectorPresentation>
-  ) });
+  const resource = createRoute({ getParentRoute: () => environmentRoute, path: "resources/$resourceId", component: () => {
+    const config = requireView(useStoreViews("acme", [configsQuery(environment)] as const)[0]).configs[0];
+    if (!config) throw new Error("Config listing did not load");
+    return (
+      <InspectorPresentation value={{ takeover: false, toggleFullscreen() {}, returnTo: null }}>
+        <StoreConfigDrawer params={params} config={config} />
+      </InspectorPresentation>
+    );
+  } });
   const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([organization.addChildren([
     project.addChildren([environmentRoute.addChildren([resource])]),
   ])])]), history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/production/resources/config"] }) });
@@ -78,6 +83,7 @@ async function openDrawer() {
   return {
     store, write,
     edit(text: string) { act(() => { const view = editor(); view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: "input.type" }); }); },
+    undo() { act(() => { undo(editor()); }); },
     text: () => editor().state.doc.toString(),
   };
 }
@@ -122,6 +128,77 @@ it("does not restore an older refused save over a newer submitted save", async (
   await act(async () => { second.resolve(accepted); });
   await waitFor(() => expect(test.text()).toBe("newer"));
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true);
+});
+
+it("keeps a queued save visible through the preceding save's refresh and subsequent edits", async () => {
+  const test = await openDrawer();
+  const first = deferred();
+  const second = deferred();
+  const third = deferred();
+  test.write.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise).mockImplementationOnce(() => third.promise);
+  test.edit("version: A");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  test.edit("version: B");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  test.store.item = { ...initial, contents: { "config.yml": "version: A" } };
+  await act(async () => { first.resolve(accepted); });
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+  expect(test.text()).toBe("version: B");
+  test.edit(`${test.text()}\nadded: true`);
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  test.store.item = { ...initial, contents: { "config.yml": "version: B" } };
+  await act(async () => { second.resolve(accepted); });
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(3));
+  expect(test.write).toHaveBeenLastCalledWith(expect.objectContaining({ data: {
+    organizationSlug: "acme", command: { command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "version: B\nadded: true" },
+    ] },
+  } }));
+  expect(test.text()).toBe("version: B\nadded: true");
+  test.store.item = { ...initial, contents: { "config.yml": "version: B\nadded: true" } };
+  await act(async () => { third.resolve(accepted); });
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+});
+
+it("keeps unsaved text and new files through a successful Config rename", async () => {
+  const test = await openDrawer();
+  test.write.mockImplementationOnce(async () => {
+    test.store.item = { ...initial, name: "renamed" };
+    return accepted;
+  });
+  test.edit("keep unsaved text");
+  fireEvent.click(screen.getByRole("button", { name: "Add file" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "File name" }), { target: { value: "new.yml" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  await screen.findByRole("textbox", { name: "new.yml contents" });
+  test.edit("new unsaved text");
+  fireEvent.click(screen.getByTitle("Edit config name"));
+  fireEvent.change(screen.getByRole("textbox", { name: "Edit config name" }), { target: { value: "renamed" } });
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+  await screen.findByRole("button", { name: "renamed" });
+  await screen.findByRole("textbox", { name: "new.yml contents" });
+  expect(test.text()).toBe("new unsaved text");
+  fireEvent.click(screen.getByRole("tab", { name: /config.yml/ }));
+  await screen.findByRole("textbox", { name: "config.yml contents" });
+  expect(test.text()).toBe("keep unsaved text");
+  expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+    organizationSlug: "acme", command: { command: "rename_config", environment, config: "sentry", name: "renamed" },
+  } }));
+});
+
+it("isolates undo when switching to a file with the same text", async () => {
+  const test = await openDrawer({ ...initial, files: [...initial.files, { name: "same.yml", bytes: 4, mode: "0444", uid: 0, gid: 0, references: [] }],
+    contents: { ...initial.contents, "same.yml": "same" } });
+  test.edit("same");
+  fireEvent.click(screen.getByRole("tab", { name: "same.yml" }));
+  await screen.findByRole("textbox", { name: "same.yml contents" });
+  test.undo();
+  expect(test.text()).toBe("same");
+  fireEvent.click(screen.getByRole("tab", { name: /config.yml/ }));
+  await screen.findByRole("textbox", { name: "config.yml contents" });
+  expect(test.text()).toBe("same");
 });
 
 it("adds a nested filename and submits its contents", async () => {
