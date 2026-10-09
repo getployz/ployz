@@ -439,6 +439,33 @@ async fn abdicates_only_when_the_installed_binary_cannot_serve_dns() {
     assert!(Listeners::bind(harness.spec.listen).is_ok());
 }
 
+#[tokio::test]
+async fn an_inconclusive_probe_is_retried_on_the_next_tick() {
+    let harness = Harness::new();
+    harness.publish_replicas(1).await;
+    let shutdown = CancellationToken::new();
+    let process = harness.spawn(&shutdown);
+    harness.wait_for_replicas(1).await;
+
+    install(&harness.exe, "exit 2");
+    fs::set_permissions(&harness.exe, fs::Permissions::from_mode(0o644)).unwrap();
+    tokio::time::sleep(TICK * 4).await;
+    assert!(
+        !process.is_finished(),
+        "a probe that could not run must not end the process"
+    );
+
+    fs::set_permissions(&harness.exe, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        tokio::time::timeout(SETTLE, process)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        DnsExit::Abdicated
+    );
+}
+
 async fn wait_for_status(keeper: &MemoryKeeper, status: &str) {
     let deadline = Instant::now() + SETTLE;
     while !keeper.statuses().iter().any(|seen| seen == status) {

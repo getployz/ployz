@@ -449,15 +449,19 @@ impl Tick<'_> {
             {
                 return DnsExit::SpecChanged;
             }
-            if let Some(path) = self.exe.changed()
-                && Successor::at(path).probe().await == Probe::CannotServe
-            {
-                if let Err(error) = keeper.forget(&listeners.names()) {
-                    eprintln!(
-                        "failed to forget the Internal DNS sockets while abdicating: {error}"
-                    );
+            if let Some(identity) = self.exe.changed() {
+                match Successor::at(self.exe.path()).probe().await {
+                    Probe::CannotServe => {
+                        if let Err(error) = keeper.forget(&listeners.names()) {
+                            eprintln!(
+                                "failed to forget the Internal DNS sockets while abdicating: {error}"
+                            );
+                        }
+                        return DnsExit::Abdicated;
+                    }
+                    Probe::Serves => self.exe.identity = Some(identity),
+                    Probe::Unknown => {}
                 }
-                return DnsExit::Abdicated;
             }
             self.upstreams.reload_if_changed();
         }
@@ -492,13 +496,9 @@ impl InstalledExe {
         self.identity
     }
 
-    fn changed(&mut self) -> Option<&Path> {
+    fn changed(&self) -> Option<(u64, u64)> {
         let identity = identity_of(&self.path).ok()?;
-        if self.identity == Some(identity) {
-            return None;
-        }
-        self.identity = Some(identity);
-        Some(&self.path)
+        (self.identity != Some(identity)).then_some(identity)
     }
 }
 
