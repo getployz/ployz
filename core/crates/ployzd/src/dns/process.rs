@@ -135,6 +135,8 @@ pub(crate) async fn serve_with(
     };
     let adopted = adopt(inherited, spec.listen);
     fixture.keeper.forget(&names(&adopted.stale))?;
+    // A rejected half pair still holds the address; the rebind below needs it released.
+    drop(adopted.stale);
     let listeners = match adopted.listeners {
         Some(listeners) => listeners,
         None => match bind_until_free(spec.listen, &fixture, &shutdown).await? {

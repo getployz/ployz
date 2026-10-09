@@ -23,7 +23,7 @@ use super::{Backoff, DnsExit, Fixture, InstalledExe, serve_with};
 use crate::{
     corrosion::fake_cluster::FakeCluster,
     dns::{
-        listeners::{Listeners, MemoryKeeper},
+        listeners::{Keeper, Listeners, MemoryKeeper},
         spec::{CorrosionEndpoint, DnsSpec, SpecFile},
         tests::replica_observations,
     },
@@ -370,6 +370,38 @@ async fn inherited_sockets_carry_queries_queued_across_a_restart() {
         .await
         .expect("queued TCP query answered");
     assert_eq!(a_records(&over_tcp).len(), 2);
+
+    shutdown.cancel();
+    assert_eq!(second.await.unwrap().unwrap(), DnsExit::Stopped);
+}
+
+#[tokio::test]
+async fn a_half_stored_pair_is_released_and_rebound() {
+    let harness = Harness::new();
+    harness.publish_replicas(2).await;
+    let shutdown = CancellationToken::new();
+    let first = harness.spawn(&shutdown);
+    harness.wait_for_replicas(2).await;
+    shutdown.cancel();
+    assert_eq!(first.await.unwrap().unwrap(), DnsExit::Stopped);
+    let tcp: Vec<String> = harness
+        .keeper
+        .stored_names()
+        .into_iter()
+        .filter(|name| name.starts_with("tcp-"))
+        .collect();
+    harness.keeper.forget(&tcp).unwrap();
+
+    let shutdown = CancellationToken::new();
+    let second = harness.spawn(&shutdown);
+    harness.wait_for_replicas(2).await;
+    let mut stream = TcpStream::connect(harness.listen()).await.unwrap();
+    send_tcp(&mut stream, &query(INTERNAL)).await;
+    let over_tcp = recv_tcp(&mut stream, SETTLE)
+        .await
+        .expect("the rebound TCP listener answers");
+    assert_eq!(a_records(&over_tcp).len(), 2);
+    assert_eq!(harness.keeper.stored_names().len(), 2);
 
     shutdown.cancel();
     assert_eq!(second.await.unwrap().unwrap(), DnsExit::Stopped);
