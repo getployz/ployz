@@ -66,6 +66,7 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
     ?? (configs.some((other) => other.id !== config.id && other.name === name) ? `A config here is already named ${name}.` : undefined)));
   const targets = storeReferenceTargets(settings, services, "");
+  const values = configReferenceValues(settings, services);
   const serviceNames = services.map((service) => service.name);
 
   return (
@@ -84,14 +85,14 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
         </p>
       </CanvasInspectorHeader>
       <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
-        values={() => configReferenceValues(settings, services)} removing={removing} params={params} version={diff.version} />
+        values={values} removing={removing} params={params} version={diff.version} />
     </div>
   );
 }
 
 function ConfigBody({ state, item, services, targets, serviceNames, values, removing, params, version }: {
   state: StoreConfig; item: ConfigItemView; services: readonly ServiceListing[]; targets: readonly ReferenceTarget[];
-  serviceNames: readonly string[]; values: () => ReturnType<typeof configReferenceValues>; removing: boolean;
+  serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>; removing: boolean;
   params: ConfigRouteParams; version: string;
 }) {
   const writer = useStoreWriter(state.organizationSlug);
@@ -151,7 +152,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
       });
   }
 
-  const references = fileNames.flatMap((file) => configReferences(textOf(file), targets, serviceNames));
+  const references = fileNames.flatMap((file) => configReferences(textOf(file), values, serviceNames));
   const dependsOn = [...new Set(references.flatMap((ref) => ref.kind === "ref" ? [ref.service] : []))];
   const secrets = [...new Set(references.flatMap((ref) => ref.kind === "ref" && ref.secret ? [`${ref.service}.${ref.key}`] : []))];
 
@@ -231,7 +232,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
   onDraft, onSave, onRemove, onAdd, footer }: {
   fileNames: readonly string[]; current: string | null; onSelect: (file: string) => void; item: ConfigItemView;
   drafts: ReadonlyMap<string, FileDraft>; dirty: ReadonlySet<string>; textOf: (file: string) => string;
-  targets: readonly ReferenceTarget[]; serviceNames: readonly string[]; values: () => ReturnType<typeof configReferenceValues>;
+  targets: readonly ReferenceTarget[]; serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>;
   readOnly: boolean; onDraft: (file: string, change: Partial<FileDraft>) => void; onSave: () => void; onRemove: (file: string) => void;
   onAdd: (file: string) => void; footer: React.ReactNode;
 }) {
@@ -323,12 +324,12 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
       {current === null ? (
         <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>
       ) : view === "preview" ? (
-        <ConfigPreview text={textOf(current)} values={values()} />
+        <ConfigPreview text={textOf(current)} values={values} />
       ) : ConfigFileEditor === null ? (
         <Skeleton className="h-80 w-full" />
       ) : (
         <div className="overflow-hidden rounded-md border">
-          <ConfigFileEditor key={current} fileName={current} value={textOf(current)} targets={targets} services={serviceNames}
+          <ConfigFileEditor key={current} fileName={current} value={textOf(current)} targets={targets} values={values} services={serviceNames}
             ariaLabel={`${current} contents`} onSave={onSave}
             onChange={(content) => { if (!readOnly) onDraft(current, { content }); }} />
         </div>

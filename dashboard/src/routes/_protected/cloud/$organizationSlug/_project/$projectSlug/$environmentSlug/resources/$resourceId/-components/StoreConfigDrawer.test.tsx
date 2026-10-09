@@ -84,7 +84,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
   return {
     store, write,
     edit(text: string) { act(() => { const view = editor(); view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: "input.type" }); }); },
-    complete() { act(() => { startCompletion(editor()); }); },
+    complete() { act(() => { const view = editor(); view.dispatch({ selection: { anchor: view.state.doc.length } }); startCompletion(view); }); },
     undo() { act(() => { undo(editor()); }); },
     text: () => editor().state.doc.toString(),
   };

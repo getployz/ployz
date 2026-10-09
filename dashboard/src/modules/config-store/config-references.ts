@@ -1,4 +1,3 @@
-import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { KEY_SRC, SLUG_SRC } from "#/modules/variables/variable-template";
 
 /** A closed `${{ }}` token in a Config file, at `[from, to)`: a reference that resolves, or why it doesn't. */
@@ -33,14 +32,7 @@ function* tokens(text: string): Generator<Token> {
 }
 
 /** Every closed reference in `text`; an unclosed `${{` and the `$${{` escape yield nothing. */
-export function configReferences(text: string, targets: readonly ReferenceTarget[], services: readonly string[]): ConfigReference[] {
-  const keys = new Map<string, Map<string, boolean>>();
-  for (const target of targets) {
-    if (target.ownerSlug === null) continue;
-    const owned = keys.get(target.ownerSlug) ?? new Map<string, boolean>();
-    owned.set(target.key, target.isSecret);
-    keys.set(target.ownerSlug, owned);
-  }
+export function configReferences(text: string, values: ReadonlyMap<string, ReferenceValue>, services: readonly string[]): ConfigReference[] {
   const known = new Set(services);
 
   return [...tokens(text)].flatMap((token): ConfigReference[] => {
@@ -50,12 +42,13 @@ export function configReferences(text: string, targets: readonly ReferenceTarget
     if (!known.has(service)) {
       return [{ from, to, kind: "unknown", message: `Unknown service ${service}${didYouMean(service, services)}` }];
     }
-    const owned = keys.get(service);
-    const secret = owned?.get(key);
-    if (secret === undefined) {
-      return [{ from, to, kind: "unknown", message: `${service} has no ${key}${didYouMean(key, [...(owned?.keys() ?? [])])}` }];
+    const value = values.get(`${service}.${key}`);
+    if (value === undefined) {
+      const prefix = `${service}.`;
+      const candidates = [...values.keys()].filter((name) => name.startsWith(prefix)).map((name) => name.slice(prefix.length));
+      return [{ from, to, kind: "unknown", message: `${service} has no ${key}${didYouMean(key, candidates)}` }];
     }
-    return [{ from, to, kind: "ref", service, key, secret }];
+    return [{ from, to, kind: "ref", service, key, secret: value.secret }];
   });
 }
 

@@ -1,18 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { configReferences, previewSegments, type ReferenceValue } from "./config-references";
 
-const target = (ownerSlug: string, key: string, isSecret = false): ReferenceTarget =>
-  ({ key, ownerSlug, kind: "service", ownerLabel: ownerSlug, isSecret, description: null });
-
-const targets = [
-  target("redis", "PLOYZ_PRIVATE_DOMAIN"),
-  target("redis", "PORT"),
-  target("web", "SENTRY_DSN", true),
-];
+const values = new Map<string, ReferenceValue>([
+  ["redis.PLOYZ_PRIVATE_DOMAIN", { secret: false, value: "redis.internal" }],
+  ["redis.PORT", { secret: false, value: "6379" }],
+  ["web.SENTRY_DSN", { secret: true }],
+]);
 const services = ["redis", "web"];
 
-const spans = (text: string) => configReferences(text, targets, services)
+const spans = (text: string) => configReferences(text, values, services)
   .map((reference) => ({ ...reference, text: text.slice(reference.from, reference.to) }));
 
 describe("configReferences", () => {
@@ -36,7 +32,7 @@ describe("configReferences", () => {
       .toEqual(["Unknown service redsi · Did you mean redis?"]);
   });
 
-  it("flags a key the service does not export, suggesting a close one", () => {
+  it("flags a missing key, suggesting a close one", () => {
     expect(spans("${{ redis.FOO }} ${{ redis.PROT }}")).toEqual([
       { from: 0, to: 16, kind: "unknown", message: "redis has no FOO", text: "${{ redis.FOO }}" },
       { from: 17, to: 34, kind: "unknown", message: "redis has no PROT · Did you mean PORT?", text: "${{ redis.PROT }}" },

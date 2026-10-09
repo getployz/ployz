@@ -10,7 +10,7 @@ import {
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
-import { configReferences, type ConfigReference } from "#/modules/config-store/config-references";
+import { configReferences, type ConfigReference, type ReferenceValue } from "#/modules/config-store/config-references";
 import { filterReferenceTargets, type ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { buildRefToken, caretToken } from "#/modules/variables/variable-template";
 
@@ -20,14 +20,15 @@ export type ConfigFileEditorProps = {
   onChange: (value: string) => void;
   onSave: () => void;
   targets: readonly ReferenceTarget[];
+  values: ReadonlyMap<string, ReferenceValue>;
   services: readonly string[];
   ariaLabel: string;
 };
 
-type ReferenceContext = { targets: readonly ReferenceTarget[]; services: readonly string[] };
+type ReferenceContext = Pick<ConfigFileEditorProps, "targets" | "values" | "services">;
 
 const referenceContext = Facet.define<ReferenceContext, ReferenceContext>({
-  combine: (values) => values[0] ?? { targets: [], services: [] },
+  combine: (values) => values[0] ?? { targets: [], values: new Map(), services: [] },
 });
 
 const pill = Decoration.mark({ class: "cm-config-ref" });
@@ -49,14 +50,14 @@ const referenceDecorations = ViewPlugin.fromClass(class {
   }
 
   scan(view: EditorView): DecorationSet {
-    const { targets, services } = view.state.facet(referenceContext);
+    const { values, services } = view.state.facet(referenceContext);
     const { doc } = view.state;
     const builder = new RangeSetBuilder<Decoration>();
     this.references = [];
     for (const range of view.visibleRanges) {
       const from = doc.lineAt(range.from).from;
       const to = doc.lineAt(range.to).to;
-      for (const reference of configReferences(doc.sliceString(from, to), targets, services)) {
+      for (const reference of configReferences(doc.sliceString(from, to), values, services)) {
         const placed = { ...reference, from: from + reference.from, to: from + reference.to };
         this.references.push(placed);
         builder.add(placed.from, placed.to, placed.kind === "unknown" ? unknown : pill);
@@ -163,7 +164,7 @@ function language(fileName: string): Extension | Promise<Extension> {
   }
 }
 
-export default function ConfigFileEditor({ fileName, value, onChange, onSave, targets, services, ariaLabel }: ConfigFileEditorProps) {
+export default function ConfigFileEditor({ fileName, value, onChange, onSave, targets, values, services, ariaLabel }: ConfigFileEditorProps) {
   const parent = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const callbacks = useRef({ onChange, onSave });
@@ -174,7 +175,7 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
   });
 
   const props = (): Extension => [
-    referenceContext.of({ targets, services }),
+    referenceContext.of({ targets, values, services }),
     EditorView.contentAttributes.of({ "aria-label": ariaLabel }),
   ];
 
@@ -251,7 +252,7 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
 
   useEffect(() => {
     view.current?.dispatch({ effects: propsSlot.reconfigure(props()) });
-  }, [targets, services, ariaLabel]);
+  }, [targets, values, services, ariaLabel]);
 
   return <div ref={parent} className="ph-no-capture h-full min-h-0 overflow-hidden" />;
 }
