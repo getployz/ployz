@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
+import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
@@ -175,4 +175,29 @@ it("takes an unmarked row's mark out of a Sync at once, dropping a row left with
   } satisfies SyncView });
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [marked("A", []).row, marked("B", []).row], off: true });
   expect(read<SyncView>(query)?.never_synced).toEqual([marked("B", ["production"]), marked("C", ["fix-api"])]);
+});
+
+
+it("removes only the named Config file from both the listing and open item", async () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  const config = (name: string): ConfigItemView => ({
+    environment, id: name, lineage: name, name, mounts: [], deployed: false, change: "create",
+    files: ["config.yml", "conf.d/site.yml"].map((file) => ({ name: file, bytes: 1, mode: "0444", uid: 0, gid: 0, references: [] })),
+    contents: { "config.yml": "a", "conf.d/site.yml": "b" },
+  });
+  const configs = { query: "configs", environment: ref } as const;
+  const item = { query: "config", environment: ref, config: "sentry" } as const;
+  const other = { query: "config", environment: ref, config: "other" } as const;
+  const key = (query: Parameters<typeof storeViewOptions>[2]) => storeViewOptions("acme", scope, query).queryKey;
+  queryClient.setQueryData<unknown>(key(configs), { ok: true, value: { environment, configs: [config("sentry"), config("other")] } });
+  queryClient.setQueryData<unknown>(key(item), { ok: true, value: config("sentry") });
+  queryClient.setQueryData<unknown>(key(other), { ok: true, value: config("other") });
+  await applyOptimistic(queryClient, "acme", { command: "remove_config_file", environment: ref, config: "sentry", file: "conf.d/site.yml" });
+  expect(queryClient.getQueryData<{ value: ConfigsView }>(key(configs))?.value.configs.map((one) => one.files.map((file) => file.name)))
+    .toEqual([["config.yml"], ["config.yml", "conf.d/site.yml"]]);
+  const shown = queryClient.getQueryData<{ value: ConfigItemView }>(key(item))?.value;
+  expect(shown?.files.map((file) => file.name)).toEqual(["config.yml"]);
+  expect(shown?.contents).toEqual({ "config.yml": "a" });
+  expect(queryClient.getQueryData<{ value: ConfigItemView }>(key(other))?.value).toEqual(config("other"));
 });
