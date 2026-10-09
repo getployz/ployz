@@ -9,7 +9,6 @@ use std::{
     io,
     net::{SocketAddr, SocketAddrV4, TcpListener, UdpSocket},
     os::fd::{AsFd, OwnedFd},
-    sync::{Arc, Mutex},
 };
 
 use hickory_server::{Server, server::RequestHandler};
@@ -56,8 +55,21 @@ impl Listeners {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn listen(&self) -> SocketAddrV4 {
         self.listen
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bind_ephemeral() -> Self {
+        loop {
+            let udp_port_already_held_by_another_tcp_socket =
+                match Self::bind(SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 0)) {
+                    Ok(listeners) => return listeners,
+                    Err(error) => error.kind() == io::ErrorKind::AddrInUse,
+                };
+            assert!(udp_port_already_held_by_another_tcp_socket);
+        }
     }
 
     /// Hand `server` duplicates. The originals stay here and in the fd store, so
@@ -247,12 +259,14 @@ impl Keeper for SystemdKeeper {
 
 /// Test supervisor. Clone it into the next simulated process to reproduce a
 /// restart: queries sent while no process runs wait in the stored socket.
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub(crate) struct MemoryKeeper {
-    store: Arc<Mutex<Vec<(String, OwnedFd)>>>,
-    statuses: Arc<Mutex<Vec<String>>>,
+    store: std::sync::Arc<std::sync::Mutex<Vec<(String, OwnedFd)>>>,
+    statuses: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+#[cfg(test)]
 impl MemoryKeeper {
     pub(crate) fn stored_names(&self) -> Vec<String> {
         self.store
@@ -268,6 +282,7 @@ impl MemoryKeeper {
     }
 }
 
+#[cfg(test)]
 impl Keeper for MemoryKeeper {
     fn inherited(&self) -> io::Result<Vec<InheritedFd>> {
         self.store
@@ -333,7 +348,7 @@ mod tests {
     use super::*;
 
     fn loopback_pair() -> Listeners {
-        Listeners::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap()
+        Listeners::bind_ephemeral()
     }
 
     fn inherited_from(listeners: &Listeners, names: [&str; 2]) -> Vec<InheritedFd> {

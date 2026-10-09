@@ -55,6 +55,7 @@ x509-parser = "0.18.1"
 verify-faults = []
 
 [dev-dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http2"] }
 base64 = "0.22.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }
 ployz = { path = "../ployz" }

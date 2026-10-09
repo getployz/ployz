@@ -18,6 +18,7 @@ use ployz_core::{
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
     diag,
+    dns::{self, DnsExit, DnsSupervision},
     installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
@@ -59,6 +60,13 @@ enum Command {
     /// Bridge standard input/output to the local Machine API socket.
     #[command(hide = true)]
     DialStdio,
+    /// Serve Internal DNS from the spec the daemon publishes under its run directory.
+    #[command(hide = true)]
+    Dns {
+        /// Exit 0 without serving; tells an older daemon this release serves DNS itself.
+        #[arg(long, hide = true)]
+        probe: bool,
+    },
     /// Serve the Docker Volume plugin on its systemd socket.
     VolumePlugin,
     /// Execute one accepted Machine upgrade from its transient systemd service.
@@ -100,7 +108,7 @@ fn main() -> ExitCode {
         }
     };
     let code = match runtime.block_on(run(args)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("{error}", error = ployz_core::error_chain::inline(&error),);
             daemon_error_exit_code(&error)
@@ -121,13 +129,17 @@ fn daemon_error_exit_code(error: &Error) -> ExitCode {
     }
 }
 
-async fn run(args: Args) -> Result<(), Error> {
+async fn run(args: Args) -> Result<ExitCode, Error> {
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::DialStdio)) {
-        return dial_stdio(&args.socket).await.map_err(Error::from);
+        dial_stdio(&args.socket).await?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if matches!(args.command, Some(Command::Dns { probe: true })) {
+        return Ok(ExitCode::SUCCESS);
     }
     let run_dir = args
         .socket
@@ -135,10 +147,10 @@ async fn run(args: Args) -> Result<(), Error> {
         .unwrap_or_else(|| Path::new("/run/ployz"))
         .to_owned();
     if let Some(Command::UpgradeWorker { attempt }) = args.command {
-        return ployzd::installer::upgrade::run_worker(attempt, &args.data_dir, &run_dir)
+        ployzd::installer::upgrade::run_worker(attempt, &args.data_dir, &run_dir)
             .await
-            .map_err(io::Error::other)
-            .map_err(Error::from);
+            .map_err(io::Error::other)?;
+        return Ok(ExitCode::SUCCESS);
     }
     if let Some(Command::Install {
         version,
@@ -164,20 +176,26 @@ async fn run(args: Args) -> Result<(), Error> {
                 println!("Ployz {} is running and ready", outcome.target);
             }
         }
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     if matches!(args.command, Some(Command::VolumePlugin)) {
         let listener = volume_plugin::inherited_listener()?;
-        return volume_plugin::run(listener, &args.data_dir, &run_dir)
-            .await
-            .map_err(Error::from);
+        volume_plugin::run(listener, &args.data_dir, &run_dir).await?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if matches!(args.command, Some(Command::Dns { .. })) {
+        return Ok(match dns::serve(&run_dir).await? {
+            DnsExit::Abdicated => ExitCode::from(dns::ABDICATED),
+            DnsExit::Stopped | DnsExit::SpecChanged => ExitCode::SUCCESS,
+        });
     }
     let daemon = Daemon::start(DaemonConfig {
         data_dir: args.data_dir,
         socket: args.socket,
         dns_upstreams: args.dns_upstreams,
+        dns: DnsSupervision::detect(),
         machine_api_address: args.machine_api_address,
         containerd_socket: args.containerd_socket,
         volume_plugin_socket: args.volume_plugin_socket,
@@ -188,7 +206,8 @@ async fn run(args: Args) -> Result<(), Error> {
         },
     })
     .await?;
-    daemon.wait().await
+    daemon.wait().await?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn install_request(

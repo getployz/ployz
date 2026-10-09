@@ -73,8 +73,6 @@ impl DnsSpec {
 enum InvalidSpec {
     #[error("listen address {listen} is outside the Machine subnet {subnet}")]
     ListenOutsideSubnet { listen: Ipv4Addr, subnet: Ipv4Net },
-    #[error("listen port {0} is not {PORT}")]
-    ListenPort(u16),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -113,9 +111,6 @@ impl TryFrom<Wire> for DnsSpec {
                 subnet: wire.subnet,
             });
         }
-        if wire.listen.port() != PORT {
-            return Err(InvalidSpec::ListenPort(wire.listen.port()));
-        }
         Ok(Self {
             machine: wire.machine,
             listen: wire.listen,
@@ -143,6 +138,7 @@ impl SpecFile {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
@@ -293,29 +289,27 @@ mod tests {
     }
 
     #[test]
-    fn read_rejects_listen_outside_subnet_or_off_port() {
+    fn read_rejects_listen_outside_subnet() {
         let dir = tempfile::tempdir().unwrap();
         let file = SpecFile::in_run_dir(dir.path());
-        for (listen, message) in [
-            ("10.210.4.1:53", "outside the Machine subnet"),
-            ("10.210.3.1:5353", "listen port 5353 is not 53"),
-        ] {
-            fs::write(
-                file.path(),
-                json!({
-                    "machine": "b".repeat(32),
-                    "listen": listen,
-                    "subnet": "10.210.3.0/24",
-                    "corrosion_api": "127.0.0.1:7571",
-                    "corrosion_admin_socket": "/a",
-                    "corrosion_token_file": "/t",
-                })
-                .to_string(),
-            )
-            .unwrap();
-            let error = file.read().unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-            assert!(error.to_string().contains(message), "{error}");
-        }
+        fs::write(
+            file.path(),
+            json!({
+                "machine": "b".repeat(32),
+                "listen": "10.210.4.1:53",
+                "subnet": "10.210.3.0/24",
+                "corrosion_api": "127.0.0.1:7571",
+                "corrosion_admin_socket": "/a",
+                "corrosion_token_file": "/t",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let error = file.read().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("outside the Machine subnet"),
+            "{error}"
+        );
     }
 }

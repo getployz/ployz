@@ -29,7 +29,7 @@ use crate::{
         CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
         MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
-    dns,
+    dns::{DnsService, DnsSupervision},
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     ingress,
     machine::{
@@ -56,6 +56,7 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: PathBuf,
     pub dns_upstreams: Vec<SocketAddr>,
+    pub dns: DnsSupervision,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
     /// Volume plugin socket; None uses the Docker plugin socket.
@@ -71,6 +72,7 @@ pub struct Daemon {
     shutdown: CancellationToken,
     local: RecordOwner,
     corrosion: Option<RunningCorrosion>,
+    dns: DnsService,
     ingest: Arc<ImageIngest>,
     restart_requested: watch::Receiver<bool>,
     servers: JoinHandle<io::Result<()>>,
@@ -154,6 +156,15 @@ impl Daemon {
         let local_id = local_record.id();
         let local_phase = local_record.phase();
         let local_machine = local_record.machine().cloned();
+        let dns = DnsService::start(
+            config.dns,
+            &config.data_dir,
+            &run_dir,
+            &config.socket,
+            config.dns_upstreams.clone(),
+            &local_record,
+        )
+        .await?;
         let mut network = NetworkPlane::start(&local_record).await?;
         let machine_api_listener = match config
             .machine_api_address
@@ -168,8 +179,6 @@ impl Daemon {
             }
             None => None,
         };
-        let dns_upstreams =
-            (!config.dns_upstreams.is_empty()).then(|| config.dns_upstreams.clone());
         let containers = match config.containers {
             ContainerMode::Absent => None,
             ContainerMode::Auto => {
@@ -188,7 +197,6 @@ impl Daemon {
         };
         let corrosion = start_corrosion(&config, &local).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
-        let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let plugin = config
             .volume_plugin_socket
             .clone()
@@ -208,6 +216,7 @@ impl Daemon {
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
         let records = local.watch();
+        let dns_service = dns.clone();
         let restart_requested = local.restart_requested();
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
@@ -299,33 +308,7 @@ impl Daemon {
                     }
                 }
             };
-            let dns = async {
-                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
-                    return Ok(());
-                }
-                match (
-                    local_machine.clone(),
-                    replicated_store.clone(),
-                    machine_view.clone(),
-                    admin,
-                ) {
-                    (Some(machine), Some(replicated), Some(machines), Some(admin)) => {
-                        dns::run(
-                            machine,
-                            replicated,
-                            machines,
-                            admin,
-                            dns_upstreams,
-                            shutdown.clone(),
-                        )
-                        .await
-                    }
-                    _ => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
-                }
-            };
+            let dns = dns_service.run(records.clone(), shutdown.clone());
             let ingress = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
@@ -391,6 +374,7 @@ impl Daemon {
             shutdown,
             local,
             corrosion,
+            dns,
             ingest,
             restart_requested,
             servers,
@@ -455,12 +439,14 @@ impl Daemon {
         self.shutdown.cancel();
         // Reset must not wait for active Machine API connections.
         // CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
-        let server_result = stop_servers(
-            completed_servers,
-            &mut servers,
-            (!resetting).then_some(SERVER_DRAIN),
-        )
-        .await;
+        let (server_result, ()) = tokio::join!(
+            stop_servers(
+                completed_servers,
+                &mut servers,
+                (!resetting).then_some(SERVER_DRAIN),
+            ),
+            self.dns.stopping(resetting),
+        );
         if let Err(error) = server_result {
             errors.push(ployz_core::error_chain::inline(&error));
         }
@@ -761,6 +747,7 @@ mod tests {
 
     use tokio::net::UnixListener;
 
+    use crate::dns::DnsSupervision;
     use ployz_core::{
         CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
         LIST_CONTAINERS_CAPABILITY, MachineRpcClient, ResetRequest, op,
@@ -783,6 +770,7 @@ mod tests {
                 data_dir: root.join("data"),
                 socket: socket.clone(),
                 dns_upstreams: Vec::new(),
+                dns: DnsSupervision::External,
                 machine_api_address: None,
                 containerd_socket: None,
                 volume_plugin_socket: None,
@@ -917,6 +905,7 @@ mod tests {
             data_dir: root.0.join("data-a"),
             socket: socket.clone(),
             dns_upstreams: Vec::new(),
+            dns: DnsSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,
@@ -929,6 +918,7 @@ mod tests {
             data_dir: root.0.join("data-b"),
             socket,
             dns_upstreams: Vec::new(),
+            dns: DnsSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,
