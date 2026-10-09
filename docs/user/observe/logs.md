@@ -12,8 +12,9 @@ build output, so you can see why a build failed.
 2. Click **Logs** in the sidebar.
 
 Lines from every service arrive as they're written. **All services** and **All servers** narrow
-the list, and **Search loaded logs** filters it. Scroll up for older lines; **Latest** brings you
-back to the end.
+the list, **Search loaded logs** filters it, and **Error**, **Warn**, **Info** and **Debug** show
+only lines at the levels you pick. Scroll up for older lines, back to the oldest your servers kept;
+**Latest** brings you back to the end.
 
 For one service, click it on the canvas and open its **Logs** tab.
 
@@ -27,8 +28,8 @@ For one service, click it on the canvas and open its **Logs** tab.
 3. Pick **Build** or **Deploy**.
 
 **Build** shows the build output. A Docker image service has no build. **Deploy** shows what the
-new containers printed, including the pre-deploy command. See
-[Deployments](../deploy/deployments.md).
+new containers printed, including the pre-deploy command, even after a later deploy replaced
+them. See [Deployments](../deploy/deployments.md).
 
 ![A deployment's Build logs while it builds](../images/deployment-page-build.png)
 
@@ -45,12 +46,20 @@ no service arguments, and `--follow` still use live container discovery.
 
 ## Good to know
 
-- **Logs stay on your servers, for a while.** Ployz doesn't copy them anywhere else. Each
-  container keeps its most recent lines (if Docker was on the server before Ployz, your Docker
-  log settings decide how many), and each build keeps the end of its output. To search or keep
-  logs for longer, send them from your app to a log service.
-- **A deploy clears the old logs.** When a deploy replaces a container, its logs go with it, so
-  an older deployment's **Deploy** tab ends up empty. A replica that failed its deploy keeps its
-  logs.
+- **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
+  so an older deployment's **Deploy** tab still shows its output. Ployz keeps up to 5% of the
+  disk for them, between 512 MB and 5 GB, for 30 days, and the oldest go first. It doesn't copy
+  them anywhere else. To search or keep logs for longer, send them from your app to a log
+  service.
+- **A replica that failed keeps its output and exit code**, so you can see why it stopped.
+- **Deleting an environment deletes its logs.** A removed service's logs stay until they age out.
+- **Containers started before your servers ran this release** keep Docker's old log settings, and
+  their logs aren't kept, until their next deploy.
+- **Levels come from the line.** A JSON `level` field, a logfmt `level=`, or a leading word such
+  as `ERROR` sets it. A line without one counts as **Info**, stderr included.
+- **A stretch a server didn't keep says so.** The log shows a line in its place, saying the lines
+  weren't captured or couldn't be read.
+- **A server that doesn't answer is named** in a banner above the log, and the other servers'
+  lines still show.
 - **When your servers are offline**, the page says **Your servers are offline** and keeps the
   last lines they sent.

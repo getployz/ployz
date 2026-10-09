@@ -272,9 +272,10 @@ sudo docker system df
   and refuses while a build runs.
 - **Images from a registry**, like an old `postgres` version, stay until you remove them with
   `sudo docker image rm`. Ployz cleans up the images it builds on its own.
-- **Container logs.** If Docker was installed before Ployz, it keeps its own log settings, and
-  Docker's default never rotates logs. Set `log-opts` in `/etc/docker/daemon.json` and restart
-  Docker.
+- **Container logs.** Ployz sets each container's log settings itself: Docker keeps up to three
+  10 MB files per container and rotates them. `log-opts` in `/etc/docker/daemon.json` doesn't
+  change them. A container started before your server ran this release keeps its old settings
+  until its next deploy.
 - **Plain Docker volumes** have no size limit, and `docker system df` above counts them.
 - **Kept container logs.** Ployz keeps the logs of containers it ran, even after they're
   replaced, in `ployz-observe` under Docker's directory. `docker system df` doesn't count them;
