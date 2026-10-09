@@ -151,12 +151,23 @@ it("does not restore an older refused save over a newer submitted save", async (
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
   test.edit("newer");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  const read = vi.mocked(functions.readStoreViewServerFn).getMockImplementation();
+  if (!read) throw new Error("Store test reader did not mount");
+  vi.mocked(functions.readStoreViewServerFn).mockRejectedValue(new TypeError("Failed to fetch"));
   await act(async () => { first.resolve(refused); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+  expect(test.text()).toBe("newer");
+  expect(screen.queryByText("Unknown Config reference")).toBeNull();
+  act(() => { void test.router.navigate({ to: "/" }); });
+  const dialog = await screen.findByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(read);
   test.store.item = { ...initial, contents: { "config.yml": "newer" } };
   await act(async () => { second.resolve(accepted); });
   await waitFor(() => expect(test.text()).toBe("newer"));
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true);
+  await act(async () => { await test.router.navigate({ to: "/" }); });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
 it("keeps a queued save visible through the preceding save's refresh and subsequent edits", async () => {
@@ -286,6 +297,8 @@ it("releases navigation protection once a pending save persists", async () => {
   test.edit("persisted text");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  test.edit("temporary edit");
+  test.edit("persisted text");
   test.store.item = { ...initial, contents: { "config.yml": "persisted text" } };
   await act(async () => { pending.resolve(accepted); });
   await act(async () => { await test.router.navigate({ to: "/" }); });
@@ -309,7 +322,7 @@ it("lets the user explicitly discard a pending save without restoring its refuse
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
-it.each(["retry", "discard"])("keeps a refused save guarded after returning to submitted text when rollback reads fail until %s", async (action) => {
+it.each(["retry", "discard"].flatMap((action) => ["unchanged", "newer", "returned"].map((edit) => ({ action, edit }))))("keeps a refused save guarded with $edit text when rollback reads fail until $action", async ({ action, edit }) => {
   const test = await openDrawer();
   const pending = deferred();
   test.write.mockImplementationOnce(() => pending.promise);
@@ -317,14 +330,15 @@ it.each(["retry", "discard"])("keeps a refused save guarded after returning to s
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
-  test.edit("temporary newer text");
-  test.edit("valuable offline text");
+  if (edit !== "unchanged") test.edit("temporary newer text");
+  if (edit === "returned") test.edit("valuable offline text");
+  const remainingText = test.text();
   const read = vi.mocked(functions.readStoreViewServerFn).getMockImplementation();
   if (!read) throw new Error("Store test reader did not mount");
   vi.mocked(functions.readStoreViewServerFn).mockRejectedValue(new TypeError("Failed to fetch"));
   await act(async () => { pending.resolve(refused); });
   await screen.findByText("Unknown Config reference");
-  expect(test.text()).toBe("valuable offline text");
+  expect(test.text()).toBe(remainingText);
   act(() => { void test.router.navigate({ to: "/" }); });
   const dialog = await screen.findByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
@@ -332,7 +346,7 @@ it.each(["retry", "discard"])("keeps a refused save guarded after returning to s
   vi.mocked(functions.readStoreViewServerFn).mockImplementation(read);
   if (action === "retry") {
     test.write.mockImplementationOnce(async () => {
-      test.store.item = { ...initial, contents: { "config.yml": "valuable offline text" } };
+      test.store.item = { ...initial, contents: { "config.yml": remainingText } };
       return accepted;
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));

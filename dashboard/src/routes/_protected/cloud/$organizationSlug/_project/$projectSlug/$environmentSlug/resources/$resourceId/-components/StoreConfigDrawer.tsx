@@ -124,7 +124,6 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
 
   function draft(file: string, change: Partial<FileDraft>) {
     setSaveError(null);
-    submittedFiles.current.delete(file);
     setDrafts((prev) => new Map(prev).set(file, { content: prev.get(file)?.content ?? item.contents[file] ?? "", ...prev.get(file), ...change }));
   }
 
