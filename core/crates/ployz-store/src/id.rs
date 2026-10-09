@@ -338,6 +338,38 @@ impl ConfigRef {
         }
     }
 
+    /// Resolve one identity across the states a restore addresses.
+    pub(crate) fn resolve<'a>(
+        &self,
+        intents: impl IntoIterator<Item = &'a ployz_core::config::SavedEnvironmentIntent>,
+    ) -> Result<&'a ployz_core::config::SavedConfigIntent, RpcError> {
+        let matching: Vec<_> = intents
+            .into_iter()
+            .flat_map(|intent| &intent.configs)
+            .filter(|config| self.matches(config))
+            .collect();
+        let first = matching.first().copied().ok_or_else(|| {
+            crate::error::not_found(
+                "No Config matches this selector.",
+                serde_json::json!({ "config": self }),
+            )
+        })?;
+        if matching
+            .iter()
+            .any(|config| config.resource_id != first.resource_id)
+        {
+            let valid: std::collections::BTreeSet<_> = matching
+                .iter()
+                .map(|config| format!("configs.@{}", config.resource_id))
+                .collect();
+            return Err(crate::error::ambiguous(
+                "More than one Config has this name.",
+                serde_json::json!({ "config": self, "valid_children": valid }),
+            ));
+        }
+        Ok(first)
+    }
+
     pub(crate) fn matches(&self, config: &ployz_core::config::SavedConfigIntent) -> bool {
         match self {
             Self::Name(name) => config.name == *name,

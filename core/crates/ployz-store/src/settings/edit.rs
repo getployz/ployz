@@ -228,15 +228,19 @@ pub(crate) fn edit(
                         json!({ "example": "/etc/app" }),
                     ));
                 };
+                let name = config.resolve([&environment.working])?.name.clone();
                 (
-                    crate::config_item::attach(&mut environment, service, config, dir)?,
+                    crate::config_item::attach(&mut environment, service, &name, dir)?,
                     Apply::Staged,
                 )
             }
-            (Some(Target::ConfigMount(config)), None) => (
-                crate::config_item::detach(&mut environment, service, config)?,
-                Apply::Staged,
-            ),
+            (Some(Target::ConfigMount(config)), None) => {
+                let name = config.resolve([&environment.working])?.name.clone();
+                (
+                    crate::config_item::detach(&mut environment, service, &name)?,
+                    Apply::Staged,
+                )
+            }
             (None, _) => return Err(crate::settings::name_a_setting(path.node())),
         };
         if !changed {
@@ -321,7 +325,7 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         };
                         for (config, value) in mounts {
                             let config = crate::settings::config_name(config)?;
-                            let path = SettingPath::at(service, Target::ConfigMount(config));
+                            let path = SettingPath::at(service, Target::ConfigMount(config.into()));
                             expanded.push((path, Some(value.clone())));
                         }
                         continue;

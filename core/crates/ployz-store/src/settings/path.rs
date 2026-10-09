@@ -162,7 +162,7 @@ pub(crate) enum Target {
     /// Where the Service mounts a Volume.
     Mount(VolumeName),
     /// The directory the Service mounts a Config at.
-    ConfigMount(ConfigName),
+    ConfigMount(ConfigRef),
 }
 
 impl SettingPath {
@@ -238,7 +238,7 @@ impl SettingPath {
             }
             Some(rest) if rest.starts_with("configs.") => {
                 let config = rest.strip_prefix("configs.").unwrap_or_default();
-                Some(Target::ConfigMount(config_name(config)?))
+                Some(Target::ConfigMount(ConfigRef::parse(config)?))
             }
             Some("source") => Some(Target::Source),
             Some(rest) => Some(match rest.strip_prefix("env.") {
@@ -290,7 +290,8 @@ impl SettingPath {
             .or_else(|| field.strip_prefix("variables."));
         let field = match (key, field.split_once('.')) {
             (Some(key), _) => format!("env.{key}"),
-            (_, Some((family @ ("mounts" | "configs"), id))) => {
+            (_, Some(("configs", id))) => format!("configs.@{id}"),
+            (_, Some((family @ "mounts", id))) => {
                 format!("{family}.{}", named(family, id))
             }
             _ => field.to_owned(),

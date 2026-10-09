@@ -206,25 +206,9 @@ fn restore(
                     .err()
                     .unwrap_or_else(|| error::corrupt("Volume"))
             }),
-        NodeName::Config(selector) => {
-            let mut matching = [working, &head]
-                .into_iter()
-                .flat_map(|intent| &intent.configs)
-                .filter(|config| selector.matches(config));
-            let Some(first) = matching.next() else {
-                return Err(error::not_found(
-                    "No Config matches this selector",
-                    json!({ "config": selector }),
-                ));
-            };
-            if matching.any(|config| config.resource_id != first.resource_id) {
-                return Err(error::ambiguous(
-                    "More than one Config has this name; select its @ID",
-                    json!({ "config": selector }),
-                ));
-            }
-            Ok((EnvironmentNodeType::Config, first.resource_id.clone()))
-        }
+        NodeName::Config(selector) => selector
+            .resolve([working, &head])
+            .map(|config| (EnvironmentNodeType::Config, config.resource_id.clone())),
     };
     let (node_type, id) = node?;
     // A part of the source discards with it: the source is one change row.
@@ -250,7 +234,10 @@ fn restore(
     } else {
         head
     };
-    let resource = part.and_then(|part| mounted(working, &baseline, part));
+    let resource = part
+        .map(|part| mounted(working, &baseline, part))
+        .transpose()?
+        .flatten();
     let resource = resource.as_deref();
     let restore = |current: &SavedEnvironmentIntent| {
         let restored = match field {
@@ -475,19 +462,15 @@ fn mounted(
     current: &SavedEnvironmentIntent,
     baseline: &SavedEnvironmentIntent,
     part: &Target,
-) -> Option<String> {
+) -> Result<Option<String>, RpcError> {
     let intents = [current, baseline];
-    match part {
+    Ok(match part {
         Target::Mount(volume) => intents
             .into_iter()
             .flat_map(|intent| &intent.volumes)
             .find(|node| node.name == volume.as_str())
             .map(|node| node.resource_id.clone()),
-        Target::ConfigMount(config) => intents
-            .into_iter()
-            .flat_map(|intent| &intent.configs)
-            .find(|node| node.name == *config)
-            .map(|node| node.resource_id.clone()),
+        Target::ConfigMount(config) => Some(config.resolve(intents)?.resource_id.clone()),
         Target::Setting(_) | Target::Source | Target::Variable(_) | Target::Exported(_) => None,
-    }
+    })
 }

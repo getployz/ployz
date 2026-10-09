@@ -207,7 +207,7 @@ pub(crate) fn create_config(
         if attach(&mut environment, &mount.service, &create.name, &mount.dir)? {
             staged.push(SettingPath::at(
                 &mount.service,
-                Target::ConfigMount(create.name.clone()),
+                Target::ConfigMount(create.name.clone().into()),
             ));
         }
     }
@@ -317,7 +317,7 @@ pub(crate) fn delete_config(
                 ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
             staged.push(SettingPath::at(
                 &name,
-                Target::ConfigMount(config.name.clone()),
+                Target::ConfigMount(config.name.clone().into()),
             ));
         }
     }
@@ -367,7 +367,7 @@ fn mounted(
     changed: bool,
 ) -> Result<ConfigStaged, RpcError> {
     let staged = changed
-        .then(|| SettingPath::at(service, Target::ConfigMount(config.clone())))
+        .then(|| SettingPath::at(service, Target::ConfigMount(config.clone().into())))
         .into_iter()
         .collect();
     Ok(ConfigStaged {

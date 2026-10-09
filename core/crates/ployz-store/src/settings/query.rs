@@ -166,16 +166,16 @@ pub(crate) fn environment(
                 Apply::Staged,
             )?;
         }
-        if let Some(Target::ConfigMount(config)) = only {
-            environment.config(config)?;
-        }
+        let selected_config = match only {
+            Some(Target::ConfigMount(config)) => Some(config.resolve([&environment.working])?),
+            _ => None,
+        };
         for (config, dir) in config_mounts(service, &environment.working) {
-            row(
-                Target::ConfigMount(config),
-                Value::String(dir),
-                Value::Null,
-                Apply::Staged,
-            )?;
+            let target = match (only, selected_config) {
+                (Some(target), Some(selected)) if selected.name == config => target.clone(),
+                _ => Target::ConfigMount(config.into()),
+            };
+            row(target, Value::String(dir), Value::Null, Apply::Staged)?;
         }
     }
     Ok(EnvironmentView {

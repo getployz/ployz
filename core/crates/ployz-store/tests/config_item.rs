@@ -863,3 +863,54 @@ fn the_config_list_shows_files_sizes_and_mounts_but_never_resolved_values() {
     assert!(!one.contains("worker-key"), "{one}");
     assert!(one.contains("${{ worker.KEY }}"), "{one}");
 }
+
+#[test]
+fn exact_config_mount_paths_follow_identity_after_rename() {
+    let (store, who) = shop();
+    create(&store, &who, 10, "sentry", &[]).unwrap();
+    let path = format!("web.configs.@{}", uuid(10));
+    edit(&store, &who, vec![set(&path, json!("/etc/sentry"))]).unwrap();
+    store
+        .write(
+            &who,
+            &RenameConfig {
+                environment: EnvironmentRef::default(),
+                config: config("sentry"),
+                name: config("relay"),
+            },
+        )
+        .unwrap();
+    create(&store, &who, 11, "sentry", &[("web", "/etc/replacement")]).unwrap();
+    let read = || {
+        store
+            .read(
+                &who,
+                &ployz_store::EnvironmentQuery {
+                    environment: EnvironmentRef::default(),
+                    path: Some(SettingPath::parse(&path).unwrap()),
+                    all: false,
+                },
+            )
+            .unwrap()
+    };
+    assert_eq!(read().settings.len(), 1);
+    assert_eq!(read().settings[0].value, json!("/etc/sentry"));
+    assert_eq!(read().settings[0].path.to_string(), path);
+    edit(&store, &who, vec![set(&path, json!("/srv/relay"))]).unwrap();
+    assert_eq!(
+        values(&store, &who, "web")["configs"],
+        json!({ "relay": "/srv/relay", "sentry": "/etc/replacement" })
+    );
+    edit(
+        &store,
+        &who,
+        vec![Change::Unset {
+            path: SettingPath::parse(&path).unwrap(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        values(&store, &who, "web")["configs"],
+        json!({ "sentry": "/etc/replacement" })
+    );
+}
