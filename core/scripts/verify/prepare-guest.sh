@@ -13,7 +13,11 @@ docker pull caddy:2
 caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
 docker tag caddy:2 "caddy:${caddy_version#v}"
-systemctl stop ployz.socket ployz.service ployz-dns.service ployz-volume-plugin.socket ployz-volume-plugin.service
+systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service
+# ployz-dns.service exists only after the daemon has written it under /run.
+if [ -n "$(systemctl list-units --all --plain --no-legend ployz-dns.service)" ]; then
+    systemctl stop ployz-dns.service
+fi
 systemctl disable ployz.socket ployz.service ployz-volume-plugin.socket
 systemctl enable ssh docker
 # Clone dependencies and cached images, then create each Machine's identity on first start.
