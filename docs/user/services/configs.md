@@ -86,6 +86,8 @@ The dashboard shows custom permissions and preserves them when you edit the text
 When you delete a config and create another with the same name before deploying, they remain
 separate configs. To keep the deleted config, first rename or discard its replacement; keeping
 both under one name would conflict. CLI discard accepts `configs.@UUID` to select one exact
-config; a shared name is refused when it could select either config.
+config; a shared name is refused when it could select either config. A service mount can
+likewise be selected with `web.configs.@UUID`; discarding it preserves another config's mounts,
+even when the configs share a name.
 
 Next, [review your deployments](../deploy/deployments.md).

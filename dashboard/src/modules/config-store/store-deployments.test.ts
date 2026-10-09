@@ -35,7 +35,7 @@ it("keeps atomic Config files, literal paths and restart facts in the review", (
   const [config, web] = changeGroups({ ...diff, changes: [
     { type: "config", id: "c", row: "c:node" as RowId, name: "sentry", lifecycle: "update", comparison: "head", data: null, restarts, settings: rows },
     { type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [],
-      settings: [{ path: "web.configs.sentry", kind: "add", before: null, after: "/etc/sentry", canRestore: true, row: null }] },
+      settings: [{ path: "web.configs.@c", configName: "sentry", kind: "add", before: null, after: "/etc/sentry", canRestore: true, row: null }] },
   ] }, services);
   expect(config).toMatchObject({ discardPath: "configs.@c", changeCount: 3, restarts });
   expect(config?.restarts).toBe(restarts);

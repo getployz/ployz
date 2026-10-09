@@ -79,7 +79,9 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       const prefix = node.type === "volume" ? `volumes.${node.name}.` : node.type === "config" ? `configs.@${node.id}.` : `${node.name}.`;
       const setting = row.path.slice(prefix.length);
       const title = settingTitle(setting);
-      const label = setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
+      const label = row.configName ? `Config mount ${row.configName}`
+        : setting.startsWith("configs.@") ? "Config mount"
+        : setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
       const variable = node.type === "service" && setting.startsWith("env.");
       const shown = setting === "source" ? sourceText : shownValue;
       const file = (value: JsonValue) => value === null ? null : Option.getOrThrowWith(decodeFile(value),
