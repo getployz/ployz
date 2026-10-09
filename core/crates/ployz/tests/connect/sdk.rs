@@ -363,18 +363,13 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
     assert_eq!(created.len(), 2);
     for request in created.iter() {
         assert_eq!(request.resolved_spec.configs().len(), 1);
-        assert_eq!(
-            request.resolved_spec.configs()[0].content,
-            b"C6_PRIVATE_CONFIG_SENTINEL\n"
-        );
+        let config = request.resolved_spec.configs().first().unwrap();
+        assert_eq!(config.content, b"C6_PRIVATE_CONFIG_SENTINEL\n");
         assert_eq!(request.resolved_spec.config_mounts().len(), 1);
-        assert_eq!(request.resolved_spec.configs()[0].name, "sentry/app.conf");
+        let config_mount = request.resolved_spec.config_mounts().first().unwrap();
+        assert_eq!(config.name, "sentry/app.conf");
         assert_eq!(
-            request.resolved_spec.config_mounts()[0]
-                .target
-                .as_ref()
-                .unwrap()
-                .as_str(),
+            config_mount.target.as_ref().unwrap().as_str(),
             "/etc/sentry/app.conf"
         );
     }
