@@ -2114,6 +2114,17 @@ mod tests {
         }
     }
 
+    /// Docker's state for a later run it started at `T0 + started`, still
+    /// running: FinishedAt is still the previous run's and ExitCode is reset.
+    fn running_after(started: i64, previous_finished: i64) -> ContainerState {
+        ContainerState {
+            finished_at: Some(at(previous_finished)),
+            exit_code: Some(0),
+            oom_killed: Some(false),
+            ..running(started)
+        }
+    }
+
     /// Docker's state for the run it started at `T0 + started` once it
     /// exited at `T0 + finished`.
     fn exited(started: i64, finished: i64, code: i64, oom: bool) -> ContainerState {
@@ -2221,7 +2232,7 @@ mod tests {
             Step::Event("die", 2, Some("1")),
             Step::Inspect(restarting(1, 2, 1, false)),
             Step::Event("start", 3, None),
-            Step::Inspect(running(3)),
+            Step::Inspect(running_after(3, 2)),
             Step::Event("die", 4, Some("0")),
             Step::Inspect(exited(3, 4, 0, false)),
         ]);
@@ -2238,10 +2249,33 @@ mod tests {
             Step::Event("die", 2, Some("1")),
             Step::Inspect(restarting(1, 2, 1, false)),
             Step::Event("start", 3, None),
-            Step::Inspect(running(3)),
+            Step::Inspect(running_after(3, 2)),
             Step::Event("die", 4, Some("0")),
         ]);
         assert_eq!(saved_run(&meta), (Some(&*at(3)), None, None, false));
+    }
+
+    #[tokio::test]
+    async fn a_container_has_one_inspect_in_flight_and_events_queue_one_more() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        let harvester = &mut running.harvester;
+        harvester.rescan();
+        assert_eq!(harvester.inspecting.get(&id), Some(&false));
+        harvester.on_docker_event(event("die", T0 + 5, &[("exitCode", "1")]));
+        harvester.on_docker_event(event("start", T0 + 6, &[]));
+        harvester.on_docker_event(event("die", T0 + 7, &[("exitCode", "2")]));
+        assert_eq!(harvester.inspecting.get(&id), Some(&true));
+        assert_eq!(harvester.inspecting.len(), 1);
+        harvester.on_inspected(id, inspected(&running_after(6, 5)));
+        assert_eq!(harvester.inspecting.get(&id), Some(&false));
+        harvester.on_inspected(id, inspected(&exited(6, 7, 2, false)));
+        assert_eq!(harvester.inspecting.get(&id), None);
+        assert_eq!(
+            saved_run(&host.meta()),
+            (Some(&*at(6)), Some(&*at(7)), Some(2), false)
+        );
     }
 
     #[tokio::test]
