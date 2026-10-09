@@ -5,7 +5,7 @@ description: Verify a Ployz feature on disposable real Machines. Use when core o
 
 # Verify a server feature
 
-Run from `core/` on the Linux development host. From a Mac, SSH to that host and run the same commands there. Choose the number of Machines and the checks from the feature being implemented; the helper provides the environment. Read `DESIGN.md` and the relevant `../docs/user/` behavior before choosing expected outcomes.
+Run from `core/` on the Linux development host. From a Mac, SSH to that host and run the same commands there. `up` boots one Machine. Pass `--machines N` only when a check needs N distinct Machines, for example a move that needs a source and a target, or a refusal that needs a Machine holding no copy, and name that check in your evidence. Each VM costs 2 GiB of RAM and two vCPUs on a host that other sessions share. Choose the checks from the feature being implemented; the helper provides the environment. Read `DESIGN.md` and the relevant `../docs/user/` behavior before choosing expected outcomes.
 
 ```mermaid
 flowchart LR
@@ -23,7 +23,7 @@ flowchart LR
 Choose `stable` for dashboard or client work against a published daemon. Use `checkout` when the feature changes daemon behavior; use `beta` or an exact version when that is the required baseline.
 
 ```bash
-run=$(scripts/verify-cluster up --machines 2 --daemon stable)
+run=$(scripts/verify-cluster up --daemon stable)
 scripts/verify-cluster doctor "$run"
 ```
 
@@ -98,7 +98,7 @@ The Incus host needs KVM, passwordless sudo, Python 3, Rust, `strip`, OpenSSH, I
 ## Cloud pairing
 
 ```bash
-run=$(scripts/verify-cluster up --machines 2 --daemon stable --cloud)
+run=$(scripts/verify-cluster up --daemon stable --cloud)
 ```
 
 `--cloud` starts this checkout's dashboard (`../dashboard/scripts/verify/up.sh`) with Inngest and the worker. It then enrolls the Machines through it with the seed's Organization Token rather than `--standalone`. `cli` then goes through Cloud with that token, and `doctor` also checks that Cloud lists exactly this run's Machines. `down` stops the dashboard it started. When the dashboard's `SERVERS=N up.sh` started the cluster instead, the dashboard owns it and its `down.sh` removes the cluster. Cloud enrollment needs the daemon version to equal this checkout's CLI version, so use `stable` on a release commit and `checkout` otherwise. In this mode the daemon advertises its discovered endpoints, so the provider's `--public-ip` and `--wg-endpoint` choices do not apply.

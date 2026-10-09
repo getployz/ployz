@@ -28,7 +28,7 @@ fn resolved_spec() -> Value {
 }
 
 fn switch() -> Value {
-    json!({ "lease": 3, "pos": { "seq": 4, "round": 0, "sub": 0 }, "not_after_unix_seconds": 0 })
+    json!({ "lease": 3, "pos": { "seq": 4, "round": 0, "sub": 0 } })
 }
 
 #[test]
@@ -42,11 +42,6 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
             "inspect_volume_copy",
             json!({ "name": "data" }),
             "InspectVolumeCopy",
-        ),
-        (
-            "adopt_lease",
-            json!({ "lease": 3, "not_after_unix_seconds": 0, "name": "data" }),
-            "AdoptLease",
         ),
         (
             "declare_mirror",
@@ -74,6 +69,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
         ("destroy_mirror", leased.clone(), "DestroyMirror"),
         ("forget_snapshots", leased.clone(), "ForgetSnapshots"),
         ("forget_lease", leased.clone(), "ForgetLease"),
+        ("demote_volume", leased.clone(), "DemoteVolume"),
         ("withdraw", source.clone(), "Withdraw"),
         ("freeze", source.clone(), "Freeze"),
         ("thaw", source, "Thaw"),

@@ -824,12 +824,6 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn adopt_lease(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
     async fn withdraw(
         &self,
         _request: Request<OpaquePayload>,
@@ -945,6 +939,12 @@ impl MachineRpc for JoinDaemon {
         unused()
     }
     async fn forget_lease(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn demote_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

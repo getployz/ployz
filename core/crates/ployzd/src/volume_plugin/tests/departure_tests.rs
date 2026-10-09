@@ -1,12 +1,12 @@
-//! Departure over fake ZFS: every root becomes a slot, every record moves on, and the
+//! Departure over fake ZFS: every root becomes a slot, every record closes, and the
 //! roles Storage.Inspect and Mount derive from the markers.
 
 use super::lease_tests::{set_property, start};
-use super::mirror_tests::{commands, property, snapshot_names};
+use super::mirror_tests::{at, commands, property, snapshot_names};
 use super::*;
 
 #[tokio::test]
-async fn departure_demotes_each_root_to_a_slot_and_bumps_every_record() {
+async fn departure_demotes_each_root_to_a_slot_and_closes_every_record() {
     let test = TestDir::new();
     set_property(&test, "tank/ployz", "ployz:lease.data", "3:5.2.1:open");
     set_property(&test, "tank/ployz", "ployz:lease.gone", "1:2.0.0:closed");
@@ -46,11 +46,11 @@ async fn departure_demotes_each_root_to_a_slot_and_bumps_every_record() {
     assert!(kept.contains(&"w-3-1".to_owned()), "{kept:?}");
     assert_eq!(
         property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
-        Some("4:2.0.0:closed")
+        Some("3:65535.4294967295.255:closed")
     );
     assert_eq!(
         property(&test, "tank/ployz", "ployz:lease.gone").as_deref(),
-        Some("2:2.0.0:closed")
+        Some("1:65535.4294967295.255:closed")
     );
 
     let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
@@ -70,6 +70,18 @@ async fn departure_without_a_pool_demotes_nothing() {
     let (socket, server) = start(&test, "", &[]);
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(response, json!({"Ok": []}));
+    server.abort();
+}
+
+#[tokio::test]
+async fn departure_on_a_machine_without_zfs_demotes_nothing() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, "", &[]);
+    fs::remove_file(test.0.join("zpool")).unwrap();
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(response, json!({"Ok": []}));
+    let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+    assert!(capacity.get("Ok").is_some(), "{capacity}");
     server.abort();
 }
 
@@ -132,6 +144,46 @@ async fn departure_moves_a_root_into_the_empty_slot_beside_it() {
         !log.contains("zfs create -o canmount=off -o readonly=on"),
         "{log}"
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn demote_seals_one_old_root_read_only_before_unmounting_it_and_closes_its_record() {
+    let test = TestDir::new();
+    set_property(&test, "tank/ployz", "ployz:lease.data", "7:4.0.5:closed");
+    set_property(&test, "tank/ployz", "ployz:lease.other", "2:4.0.0:open");
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+
+    let request = at(9, 3, 0, 0, json!({}));
+    let response = post(&socket, "/Volume.Demote", request.clone()).await;
+    assert_eq!(
+        response.pointer("/Ok/decision").unwrap(),
+        "adopt",
+        "{response}"
+    );
+    assert_departed_into_a_slot(&test, &socket).await;
+    let log = commands(&test);
+    let sealed = log
+        .find("zfs set readonly=on tank/ployz/data\n")
+        .unwrap_or_else(|| panic!("the root was never sealed in place:\n{log}"));
+    let unmounted = log.find("zfs unmount tank/ployz/data\n").unwrap();
+    assert!(sealed < unmounted, "{log}");
+    assert_eq!(
+        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
+        Some("9:3.0.0:closed")
+    );
+    assert_eq!(
+        property(&test, "tank/ployz", "ployz:lease.other").as_deref(),
+        Some("2:4.0.0:open")
+    );
+
+    let replayed = post(&socket, "/Volume.Demote", request).await;
+    assert_eq!(
+        replayed.pointer("/Ok/decision").unwrap(),
+        "replay",
+        "{replayed}"
+    );
+    assert_eq!(commands(&test).matches("zfs rename").count(), 1);
     server.abort();
 }
 
@@ -323,4 +375,35 @@ async fn mount_admits_only_an_idle_closed_root() {
         }
         server.abort();
     }
+}
+
+#[tokio::test]
+async fn a_late_step_at_the_departed_lease_is_refused_as_stale() {
+    let test = TestDir::new();
+    set_property(&test, "tank/ployz", "ployz:lease.data", "1:10.0.0:open");
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let demoted = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(demoted, json!({"Ok": ["data"]}));
+
+    let response = post(
+        &socket,
+        "/Volume.Restore",
+        super::mirror_tests::at(1, 11, 0, 0, json!({})),
+    )
+    .await;
+
+    assert_eq!(
+        response.pointer("/Err/details/reason"),
+        Some(&json!("stale_step")),
+        "{response}"
+    );
+    assert!(
+        !test.0.join("volume").exists(),
+        "a late Restore reopened the departed root"
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
+        Some("on")
+    );
+    server.abort();
 }

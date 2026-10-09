@@ -1,4 +1,2 @@
-ALTER TABLE "volume_run" ADD COLUMN "machine_ids" text[] DEFAULT '{}'::text[] NOT NULL;--> statement-breakpoint
 ALTER TABLE "volume_run" ADD COLUMN "service_spec" jsonb;--> statement-breakpoint
-CREATE INDEX "volume_run_machine_ids_idx" ON "volume_run" USING gin ("machine_ids");--> statement-breakpoint
 ALTER TABLE "volume_run" DROP CONSTRAINT "volume_run_kind_check", ADD CONSTRAINT "volume_run_kind_check" CHECK ("kind" in ('mirror','sync','delete_mirror','move','release','restore'));

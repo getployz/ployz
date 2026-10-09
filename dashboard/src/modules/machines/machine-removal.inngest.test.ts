@@ -99,14 +99,14 @@ describe("machine remove Inngest boundary", () => {
     ).toBe(true);
   });
 
-  it("fails the attempt, and releases nothing, when an open Volume run still names the Server", async () => {
+  it("fails the attempt, and releases nothing, when the Server refuses its removal", async () => {
     const attemptId = "00000000-0000-4000-8000-000000000a01";
     const output = await new InngestTestEngine({
       function: createProcessMachineRemove(new Inngest({ id: "test" })),
       events: [{ name: "machine/remove.requested", data: { attemptId } }],
       steps: [
         { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
-        { id: "remove-machine", handler: () => ({ kind: "refused", failureCode: "volume_run_open", message: "data's move uses this Server; wait for it to end, or volume release data" }) },
+        { id: "remove-machine", handler: () => ({ kind: "refused", failureCode: "conflict", message: "Server two answers and holds copies of Volumes data; removing it without a reset leaves them behind. No changes made." }) },
         { id: "complete-refused", handler: () => undefined },
       ],
     }).execute();

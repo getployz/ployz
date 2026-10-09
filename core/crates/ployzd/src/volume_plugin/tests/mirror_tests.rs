@@ -4,15 +4,12 @@ use super::fake_zfs::SLOT_BOUND_BYTES;
 use super::lease_tests::{set_property, start};
 use super::*;
 
-const FAR_FUTURE: i64 = 4_102_444_800;
-
 /// A request at `lease`, step `seq.round.sub`, with the verb's own fields merged in.
 pub(super) fn at(lease: u64, seq: u16, round: u32, sub: u8, fields: Value) -> Value {
     let mut request = json!({
         "switch": {
             "lease": lease,
             "pos": {"seq": seq, "round": round, "sub": sub},
-            "not_after_unix_seconds": FAR_FUTURE,
         },
         "name": "data",
     });
@@ -511,6 +508,7 @@ async fn every_mirror_verb_is_fenced() {
         ("/Volume.DestroyMirror", json!({})),
         ("/Volume.ForgetSnapshots", json!({})),
         ("/Volume.ForgetLease", json!({})),
+        ("/Volume.Demote", json!({})),
     ] {
         let response = post(&socket, route, at(4, 9, 9, 9, fields)).await;
         assert_eq!(

@@ -57,7 +57,6 @@ import type {
 } from "./generated/payloads";
 export * from "./generated/payloads";
 import type {
-  AdoptLeaseRequest,
   CommitRequest,
   CopyObservation,
   DeclareMirrorRequest,
@@ -88,7 +87,6 @@ export type StartReceiveRequest = {
 /** One request `Client.volumeSwitch` sends: a Volume run verb and its payload. */
 export type VolumeSwitchRequest =
   | { command: "inspect_volume_copy"; payload: InspectVolumeCopyRequest }
-  | { command: "adopt_lease"; payload: AdoptLeaseRequest }
   | { command: "declare_mirror"; payload: DeclareMirrorRequest }
   | { command: "begin_round"; payload: MirrorRequest }
   | { command: "commit_snapshots"; payload: CommitRequest }
@@ -99,6 +97,7 @@ export type VolumeSwitchRequest =
   | { command: "destroy_mirror"; payload: MirrorRequest }
   | { command: "forget_snapshots"; payload: MirrorRequest }
   | { command: "forget_lease"; payload: MirrorRequest }
+  | { command: "demote_volume"; payload: MirrorRequest }
   | { command: "withdraw"; payload: SourceContainerRequest }
   | { command: "freeze"; payload: SourceContainerRequest }
   | { command: "hand_over"; payload: HandOverRequest }
