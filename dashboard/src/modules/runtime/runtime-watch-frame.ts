@@ -37,6 +37,13 @@ const runtimeWatchIncompleteVolumeIdSchema = Schema.Struct({
   name: Schema.String,
 });
 
+/** A managed Volume's copy on one Machine. An unset Engine role is a writer; `old` is a demoted returning copy. */
+const runtimeWatchVolumeCopySchema = Schema.Struct({
+  machine_id: Schema.String,
+  name: Schema.String,
+  role: Schema.Literals(["writer", "slot", "switching", "old"]),
+});
+
 const runtimeWatchCertificateSchema = Schema.Struct({
   hostname: Schema.String,
   status: Schema.String,
@@ -67,6 +74,7 @@ export const runtimeWatchFrameSchema = Schema.Struct({
   /** Each Machine's build concurrency in effect, by Machine id. */
   effective_build_concurrency: Schema.Record(Schema.String, Schema.Number),
   containers: Schema.Array(runtimeWatchContainerSchema),
+  volumes: Schema.Array(runtimeWatchVolumeCopySchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
   incomplete_ids: Schema.Struct({
     machines: Schema.Array(Schema.String),
@@ -128,6 +136,10 @@ export function runtimeWatchFrameForTransport(
     })),
     effective_build_concurrency: { ...frame.effective_build_concurrency },
     containers: frame.containers.map(runtimeWatchContainerForTransport),
+    // Only managed Volumes have copies; their labels, options and paths stay on the Server.
+    volumes: frame.volumes.flatMap((volume) => volume.storage.kind === "provisioned"
+      ? [{ machine_id: volume.id.machine_id, name: volume.id.name, role: volume.storage.role ?? "writer" }]
+      : []),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
       status: certificate.status,
@@ -203,6 +215,7 @@ export function runtimeSnapshotFromWatchFrame(
       hookContainers: service.hook_containers.map(runtimeContainerRecordFromWatch),
       observedAt,
     })),
+    volumeCopies: frame.volumes.map((copy) => ({ machineId: copy.machine_id, name: copy.name, role: copy.role })),
     certificates: frame.certificates.map((certificate) => ({
       hostname: certificate.hostname,
       status: certificate.status,

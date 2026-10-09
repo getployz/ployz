@@ -89,7 +89,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     }));
     const snapshot = runtimeSnapshotFromWatchFrame(frame);
 
-    expect(frame).not.toHaveProperty("volumes");
+    expect(frame.volumes).toEqual([]);
     expect(frame.incomplete_ids.volumes).toEqual([
       { machine_id: "machine-a", name: "data" },
     ]);
@@ -143,6 +143,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           observedAt: OBSERVED_AT,
         },
       ],
+      volumeCopies: [],
       certificates: [
         {
           hostname: "api.example.test",
@@ -164,6 +165,27 @@ describe("runtimeSnapshotFromWatchFrame", () => {
       },
       observedAt: OBSERVED_AT,
     });
+  });
+
+  it("carries each managed Volume copy's role and nothing else of the Volume", () => {
+    const provisioned = (machineId: string, role: "slot" | "switching" | null) => runtimeWatchVolumeFixture(machineId, "app_vol-v1", {
+      labels: { secret: "label" },
+      storage: { kind: "provisioned", mountpoint: "/var/lib/ployz/volumes/app_vol-v1", bound_bytes: 10, used_bytes: 1, role },
+    });
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      volumes: [provisioned("web-1", null), provisioned("web-2", "slot"), provisioned("web-3", "switching"), runtimeWatchVolumeFixture("web-1", "plain")],
+    }));
+
+    expect(frame.volumes).toEqual([
+      { machine_id: "web-1", name: "app_vol-v1", role: "writer" },
+      { machine_id: "web-2", name: "app_vol-v1", role: "slot" },
+      { machine_id: "web-3", name: "app_vol-v1", role: "switching" },
+    ]);
+    expect(runtimeSnapshotFromWatchFrame(frame).volumeCopies).toEqual([
+      { machineId: "web-1", name: "app_vol-v1", role: "writer" },
+      { machineId: "web-2", name: "app_vol-v1", role: "slot" },
+      { machineId: "web-3", name: "app_vol-v1", role: "switching" },
+    ]);
   });
 
   it("accepts additive SDK fields while requiring the retained evidence", () => {
