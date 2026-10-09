@@ -13,7 +13,8 @@ build output, so you can see why a build failed.
 
 Lines from every service arrive as they're written. **All services** and **All servers** narrow
 the list, **Search loaded logs** filters it, and **Error**, **Warn**, **Info** and **Debug** show
-only lines at the levels you pick. Scroll up for older lines, back to the oldest your servers kept.
+only lines at the levels you pick. Scroll up for older lines, back to the oldest your servers kept;
+the page holds up to 30,000 lines at once.
 New lines wait while you're scrolled up; **Latest** brings you back to the end and shows them.
 
 For one service, click it on the canvas and open its **Logs** tab.
