@@ -320,14 +320,12 @@ pub(crate) enum Probe {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
     use super::*;
+    use crate::dns::tests::write_script;
 
     fn script(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("ployzd");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&path, body);
         path
     }
 
