@@ -14,8 +14,10 @@ function run<A, E>(effect: Effect.Effect<A, E, GithubApi>, answers: Readonly<Rec
   return Effect.runPromise(Effect.result(effect).pipe(Effect.provide(Layer.succeed(GithubApi, fakeGithubApi(answers).service))));
 }
 
+const head = { [`${base}/commits/main`]: { commit: { tree: { sha } } } };
+
 const tree = (paths: ReadonlyArray<string>, truncated = false) => ({
-  [`${base}/commits/main`]: { commit: { tree: { sha } } },
+  ...head,
   [`${base}/git/trees/${sha}?recursive=1`]: { truncated, tree: paths.map((path) => ({ path, type: "blob", mode: "100644" })) },
 });
 
