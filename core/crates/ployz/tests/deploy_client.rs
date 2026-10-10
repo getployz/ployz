@@ -1138,6 +1138,108 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
     server.abort();
 }
 
+/// Compensation removes a replacement that crashed, yet its failed row still
+/// shows the replacement's last output lines.
+#[tokio::test]
+async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
+        RowState, RunnerId, SealingKey, ServiceLineageId, Trusted,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone()).crash_containers();
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(running_container_in(
+            &machine,
+            &spec("web"),
+            "shop-production",
+            'f',
+        ));
+    let removed = service.removed_containers();
+    let (address, server) = listening(service).await;
+
+    let summary = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        id.clone(),
+        RunnerId::parse("cloud-run-1").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    )
+    .await
+    .unwrap();
+    server.abort();
+
+    assert_eq!(summary.status, DeploymentStatus::Failed);
+    let replacement = ContainerId::parse(format!("{:064x}", 1)).unwrap();
+    assert!(removed.lock().unwrap().contains(&replacement));
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    let logs = view
+        .nodes
+        .iter()
+        .flat_map(|node| &node.rows)
+        .filter_map(|row| {
+            let RowState::Failed { log, .. } = &row.state else {
+                return None;
+            };
+            Some(log.clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        logs,
+        [(3..=12).map(|n| format!("line {n}")).collect::<Vec<_>>()]
+    );
+}
+
 #[tokio::test]
 async fn cloud_runner_applies_an_environment_removal() {
     use ployz_store::{

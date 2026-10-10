@@ -6,9 +6,10 @@ use crate::{
     ui::progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
 use ployz_core::{
-    ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
-    Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+    ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, HistoryRow,
+    LogDirection, LogHistoryRequest, MachineId, MachineTarget, Namespace, OperationPhase,
+    OperationRow, OperationStatus, QualifiedService, ReplacementCompensation, RestartAttempt,
+    RpcError, RpcErrorCode, ServiceName, StopAttempt, op,
 };
 use ployz_store::{RowState, RowTracker, ServerProgress};
 use std::collections::BTreeMap;
@@ -212,45 +213,57 @@ fn failure_causes(error: &ExecutionError) -> Vec<String> {
         .collect()
 }
 
-async fn log_tail(client: &Client, machine: MachineId, container: ContainerId) -> Vec<String> {
+/// A failed Container's last lines, from its Server's Log Store, which keeps
+/// them after compensation removes the Container.
+pub(crate) async fn log_tail(
+    client: &Client,
+    machine: MachineId,
+    container: ContainerId,
+) -> Vec<String> {
+    let mut newest = Vec::new();
     let read = async {
-        let request = ployz_core::op::TailLogs::into_request(ployz_core::TailLogsRequest {
-            target: ployz_core::LiveLogTarget::Container(container),
-            options: ployz_core::LogsOptions {
-                follow: false,
-                tail: 10,
-                since_nanos: None,
-                until_unix_seconds: None,
-            },
-        })
-        .encode()
-        .ok()?;
-        let mut stream = client
-            .tail_logs_stream(&ployz_core::MachineTarget::from(&machine), request)
-            .await
-            .ok()?;
-        let mut lines = std::collections::VecDeque::new();
-        while let Ok(Some(payload)) = stream.message().await {
-            let entry = ployz_core::LogEntry::decode(&payload).ok()?;
-            let bytes = match entry.body {
-                ployz_core::LogBody::Stdout(bytes) | ployz_core::LogBody::Stderr(bytes) => bytes,
-                ployz_core::LogBody::Heartbeat | ployz_core::LogBody::Error(_) => continue,
+        let mut cursor = None;
+        loop {
+            let Ok(request) = op::LogHistory::into_request(LogHistoryRequest {
+                container_id: Some(container),
+                direction: LogDirection::Backward,
+                limit: u16::try_from(ployz_store::LOG_TAIL).unwrap_or(u16::MAX),
+                cursor: cursor.take(),
+                ..LogHistoryRequest::default()
+            })
+            .encode() else {
+                return;
             };
-            for line in String::from_utf8_lossy(&bytes).lines() {
-                if lines.len() == ployz_store::LOG_TAIL {
-                    lines.pop_front();
+            let Ok(mut stream) = client
+                .log_history_stream(&MachineTarget::from(&machine), request)
+                .await
+            else {
+                return;
+            };
+            while let Ok(Some(payload)) = stream.message().await {
+                match HistoryRow::decode(&payload) {
+                    Ok(HistoryRow::Line { text, .. }) => newest.extend(
+                        String::from_utf8_lossy(&text)
+                            .lines()
+                            .rev()
+                            .map(str::to_owned),
+                    ),
+                    Ok(HistoryRow::End { next }) => cursor = next,
+                    Ok(HistoryRow::Error(_)) | Err(_) => return,
+                    Ok(_) => {}
                 }
-                lines.push_back(line.to_owned());
+            }
+            if cursor.is_none() || newest.len() >= ployz_store::LOG_TAIL {
+                return;
             }
         }
-        Some(lines.into_iter().collect())
     };
-    tokio::time::timeout(Duration::from_secs(5), read)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+    let _ = tokio::time::timeout(Duration::from_secs(5), read).await;
+    newest.truncate(ployz_store::LOG_TAIL);
+    newest.reverse();
+    newest
 }
+
 pub(super) fn visible_row_name(row: &OperationRow) -> String {
     visible_name(
         row.display_name.as_deref(),
