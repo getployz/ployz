@@ -144,7 +144,8 @@ ployz server upgrade stable web-1 web-2
 ```
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
-running and private DNS keeps answering, Ployz stops at the first server that fails, and a server whose upgrade fails goes back to
+running and private DNS keeps answering (with the exceptions in
+[Private networking](../services/private-networking.md)), Ployz stops at the first server that fails, and a server whose upgrade fails goes back to
 the release it ran before.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
