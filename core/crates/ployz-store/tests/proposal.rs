@@ -9,12 +9,13 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, ConfigStore, CreateBranch, CreateProject, CreateService, Edit, EnvironmentId,
-    EnvironmentName, EnvironmentRef, OrganizationId, ProjectId, ProjectName, ProposalId,
-    RemoveProposal, ServiceLineageId, ServiceQuery, SettingPath, SyncChanges, SyncId, SyncQuery,
-    SyncView, Synced, SyncedWhen, When,
+    Actor, AuthorizedRepository, ConfigStore, CreateBranch, CreateGitService, CreateProject,
+    CreateService, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
+    ProjectName, ProposalId, RemoveProposal, ServiceLineageId, ServiceQuery, SettingPath,
+    SyncChanges, SyncId, SyncQuery, SyncView, Synced, SyncedWhen, Trusted, When,
 };
 use serde_json::{Value, json};
 
@@ -788,6 +789,86 @@ fn an_introduced_service_with_a_resolved_secret_refuses_remove() {
     assert_eq!(code, RpcErrorCode::Conflict, "{message}");
     assert!(message.contains("cache"), "{message}");
     assert_eq!(db.services("production"), ["api", "cache"]);
+}
+
+#[test]
+fn an_introduced_service_with_a_registry_credential_refuses_remove() {
+    let db = Db::new();
+    db.service("dev", 11, "cache");
+    db.put(
+        "dev",
+        &[(
+            "cache.registryCredential",
+            json!({"username": "u", "secret": "dev"}),
+        )],
+    );
+    // The credential the Sync carried goes with the Service.
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    assert_eq!(db.remove("production", &a), Ok(true));
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(2), None)
+            .unwrap(),
+    );
+    db.put(
+        "production",
+        &[(
+            "cache.registryCredential",
+            json!({"username": "u", "secret": "prod"}),
+        )],
+    );
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("registry credential"), "{message}");
+    assert_eq!(db.services("production"), ["api", "cache"]);
+    db.discard("production", Some("cache"));
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.services("production"), ["api"]);
+}
+
+#[test]
+fn an_introduced_service_with_a_deploy_policy_refuses_remove() {
+    let db = Db::new();
+    db.store
+        .write_trusted(
+            &db.who,
+            &CreateGitService {
+                id: ServiceLineageId::parse(uuid(11)).unwrap(),
+                environment: at("dev"),
+                name: ServiceName::parse("web").unwrap(),
+                repository: backend::repo_name("acme/web"),
+                branch: None,
+            },
+            &Trusted {
+                repositories: vec![AuthorizedRepository {
+                    repository: backend::repo_name("acme/web"),
+                    repository_id: backend::repo_id(11),
+                    access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+                    default_branch: backend::git_branch("main"),
+                    branches: Vec::new(),
+                }],
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    db.put("dev", &[("web.waitForCi", json!(true))]);
+    // The policy the Sync carried goes with the Service.
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    assert_eq!(db.remove("production", &a), Ok(true));
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(2), None)
+            .unwrap(),
+    );
+    db.put("production", &[("web.autoDeploy", json!(false))]);
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("Auto-deploy"), "{message}");
+    assert_eq!(db.services("production"), ["api", "web"]);
 }
 
 #[test]

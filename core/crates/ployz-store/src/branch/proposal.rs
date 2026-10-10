@@ -542,6 +542,15 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
             ) && (nodes.contains(arrived.row.lineage()) || *arrived.row.at() == At::Node)
         })
         .map(|arrived| arrived.row);
+    if let Some((service, set)) = set_here(tx, into, &proposal.source, &nodes)? {
+        return Err(error::conflict(
+            format!(
+                "{service}'s {set} was set here since {source} was included: \
+                 Discard {service}, or keep {source}"
+            ),
+            json!({ "service": service, "proposal": proposal.id }),
+        ));
+    }
     let unapplied = match released {
         Some(row) => Err(Unapplied::Changed(row)),
         None => unapply(&into.working, &suffix(tx, into)?, &landed),
@@ -580,6 +589,61 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
     )?;
     // Last: the rows put back are no longer owned, so nothing is left to release.
     scope::save_working(tx, into)
+}
+
+/// The first registry credential or Deployment Policy setting of a Service in `nodes`
+/// that `into` holds apart from what `source` holds now, which a Sync would have
+/// carried: Working State doesn't show it, and removing the Service would lose it.
+fn set_here(
+    tx: &mut dyn Tx,
+    into: &Environment,
+    source: &EnvironmentId,
+    nodes: &BTreeSet<&str>,
+) -> Result<Option<(String, &'static str)>, RpcError> {
+    let exists = !tx
+        .query(
+            "SELECT 1 FROM config_environment WHERE id = ?1",
+            &[source.as_str().into()],
+        )?
+        .is_empty();
+    let from = if exists {
+        Some(scope::load_by_id(tx, source)?.working)
+    } else {
+        None
+    };
+    for service in &into.working.services {
+        if !nodes.contains(service.lineage_id.as_str()) {
+            continue;
+        }
+        let there = from.as_ref().and_then(|from| {
+            from.services
+                .iter()
+                .find(|there| there.lineage_id == service.lineage_id)
+        });
+        let credential = registry::sealed(tx, &into.summary.id, &service.id)?;
+        let carried = match there {
+            Some(there) => registry::sealed(tx, source, &there.id)?,
+            None => None,
+        };
+        if credential.is_some() && credential != carried {
+            return Ok(Some((service.slug.to_string(), "registry credential")));
+        }
+        let Some(policy) = policy::stored(tx, &into.summary.id, &service.id)? else {
+            continue;
+        };
+        let carried = match there {
+            Some(there) => policy::stored(tx, source, &there.id)?,
+            None => None,
+        }
+        .unwrap_or_default();
+        if let Some(setting) = policy::PolicySetting::ALL
+            .into_iter()
+            .find(|setting| setting.value(&policy) != setting.value(&carried))
+        {
+            return Ok(Some((service.slug.to_string(), setting.label())));
+        }
+    }
+    Ok(None)
 }
 
 /// Undo Sync `sync` if it included a proposal: Remove it while that Sync is its only

@@ -102,6 +102,9 @@ from. In production's bottom bar, click **Details**: **Included** lists `staging
 Remove is refused, and says why, when taking staging out would lose your work:
 
 - A service staging brought was edited in production since. Discard that service, or keep staging.
+- A service staging brought got its own registry credential or deployment setting (such as
+  auto-deploy) in production since. Those take effect at once, outside the draft. Discard that
+  service, or keep staging.
 - Another service in production uses one staging brought. Change that service first, or Remove
   what brought it.
 
