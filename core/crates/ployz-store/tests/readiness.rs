@@ -1103,6 +1103,84 @@ fn a_follow_into_the_pr_environment_leaves_its_offer_standing() {
     );
 }
 
+/// GitHub never reports an open pull request with a merge commit: the Store refuses
+/// those facts and the pull request stays unmerged.
+#[test]
+fn an_open_pull_request_with_a_merge_commit_is_refused() {
+    let db = shop();
+    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    let proposal = offer(&db);
+    include(&db, &proposal, &[]).unwrap();
+    let refused = db
+        .store
+        .system(
+            &db.who.organization,
+            &SystemEvent::PullRequest(facts(true, Some(MERGE), "main", 2)),
+            &Trusted::default(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(included(&db)[0].readiness, Some(Readiness::Open));
+}
+
+/// A Config pr-5 adds, its file and its mount, offered and included like any row.
+#[test]
+fn including_an_offer_lands_a_config_its_file_and_its_mount() {
+    let db = shop();
+    let name = ployz_core::ConfigName::parse("sentry").unwrap();
+    let file = ployz_core::ConfigFileName::parse("a.yml").unwrap();
+    db.store
+        .write(
+            &db.who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(10)).unwrap(),
+                environment: at("pr-5"),
+                name: name.clone(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ployz_core::ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    db.store
+        .write(
+            &db.who,
+            &ployz_store::PutConfigFile {
+                environment: at("pr-5"),
+                config: name.clone(),
+                file: file.clone(),
+                content: "dsn: one\n".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    db.probe();
+    let proposal = offer(&db);
+    let config = |db: &Db| {
+        db.store.read(
+            &db.who,
+            &ployz_store::ConfigItemQuery {
+                environment: at("production"),
+                config: name.clone().into(),
+            },
+        )
+    };
+    assert!(config(&db).is_err(), "an offer reached the draft");
+    include(&db, &proposal, &[]).unwrap();
+    let included = config(&db).unwrap();
+    assert_eq!(included.contents[&file], "dsn: one\n");
+    assert_eq!(
+        included.config.mounts,
+        [ployz_store::ConfigMountAt {
+            service: ployz_core::ServiceName::parse("web").unwrap(),
+            dir: "/etc/sentry".into(),
+        }]
+    );
+}
+
 /// pr-5 is a Branch of staging, and production includes its offer: staging deploys
 /// a change that follows into pr-5. production's draft lists PR #5 newer, and its
 /// version stays, so a review of it is still current.

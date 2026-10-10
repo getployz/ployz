@@ -586,6 +586,31 @@ fn two_conditional_syncs_on_one_pull_request_stop_the_open_naming_both() {
     );
 }
 
+/// Only a pull request's proposal is offered: the Store refuses an offer without one.
+#[test]
+fn an_offer_without_a_pull_request_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::load();
+    let url = legacy(&dir, "store", &fixture);
+    let storage = Storage::open(&url).unwrap();
+    let insert = |number: &str| {
+        storage.write(|tx| {
+            tx.execute(
+                &format!(
+                    "INSERT INTO config_proposal (id, organization_id, environment_id, \
+                     source_environment_id, repository_id, number, source_name, \
+                     source_revision, first_sync, last_sync, offered) \
+                     VALUES ('00000000-0000-4000-8000-000000000071', ?1, ?2, ?3, \
+                     {number}, {number}, 'staging', 1, 'a', 'a', '{{}}')"
+                ),
+                &[ORG.into(), PRODUCTION.into(), STAGING.into()],
+            )
+        })
+    };
+    assert!(insert("NULL").is_err(), "an offer without a pull request was stored");
+    insert("8").unwrap();
+}
+
 #[test]
 fn opens_at_once_convert_once() {
     if !postgres() {
