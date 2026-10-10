@@ -73,7 +73,7 @@ const t1: Task = {
     facts: [stagingFact, "The image is traefik/whoami.", "One domain can be a generated one; the other is whoami.example.com."],
   },
   policy: "approve",
-  allowed: edits("staging.settings.whoami", "staging.domains.whoami"),
+  allowed: edits("staging.settings.whoami", "staging.domains.whoami", "staging.deployments"),
   check: (evidence) => {
     const image = after(evidence).settings["whoami.image"];
     const domains = domainsOf(evidence, "whoami");
@@ -167,7 +167,7 @@ const t7: Task = {
   tags: [],
   persona: { goal: "Run worker in staging as 3 replicas, each limited to half a CPU.", opening: "worker should run 3 copies with half a CPU each", facts: [stagingFact] },
   policy: "approve",
-  allowed: edits("staging.settings.worker.replicas", "staging.settings.worker.cpuLimit"),
+  allowed: edits("staging.settings.worker.replicas", "staging.settings.worker.cpuLimit", "staging.deployments"),
   check: (evidence) => need(
     [after(evidence).settings["worker.replicas"] === 3, "worker.replicas is not 3"],
     [after(evidence).settings["worker.cpuLimit"] === 0.5, "worker.cpuLimit is not 0.5"],

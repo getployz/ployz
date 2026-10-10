@@ -7,6 +7,7 @@ import { vi } from "vitest";
 import { agentChat } from "#/modules/agent/agent-chat.server";
 import { agentPersistence } from "#/modules/agent/persistence.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import type { Caller } from "#/modules/identity/actor";
@@ -26,6 +27,9 @@ const ENVIRONMENT_IDS = {
 const PREFIXES = { production: "www", staging: "web" } satisfies Record<EnvironmentName, string>;
 const CLUSTER_DOMAIN = "acme.ployz.test";
 /** What made staging's Deployment 4 fail, as its runner recorded it. */
+/** Every task happens in staging, and a member asks from the page they view: staging's architecture. */
+const STAGING_PAGE = { page: "architecture", project: "app", environment: "staging" };
+
 export const FAILURE = "Building worker failed: npm ERR! Missing script: \"start\"";
 
 export const environmentRef = (environment: EnvironmentName): EnvironmentRef => ({ project: "app", environment });
@@ -64,13 +68,17 @@ const environmentCommands = (environment: EnvironmentName): ConfigCommand[] => {
 /**
  * Organization acme with Project app: production and staging each run web (nginx:1.27, generated domain web), db
  * (postgres:17 on Volume pgdata) and worker (acme/worker). Staging's Deployments 1 to 3 applied its Saved revision and
- * Deployment 4 failed. Inngest only records what Cloud would hand its worker.
+ * Deployment 4 failed. Inngest records what Cloud would hand its worker, and a Deployment admitted later applies at once.
  */
 export const evalFixture = Effect.fn("Eval.fixture")(function* () {
   const inngest = new Inngest({ id: "agent-eval" });
   const dispatched: unknown[] = [];
+  let settle = (_deployment: string): Promise<void> => Promise.resolve();
   vi.spyOn(inngest, "send").mockImplementation(async (payload) => {
     dispatched.push(payload);
+    for (const event of [payload].flat()) {
+      if (event.name === configDeploymentAdmittedEvent) await settle(event.data.deploymentId);
+    }
     return { ids: [] };
   });
   const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
@@ -98,13 +106,14 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* () {
     else yield* provided(applied(deployment));
   }
   dispatched.length = 0;
+  settle = (deployment) => Effect.runPromise(provided(applied(deployment)));
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "acme" }, credential: { kind: "session", id: "session-eval" } };
   /** One sidebar thread of the fixture's member: each turn's stream, and the approval its last turn waits on. */
   const conversation = (model: AnyTextAdapter, thread: string) => {
     let runs = 0;
     const run = (request: Omit<Parameters<typeof agentChat>[1], "threadId" | "runId">) =>
       provided(agentChat(caller, { ...request, threadId: thread, runId: `${thread}-run-${++runs}` }, model)).pipe(Effect.flatMap(collect));
-    const say = (content: string) => run({ messages: [{ role: "user", content }] });
+    const say = (content: string) => run({ messages: [{ role: "user", content }], forwardedProps: { page: STAGING_PAGE } });
     const waiting = provided(Effect.gen(function* () {
       const persistence = yield* agentPersistence({ organizationId: ORGANIZATION, userId });
       const [interrupt] = yield* Effect.promise(() => persistence.stores.interrupts.listPending(thread));
@@ -127,7 +136,10 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* () {
 /** Deployment `deployment` finished: what it deployed is Applied State. */
 const applied = Effect.fn(function* (deployment: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`update config_deployment set status = 'applied', ended = 0 where id = ${deployment}`);
+  yield* drizzle.execute(sql`update config_deployment set status = 'applied', runner = 'eval-runner', started = admitted, ended = admitted + 1,
+    run = (run::jsonb || jsonb_build_object('outcome', '{"type": "executed", "summary": {}}'::jsonb,
+      'nodes', (select coalesce(jsonb_object_agg(node->>'id', 'deployed'), '{}'::jsonb) from jsonb_array_elements(nodes::jsonb) node)))::text
+    where id = ${deployment}`);
   yield* drizzle.execute(sql`insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
     select d.environment_id, node->>kind.id, d.organization_id, d.id, kind.type, node::text
     from config_deployment d join config_saved s on s.environment_id = d.environment_id and s.revision = d.saved_revision,

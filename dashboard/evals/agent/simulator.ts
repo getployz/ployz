@@ -17,7 +17,11 @@ Never invent facts beyond these. Approval cards are not yours to answer; if the 
 
 If the agent asks you to confirm something you already said, answer 'just do it'. On the third such question, end the conversation.
 
-When your goal is met, when the agent says it can't be done, or when you end the conversation, reply with exactly ${STOP}.`;
+Reply with exactly ${STOP} and nothing else as soon as any of these is true:
+- the agent says it did what your goal asks, even if it is still rolling out
+- the agent says it can't do it, or it waits on something outside this chat
+- you have nothing new to add
+Do not chat about anything beyond your goal.`;
 
 /** A member played by `adapter` at temperature 1 from `persona`: opens with its opening word for word, then replies until it stops. */
 export const simulated = (adapter: AnyTextAdapter, persona: Persona): Member => {

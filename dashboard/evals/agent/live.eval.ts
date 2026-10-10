@@ -25,10 +25,16 @@ describe.skipIf(process.env["PLOYZ_EVAL_LIVE"] !== "1")("live agent eval", () =>
     if (runnable.length === 0) return context.skip("no pinned agent model can run here");
     const tasks = TASKS.filter(({ id }) => only(process.env["PLOYZ_EVAL_TASKS"])(id));
     const runs = runnable.flatMap(([name, agent]) => tasks.flatMap((task) => Array.from({ length: TRIALS }, () => ({ name, agent, task }))));
+    let failures = 0;
     const trials = yield* Effect.forEach(runs, ({ name, agent, task }) => Effect.gen(function* () {
       const recorder = new Recorder(agent);
       const member = recording(simulated(simulator.success, task.persona));
       const result = yield* Effect.scoped(runTrial(task, recorder, member.member));
+      if (result.failures.length > 0) {
+        const failed = new URL(`failed/${name}/`, RESULTS);
+        mkdirSync(failed, { recursive: true });
+        writeFileSync(new URL(`${task.id}-${++failures}.json`, failed), `${JSON.stringify({ failures: result.failures, transcript: result.transcript }, null, 2)}\n`);
+      }
       if (result.failures.length === 0 && !task.tags.includes("held-out")) {
         const golden: Golden = { task: task.id, model: name, member: member.said, calls: recorder.calls };
         writeFileSync(new URL(`${task.id}.json`, GOLDEN), `${JSON.stringify(golden, null, 2)}\n`);
@@ -37,8 +43,9 @@ describe.skipIf(process.env["PLOYZ_EVAL_LIVE"] !== "1")("live agent eval", () =>
     }), { concurrency: CONCURRENCY });
     const summary = summarize(trials);
     mkdirSync(RESULTS, { recursive: true });
-    writeFileSync(new URL("latest.json", RESULTS), `${JSON.stringify({ trials, summary }, null, 2)}\n`);
-    writeFileSync(new URL("latest.md", RESULTS), markdown(summary));
+    const name = runnable.map(([agent]) => agent).join("+");
+    writeFileSync(new URL(`${name}.json`, RESULTS), `${JSON.stringify({ trials, summary }, null, 2)}\n`);
+    writeFileSync(new URL(`${name}.md`, RESULTS), markdown(summary));
     yield* Effect.logInfo(markdown(summary));
-  }), 6 * 60 * 60 * 1000);
+  }), 24 * 60 * 60 * 1000);
 });
