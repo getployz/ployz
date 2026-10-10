@@ -8,10 +8,12 @@ import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader } from "#/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "#/components/ui/input-group";
+import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
 import { Message, MessageContent } from "#/components/ui/message";
 import {
   MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport,
 } from "#/components/ui/message-scroller";
+import { Spinner } from "#/components/ui/spinner";
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
@@ -75,7 +77,7 @@ function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
     <MessageScrollerProvider>
       <MessageScroller className="flex-1">
         <MessageScrollerViewport>
-          <MessageScrollerContent className="gap-3 p-3">
+          <MessageScrollerContent aria-busy={chat.isLoading} className="gap-3 p-3">
             {waiting.length > 0 && (
               <MessageScrollerItem>
                 <section aria-label="Waiting on you" className="flex flex-col gap-2">
@@ -98,6 +100,16 @@ function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
                 <Turn organizationSlug={organizationSlug} scope={scope} message={message} asked={asked} bound={bound} />
               </MessageScrollerItem>
             ))}
+            {chat.status === "submitted" && (
+              <MessageScrollerItem>
+                <Message>
+                  <Marker role="status">
+                    <MarkerIcon><Spinner /></MarkerIcon>
+                    <MarkerContent className="shimmer">Thinking…</MarkerContent>
+                  </Marker>
+                </Message>
+              </MessageScrollerItem>
+            )}
             {chat.error && (
               <MessageScrollerItem>
                 {refused(chat.error) ? (
