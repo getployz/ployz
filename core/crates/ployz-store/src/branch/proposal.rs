@@ -313,6 +313,7 @@ pub(crate) fn record(
                 found.id.as_str().into(),
             ],
         )?;
+        keep_receipt(tx, who, (into, from), &found.id, sync)?;
         return Ok(found.id.clone());
     }
     let id = ProposalId::parse(uuid::Uuid::new_v4().to_string())?;
@@ -336,18 +337,40 @@ pub(crate) fn record(
             sync.as_str().into(),
         ],
     )?;
+    keep_receipt(tx, who, (into, from), &id, sync)?;
     Ok(id)
 }
 
-/// Refuse Sync `id` when a Sync of that id already ran, so an id names one Sync and
-/// Undo of it one proposal. A retry of the Include it made is answered before this.
+/// Sync `sync` ran from `from` into `into`, including `proposal`: kept for good, so
+/// the id is never another Sync's and Undo finds what it included.
+fn keep_receipt(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (into, from): (&EnvironmentId, &Environment),
+    proposal: &ProposalId,
+    sync: &SyncId,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_sync_receipt (organization_id, sync_id, environment_id, \
+         source_environment_id, proposal_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+        &[
+            who.organization.as_str().into(),
+            sync.as_str().into(),
+            into.as_str().into(),
+            from.summary.id.as_str().into(),
+            proposal.as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Refuse Sync `id` when its receipt says a Sync of that id already ran, so an id
+/// names one Sync and Undo of it one proposal, whatever became of either since. A
+/// retry of the Include it made is answered before this.
 pub(crate) fn unused(tx: &mut dyn Tx, who: &Actor, id: &SyncId) -> Result<(), RpcError> {
     let known = tx.query(
-        "SELECT 1 FROM config_proposal WHERE organization_id = ?2 \
-         AND (first_sync = ?1 OR last_sync = ?1) \
-         UNION ALL SELECT 1 FROM config_sync_arrival WHERE organization_id = ?2 \
-         AND sync_id = ?1",
-        &[id.as_str().into(), who.organization.as_str().into()],
+        "SELECT 1 FROM config_sync_receipt WHERE organization_id = ?1 AND sync_id = ?2",
+        &[who.organization.as_str().into(), id.as_str().into()],
     )?;
     if known.is_empty() {
         return Ok(());
@@ -553,10 +576,10 @@ pub(crate) fn undo(
     sync: &SyncId,
 ) -> Result<Option<Undone>, RpcError> {
     let rows = tx.query(
-        "SELECT environment_id, id FROM config_proposal p \
-         WHERE organization_id = ?2 AND (first_sync = ?1 OR last_sync = ?1 OR EXISTS ( \
-         SELECT 1 FROM config_sync_arrival a WHERE a.proposal_id = p.id AND a.sync_id = ?1))",
-        &[sync.as_str().into(), who.organization.as_str().into()],
+        "SELECT r.environment_id, r.proposal_id FROM config_sync_receipt r \
+         JOIN config_proposal p ON p.id = r.proposal_id \
+         WHERE r.organization_id = ?1 AND r.sync_id = ?2",
+        &[who.organization.as_str().into(), sync.as_str().into()],
     )?;
     let Some(row) = rows.first() else {
         return Ok(None);
@@ -567,7 +590,9 @@ pub(crate) fn undo(
     );
     scope::lock_project(tx, &receiver)?;
     let mut into = scope::lock_id(tx, who, &receiver)?;
-    let proposal = by_id(tx, &receiver, &id)?.ok_or_else(|| error::corrupt("proposal"))?;
+    let Some(proposal) = by_id(tx, &receiver, &id)? else {
+        return Ok(None);
+    };
     if proposal.first_sync != *sync || proposal.last_sync != *sync {
         return Err(error::conflict(
             format!(

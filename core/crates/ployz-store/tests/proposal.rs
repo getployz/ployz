@@ -982,6 +982,34 @@ fn a_sync_id_names_one_sync() {
     assert_eq!(db.env("production", "api"), json!({"X": "3", "Y": "0"}));
 }
 
+#[test]
+fn a_sync_id_stays_used_after_its_proposal_ends() {
+    let db = Db::new();
+    with_qa(&db);
+    db.set("dev", &[("api.env.X", "1")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    assert_eq!(db.remove("production", &a), Ok(true));
+    let (code, message) = db
+        .include(("dev", "production"), &sync_id(1), None)
+        .unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    // A refresh between the first and the last Sync is no longer in the proposal.
+    for (n, x) in [(2, "2"), (3, "3"), (4, "4")] {
+        db.set("dev", &[("api.env.X", x)]);
+        db.include(("dev", "production"), &sync_id(n), None)
+            .unwrap();
+    }
+    db.set("qa", &[("api.env.Y", "5")]);
+    let (code, message) = db
+        .include(("qa", "production"), &sync_id(3), None)
+        .unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert_eq!(db.env("production", "api"), json!({"X": "4", "Y": "0"}));
+}
+
 // Lifetime.
 
 #[test]

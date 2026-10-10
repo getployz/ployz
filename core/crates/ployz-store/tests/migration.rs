@@ -76,6 +76,8 @@ const BEFORE_SYNC: &str = "
           AND s.other_id = config_environment_branch.environment_id)
     );
     ALTER TABLE config_environment_branch RENAME COLUMN made_with TO base;
+    DROP TABLE config_sync_receipt;
+    DELETE FROM config_migration WHERE name = '0006_sync_receipt';
     DROP TABLE config_sync_arrival;
     DROP TABLE config_proposal;
     DELETE FROM config_migration WHERE name = '0005_proposal';
