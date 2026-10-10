@@ -39,6 +39,11 @@ deprecation, not a guarantee. Branch Sync broke it on purpose, with no users yet
 `env save` and `env update` are gone, and the JSON field `save` is now
 `conditional_sync`. Warm Move broke it on purpose too, with no users yet: switch
 requests no longer carry `not_after_unix_seconds`, and AdoptLease is gone.
+The Log Store release makes one approved exception while the user base is small:
+`TailLogs` replaces `ContainerLogs` and `MachineLogs`, and `LogHistory` replaces
+`ContainerLogHistory`. Clients and daemons need the matching log RPCs. The release
+also removes `ForgetLogs`; deleting an Environment leaves its logs under the
+normal retention limits. These two read RPCs are the log contract going forward.
 
 Frozen formats evolve **additively with tolerant readers**: rows and bodies only
 gain fields; every new field is optional with a default; nothing is renamed or
@@ -226,6 +231,9 @@ That window is accepted and documented, not prevented.
 A container's output is Machine-local too. It lives on the Machine that ran the
 container and outlives it. That Machine deletes it once it passes the size or
 age cap. Cloud reads it through the daemon and never copies it (bet 7).
+Deleting an Environment does not delete its retained logs. Reusing its Namespace
+and Service names can show the earlier Environment's output until retention removes
+it. Deployment and Container selectors distinguish that output by their identities.
 
 **Red flags:**
 
