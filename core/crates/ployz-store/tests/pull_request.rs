@@ -934,6 +934,114 @@ fn a_preview_is_its_pull_requests_proposal_only_in_a_destination() {
     );
 }
 
+/// `pr-5`'s facts at `updated`, open and targeting `branch`.
+fn targeting(branch: &str, updated: &str) -> PullRequest {
+    PullRequest {
+        target_branch: backend::git_branch(branch),
+        ..facts(true, updated)
+    }
+}
+
+/// The one proposal included in production's draft.
+fn included_in_production(store: &ConfigStore, who: &Actor) -> ployz_store::Included {
+    let diff = store
+        .read(
+            who,
+            &ployz_store::DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap();
+    let [included] = &diff.included[..] else {
+        panic!("one proposal: {:?}", diff.included)
+    };
+    included.clone()
+}
+
+/// Remove `proposal` from production's draft.
+fn remove_from_production(store: &ConfigStore, who: &Actor, proposal: ployz_store::ProposalId) {
+    let removed = store
+        .write(
+            who,
+            &ployz_store::RemoveProposal {
+                environment: at("production"),
+                proposal,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(removed.removed);
+}
+
+/// Production's `web` env now, if it has any.
+fn production_env(store: &ConfigStore, who: &Actor) -> Option<serde_json::Value> {
+    store
+        .read(
+            who,
+            &ployz_store::ServiceQuery {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap()
+        .values
+        .get("env")
+        .cloned()
+}
+
+/// A preview included before its pull request targeted the draft's branch is still
+/// one proposal there once it does: the next Include makes it the pull request's.
+#[test]
+fn a_preview_included_before_it_was_destined_becomes_its_pull_requests_proposal() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, targeting("release", "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    let first = include_pr(&store, &who, 1).unwrap();
+
+    pull(&store, &who, targeting("main", "2026-09-29T11:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.Y", json!("2"));
+    assert_eq!(include_pr(&store, &who, 2), Ok(first.clone()));
+    let included = included_in_production(&store, &who);
+    assert!(
+        matches!(
+            included.source,
+            ployz_store::ProposalSource::PullRequest { number, .. } if number.get() == 5
+        ),
+        "{:?}",
+        included.source
+    );
+    assert_eq!(included.changes, 2);
+
+    remove_from_production(&store, &who, first);
+    assert_eq!(production_env(&store, &who), None);
+}
+
+/// A pull request's proposal in a draft that stops being one of its Destinations is
+/// its preview's own from the next Include on.
+#[test]
+fn a_pull_requests_proposal_outside_its_destinations_becomes_its_previews() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    let first = include_pr(&store, &who, 1).unwrap();
+
+    pull(&store, &who, targeting("release", "2026-09-29T11:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.Y", json!("2"));
+    assert_eq!(include_pr(&store, &who, 2), Ok(first.clone()));
+    let included = included_in_production(&store, &who);
+    assert!(
+        matches!(&included.source, ployz_store::ProposalSource::Environment { name, .. } if name == "pr-5"),
+        "{:?}",
+        included.source
+    );
+    assert_eq!(included.changes, 2);
+
+    remove_from_production(&store, &who, first);
+    assert_eq!(production_env(&store, &who), None);
+}
+
 /// A pull request's recreated preview finds the proposal its first one made, unless
 /// a row the proposal owns already arrived from the new preview.
 #[test]

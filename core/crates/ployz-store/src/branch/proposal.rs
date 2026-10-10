@@ -80,11 +80,11 @@ pub enum ProposalSource {
     },
 }
 
-/// Who a source is to the drafts it is included in: a pull request's previews are one
-/// source however often they are recreated.
-pub(crate) enum Identity {
-    Environment(EnvironmentId),
-    PullRequest(PullRequestRef),
+/// Who a source is to a draft: in a Destination of its pull request, a preview is
+/// that pull request, one source however often it is recreated.
+pub(crate) struct Identity {
+    source: EnvironmentId,
+    pull_request: Option<PullRequestRef>,
 }
 
 /// One proposal of a draft.
@@ -116,12 +116,10 @@ pub(crate) fn identity(
     from: &Environment,
     into: &EnvironmentId,
 ) -> Result<Identity, RpcError> {
-    Ok(
-        match crate::pull_request::destined(tx, &from.summary.id, into)? {
-            Some(pr) => Identity::PullRequest(pr),
-            None => Identity::Environment(from.summary.id.clone()),
-        },
-    )
+    Ok(Identity {
+        source: from.summary.id.clone(),
+        pull_request: crate::pull_request::destined(tx, &from.summary.id, into)?,
+    })
 }
 
 const PROPOSAL: &str = "SELECT id, source_environment_id, source_name, first_sync, last_sync \
@@ -137,27 +135,34 @@ fn proposal(row: &storage::Row) -> Result<Proposal, RpcError> {
     })
 }
 
-/// The proposal of `who` in the draft of `into`, if it is included there.
+/// The proposal of `who` in the draft of `into`, if it is included there: its pull
+/// request's, else its source Environment's, as a preview included before `into` was
+/// a Destination made. [`record`] keys it as `who` is now.
 pub(crate) fn find(
     tx: &mut dyn Tx,
     into: &EnvironmentId,
     who: &Identity,
 ) -> Result<Option<Proposal>, RpcError> {
-    let rows = match who {
-        Identity::Environment(source) => tx.query(
-            &format!("{PROPOSAL} AND source_environment_id = ?2"),
-            &[into.as_str().into(), source.as_str().into()],
-        )?,
-        Identity::PullRequest(pr) => tx.query(
+    if let Some(pr) = &who.pull_request {
+        let rows = tx.query(
             &format!("{PROPOSAL} AND repository_id = ?2 AND number = ?3"),
             &[
                 into.as_str().into(),
                 pr.repository_id.into(),
                 pr.number.into(),
             ],
-        )?,
-    };
-    rows.first().map(proposal).transpose()
+        )?;
+        if let Some(row) = rows.first() {
+            return proposal(row).map(Some);
+        }
+    }
+    tx.query(
+        &format!("{PROPOSAL} AND source_environment_id = ?2"),
+        &[into.as_str().into(), who.source.as_str().into()],
+    )?
+    .first()
+    .map(proposal)
+    .transpose()
 }
 
 fn by_id(
@@ -300,7 +305,7 @@ pub(crate) fn rebind(
 }
 
 /// `from` is included in `into`'s draft by Sync `sync`, at its revision now: the
-/// proposal `found` advanced, or a new one. Returns its ID.
+/// proposal `found` advanced and keyed as `identity`, or a new one. Returns its ID.
 pub(crate) fn record(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -310,14 +315,20 @@ pub(crate) fn record(
     sync: &SyncId,
 ) -> Result<ProposalId, RpcError> {
     let at = scope::revision_param(from.summary.revision)?;
+    let (repository, number): (Param, Param) = match &identity.pull_request {
+        Some(pr) => (pr.repository_id.into(), pr.number.into()),
+        None => (Param::NullInt, Param::NullInt),
+    };
     if let Some(found) = found {
         tx.execute(
-            "UPDATE config_proposal SET source_revision = ?1, last_sync = ?2, source_name = ?3 \
-             WHERE id = ?4",
+            "UPDATE config_proposal SET source_revision = ?1, last_sync = ?2, source_name = ?3, \
+             repository_id = ?4, number = ?5 WHERE id = ?6",
             &[
                 at.into(),
                 sync.as_str().into(),
                 from.summary.name.as_str().into(),
+                repository,
+                number,
                 found.id.as_str().into(),
             ],
         )?;
@@ -325,10 +336,6 @@ pub(crate) fn record(
         return Ok(found.id.clone());
     }
     let id = ProposalId::parse(uuid::Uuid::new_v4().to_string())?;
-    let (repository, number): (Param, Param) = match identity {
-        Identity::PullRequest(pr) => (pr.repository_id.into(), pr.number.into()),
-        Identity::Environment(_) => (Param::NullInt, Param::NullInt),
-    };
     tx.execute(
         "INSERT INTO config_proposal (id, organization_id, environment_id, \
          source_environment_id, repository_id, number, source_name, source_revision, \
