@@ -43,7 +43,10 @@ pub(crate) fn command() -> Command {
                 .about("List a repository's files")
                 .arg(positional("repository", true).help("OWNER/REPO"))
                 .arg(positional("path", false).help("Only files under this directory"))
-                .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted")),
+                .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted"))
+                .arg(value("match", None).value_name("GLOB").help(
+                    "Only paths matching this glob, like **/Dockerfile or apps/*/package.json",
+                )),
         )
         .subcommand(
             Command::new("cat")
@@ -255,7 +258,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn tree(root: &ArgMatches) -> Result<(), Error> {
-    let tree: Tree = read_repository(root, "tree", "path")?;
+    let tree: Tree = read_repository(root, "tree", &["path", "ref", "match"])?;
     crate::ui::finish(&tree, || {
         if tree.paths.is_empty() {
             crate::ui::note(format_args!(
@@ -267,14 +270,16 @@ fn tree(root: &ArgMatches) -> Result<(), Error> {
             crate::ui::stream(path);
         }
         if tree.truncated {
-            crate::ui::note("The listing is cut short: name a directory to see the rest.");
+            crate::ui::note(
+                "The listing is cut short: name a directory or a narrower --match to see the rest.",
+            );
         }
     })?;
     Ok(())
 }
 
 fn cat(root: &ArgMatches) -> Result<(), Error> {
-    let file: File = read_repository(root, "file", "path")?;
+    let file: File = read_repository(root, "file", &["path", "ref"])?;
     crate::ui::finish(&file, || match &file.content {
         Some(content) => {
             let _ = std::io::Write::write_all(&mut anstream::stdout(), content.as_bytes());
@@ -284,11 +289,11 @@ fn cat(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// Cloud's `github/<route>` reading of a repository, at `--ref` and the `path` argument.
+/// Cloud's `github/<route>` reading of a repository, narrowed by the `options` given.
 fn read_repository<T: serde::de::DeserializeOwned>(
     root: &ArgMatches,
     route: &str,
-    path: &str,
+    options: &[&str],
 ) -> Result<T, Error> {
     let matches = leaf_matches(root);
     let repository = matches
@@ -303,11 +308,8 @@ fn read_repository<T: serde::de::DeserializeOwned>(
     query
         .query_pairs_mut()
         .append_pair("repository", repository);
-    for (key, value) in [
-        (path, matches.get_one::<String>(path)),
-        ("ref", matches.get_one::<String>("ref")),
-    ] {
-        if let Some(value) = value {
+    for &key in options {
+        if let Some(value) = matches.get_one::<String>(key) {
             query.query_pairs_mut().append_pair(key, value);
         }
     }

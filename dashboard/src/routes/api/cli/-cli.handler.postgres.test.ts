@@ -524,6 +524,8 @@ it.live(
 
         const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
         assert.deepInclude(tree.json, { repository: "acme/web", ref: "main", paths: ["src/main.ts"], truncated: false });
+        const dockerfiles = yield* cli("GET", "github/tree?repository=acme%2Fweb&match=**%2FDockerfile", alice);
+        assert.deepInclude(dockerfiles.json, { paths: ["Dockerfile"], truncated: false });
         const file = yield* cli("GET", "github/file?repository=acme%2Fweb&path=Dockerfile", alice);
         assert.deepInclude(file.json, { path: "Dockerfile", size: 12, content: "FROM alpine\n" });
         const directory = yield* cli("GET", "github/file?repository=acme%2Fweb&path=src", alice);

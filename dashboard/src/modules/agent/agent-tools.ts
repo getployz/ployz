@@ -335,8 +335,8 @@ export const BINDINGS = new Map<string, AgentBinding>([
       return { status: connection.ready ? "connected" : "pending", url: connection.install_url };
     })),
   ],
-  ["github tree", cloud(Schema.Struct({ repository: Schema.String, path: Text, ref: Text }), (input, caller) =>
-    githubTree(caller, input.repository, input.path ?? null, input.ref ?? null))],
+  ["github tree", cloud(Schema.Struct({ repository: Schema.String, path: Text, ref: Text, match: Text }), (input, caller) =>
+    githubTree(caller, input.repository, input))],
   ["github cat", cloud(Schema.Struct({ repository: Schema.String, path: Schema.String, ref: Text }), (input, caller) =>
     githubFile(caller, input.repository, input.path, input.ref ?? null))],
   [

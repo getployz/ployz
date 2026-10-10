@@ -2389,6 +2389,15 @@
         "multiple": false,
         "trailing": false,
         "help": "Branch, tag or commit; the default branch if omitted"
+      },
+      {
+        "name": "--match",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Only paths matching this glob, like **/Dockerfile or apps/*/package.json"
       }
     ]
   },

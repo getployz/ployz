@@ -8,7 +8,7 @@ import {
   listCachedGithubRepositoriesForUser,
   listGithubInstallationsForUser,
 } from "#/modules/github/github.repository";
-import { getGithubAppInstallUrl } from "#/modules/github/github.server";
+import { basicGlob, getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
 import type { Caller } from "#/modules/identity/actor";
 import { account } from "#/modules/identity/tables";
@@ -77,20 +77,32 @@ export const FILE_BYTES = 64 * 1024;
 
 const directoryOf = (path: string | null) => (path ?? "").replace(/^(\.?\/)+|\/+$/g, "");
 
-/** The files of `repository` at `ref` (its default branch if null) under directory `path`, at most `TREE_PATHS`. */
+/** What narrows a `github tree` listing; each is optional. */
+export type TreeQuery = {
+  /** A directory: only files under it. */
+  readonly path?: string | null;
+  /** A branch, tag or commit; the default branch if absent. */
+  readonly ref?: string | null;
+  /** A glob the whole repository-relative path must match. */
+  readonly match?: string | null;
+};
+
+/** The files of `repository` that `query` selects, at most `TREE_PATHS`. */
 export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
-  repository: ReadableRepository, path: string | null, ref: string | null,
+  repository: ReadableRepository, { path = null, ref = null, match = null }: TreeQuery,
 ) {
   const at = ref ?? repository.defaultBranch;
   const listed = yield* listGithubRepositoryFiles(repository.installationId, repository.fullName, at).pipe(
     Effect.catchIf(isGithubObservationNotFound, () => new NotFound({ message: `No ref ${at} in ${repository.fullName}.` })));
   const directory = directoryOf(path);
   const under = directory === "" ? listed.paths : listed.paths.filter((file) => file.startsWith(`${directory}/`));
+  const matcher = match === null ? null : basicGlob(match);
+  const matching = matcher === null ? under : under.filter((file) => matcher.match(file));
   return {
     repository: repository.fullName,
     ref: at,
-    paths: under.slice(0, TREE_PATHS),
-    truncated: listed.truncated || under.length > TREE_PATHS,
+    paths: matching.slice(0, TREE_PATHS),
+    truncated: listed.truncated || matching.length > TREE_PATHS,
   };
 });
 
@@ -129,11 +141,9 @@ function decode(bytes: Uint8Array) {
   }
 }
 
-/** `ployz github tree OWNER/REPO [PATH]`: a readable repository's files. */
-export const githubTree = Effect.fn("GithubCli.tree")(function* (
-  caller: Caller, repository: string, path: string | null, ref: string | null,
-) {
-  return yield* repositoryTree(yield* readableBy(caller, repository), path, ref);
+/** `ployz github tree OWNER/REPO [PATH] [--match GLOB]`: a readable repository's files. */
+export const githubTree = Effect.fn("GithubCli.tree")(function* (caller: Caller, repository: string, query: TreeQuery) {
+  return yield* repositoryTree(yield* readableBy(caller, repository), query);
 });
 
 /** `ployz github cat OWNER/REPO PATH`: one file of a readable repository. */

@@ -244,7 +244,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         case "branches":
           return yield* githubBranches(caller, repository);
         case "tree":
-          return yield* githubTree(caller, repository, path, query.get("ref"));
+          return yield* githubTree(caller, repository, { path, ref: query.get("ref"), match: query.get("match") });
         case "file":
           if (path === null) return yield* new NotFound({ message: "Not found." });
           return yield* githubFile(caller, repository, path, query.get("ref")).pipe(

@@ -252,7 +252,10 @@ fn serve(
             200,
             json!({ "repository": "acme/web", "access": "installation", "default_branch": "main", "branches": ["dev", "main"] }),
         ),
-        (Some(_), "/api/cli/github/tree?repository=acme%2Fweb&path=src&ref=dev") => (
+        (
+            Some(_),
+            "/api/cli/github/tree?repository=acme%2Fweb&path=src&ref=dev&match=**%2F*.rs",
+        ) => (
             200,
             json!({ "repository": "acme/web", "ref": "dev", "paths": ["src/main.rs"], "truncated": false }),
         ),
@@ -2801,7 +2804,9 @@ fn github_lists_branches_reads_files_and_disconnects_in_cloud() {
     );
     let tree = ok(
         &cloud,
-        &["github", "tree", "acme/web", "src", "--ref", "dev"],
+        &[
+            "github", "tree", "acme/web", "src", "--ref", "dev", "--match", "**/*.rs",
+        ],
     );
     assert_eq!(tree["paths"], json!(["src/main.rs"]));
     let file = ok(&cloud, &["github", "cat", "acme/web", "Dockerfile"]);
