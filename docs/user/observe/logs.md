@@ -52,15 +52,17 @@ no service arguments, and `--follow` still use live container discovery.
   disk for them, between 512 MB and 5 GB, for 30 days, and the oldest go first. It doesn't copy
   them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
-- **A replica that failed keeps its output and exit code**, so you can see why it stopped.
+- **A replica that failed keeps its output.** Its exit code appears when the server observed it,
+  so you can see why it stopped.
 - **Deleting an environment deletes its logs.** A removed service's logs stay until they age out.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't kept, until their next deploy.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
   without one counts as **Info**, stderr included.
-- **A stretch a server didn't keep says so.** The log shows a line in its place, saying the lines
-  weren't captured or couldn't be read.
+- **Detected gaps appear in the log**, saying the lines weren't captured or couldn't be read.
+  Missing output can have no gap record, such as when a container ran entirely while log
+  collection was down.
 - **A server that doesn't answer is named** in a banner above the log, and the other servers'
   lines still show.
 - **When your servers are offline**, the page says **Your servers are offline** and keeps the
