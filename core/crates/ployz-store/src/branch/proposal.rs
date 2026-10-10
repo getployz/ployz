@@ -116,10 +116,12 @@ pub(crate) fn identity(
     from: &Environment,
     into: &EnvironmentId,
 ) -> Result<Identity, RpcError> {
-    Ok(match crate::pull_request::destined(tx, &from.summary.id, into)? {
-        Some(pr) => Identity::PullRequest(pr),
-        None => Identity::Environment(from.summary.id.clone()),
-    })
+    Ok(
+        match crate::pull_request::destined(tx, &from.summary.id, into)? {
+            Some(pr) => Identity::PullRequest(pr),
+            None => Identity::Environment(from.summary.id.clone()),
+        },
+    )
 }
 
 const PROPOSAL: &str = "SELECT id, source_environment_id, source_name, first_sync, last_sync \
@@ -577,11 +579,29 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
                 |n| (n.node.to_string(), n.name),
             );
             let edited = at.map_or_else(|| node.clone(), |at| format!("{node}'s {at}"));
-            return Err(error::conflict(
-                format!(
+            let holder = tx.query(
+                "SELECT p.source_name FROM config_sync_arrival a \
+                 JOIN config_proposal p ON p.id = a.proposal_id \
+                 WHERE a.environment_id = ?1 AND a.lineage = ?2 AND a.at = ?3",
+                &[
+                    id.as_str().into(),
+                    row.lineage().into(),
+                    row.at().to_string().as_str().into(),
+                ],
+            )?;
+            let message = match holder.first().map(|row| row.text(0)).transpose()? {
+                Some(holder) => {
+                    format!(
+                        "{edited} is included with {holder}: Remove {holder} first, or keep {source}"
+                    )
+                }
+                None => format!(
                     "{edited} was edited here since {source} was included: \
                      Discard {node}, or keep {source}"
                 ),
+            };
+            return Err(error::conflict(
+                message,
                 json!({ "row": row, "proposal": proposal.id }),
             ));
         }
@@ -792,7 +812,7 @@ pub(crate) fn undo(
     if proposal.first_sync != *sync || proposal.last_sync != *sync {
         return Err(error::conflict(
             format!(
-                "{} was refreshed since: Remove it in Changes",
+                "{} was refreshed since: Remove it from Changes in Ployz Cloud",
                 proposal.name
             ),
             json!({ "proposal": proposal.id }),

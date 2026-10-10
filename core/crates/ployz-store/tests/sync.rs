@@ -1265,7 +1265,7 @@ fn a_new_service_is_reviewed_and_undone_whole() {
         undo(&store, &who, &synced),
         Err((
             RpcErrorCode::Conflict,
-            "fix-web was refreshed since: Remove it in Changes".into()
+            "fix-web was refreshed since: Remove it from Changes in Ployz Cloud".into()
         ))
     );
     assert!(remove(&store, &who, "production", &synced));

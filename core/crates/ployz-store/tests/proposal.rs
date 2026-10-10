@@ -776,6 +776,23 @@ fn remove_is_refused_once_the_draft_edited_a_service_it_introduced() {
 }
 
 #[test]
+fn remove_names_the_proposal_holding_a_row_of_a_service_it_introduced() {
+    let db = Db::new();
+    db.service("dev", 11, "cache");
+    db.branch(10, "dev", "qa", &["cache"]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), Some(&["cache"]))
+            .unwrap(),
+    );
+    db.set("qa", &[("cache.env.Z", "1")]);
+    db.include(("qa", "production"), &sync_id(2), Some(&["cache.env.Z"]))
+        .unwrap();
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("Remove qa first"), "{message}");
+}
+
+#[test]
 fn remove_ignores_a_service_an_earlier_saved_proposal_introduced() {
     let db = Db::new();
     db.service("dev", 11, "cache");
