@@ -138,7 +138,9 @@ export type LogFilter = {
 export type LogLevel = "error" | "warn" | "info" | "debug";
 export type LogRecord = ContainerLogRecord & { id: string; level: LogLevel };
 export type LogSourceError = { type: "source_error"; machineId: string; containerId: string; message: string };
-export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError;
+/** A container whose source failed has left the Runtime Watch; nothing more will come from it. */
+export type LogSourceGone = { type: "source_gone"; machineId: string; containerId: string };
+export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError | LogSourceGone;
 export type LogOptions = WatchOptions & { filter?: LogFilter; tail?: number; follow?: boolean };
 /** A stretch of one container's output its Server's Log Store doesn't have. */
 export type LogGap = {

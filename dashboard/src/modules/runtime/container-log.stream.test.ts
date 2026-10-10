@@ -371,7 +371,7 @@ it("drops a read of the Log Store still in flight when the viewer returns to the
   }
 });
 
-it("clears a Server's missing note once every container that failed sends again", async () => {
+it("clears a Server's missing note once every container that failed sends again or leaves", async () => {
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {
     constructor() { super(); source = this; }
@@ -393,7 +393,7 @@ it("clears a Server's missing note once every container that failed sends again"
     expect(stream.getSnapshot().missing.live["m"]?.containerIds).toEqual(["c", "d"]);
     send(record("c"));
     expect(stream.getSnapshot().missing.live["m"]?.containerIds).toEqual(["d"]);
-    send(record("d"));
+    send(JSON.stringify({ type: "source_gone", machineId: "m", containerId: "d" }));
     expect(stream.getSnapshot().missing.live).toEqual({});
   } finally {
     subscription.unsubscribe();

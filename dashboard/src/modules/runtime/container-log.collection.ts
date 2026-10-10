@@ -35,6 +35,7 @@ export const logSourceErrorSchema = Schema.Struct({
 export const containerLogEventSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("record"), record: containerLogLineSchema }),
   logSourceErrorSchema,
+  Schema.Struct({ type: Schema.Literal("source_gone"), machineId: Schema.String, containerId: Schema.String }),
 ]);
 export const missingServerSchema = Schema.Struct({ machineId: Schema.String, machineName: Schema.String, message: Schema.String });
 export type MissingServer = typeof missingServerSchema.Type;

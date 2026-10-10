@@ -144,6 +144,23 @@ test("one failed source does not interrupt other containers", async () => {
   assert.equal((await output.next()).done, true);
 });
 
+test("a failed source whose container leaves a complete observation is gone", async () => {
+  const t = transport(); const open = t.open; const abort = new AbortController();
+  t.open = input => input.container_id === "bad" ? Promise.reject(new Error("unavailable")) : open(input);
+  const output = logs(t, { signal: abort.signal });
+  try {
+    t.frames.push({ containers: [container("bad"), container("good")] });
+    assert.deepEqual((await output.next()).value, { type: "source_error", machineId: "machine", containerId: "bad", message: "unavailable" });
+    t.frames.push({ containers: [container("good")], incomplete_ids: { machines: ["machine"] } });
+    t.frames.push({ containers: [container("good")] });
+    assert.deepEqual((await output.next()).value, { type: "source_gone", machineId: "machine", containerId: "bad" });
+    t.readers.get("good").push(row("good", 1));
+    assert.equal((await output.next()).value.type, "record");
+  } finally {
+    const end = output.next(); abort.abort(); await end;
+  }
+});
+
 test("a later running observation follows after the immediate EOF handoff ends", async () => {
   const t = transport();
   const abort = new AbortController();

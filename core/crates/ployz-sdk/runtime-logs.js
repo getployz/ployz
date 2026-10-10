@@ -76,6 +76,15 @@ async function* logs(transport, options = {}) {
           if (source.last !== null && container.runtime.state !== "running") continue;
           openSource(key, source);
         }
+        // A failed source's container missing from a complete observation has left; nothing more will come from it.
+        const seen = new Set(event.value.value.containers.map(sourceKey));
+        const incomplete = event.value.value.incomplete_ids ?? {};
+        for (const [key, source] of sources) {
+          const [machineId, containerId] = key.split("/");
+          if (!source.failed || seen.has(key) || incomplete.machines?.includes(machineId) || incomplete.containers?.includes(containerId)) continue;
+          sources.delete(key);
+          yield { type: "source_gone", machineId, containerId };
+        }
         if (options.follow !== false) nextWatch();
       } else {
         const source = sources.get(event.key);

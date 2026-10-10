@@ -80,6 +80,14 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           if (trimContainerLogs(collection) && cursor !== undefined) resetHistory();
         };
         // A replayed tail after a reconnect is dropped by the rows' ids. A refused stream ends its history reads.
+        // A container that failed is sending again or has left; the note stays while another on that Server is still down.
+        const recovered = (machineId: string, containerId: string) => {
+          const server = snapshot.missing.live[machineId];
+          if (!server?.containerIds.includes(containerId)) return;
+          const { [machineId]: _, ...live } = snapshot.missing.live;
+          const containerIds = server.containerIds.filter(failed => failed !== containerId);
+          publish({ ...snapshot, missing: { ...snapshot.missing, live: containerIds.length ? { ...live, [machineId]: { ...server, containerIds } } : live } });
+        };
         controller = new AbortController();
         const stop = liveStream(`/api/runtime/logs?${query}`, {
           onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
@@ -103,15 +111,10 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
               const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
               if (decoded._tag === "None") return;
               if (decoded.value.type === "record") {
-                const { machineId, containerId } = decoded.value.record;
-                // A container that failed is sending again; the note stays while another on that Server is still down.
-                const server = snapshot.missing.live[machineId];
-                if (server?.containerIds.includes(containerId)) {
-                  const { [machineId]: _, ...live } = snapshot.missing.live;
-                  const containerIds = server.containerIds.filter(failed => failed !== containerId);
-                  publish({ ...snapshot, missing: { ...snapshot.missing, live: containerIds.length ? { ...live, [machineId]: { ...server, containerIds } } : live } });
-                }
+                recovered(decoded.value.record.machineId, decoded.value.record.containerId);
                 pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
+              } else if (decoded.value.type === "source_gone") {
+                recovered(decoded.value.machineId, decoded.value.containerId);
               } else {
                 const { machineId, containerId, message } = decoded.value;
                 const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
