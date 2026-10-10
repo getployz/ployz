@@ -38,6 +38,7 @@ use super::{
 /// Enough of a file's head or tail to hold a whole frame of the largest
 /// size Docker writes, plus an incomplete one after it.
 const BOUND_WINDOW: u64 = 2 << 20;
+const BOUND_PROBE: u64 = 32 << 10;
 const CANCEL_EVERY: usize = 4096;
 /// The text one page holds at most, past its first row. The page ends early,
 /// with a cursor, rather than outgrow the observe service's memory.
@@ -147,8 +148,10 @@ pub fn page(
     known: &Bounds,
     cancel: &AtomicBool,
 ) -> io::Result<Page> {
+    check(cancel)?;
     let mut containers = Vec::new();
     for entry in fs::read_dir(store.containers())? {
+        check(cancel)?;
         let entry = entry?;
         let Some(id) = entry
             .file_name()
@@ -166,7 +169,7 @@ pub fn page(
                 continue;
             }
         };
-        let files = match known.files(&dir) {
+        let files = match known.files(&dir, cancel) {
             Ok(files) => files,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
@@ -422,9 +425,10 @@ struct Known {
 }
 
 impl Bounds {
-    fn files(&self, dir: &Path) -> io::Result<Vec<StoredFile>> {
+    fn files(&self, dir: &Path, cancel: &AtomicBool) -> io::Result<Vec<StoredFile>> {
         let mut files = Vec::new();
         for entry in fs::read_dir(dir)? {
+            check(cancel)?;
             let entry = entry?;
             let Some(name) = LogFileName::parse(entry.file_name().as_encoded_bytes()) else {
                 continue;
@@ -476,13 +480,40 @@ fn bounds(path: &Path) -> io::Result<(i64, i64)> {
     let mut file = fs::File::open(path)?;
     let len = file.metadata()?.len();
     let mut head = Vec::new();
-    (&mut file).take(BOUND_WINDOW).read_to_end(&mut head)?;
-    let first = frame::first_ts(&head).unwrap_or(i64::MIN);
-    if len <= BOUND_WINDOW {
+    (&mut file).take(BOUND_PROBE).read_to_end(&mut head)?;
+    // A probe inside a large frame can contain another valid frame in its text.
+    let first = match Frames::new(&head).next() {
+        Some(Event::Entry(entry)) => entry.ts,
+        _ => {
+            (&mut file)
+                .take(BOUND_WINDOW - head.len() as u64)
+                .read_to_end(&mut head)?;
+            frame::first_ts(&head).unwrap_or(i64::MIN)
+        }
+    };
+    if len <= head.len() as u64 {
         return Ok((first, frame::last_ts(&head).unwrap_or(i64::MAX)));
     }
-    file.seek(SeekFrom::Start(len - BOUND_WINDOW))?;
+    file.seek(SeekFrom::Start(len.saturating_sub(BOUND_PROBE)))?;
     let mut tail = Vec::new();
+    (&mut file).take(BOUND_PROBE).read_to_end(&mut tail)?;
+    let last = tail.last_chunk::<4>().and_then(|footer| {
+        let size = usize::try_from(u32::from_be_bytes(*footer)).ok()?;
+        let start = tail.len().checked_sub(size.checked_add(8)?)?;
+        let bytes = tail.get(start..)?;
+        if bytes.get(..4)? != footer {
+            return None;
+        }
+        match Frames::new(bytes).next() {
+            Some(Event::Entry(entry)) => Some(entry.ts),
+            _ => None,
+        }
+    });
+    if let Some(last) = last {
+        return Ok((first, last));
+    }
+    file.seek(SeekFrom::Start(len.saturating_sub(BOUND_WINDOW)))?;
+    tail.clear();
     file.take(BOUND_WINDOW).read_to_end(&mut tail)?;
     Ok((first, frame::last_ts(&tail).unwrap_or(i64::MAX)))
 }
@@ -989,6 +1020,131 @@ pub(crate) mod tests {
         assert_eq!(reads(), 3);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cold_small_page_does_not_read_every_segment() {
+        let store = Store::new();
+        let id = store.container('b', "web");
+        for seq in 0..16_u64 {
+            let frames: Vec<_> = (0..10_000)
+                .map(|n| {
+                    line(
+                        T0 + i64::try_from(seq * 10_000).unwrap() + n,
+                        &format!("{seq}-{n:05} {}", "x".repeat(224)),
+                    )
+                })
+                .collect();
+            store.file(&id, seq, &frames);
+        }
+        let read_bytes = || {
+            std::fs::read_to_string("/proc/thread-self/io")
+                .unwrap()
+                .lines()
+                .find_map(|line| line.strip_prefix("rchar: "))
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+        };
+        for (direction, seq, first, limit, last) in [
+            (LogDirection::Forward, 0, 0, 200, 199),
+            (LogDirection::Forward, 0, 0, 5_000, 4_999),
+            (LogDirection::Backward, 15, 9_999, 200, 9_800),
+            (LogDirection::Backward, 15, 9_999, 5_000, 5_000),
+        ] {
+            let before = read_bytes();
+            let page = page(
+                &store.root,
+                &Query::new(request(direction, limit)).unwrap(),
+                &Bounds::default(),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            let bytes = read_bytes() - before;
+            let rows = texts(&page.rows);
+            assert_eq!(rows.len(), usize::from(limit));
+            assert!(
+                rows.first()
+                    .unwrap()
+                    .starts_with(&format!("{seq}-{first:05} "))
+            );
+            assert!(
+                rows.last()
+                    .unwrap()
+                    .starts_with(&format!("{seq}-{last:05} "))
+            );
+            assert_eq!(
+                page.next,
+                Some(format!("{}:{id}:{}:0", T0 + seq * 10_000 + last, seq + 1))
+            );
+            assert!(
+                bytes < 8 << 20,
+                "a cold {limit}-row page read {bytes} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn large_or_damaged_boundary_frames_never_hide_a_row() {
+        let store = Store::new();
+        let id = store.container('b', "web");
+        let inner = line(T0 + 9_999, "a frame inside the outer line");
+        let mut text = vec![b'x'; 999_978];
+        text.get_mut(64..64 + inner.len())
+            .unwrap()
+            .copy_from_slice(&inner);
+        let first = frame(T0, Stream::Stdout, &text, Piece::Whole);
+        assert_eq!(first.get(..4).unwrap(), 1_000_000_u32.to_be_bytes());
+        let last = frame(T0 + 20, Stream::Stdout, &text, Piece::Whole);
+        let middle = frame(
+            T0 + 10,
+            Stream::Stdout,
+            &vec![b'y'; 128 << 10],
+            Piece::Whole,
+        );
+        let torn = line(T0 + 30, "being written");
+        for (prefix, suffix) in [
+            (Vec::new(), Vec::new()),
+            (Vec::new(), torn.get(..9).unwrap().to_vec()),
+            (vec![0xee; 33 << 10], vec![0xee; 33 << 10]),
+            (vec![0xee; 2 << 20], vec![0xee; 2 << 20]),
+        ] {
+            store.file(
+                &id,
+                0,
+                &[prefix, first.clone(), middle.clone(), last.clone(), suffix],
+            );
+            for (direction, since, until, ts) in [
+                (LogDirection::Forward, T0, T0 + 1, T0),
+                (LogDirection::Backward, T0 + 20, T0 + 21, T0 + 20),
+            ] {
+                let page = page(
+                    &store.root,
+                    &Query::new(LogHistoryRequest {
+                        since_nanos: Some(since),
+                        until_nanos: Some(until),
+                        ..request(direction, 10)
+                    })
+                    .unwrap(),
+                    &Bounds::default(),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                let lines: Vec<_> = page
+                    .rows
+                    .iter()
+                    .filter_map(|row| {
+                        if let HistoryRow::Line { ts, text, .. } = row {
+                            Some((*ts, text))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(lines, [(ts, &text)]);
+            }
+        }
+    }
+
     #[test]
     fn paging_either_way_neither_repeats_nor_skips_a_row() {
         let store = Store::new();
@@ -1178,6 +1334,36 @@ pub(crate) mod tests {
         .err()
         .unwrap();
         assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(store.bounds.known.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_page_never_opens_the_store() {
+        let store = Store::new();
+        std::fs::remove_dir_all(store.root.containers()).unwrap();
+        let error = page(
+            &store.root,
+            &Query::new(request(LogDirection::Forward, 10)).unwrap(),
+            &store.bounds,
+            &AtomicBool::new(true),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn cancelled_file_discovery_never_reads_a_segment() {
+        let store = Store::new();
+        let id = store.container('9', "web");
+        store.file(&id, 0, &[line(T0, "x")]);
+        let error = store
+            .bounds
+            .files(&store.root.container(&id), &AtomicBool::new(true))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(store.bounds.known.lock().unwrap().is_empty());
     }
 
     #[test]
