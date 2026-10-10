@@ -1,4 +1,3 @@
-import { previewCopies, useWarmMovePreview } from "#/modules/volume-run/WarmMovePreview";
 import { createContext, use, useState, type ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { FolderIcon, HardDriveIcon, LinkIcon } from "lucide-react";
@@ -36,10 +35,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   const pick = useNodePick(volume.name);
   const lens = useRuntimeLens(params.organizationSlug);
   const { data: active = [] } = useActiveVolumeRuns(params.organizationSlug);
-  const preview = useWarmMovePreview();
-  const runtimeCopy = trayCopy({ volume, copies: lens.volumeCopies, machines: lens.machines, active: active.find((run) => run.volume_id === volume.id) ?? null });
-  const previewMirror = preview ? previewCopies(preview, volume.name).view.copies.find((copy) => copy.role === "mirror") : null;
-  const copy = preview ? preview.active?.kind === "move" ? { kind: "moving" as const, text: `Moving to ${preview.active.args.to}` } : previewMirror ? { kind: "mirror" as const, label: previewMirror.label } : null : runtimeCopy;
+  const copy = trayCopy({ volume, copies: lens.volumeCopies, machines: lens.machines, active: active.find((run) => run.volume_id === volume.id) ?? null });
   // Staged by its own lifecycle first, else by the next Deploy adding or changing this mount of it.
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
@@ -79,7 +75,6 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   return (
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
-      hash={preview ? "warm-move-preview" : undefined}
       data-canvas-node={volume.id} aria-current={selected ? "page" : undefined} draggable={false} className={className} {...hover}
       title={shared ? SHARED_VOLUME_WHY : alsoMounted}>
       {content}

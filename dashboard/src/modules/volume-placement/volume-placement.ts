@@ -87,11 +87,33 @@ export function detachedCopies(observed: ObservedPlacement, row: PlacementRow | 
   return observed.copies.filter((copy) => copy.kind === "slot" && !mirrors.includes(copy.server.id));
 }
 
-/** What the next Deploy aims for: the staged placement, else what is applied. Null when no primary is known. */
+/**
+ * What the next Deploy aims for: the staged placement, else what is applied. With no primary answering, the silent
+ * Server is presumed to hold it. Null when no Server holds the Volume.
+ */
 export function targetPlacement(observed: ObservedPlacement, row: PlacementRow | null): Placement | null {
   if (row?.staged != null) return row.staged;
-  if (observed.primary === null) return null;
-  return { primary: observed.primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
+  const primary = observed.primary ?? observed.unanswered[0] ?? null;
+  if (primary === null) return null;
+  return { primary: primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
+}
+
+export type PlacementEdit =
+  | { readonly kind: "move"; readonly to: MachineId }
+  | { readonly kind: "add_mirror" | "remove_mirror" | "delete_copy"; readonly server: MachineId };
+
+/** One drawer edit. A move to a mirror promotes it; any other move leaves Mirrors as they are. */
+export function editPlacement(target: Placement, edit: PlacementEdit): Placement {
+  switch (edit.kind) {
+    case "move":
+      return { ...target, primary: edit.to, mirrors: target.mirrors.filter((id) => id !== edit.to) };
+    case "add_mirror":
+      return { ...target, mirrors: [...target.mirrors, edit.server] };
+    case "remove_mirror":
+      return { ...target, mirrors: target.mirrors.filter((id) => id !== edit.server) };
+    case "delete_copy":
+      return { ...target, deletes: [...target.deletes, edit.server] };
+  }
 }
 
 export function placementChanges(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): PlacementChange[] {
@@ -240,11 +262,6 @@ export function failover(observed: ObservedPlacement, row: PlacementRow | null):
   if (mirror === undefined || row?.staged?.primary === mirror.server.id) return null;
   return { down, mirror: mirror.server, lostAfter: mirror.newest };
 }
-
-export const failoverWords = (offer: Failover) =>
-  [`${offer.down.name} is not answering`, `Use mirror on ${offer.mirror.name}`, offer.lostAfter === null ? null : `Changes after ${lossTime(offer.lostAfter)} lost`]
-    .filter((part) => part !== null)
-    .join(" · ");
 
 export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };
 

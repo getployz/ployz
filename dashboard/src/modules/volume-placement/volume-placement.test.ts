@@ -4,14 +4,15 @@ import type { Member } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
   detachedCopies,
+  editPlacement,
   failover,
-  failoverWords,
   nextPlacementStep,
   observePlacement,
   placementChanges,
   placementSteps,
   placementTargets,
   placementWords,
+  targetPlacement,
   type PlacementRow,
 } from "./volume-placement";
 
@@ -143,11 +144,37 @@ describe("nextPlacementStep", () => {
   });
 });
 
+describe("editPlacement", () => {
+  const target = (members: Member[], placement: PlacementRow | null) => {
+    const found = targetPlacement(observePlacement(members), placement);
+    if (found === null) throw new Error("no primary");
+    return found;
+  };
+
+  it("promotes the mirror a move targets, and keeps the mirrors of a move elsewhere", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
+    expect(editPlacement(target(members, row(["web-2"])), { kind: "move", to: id("web-2") })).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
+    expect(editPlacement(target(members, row(["web-2"])), { kind: "move", to: id("web-3") })).toEqual({ primary: id("web-3"), mirrors: [id("web-2")], deletes: [] });
+  });
+
+  it("builds on what is already staged", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
+    const staged = editPlacement(target(members, row(["web-2"], { primary: "web-3", mirrors: ["web-2"] })), { kind: "remove_mirror", server: id("web-2") });
+    expect(staged).toEqual({ primary: id("web-3"), mirrors: [], deletes: [] });
+  });
+
+  it("stages the mirror as primary when the primary's Server is silent", () => {
+    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
+    const staged = editPlacement(target(members, row(["web-2"])), { kind: "move", to: id("web-2") });
+    expect(staged).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
+    expect(steps(members, row(["web-2"], { primary: "web-2" }))).toEqual([{ kind: "restore", args: { from: "web-2" } }]);
+  });
+});
+
 describe("failover", () => {
   it("offers the mirror when the primary stops answering, with the loss time from its newest snapshot", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    const offer = failover(observePlacement(members), row(["web-2"]));
-    expect(offer && failoverWords(offer)).toBe("web-1 is not answering · Use mirror on web-2 · Changes after 10:36 lost");
+    expect(failover(observePlacement(members), row(["web-2"]))).toMatchObject({ down: { name: "web-1" }, mirror: { name: "web-2" }, lostAfter: at });
   });
 
   it("offers nothing once the mirror is staged, or while the primary answers", () => {
