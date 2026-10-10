@@ -122,11 +122,13 @@ fn seed(tx: &mut dyn Tx, fixture: &Fixture) -> Result<(), ployz_core::RpcError> 
     }
     let pr = &fixture.pull_request;
     let facts: Value = serde_json::from_str(pr["facts"].as_str().unwrap()).unwrap();
-    for (number, merge) in [(5, None), (6, Some("3")), (7, Some("4"))] {
+    // #6 closed before its facts named the merge commit: only its frozen Conditional
+    // Sync knows it, and the conversion takes `merged` from there.
+    for (number, open, merge) in [(5, true, None), (6, false, None), (7, false, Some("4"))] {
         let mut facts = facts.clone();
         facts["number"] = json!(number);
+        facts["open"] = json!(open);
         if let Some(digit) = merge {
-            facts["open"] = json!(false);
             facts["merge_commit"] = json!(digit.repeat(40));
             facts["merge_reached"] = json!(true);
         }
