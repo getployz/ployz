@@ -2162,6 +2162,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_rescan_settles_removed_containers_without_a_die_event() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 5)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, managed(3));
+        fs::write(
+            host.local_logs().join("container.log"),
+            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
+        )
+        .unwrap();
+        host.remove_from_docker();
+        running.harvester.rescan();
+
+        assert_eq!(host.held(), 1);
+        let gaps = host.gaps();
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[0], DAMAGE_GAP);
+        assert_eq!(
+            (gaps[1].from, gaps[1].reason),
+            (T0 + 10, GapReason::NotCaptured)
+        );
+        assert!(gaps[1].to > gaps[1].from);
+        running.harvester.on_inspected(id, Inspected::Gone);
+        running.harvester.rescan();
+        assert_eq!(host.gaps(), gaps);
+    }
+
+    #[tokio::test]
+    async fn a_rescan_keeps_event_owned_containers_before_their_first_inspect() {
+        let host = host();
+        let id = host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(event("start", T0, &[]));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 5, &[("exitCode", "3")]));
+        host.remove_from_docker();
+        running.harvester.rescan();
+        running.harvester.on_inspected(id, Inspected::Gone);
+
+        assert_eq!(host.held(), 1);
+        let meta = host.meta();
+        assert_eq!(
+            (meta.service.as_deref(), meta.deployment.as_deref()),
+            (Some("web"), Some("d1"))
+        );
+        assert_eq!(
+            (meta.finished_at.as_deref(), meta.exit_code),
+            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
+        );
+        assert_eq!(host.gaps(), []);
+    }
+
+    #[tokio::test]
+    async fn a_rescan_discards_removed_containers_without_ownership_evidence() {
+        let host = host();
+        host.container(&[lines(T0 + 1, 3)]);
+        let mut running = host.harvester();
+        running.harvester.rescan();
+        host.remove_from_docker();
+        running.harvester.rescan();
+        assert!(!exists(&host.dir()));
+    }
+
+    #[tokio::test]
     async fn a_first_set_gap_that_cannot_be_written_is_recorded_at_the_next_inspect() {
         let host = host();
         let id = host.container(&[lines(T0 + 7, 1), lines(T0 + 6, 1)]);

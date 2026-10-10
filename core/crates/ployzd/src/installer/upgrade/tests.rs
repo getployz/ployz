@@ -38,7 +38,18 @@ start() {
 version=none
 if [ -f "$root/running-version" ]; then read -r version < "$root/running-version"; fi
 case "$1" in
-  restart) start ;;
+  restart)
+    case "$2" in
+      ployz-observe.service) /bin/touch "$root/active-$2" ;;
+      *) start ;;
+    esac ;;
+  enable)
+    if [ "$2" = --now ] && [ "$3" = ployz-observe.service ]; then
+      /bin/touch "$root/active-$3" "$root/enabled-$3"
+    fi ;;
+  stop) /bin/rm -f "$root/active-$2" ;;
+  disable) /bin/rm -f "$root/enabled-$2" ;;
+  is-enabled) [ -e "$root/enabled-$3" ] || exit 1 ;;
   is-active)
     case "$3" in
       ployz-volume-plugin.*|ployz-observe.*) [ -e "$root/active-$3" ] || exit 3 ;;
@@ -314,6 +325,9 @@ async fn upgrade_worker_contract() {
         "succeeded",
         "readiness-restored",
         "soak-restored",
+        "observer-inactive-disabled-restored",
+        "observer-inactive-enabled-restored",
+        "observer-active-disabled-restored",
         "restore-failed",
         "before-activation",
         "already-installed",
@@ -355,6 +369,15 @@ async fn run_worker_case(root: &Path, case: &str) {
             mark("broken-1.2.3");
             mark("active-ployz-volume-plugin.socket");
             mark("active-ployz-volume-plugin.service");
+            mark("active-ployz-observe.service");
+        }
+        "observer-inactive-disabled-restored" => mark("broken-1.2.3"),
+        "observer-inactive-enabled-restored" => {
+            mark("broken-1.2.3");
+            mark("enabled-ployz-observe.service");
+        }
+        "observer-active-disabled-restored" => {
+            mark("broken-1.2.3");
             mark("active-ployz-observe.service");
         }
         "other-line" => mark("broken-1.2.3"),
@@ -473,6 +496,22 @@ async fn run_worker_case(root: &Path, case: &str) {
             ));
             assert_eq!(installed, before);
             assert_eq!(transitions(root), restored);
+        }
+        "observer-inactive-disabled-restored"
+        | "observer-inactive-enabled-restored"
+        | "observer-active-disabled-restored" => {
+            assert_eq!(outcome, failed(&format!("{unready}; restored 1.2.2")));
+            assert_eq!(installed, before);
+            assert_eq!(
+                root.join("active-ployz-observe.service").exists(),
+                case == "observer-active-disabled-restored",
+                "compensation must restore the observer's active state"
+            );
+            assert_eq!(
+                root.join("enabled-ployz-observe.service").exists(),
+                case == "observer-inactive-enabled-restored",
+                "compensation must restore the observer's enabled state"
+            );
         }
         "restore-failed" => {
             assert_eq!(
