@@ -41,7 +41,11 @@ fn at(environment: &str) -> EnvironmentRef {
 /// Project `shop`: `production` runs Git Services `web` and `api` from `acme/web`'s
 /// `main`, published.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+/// `shop` on `store`.
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -799,4 +803,114 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
     assert_eq!(destinations[0].name.as_str(), "qa");
     assert_eq!(destinations[0].changes, review.rows.len());
     assert_eq!(view.reason, "1 change to sync in Ployz");
+}
+
+/// Run `sql` on the database at `url`, beside the Store.
+fn execute(url: &str, sql: &str) -> usize {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(sql, [])
+            .unwrap(),
+        None => usize::try_from(
+            postgres::Client::connect(url, postgres::NoTls)
+                .unwrap()
+                .execute(sql, &[])
+                .unwrap(),
+        )
+        .unwrap(),
+    }
+}
+
+fn now_when() -> ployz_store::When {
+    ployz_store::When::Now { close_after: false }
+}
+
+/// Include what `pr-5` offers into production as Sync `n`; the proposal, or the refusal.
+fn include_pr(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+) -> Result<ployz_store::ProposalId, (RpcErrorCode, String)> {
+    let view = store
+        .read(
+            who,
+            &ployz_store::SyncQuery {
+                from: at("pr-5"),
+                into: Some(at("production")),
+                when: Some(now_when()),
+            },
+        )
+        .unwrap();
+    let synced = store
+        .write(
+            who,
+            &ployz_store::SyncChanges {
+                from: at("pr-5"),
+                into: Some(at("production")),
+                when: Some(now_when()),
+                version: view.version,
+                picks: None,
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: Some(
+                    ployz_store::SyncId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}"))
+                        .unwrap(),
+                ),
+            },
+        )
+        .map_err(|error| (error.code, error.message))?;
+    let ployz_store::SyncedWhen::Now { proposal, .. } = synced.when else {
+        panic!("an Include stages now")
+    };
+    Ok(proposal)
+}
+
+/// A pull request's recreated preview finds the proposal its first one made, unless
+/// a row the proposal owns already arrived from the new preview.
+#[test]
+fn a_recreated_preview_rebinds_its_proposal_and_refuses_a_colliding_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    let first = include_pr(&store, &who, 1).unwrap();
+    // Closed before it deployed: the preview is deleted at once, the proposal stays.
+    pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
+    assert_eq!(listed(&store, &who), ["production"]);
+    pull(&store, &who, facts(true, "2026-09-29T12:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.Y", json!("2"));
+
+    // A row the proposal owns arrived from the new preview too: rebinding would
+    // merge the two, so Include refuses and names it.
+    let collide = format!(
+        "INSERT INTO config_sync_arrival \
+         (environment_id, other_id, lineage, at, organization_id, how, state, value) \
+         SELECT environment_id, (SELECT id FROM config_environment WHERE name = 'pr-5'), \
+         lineage, at, organization_id, how, 'settled', value \
+         FROM config_sync_arrival WHERE proposal_id = '{first}'"
+    );
+    assert_eq!(execute(&url, &collide), 1);
+    let (code, message) = include_pr(&store, &who, 2).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("web.env.X"), "{message}");
+
+    execute(
+        &url,
+        "DELETE FROM config_sync_arrival WHERE proposal_id IS NULL \
+         AND other_id = (SELECT id FROM config_environment WHERE name = 'pr-5')",
+    );
+    assert_eq!(include_pr(&store, &who, 3), Ok(first));
+    let production = store
+        .read(
+            &who,
+            &ployz_store::ServiceQuery {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(production.values["env"], json!({"X": "1", "Y": "2"}));
 }

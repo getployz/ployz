@@ -556,3 +556,51 @@ fn a_branchs_copy_of_a_service_is_named_by_its_lineages_row() {
         std::slice::from_ref(&web.row)
     );
 }
+
+/// Include fix-web's ticked rows into production; the proposal it made.
+fn include(store: &ConfigStore, who: &Actor) -> ployz_store::ProposalId {
+    let mut changes = sync(&view(store, who), None);
+    changes.id = Some(ployz_store::SyncId::parse("00000000-0000-4000-8000-000000000201").unwrap());
+    let ployz_store::SyncedWhen::Now { proposal, .. } = store.write(who, &changes).unwrap().when
+    else {
+        panic!("a Sync into a Branch's Parent stages now")
+    };
+    proposal
+}
+
+#[test]
+fn marking_an_owned_row_never_sync_blocks_its_refresh_and_remove_still_inverts_it() {
+    let (store, who) = shop();
+    set(&store, &who, "fix-web", &[("web.env.PLAIN", json!("2"))]);
+    let proposal = include(&store, &who);
+    assert_eq!(
+        values(&store, &who, "production")["env"]["PLAIN"],
+        json!("2")
+    );
+    store
+        .write(&who, &never_sync("production", &["variables.PLAIN"], false))
+        .unwrap();
+    set(&store, &who, "fix-web", &[("web.env.PLAIN", json!("3"))]);
+    let (offered, apart) = between(&store, &who, ("fix-web", "production"));
+    assert!(offered.is_empty(), "{offered:?}");
+    assert_eq!(
+        apart,
+        [("web.env.PLAIN".to_owned(), vec!["production".to_owned()])]
+    );
+    // The mark keeps the row out of later Syncs; Remove still puts back what was.
+    let removed = store
+        .write(
+            &who,
+            &ployz_store::RemoveProposal {
+                environment: at("production"),
+                proposal,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(removed.removed);
+    assert_eq!(
+        values(&store, &who, "production")["env"]["PLAIN"],
+        json!("1")
+    );
+}

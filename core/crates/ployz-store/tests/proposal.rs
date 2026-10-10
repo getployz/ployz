@@ -215,6 +215,100 @@ impl Db {
         }
     }
 
+    /// Set `changes`, each a JSON value, in `environment`'s Working State.
+    fn put(&self, environment: &str, changes: &[(&str, Value)]) {
+        self.store
+            .write(
+                &self.who,
+                &Edit {
+                    environment: at(environment),
+                    expect: None,
+                    changes: changes
+                        .iter()
+                        .map(|(path, value)| ployz_store::Change::Set {
+                            path: SettingPath::parse(path).unwrap(),
+                            value: value.clone(),
+                        })
+                        .collect(),
+                },
+            )
+            .unwrap();
+    }
+
+    /// Save `environment`'s draft; its revision after.
+    fn save(&self, environment: &str) -> u64 {
+        let published = self
+            .store
+            .write(
+                &self.who,
+                &ployz_store::Publish {
+                    environment: at(environment),
+                    version: None,
+                    message: None,
+                    accept_volume_loss: Vec::new(),
+                },
+            )
+            .unwrap();
+        published.environment.revision.0
+    }
+
+    /// Discard `environment`'s draft back to Head: whole, or one `path`.
+    fn discard(&self, environment: &str, path: Option<&str>) {
+        self.store
+            .write(
+                &self.who,
+                &ployz_store::Discard {
+                    environment: at(environment),
+                    target: ployz_store::DiscardTarget::Head,
+                    path: path.map(|path| SettingPath::parse(path).unwrap()),
+                    version: None,
+                },
+            )
+            .unwrap();
+    }
+
+    fn undo(&self, synced: &Synced) -> Result<(), (RpcErrorCode, String)> {
+        self.store
+            .write(
+                &self.who,
+                &ployz_store::UndoSync {
+                    sync: synced.sync.clone(),
+                },
+            )
+            .map(|_| ())
+            .map_err(|error| (error.code, error.message))
+    }
+
+    /// `environment`'s `diff` version and revision.
+    fn diff(&self, environment: &str) -> (String, u64) {
+        let diff = self
+            .store
+            .read(
+                &self.who,
+                &ployz_store::DiffQuery {
+                    environment: at(environment),
+                },
+            )
+            .unwrap();
+        (diff.version, diff.environment.revision.0)
+    }
+
+    /// The services `environment`'s Working State runs.
+    fn services(&self, environment: &str) -> Vec<String> {
+        self.store
+            .read(
+                &self.who,
+                &ployz_store::ServicesQuery {
+                    environment: at(environment),
+                },
+            )
+            .unwrap()
+            .services
+            .into_iter()
+            .map(|listing| listing.service.name.to_string())
+            .collect()
+    }
+
     /// production's proposals: source name, first Sync, last Sync.
     fn proposals(&self) -> Vec<Vec<String>> {
         self.rows(&format!(
@@ -454,4 +548,441 @@ fn the_worked_trace() {
         .map(|row| row.at.to_string())
         .collect();
     assert_eq!(labels, ["api.env.Y"]);
+}
+
+/// `label`'s row in `view`.
+fn row<'view>(view: &'view SyncView, label: &str) -> &'view ployz_store::SyncRow {
+    view.rows
+        .iter()
+        .find(|row| row.at.to_string() == label)
+        .unwrap_or_else(|| panic!("{label} offered"))
+}
+
+/// Branch `qa` beside `dev`, with its own `api`.
+fn with_qa(db: &Db) {
+    db.branch(10, "production", "qa", &["api"]);
+}
+
+// Case 1.
+
+#[test]
+fn refresh_exposes_a_source_change_to_an_overridden_row_unticked() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1"), ("api.env.Y", "1")]);
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.set("production", &[("api.env.X", "local")]);
+    db.set("dev", &[("api.env.X", "2"), ("api.env.Y", "2")]);
+    let view = db.offered("dev", "production");
+    let x = row(&view, "api.env.X");
+    assert_eq!(
+        (x.change, x.ticked),
+        (ployz_store::SyncChange::Conflict, false)
+    );
+    assert!(row(&view, "api.env.Y").ticked);
+    // The ticked rows only: X keeps production's own value.
+    db.include(("dev", "production"), &sync_id(2), None)
+        .unwrap();
+    assert_eq!(db.env("production", "api"), json!({"X": "local", "Y": "2"}));
+}
+
+// Case 2.
+
+#[test]
+fn a_second_proposal_cannot_take_an_owned_row() {
+    let db = Db::new();
+    with_qa(&db);
+    db.set("dev", &[("api.env.X", "1")]);
+    db.set("qa", &[("api.env.X", "2"), ("api.env.Y", "2")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    let view = db.offered("qa", "production");
+    let x = row(&view, "api.env.X");
+    assert_eq!((x.held_by.as_deref(), x.ticked), (Some("dev"), false));
+    let (code, _) = db
+        .include(("qa", "production"), &sync_id(2), Some(&["api.env.X"]))
+        .unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict);
+    let b = proposal(&db.include(("qa", "production"), &sync_id(3), None).unwrap());
+    assert_eq!(db.env("production", "api"), json!({"X": "1", "Y": "2"}));
+    // Removing B touches nothing of A's; removing A restores production's 0.
+    assert_eq!(db.remove("production", &b), Ok(true));
+    assert_eq!(db.env("production", "api"), json!({"X": "1", "Y": "0"}));
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.env("production", "api"), json!({"X": "0", "Y": "0"}));
+}
+
+// Case 3.
+
+#[test]
+fn an_equal_claim_is_disclosed_and_offered_again_after_remove() {
+    let db = Db::new();
+    with_qa(&db);
+    db.set("dev", &[("api.env.X", "1")]);
+    db.set("qa", &[("api.env.X", "1")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    let view = db.offered("qa", "production");
+    assert_eq!(row(&view, "api.env.X").held_by.as_deref(), Some("dev"));
+    assert_eq!(db.remove("production", &a), Ok(true));
+    let view = db.offered("qa", "production");
+    let x = row(&view, "api.env.X");
+    assert_eq!((x.held_by.as_deref(), x.ticked), (None, true));
+}
+
+// Case 4.
+
+#[test]
+fn a_refreshed_remove_restores_the_original_value() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.set("dev", &[("api.env.X", "2")]);
+    db.include(("dev", "production"), &sync_id(2), None)
+        .unwrap();
+    assert_eq!(db.env("production", "api")["X"], "2");
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.env("production", "api")["X"], "0");
+}
+
+// Case 5.
+
+#[test]
+fn an_edit_and_back_is_local_and_a_no_op_write_is_not() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1"), ("api.env.Y", "1")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.set("production", &[("api.env.X", "2")]);
+    db.set("production", &[("api.env.X", "1")]);
+    db.set("production", &[("api.env.Y", "1")]);
+    let owners: Vec<String> = arrivals(&db)
+        .into_values()
+        .map(|row| row[5].clone())
+        .collect();
+    assert_eq!(owners, ["unowned", "owned"]);
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.env("production", "api"), json!({"X": "1", "Y": "0"}));
+}
+
+// Case 6, G7.
+
+#[test]
+fn remove_is_refused_while_the_draft_uses_a_service_it_introduced() {
+    let db = Db::new();
+    db.service("dev", 11, "cache");
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    assert_eq!(db.services("production"), ["api", "cache"]);
+    db.set(
+        "production",
+        &[("api.env.CACHE", "${{ cache.PLOYZ_PRIVATE_DOMAIN }}")],
+    );
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("cache"), "{message}");
+    assert_eq!(db.services("production"), ["api", "cache"]);
+    // Without the reference, Remove takes cache back out.
+    db.discard("production", Some("api.env.CACHE"));
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.services("production"), ["api"]);
+}
+
+#[test]
+fn remove_is_refused_once_the_draft_edited_a_service_it_introduced() {
+    let db = Db::new();
+    db.service("dev", 11, "cache");
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.set("production", &[("cache.image", "cache:2")]);
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("cache"), "{message}");
+    assert_eq!(db.services("production"), ["api", "cache"]);
+}
+
+// Case 8.
+
+#[test]
+fn a_secret_resolved_on_an_existing_service_survives_remove() {
+    let db = Db::new();
+    db.put("dev", &[("api.env.KEY", json!({"secret": "dev-key"}))]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    assert_eq!(db.env("production", "api")["KEY"], json!({"secret": false}));
+    db.put(
+        "production",
+        &[("api.env.KEY", json!({"secret": "prod-key"}))],
+    );
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.env("production", "api")["KEY"], json!({"secret": true}));
+    // No plaintext is stored with what arrived.
+    let stored =
+        db.rows("SELECT value, COALESCE(prior, ''), COALESCE(was, '') FROM config_sync_arrival");
+    assert!(!format!("{stored:?}").contains("key\""), "{stored:?}");
+}
+
+#[test]
+fn an_introduced_service_with_a_resolved_secret_refuses_remove() {
+    let db = Db::new();
+    db.service("dev", 11, "cache");
+    db.put("dev", &[("cache.env.KEY", json!({"secret": "dev-key"}))]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.put(
+        "production",
+        &[("cache.env.KEY", json!({"secret": "prod-key"}))],
+    );
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("cache"), "{message}");
+    assert_eq!(db.services("production"), ["api", "cache"]);
+}
+
+// Case 10.
+
+#[test]
+fn a_deleted_source_stays_listed_and_removable() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.store
+        .write(
+            &db.who,
+            &ployz_store::RemoveEnvironment {
+                environment: at("dev"),
+            },
+        )
+        .unwrap();
+    assert_eq!(db.included(), [("dev".to_owned(), false, 1)]);
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.env("production", "api")["X"], "0");
+    assert!(db.proposals().is_empty());
+}
+
+// Case 11, amendment 1.
+
+#[test]
+fn cancelling_proposals_stay_listed_and_a_nothing_staged_save_consumes() {
+    let db = Db::new();
+    backend::deploy(&db.store, &db.who, "production", 1);
+    with_qa(&db);
+    db.set("dev", &[("api.env.X", "1")]);
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.set("production", &[("api.env.X", "0")]);
+    // Production's draft is empty again, yet dev is still included.
+    db.set("qa", &[("api.env.Y", "1")]);
+    let b = proposal(&db.include(("qa", "production"), &sync_id(2), None).unwrap());
+    db.set("production", &[("api.env.Y", "0")]);
+    assert_eq!(
+        db.included(),
+        [("dev".to_owned(), false, 0), ("qa".to_owned(), false, 0)]
+    );
+    let (_, before) = db.diff("production");
+    let after = db.save("production");
+    assert!(after > before, "consuming moves the revision");
+    assert_eq!(db.diff("production").1, after);
+    assert!(db.proposals().is_empty());
+    assert_eq!(db.remove("production", &b), Ok(false));
+}
+
+// Case 12, G9.
+
+#[test]
+fn an_admitted_retry_neither_settles_nor_consumes_a_later_proposal() {
+    let db = Db::new();
+    let id = backend::admit(&db.store, &db.who, "production", 1);
+    db.set("dev", &[("api.env.X", "1")]);
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    backend::run(&db.store, &id);
+    // The run Follows what it shipped into dev, so dev is newer; production's
+    // proposal is untouched.
+    assert_eq!(db.included(), [("dev".to_owned(), true, 1)]);
+    assert_eq!(
+        db.proposals(),
+        [["dev", sync_id(1).as_str(), sync_id(1).as_str()]]
+    );
+    assert_eq!(
+        arrivals(&db)["X"],
+        stored(["pending", "1", "0", "0", "S1", "owned", "1"])
+    );
+}
+
+// G10.
+
+#[test]
+fn stale_versions_are_refused_and_a_retry_replays() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let view = db.offered("dev", "production");
+    db.set("production", &[("api.env.Y", "local")]);
+    let (code, _) = db
+        .store
+        .write(&db.who, &changes(&view, &sync_id(1), None))
+        .map_err(|error| (error.code, error.message))
+        .unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    let (version, _) = db.diff("production");
+    db.set("production", &[("api.env.Y", "local2")]);
+    let stale = db.store.write(
+        &db.who,
+        &RemoveProposal {
+            environment: at("production"),
+            proposal: a.clone(),
+            version: Some(version),
+        },
+    );
+    assert_eq!(stale.unwrap_err().code, RpcErrorCode::Conflict);
+    let (version, _) = db.diff("production");
+    let removed = db.store.write(
+        &db.who,
+        &RemoveProposal {
+            environment: at("production"),
+            proposal: a.clone(),
+            version: Some(version),
+        },
+    );
+    assert!(removed.unwrap().removed);
+    assert_eq!(db.remove("production", &a), Ok(false));
+}
+
+// Lifetime.
+
+#[test]
+fn a_save_ends_proposals_and_keeps_what_arrived() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.save("production");
+    assert!(db.proposals().is_empty());
+    assert_eq!(
+        arrivals(&db)["X"],
+        stored(["pending", "1", "0", "0", "S1", "unowned", "-"])
+    );
+    assert_eq!(db.remove("production", &a), Ok(false));
+    assert_eq!(db.env("production", "api")["X"], "1");
+}
+
+#[test]
+fn a_manual_deploy_ends_proposals() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    backend::deploy(&db.store, &db.who, "production", 1);
+    assert!(db.proposals().is_empty());
+    assert_eq!(db.env("production", "api")["X"], "1");
+}
+
+#[test]
+fn a_whole_discard_drops_membership_and_a_path_discard_rewinds_one_row() {
+    let db = Db::new();
+    backend::deploy(&db.store, &db.who, "production", 1);
+    db.set("dev", &[("api.env.X", "1"), ("api.env.Y", "1")]);
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.discard("production", Some("api.env.X"));
+    assert_eq!(db.env("production", "api"), json!({"X": "0", "Y": "1"}));
+    assert_eq!(db.included(), [("dev".to_owned(), false, 1)]);
+    db.discard("production", None);
+    assert_eq!(db.env("production", "api"), json!({"X": "0", "Y": "0"}));
+    assert!(db.proposals().is_empty());
+    assert!(db.included().is_empty());
+}
+
+// Undo.
+
+#[test]
+fn undo_of_an_unrefreshed_proposal_removes_it() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let synced = db
+        .include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    assert_eq!(db.undo(&synced), Ok(()));
+    assert!(db.proposals().is_empty());
+    assert_eq!(db.env("production", "api")["X"], "0");
+}
+
+#[test]
+fn undo_of_a_refreshed_proposal_is_refused() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let first = db
+        .include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.set("dev", &[("api.env.Y", "1")]);
+    db.include(("dev", "production"), &sync_id(2), None)
+        .unwrap();
+    let (code, _) = db.undo(&first).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict);
+    assert_eq!(db.env("production", "api"), json!({"X": "1", "Y": "1"}));
+}
+
+#[test]
+fn a_saved_sync_still_undoes_as_before() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let synced = db
+        .include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.save("production");
+    assert_eq!(db.undo(&synced), Ok(()));
+    assert_eq!(db.env("production", "api")["X"], "0");
+}
+
+#[test]
+fn deleting_the_destination_deletes_its_proposals() {
+    let db = Db::new();
+    db.branch(10, "dev", "qa", &["api"]);
+    db.set("qa", &[("api.env.X", "1")]);
+    db.include(("qa", "dev"), &sync_id(1), None).unwrap();
+    let dev = uuid(9);
+    let count = |table: &str| {
+        db.rows(&format!(
+            "SELECT CAST(COUNT(*) AS TEXT) FROM {table} WHERE environment_id = '{dev}'"
+        ))
+    };
+    assert_ne!(count("config_proposal"), [["0"]]);
+    for environment in ["qa", "dev"] {
+        db.store
+            .write(
+                &db.who,
+                &ployz_store::RemoveEnvironment {
+                    environment: at(environment),
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(count("config_proposal"), [["0"]]);
+    assert_eq!(count("config_sync_arrival"), [["0"]]);
 }
