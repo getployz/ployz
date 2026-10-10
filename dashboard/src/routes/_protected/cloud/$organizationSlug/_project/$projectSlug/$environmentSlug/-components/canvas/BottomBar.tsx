@@ -14,9 +14,9 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
-import { goLiveWhen } from "#/modules/config-store/store-pull-requests";
+import { blockingPullRequest, needs, OFFERED } from "#/modules/config-store/store-offers";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
@@ -44,10 +44,11 @@ type BottomBarProps = {
   active: DeploymentSummary[];
   /** Details' notes: where changes came from, and merged pull requests' and the Parent's values. */
   notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "originFor" | "after">;
-  /** Details' Included list: the sources Syncs included here, with Remove and Include newer changes. */
-  proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer">;
-  /** Changes open pull requests saved here, going live when each merges. */
-  waiting?: ReadonlyArray<{ number: number; changes: number; environment: string }>;
+  /**
+   * Details' Included list: the sources Syncs included here, with Remove and Include newer changes, and the offers a
+   * Merge-menu Sync left, with Include. Save and Deploy wait on an included pull request that isn't ready.
+   */
+  proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer" | "onInclude">;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
   noServers?: boolean;
 };
@@ -73,7 +74,6 @@ export function BottomBar({
   active: newestFirst,
   notes,
   proposals,
-  waiting = [],
   noServers = false,
   admitting = false,
 }: BottomBarProps) {
@@ -90,10 +90,13 @@ export function BottomBar({
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canPublish;
   const deployable = runtimeChanges > 0 && !noServers;
+  const included = proposals?.included ?? [];
+  const blockedBy = blockingPullRequest(included);
+  const offers = included.filter((item) => item.offered);
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
 
   function deploy() {
-    if (admitting) return;
+    if (admitting || blockedBy !== null) return;
     setOpen(false);
     onDeploy(message);
     setMessage("");
@@ -125,7 +128,7 @@ export function BottomBar({
 
   // ⇧+Enter deploys from anywhere except multi-line text, where it types a newline.
   useEffect(() => {
-    if (!deployable) return;
+    if (!deployable || blockedBy !== null) return;
     function deployOnShiftEnter(event: KeyboardEvent) {
       if (event.key !== "Enter" || !event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.repeat || event.defaultPrevented) return;
       if (event.target instanceof HTMLTextAreaElement || (event.target instanceof HTMLElement && event.target.isContentEditable)) return;
@@ -138,16 +141,16 @@ export function BottomBar({
 
   const row = hasChanges ? (
     <Row staged title={totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save"}
-      shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
+      shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={blockedBy === null ? null : needs(blockedBy)}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
         <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
       ) : <Tooltip>
-        <TooltipTrigger render={<Button variant="intent" disabled={!deployable || admitting} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
+        <TooltipTrigger render={<Button variant="intent" disabled={!deployable || admitting || blockedBy !== null} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
           {active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
-        <TooltipContent>⇧+Enter</TooltipContent>
+        <TooltipContent>{blockedBy === null ? "⇧+Enter" : needs(blockedBy)}</TooltipContent>
       </Tooltip>}
       <DropdownMenu>
         <DropdownMenuTrigger render={<Button size="icon" variant="ghost" aria-label="More change actions" title="More change actions" />}>
@@ -160,16 +163,11 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shown ? <AttemptState deployment={shown} /> : waiting.length ? (
+  ) : shown ? <AttemptState deployment={shown} /> : offers.length ? (
     <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />}
-      title={waiting.map(({ number }) => `PR #${number}`).join(", ")}
-      detail={waiting.map(({ number, changes }) => goLiveWhen(changes, number)).join(" · ")}>
-      {waiting.slice(0, 1).map(({ environment }) => (
-        <Link key={environment} to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: environment }}
-          className={buttonVariants({ variant: "outline" })}>
-          Open {environment}
-        </Link>
-      ))}
+      title={offers.map(({ source }) => source.kind === "pull_request" ? `PR #${source.number}` : source.name).join(", ")}
+      detail={OFFERED}>
+      <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
     </Row>
   ) : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
@@ -178,7 +176,7 @@ export function BottomBar({
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
-    onPublish: () => onPublish(message),
+    onPublish: () => onPublish(message), blockedBy,
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,

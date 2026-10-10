@@ -93,10 +93,10 @@ it("lists what is never synced from the footer, and offers to close the Branch a
   expect(list.getByText(/api, marked in fix-api/u)).toBeTruthy();
 });
 
-it("says a Conditional Sync goes live at the merge, offers no Close, and asks for a value", async () => {
+it("says a Sync at the merge is for its Destination to include after, offers no Close, and asks for a value", async () => {
   open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: {} })] }) });
   const sync = await dialog();
-  expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
+  expect(sync.getByText("production can include these after #142 merges.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Set production's value");
 });

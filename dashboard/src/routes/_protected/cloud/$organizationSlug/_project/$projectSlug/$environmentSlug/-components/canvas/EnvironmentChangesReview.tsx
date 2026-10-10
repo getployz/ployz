@@ -1,14 +1,16 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { ChangeKind, Included, RowId } from "@ployz/sdk";
 import { ArrowRightIcon, MinusIcon, MoreVerticalIcon, PencilIcon, PinIcon, PlusIcon, RefreshCwIcon, Undo2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
+import { Input } from "#/components/ui/input";
 import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
+import { INCLUDE, needs, readinessLabel, SET_VALUE } from "#/modules/config-store/store-offers";
 
 /** Where changes came from, said once over them: "From production's deploy", and why they arrived. */
 export type ChangeOrigin = { title: string; description: string };
@@ -40,10 +42,14 @@ export type EnvironmentChangesReviewProps = {
   originFor?: (row: RowId) => ChangeOrigin | undefined;
   /** Lists after the changes: merged pull requests' and the Parent's values no change shows. */
   after?: ReactNode;
-  /** The sources Syncs included in this draft. */
+  /** The sources Syncs included in this draft, and the offers a Merge-menu Sync left to include. */
   included?: readonly Included[];
-  /** Takes a source back out: what it still holds returns to what it was. */
+  /** Takes a source back out, or drops an offer: what it still holds returns to what it was. */
   onRemoveIncluded?: (included: Included) => void;
+  /** Moves an offer into the draft, with values for secrets the draft lacks; answers the secrets still needing one. */
+  onInclude?: (included: Included, values: Readonly<Record<string, string>>) => Promise<readonly string[]>;
+  /** An included pull request that isn't ready: Save and Deploy wait for it. */
+  blockedBy?: number | null;
   /** Reviews the Sync from a source that changed since, to include its newer changes. */
   onIncludeNewer?: (included: Included) => void;
 };
@@ -54,7 +60,7 @@ export type EnvironmentChangesReviewProps = {
  */
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
   const { environment, canPublish, canDeploy, totalChanges, onClose, after, message, onMessageChange, included = [] } = props;
-  const staged = canPublish || totalChanges > 0 || included.length > 0;
+  const staged = canPublish || totalChanges > 0 || included.some((item) => !item.offered);
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
@@ -161,38 +167,70 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
   })}</>;
 }
 
-/** Each source a Sync included, with Remove and, once it changed, Include newer changes in its ⋯. */
-function IncludedList({ included, onRemoveIncluded, onIncludeNewer }: Pick<EnvironmentChangesReviewProps, "onRemoveIncluded" | "onIncludeNewer"> & { included: readonly Included[] }) {
+/**
+ * Each source a Sync included, with Remove and, once it changed, Include newer changes in its ⋯; a pull request's says
+ * whether it merged. An offer has Include, which asks here for the value of each secret the draft lacks.
+ */
+function IncludedList({ included, onRemoveIncluded, onIncludeNewer, onInclude }: Pick<EnvironmentChangesReviewProps, "onRemoveIncluded" | "onIncludeNewer" | "onInclude"> & { included: readonly Included[] }) {
   return (
     <section aria-label="Included">
       <h3 className="font-medium">Included</h3>
       <ul>
-        {included.map((item) => {
-          const { source } = item;
-          // A pull request's changes come in from its preview's own Sync.
-          const newer = item.newer && source.kind === "environment" && source.live && onIncludeNewer ? () => onIncludeNewer(item) : undefined;
-          return (
-            <li key={item.proposal} className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-b py-1.5 last:border-b-0">
-              <div className="min-w-0">
-                <p className="truncate">{source.name} · {plural(item.changes, "change")}</p>
-                {item.newer ? <p className="text-muted-foreground">{source.name} changed since</p> : null}
-              </div>
-              {onRemoveIncluded ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${source.name}`} />}>
-                    <MoreVerticalIcon />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-auto">
-                    {newer ? <DropdownMenuItem onClick={newer}><RefreshCwIcon />Include newer changes</DropdownMenuItem> : null}
-                    <DropdownMenuItem variant="destructive" onClick={() => onRemoveIncluded(item)}><Undo2Icon />Remove</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : <span />}
-            </li>
-          );
-        })}
+        {included.map((item) => <IncludedItem key={item.proposal} item={item} onRemove={onRemoveIncluded}
+          onIncludeNewer={onIncludeNewer} onInclude={onInclude} />)}
       </ul>
     </section>
+  );
+}
+
+function IncludedItem({ item, onRemove, onIncludeNewer, onInclude }: {
+  item: Included; onRemove?: (included: Included) => void; onIncludeNewer?: (included: Included) => void;
+  onInclude?: EnvironmentChangesReviewProps["onInclude"];
+}) {
+  const { source } = item;
+  // Secrets the last Include named as needing a value, and the values typed for them: sent with the Include, never shown back.
+  const [needed, setNeeded] = useState<readonly string[]>([]);
+  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+  const [pending, setPending] = useState(false);
+  const live = source.kind === "environment" ? source.live : source.environment !== null;
+  const newer = item.newer && !item.offered && live && onIncludeNewer ? () => onIncludeNewer(item) : undefined;
+  const include = onInclude && item.offered ? async () => {
+    setPending(true);
+    try {
+      setNeeded(await onInclude(item, values));
+    } finally {
+      setPending(false);
+    }
+  } : undefined;
+  return (
+    <li className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 border-b py-1.5 last:border-b-0">
+      <div className="min-w-0">
+        <p className="flex min-w-0 items-center gap-2">
+          <span className="truncate">{source.name} · {plural(item.changes, "change")}</span>
+          {source.kind === "pull_request" && item.readiness ? (
+            <Badge variant={item.readiness === "ready" ? "secondary" : "outline"}>{readinessLabel(item.readiness, source.number)}</Badge>
+          ) : null}
+        </p>
+        {item.newer ? <p className="text-muted-foreground">{source.name} changed since</p> : null}
+        {needed.map((name) => (
+          <Input key={name} type="password" autoComplete="off" aria-label={`${SET_VALUE} of ${name}`} placeholder={`${SET_VALUE}: ${name}`}
+            value={values[name] ?? ""} onChange={(event) => setValues((current) => ({ ...current, [name]: event.target.value }))}
+            className="ph-no-capture mt-1.5 w-full" />
+        ))}
+      </div>
+      {include ? <Button size="sm" disabled={pending || needed.some((name) => !values[name])} onClick={() => void include()}>{INCLUDE}</Button> : <span />}
+      {onRemove ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${source.name}`} />}>
+            <MoreVerticalIcon />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-auto">
+            {newer ? <DropdownMenuItem onClick={newer}><RefreshCwIcon />Include newer changes</DropdownMenuItem> : null}
+            <DropdownMenuItem variant="destructive" onClick={() => onRemove(item)}><Undo2Icon />Remove</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : <span />}
+    </li>
   );
 }
 
@@ -270,15 +308,17 @@ function Value({ kind, before, after }: { kind: ChangeKind; before: string; afte
   );
 }
 
-/** Discard all, quiet on the left; Publish and Deploy on the right. */
-function Footer({ groups, canDeploy, canPublish, onPublish, onDiscardAll, onDeploy, admitting = false }: EnvironmentChangesReviewProps) {
+/** Discard all, quiet on the left; Publish and Deploy on the right, waiting on an included pull request that isn't ready. */
+function Footer({ groups, canDeploy, canPublish, onPublish, onDiscardAll, onDeploy, admitting = false, blockedBy = null }: EnvironmentChangesReviewProps) {
+  const blocked = blockedBy !== null;
   return (
     <DialogFooter>
       {groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={onDiscardAll}>Discard all</Button>
       ) : null}
-      <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Save</Button>
-      {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}
+      {blocked ? <p role="status" className="self-center text-muted-foreground">{needs(blockedBy)}</p> : null}
+      <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish || blocked} onClick={onPublish}>Save</Button>
+      {canDeploy ? <Button disabled={admitting || blocked} onClick={onDeploy}>Deploy changes</Button> : null}
     </DialogFooter>
   );
 }

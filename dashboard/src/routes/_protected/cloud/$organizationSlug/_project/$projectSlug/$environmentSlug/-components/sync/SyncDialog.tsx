@@ -10,6 +10,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
+import { includeAfterMerge } from "#/modules/config-store/store-offers";
 import { flipRow, flipsMoved, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -27,7 +28,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   /** Offer to close `from` once synced: a Branch that isn't kept, into its Parent. */
   closable: boolean;
   onClose: () => void;
-  /** How many changes synced, and the Sync: what Undo passes, and the Conditional Sync standing for one at the merge. */
+  /** How many changes synced, and the Sync: what Undo passes, and the offer for one at the merge. */
   onSynced: (changes: number, synced: Synced) => void;
 }) {
   const writer = useStoreWriter(organizationSlug);
@@ -87,7 +88,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
           <DialogTitle>Sync to {into}</DialogTitle>
           <DialogDescription>
             {!view.ok ? view.refusal.message : rows.length === 0 ? `Nothing to sync: ${into} has every change from ${name}.`
-              : atMerge !== null ? `These changes from ${name} go live in ${into} when #${atMerge} merges.`
+              : atMerge !== null ? includeAfterMerge(into, atMerge)
               : `These changes from ${name} become ${into}'s changes to deploy.`}
           </DialogDescription>
         </DialogHeader>

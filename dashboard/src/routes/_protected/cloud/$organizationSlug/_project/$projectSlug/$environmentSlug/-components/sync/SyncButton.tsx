@@ -16,7 +16,8 @@ import {
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { plural } from "#/lib/plural";
 import { pullRequestQuery } from "#/modules/config-store/store-pull-requests";
-import { closesIn, goesLive, mergeSync, syncButtonState } from "#/modules/config-store/store-sync";
+import { offeredTo } from "#/modules/config-store/store-offers";
+import { closesIn, mergeSync, syncButtonState } from "#/modules/config-store/store-sync";
 import {
   branchQuery, environmentsQuery, fetchStoreView, requireView, servicesQuery, syncQuery,
   useCachedStoreView, useStoreViews, volumesQuery,
@@ -30,7 +31,7 @@ import { SyncDialog } from "./SyncDialog";
 /**
  * A Branch's one control, at the canvas's top right: it says what a Sync into its Parent carries and opens the Sync
  * dialog; ▾ syncs anywhere else in the Project and holds Keep, Shut down and Close. On a PR Environment it syncs into
- * the Destination at the merge, reads "Goes live with #N" once that stands, and ▾ adds the GitHub check and Undo.
+ * the Destination as an offer to include after the merge, says so once offered, and ▾ adds the GitHub check and Undo.
  * Elsewhere it isn't there.
  */
 export function SyncButton() {
@@ -55,7 +56,7 @@ function BranchSync({ params, store, branch, environments }: {
   const name = branch.environment.name;
   const me = environments.find((environment) => environment.name === name);
   const removal = me?.removal ?? null;
-  // A PR Environment's pull request: its Destination, its Conditional Sync there and its GitHub check. Chrome.
+  // A PR Environment's pull request: its Destination, the Sync offered there and its GitHub check. Chrome.
   const pullRequest = useCachedStoreView(params.organizationSlug, branch.pull_request ? pullRequestQuery(branch.pull_request) : null);
   const check = pullRequest?.ok && pullRequest.value.pull_request?.open ? pullRequest.value : null;
   const merge = pullRequest?.ok ? mergeSync(pullRequest.value, name) : null;
@@ -69,7 +70,7 @@ function BranchSync({ params, store, branch, environments }: {
   const others = storeEnvironmentTree(environments).map(({ environment }) => environment.name)
     .filter((other) => other !== name && other !== state.into);
   const shuttable = branch.pull_request !== null;
-  // Takes the synced changes back out of the receiver, or withdraws a Conditional Sync (its id names it too), and
+  // Takes the synced changes back out of the receiver, or drops an offer (its id names it too), and
   // the next Sync offers them again.
   const undo = (sync: SyncId) => writer.commit({ command: "undo_sync", sync });
 
@@ -77,8 +78,8 @@ function BranchSync({ params, store, branch, environments }: {
     setInto(null);
     const action = { label: "Undo", onClick: () => void undo(sync.sync) };
     if (sync.when.kind === "at_merge") {
-      // Nothing is staged in `to` until the merge: the user stays here, where the button now reads "Goes live".
-      toast.success(goesLive(changes, to, sync.when.conditional_sync.pull_request), { action });
+      // Nothing is staged in `to`: it is offered there to include after the merge, and the user stays here.
+      toast.success(offeredTo(to), { action });
       return;
     }
     void navigate(getDashboardDestination({ kind: "environment", ...params, environmentSlug: to }, "architecture"));
@@ -100,7 +101,7 @@ function BranchSync({ params, store, branch, environments }: {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-auto min-w-56">
             <DropdownMenuGroup>
-              {/* A standing Conditional Sync already holds these changes for the merge; Undo below changes it. */}
+              {/* An offer already holds these changes for the merge; Undo below takes it back. */}
               {standing ? null : (
                 <DropdownMenuItem onClick={() => setInto(state.into)}>
                   Sync to {state.into}
@@ -122,7 +123,7 @@ function BranchSync({ params, store, branch, environments }: {
                     </span>
                   </DropdownMenuLabel>
                 ) : null}
-                {/* Withdraws the Conditional Sync: the changes no longer go live with the merge. */}
+                {/* Drops the offer: the Destination no longer has these changes to include. */}
                 {merge && standing ? (
                   <DropdownMenuItem onClick={() => void undo(standing)}>
                     <Undo2Icon />Undo sync to {merge.into}

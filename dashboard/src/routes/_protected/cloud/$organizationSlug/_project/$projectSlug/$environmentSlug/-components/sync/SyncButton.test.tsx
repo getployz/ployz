@@ -47,7 +47,7 @@ const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
   never_synced: [neverSynced("env.STRIPE_KEY")], proposal: null, ...extra,
 });
-/** What a Sync answers: its id, and the Conditional Sync standing for one at the merge. */
+/** What a Sync answers: its id, and the offer for one at the merge. */
 const synced = (atMerge: number | null) => ({ ok: true, value: {
   written: "synced", sync: "sync-1",
   when: atMerge === null ? { kind: "now", staged: [], closing: false }
@@ -224,29 +224,29 @@ it("keeps a kept Branch open after syncing: no Close checkbox", async () => {
 it("syncs a PR Environment into its Destination at the merge, staying put, and Undo withdraws it", async () => {
   const app = open({ branch: branchView({ pull_request: pr142 }), sync: syncView({ at_merge: 142 }), pullRequest: pullRequestView(false) });
   const sync = await dialog();
-  expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
+  expect(sync.getByText("production can include these after #142 merges.")).toBeTruthy();
   // A PR Environment closes with its pull request.
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   fireEvent.change(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
   await waitFor(() => expect(app.success).toHaveBeenCalled());
-  // The value is held for the merge, with the Sync.
+  // The value goes with the offer, for its Include.
   const production = { project: "shop", environment: "production" };
   expect(app.commands()[0]).toMatchObject({
     command: "sync", from: fixApi, into: production, when: null,
     values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
   });
   expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/fix-api");
-  expect(app.success.mock.calls.at(0)?.[0]).toBe("4 changes go live in production when #142 merges");
+  expect(app.success.mock.calls.at(0)?.[0]).toBe("Offered to production");
   // SAFETY: the Sync button's toast action is a label and a click, never a node.
   const action = app.success.mock.calls.at(0)?.[1]?.action as Action | undefined;
   action?.onClick(asTestDouble<MouseEvent<HTMLButtonElement>>()({}));
   await waitFor(() => expect(app.commands()[1]).toEqual({ command: "undo_sync", sync: "sync-1" }));
 });
 
-it("reads Goes live with #N once a Conditional Sync stands, with the GitHub check and Undo in its menu", async () => {
+it("reads Offered once its Sync is offered, with the GitHub check and Undo in its menu", async () => {
   const app = open({ branch: branchView({ pull_request: pr142 }), pullRequest: pullRequestView(true) });
-  expect(await screen.findByRole("button", { name: "Goes live with #142" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Offered" })).toBeTruthy();
   const items = await menu();
   expect(items.getByText("Ready to merge on GitHub")).toBeTruthy();
   expect(items.getByText("3 changes go live with this PR")).toBeTruthy();
@@ -255,7 +255,7 @@ it("reads Goes live with #N once a Conditional Sync stands, with the GitHub chec
   expect(items.queryByRole("menuitem", { name: /^Sync to production/u })).toBeNull();
   expect(items.getByRole("menuitem", { name: "Sync to staging" })).toBeTruthy();
   fireEvent.click(items.getByRole("menuitem", { name: "Undo sync to production" }));
-  // The standing Conditional Sync's id names it.
+  // The offer's Sync id names it.
   await waitFor(() => expect(app.commands()).toEqual([{ command: "undo_sync", sync: "cs" }]));
 });
 

@@ -9,6 +9,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { HistoryIcon, PlusIcon } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "./store-hints";
@@ -27,7 +28,7 @@ import { useVolumeCreator } from "./useVolumeCreator";
 import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
-import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { reviewGroups } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -35,6 +36,7 @@ import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
@@ -215,10 +217,9 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
-  const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
   const groups = reviewGroups(diff, store.services.map(({ service }) => service));
-  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
+  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.some((item) => !item.offered);
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
   return (
@@ -240,8 +241,19 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
           included: diff.included,
           onRemoveIncluded: ({ proposal }) => void writer.commit({ command: "remove_proposal", environment: ref, proposal, version: diff.version }),
           onIncludeNewer: ({ source }) => setIncluding(source.name),
+          onInclude: async ({ proposal }, values) => {
+            try {
+              await writer.commit({ command: "include_proposal", environment: ref, proposal, version: diff.version, values }, ["conflict"]).isPersisted.promise;
+              return [];
+            } catch (error) {
+              if (!(error instanceof StoreRefused) || error.code !== "conflict") return [];
+              const needed = (error.details as { needs_value?: unknown } | null)?.needs_value;
+              if (Array.isArray(needed)) return needed.filter((name): name is string => typeof name === "string");
+              toast.error(error.message);
+              return [];
+            }
+          },
         }}
-        waiting={waiting}
         noServers={noServers}
       />
       {actions.dialog}
