@@ -367,6 +367,107 @@ fn mesh_firewall_policy() {
     assert_connection_denied(&container, "fd00::2", "fdcc::2", MACHINE_API_PORT);
 }
 
+#[test]
+#[ignore = "requires passwordless sudo and Linux network namespaces"]
+fn reapplying_the_firewall_never_drops_admitted_traffic() {
+    sudo(&["-n", "true"]);
+    let namespace = format!("p35-reapply-{}", std::process::id());
+    let _namespaces = Namespaces::new([&namespace]);
+    ns(&namespace, "ip", &["link", "set", "lo", "up"]);
+    ns(&namespace, "iptables", &["-N", "DOCKER-USER"]);
+    ns(&namespace, "iptables", &["-P", "INPUT", "DROP"]);
+    ns(&namespace, "ip6tables", &["-P", "INPUT", "DROP"]);
+    apply_in_namespace(&namespace, "10.210.1.0/24", "fdcc::1");
+
+    let stop = env::temp_dir().join(format!("{namespace}.stop"));
+    let mut probe = Server::start(
+        &namespace,
+        &format!(
+            "import os,socket,sys,threading,time; a,p=sys.argv[1:]; r=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); r.bind((a,int(p))); r.settimeout(.1); got=set(); done=threading.Event()\n\
+def receive():\n while not done.is_set():\n  try: got.add(int(r.recv(16)))\n  except socket.timeout: pass\n\
+t=threading.Thread(target=receive); t.start(); print('READY',flush=True); sent=0\n\
+while not os.path.exists({stop:?}):\n s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.sendto(str(sent).encode(),(a,int(p))); s.close(); sent+=1; time.sleep(.001)\n\
+time.sleep(.3); done.set(); t.join(); print(f'{{len(set(range(sent))-got)}} of {{sent}}',flush=True)"
+        ),
+        "127.0.0.1",
+        51820,
+    );
+    for _ in 0..4 {
+        apply_in_namespace(&namespace, "10.210.1.0/24", "fdcc::1");
+    }
+    ns(
+        &namespace,
+        "iptables",
+        &["-I", "INPUT", "1", "-p", "icmp", "-j", "ACCEPT"],
+    );
+    ns(
+        &namespace,
+        "iptables",
+        &["-t", "nat", "-I", "POSTROUTING", "1", "-j", "RETURN"],
+    );
+    apply_in_namespace(&namespace, "10.210.1.0/24", "fdcc::1");
+    std::fs::write(&stop, "").unwrap();
+    let lost = probe.peer();
+    std::fs::remove_file(&stop).unwrap();
+    assert!(
+        lost.starts_with("0 of "),
+        "lost {lost} datagrams to the mesh port"
+    );
+
+    assert_eq!(
+        rules(&namespace, "filter", "INPUT"),
+        ["-A INPUT -j PLOYZ-INPUT", "-A INPUT -p icmp -j ACCEPT"]
+    );
+    assert_eq!(
+        rules(&namespace, "nat", "POSTROUTING"),
+        [
+            "-A POSTROUTING -s 10.210.1.0/24 -o ployz-wg -j RETURN",
+            "-A POSTROUTING -j RETURN"
+        ]
+    );
+    let jumped = jump_packets(&namespace);
+    apply_in_namespace(&namespace, "10.210.1.0/24", "fdcc::1");
+    assert_eq!(
+        jump_packets(&namespace),
+        jumped,
+        "a converged INPUT jump was replaced"
+    );
+}
+
+fn rules(namespace: &str, table: &str, chain: &str) -> Vec<String> {
+    let output = Command::new("sudo")
+        .args([
+            "-n", "ip", "netns", "exec", namespace, "iptables", "-t", table, "-S", chain,
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with("-A "))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn jump_packets(namespace: &str) -> String {
+    let output = Command::new("sudo")
+        .args([
+            "-n", "ip", "netns", "exec", namespace, "iptables", "-L", "INPUT", "-v", "-x", "-n",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let listing = String::from_utf8(output.stdout).unwrap();
+    let jump = listing
+        .lines()
+        .find(|line| line.contains("PLOYZ-INPUT"))
+        .unwrap();
+    let packets = jump.split_whitespace().next().unwrap().to_owned();
+    assert_ne!(packets, "0", "no traffic crossed the INPUT jump");
+    packets
+}
+
 fn apply_in_namespace(namespace: &str, subnet: &str, management_address: &str) {
     let executable = env::current_exe().unwrap();
     let status = Command::new("sudo")
