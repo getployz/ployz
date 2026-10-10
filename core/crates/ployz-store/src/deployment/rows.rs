@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
     ContainerId, DependencyHealthFailure, ExecutionError, HookFailure, MachineAction, MachineId,
     OperationPhase, OperationRow, OperationStatus, RpcError, ServiceName,
@@ -440,42 +441,50 @@ pub(super) fn of_nodes(
     if !stored
         .nodes
         .iter()
-        .any(|node| matches!(node, TargetNode::Volume { .. }))
+        .any(|node| matches!(node, TargetNode::Volume { .. } | TargetNode::Config { .. }))
     {
         return Ok(nodes);
     }
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     for node in &stored.nodes {
-        let TargetNode::Volume { id, .. } = node else {
-            continue;
+        let id = match node {
+            TargetNode::Service { .. } => continue,
+            TargetNode::Volume { id, .. } => id.as_str(),
+            TargetNode::Config { id, .. } => id.as_str(),
         };
-        let mut rows: BTreeMap<MachineId, ServerRow> = BTreeMap::new();
-        for service in saved.services.iter().filter(|service| {
-            service
+        let mounts = |service: &&SavedServiceIntent| match node {
+            TargetNode::Volume { .. } => service
                 .volume_attachments
                 .iter()
-                .any(|mount| mount.volume_resource_id == id.as_str())
-        }) {
+                .any(|mount| mount.volume_resource_id == id),
+            TargetNode::Config { .. } => service
+                .config_attachments
+                .iter()
+                .any(|mount| mount.config_resource_id == id),
+            TargetNode::Service { .. } => false,
+        };
+        let mut rows: BTreeMap<MachineId, ServerRow> = BTreeMap::new();
+        for service in saved.services.iter().filter(mounts) {
             for (machine, row) in by_service
                 .get(&service.config.private_dns)
                 .into_iter()
                 .flatten()
             {
                 rows.entry(*machine)
-                    .and_modify(|kept| merge_volume_row(kept, row))
+                    .and_modify(|kept| merge_mounting_row(kept, row))
                     .or_insert_with(|| row.clone());
             }
         }
         if !rows.is_empty() {
             let mut rows: Vec<_> = rows.into_values().collect();
             rows.sort_by(|a, b| a.server.cmp(&b.server));
-            nodes.insert(id.as_str().to_owned(), rows);
+            nodes.insert(id.to_owned(), rows);
         }
     }
     Ok(nodes)
 }
 
-fn merge_volume_row(kept: &mut ServerRow, row: &ServerRow) {
+fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
     let priority = |state: &RowState| match state {
         RowState::Failed { .. } => 6,
         RowState::Unknown => 5,

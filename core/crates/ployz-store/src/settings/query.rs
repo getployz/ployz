@@ -5,7 +5,7 @@
 //! `{"secret": true}`: no read shows a secret.
 
 use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
@@ -104,7 +104,8 @@ pub(crate) fn environment(
                     Target::Setting(_)
                     | Target::Source
                     | Target::Exported(_)
-                    | Target::Mount(_) => None,
+                    | Target::Mount(_)
+                    | Target::ConfigMount(_) => None,
                 };
                 settings.push(SettingRow {
                     path: SettingPath::at(&name, target),
@@ -165,6 +166,17 @@ pub(crate) fn environment(
                 Apply::Staged,
             )?;
         }
+        let selected_config = match only {
+            Some(Target::ConfigMount(config)) => Some(config.resolve([&environment.working])?),
+            _ => None,
+        };
+        for (config, dir) in config_mounts(service, &environment.working) {
+            let target = match (only, selected_config) {
+                (Some(target), Some(selected)) if selected.name == config => target.clone(),
+                _ => Target::ConfigMount(config.into()),
+            };
+            row(target, Value::String(dir), Value::Null, Apply::Staged)?;
+        }
     }
     Ok(EnvironmentView {
         never_synced: crate::branch::marked(tx, &environment.summary.id)?
@@ -207,6 +219,13 @@ pub(crate) fn values(
     if !mounts.is_empty() {
         values.insert("mounts".to_owned(), Value::Object(mounts));
     }
+    let configs: Map<String, Value> = config_mounts(service, intent)
+        .into_iter()
+        .map(|(config, dir)| (config.to_string(), Value::String(dir)))
+        .collect();
+    if !configs.is_empty() {
+        values.insert("configs".to_owned(), Value::Object(configs));
+    }
     Ok(values)
 }
 
@@ -224,6 +243,25 @@ pub(crate) fn mounts(
                 .iter()
                 .find(|volume| volume.resource_id == mount.volume_resource_id)?;
             Some((volume.name.clone(), mount.mount_path.clone()))
+        })
+        .collect();
+    mounts.sort();
+    mounts
+}
+
+fn config_mounts(
+    service: &SavedServiceIntent,
+    intent: &SavedEnvironmentIntent,
+) -> Vec<(ConfigName, String)> {
+    let mut mounts: Vec<(ConfigName, String)> = service
+        .config_attachments
+        .iter()
+        .filter_map(|mount| {
+            let config = intent
+                .configs
+                .iter()
+                .find(|config| config.resource_id == mount.config_resource_id)?;
+            Some((config.name.clone(), mount.mount_dir.to_string()))
         })
         .collect();
     mounts.sort();

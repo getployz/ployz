@@ -715,7 +715,9 @@ impl DeployPreviewHandle {
     /// Returns when the preview cannot be encoded as JSON.
     #[napi]
     pub fn payload(&self) -> Result<serde_json::Value> {
-        to_json(self.inner.preview())
+        to_json(&ployz_core::config::redacted_runtime_preview(
+            self.inner.preview().clone(),
+        ))
     }
 
     /// Execute these operations. Illegal after a previous confirm.

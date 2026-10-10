@@ -64,7 +64,6 @@ macro_rules! rpc_catalog {
                 InspectVolume: (inspect_volume, "InspectVolume", InspectVolumeRequest, "inspect_volume", DockerVolume, INSPECT_VOLUME_CAPABILITY, "ployz.volume.inspect.v1", Container),
                 RemoveVolume: (remove_volume, "RemoveVolume", RemoveVolumeRequest, "remove_volume", VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container),
                 InspectVolumeCopy: (inspect_volume_copy, "InspectVolumeCopy", InspectVolumeCopyRequest, "inspect_volume_copy", VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container),
-                AdoptLease: (adopt_lease, "AdoptLease", AdoptLeaseRequest, "adopt_lease", SwitchReply, ADOPT_LEASE_CAPABILITY, "ployz.volume.lease.adopt.v1", Container),
                 Withdraw: (withdraw, "Withdraw", SourceContainerRequest, "withdraw", SwitchReply, WITHDRAW_VOLUME_CAPABILITY, "ployz.volume.withdraw.v1", Container),
                 Freeze: (freeze, "Freeze", SourceContainerRequest, "freeze", SwitchReply, FREEZE_VOLUME_CAPABILITY, "ployz.volume.freeze.v1", Container),
                 HandOver: (hand_over, "HandOver", HandOverRequest, "hand_over", SwitchReply, HAND_OVER_VOLUME_CAPABILITY, "ployz.volume.hand-over.v1", Container),

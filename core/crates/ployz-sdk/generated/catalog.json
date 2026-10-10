@@ -60,6 +60,35 @@
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },
+        "configs": {
+          "additionalProperties": false,
+          "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add a Config with `ployz config add`. Unset unmounts it: the Config and its files stay.",
+          "examples": [
+            {
+              "sentry": "/etc/sentry"
+            }
+          ],
+          "patternProperties": {
+            "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
+              "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers, with no `.` or `..` segment, empty segment or trailing `/`. Unset unmounts it: the Config and its files stay.",
+              "examples": [
+                "/etc/app"
+              ],
+              "minLength": 1,
+              "pattern": "^(/([^/.][^/]*|\\.[^/.][^/]*|\\.\\.[^/]+))+$",
+              "title": "Mount directory",
+              "type": "string",
+              "x-ployz-apply": "staged",
+              "x-ployz-data-loss": false,
+              "x-ployz-secret": false
+            }
+          },
+          "title": "Config mounts",
+          "type": "object",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
         "cpuLimit": {
           "description": "Most vCPUs each replica may use. Unset means no limit.",
           "examples": [

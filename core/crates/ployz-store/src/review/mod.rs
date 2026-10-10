@@ -74,6 +74,10 @@ pub struct NodeChange {
     /// What the change does to Volume data: `deleted` for a deployed Volume it
     /// removes, `kept` for a Service that stops mounting a Volume that stays.
     pub data: Option<DataEffect>,
+    /// For a Config changed in place, the deployed Services mounting it: they restart
+    /// to take its new files.
+    #[serde(default)]
+    pub restarts: Vec<ployz_core::ServiceName>,
 }
 
 /// What a staged change does to data on the Servers.
@@ -130,6 +134,8 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .as_ref()
             .map_or(&environment.working, |saved| &saved.intent),
     ];
+    let mut names = crate::config_item::names_in(&every);
+    names.extend(environment.names());
     let lineage = |node: &ReviewNodeIdentity| {
         every.iter().find_map(|intent| match node.node_type {
             EnvironmentNodeType::Service => intent
@@ -142,6 +148,11 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                 .iter()
                 .find(|volume| volume.resource_id == node.id)
                 .map(|volume| volume.resource_lineage_id.clone()),
+            EnvironmentNodeType::Config => intent
+                .configs
+                .iter()
+                .find(|config| config.resource_id == node.id)
+                .map(|config| config.resource_lineage_id.clone()),
         })
     };
     let name = |node: &ReviewNodeIdentity| {
@@ -152,6 +163,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .map(|service| service.slug.clone());
         services
             .or_else(|| volume_name(&intents, &node.id))
+            .or_else(|| config_name(&intents, &node.id))
             .unwrap_or_default()
     };
     let mut view = DiffView {
@@ -181,13 +193,18 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|(mut row, at)| {
-                        let at = match row.path.strip_prefix("mounts.") {
-                            Some(id) => every
+                        let at = match row.path.split_once('.') {
+                            Some(("mounts", id)) => every
                                 .iter()
                                 .flat_map(|intent| &intent.volumes)
                                 .find(|volume| volume.resource_id == id)
                                 .map(|volume| At::Mount(volume.resource_lineage_id.clone())),
-                            None => at,
+                            Some(("configs", id)) => every
+                                .iter()
+                                .flat_map(|intent| &intent.configs)
+                                .find(|config| config.resource_id == id)
+                                .map(|config| At::ConfigMount(config.resource_lineage_id.clone())),
+                            _ => at,
                         };
                         // A row's Setting is what Discard takes, whichever part of it changed.
                         let setting = match &at {
@@ -199,15 +216,33 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                             row.before = row.before.get("mountPath").cloned().unwrap_or_default();
                             row.after = row.after.get("mountPath").cloned().unwrap_or_default();
                         }
+                        if row.path.starts_with("configs.") {
+                            row.before = row.before.get("mountDir").cloned().unwrap_or_default();
+                            row.after = row.after.get("mountDir").cloned().unwrap_or_default();
+                        }
                         if group.node.node_type == EnvironmentNodeType::Volume {
                             row.path = format!("volumes.{name}.{}", row.path);
+                        } else if group.node.node_type == EnvironmentNodeType::Config {
+                            row.before = crate::config_item::shown_file(row.before, &names);
+                            row.after = crate::config_item::shown_file(row.after, &names);
+                            row.path = format!("configs.@{}.{}", group.node.id, row.path);
                         } else {
+                            row.config_name = row
+                                .path
+                                .strip_prefix("configs.")
+                                .and_then(|id| config_name(&intents, id))
+                                .and_then(|name| ployz_core::ConfigName::parse(&name).ok());
                             row.before = shown(&row.path, row.before);
                             row.after = shown(&row.path, row.after);
                             row.path = match setting {
                                 Some(setting) => format!("{name}.{}", setting.name()),
-                                None => SettingPath::from_core(&name, &row.path, |id| {
-                                    volume_name(&intents, id).unwrap_or_default()
+                                None => SettingPath::from_core(&name, &row.path, |family, id| {
+                                    if family == "configs" {
+                                        config_name(&intents, id)
+                                    } else {
+                                        volume_name(&intents, id)
+                                    }
+                                    .unwrap_or_default()
                                 }),
                             };
                         }
@@ -217,6 +252,12 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     })
                     .collect();
                 let data = data_effect(&group.node, group.lifecycle, &settings, &head.applied);
+                let restarts = restarts(
+                    &group.node,
+                    group.lifecycle,
+                    &environment.working,
+                    &head.applied,
+                )?;
                 Ok(NodeChange {
                     node: group.node,
                     name,
@@ -225,6 +266,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     comparison: group.comparison,
                     settings,
                     data,
+                    restarts,
                 })
             })
             .collect::<Result<_, RpcError>>()?,
@@ -300,6 +342,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             // Renaming it back undoes it: `discard` takes no name path.
             can_restore: false,
             row: None,
+            config_name: None,
         };
         view.total_count += 1;
         match view
@@ -319,6 +362,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
                 comparison: Some(ReviewComparisonRole::Head),
                 settings: vec![row],
                 data: None,
+                restarts: Vec::new(),
             }),
         }
     }
@@ -331,6 +375,14 @@ fn volume_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<Strin
         .flat_map(|intent| &intent.volumes)
         .find(|volume| volume.resource_id == id)
         .map(|volume| volume.name.clone())
+}
+
+fn config_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<String> {
+    intents
+        .iter()
+        .flat_map(|intent| &intent.configs)
+        .find(|config| config.resource_id == id)
+        .map(|config| config.name.to_string())
 }
 
 /// A deployed Volume removed deletes data; a Service removed, or one of its mounts
@@ -359,7 +411,34 @@ fn data_effect(
                     .any(|service| service.id == node.id && !service.volume_attachments.is_empty());
             (detached || removed_with_mounts).then_some(DataEffect::Kept)
         }
+        EnvironmentNodeType::Config => None,
     }
+}
+
+fn restarts(
+    node: &ReviewNodeIdentity,
+    lifecycle: ReviewLifecycleKind,
+    working: &SavedEnvironmentIntent,
+    applied: &SavedEnvironmentIntent,
+) -> Result<Vec<ployz_core::ServiceName>, RpcError> {
+    if node.node_type != EnvironmentNodeType::Config || lifecycle != ReviewLifecycleKind::Update {
+        return Ok(Vec::new());
+    }
+    working
+        .services
+        .iter()
+        .filter(|service| {
+            service
+                .config_attachments
+                .iter()
+                .any(|mount| mount.config_resource_id == node.id)
+                && applied.services.iter().any(|old| old.id == service.id)
+        })
+        .map(|service| {
+            ployz_core::ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))
+        })
+        .collect()
 }
 
 /// Refuse unless `version` still names this review; the refusal carries the fresh

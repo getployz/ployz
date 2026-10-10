@@ -24,6 +24,10 @@ pub enum ChangeKind {
 #[serde(rename_all = "camelCase")]
 pub struct ServiceSettingChange {
     pub path: String,
+    /// The mounted Config's friendly name; its path keeps the exact identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub config_name: Option<crate::ConfigName>,
     pub kind: ChangeKind,
     pub before: Value,
     pub after: Value,
@@ -249,6 +253,7 @@ pub(super) fn change(
         after,
         can_restore,
         row: None,
+        config_name: None,
     };
     (change, at)
 }
@@ -258,7 +263,11 @@ fn compare_related_settings(
     baseline: &Value,
 ) -> Vec<(ServiceSettingChange, Option<At>)> {
     let mut changes = Vec::new();
-    for (family, identity) in [("routes", "id"), ("mounts", "volumeResourceId")] {
+    for (family, identity) in [
+        ("routes", "id"),
+        ("mounts", "volumeResourceId"),
+        ("configs", "configResourceId"),
+    ] {
         let indexed = |value: &Value| -> BTreeMap<String, Value> {
             value[family]
                 .as_array()
@@ -272,10 +281,10 @@ fn compare_related_settings(
         for id in before.keys().chain(after.keys()).collect::<BTreeSet<_>>() {
             let before = before.get(id).unwrap_or(&Value::Null);
             let after = after.get(id).unwrap_or(&Value::Null);
-            let equal = if family == "mounts" {
-                before["mountPath"] == after["mountPath"]
-            } else {
-                before == after
+            let equal = match family {
+                "mounts" => before["mountPath"] == after["mountPath"],
+                "configs" => before["mountDir"] == after["mountDir"],
+                _ => before == after,
             };
             if !equal {
                 let at = (family == "routes").then_some(At::Setting(Setting::Routes));

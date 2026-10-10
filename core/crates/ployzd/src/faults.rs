@@ -176,9 +176,9 @@ mod enabled {
         fn fault_points_parse_their_env_form() {
             for (value, fault) in [
                 (
-                    "delay-rpc:AdoptLease:30",
+                    "delay-rpc:Freeze:30",
                     FaultPoint::DelayRpc {
-                        verb: "AdoptLease".into(),
+                        verb: "Freeze".into(),
                         secs: 30,
                     },
                 ),
@@ -208,16 +208,16 @@ mod enabled {
             for value in [
                 "",
                 "delay-rpc",
-                "delay-rpc:AdoptLease",
-                "delay-rpc:AdoptLease:soon",
+                "delay-rpc:Freeze",
+                "delay-rpc:Freeze:soon",
                 "delay-rpc::3",
                 "kill-daemon",
-                "kill-daemon:AdoptLease:extra",
+                "kill-daemon:Freeze:extra",
                 "kill-after-record",
                 "hold-task:Promote",
                 "hold-task:Promote:later",
                 "busy-mount:data",
-                "unanswered:AdoptLease",
+                "unanswered:Freeze",
                 "explode",
             ] {
                 assert!(value.parse::<FaultPoint>().is_err(), "{value:?}");

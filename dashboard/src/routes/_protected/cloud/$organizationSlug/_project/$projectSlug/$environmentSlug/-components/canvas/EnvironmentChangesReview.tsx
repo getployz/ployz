@@ -6,7 +6,7 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
-import { plural } from "#/lib/plural";
+import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
 
@@ -98,6 +98,12 @@ function changeSections(groups: readonly ChangeGroup[], originFor: EnvironmentCh
 
 function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, noteFor, neverSyncFor, originFor }: EnvironmentChangesReviewProps) {
   const sections = changeSections(groups, originFor);
+  const firstConfigLines = new Map<string, Line>();
+  for (const { lines } of sections) {
+    for (const line of lines) {
+      if (line.group.nodeType === "config" && !firstConfigLines.has(line.group.nodeId)) firstConfigLines.set(line.group.nodeId, line);
+    }
+  }
   // The last change gone, nothing is left to review.
   const leaving = (last: boolean, leave: () => void) => () => {
     if (last) onClose();
@@ -111,13 +117,21 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
         {title ? <h3 className="font-medium">{title}</h3> : null}
         {origin ? <p className="text-muted-foreground">{origin.description}</p> : null}
         <ul>
-          {lines.map(({ group, row }) => {
+          {lines.map((line) => {
+            const { group, row } = line;
+            const firstConfig = firstConfigLines.get(group.nodeId) === line;
+            const restarts = firstConfig && group.restarts.length ? (
+              <p className="text-muted-foreground">Deploying {group.nodeName} restarts {listNames(group.restarts)}.</p>
+            ) : null;
             const discardNode = group.canDiscard ? leaving(groups.length === 1, () => onDiscardNode(group)) : undefined;
             if (!row) {
               const kind = nodeKinds[group.lifecycle];
               return (
-                <ChangeLine key={group.discardPath} kind={kind} label={group.nodeName} onDiscard={discardNode}>
+                <ChangeLine key={group.discardPath} kind={kind} label={group.nodeName}
+                  onDiscard={firstConfig ? undefined : discardNode}
+                  discardNode={firstConfig && discardNode ? { name: group.nodeName, run: discardNode } : undefined}>
                   <p className={cn("truncate", kindText[kind])}>{group.nodeName} · {nodeWords[group.lifecycle]}</p>
+                  {restarts}
                 </ChangeLine>
               );
             }
@@ -125,14 +139,16 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
             const note = noteFor?.(row);
             return (
               <ChangeLine key={row.changeKey} kind={row.kind} label={`${group.nodeName} ${row.label}`}
-                value={<Value kind={row.kind} before={row.currentValue} after={row.newValue} />}
+                value={row.configFile ? undefined : <Value kind={row.kind} before={row.currentValue} after={row.newValue} />}
                 onDiscard={row.canDiscard ? leaving(totalChanges === 1, () => onDiscardRow(group, row.path)) : undefined}
-                discardNode={row.canDiscard ? undefined : discardNode && { name: group.nodeName, run: discardNode }}
+                discardNode={(!row.canDiscard || firstConfig) && discardNode ? { name: group.nodeName, run: discardNode } : undefined}
                 onNeverSync={neverSync && leaving(totalChanges === 1, neverSync)}>
                 <p className="flex min-w-0 items-baseline gap-2">
                   <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
                 </p>
+                {restarts}
+                {row.configFile ? <ConfigFileValue {...row.configFile} /> : null}
                 {note ? <div className="text-muted-foreground">{note}</div> : null}
               </ChangeLine>
             );
@@ -155,7 +171,6 @@ const kindMarks = {
 /** One change: its kind's marker, what changed, the value on the right, and ⋯. */
 function ChangeLine({ kind, label, value, onDiscard, discardNode, onNeverSync, children }: {
   kind: ChangeKind; label: string; value?: ReactNode; onDiscard?: () => void;
-  /** This setting can't go alone: Discard takes its whole node. */
   discardNode?: { name: string; run: () => void };
   onNeverSync?: () => void; children: ReactNode;
 }) {
@@ -179,6 +194,29 @@ function ChangeLine({ kind, label, value, onDiscard, discardNode, onNeverSync, c
         </DropdownMenu>
       ) : <span />}
     </li>
+  );
+}
+
+function ConfigFileValue({ before, after }: NonNullable<ChangeRow["configFile"]>) {
+  return (
+    <div className="ph-no-capture flex flex-col gap-2 py-2">
+      {([{ label: "Before", file: before, other: after, color: "text-destructive" },
+        { label: "After", file: after, other: before, color: before ? "text-changed-deep" : "text-success" }]).map(({ label, file, other, color }) => file === null ? null : (
+        <div key={label} className="min-w-0">
+          <p className="flex flex-wrap gap-x-3 text-xs">
+            <span className="text-muted-foreground">{label}</span>
+            {(["mode", "uid", "gid"] as const).map((key) => (
+              <span key={key} className={cn("font-mono", other && file[key] !== other[key] ? color : "text-muted-foreground")}>
+                {key === "mode" ? "Mode" : key.toUpperCase()} {file[key]}
+              </span>
+            ))}
+          </p>
+          <pre className={cn("max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-xs", color)}>
+            {file.content === "" ? <span className="text-muted-foreground">Empty file</span> : file.content}
+          </pre>
+        </div>
+      ))}
+    </div>
   );
 }
 

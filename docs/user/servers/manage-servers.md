@@ -177,6 +177,11 @@ If the server is unreachable, remove it without resetting it. This is CLI-only f
 ployz server rm web-2 --no-reset --confirm web-2
 ```
 
+A server removed this way doesn't know it was removed. If it comes back, its services may still be
+running on its copy of a volume. Ployz no longer uses that copy. Anything written to it after the
+removal stays on that server and never reaches your other servers. The volume's copy on your
+current servers is the real one.
+
 `sudo systemctl stop ployz` stops Ployz's control of the server; your services, their private DNS
 and the server's place in the cluster keep running. To stop everything, run `sudo ployz-uninstall`.
 

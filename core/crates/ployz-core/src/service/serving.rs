@@ -64,12 +64,20 @@ pub fn serving_containers<'serving>(
         else {
             continue;
         };
-        let selected = newest.as_observation().resolved_spec.serving_shape();
+        let selected = newest
+            .as_observation()
+            .resolved_spec
+            .published_serving_shape();
         for container in members {
             let Some(address) = container.traffic_address() else {
                 continue;
             };
-            if container.as_observation().resolved_spec.serving_shape() == selected {
+            if container
+                .as_observation()
+                .resolved_spec
+                .published_serving_shape()
+                == selected
+            {
                 serving.push(ServingContainer { container, address });
             }
         }
@@ -360,6 +368,63 @@ mod tests {
                 .map(super::ServingContainer::as_observation)
                 .collect::<Vec<_>>(),
             vec![&failing_v4]
+        );
+    }
+
+    #[test]
+    fn serving_containers_keeps_trunk_and_head_rows_of_one_config_service() {
+        let service_id = ServiceId::parse("a".repeat(32)).unwrap();
+        let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+            "service_id": service_id,
+            "name": "api",
+            "mode": { "mode": "replicated", "replicas": 2 },
+            "container": {
+                "image": "api",
+                "pull_policy": "missing",
+                "config_mounts": [{ "config_name": "settings", "target": "/etc/settings.conf" }]
+            },
+            "configs": [{ "name": "settings", "content": b"token=config-secret".to_vec() }]
+        }))
+        .unwrap();
+        let healthy = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        };
+        let mut trunk_row = serving_observation(
+            '1',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            healthy.clone(),
+            Some([10, 210, 1, 2]),
+        );
+        trunk_row
+            .try_update(|parts| {
+                parts.created_at_unix_nanos = 1;
+                parts.resolved_spec = spec.clone();
+            })
+            .unwrap();
+        let mut head_row = serving_observation(
+            '2',
+            &service_id,
+            ContainerKind::ServiceContainer,
+            healthy,
+            Some([10, 210, 1, 3]),
+        );
+        head_row
+            .try_update(|parts| {
+                parts.created_at_unix_nanos = 2;
+                parts.resolved_spec = spec;
+                parts.resolved_spec.mount_graph.redact_config_content();
+            })
+            .unwrap();
+
+        let containers = service_containers([trunk_row.clone(), head_row.clone()]);
+
+        assert_eq!(
+            serving_containers(&containers)
+                .into_iter()
+                .map(super::ServingContainer::as_observation)
+                .collect::<Vec<_>>(),
+            vec![&trunk_row, &head_row]
         );
     }
 

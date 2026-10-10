@@ -126,6 +126,20 @@ fn service() -> Value {
             "x-ployz-data-loss": false,
         }),
     );
+    properties.insert(
+        "configs".to_owned(),
+        json!({
+            "title": "Config mounts",
+            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add a Config with `ployz config add`. Unset unmounts it: the Config and its files stay.",
+            "type": "object",
+            "patternProperties": { NODE_NAME: config_mount() },
+            "additionalProperties": false,
+            "examples": [{ "sentry": "/etc/sentry" }],
+            "x-ployz-apply": "staged",
+            "x-ployz-secret": false,
+            "x-ployz-data-loss": false,
+        }),
+    );
     json!({
         "title": "Service",
         "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
@@ -149,9 +163,24 @@ fn mount() -> Value {
     })
 }
 
+fn config_mount() -> Value {
+    json!({
+        "title": "Mount directory",
+        "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers, with no `.` or `..` segment, empty segment or trailing `/`. Unset unmounts it: the Config and its files stay.",
+        "type": "string",
+        "pattern": "^(/([^/.][^/]*|\\.[^/.][^/]*|\\.\\.[^/]+))+$",
+        "minLength": 1,
+        "examples": ["/etc/app"],
+        "x-ployz-apply": "staged",
+        "x-ployz-secret": false,
+        "x-ployz-data-loss": false,
+    })
+}
+
 fn target(target: &Target) -> Value {
     match target {
         Target::Mount(_) => mount(),
+        Target::ConfigMount(_) => config_mount(),
         Target::Setting(one) => setting(*one),
         Target::Source => json!({
             "title": "Source",
@@ -223,6 +252,10 @@ mod tests {
             (
                 "web.mounts.data".to_owned(),
                 schema(Some("web.mounts.data")).unwrap(),
+            ),
+            (
+                "web.configs.sentry".to_owned(),
+                schema(Some("web.configs.sentry")).unwrap(),
             ),
         ];
         let properties = service["properties"].as_object().unwrap().clone();
@@ -328,6 +361,33 @@ mod tests {
             explain("web.replicas").unwrap().path.to_string(),
             "web.replicas"
         );
+    }
+
+    #[test]
+    fn the_config_mount_pattern_admits_exactly_the_directories_the_store_does() {
+        let schema = schema(Some("web.configs.sentry")).unwrap();
+        let pattern = regex::Regex::new(schema["pattern"].as_str().unwrap()).unwrap();
+        for dir in [
+            "/etc/sentry",
+            "/.config",
+            "/etc/..d",
+            "/a/.../b",
+            "/",
+            "/etc/",
+            "/etc//a",
+            "/etc/./a",
+            "/etc/../a",
+            "/.",
+            "/..",
+            "etc",
+            "",
+        ] {
+            assert_eq!(
+                pattern.is_match(dir),
+                ployz_core::config::ConfigAttachment::is_canonical_dir(dir),
+                "{dir:?}"
+            );
+        }
     }
 
     #[test]

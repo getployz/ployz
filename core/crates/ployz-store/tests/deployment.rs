@@ -7,16 +7,18 @@
 
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
-    DeployOutcome, DeployPreview, ExecutionError, OperationRow, RpcError, RpcErrorCode, ServiceName,
+    ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, OperationRow,
+    RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, Deploy,
-    DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
+    Actor, Admit, AttachConfig, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore,
+    ConfigsQuery, CreateConfig, CreateProject, CreateService, DeleteConfig, Deploy, DeploymentId,
+    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DetachConfig, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
-    PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
-    Revision, RowPhase, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
-    ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View,
-    Written,
+    PlanQuery, Principal, ProjectId, ProjectName, PutConfigFile, Query, RemoveService,
+    RenameConfig, RenameService, Retry, Revision, RowPhase, RowState, RowTracker, RunEvidence,
+    RunnerId, ServerRow, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Start,
+    Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -105,6 +107,22 @@ fn changed(store: &ConfigStore, who: &Actor) -> Vec<String> {
         .collect()
 }
 
+fn configs(store: &ConfigStore, who: &Actor) -> Vec<(String, bool, Option<ReviewLifecycleKind>)> {
+    store
+        .read(who, &ConfigsQuery::default())
+        .unwrap()
+        .configs
+        .into_iter()
+        .map(|listing| {
+            (
+                listing.config.name.to_string(),
+                listing.deployed,
+                listing.change,
+            )
+        })
+        .collect()
+}
+
 fn set_replicas(store: &ConfigStore, who: &Actor, service: &str, replicas: u8) {
     store
         .write(
@@ -123,7 +141,11 @@ fn set_replicas(store: &ConfigStore, who: &Actor, service: &str, replicas: u8) {
 
 /// A distinct operation per Service, attributed to it.
 fn operation(service: &str) -> Value {
-    let container = if service == "web" { "a" } else { "b" };
+    let container = match service {
+        "web" => "a",
+        "worker" => "c",
+        _ => "b",
+    };
     json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": container.repeat(64)})
 }
 
@@ -258,6 +280,592 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
             ("api".to_owned(), NodeStatus::Unchanged)
         ]
     );
+}
+
+fn sentry(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    put_sentry(store, who, "url: http://api:${{ api.PORT }}\n");
+}
+
+fn put_sentry(store: &ConfigStore, who: &Actor, content: &str) {
+    store
+        .write(
+            who,
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                file: ConfigFileName::parse("config.yml").unwrap(),
+                content: content.into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_config_deploys_with_the_services_that_mount_it() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    assert!(changed(&store, &who).is_empty());
+    let a = runner("runner-a");
+    let claimed = store.claim(&id(1), &a).unwrap();
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(
+        json!(web.configs()),
+        json!([{"name": "sentry/config.yml", "content": b"url: http://api:8080\n".to_vec()}])
+    );
+    assert_eq!(
+        json!(web.config_mounts()),
+        json!([{"config_name": "sentry/config.yml", "target": "/etc/sentry/config.yml",
+            "uid": 0, "gid": 0, "mode": 0o444}])
+    );
+    let web_name = ServiceName::parse("web").unwrap();
+    assert_eq!(
+        claimed.intent.dependencies()[&web_name][0].service.as_str(),
+        "api"
+    );
+    assert!(claimed.deployment.warnings.is_empty());
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let sentry_is = |n: u8| {
+        nodes(&store, &who, n)
+            .into_iter()
+            .find(|(name, _)| name == "sentry")
+            .map(|(_, outcome)| outcome)
+    };
+    assert_eq!(sentry_is(1), Some(NodeStatus::Pending));
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), false, None)]);
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(sentry_is(1), Some(NodeStatus::Deployed));
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
+    assert!(
+        changed(&store, &who).is_empty(),
+        "Applied State holds Config and mount"
+    );
+
+    admit(&store, &who, 2, &["api"], None).unwrap();
+    assert_eq!(sentry_is(2), None);
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&[])))
+        .unwrap();
+    store.record(&id(2), &a, succeeded(&[])).unwrap();
+
+    put_sentry(&store, &who, "url: changed\n");
+    admit(&store, &who, 3, &[], None).unwrap();
+    store.claim(&id(3), &a).unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(3),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("api")],
+                    "failed": {"type": "operation", "operation": operation("web"), "error": {
+                        "type": "machine", "action": "RemoveContainer",
+                        "error": {"code": "internal", "message": "busy", "details": {}}
+                    }},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(sentry_is(3), Some(NodeStatus::Failed));
+    assert_eq!(changed(&store, &who), ["sentry"]);
+
+    store
+        .write(
+            &who,
+            &DetachConfig {
+                environment: EnvironmentRef::default(),
+                service: web_name.clone(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 4, &[], None).unwrap();
+    assert!(changed(&store, &who).is_empty());
+    store.claim(&id(4), &a).unwrap();
+    store
+        .record(&id(4), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    assert_eq!(sentry_is(4), Some(NodeStatus::Pending));
+    store.record(&id(4), &a, succeeded(&["web"])).unwrap();
+    assert_eq!(sentry_is(4), Some(NodeStatus::Removed));
+    assert!(changed(&store, &who).is_empty());
+    assert!(configs(&store, &who).is_empty());
+}
+
+#[test]
+fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &RenameConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                name: ConfigName::parse("errors").unwrap(),
+            },
+        )
+        .unwrap();
+    for (file, content) in [
+        ("config.yml", "url: changed\n"),
+        ("extra.yml", "on: true\n"),
+    ] {
+        store
+            .write(
+                &who,
+                &PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: ConfigName::parse("errors").unwrap(),
+                    file: ConfigFileName::parse(file).unwrap(),
+                    content: content.into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    }
+    let rows: Vec<(String, bool)> = diff(&store, &who)
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .map(|row| (row.path.clone(), row.can_restore))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "configs.@00000000-0000-4000-8000-000000000009.name".to_owned(),
+                true
+            ),
+            (
+                "configs.@00000000-0000-4000-8000-000000000009.files.config.yml".to_owned(),
+                true
+            ),
+            (
+                "configs.@00000000-0000-4000-8000-000000000009.files.extra.yml".to_owned(),
+                true
+            ),
+        ]
+    );
+    for (path, _) in &rows {
+        assert_eq!(&SettingPath::parse(path).unwrap().to_string(), path);
+    }
+    let discard = |path: &str| {
+        store.write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse(path).unwrap()),
+                version: None,
+            },
+        )
+    };
+    discard(&rows[2].0).unwrap();
+    discard(&rows[1].0).unwrap();
+    assert_eq!(changed(&store, &who), ["errors"], "the rename stays staged");
+    discard(&rows[0].0).unwrap();
+    assert!(diff(&store, &who).changes.is_empty());
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
+    assert_eq!(
+        SettingPath::parse("configs.sentry.mode").unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
+}
+
+#[test]
+fn a_config_deleted_while_its_deploy_is_in_flight_lists_as_a_delete() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DetachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    let delete = Some(ReviewLifecycleKind::Delete);
+    assert_eq!(
+        configs(&store, &who),
+        [("sentry".to_owned(), false, delete)]
+    );
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, delete)]);
+}
+
+fn shared_sentry(store: &ConfigStore, who: &Actor) {
+    sentry(store, who);
+    put_sentry(store, who, "value: old\n");
+    store
+        .write(
+            who,
+            &AttachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+                config: ConfigName::parse("sentry").unwrap(),
+                dir: "/etc/sentry".into(),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn an_existing_shared_config_keeps_its_edit_after_a_mounter_fails() {
+    let (store, who) = shop();
+    shared_sentry(&store, &who);
+    backend::deploy(&store, &who, "production", 1);
+    put_sentry(&store, &who, "value: new\n");
+    admit(&store, &who, 2, &[], None).unwrap();
+    fail_api(&store, 2);
+
+    assert_eq!(changed(&store, &who), ["sentry"]);
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Failed),
+            ("sentry".to_owned(), NodeStatus::Failed),
+        ]
+    );
+}
+
+#[test]
+fn an_existing_shared_config_waits_for_pending_mounters() {
+    let (store, who) = shop();
+    shared_sentry(&store, &who);
+    backend::deploy(&store, &who, "production", 1);
+    put_sentry(&store, &who, "value: new\n");
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Pending),
+            ("sentry".to_owned(), NodeStatus::Pending),
+        ]
+    );
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(changed(&store, &who), ["sentry"]);
+}
+
+#[test]
+fn a_shared_configs_outcome_follows_its_mounters_when_an_unrelated_service_fails() {
+    for confirmed_early in [false, true] {
+        for (completed, unexecuted, expected) in [
+            (vec!["web", "api"], vec![], NodeStatus::Deployed),
+            (vec!["web"], vec!["api"], NodeStatus::NotAttempted),
+        ] {
+            let (store, who) = shop();
+            shared_sentry(&store, &who);
+            store
+                .write(
+                    &who,
+                    &CreateService {
+                        id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005")
+                            .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ServiceName::parse("worker").unwrap(),
+                        image: Some("nginx:1".into()),
+                        template: None,
+                    },
+                )
+                .unwrap();
+            backend::deploy(&store, &who, "production", 1);
+            put_sentry(&store, &who, "value: new\n");
+            admit(&store, &who, 2, &[], None).unwrap();
+            let a = runner("runner-a");
+            store.claim(&id(2), &a).unwrap();
+            store
+                .record(
+                    &id(2),
+                    &a,
+                    RunEvidence::Prepared(preview(&["web", "api", "worker"])),
+                )
+                .unwrap();
+            if confirmed_early {
+                store
+                    .record(
+                        &id(2),
+                        &a,
+                        RunEvidence::Confirmed(
+                            completed
+                                .iter()
+                                .map(|name| ServiceName::parse(*name).unwrap())
+                                .collect(),
+                        ),
+                    )
+                    .unwrap();
+            }
+            store
+                .record(
+                    &id(2),
+                    &a,
+                    RunEvidence::Executed {
+                        progress: Vec::new(),
+                        outcome: Box::new(outcome(json!({
+                            "type": "failed",
+                            "completed": completed.iter().map(|name| operation(name)).collect::<Vec<_>>(),
+                            "failed": {"type": "operation", "operation": operation("worker"),
+                                "error": {"type": "cancelled"}},
+                            "unexecuted": unexecuted.iter().map(|name| operation(name)).collect::<Vec<_>>()
+                        }))),
+                        removed: Vec::new(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(status(&store, &who, 2), DeploymentStatus::Failed);
+            assert_eq!(
+                nodes(&store, &who, 2)
+                    .into_iter()
+                    .find(|(name, _)| name == "sentry")
+                    .unwrap()
+                    .1,
+                expected,
+            );
+            let expected_changes: &[&str] = if expected == NodeStatus::Deployed {
+                &[]
+            } else {
+                &["sentry"]
+            };
+            assert_eq!(changed(&store, &who), expected_changes);
+        }
+    }
+}
+
+#[test]
+fn a_fresh_shared_config_keeps_a_confirmed_mount_valid_when_its_sibling_fails() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    shared_sentry(&store, &who);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"),
+                        "error": {"type": "cancelled"}},
+                    "unexecuted": []
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(configs(&store, &who), [("sentry".to_owned(), true, None)]);
+    assert_eq!(changed(&store, &who), ["api"]);
+    let plan = store.read(&who, &PlanQuery::default()).unwrap();
+    assert_eq!(plan.changes[0].name, "api");
+}
+
+#[test]
+fn a_narrowed_deploy_leaves_a_shared_config_staged_until_every_mounter_redeploys() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    store
+        .write(
+            &who,
+            &AttachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("api").unwrap(),
+                config: ConfigName::parse("sentry").unwrap(),
+                dir: "/etc/sentry".into(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("unmounted").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    let a = runner("runner-a");
+    let deploy = |n: u8, services: &[&str], ran: &[&str]| {
+        admit(&store, &who, n, services, None).unwrap();
+        let claimed = store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(ran)))
+            .unwrap();
+        store.record(&id(n), &a, succeeded(ran)).unwrap();
+        claimed
+    };
+    let claimed = deploy(1, &[], &["web", "api"]);
+    assert!(!claimed.input.to_string().contains("unmounted"));
+    assert!(changed(&store, &who).is_empty());
+
+    put_sentry(&store, &who, "url: changed\n");
+    let restarts = |changes: Vec<ployz_store::NodeChange>| -> Vec<(String, Vec<String>)> {
+        changes
+            .into_iter()
+            .map(|change| {
+                let services = change.restarts.iter().map(ToString::to_string).collect();
+                (change.name, services)
+            })
+            .collect()
+    };
+    assert_eq!(
+        restarts(diff(&store, &who).changes),
+        [(
+            "sentry".to_owned(),
+            vec!["web".to_owned(), "api".to_owned()]
+        )]
+    );
+    let plan = |services: &[&str]| {
+        let plan: ployz_store::PlanView = store
+            .read(
+                &who,
+                &PlanQuery {
+                    services: services
+                        .iter()
+                        .map(|name| ServiceName::parse(*name).unwrap())
+                        .collect(),
+                    ..PlanQuery::default()
+                },
+            )
+            .unwrap();
+        restarts(plan.changes)
+    };
+    assert_eq!(
+        plan(&["web"]),
+        [("sentry".to_owned(), vec!["web".to_owned()])],
+        "api keeps the old file, so only web restarts"
+    );
+    deploy(2, &["web"], &["web"]);
+    assert!(
+        !nodes(&store, &who, 2)
+            .iter()
+            .any(|(name, _)| name == "sentry"),
+        "api still runs the old file"
+    );
+    assert_eq!(changed(&store, &who), ["sentry"]);
+
+    deploy(3, &[], &["web", "api"]);
+    assert!(changed(&store, &who).is_empty());
+
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000011").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("fresh").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/fresh".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let fresh = diff(&store, &who)
+        .changes
+        .into_iter()
+        .find(|change| change.name == "fresh")
+        .unwrap();
+    assert_eq!(fresh.lifecycle, ReviewLifecycleKind::Create);
+    assert!(fresh.restarts.is_empty(), "a new Config restarts nothing");
 }
 
 #[test]
@@ -718,34 +1326,52 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
 }
 
 #[test]
-fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
-    for api_status in [
-        json!({"type": "completed"}),
-        json!({"type": "pending"}),
-        waiting(1_000),
-    ] {
+fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
+    for (resource, api_status) in ["data", "sentry"].into_iter().flat_map(|resource| {
+        [
+            json!({"type": "completed"}),
+            json!({"type": "pending"}),
+            waiting(1_000),
+        ]
+        .map(|status| (resource, status))
+    }) {
         let api_finished = api_status["type"] == "completed";
         let (store, who) = shop();
-        store
-            .write(
-                &who,
-                &ployz_store::CreateVolume {
-                    id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005")
-                        .unwrap(),
-                    environment: EnvironmentRef::default(),
-                    name: ployz_store::VolumeName::parse("data").unwrap(),
-                    storage: ployz_core::config::VolumeKind::Docker {},
-                    shared_writes: true,
-                    mounts: ["web", "api"]
-                        .into_iter()
-                        .map(|service| ployz_store::Mount {
-                            service: ServiceName::parse(service).unwrap(),
-                            path: "/data".into(),
-                        })
-                        .collect(),
-                },
-            )
-            .unwrap();
+        if resource == "data" {
+            store
+                .write(
+                    &who,
+                    &ployz_store::CreateVolume {
+                        id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005")
+                            .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ployz_store::VolumeName::parse("data").unwrap(),
+                        storage: ployz_core::config::VolumeKind::Docker {},
+                        shared_writes: true,
+                        mounts: ["web", "api"]
+                            .into_iter()
+                            .map(|service| ployz_store::Mount {
+                                service: ServiceName::parse(service).unwrap(),
+                                path: "/data".into(),
+                            })
+                            .collect(),
+                    },
+                )
+                .unwrap();
+        } else {
+            sentry(&store, &who);
+            store
+                .write(
+                    &who,
+                    &AttachConfig {
+                        environment: EnvironmentRef::default(),
+                        service: ServiceName::parse("api").unwrap(),
+                        config: ConfigName::parse("sentry").unwrap(),
+                        dir: "/etc/sentry".into(),
+                    },
+                )
+                .unwrap();
+        }
         admit(&store, &who, 1, &[], None).unwrap();
         let a = runner("runner-a");
         store.claim(&id(1), &a).unwrap();
@@ -780,7 +1406,7 @@ fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
             .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
             .unwrap();
         let serialized = serde_json::to_value(&deployment).unwrap();
-        for name in ["web", "data"] {
+        for name in ["web", resource] {
             let node = serialized["nodes"]
                 .as_array()
                 .unwrap()
@@ -817,7 +1443,7 @@ fn volume_rows_keep_distinct_machines_and_failed_mounting_services() {
             );
         }
         let view = rows(&store, &who, 1);
-        let volume = &view.iter().find(|(name, _)| name == "data").unwrap().1;
+        let volume = &view.iter().find(|(name, _)| name == resource).unwrap().1;
         assert_eq!(volume.len(), 2, "Machine names are not identities");
         assert!(volume.iter().all(|row| row.server == "same-name"));
         assert!(volume.iter().any(
@@ -2053,4 +2679,279 @@ fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
     );
     // web is in Applied State: only api is still to deploy.
     assert_eq!(changed(&store, &who), ["api"]);
+}
+
+fn rewrite_run(url: &str, n: u8, rewrite: impl FnOnce(&mut Value)) {
+    let id = id(n);
+    let select = "SELECT run FROM config_deployment WHERE id = ";
+    let update = "UPDATE config_deployment SET run = ";
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            let db = rusqlite::Connection::open(path).unwrap();
+            let text: String = db
+                .query_row(&format!("{select}?1"), [id.as_str()], |row| row.get(0))
+                .unwrap();
+            let mut run = serde_json::from_str(&text).unwrap();
+            rewrite(&mut run);
+            db.execute(
+                &format!("{update}?1 WHERE id = ?2"),
+                [run.to_string().as_str(), id.as_str()],
+            )
+            .unwrap();
+        }
+        None => {
+            let mut db = postgres::Client::connect(url, postgres::NoTls).unwrap();
+            let text: String = db
+                .query_one(&format!("{select}$1"), &[&id.as_str()])
+                .unwrap()
+                .get(0);
+            let mut run = serde_json::from_str(&text).unwrap();
+            rewrite(&mut run);
+            db.execute(
+                &format!("{update}$1 WHERE id = $2"),
+                &[&run.to_string(), &id.as_str()],
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_preview_recorded_with_hook_environment_still_matches_its_replay_and_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let run_web = json!({
+        "type": "run_container", "machine_id": "a".repeat(32), "skip_health_monitor": false,
+        "spec": {
+            "service_id": "c".repeat(32), "name": "web", "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "nginx:1", "pull_policy": "missing"},
+            "pre_deploy": {"command": ["migrate"], "environment": {"DATABASE_URL": "hook-secret"}}
+        }
+    });
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{"index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+            "operation": run_web, "status": {"type": "pending"}}],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview.clone()))
+        .unwrap();
+    rewrite_run(&url, 1, |run| {
+        run["preview"]["operations"][0]["operation"]["spec"]["pre_deploy"]["environment"] =
+            json!({"DATABASE_URL": "hook-secret"});
+    });
+
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview))
+        .unwrap();
+    let executed = store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({"type": "success", "completed": [run_web]}))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(executed.status, DeploymentStatus::Applied);
+}
+
+#[test]
+fn deleted_config_discard_does_not_target_same_name_replacement() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    let query = |selector: &str| ployz_store::ConfigItemQuery {
+        environment: EnvironmentRef::default(),
+        config: ployz_store::ConfigRef::parse(selector).unwrap(),
+    };
+    let old = store.read(&who, &query("sentry")).unwrap();
+    let old_selector = format!("@{}", old.config.config.id);
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    let replacement = ConfigId::parse("00000000-0000-4000-8000-000000000010").unwrap();
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: replacement.clone(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![],
+            },
+        )
+        .unwrap();
+    put_sentry(&store, &who, "REPLACEMENT_TEXT_MUST_SURVIVE");
+    let before = store.read(&who, &ConfigsQuery::default()).unwrap();
+    assert_eq!(
+        before
+            .configs
+            .iter()
+            .filter(|c| c.config.name.as_str() == "sentry")
+            .count(),
+        2
+    );
+    let replacement_before = store.read(&who, &query("sentry")).unwrap();
+    assert_eq!(replacement_before.config.config.id, replacement);
+    assert_eq!(
+        store.read(&who, &query(&old_selector)).unwrap().contents,
+        old.contents
+    );
+    let discard = |path: &str| {
+        store.write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse(path).unwrap()),
+                version: None,
+            },
+        )
+    };
+    assert_eq!(
+        discard("configs.sentry").unwrap_err().code,
+        RpcErrorCode::Ambiguous
+    );
+    assert_eq!(
+        discard(&format!("configs.{old_selector}"))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(store.read(&who, &ConfigsQuery::default()).unwrap(), before);
+    assert_eq!(
+        store.read(&who, &query("sentry")).unwrap(),
+        replacement_before
+    );
+    let missing = "@00000000-0000-4000-8000-000000000099";
+    assert_eq!(
+        store.read(&who, &query(missing)).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+    discard(&format!("configs.@{replacement}")).unwrap();
+    assert_eq!(
+        store
+            .read(&who, &query(&format!("@{replacement}")))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    discard(&format!("configs.{old_selector}")).unwrap();
+    assert_eq!(
+        store.read(&who, &query(&old_selector)).unwrap().contents,
+        old.contents
+    );
+}
+
+#[test]
+fn discard_config_mount_preserves_same_name_replacement() {
+    let (store, who) = shop();
+    sentry(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &DeleteConfig {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    let replacement = ConfigId::parse("00000000-0000-4000-8000-000000000010").unwrap();
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: replacement.clone(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/replacement".into(),
+                }],
+            },
+        )
+        .unwrap();
+    put_sentry(&store, &who, "REPLACEMENT_TEXT_MUST_SURVIVE");
+    let query = ployz_store::ConfigItemQuery {
+        environment: EnvironmentRef::default(),
+        config: replacement.clone().into(),
+    };
+    let before = store.read(&who, &query).unwrap();
+    let review = diff(&store, &who);
+    let web = review
+        .changes
+        .iter()
+        .find(|change| change.name == "web")
+        .unwrap();
+    let removed = web
+        .settings
+        .iter()
+        .find(|row| row.before == json!("/etc/sentry") && row.after.is_null())
+        .unwrap();
+    let result = store.write(
+        &who,
+        &Discard {
+            environment: EnvironmentRef::default(),
+            path: Some(SettingPath::parse(&removed.path).unwrap()),
+            version: Some(review.version.clone()),
+        },
+    );
+    assert_eq!(result.unwrap_err().code, ployz_core::RpcErrorCode::Conflict);
+    assert_eq!(removed.config_name.as_ref().unwrap().as_str(), "sentry");
+    let ambiguous = store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse("web.configs.sentry").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(ambiguous.code, ployz_core::RpcErrorCode::Ambiguous);
+    assert_eq!(
+        ambiguous.details["valid_children"],
+        json!([
+            "configs.@00000000-0000-4000-8000-000000000009",
+            "configs.@00000000-0000-4000-8000-000000000010",
+        ])
+    );
+    let after = store.read(&who, &query).unwrap();
+    assert_eq!(diff(&store, &who), review);
+    assert_eq!(after.contents, before.contents);
+    assert_eq!(
+        after.config.mounts, before.config.mounts,
+        "Discarding A's deleted mount must preserve B's independently authored replacement mount"
+    );
 }
