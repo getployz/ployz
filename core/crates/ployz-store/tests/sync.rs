@@ -218,6 +218,7 @@ fn sync(view: &SyncView, picks: Option<&[&str]>) -> SyncChanges {
         picks: picks.map(|picks| picks.iter().map(|label| (*label).into()).collect()),
         skip: Vec::new(),
         values: BTreeMap::new(),
+        id: None,
     }
 }
 
@@ -256,6 +257,24 @@ fn discard(store: &ConfigStore, who: &Actor, path: &str) {
             },
         )
         .unwrap();
+}
+
+/// Remove the proposal `synced` included from `into`'s draft; false when gone.
+fn remove(store: &ConfigStore, who: &Actor, into: &str, synced: &Synced) -> bool {
+    let SyncedWhen::Now { proposal, .. } = &synced.when else {
+        panic!("a Sync between Branches stages now")
+    };
+    store
+        .write(
+            who,
+            &ployz_store::RemoveProposal {
+                environment: at(into),
+                proposal: proposal.clone(),
+                version: None,
+            },
+        )
+        .unwrap()
+        .removed
 }
 
 fn undo(
@@ -306,13 +325,14 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
     assert_eq!(new.at.node().to_string(), "web");
     assert_eq!((new.ticked, new.change), (true, SyncChange::New));
     assert_eq!((&new.from, &new.into), (&json!("1"), &Value::Null));
-    assert_eq!((image.ticked, image.change), (true, SyncChange::Conflict));
+    // A conflict starts unticked: taking it overwrites production's own change.
+    assert_eq!((image.ticked, image.change), (false, SyncChange::Conflict));
     assert_eq!(
         (&image.from["image"], &image.into["image"]),
         (&json!("web:2"), &json!("web:hot"))
     );
     // The Branch's count to its Parent is the rows ticked by default.
-    assert_eq!(to_parent(&store, &who), 2);
+    assert_eq!(to_parent(&store, &who), 1);
 
     // A stale version is refused with the fresh one.
     let stale = SyncChanges {
@@ -355,7 +375,10 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
         .write(&who, &sync(&review, Some(&["web.source"])))
         .unwrap();
     assert_eq!(synced.into.name.as_str(), "production");
-    let SyncedWhen::Now { staged, closing } = &synced.when else {
+    let SyncedWhen::Now {
+        staged, closing, ..
+    } = &synced.when
+    else {
         panic!("a Sync between Branches stages now")
     };
     assert_eq!(
@@ -1235,8 +1258,17 @@ fn a_new_service_is_reviewed_and_undone_whole() {
         assert_eq!(services(&store, &who, "production"), ["api", "db", "web"]);
         discard(&store, &who, "api");
     }
+    // Discarding api kept fix-web included, so this Sync refreshed it: Undo is
+    // refused, and Remove takes the whole proposal out.
     let synced = sync_into(&store, &who, ("fix-web", "production"), None);
-    assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
+    assert_eq!(
+        undo(&store, &who, &synced),
+        Err((
+            RpcErrorCode::Conflict,
+            "fix-web was refreshed since: Remove it in Changes".into()
+        ))
+    );
+    assert!(remove(&store, &who, "production", &synced));
     assert_eq!(services(&store, &who, "production"), ["db", "web"]);
 }
 
@@ -1425,7 +1457,10 @@ fn a_config_file_syncs_as_one_row_and_a_conflict_replaces_the_whole_file() {
         ]
     );
 
-    store.write(&who, &sync(&review, None)).unwrap();
+    // The conflict starts unticked, so both are picked.
+    let picks: Vec<String> = review.rows.iter().map(|row| row.at.to_string()).collect();
+    let picks: Vec<&str> = picks.iter().map(String::as_str).collect();
+    store.write(&who, &sync(&review, Some(&picks))).unwrap();
     let contents = store
         .read(
             &who,

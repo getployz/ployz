@@ -208,6 +208,7 @@ fn sync(view: &SyncView, picks: Option<Vec<ployz_store::RowId>>) -> SyncChanges 
         picks,
         skip: Vec::new(),
         values: Default::default(),
+        id: None,
     }
 }
 

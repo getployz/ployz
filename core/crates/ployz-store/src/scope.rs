@@ -541,7 +541,17 @@ fn persist_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(),
             environment.summary.id.as_str().into(),
         ],
     )?;
-    Ok(())
+    // A row the draft changed is its own now, whatever proposal brought it.
+    crate::branch::release_changed(tx, environment)
+}
+
+/// Advance `environment`'s revision with its Working State as it is: what it holds
+/// changed in another way, as when its proposals end.
+pub(crate) fn touch_working(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+) -> Result<(), RpcError> {
+    persist_working(tx, environment)
 }
 
 pub(crate) struct ValidatedWorking {

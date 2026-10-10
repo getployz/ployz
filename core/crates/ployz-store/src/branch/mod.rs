@@ -10,6 +10,7 @@ mod follow;
 mod live;
 mod never_sync;
 mod pair;
+mod proposal;
 mod setup;
 mod sync;
 pub(crate) use create::*;
@@ -19,6 +20,9 @@ pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use never_sync::{marked, marks, never_sync};
 pub(crate) use pair::*;
+pub(crate) use proposal::remove as remove_proposal;
+pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};
+pub(crate) use proposal::{Owners, consume, included, release_changed};
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{
@@ -35,7 +39,7 @@ use ployz_core::config::{
     LiveValuesOwner, NodeRef, Plan, PlannedRow, Policy as Rules, RowId, SavedEnvironmentIntent,
     SavedServiceIntent, SavedVariableProducer, SealedCell, SealedSecret, ServiceImageCredentials,
     ServiceSource, Setting, Sides, Unapplied, ValuePart, ValuePartOwner, Verdict, Way, Why,
-    canonicalize_environment_intent, compile_environment_intent, live_values, marks_on,
+    canonicalize_environment_intent, compile_environment_intent, dependents, live_values, marks_on,
     parse_service_setting, plan, plan_branch, put_back, unapply,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -46,8 +50,8 @@ use ts_rs::TS;
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{
-    ConditionalSyncId, DeploymentId, EnvironmentId, EnvironmentName, PullRequestNumber, Revision,
-    SyncId, VolumeName,
+    ConditionalSyncId, DeploymentId, EnvironmentId, EnvironmentName, ProposalId, PullRequestNumber,
+    Revision, SyncId, VolumeName,
 };
 use crate::policy::{self, Policy};
 use crate::project::insert_environment;

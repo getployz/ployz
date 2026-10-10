@@ -77,6 +77,8 @@ const BEFORE_SYNC: &str = "
     );
     ALTER TABLE config_environment_branch RENAME COLUMN made_with TO base;
     DROP TABLE config_sync_arrival;
+    DROP TABLE config_proposal;
+    DELETE FROM config_migration WHERE name = '0005_proposal';
     DROP TABLE config_sync_base;
     DROP TABLE config_never_sync;
     DROP TABLE config_held_secret;
@@ -172,6 +174,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
                     picks: Some(vec![image.at.row().clone().into()]),
                     skip: Vec::new(),
                     values: std::collections::BTreeMap::new(),
+                    id: None,
                 },
             )
             .unwrap();
@@ -182,6 +185,9 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
 
     run(&url, BEFORE_SYNC);
     let store = ConfigStore::open(&url, backend::key()).unwrap();
+    // A database from before Sync has no proposals: what arrived is unowned.
+    let mut before = before;
+    before.0.proposal = None;
     assert_eq!(comparisons(&store, &who), before);
 }
 
