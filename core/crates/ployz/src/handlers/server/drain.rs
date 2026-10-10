@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use clap::ArgMatches;
-use ployz_core::{MachineId, MachineName, MachineTarget, RpcError};
+use ployz_core::{Machine, MachineName, MachineTarget, RpcError};
 use ployz_store::NamespacesQuery;
 use reqwest::Method;
 use serde::Deserialize;
@@ -58,7 +58,7 @@ fn through_cloud(
     runtime: &tokio::runtime::Runtime,
     matches: &ArgMatches,
     credential: &Credential,
-    machine: &MachineId,
+    machine: &Machine,
     selector: &str,
 ) -> Result<DrainReport, Error> {
     let id = approval::approved(
@@ -71,7 +71,7 @@ fn through_cloud(
             cloud_account::start_run(
                 credential,
                 Method::POST,
-                &format!("servers/{machine}/drain"),
+                &format!("servers/{}/drain", machine.id),
                 &json!({}),
                 approval,
             )
@@ -85,7 +85,7 @@ fn through_cloud(
     let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
         credential,
         &format!("server-drains/{id}"),
-        &format!("Draining Server {selector}"),
+        &format!("Draining Server {}", machine.name),
     ))?;
     Ok(settled.finished()?.report)
 }

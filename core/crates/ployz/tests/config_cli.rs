@@ -22,6 +22,10 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
+#[allow(dead_code, reason = "This file's Engine answers only the Server list.")]
+#[path = "connect/support.rs"]
+mod engine;
+
 /// Where the CLI's Config Store is.
 enum Target {
     Local(tempfile::TempDir),
@@ -255,6 +259,10 @@ fn serve(
                 "uninstall_url": "https://github.com/organizations/acme/settings/installations/7",
             }),
         ),
+        (Some(_), "/api/cli/server-access") => (
+            200,
+            json!({ "connections": [{ "tcp": engine() }], "unreachable": [] }),
+        ),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
             approvals.run(&method, route, &body, approval.as_deref())
         }
@@ -384,6 +392,8 @@ impl Approvals {
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let segments: Vec<&str> = route.split('/').collect();
         match (method, segments.as_slice()) {
+            ("POST", ["servers", BUSY_SERVER, "drain"]) => (202, json!({ "id": "drn_running" })),
+            ("GET", ["server-drains", "drn_running"]) => (200, json!({ "state": "running" })),
             ("POST", ["servers", server, "drain"]) => self.operation(
                 approval,
                 json!({ "verb": "drain", "name": server }),
@@ -565,6 +575,33 @@ const CLOUD_SERVER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OFFLINE_SERVER: &str = "cccccccccccccccccccccccccccccccc";
 const BUSY_SERVER: &str = "dddddddddddddddddddddddddddddddd";
 const OLD_CLOUD_SERVER: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+/// The Engine Cloud's Server access dials: it names every Server above.
+fn engine() -> std::net::SocketAddr {
+    static ENGINE: std::sync::OnceLock<std::net::SocketAddr> = std::sync::OnceLock::new();
+    *ENGINE.get_or_init(|| {
+        let (sent, address) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(async {
+                let mut service = engine::DiscoveryService::new(engine::test_description());
+                service.machines = [
+                    ('a', "web-1"),
+                    ('c', "web-2"),
+                    ('d', "web-3"),
+                    ('e', "web-4"),
+                ]
+                .into_iter()
+                .map(|(hex, name)| engine::machine(hex, name))
+                .collect();
+                let (address, server) = engine::serve_discovery(service).await;
+                sent.send(address).unwrap();
+                server.await
+            })
+        });
+        address.recv().unwrap()
+    })
+}
 
 fn cloud_server() -> ployz_core::Machine {
     ployz_core::Machine {
@@ -3720,9 +3757,7 @@ fn a_cloud_upgrade_skips_an_offline_or_busy_server_by_name_and_upgrades_the_rest
     let skipped = &upgraded["follow_up_error"];
     assert_eq!(
         skipped["message"],
-        json!(format!(
-            "Skipped Servers {OFFLINE_SERVER}, {BUSY_SERVER}; they took no Upgrade."
-        )),
+        json!("Skipped Servers web-2, web-3; they took no Upgrade."),
         "{skipped}"
     );
     assert_eq!(
@@ -3749,6 +3784,66 @@ fn a_cloud_upgrade_skips_an_offline_or_busy_server_by_name_and_upgrades_the_rest
         json!("Your servers aren't answering. Try again once they are."),
         "Cloud's own failure reads as its sentence, not its JSON: {refused}"
     );
+}
+
+/// stdout then stderr of a person's `ployz ARGS`, without `--json`.
+fn said(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn a_cloud_upgrade_chosen_by_id_names_the_server_not_its_id() {
+    let (target, _) = running(&[]);
+    let home = tempfile::tempdir().unwrap();
+    let output = target
+        .command(home.path())
+        .args(["server", "upgrade", "stable", CLOUD_SERVER])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let said = said(&output);
+    assert_eq!(output.status.code(), Some(0), "{said}");
+    assert!(said.contains("Upgrading Server web-1."), "{said}");
+    assert!(said.contains("Upgraded Server web-1 to 0.3.0."), "{said}");
+    assert!(!said.contains(CLOUD_SERVER), "ids are machinery: {said}");
+}
+
+#[test]
+fn stopping_a_cloud_drain_chosen_by_id_names_the_server_not_its_id() {
+    let (target, approvals) = running(&[]);
+    let home = tempfile::tempdir().unwrap();
+    let child = target
+        .command(home.path())
+        .args(["server", "drain", BUSY_SERVER])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let followed = "GET server-drains/drn_running".to_owned();
+    while !approvals.runs().contains(&followed) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the CLI never followed the drain: {:?}",
+            approvals.runs()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let pid = rustix::process::Pid::from_raw(child.id().try_into().unwrap()).unwrap();
+    rustix::process::kill_process(pid, rustix::process::Signal::INT).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let said = said(&output);
+    assert_eq!(output.status.code(), Some(130), "{said}");
+    assert!(
+        said.contains("Draining Server web-3 keeps running in Ployz Cloud"),
+        "{said}"
+    );
+    assert!(!said.contains(BUSY_SERVER), "ids are machinery: {said}");
 }
 
 #[test]

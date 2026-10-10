@@ -4,9 +4,8 @@ use std::{collections::BTreeSet, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
-    InspectMachineUpgradeRequest, Machine, MachineId, MachineRelease, MachineTarget,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    RequestMachineUpgradeRequest, RpcErrorCode, op,
+    InspectMachineUpgradeRequest, Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -188,14 +187,15 @@ fn through_cloud(
                 .into(),
         ));
     }
-    let servers = cloud_servers(runtime, matches, selectors)?;
+    // Ids route the runs, and only the Engine knows the names prose says.
+    let servers = runtime.block_on(async {
+        let mut client = super::connect(matches, None).await?;
+        selected_machines(&mut client, selectors).await
+    })?;
     let mut attempts = Vec::new();
     let mut skipped = Vec::new();
-    let skip = |id: &MachineId, name: &String, reason: String| {
-        crate::ui::warn(format!("Skipped Server {name}: {reason}"));
-        (*id, name.clone(), reason)
-    };
-    for (index, (id, name)) in servers.iter().enumerate() {
+    for (index, (machine, selector)) in servers.iter().zip(selectors).enumerate() {
+        let (id, name) = (machine.id, machine.name.as_str());
         let started = runtime.block_on(cloud_account::start_run(
             credential,
             Method::POST,
@@ -223,7 +223,7 @@ fn through_cloud(
                 });
             }
             Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Unavailable => {
-                skipped.push(skip(id, name, refused.message));
+                skipped.push(skip(machine, selector, refused.message));
                 continue;
             }
             Err(error) => return Err(error.into()),
@@ -239,7 +239,7 @@ fn through_cloud(
             .expect("a run followed without a deadline settles or fails");
         let upgrade = match settled {
             Settled::Ended { code, message } if code == "busy" => {
-                skipped.push(skip(id, name, message));
+                skipped.push(skip(machine, selector, message));
                 continue;
             }
             settled @ (Settled::Finished(_) | Settled::Ended { .. }) => settled.finished()?,
@@ -257,13 +257,12 @@ fn through_cloud(
             continue;
         };
         let unattempted = servers.get(index + 1..).unwrap_or_default();
-        let unattempted_names = unattempted.iter().map(|(_, name)| name.clone());
-        if let Some(warning) = unattempted_warning(unattempted_names, name) {
+        if let Some(warning) = unattempted_warning(names(unattempted), name) {
             crate::ui::warn(warning);
         }
         let result = json!({
             "attempts": attempts,
-            "unattempted": unattempted.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
             "skipped": skipped_json(&skipped),
         });
         return crate::ui::emit_committed(result, Err(stopped));
@@ -272,7 +271,7 @@ fn through_cloud(
         json!({ "attempts": attempts, "unattempted": [], "skipped": skipped_json(&skipped) });
     let names = skipped
         .iter()
-        .map(|(_, name, _)| name.as_str())
+        .map(|(machine, _, _)| machine.name.as_str())
         .collect::<Vec<_>>();
     let message = match names.as_slice() {
         [] => return crate::ui::emit(&result),
@@ -280,50 +279,25 @@ fn through_cloud(
         many => format!("Skipped Servers {}; they took no Upgrade.", many.join(", ")),
     };
     let mut args = vec!["server", "upgrade", channel.as_str()];
-    args.extend(names);
+    args.extend(skipped.iter().map(|(_, selector, _)| *selector));
     let skipped = Error::coded(RpcErrorCode::Unavailable, message)
         .hint(Hint::Retry(super::super::rerun(matches, &args)));
     crate::ui::emit_committed(result, Err(skipped))
 }
 
-fn skipped_json(skipped: &[(MachineId, String, String)]) -> serde_json::Value {
-    skipped
-        .iter()
-        .map(|(id, _, reason)| json!({ "server": id, "reason": reason }))
-        .collect()
+/// A Server that took no Upgrade, the selector that chose it, and why.
+type Skipped<'a> = (&'a Machine, &'a str, String);
+
+fn skip<'a>(machine: &'a Machine, selector: &'a str, reason: String) -> Skipped<'a> {
+    crate::ui::warn(format!("Skipped Server {}: {reason}", machine.name));
+    (machine, selector, reason)
 }
 
-fn cloud_servers(
-    runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
-    selectors: &[String],
-) -> Result<Vec<(MachineId, String)>, Error> {
-    let ids = selectors
+fn skipped_json(skipped: &[Skipped<'_>]) -> serde_json::Value {
+    skipped
         .iter()
-        .map(|selector| {
-            MachineId::parse(selector)
-                .ok()
-                .map(|id| (id, selector.clone()))
-        })
-        .collect::<Option<Vec<_>>>();
-    let servers = match ids {
-        Some(ids) => ids,
-        None => runtime
-            .block_on(async {
-                let mut client = super::connect(matches, None).await?;
-                selected_machines(&mut client, selectors).await
-            })?
-            .into_iter()
-            .map(|machine| (machine.id, machine.name.to_string()))
-            .collect(),
-    };
-    let mut seen = BTreeSet::new();
-    if let Some((_, name)) = servers.iter().find(|(id, _)| !seen.insert(*id)) {
-        return Err(Error::usage(format!(
-            "Server {name} was selected more than once"
-        )));
-    }
-    Ok(servers)
+        .map(|(machine, _, reason)| json!({ "server": machine.id, "reason": reason }))
+        .collect()
 }
 
 fn stopped(server: &str, upgrade: &CloudUpgrade) -> Option<Error> {

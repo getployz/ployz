@@ -120,20 +120,17 @@ pub(super) fn cloud_runs(
     }
 }
 
-/// The Server `selector` names, for a Cloud route. An id needs nothing dialed; a name
-/// resolves among the Servers Cloud's dial sees.
+/// The Server `selector` names, for a Cloud route, among the Servers Cloud's dial sees.
+/// An id resolves there too, since only the Engine knows the name prose says.
 pub(super) fn cloud_machine(
     runtime: &tokio::runtime::Runtime,
     matches: &ArgMatches,
     selector: &str,
-) -> Result<ployz_core::MachineId, Error> {
-    if let Ok(id) = ployz_core::MachineId::parse(selector) {
-        return Ok(id);
-    }
+) -> Result<ployz_core::Machine, Error> {
     runtime.block_on(async {
         let mut client = connect(matches, None).await?;
         let machines = client.machines().await?;
-        Ok(remove::select_machine(&machines, selector)?.id)
+        remove::select_machine(&machines, selector)
     })
 }
 
