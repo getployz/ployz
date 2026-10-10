@@ -20,7 +20,7 @@ export type StoreEdit = {
 type Carried = { views?: CommittedViews };
 
 /** Commands that read or write an Environment besides the one they name. */
-const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["sync", "undo_sync", "take", "create_branch", "copy_node"]);
+const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["sync", "undo_sync", "remove_proposal", "take", "create_branch", "copy_node"]);
 
 /** The Environment revision a write produced; a Batch's is its last command's. */
 function writtenRevision(written: ConfigWritten): number | null {

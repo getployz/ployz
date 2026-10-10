@@ -9,7 +9,7 @@ import { ConfirmDialog } from "#/components/confirm-dialog";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
-import type { DeploymentSummary } from "@ployz/sdk";
+import type { DeploymentSummary, Included } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
@@ -44,6 +44,8 @@ type BottomBarProps = {
   active: DeploymentSummary[];
   /** Details' notes: where changes came from, and merged pull requests' and the Parent's values. */
   notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "originFor" | "after">;
+  /** Details' Included list: the sources Syncs included here, with Remove and Include newer changes. */
+  proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer">;
   /** Changes open pull requests saved here, going live when each merges. */
   waiting?: ReadonlyArray<{ number: number; changes: number; environment: string }>;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
@@ -70,6 +72,7 @@ export function BottomBar({
   onDiscardRow,
   active: newestFirst,
   notes,
+  proposals,
   waiting = [],
   noServers = false,
   admitting = false,
@@ -178,6 +181,12 @@ export function BottomBar({
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
+    ...proposals,
+    // The Sync's review takes Details' place.
+    onIncludeNewer: proposals?.onIncludeNewer && ((included: Included) => {
+      setOpen(false);
+      proposals.onIncludeNewer?.(included);
+    }),
   };
   return (
     <>

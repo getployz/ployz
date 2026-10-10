@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { ChangeKind, RowId } from "@ployz/sdk";
-import { ArrowRightIcon, MinusIcon, MoreVerticalIcon, PencilIcon, PinIcon, PlusIcon, Undo2Icon } from "lucide-react";
+import type { ChangeKind, Included, RowId } from "@ployz/sdk";
+import { ArrowRightIcon, MinusIcon, MoreVerticalIcon, PencilIcon, PinIcon, PlusIcon, RefreshCwIcon, Undo2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
@@ -40,6 +40,12 @@ export type EnvironmentChangesReviewProps = {
   originFor?: (row: RowId) => ChangeOrigin | undefined;
   /** Lists after the changes: merged pull requests' and the Parent's values no change shows. */
   after?: ReactNode;
+  /** The sources Syncs included in this draft. */
+  included?: readonly Included[];
+  /** Takes a source back out: what it still holds returns to what it was. */
+  onRemoveIncluded?: (included: Included) => void;
+  /** Reviews the Sync from a source that changed since, to include its newer changes. */
+  onIncludeNewer?: (included: Included) => void;
 };
 
 /**
@@ -47,8 +53,8 @@ export type EnvironmentChangesReviewProps = {
  * change, coloured by its kind; Discard and Never sync in each line's ⋯; Discard all and Publish in the footer.
  */
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
-  const { environment, canPublish, canDeploy, totalChanges, onClose, after, message, onMessageChange } = props;
-  const staged = canPublish || totalChanges > 0;
+  const { environment, canPublish, canDeploy, totalChanges, onClose, after, message, onMessageChange, included = [] } = props;
+  const staged = canPublish || totalChanges > 0 || included.length > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
@@ -66,6 +72,7 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
           ) : null}
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+          {included.length ? <IncludedList {...props} included={included} /> : null}
           {staged ? <ChangeGroups {...props} /> : null}
           {after ? <div className="flex flex-col gap-3">{after}</div> : null}
         </div>
@@ -152,6 +159,41 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
       </section>
     );
   })}</>;
+}
+
+/** Each source a Sync included, with Remove and, once it changed, Include newer changes in its ⋯. */
+function IncludedList({ included, onRemoveIncluded, onIncludeNewer }: Pick<EnvironmentChangesReviewProps, "onRemoveIncluded" | "onIncludeNewer"> & { included: readonly Included[] }) {
+  return (
+    <section aria-label="Included">
+      <h3 className="font-medium">Included</h3>
+      <ul>
+        {included.map((item) => {
+          const { source } = item;
+          // A pull request's changes come in from its preview's own Sync.
+          const newer = item.newer && source.kind === "environment" && source.live && onIncludeNewer ? () => onIncludeNewer(item) : undefined;
+          return (
+            <li key={item.proposal} className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-b py-1.5 last:border-b-0">
+              <div className="min-w-0">
+                <p className="truncate">{source.name} · {plural(item.changes, "change")}</p>
+                {item.newer ? <p className="text-muted-foreground">{source.name} changed since</p> : null}
+              </div>
+              {onRemoveIncluded ? (
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${source.name}`} />}>
+                    <MoreVerticalIcon />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-auto">
+                    {newer ? <DropdownMenuItem onClick={newer}><RefreshCwIcon />Include newer changes</DropdownMenuItem> : null}
+                    <DropdownMenuItem variant="destructive" onClick={() => onRemoveIncluded(item)}><Undo2Icon />Remove</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ) : <span />}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
 }
 
 const nodeKinds = { create: "add", update: "update", delete: "remove" } as const;
