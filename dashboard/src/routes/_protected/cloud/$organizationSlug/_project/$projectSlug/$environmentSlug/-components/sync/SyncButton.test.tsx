@@ -32,7 +32,7 @@ const branchView = (extra: Partial<BranchView> = {}): BranchView => ({
   closes_at: Date.now() / 1000 + 5 * 24 * 60 * 60 - 60, pull_request: null, ...extra,
 });
 const row = (name: string, extra: Partial<SyncRow> = {}): SyncRow => ({
-  row: `a:${name}` as RowId, node: "api", kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null,
+  row: `a:${name}` as RowId, node: "api", kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, held_by: null,
   ...extra,
 });
 const rows = [
@@ -45,7 +45,7 @@ const neverSynced = (name: string) =>
   ({ row: `a:${name}` as RowId, node: "api", kind: "service" as const, name, marks: [{ environment: "fix-api", row: `a:${name}` as RowId }] });
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
-  never_synced: [neverSynced("env.STRIPE_KEY")], ...extra,
+  never_synced: [neverSynced("env.STRIPE_KEY")], proposal: null, ...extra,
 });
 /** What a Sync answers: its id, and the Conditional Sync standing for one at the merge. */
 const synced = (atMerge: number | null) => ({ ok: true, value: {

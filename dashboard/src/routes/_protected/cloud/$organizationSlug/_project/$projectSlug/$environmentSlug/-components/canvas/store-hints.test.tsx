@@ -23,7 +23,7 @@ const api = (settings: NodeChange["settings"]): NodeChange =>
   ({ type: "service", id: "api", row: id("a:node"), name: "api", lifecycle: "update", comparison: null, data: null, restarts: [], settings });
 const diff = (extra: Partial<DiffView>): DiffView => ({
   environment: { id: "id-fix-api", project: "shop", name: "fix-api", revision: 4 }, version: "4:abc", saved: null,
-  published: false, changes: [], total_count: 0, hints: [], incoming: [], follow_hints: [], ...extra,
+  published: false, changes: [], total_count: 0, hints: [], incoming: [], follow_hints: [], included: [], ...extra,
 });
 
 /** fix-api's Details over `view`, as the bottom bar opens it. */
