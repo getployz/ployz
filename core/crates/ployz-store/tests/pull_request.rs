@@ -914,3 +914,48 @@ fn a_recreated_preview_rebinds_its_proposal_and_refuses_a_colliding_row() {
         .unwrap();
     assert_eq!(production.values["env"], json!({"X": "1", "Y": "2"}));
 }
+
+/// A reopened pull request's new preview is where its proposal now comes from, before
+/// any Include from it rebinds the proposal.
+#[test]
+fn a_recreated_preview_is_listed_as_its_proposals_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_pr(&store, &who, 1).unwrap();
+    pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
+    let source = || {
+        let diff = store
+            .read(
+                &who,
+                &ployz_store::DiffQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap();
+        let [included] = &diff.included[..] else {
+            panic!("one proposal: {:?}", diff.included)
+        };
+        let ployz_store::ProposalSource::PullRequest { environment, .. } = &included.source else {
+            panic!("a pull request's proposal")
+        };
+        (environment.clone(), included.newer)
+    };
+    assert_eq!(source(), (None, false));
+
+    pull(&store, &who, facts(true, "2026-09-29T12:00:00Z"));
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: at("pr-5"),
+            },
+        )
+        .unwrap()
+        .environment
+        .id;
+    assert_eq!(source(), (Some(preview), true));
+}

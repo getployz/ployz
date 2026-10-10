@@ -687,8 +687,15 @@ pub(crate) fn included(
          p.repository_id, p.number, \
          (SELECT COUNT(*) FROM config_sync_arrival a \
           WHERE a.environment_id = p.environment_id AND a.proposal_id = p.id), \
-         e.name, e.working_revision \
-         FROM config_proposal p LEFT JOIN config_environment e ON e.id = p.source_environment_id \
+         COALESCE(e.name, r.name), COALESCE(e.working_revision, r.working_revision), \
+         r.id \
+         FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
+         LEFT JOIN config_environment e ON e.id = p.source_environment_id \
+         LEFT JOIN (SELECT q.environment_id AS id, q.repository_id, q.number, \
+          v.project_id, v.name, v.working_revision \
+          FROM config_pr_environment q JOIN config_environment v ON v.id = q.environment_id) r \
+         ON e.id IS NULL AND r.repository_id = p.repository_id AND r.number = p.number \
+         AND r.project_id = d.project_id \
          WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
         &[environment.as_str().into()],
     )?;
@@ -697,7 +704,14 @@ pub(crate) fn included(
             let revision = Revision(row.number::<u64>(3, "proposal")?);
             let now = row.optional_int(9)?;
             let name = row.optional_text(8)?.unwrap_or(row.text(2)?).to_owned();
-            let id: EnvironmentId = row.parse(1, "proposal")?;
+            // A pull request reopened since its proposal was included comes from its
+            // new preview, which an Include rebinds to; its revisions are its own, so
+            // all of it is newer.
+            let recreated: Option<EnvironmentId> = row.parse_optional(10, "proposal")?;
+            let id: EnvironmentId = match &recreated {
+                Some(preview) => preview.clone(),
+                None => row.parse(1, "proposal")?,
+            };
             let live = now.is_some();
             let source = match (row.optional_int(5)?, row.optional_int(6)?) {
                 (Some(_), Some(_)) => ProposalSource::PullRequest {
@@ -712,7 +726,8 @@ pub(crate) fn included(
                 proposal: row.parse(0, "proposal")?,
                 source,
                 revision,
-                newer: now.is_some_and(|now| now > row.int(3).unwrap_or(i64::MAX)),
+                newer: recreated.is_some()
+                    || now.is_some_and(|now| now > row.int(3).unwrap_or(i64::MAX)),
                 changes: usize::try_from(row.int(7)?).map_err(|_| error::corrupt("proposal"))?,
                 sync: row.parse(4, "proposal")?,
             })
