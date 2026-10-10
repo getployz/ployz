@@ -47,15 +47,25 @@ case "$1" in
     if [ "$2" = --now ] && [ "$3" = ployz-observe.service ]; then
       /bin/touch "$root/active-$3" "$root/enabled-$3"
     fi ;;
-  stop) /bin/rm -f "$root/active-$2" ;;
-  disable) /bin/rm -f "$root/enabled-$2" ;;
-  is-enabled) [ -e "$root/enabled-$3" ] || exit 1 ;;
+  stop|disable)
+    if [ -e "$root/observer-not-loaded" ]; then echo unit not loaded >&2; exit 5; fi
+    if [ "$1" = stop ]; then /bin/rm -f "$root/active-$2"; else /bin/rm -f "$root/enabled-$2"; fi ;;
   is-active)
     case "$3" in
       ployz-volume-plugin.*|ployz-observe.*) [ -e "$root/active-$3" ] || exit 3 ;;
       *) if [ -e "$root/broken-$version" ]; then exit 3; fi ;;
     esac ;;
   show)
+if [ "$2" = --property=UnitFileState ]; then
+  if [ -e "$root/observer-snapshot-error" ]; then echo manager unavailable >&2; exit 1; fi
+  if [ -e "$root/observer-not-loaded" ]; then exit 0; fi
+  if [ -e "$root/enabled-ployz-observe.service" ]; then echo enabled; else echo disabled; fi
+  exit 0
+fi
+if [ "$2" = --property=LoadState ]; then
+  if [ -e "$root/observer-not-loaded" ]; then echo not-found; else echo loaded; fi
+  exit 0
+fi
 if [ -e "$root/crashing-$version" ]; then start; fi
 read -r pid < "$root/main-pid"; echo "$pid" ;;
 esac"#;
@@ -325,6 +335,8 @@ async fn upgrade_worker_contract() {
         "succeeded",
         "readiness-restored",
         "soak-restored",
+        "observer-snapshot-error",
+        "observer-not-loaded-restored",
         "observer-inactive-disabled-restored",
         "observer-inactive-enabled-restored",
         "observer-active-disabled-restored",
@@ -370,6 +382,11 @@ async fn run_worker_case(root: &Path, case: &str) {
             mark("active-ployz-volume-plugin.socket");
             mark("active-ployz-volume-plugin.service");
             mark("active-ployz-observe.service");
+        }
+        "observer-snapshot-error" => mark("observer-snapshot-error"),
+        "observer-not-loaded-restored" => {
+            mark("observer-not-loaded");
+            fs::write(&paths.systemd_dir, "blocked").unwrap();
         }
         "observer-inactive-disabled-restored" => mark("broken-1.2.3"),
         "observer-inactive-enabled-restored" => {
@@ -496,6 +513,39 @@ async fn run_worker_case(root: &Path, case: &str) {
             ));
             assert_eq!(installed, before);
             assert_eq!(transitions(root), restored);
+        }
+        "observer-snapshot-error" => {
+            assert_eq!(
+                outcome,
+                MachineUpgradeOutcome::Failed {
+                    stage: MachineUpgradeStage::Preparing,
+                    error: "check observer enablement: manager unavailable".into(),
+                }
+            );
+            assert_eq!(installed, before);
+            assert!(transitions(root).is_empty());
+            assert!(!root.join("active-ployz-observe.service").exists());
+            assert!(!root.join("enabled-ployz-observe.service").exists());
+        }
+        "observer-not-loaded-restored" => {
+            assert!(matches!(
+                outcome,
+                MachineUpgradeOutcome::Failed {
+                    stage: MachineUpgradeStage::Activating,
+                    ref error,
+                } if error.starts_with("create systemd unit directory:")
+                    && error.ends_with("; restored 1.2.2")
+            ));
+            assert_eq!(installed, before);
+            assert_eq!(
+                transitions(root),
+                [
+                    "reset-failed ployz.socket ployz.service",
+                    "restart ployz.socket ployz.service",
+                ]
+            );
+            assert!(!root.join("active-ployz-observe.service").exists());
+            assert!(!root.join("enabled-ployz-observe.service").exists());
         }
         "observer-inactive-disabled-restored"
         | "observer-inactive-enabled-restored"

@@ -15,11 +15,13 @@ const SOAK: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const SOAK: Duration = Duration::from_millis(100);
 
+const OBSERVER_UNIT: &str = "ployz-observe.service";
+
 /// Units besides the daemon that an Upgrade restarts and compensation must bring back.
 const HELPER_UNITS: [&str; 3] = [
     "ployz-volume-plugin.socket",
     "ployz-volume-plugin.service",
-    "ployz-observe.service",
+    OBSERVER_UNIT,
 ];
 
 /// Why an Upgrade failed, and whether the previous release went back into service. Its text is
@@ -63,6 +65,24 @@ pub(super) async fn install_or_compensate(
         .into_iter()
         .filter(|unit| super::systemctl("check unit", ["is-active", "--quiet", unit]).is_ok())
         .collect();
+    let observer_state = super::systemctl(
+        "check observer enablement",
+        ["show", "--property=UnitFileState", "--value", OBSERVER_UNIT],
+    )
+    .map_err(UpgradeFailure::NotRestored)?;
+    let observer_enabled = match observer_state.stdout.trim_ascii() {
+        b"enabled" | b"enabled-runtime" => true,
+        b"disabled" | b"" => false,
+        state => {
+            return Err(UpgradeFailure::NotRestored(super::refuse(
+                "check observer enablement",
+                format!(
+                    "unknown unit file state {:?}",
+                    String::from_utf8_lossy(state)
+                ),
+            )));
+        }
+    };
     let request = InstallRequest {
         release: MachineRelease::Exact(target.clone()),
         mode: InstallMode::SoftwareOnly,
@@ -82,10 +102,12 @@ pub(super) async fn install_or_compensate(
     else {
         return Err(UpgradeFailure::NotRestored(error));
     };
-    Err(match restore(paths, &previous, &active_plugins).await {
-        Ok(()) => UpgradeFailure::Restored { error, previous },
-        Err(restore) => UpgradeFailure::RestoreFailed { error, restore },
-    })
+    Err(
+        match restore(paths, &previous, &active_plugins, observer_enabled).await {
+            Ok(()) => UpgradeFailure::Restored { error, previous },
+            Err(restore) => UpgradeFailure::RestoreFailed { error, restore },
+        },
+    )
 }
 
 /// Hold a ready daemon for [`SOAK`]: a crash restarts it under another main PID.
@@ -107,7 +129,20 @@ async fn restore(
     paths: &InstallPaths,
     previous: &MachineVersion,
     plugins: &[&str],
+    observer_enabled: bool,
 ) -> Result<(), InstallError> {
+    let observer = super::systemctl(
+        "check observer unit",
+        ["show", "--property=LoadState", "--value", OBSERVER_UNIT],
+    )?;
+    if observer.stdout.trim_ascii() != b"not-found" {
+        if !plugins.contains(&OBSERVER_UNIT) {
+            super::systemctl("stop new observer", ["stop", OBSERVER_UNIT])?;
+        }
+        if !observer_enabled {
+            super::systemctl("restore observer enablement", ["disable", OBSERVER_UNIT])?;
+        }
+    }
     super::release::restore_previous(paths)?;
     // A crash loop exhausts a unit's start limit, which would refuse the restart. `reset-failed`
     // fails on a unit that is not loaded, so it only names units known to be.

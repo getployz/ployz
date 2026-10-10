@@ -202,6 +202,17 @@ impl Harvester {
             .filter_map(Result::ok)
             .filter_map(|entry| container_id(&entry.file_name()))
             .collect();
+        let gone: Vec<ContainerId> = self
+            .seen
+            .iter()
+            .filter(|(id, seen)| {
+                !present.contains(id) && !matches!(seen, Seen::Ignored) && self.docker_dir_gone(id)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.on_gone(&id);
+        }
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
         self.last_event.retain(|id, _| present.contains(id));
@@ -2178,13 +2189,15 @@ mod tests {
 
         assert_eq!(host.held(), 1);
         let gaps = host.gaps();
-        assert_eq!(gaps.len(), 2);
-        assert_eq!(gaps[0], DAMAGE_GAP);
+        let [damage, unexited] = gaps.as_slice() else {
+            panic!("expected damage and missing-exit gaps, got {gaps:?}");
+        };
+        assert_eq!(*damage, DAMAGE_GAP);
         assert_eq!(
-            (gaps[1].from, gaps[1].reason),
+            (unexited.from, unexited.reason),
             (T0 + 10, GapReason::NotCaptured)
         );
-        assert!(gaps[1].to > gaps[1].from);
+        assert!(unexited.to > unexited.from);
         running.harvester.on_inspected(id, Inspected::Gone);
         running.harvester.rescan();
         assert_eq!(host.gaps(), gaps);
