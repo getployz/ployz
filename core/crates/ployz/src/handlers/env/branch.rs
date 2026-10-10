@@ -157,7 +157,7 @@ fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
-/// `env sync --undo SYNC`: undo a Sync, or withdraw its Conditional Sync.
+/// `env sync --undo SYNC`: undo a Sync, or withdraw its offer.
 fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let request = UndoSync {
@@ -332,15 +332,8 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
         match &synced.when {
             SyncedWhen::AtMerge { conditional_sync } => {
                 crate::ui::stream(format_args!(
-                    "Goes live in {into} with PR #{}'s merge: {}.",
+                    "Offered to {into}: include it in Changes after PR #{} merges.",
                     conditional_sync.pull_request,
-                    crate::handlers::joined(
-                        &conditional_sync
-                            .rows
-                            .iter()
-                            .map(ployz_store::NamedRow::to_string)
-                            .collect::<Vec<_>>()
-                    )
                 ));
                 crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
             }

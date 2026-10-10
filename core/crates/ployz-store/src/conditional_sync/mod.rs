@@ -205,8 +205,6 @@ pub(crate) fn pending(
     Ok(pending)
 }
 
-/// PR Environment `pr`'s offer or included proposal in Destination `into`, as the
-/// pull request's page shows it.
 /// A Follow staged the Parent's changes in PR Environment `branch`, whose Working
 /// State was at revision `before`: what it offered still stands, as only the
 /// author's own edits make an offer stale. An included proposal's source moves on
@@ -231,6 +229,8 @@ pub(crate) fn followed(
     Ok(())
 }
 
+/// PR Environment `pr`'s offer or included proposal in Destination `into`, as the
+/// pull request's page shows it.
 pub(crate) fn standing_in(
     tx: &mut dyn Tx,
     pr: &Environment,

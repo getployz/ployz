@@ -134,15 +134,12 @@ pub(crate) fn command() -> Command {
                          deploys is staged in it, but where the Branch changed a setting \
                          too, or discarded the Parent's change, the Parent's value is a \
                          hint `ployz diff` lists; --take PARENT stages it. With --at-merge, \
-                         from a PR Environment into one of its Destinations, it is a \
-                         Conditional Sync: the changes go live there with the pull request's \
-                         merge. A secret the receiver lacks arrives without its value unless \
+                         from a PR Environment into one of its Destinations, it is an offer: \
+                         include it in the Destination's Changes after the pull request \
+                         merges. A secret the receiver lacks arrives without its value unless \
                          --value gives it one. --undo SYNC undoes a Sync while what it staged \
-                         is undeployed and unchanged, or withdraws its Conditional Sync. A \
-                         merged pull request's value its Conditional Sync left beside the \
-                         Destination's own edit is a hint too; --take ID stages it, even \
-                         once its PR Environment is gone. Example: ployz env sync --to \
-                         --env fix-api --skip api.env.DEBUG --close",
+                         is undeployed and unchanged, or withdraws its offer. Example: ployz env \
+                         sync --to --env fix-api --skip api.env.DEBUG --close",
                     ),
             )
             .arg(
@@ -185,13 +182,13 @@ pub(crate) fn command() -> Command {
             )
             .arg(
                 switch("at-merge", None)
-                    .help("Go live in --to with the pull request's merge; the default from a PR Environment into a Destination")
+                    .help("Offer the changes to --to, to include in its Changes after the pull request merges; the default from a PR Environment into a Destination")
                     .conflicts_with("close"),
             )
             .arg(
                 value("undo", None)
                     .value_name("SYNC")
-                    .help("Undo the Sync a sync printed, or withdraw its Conditional Sync")
+                    .help("Undo the Sync a sync printed, or withdraw its offer")
                     .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close", "at-merge"]),
             )
             .arg(
