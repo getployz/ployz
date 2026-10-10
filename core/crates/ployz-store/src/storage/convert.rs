@@ -20,7 +20,7 @@ pub(crate) struct Converted {
     pub(crate) standing: usize,
     /// Frozen ones offered, their pull request merged.
     pub(crate) frozen: usize,
-    /// Landed ones, dropped: they already went live.
+    /// Landed ones, dropped: what landed is Saved, and any hint one left goes too.
     pub(crate) landed_dropped: usize,
     /// Held secret values no offer took, dropped with their table.
     pub(crate) orphan_held: usize,
@@ -172,7 +172,7 @@ fn facts(tx: &mut dyn Tx) -> Result<(), RpcError> {
             _ => return Err(corrupt()),
         };
         tx.execute(
-            "UPDATE config_pull_request SET facts = ?1, merged = ?2 \
+            "UPDATE config_pull_request SET facts = ?1, merged = COALESCE(merged, ?2) \
              WHERE organization_id = ?3 AND repository_id = ?4 AND number = ?5",
             &[
                 Value::Object(facts).to_string().as_str().into(),
