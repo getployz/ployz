@@ -2322,11 +2322,16 @@ mod tests {
             (meta.service.as_deref(), meta.deployment.as_deref()),
             (Some("web"), Some("d1"))
         );
+        assert_eq!((meta.finished_at.as_deref(), meta.exit_code), (None, None));
+        let gaps = host.gaps();
+        let [unexited] = gaps.as_slice() else {
+            panic!("expected one missing-exit gap, got {gaps:?}");
+        };
         assert_eq!(
-            (meta.finished_at.as_deref(), meta.exit_code),
-            (Some("2025-10-09T08:53:20.000000005Z"), Some(3))
+            (unexited.from, unexited.reason),
+            (T0 + 3, GapReason::NotCaptured)
         );
-        assert_eq!(host.gaps(), []);
+        assert!(unexited.to > unexited.from);
     }
 
     #[tokio::test]
