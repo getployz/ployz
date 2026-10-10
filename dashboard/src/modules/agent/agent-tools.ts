@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
 import commandsJson from "../../../../core/crates/ployz-sdk/generated/commands.json";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { type StoreCall, StoreRefused } from "#/modules/config-store/store.contract";
-import { githubBranches, githubConnection, githubFile, githubTree } from "#/modules/github/github-cli.server";
+import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { Validation } from "#/server/public-error";
 
@@ -40,10 +40,9 @@ export const AGENT = { source: "agent" } as const;
 type CloudEffect =
   | ReturnType<typeof githubConnection>
   | ReturnType<typeof githubBranches>
-  | ReturnType<typeof githubTree>
-  | ReturnType<typeof githubFile>
+  | ReturnType<GithubRepositories["Service"]["tree"]>
   | ReturnType<typeof callStore<StoreCall>>;
-export type CloudServices = Effect.Services<CloudEffect>;
+export type CloudServices = Effect.Services<CloudEffect> | GithubRepositories;
 /** How a `cloud` binding refuses: `NotFound`, `Validation` and a Store refusal reach the model as its refusal. */
 export type CloudError = Effect.Error<CloudEffect> | Validation | StoreRefused;
 
@@ -336,9 +335,13 @@ export const BINDINGS = new Map<string, AgentBinding>([
     })),
   ],
   ["github tree", cloud(Schema.Struct({ repository: Schema.String, path: Text, ref: Text, match: Text }), (input, caller) =>
-    githubTree(caller, input.repository, input))],
+    Effect.gen(function* () {
+      return yield* (yield* GithubRepositories).tree(caller, input);
+    }))],
   ["github cat", cloud(Schema.Struct({ repository: Schema.String, path: Schema.String, ref: Text }), (input, caller) =>
-    githubFile(caller, input.repository, input.path, input.ref ?? null))],
+    Effect.gen(function* () {
+      return yield* (yield* GithubRepositories).file(caller, input);
+    }))],
   [
     "service rm",
     stage(Schema.Struct({ ...Env, service: Schema.String }), (input) => ({

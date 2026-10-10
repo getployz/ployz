@@ -292,6 +292,24 @@ export const findGithubRepositoryByNameForOrganization = Effect.fn("Github.findR
   },
 );
 
+/** The first `limit` repositories, by name, that the Organization's members' installations grant. */
+export const listGithubRepositoryNamesForOrganization = Effect.fn("Github.listRepositoryNamesForOrganization")(
+  function* (input: { organizationId: string; limit: number }) {
+    const database = yield* Database;
+    const rows = yield* database.drizzle.selectDistinct({ fullName: schemaGithubRepositoryCache.fullName })
+      .from(schemaGithubRepositoryCache)
+      .innerJoin(schemaGithubInstallation, and(
+        eq(schemaGithubInstallation.userId, schemaGithubRepositoryCache.userId),
+        eq(schemaGithubInstallation.installationId, schemaGithubRepositoryCache.installationId),
+      ))
+      .innerJoin(schemaMember, eq(schemaMember.userId, schemaGithubInstallation.userId))
+      .where(eq(schemaMember.organizationId, input.organizationId))
+      .orderBy(schemaGithubRepositoryCache.fullName)
+      .limit(input.limit);
+    return rows.map((row) => row.fullName);
+  },
+);
+
 /** Forget one of the user's GitHub installations and its repositories; the App stays installed on GitHub. */
 export const deleteGithubInstallationForUser = Effect.fn("Github.deleteInstallationForUser")(
   function* (input: { userId: string; installationId: number }) {

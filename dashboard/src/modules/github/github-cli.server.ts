@@ -1,12 +1,15 @@
 import "@tanstack/react-start/server-only";
+import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Context, Effect, Layer } from "effect";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { listGithubRepositoryBranches, listGithubRepositoryFiles, readGithubRepositoryContents } from "#/modules/github/github.api";
-import { isGithubObservationNotFound } from "#/modules/github/github-observation.api";
+import { GithubApi, isGithubObservationNotFound } from "#/modules/github/github-observation.api";
 import {
   deleteGithubInstallationForUser,
   listCachedGithubRepositoriesForUser,
   listGithubInstallationsForUser,
+  listGithubRepositoryNamesForOrganization,
 } from "#/modules/github/github.repository";
 import { basicGlob, getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
@@ -49,11 +52,22 @@ export const githubConnection = Effect.fn("GithubCli.connection")(function* (cal
   };
 });
 
-/** A repository the caller's Organization may read; a private one it can't is as missing as one that doesn't exist. */
+/** How many repositories a not-found refusal names, as the ones the Organization can read. */
+const READABLE_NAMED = 10;
+
+/**
+ * A repository the caller's Organization may read; a private one it can't is as missing as one that doesn't exist.
+ * The refusal names up to `READABLE_NAMED` repositories it can read.
+ */
 const readableBy = Effect.fn("GithubCli.readableBy")(function* (caller: Caller, repository: string) {
   const readable = yield* resolveReadableRepository(caller.organization.id, repository);
   if (readable === null) {
-    return yield* new NotFound({ message: "No repository by that name that this Organization can read." });
+    const names = yield* listGithubRepositoryNamesForOrganization({ organizationId: caller.organization.id, limit: READABLE_NAMED });
+    return yield* new StoreRefused({
+      code: "not_found",
+      message: "No repository by that name that this Organization can read.",
+      details: { valid_children: names },
+    });
   }
   return readable;
 });
@@ -75,44 +89,35 @@ export const TREE_PATHS = 500;
 /** The largest file `github cat` returns the text of. */
 export const FILE_BYTES = 64 * 1024;
 
-const directoryOf = (path: string | null) => (path ?? "").replace(/^(\.?\/)+|\/+$/g, "");
-
-export type TreeQuery = {
-  /** A directory: only files under it. */
-  readonly path?: string | null;
-  /** A branch, tag or commit; the default branch if absent. */
-  readonly ref?: string | null;
-  /** A glob the whole repository-relative path must match. */
-  readonly match?: string | null;
-};
+const directoryOf = (path: string | undefined) => (path ?? "").replace(/^(\.?\/)+|\/+$/g, "");
 
 /** The files of `repository` that `query` selects, at most `TREE_PATHS`. */
 export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
-  repository: ReadableRepository, { path = null, ref = null, match = null }: TreeQuery,
+  repository: ReadableRepository, query: Omit<GithubTreeQuery, "repository">,
 ) {
-  const at = ref ?? repository.defaultBranch;
+  const at = query.ref ?? repository.defaultBranch;
   const listed = yield* listGithubRepositoryFiles(repository.installationId, repository.fullName, at).pipe(
     Effect.catchIf(isGithubObservationNotFound, () => new NotFound({ message: `No ref ${at} in ${repository.fullName}.` })));
-  const directory = directoryOf(path);
+  const directory = directoryOf(query.path);
   const under = directory === "" ? listed.paths : listed.paths.filter((file) => file.startsWith(`${directory}/`));
-  const matcher = match === null ? null : basicGlob(match);
+  const matcher = query.match === undefined ? null : basicGlob(query.match);
   const matching = matcher === null ? under : under.filter((file) => matcher.match(file));
   return {
     repository: repository.fullName,
     ref: at,
     paths: matching.slice(0, TREE_PATHS),
     truncated: listed.truncated || matching.length > TREE_PATHS,
-  };
+  } satisfies GithubTreeView;
 });
 
 const text = new TextDecoder("utf-8", { fatal: true });
 
-/** The text of one file of `repository` at `ref` (its default branch if null); null with a note past `FILE_BYTES` or for binary. */
+/** One file of `repository` at its `ref`, the default branch if absent: its text, or a note past `FILE_BYTES` or for binary. */
 export const repositoryFile = Effect.fn("GithubCli.repositoryFile")(function* (
-  repository: ReadableRepository, path: string, ref: string | null,
+  repository: ReadableRepository, query: Omit<GithubFileQuery, "repository">,
 ) {
-  const at = ref ?? repository.defaultBranch;
-  const file = directoryOf(path);
+  const at = query.ref ?? repository.defaultBranch;
+  const file = directoryOf(query.path);
   if (file === "") return yield* new Validation({ message: "Name a file; list the repository with github tree.", userFacing: true });
   const contents = yield* readGithubRepositoryContents(repository.installationId, repository.fullName, file, at).pipe(
     Effect.catchIf(isGithubObservationNotFound,
@@ -121,15 +126,14 @@ export const repositoryFile = Effect.fn("GithubCli.repositoryFile")(function* (
     return yield* new Validation({ message: `${file} is a directory: list it with github tree.`, userFacing: true });
   }
   const read = { repository: repository.fullName, ref: at, path: file, size: contents.size };
-  if (contents.type !== "file") return { ...read, content: null, note: `${file} is a ${contents.type}, not a file.` };
+  const withheld = (note: string): GithubFileView => ({ ...read, note });
+  if (contents.type !== "file") return withheld(`${file} is a ${contents.type}, not a file.`);
   if (contents.size > FILE_BYTES || contents.encoding !== "base64" || contents.content === undefined) {
-    return { ...read, content: null, note: `${file} is ${contents.size} bytes, over the ${FILE_BYTES / 1024} KiB github cat reads.` };
+    return withheld(`${file} is ${contents.size} bytes, over the ${FILE_BYTES / 1024} KiB github cat reads.`);
   }
   const bytes = Buffer.from(contents.content, "base64");
   const decoded = bytes.includes(0) ? null : decode(bytes);
-  return decoded === null
-    ? { ...read, content: null, note: `${file} is binary; github cat reads text only.` }
-    : { ...read, content: decoded };
+  return decoded === null ? withheld(`${file} is binary; github cat reads text only.`) : { ...read, content: decoded } satisfies GithubFileView;
 });
 
 function decode(bytes: Uint8Array) {
@@ -140,16 +144,40 @@ function decode(bytes: Uint8Array) {
   }
 }
 
-export const githubTree = Effect.fn("GithubCli.tree")(function* (caller: Caller, repository: string, query: TreeQuery) {
-  return yield* repositoryTree(yield* readableBy(caller, repository), query);
-});
+/** A refusal in the RPC vocabulary the CLI and the agent read, for what GitHub or the request got wrong. */
+const missing = ({ message }: NotFound) => Effect.fail(new StoreRefused({ code: "not_found", message, details: null }));
+const invalid = ({ message }: Validation) => Effect.fail(new StoreRefused({ code: "invalid_argument", message, details: null }));
+
+/** `ployz github tree OWNER/REPO`: a readable repository's files. */
+const githubTree = Effect.fn("GithubCli.tree")(function* (caller: Caller, query: GithubTreeQuery) {
+  return yield* repositoryTree(yield* readableBy(caller, query.repository), query);
+}, Effect.catchTag("NotFound", missing));
 
 /** `ployz github cat OWNER/REPO PATH`: one file of a readable repository. */
-export const githubFile = Effect.fn("GithubCli.file")(function* (
-  caller: Caller, repository: string, path: string, ref: string | null,
-) {
-  return yield* repositoryFile(yield* readableBy(caller, repository), path, ref);
-});
+const githubFile = Effect.fn("GithubCli.file")(function* (caller: Caller, query: GithubFileQuery) {
+  return yield* repositoryFile(yield* readableBy(caller, query.repository), query);
+}, Effect.catchTags({ NotFound: missing, Validation: invalid }));
+
+/** What a tree or file read fails with: a refusal, or the database or GitHub failing. */
+type GithubReadError = Effect.Error<ReturnType<typeof githubFile>>;
+
+/** Reads of a repository's files, the Organization's to read; a refusal names what was wrong. */
+export class GithubRepositories extends Context.Service<GithubRepositories, {
+  readonly tree: (caller: Caller, query: GithubTreeQuery) => Effect.Effect<GithubTreeView, GithubReadError>;
+  readonly file: (caller: Caller, query: GithubFileQuery) => Effect.Effect<GithubFileView, GithubReadError>;
+}>()("ployz/GithubRepositories") {}
+
+/** GitHub itself, through the App's installations or as a public repository. */
+export const GithubRepositoriesLive = Layer.effect(GithubRepositories, Effect.gen(function* () {
+  const database = yield* Database;
+  const api = yield* GithubApi;
+  const provided = <A, E>(effect: Effect.Effect<A, E, Database | GithubApi>) =>
+    effect.pipe(Effect.provideService(Database, database), Effect.provideService(GithubApi, api));
+  return {
+    tree: (caller, query) => provided(githubTree(caller, query)),
+    file: (caller, query) => provided(githubFile(caller, query)),
+  };
+}));
 
 /** `ployz github disconnect ID`: forget one of the caller's installations; uninstalling the App happens on GitHub. */
 export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (caller: Caller, installationId: number) {

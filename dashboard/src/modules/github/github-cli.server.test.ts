@@ -70,28 +70,30 @@ it("names a ref GitHub doesn't have as not found", async () => {
 });
 
 it("returns a text file decoded", async () => {
-  const read = await run(repositoryFile(web, "Dockerfile", null),
+  const read = await run(repositoryFile(web, { path: "Dockerfile" }),
     contents("Dockerfile", { type: "file", size: 12, encoding: "base64", content: base64("FROM alpine\n") }));
   expect(read._tag === "Success" && read.success).toEqual(
     { repository: "acme/web", ref: "main", path: "Dockerfile", size: 12, content: "FROM alpine\n" });
 });
 
-it("returns no content, with a note, for a binary or oversized file", async () => {
-  const binary = await run(repositoryFile(web, "logo.png", null),
+it("withholds a binary or oversized file, with a note and no content", async () => {
+  const binary = await run(repositoryFile(web, { path: "logo.png" }),
     contents("logo.png", { type: "file", size: 4, encoding: "base64", content: base64(new Uint8Array([0x89, 0x50, 0, 0x47])) }));
-  expect(binary._tag === "Success" && binary.success).toMatchObject({ content: null, note: "logo.png is binary; github cat reads text only." });
-  const large = await run(repositoryFile(web, "dump.sql", null),
+  expect(binary._tag === "Success" && binary.success).toEqual(
+    { repository: "acme/web", ref: "main", path: "logo.png", size: 4, note: "logo.png is binary; github cat reads text only." });
+  const large = await run(repositoryFile(web, { path: "dump.sql" }),
     contents("dump.sql", { type: "file", size: FILE_BYTES + 1, encoding: "none", content: "" }));
-  expect(large._tag === "Success" && large.success).toMatchObject({
-    content: null, note: `dump.sql is ${FILE_BYTES + 1} bytes, over the 64 KiB github cat reads.`,
+  expect(large._tag === "Success" && large.success).toEqual({
+    repository: "acme/web", ref: "main", path: "dump.sql", size: FILE_BYTES + 1,
+    note: `dump.sql is ${FILE_BYTES + 1} bytes, over the 64 KiB github cat reads.`,
   });
 });
 
 it("refuses a directory, pointing at github tree", async () => {
-  const directory = await run(repositoryFile(web, "src", null), contents("src", [{ path: "src/a.ts" }]));
+  const directory = await run(repositoryFile(web, { path: "src" }), contents("src", [{ path: "src/a.ts" }]));
   expect(directory._tag === "Failure" && directory.failure).toMatchObject({
     _tag: "Validation", message: "src is a directory: list it with github tree.",
   });
-  const missing = await run(repositoryFile(web, "nope", null), {});
+  const missing = await run(repositoryFile(web, { path: "nope" }), {});
   expect(missing._tag === "Failure" && missing.failure).toMatchObject({ _tag: "NotFound", message: "No file nope at main in acme/web." });
 });

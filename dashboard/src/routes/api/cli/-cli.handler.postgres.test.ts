@@ -7,6 +7,7 @@ import { eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
+import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
@@ -128,7 +129,8 @@ const cliLayer = Effect.fn(function* (
   );
   const store = CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)));
   const runtime = overrides.runtime ?? OrganizationRuntimeLive.pipe(Layer.provide(services));
-  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), runtime, services, store);
+  const repositories = GithubRepositoriesLive.pipe(Layer.provide(services));
+  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), runtime, services, store, repositories);
 });
 
 /** The fields these tests read from `/api/cli` replies. */
@@ -173,6 +175,7 @@ type Reply = {
       readonly channel?: string;
       readonly effects?: ReadonlyArray<{ readonly kind: string; readonly name: string }>;
       readonly operation?: { readonly verb: string; readonly name: string };
+      readonly valid_children?: ReadonlyArray<string>;
     };
   };
   readonly id?: string;
@@ -536,6 +539,11 @@ it.live(
         const absent = yield* cli("GET", "github/tree?repository=nobody%2Fnothing", alice);
         assert.strictEqual(hidden.status, 404);
         assert.deepStrictEqual([absent.status, absent.text], [hidden.status, hidden.text]);
+        assert.deepStrictEqual(absent.json.error, {
+          code: "not_found",
+          message: "No repository by that name that this Organization can read.",
+          details: { valid_children: ["acme/web"] },
+        });
 
         const removed = yield* cli("DELETE", "github/7", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });

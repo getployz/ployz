@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideApproval, gateOperation } from "#/modules/approvals/approvals.server";
-import { disconnectGithub, githubBranches, githubConnection, githubFile, githubTree } from "#/modules/github/github-cli.server";
+import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
 import {
@@ -239,21 +239,23 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const query = new URL(request.url).searchParams;
       const repository = query.get("repository");
       const path = query.get("path");
+      const optional = (key: string) => query.get(key) ?? undefined;
       if (repository === null) return yield* new NotFound({ message: "Not found." });
-      switch (id) {
-        case "branches":
-          return yield* githubBranches(caller, repository);
-        case "tree":
-          return yield* githubTree(caller, repository, { path, ref: query.get("ref"), match: query.get("match") });
-        case "file":
-          if (path === null) return yield* new NotFound({ message: "Not found." });
-          return yield* githubFile(caller, repository, path, query.get("ref")).pipe(
-            Effect.catchTag("Validation", (invalid) =>
-              Effect.succeed(refusal({ code: "invalid_argument", message: invalid.message, details: null }))),
-          );
-        default:
-          return yield* new NotFound({ message: "Not found." });
-      }
+      const github = yield* GithubRepositories;
+      const read = Effect.gen(function* () {
+        switch (id) {
+          case "branches":
+            return yield* githubBranches(caller, repository);
+          case "tree":
+            return yield* github.tree(caller, { repository, path: optional("path"), ref: optional("ref"), match: optional("match") });
+          case "file":
+            if (path === null) return yield* new NotFound({ message: "Not found." });
+            return yield* github.file(caller, { repository, path, ref: optional("ref") });
+          default:
+            return yield* new NotFound({ message: "Not found." });
+        }
+      });
+      return yield* read.pipe(Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))));
     }
     case "DELETE github/:id": {
       const installation = Number(id);
