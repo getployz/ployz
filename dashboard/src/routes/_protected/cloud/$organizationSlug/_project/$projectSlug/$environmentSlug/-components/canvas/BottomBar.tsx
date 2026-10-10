@@ -163,12 +163,18 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shown ? <AttemptState deployment={shown} /> : offers.length ? (
-    <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />}
-      title={offers.map(({ source }) => source.kind === "pull_request" ? `PR #${source.number}` : source.name).join(", ")}
-      detail={OFFERED}>
-      <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
-    </Row>
+  ) : shown || offers.length ? (
+    <>
+      {shown ? <AttemptState deployment={shown} /> : null}
+      {/* A queued or running Deployment leaves the offers in view. */}
+      {offers.length ? (
+        <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />}
+          title={offers.map(({ source }) => source.kind === "pull_request" ? `PR #${source.number}` : source.name).join(", ")}
+          detail={OFFERED}>
+          <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
+        </Row>
+      ) : null}
+    </>
   ) : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 

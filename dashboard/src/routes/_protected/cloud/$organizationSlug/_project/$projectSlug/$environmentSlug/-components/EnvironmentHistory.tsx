@@ -9,6 +9,7 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
+import { plural } from "#/lib/plural";
 import { changeGroups } from "#/modules/config-store/store-deployments";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { diffQuery, requireView, storeViewOptions, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -101,7 +102,7 @@ export function EnvironmentHistory() {
               </div>
               {revision.predecessor === null ? <p className="mt-2 text-xs text-muted-foreground">Initial saved version. No earlier version is recorded to undo.</p> : (
                 <details className="mt-2">
-                  <summary className="cursor-pointer text-sm text-muted-foreground">{revision.total_count} changes</summary>
+                  <summary className="cursor-pointer text-sm text-muted-foreground">{plural(revision.total_count, "change")}</summary>
                   <ChangeGroups groups={changeGroups({ ...diff, changes: revision.changes }, [])} />
                 </details>
               )}
