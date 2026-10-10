@@ -9,7 +9,7 @@ import {
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
-import { participantsOf, type Planned, planFromCopies, undoClearsTarget } from "#/modules/volume-run/plan";
+import { participantsOf, type PlanInput, type Planned, planFromCopies, undoClearsTarget } from "#/modules/volume-run/plan";
 import { copyName, type Member } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -20,6 +20,7 @@ import {
   endRun,
   failRun,
   findHolder,
+  findSpec,
   type Holder,
   type MachineRef,
   observeMembers,
@@ -35,7 +36,7 @@ import {
 import { runInngestEffect } from "#/server/run.server";
 import type { AppServices } from "#/server/runtime.server";
 
-type StepTools = Pick<PloyzStepTools, "run" | "sleep">;
+type StepTools = Pick<PloyzStepTools, "run" | "sleep" | "sleepUntil">;
 type EffectRunner = typeof runInngestEffect;
 
 export const RUN_VOLUME_FUNCTION_ID = "run-volume";
@@ -95,12 +96,15 @@ export async function runVolume(
   // SAFETY: step output is the JSON of the Member list, and a Member holds only JSON values.
   const members = (await step.run("01-observe", () => runEffect(observeMembers(run, runId)))) as Member[];
   // SAFETY: the row's kind and args were written together from one VolumeRunInput.
-  const plan = planFromCopies({ kind: run.kind, args: run.args, volumeName: run.volumeName, orphan: run.orphan } as Parameters<typeof planFromCopies>[0], members);
+  const input = { kind: run.kind, args: run.args, volumeName: run.volumeName, orphan: run.orphan } as PlanInput;
+  const plan = planFromCopies(input, members);
   if (!plan.ok) {
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
     return { runId: run.id, refused: plan.refusal };
   }
   const { phase } = plan;
+  if (phase.kind === "restore") return restoreVolume({ step, runEffect, run, runId }, phase);
+  if (phase.kind === "demote") return demoteVolume({ step, runEffect, run, runId }, phase);
   const source = phase.kind === "move" ? (phase.start === "close" ? null : phase.writer) : phase.kind === "release" && phase.thaw ? phase.source : null;
   let holder: Holder | null = null;
   if (source !== null) {
@@ -111,7 +115,10 @@ export async function runVolume(
     }
     holder = found.holder;
   }
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase))));
+  const spec = holder === null
+    ? await step.run("02-spec", () => runEffect(findSpec(run, runId).pipe(Effect.map((found) => found.ok ? found.spec : null))))
+    : { namespace: holder.namespace, redactedSpec: holder.redactedSpec };
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), spec)));
   const at = (pos: Pos) => ({ lease, pos });
   const mirrorRequest = (pos: Pos) => ({ switch: at(pos), name: run.dockerVolume });
   const verb = (id: string, effect: ReturnType<typeof sendSwitch>) => step.run(id, () => runEffect(effect.pipe(Effect.asVoid)));
@@ -179,6 +186,44 @@ export async function runVolume(
   const rounds = await runRounds(steps, { A, B, writerAddress: writer.address });
   await step.run("05-finish", () => runEffect(endRun(run, runId, "done", null)));
   return { runId: run.id, rounds };
+}
+
+type RestoreSteps = Pick<RunSteps, "step" | "runEffect" | "run" | "runId">;
+
+/** Restore makes the one copy left the writer; it starts no Container, so the next Deploy runs the Service on it. */
+async function restoreVolume({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"restore">) {
+  const found = await step.run("02-spec", () => runEffect(findSpec(run, runId)));
+  if (!found.ok) {
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
+    return { runId: run.id, refused: found.refusal };
+  }
+  const { spec } = found;
+  const from = phase.from.machine;
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), spec)));
+  await step.run("03-restore", () => runEffect(sendSwitch(run, runId, from, {
+    command: "restore",
+    payload: { switch: { lease, pos: { seq: 3, round: 0, sub: 0 } }, name: run.dockerVolume, namespace: spec.namespace, resolved_spec: spec.redactedSpec },
+  }).pipe(Effect.asVoid)));
+  const lostAfter = phase.lostAfter;
+  const message = lostAfter === null
+    ? `data restored on ${from.name}`
+    : `data restored on ${from.name} from ${new Date(lostAfter.created_unix_seconds * 1000).toISOString()}; writes after that time are lost`;
+  await step.run("04-finish", () => runEffect(endRun(run, runId, "done", message)));
+  return { runId: run.id, restored: from.name };
+}
+
+/** An old copy takes writes no other copy will see, so the run seals it before anything else and asks for a rerun. */
+async function demoteVolume({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"demote">) {
+  const old = phase.old.machine;
+  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), null)));
+  await step.run("03-demote", () => runEffect(sendSwitch(run, runId, old, {
+    command: "demote_volume",
+    payload: { switch: { lease, pos: { seq: 3, round: 0, sub: 0 } }, name: run.dockerVolume },
+  }).pipe(Effect.asVoid)));
+  const message = `${copyName(run.volumeName, old.name)} was older than ${copyName(run.volumeName, phase.writer.machine.name)} and is now read-only; `
+    + `writes to it since ${phase.writer.machine.name} took over are lost. Run this again`;
+  await step.run("04-finish", () => runEffect(endRun(run, runId, "failed", message)));
+  return { runId: run.id, demoted: old.name };
 }
 
 const sourceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) =>

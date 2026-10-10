@@ -69,15 +69,21 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
         ("destroy_mirror", leased.clone(), "DestroyMirror"),
         ("forget_snapshots", leased.clone(), "ForgetSnapshots"),
         ("forget_lease", leased.clone(), "ForgetLease"),
+        ("demote_volume", leased.clone(), "DemoteVolume"),
         ("withdraw", source.clone(), "Withdraw"),
         ("freeze", source.clone(), "Freeze"),
         ("thaw", source, "Thaw"),
         ("hand_over", handed.clone(), "HandOver"),
         ("accept_hand_off", handed, "AcceptHandOff"),
         ("promote", service.clone(), "Promote"),
-        ("start_handed_container", service, "StartHandedContainer"),
+        (
+            "start_handed_container",
+            service.clone(),
+            "StartHandedContainer",
+        ),
         ("close", leased.clone(), "Close"),
         ("clear_final", leased, "ClearFinal"),
+        ("restore", service, "Restore"),
     ];
     for (command, payload, route) in cases {
         let path = volume_switch_path(&body(command, payload))
@@ -88,14 +94,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
 
 #[test]
 fn other_machine_verbs_are_refused_before_anything_is_sent() {
-    let cases = [
-        (
-            "restore",
-            json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() }),
-        ),
-        ("list_volumes", json!({})),
-        ("inspect_storage", json!({})),
-    ];
+    let cases = [("list_volumes", json!({})), ("inspect_storage", json!({}))];
     for (command, payload) in cases {
         let error = volume_switch_path(&body(command, payload))
             .expect_err(&format!("{command} is not a Volume run verb"));
