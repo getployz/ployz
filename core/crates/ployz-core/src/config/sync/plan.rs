@@ -63,6 +63,11 @@ pub struct Policy {
     /// The sender's own changes when it is not syncing into its own Parent; the other
     /// rows it only inherited and they start unticked. None when every row is its own.
     pub own: Option<BTreeSet<RowId>>,
+    /// Rows another proposal included in `into`: shown, never moved.
+    pub held: BTreeSet<RowId>,
+    /// The source cells this proposal last included: the base at these rows, in place
+    /// of what the pair last shared.
+    pub accepted: BTreeMap<RowId, Cell>,
 }
 
 /// Why a row never moves.
@@ -85,6 +90,8 @@ pub enum Why {
     Data,
     /// Either side marked it Never sync.
     NeverSynced,
+    /// Another proposal included it into `into`.
+    Included,
 }
 
 /// Whether a row moves, and how.
@@ -178,6 +185,8 @@ impl Policy {
             into_marks: BTreeSet::new(),
             live: BTreeSet::new(),
             own: None,
+            held: BTreeSet::new(),
+            accepted: BTreeMap::new(),
         }
     }
 
@@ -208,6 +217,12 @@ impl Policy {
 
     /// [`Self::verdict`] for a setting no Environment owns.
     fn moved(&self, row: &RowId, base: &Cell, from: &Cell, into: &Cell) -> Option<Verdict> {
+        let own = self.own.as_ref().is_none_or(|own| own.contains(row));
+        // Before the equal-value elision: a row another proposal holds is disclosed
+        // even when both bring the same value.
+        if self.held.contains(row) && from != base && own {
+            return Some(Verdict::Differs(Why::Included));
+        }
         if from == into || from == base {
             return None;
         }
@@ -229,7 +244,8 @@ impl Policy {
         } else {
             Verdict::Moves {
                 conflict,
-                ticked: self.own.as_ref().is_none_or(|own| own.contains(row)),
+                // A Sync never overwrites the receiver's own change unless picked.
+                ticked: own && !(conflict && self.way == Way::Sync),
                 arrives,
             }
         })
@@ -290,9 +306,11 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
     };
     let cells_at = |row: &RowId| {
         [
-            base_cells
-                .as_ref()
-                .map_or(&Cell::Absent, |cells| cells.at(row)),
+            policy.accepted.get(row).unwrap_or_else(|| {
+                base_cells
+                    .as_ref()
+                    .map_or(&Cell::Absent, |cells| cells.at(row))
+            }),
             from_cells.at(row),
             into_cells.at(row),
         ]
@@ -719,6 +737,54 @@ fn uses(env: &Intent, lineage: &str) -> bool {
                 .flat_map(SavedConfigFile::referenced_lineages),
         )
         .any(|used| used == lineage)
+}
+
+/// The rows of other nodes in `env` that use `lineage`: a variable or config file that
+/// references it, a Volume mount or a Config mount of it.
+#[must_use]
+pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
+    let mut rows = Vec::new();
+    for service in env.services.iter().filter(|s| s.lineage_id != lineage) {
+        let at = |at| RowId::of(&service.lineage_id, at);
+        for variable in &service.variables {
+            if variable
+                .value
+                .referenced_lineages()
+                .into_iter()
+                .any(|used| used == lineage)
+            {
+                rows.push(at(At::Variable(variable.key.clone())));
+            }
+        }
+        for attachment in &service.volume_attachments {
+            if env.volumes.iter().any(|v| {
+                v.resource_id == attachment.volume_resource_id && v.resource_lineage_id == lineage
+            }) {
+                rows.push(at(At::Mount(lineage.to_owned())));
+            }
+        }
+        for attachment in &service.config_attachments {
+            if env.configs.iter().any(|c| {
+                c.resource_id == attachment.config_resource_id && c.resource_lineage_id == lineage
+            }) {
+                rows.push(at(At::ConfigMount(lineage.to_owned())));
+            }
+        }
+    }
+    for config in env
+        .configs
+        .iter()
+        .filter(|c| c.resource_lineage_id != lineage)
+    {
+        for (name, file) in &config.files {
+            if file.referenced_lineages().into_iter().any(|used| used == lineage) {
+                rows.push(RowId::of(&config.resource_lineage_id, At::File(name.clone())));
+            }
+        }
+    }
+    rows.sort();
+    rows.dedup();
+    rows
 }
 
 /// A base that predates a row's node (or the Volume it mounts) starts it from `into`'s.
