@@ -2,10 +2,9 @@
 
 use std::fmt;
 
-use ployz_core::config::{SavedConfigIntent, SavedEnvironmentIntent, SavedVolumeIntent};
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use ts_rs::TS;
 
 use super::ServiceSetting;
@@ -125,95 +124,11 @@ pub(crate) enum NodeField<'a> {
     Config(&'a ConfigField),
 }
 
-impl NodeField<'_> {
-    /// This field of node `id` in `intent`, as JSON; none when `intent` lacks the node.
-    pub(crate) fn of(self, intent: &SavedEnvironmentIntent, id: &str) -> Option<Value> {
-        match self {
-            Self::Volume(field) => intent
-                .volumes
-                .iter()
-                .find(|volume| volume.resource_id == id)
-                .map(|volume| field.of(volume)),
-            Self::Config(field) => intent
-                .configs
-                .iter()
-                .find(|config| config.resource_id == id)
-                .map(|config| field.of(config)),
-        }
-    }
-
-    /// Give node `id` in `intent` this field as `from` has it.
-    ///
-    /// # Errors
-    /// Why not, when either lacks the node.
-    pub(crate) fn restore(
-        self,
-        intent: &mut SavedEnvironmentIntent,
-        from: &SavedEnvironmentIntent,
-        id: &str,
-    ) -> Result<(), String> {
-        match self {
-            Self::Volume(field) => {
-                let gone = || "discard the whole Volume instead".to_owned();
-                let from = from
-                    .volumes
-                    .iter()
-                    .find(|volume| volume.resource_id == id)
-                    .ok_or_else(gone)?;
-                let volume = intent
-                    .volumes
-                    .iter_mut()
-                    .find(|volume| volume.resource_id == id)
-                    .ok_or_else(gone)?;
-                field.restore(volume, from);
-            }
-            Self::Config(field) => {
-                let gone = || "discard the whole Config instead".to_owned();
-                let from = from
-                    .configs
-                    .iter()
-                    .find(|config| config.resource_id == id)
-                    .ok_or_else(gone)?;
-                let config = intent
-                    .configs
-                    .iter_mut()
-                    .find(|config| config.resource_id == id)
-                    .ok_or_else(gone)?;
-                field.restore(config, from);
-            }
-        }
-        Ok(())
-    }
-}
-
 /// A Config's field a change row names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConfigField {
     Name,
     File(ConfigFileName),
-}
-
-impl ConfigField {
-    fn of(&self, config: &SavedConfigIntent) -> Value {
-        match self {
-            Self::Name => json!(config.name),
-            Self::File(file) => json!(config.files.get(file)),
-        }
-    }
-
-    fn restore(&self, config: &mut SavedConfigIntent, from: &SavedConfigIntent) {
-        match self {
-            Self::Name => config.name.clone_from(&from.name),
-            Self::File(file) => match from.files.get(file) {
-                Some(kept) => {
-                    config.files.insert(file.clone(), kept.clone());
-                }
-                None => {
-                    config.files.remove(file);
-                }
-            },
-        }
-    }
 }
 
 /// A Volume's field a change row names.
@@ -230,24 +145,6 @@ impl VolumeField {
             Self::Name => "name",
             Self::Storage => "storage",
             Self::SharedWrites => "sharedWrites",
-        }
-    }
-
-    /// This field of `volume`, as JSON.
-    fn of(self, volume: &SavedVolumeIntent) -> Value {
-        match self {
-            Self::Name => json!(volume.name),
-            Self::Storage => json!(volume.storage),
-            Self::SharedWrites => json!(volume.shared_writes),
-        }
-    }
-
-    /// Give `volume` this field as `from` has it.
-    fn restore(self, volume: &mut SavedVolumeIntent, from: &SavedVolumeIntent) {
-        match self {
-            Self::Name => volume.name.clone_from(&from.name),
-            Self::Storage => volume.storage = from.storage,
-            Self::SharedWrites => volume.shared_writes = from.shared_writes,
         }
     }
 }

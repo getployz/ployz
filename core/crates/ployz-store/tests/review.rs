@@ -954,6 +954,35 @@ fn history_undo_restores_exact_config_files_and_preserves_later_mounts() {
             },
         )
         .unwrap();
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    let config_change = preview
+        .changes
+        .iter()
+        .find(|change| change.node.node_type == ployz_core::config::EnvironmentNodeType::Config)
+        .unwrap();
+    assert_eq!(
+        config_change
+            .restarts
+            .iter()
+            .map(ServiceName::as_str)
+            .collect::<Vec<_>>(),
+        ["web", "api"]
+    );
+    let file = config_change.settings.first().unwrap();
+    assert!(file.path.ends_with(".files.conf.d/site.conf"));
+    assert_eq!(
+        file.after,
+        json!({ "content": "same content", "mode": "0444", "uid": 0, "gid": 20 })
+    );
     stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
     let restored = store.read(&who, &query).unwrap();
     assert_eq!(restored.contents, before.contents);
@@ -1654,4 +1683,129 @@ fn undo_variable_creation_requires_consent_for_legacy_description_edit() {
     );
     assert_eq!(result.unwrap_err().code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(fixture.intent(), draft);
+}
+
+fn git_edit(store: &ConfigStore, who: &Actor, path: &str, next: Value) {
+    let trusted = Trusted {
+        repositories: vec![ployz_store::AuthorizedRepository {
+            repository: backend::repo_name("acme/web"),
+            repository_id: backend::repo_id(11),
+            access: ployz_core::config::ServiceGitAccess::Public,
+            default_branch: backend::git_branch("main"),
+            branches: vec![backend::git_branch("dev")],
+        }],
+        ..Trusted::default()
+    };
+    let mut changes = Vec::new();
+    if path == "web.repository"
+        && value(store, who, "web.image").is_some_and(|value| !value.is_null())
+    {
+        changes.push(Change::Unset {
+            path: SettingPath::parse("web.image").unwrap(),
+        });
+    }
+    changes.push(Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value: next,
+    });
+    store
+        .write_trusted(
+            who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes,
+            },
+            &trusted,
+        )
+        .unwrap();
+}
+
+#[test]
+fn undo_git_selection_preserves_a_later_branch_without_consent() {
+    let (store, who) = shop();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    set(&store, &who, "web.rootDir", json!("/old"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.rootDir", json!("/new"));
+    publish(&store, &who, None).unwrap();
+    git_edit(&store, &who, "web.branch", json!("dev"));
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+            },
+        )
+        .unwrap();
+    assert!(preview.overwritten.is_empty());
+    assert_eq!(preview.total_count, 1);
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: preview.action,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.rootDir"), Some(json!("/old")));
+    assert_eq!(value(&store, &who, "web.branch"), Some(json!("dev")));
+}
+
+#[test]
+fn undo_source_kind_requires_consent_for_a_later_branch_edit() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    git_edit(&store, &who, "web.repository", json!("acme/web"));
+    publish(&store, &who, None).unwrap();
+    git_edit(&store, &who, "web.branch", json!("dev"));
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+            },
+        )
+        .unwrap();
+    assert_eq!(preview.overwritten, ["web.branch"]);
+    let source = preview
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .find(|row| row.path == "web.source")
+        .unwrap();
+    assert_eq!(
+        source.before.get("branch"),
+        Some(&json!({ "type": "connected", "name": "dev" }))
+    );
+    let command = ployz_store::StageHistory {
+        environment: EnvironmentRef::default(),
+        revision: Revision(2),
+        action: preview.action,
+        version: preview.version,
+        accept_overwrite: false,
+    };
+    assert_eq!(
+        store.write(&who, &command).unwrap_err().code,
+        RpcErrorCode::ConfirmationRequired
+    );
+    assert_eq!(value(&store, &who, "web.branch"), Some(json!("dev")));
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                accept_overwrite: true,
+                ..command
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
 }

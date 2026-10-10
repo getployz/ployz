@@ -5,6 +5,7 @@
 //! (what the Change Set compares against). Publish and Discard recompute the review
 //! under the Environment's lock and refuse a version that no longer matches.
 
+mod authored;
 pub(crate) mod diff;
 pub(crate) mod history;
 pub(crate) mod publish;
@@ -84,7 +85,7 @@ impl DiffView {
                 if !current
                     .settings
                     .iter()
-                    .any(|runtime| same_setting(runtime, row))
+                    .any(|runtime| runtime.path == row.path)
                 {
                     current.settings.push(row.clone());
                 }
@@ -95,43 +96,6 @@ impl DiffView {
             }
         }
         changes
-    }
-}
-
-pub(crate) fn same_setting(left: &ServiceSettingChange, right: &ServiceSettingChange) -> bool {
-    match (&left.row, &right.row) {
-        (Some(left_id), Some(right_id)) if left_id == right_id => match left_id.at() {
-            At::Variable(_) => variable_field(left) == variable_field(right),
-            At::Setting(ployz_core::config::Setting::Routes) => {
-                let route = |row: &ServiceSettingChange| {
-                    row.before
-                        .get("id")
-                        .or_else(|| row.after.get("id"))
-                        .cloned()
-                };
-                route(left) == route(right)
-            }
-            At::Node
-            | At::Data
-            | At::Name
-            | At::Storage
-            | At::File(_)
-            | At::Setting(_)
-            | At::Mount(_)
-            | At::ConfigMount(_) => true,
-        },
-        (Some(_), Some(_)) => false,
-        _ => left.path == right.path,
-    }
-}
-
-pub(crate) fn variable_field(row: &ServiceSettingChange) -> &'static str {
-    if row.path.ends_with(".exported") {
-        "exported"
-    } else if row.path.ends_with(".description") {
-        "description"
-    } else {
-        "value"
     }
 }
 
@@ -207,264 +171,11 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     Ok(Review { view, saved, head })
 }
 
-pub(crate) fn saved_comparison(
+fn saved_comparison(
     environment: &Environment,
     baseline: &SavedEnvironmentIntent,
-) -> Result<DiffView, RpcError> {
-    let head = Head {
-        token: "saved".to_owned(),
-        intent: baseline.clone(),
-        applied: baseline.clone(),
-    };
-    let mut view = compare(
-        environment,
-        None,
-        &head,
-        &crate::scope::empty(environment.summary.name.as_str()),
-    )?;
-    authored_fields(&mut view, &environment.working, baseline)?;
-    for change in &mut view.changes {
-        change.comparison = Some(ReviewComparisonRole::Saved);
-    }
-    Ok(view)
-}
-
-fn authored_fields(
-    view: &mut DiffView,
-    working: &SavedEnvironmentIntent,
-    baseline: &SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    if working.version != baseline.version || working.environment_slug != baseline.environment_slug
-    {
-        return Err(error::conflict(
-            "History cannot change the Environment identity or document schema",
-            json!({}),
-        ));
-    }
-    let existing: std::collections::BTreeSet<_> = view
-        .changes
-        .iter()
-        .flat_map(|change| change.settings.iter().map(|row| row.path.clone()))
-        .collect();
-    let names = crate::config_item::names_in(&[working, baseline]);
-    let mut add =
-        |node: ReviewNodeIdentity, lineage: &str, name: &str, row: ServiceSettingChange| {
-            view.total_count += 1;
-            if let Some(change) = view.changes.iter_mut().find(|change| change.node == node) {
-                change.settings.push(row);
-            } else {
-                view.changes.push(NodeChange {
-                    node,
-                    name: name.to_owned(),
-                    row: RowId::node(lineage),
-                    lifecycle: ReviewLifecycleKind::Update,
-                    comparison: Some(ReviewComparisonRole::Saved),
-                    settings: vec![row],
-                    data: None,
-                    restarts: Vec::new(),
-                });
-            }
-        };
-    for service in &working.services {
-        let Some(before) = baseline
-            .services
-            .iter()
-            .find(|before| before.id == service.id)
-        else {
-            continue;
-        };
-        if service.lineage_id != before.lineage_id
-            || service.config.version != before.config.version
-        {
-            return Err(error::conflict(
-                "History cannot change a Service's stable identity or setting schema",
-                json!({ "service": service.slug }),
-            ));
-        }
-        let node = ReviewNodeIdentity {
-            node_type: EnvironmentNodeType::Service,
-            id: service.id.clone(),
-        };
-        if service.config.template != before.config.template {
-            add(
-                node.clone(),
-                &service.lineage_id,
-                &service.slug,
-                ServiceSettingChange {
-                    path: format!("{}.template", service.slug),
-                    config_name: None,
-                    kind: ChangeKind::Update,
-                    before: json!(before.config.template),
-                    after: json!(service.config.template),
-                    can_restore: true,
-                    row: None,
-                },
-            );
-        }
-        let source = |source: &ployz_core::config::ServiceSource| {
-            let mut value = json!(source);
-            value
-                .as_object_mut()
-                .expect("source object")
-                .remove("branch");
-            value
-        };
-        let path = format!("{}.source", service.slug);
-        if source(&service.config.source) != source(&before.config.source)
-            && !existing.contains(&path)
-        {
-            add(
-                node.clone(),
-                &service.lineage_id,
-                &service.slug,
-                ServiceSettingChange {
-                    path,
-                    config_name: None,
-                    kind: ChangeKind::Update,
-                    before: shown("source", source(&before.config.source)),
-                    after: shown("source", source(&service.config.source)),
-                    can_restore: true,
-                    row: Some(RowId::of(
-                        &service.lineage_id,
-                        At::Setting(ployz_core::config::Setting::Source),
-                    )),
-                },
-            );
-        }
-        let common_order =
-            |left: &ployz_core::config::AuthoredServiceConfig,
-             right: &ployz_core::config::AuthoredServiceConfig| {
-                left.routes
-                    .iter()
-                    .filter(|route| right.routes.iter().any(|other| other.id == route.id))
-                    .map(|route| route.id.clone())
-                    .collect::<Vec<_>>()
-            };
-        if common_order(&service.config, &before.config)
-            != common_order(&before.config, &service.config)
-        {
-            return Err(error::conflict(
-                "History cannot restore a route order change",
-                json!({ "service": service.slug }),
-            ));
-        }
-        for variable in &service.variables {
-            let Some(old) = before.variables.iter().find(|old| old.key == variable.key) else {
-                continue;
-            };
-            let path = format!("{}.env.{}", service.slug, variable.key);
-            if (variable.id != old.id
-                || variable.value != old.value
-                || variable.value_fingerprint != old.value_fingerprint)
-                && !existing.contains(&path)
-            {
-                add(
-                    node.clone(),
-                    &service.lineage_id,
-                    &service.slug,
-                    ServiceSettingChange {
-                        path,
-                        config_name: None,
-                        kind: ChangeKind::Update,
-                        before: crate::variables::shown(old, &names),
-                        after: crate::variables::shown(variable, &names),
-                        can_restore: true,
-                        row: Some(RowId::of(
-                            &service.lineage_id,
-                            At::Variable(variable.key.clone()),
-                        )),
-                    },
-                );
-            }
-            if variable.description != old.description {
-                add(
-                    node.clone(),
-                    &service.lineage_id,
-                    &service.slug,
-                    ServiceSettingChange {
-                        path: format!("{}.env.{}.description", service.slug, variable.key),
-                        config_name: None,
-                        kind: ChangeKind::Update,
-                        before: json!(old.description),
-                        after: json!(variable.description),
-                        can_restore: true,
-                        row: Some(RowId::of(
-                            &service.lineage_id,
-                            At::Variable(variable.key.clone()),
-                        )),
-                    },
-                );
-            }
-            if variable.exported != old.exported {
-                add(
-                    node.clone(),
-                    &service.lineage_id,
-                    &service.slug,
-                    ServiceSettingChange {
-                        path: format!("{}.env.{}.exported", service.slug, variable.key),
-                        config_name: None,
-                        kind: ChangeKind::Update,
-                        before: json!(old.exported),
-                        after: json!(variable.exported),
-                        can_restore: true,
-                        row: Some(RowId::of(
-                            &service.lineage_id,
-                            At::Variable(variable.key.clone()),
-                        )),
-                    },
-                );
-            }
-        }
-    }
-    for volume in &working.volumes {
-        let Some(before) = baseline
-            .volumes
-            .iter()
-            .find(|before| before.resource_id == volume.resource_id)
-        else {
-            continue;
-        };
-        if volume.resource_lineage_id != before.resource_lineage_id {
-            return Err(error::conflict(
-                "History cannot change a Volume's stable lineage",
-                json!({ "volume": volume.name }),
-            ));
-        }
-        if volume.shared_writes == before.shared_writes {
-            continue;
-        }
-        add(
-            ReviewNodeIdentity {
-                node_type: EnvironmentNodeType::Volume,
-                id: volume.resource_id.clone(),
-            },
-            &volume.resource_lineage_id,
-            &volume.name,
-            ServiceSettingChange {
-                path: format!("volumes.{}.sharedWrites", volume.name),
-                config_name: None,
-                kind: ChangeKind::Update,
-                before: json!(before.shared_writes),
-                after: json!(volume.shared_writes),
-                can_restore: true,
-                row: None,
-            },
-        );
-    }
-    for config in &working.configs {
-        if let Some(before) = baseline
-            .configs
-            .iter()
-            .find(|before| before.resource_id == config.resource_id)
-            && config.resource_lineage_id != before.resource_lineage_id
-        {
-            return Err(error::conflict(
-                "History cannot change a Config's stable lineage",
-                json!({ "config": config.name }),
-            ));
-        }
-    }
-    Ok(())
+) -> Result<authored::Summary, RpcError> {
+    authored::compare(baseline, &environment.working)
 }
 
 fn compare(

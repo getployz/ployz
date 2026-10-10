@@ -525,6 +525,10 @@ pub(crate) fn save_working_from(
     from: Option<&SavedEnvironmentIntent>,
 ) -> Result<(), RpcError> {
     validate_and_refresh_working_from(tx, environment, from)?;
+    persist_working(tx, environment)
+}
+
+fn persist_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
         "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
@@ -538,6 +542,30 @@ pub(crate) fn save_working_from(
         ],
     )?;
     Ok(())
+}
+
+pub(crate) struct ValidatedWorking {
+    environment: Environment,
+}
+
+impl ValidatedWorking {
+    pub(crate) fn environment(&self) -> &Environment {
+        &self.environment
+    }
+    pub(crate) fn persist(mut self, tx: &mut dyn Tx) -> Result<EnvironmentSummary, RpcError> {
+        persist_working(tx, &mut self.environment)?;
+        Ok(self.environment.summary)
+    }
+}
+
+pub(crate) fn validated_working_from(
+    tx: &mut dyn Tx,
+    mut environment: Environment,
+    from: Option<&SavedEnvironmentIntent>,
+) -> Result<ValidatedWorking, RpcError> {
+    validate_and_refresh_working_from(tx, &mut environment, from)?;
+    environment.working = ployz_core::config::canonicalize_environment_intent(environment.working);
+    Ok(ValidatedWorking { environment })
 }
 
 pub(crate) fn validate_and_refresh_working_from(

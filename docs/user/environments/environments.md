@@ -83,6 +83,8 @@ it first. To set it as you sync, type production's value in the secret's row of 
 
 To keep a setting out of every sync, like a variable each environment sets its own way, click
 **Never sync** beside it in the dialog, or in the variable's ⋮ menu.
+The exclusion takes effect immediately. If it also discards an arrived change, the
+reversal stays in the draft until you Save it.
 
 ## Other choices
 

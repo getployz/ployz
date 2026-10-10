@@ -365,6 +365,7 @@ _Avoid_: Update, pull, rebase, inherit
 
 **Never sync**:
 A mark an Environment puts on one of its settings: Sync never carries it from that Environment and never changes it there. It joins sizing, custom domains, generated addresses, the Git branch and Volume data, none of which ever sync. A Branch of the Environment still gets the Environment's value; the mark doesn't carry into Branches. A Config's marks are per file.
+The exclusion takes effect immediately; a discarded arrival stages a Working State reversal, and only explicit Save records it in Saved State.
 _Avoid_: Pin, lock, local override
 
 **Deploy Snapshot**:

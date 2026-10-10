@@ -1,10 +1,5 @@
-use std::collections::BTreeSet;
-
 use ployz_core::RpcError;
-use ployz_core::config::{
-    EnvironmentNodeType, ReviewLifecycleKind, SavedEnvironmentIntent, SavedVariableValue,
-    canonicalize_environment_intent,
-};
+use ployz_core::config::SavedEnvironmentIntent;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -143,9 +138,15 @@ pub(crate) fn preview(
     query: &HistoryPreviewQuery,
 ) -> Result<HistoryPreview, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
-    let review = review::review(tx, &environment)?;
-    let target = candidate(tx, &environment, query.revision, query.action)?;
-    preview_of(&environment, &review, &target, query.revision, query.action)
+    let reviewed = review::review(tx, &environment)?;
+    let prepared = prepare(tx, &environment, &reviewed, query.revision, query.action)?;
+    Ok(preview_of(
+        &environment,
+        &reviewed,
+        &prepared,
+        query.revision,
+        query.action,
+    ))
 }
 
 pub(crate) fn stage(
@@ -153,7 +154,7 @@ pub(crate) fn stage(
     who: &Actor,
     command: &StageHistory,
 ) -> Result<HistoryStaged, RpcError> {
-    let mut environment = scope::lock(tx, who, &command.environment)?;
+    let environment = scope::lock(tx, who, &command.environment)?;
     let reviewed = review::review(tx, &environment)?;
     if command.version != reviewed.view.version {
         return Err(error::conflict(
@@ -161,29 +162,22 @@ pub(crate) fn stage(
             json!({ "diff": reviewed.view }),
         ));
     }
-    let target = candidate(tx, &environment, command.revision, command.action)?;
-    let preview = preview_of(
+    let prepared = prepare(
+        tx,
         &environment,
         &reviewed,
-        &target,
         command.revision,
         command.action,
     )?;
-    if !preview.overwritten.is_empty() && !command.accept_overwrite {
+    if !prepared.overwritten().is_empty() && !command.accept_overwrite {
         return Err(error::confirmation_required(
             "This History action overwrites draft changes",
-            json!({ "history_preview": preview }),
+            json!({ "history_preview": preview_of(&environment, &reviewed, &prepared, command.revision, command.action) }),
         ));
     }
-    let changed = canonicalize_environment_intent(environment.working.clone()) != target;
-    if changed {
-        crate::branch::rewind(tx, &environment.summary.id, (&environment.working, &target))?;
-        let restored = snapshot(tx, &environment, command.revision)?;
-        environment.working = target;
-        scope::save_working_from(tx, &mut environment, Some(&restored))?;
-    }
+    let (environment, changed) = prepared.persist(tx)?;
     Ok(HistoryStaged {
-        environment: environment.summary,
+        environment,
         saved: reviewed.view.saved,
         changed,
     })
@@ -211,227 +205,52 @@ fn snapshot(
         .intent(0, "Saved State")
 }
 
-fn candidate(
+fn prepare(
     tx: &mut dyn Tx,
     environment: &Environment,
+    reviewed: &review::Review,
     revision: Revision,
     action: HistoryAction,
-) -> Result<SavedEnvironmentIntent, RpcError> {
+) -> Result<super::authored::Prepared, RpcError> {
     let selected = snapshot(tx, environment, revision)?;
-    let target = match action {
-        HistoryAction::Restore => selected.clone(),
+    let previous = match action {
+        HistoryAction::Restore => None,
         HistoryAction::Undo => {
             let rows = tx.query("SELECT revision, intent FROM config_saved WHERE environment_id = ?1 AND revision < ?2 ORDER BY revision DESC LIMIT 1", &[environment.summary.id.as_str().into(), revision_param(revision)?.into()])?;
-            let previous = rows
-                .first()
-                .ok_or_else(|| {
-                    error::conflict(
-                        "This saved version has no recorded predecessor to undo",
-                        json!({ "revision": revision }),
-                    )
-                })?
-                .intent(1, "Saved State")?;
-            undo(environment, &selected, &previous)?
+            Some(
+                rows.first()
+                    .ok_or_else(|| {
+                        error::conflict(
+                            "This saved version has no recorded predecessor to undo",
+                            json!({ "revision": revision }),
+                        )
+                    })?
+                    .intent(1, "Saved State")?,
+            )
         }
     };
-    prevent_plaintext(&environment.working, &target)?;
-    let mut candidate = Environment {
-        summary: environment.summary.clone(),
-        working: target,
-        live: environment.live.clone(),
-    };
-    scope::validate_and_refresh_working_from(tx, &mut candidate, Some(&selected))?;
-    crate::volume::check_storage(tx, &environment.summary.id, &candidate.working)?;
-    Ok(canonicalize_environment_intent(candidate.working))
+    super::authored::prepare_history(
+        tx,
+        environment,
+        reviewed.saved.as_ref().map(|saved| &saved.intent),
+        &selected,
+        previous.as_ref(),
+    )
 }
-
-fn undo(
-    environment: &Environment,
-    selected: &SavedEnvironmentIntent,
-    previous: &SavedEnvironmentIntent,
-) -> Result<SavedEnvironmentIntent, RpcError> {
-    let mut at = Environment {
-        summary: environment.summary.clone(),
-        working: selected.clone(),
-        live: environment.live.clone(),
-    };
-    let changes = review::saved_comparison(&at, previous)?;
-    at.working = environment.working.clone();
-    for change in changes.changes {
-        review::publish::restore_change_into(&mut at.working, previous, selected, &change)?;
-    }
-    Ok(at.working)
-}
-
-pub(crate) fn prevent_plaintext(
-    current: &SavedEnvironmentIntent,
-    target: &SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    for service in &current.services {
-        let Some(restored) = target
-            .services
-            .iter()
-            .find(|restored| restored.id == service.id)
-        else {
-            continue;
-        };
-        for variable in &service.variables {
-            if matches!(
-                variable.value,
-                SavedVariableValue::Secret { .. } | SavedVariableValue::SecretWithoutValue
-            ) && restored.variables.iter().any(|next| {
-                next.key == variable.key
-                    && matches!(
-                        next.value,
-                        SavedVariableValue::Literal { .. } | SavedVariableValue::Template { .. }
-                    )
-            }) {
-                return Err(error::conflict(
-                    "A secret cannot become plain text through History",
-                    json!({ "path": format!("{}.env.{}", restored.slug, variable.key) }),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn preview_of(
     environment: &Environment,
     reviewed: &review::Review,
-    target: &SavedEnvironmentIntent,
+    prepared: &super::authored::Prepared,
     revision: Revision,
     action: HistoryAction,
-) -> Result<HistoryPreview, RpcError> {
-    let candidate = Environment {
-        summary: environment.summary.clone(),
-        working: target.clone(),
-        live: environment.live.clone(),
-    };
-    let changes = review::saved_comparison(&candidate, &environment.working)?;
-    let mut overwritten = BTreeSet::new();
-    for change in &changes.changes {
-        let Some(draft) = reviewed
-            .view
-            .draft_changes
-            .iter()
-            .find(|draft| draft.node == change.node)
-        else {
-            continue;
-        };
-        if draft.lifecycle != ReviewLifecycleKind::Update {
-            overwritten.insert(node_path(draft));
-        } else if change.lifecycle != ReviewLifecycleKind::Update {
-            overwritten.extend(draft.settings.iter().map(|row| row.path.clone()));
-        } else {
-            let renamed = format!("{}.name", draft.name);
-            for row in &change.settings {
-                if row
-                    .row
-                    .as_ref()
-                    .is_some_and(|row| matches!(row.at(), ployz_core::config::At::Variable(_)))
-                {
-                    continue;
-                }
-                if let Some(draft) = draft.settings.iter().find(|draft| {
-                    review::same_setting(draft, row)
-                        || (draft.path == renamed && row.path == format!("{}.name", change.name))
-                }) {
-                    overwritten.insert(draft.path.clone());
-                }
-            }
-        }
-    }
-    if let Some(saved) = &reviewed.saved {
-        for service in &environment.working.services {
-            let Some(baseline) = saved
-                .intent
-                .services
-                .iter()
-                .find(|baseline| baseline.id == service.id)
-            else {
-                continue;
-            };
-            let Some(restored) = target
-                .services
-                .iter()
-                .find(|restored| restored.id == service.id)
-            else {
-                continue;
-            };
-            let keys: BTreeSet<_> = baseline
-                .variables
-                .iter()
-                .chain(&service.variables)
-                .chain(&restored.variables)
-                .map(|variable| &variable.key)
-                .collect();
-            for key in keys {
-                let before = baseline
-                    .variables
-                    .iter()
-                    .find(|variable| variable.key == *key);
-                let current = service
-                    .variables
-                    .iter()
-                    .find(|variable| variable.key == *key);
-                let after = restored
-                    .variables
-                    .iter()
-                    .find(|variable| variable.key == *key);
-                let same_value =
-                    |left: Option<&ployz_core::config::SavedVariableIntent>,
-                     right: Option<&ployz_core::config::SavedVariableIntent>| {
-                        match (left, right) {
-                            (Some(left), Some(right)) => {
-                                left.value == right.value
-                                    && left.value_fingerprint == right.value_fingerprint
-                            }
-                            (None, None) => true,
-                            _ => false,
-                        }
-                    };
-                let same_id =
-                    |left: Option<&ployz_core::config::SavedVariableIntent>,
-                     right: Option<&ployz_core::config::SavedVariableIntent>| {
-                        left.map(|variable| &variable.id) == right.map(|variable| &variable.id)
-                    };
-                if (!same_value(before, current) && !same_value(after, current))
-                    || (!same_id(before, current) && !same_id(after, current))
-                    || (before.is_none() && current.is_some() && current != after)
-                {
-                    overwritten.insert(format!("{}.env.{key}", service.slug));
-                }
-                if let Some(current) = current {
-                    if before.is_some_and(|before| before.description != current.description)
-                        && after.is_none_or(|after| after.description != current.description)
-                    {
-                        overwritten.insert(format!("{}.env.{key}.description", service.slug));
-                    }
-                    if before.is_some_and(|before| before.exported != current.exported)
-                        && after.is_none_or(|after| after.exported != current.exported)
-                    {
-                        overwritten.insert(format!("{}.env.{key}.exported", service.slug));
-                    }
-                }
-            }
-        }
-    }
-    Ok(HistoryPreview {
+) -> HistoryPreview {
+    HistoryPreview {
         environment: environment.summary.clone(),
         revision,
         action,
         version: reviewed.view.version.clone(),
-        changes: changes.changes,
-        total_count: changes.total_count,
-        overwritten: overwritten.into_iter().collect(),
-    })
-}
-
-fn node_path(change: &NodeChange) -> String {
-    match change.node.node_type {
-        EnvironmentNodeType::Service => change.name.clone(),
-        EnvironmentNodeType::Volume => format!("volumes.{}", change.name),
-        EnvironmentNodeType::Config => format!("configs.@{}", change.node.id),
+        changes: prepared.preview().changes.clone(),
+        total_count: prepared.preview().total_count,
+        overwritten: prepared.overwritten().to_vec(),
     }
 }
