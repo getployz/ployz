@@ -56,9 +56,12 @@ class VolumeFences:
         result = self.cli("--json", "debug", "volume-rpc", self.machine["name"], request, check=check)
         return result.returncode, json.loads(result.stdout)
 
-    def adopt(self, lease, *, check=True):
-        return self.rpc("adopt_lease", dict(name=self.name, lease=lease,
-                                           not_after_unix_seconds=int(time.time()) + 3600), check=check)
+    def fenced(self, command, lease, *, check=True, **fields):
+        switch = dict(lease=lease, pos=dict(seq=3, round=0, sub=0))
+        return self.rpc(command, dict(switch=switch, name=self.name, **fields), check=check)
+
+    def declare(self, lease, *, check=True):
+        return self.fenced("declare_mirror", lease, check=check, refquota_bytes=67108864)
 
     def record(self, minimum=2):
         value = self.guest("zfs", "get", "-H", "-o", "value", "ployz:lease." + self.name,
@@ -68,12 +71,11 @@ class VolumeFences:
         return value
 
     def prepare_lease(self):
-        self.guest("docker", "volume", "create", "-d", "ployz", "-o", "size=64m", self.name)
-        for lease in (1, 2):
-            _, reply = self.adopt(lease)
+        for reply in (self.declare(1)[1], self.fenced("destroy_mirror", 2)[1]):
             assert reply["response"]["payload"]["decision"] == "adopt", reply
         record = self.record()
-        assert record == "2:2.0.0:closed", record
+        assert record == "2:3.0.0:closed", record
+        self.guest("docker", "volume", "create", "-d", "ployz", "-o", "size=64m", self.name)
         return record
 
     def remove_volume(self, before):
@@ -131,7 +133,7 @@ class VolumeFences:
 
     def stale_lease(self):
         before = self.record()
-        code, reply = self.adopt(1, check=False)
+        code, reply = self.declare(1, check=False)
         assert code != 0 and reply.get("error", {}).get("details", {}).get("reason") == "stale_lease", reply
         assert self.record() == before, "The stale request changed the lease record"
 

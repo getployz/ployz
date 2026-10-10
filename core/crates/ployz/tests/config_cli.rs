@@ -2998,3 +2998,63 @@ fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
     let refused = error(&store, &["env", "sync", "--to", "pr-5", "--at-merge"]);
     assert_eq!(refused["code"], json!("invalid_argument"));
 }
+
+#[test]
+fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_restarts() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let put = |content: &str| {
+        std::fs::write(file.path(), content).unwrap();
+        let from = file.path().to_str().unwrap();
+        ok(
+            &store,
+            &["config", "put", "sentry", "config.yml", "--from", from],
+        );
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["service", "add", "worker", "--image", "worker:1"]);
+    ok(
+        &store,
+        &[
+            "config",
+            "add",
+            "sentry",
+            "--mount",
+            "web:/etc/sentry",
+            "--mount",
+            "worker:/etc/sentry",
+        ],
+    );
+    put("url: one\n");
+    let row = |listing: &str| {
+        listing
+            .lines()
+            .find(|line| line.starts_with("sentry"))
+            .map(|line| line.split_whitespace().last().unwrap().to_owned())
+    };
+    assert_eq!(row(&human(&["config", "ls"])).as_deref(), Some("new"));
+    assert!(
+        human(&["config", "inspect", "sentry"])
+            .lines()
+            .any(|line| line.starts_with("next deploy") && line.ends_with(" new"))
+    );
+
+    applied(&store, "production");
+    assert_eq!(row(&human(&["config", "ls"])).as_deref(), Some("-"));
+
+    put("url: two\n");
+    assert_eq!(
+        ok(&store, &["diff"])["changes"][0]["restarts"],
+        json!(["web", "worker"])
+    );
+    assert!(human(&["diff"]).contains("\n  restarts web, worker\n"));
+    assert!(human(&["deploy", "--plan"]).contains("\n  restarts web, worker\n"));
+    assert!(human(&["deploy", "web", "--plan"]).contains("\n  restarts web\n"));
+}

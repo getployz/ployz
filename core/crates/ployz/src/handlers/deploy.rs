@@ -687,6 +687,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                     super::store::shown(&row.after)
                 ));
             }
+            super::review::restarts(change);
         }
         if !plan.unresolved.is_empty() {
             ui::stream(format_args!(

@@ -157,11 +157,11 @@ pub enum When {
 pub struct NamedRow {
     /// What commands name it by; stable across renames.
     pub(crate) row: RowId,
-    /// Its Service or Volume.
+    /// Its Service, Volume or Config.
     pub(crate) node: NodeName,
-    /// Whether `node` is a Service or a Volume.
+    /// Whether `node` is a Service, a Volume or a Config.
     pub(crate) kind: EnvironmentNodeType,
-    /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+    /// Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
     /// node itself.
     pub(crate) name: Option<String>,
 }
@@ -258,6 +258,9 @@ pub(crate) fn resolve(asked: &RowRef, rows: &[NamedRow]) -> Result<BTreeSet<RowI
         .collect();
     if exact.len() > 1 {
         return Err(several(asked, &exact, rows));
+    }
+    if exact.iter().any(|row| matches!(row.at(), At::File(_))) {
+        return Ok(exact);
     }
     let under = format!("{name}.");
     let found: BTreeSet<RowId> = rows
@@ -610,6 +613,11 @@ pub(crate) fn lineage_named(
             .iter()
             .find(|volume| volume.name == name.as_str())
             .map(|volume| volume.resource_lineage_id.clone()),
+        NodeName::Config(name) => intent
+            .configs
+            .iter()
+            .find(|config| name.matches(config))
+            .map(|config| config.resource_lineage_id.clone()),
     };
     found.ok_or_else(|| {
         let names = names(intent);
@@ -621,7 +629,6 @@ pub(crate) fn lineage_named(
     })
 }
 
-/// Every node of `intent` by name: Services as `SERVICE`, Volumes as `volumes.NAME`.
 fn names(intent: &SavedEnvironmentIntent) -> Vec<String> {
     intent
         .services
@@ -632,6 +639,12 @@ fn names(intent: &SavedEnvironmentIntent) -> Vec<String> {
                 .volumes
                 .iter()
                 .map(|volume| format!("volumes.{}", volume.name)),
+        )
+        .chain(
+            intent
+                .configs
+                .iter()
+                .map(|config| format!("configs.{}", config.name)),
         )
         .collect()
 }
@@ -650,6 +663,13 @@ pub(crate) fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
                 .find(|volume| volume.resource_lineage_id == lineage)
                 .map(|volume| volume.name.clone())
         })
+        .or_else(|| {
+            intent
+                .configs
+                .iter()
+                .find(|config| config.resource_lineage_id == lineage)
+                .map(|config| config.name.to_string())
+        })
 }
 
 /// The node of lineage `lineage` in `intent`, by name.
@@ -667,6 +687,13 @@ pub(crate) fn node_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
             .find(|volume| volume.resource_lineage_id == lineage)
             .and_then(|volume| VolumeName::parse(volume.name.as_str()).ok())
             .map(NodeName::Volume)
+            .or_else(|| {
+                intent
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_lineage_id == lineage)
+                    .map(|config| NodeName::Config(config.name.clone().into()))
+            })
     })
 }
 

@@ -1,4 +1,4 @@
-import type { Change, ConfigCommand, DiffView, EnvironmentRef, VolumeKind } from "@ployz/sdk";
+import type { Change, ConfigCommand, DiffView, EnvironmentRef, EnvironmentView, ServiceListing, VolumeListing, VolumeKind } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingText } from "./store-services";
 
@@ -6,6 +6,16 @@ import { settingText } from "./store-services";
 export function mountChange(service: string, volume: string, path: string | null): Change {
   const at = `${service}.mounts.${volume}`;
   return path === null ? { op: "unset", path: at } : { op: "set", path: at, value: path };
+}
+
+/** Listings with the writer's pending mount Settings, including new and unset rows. */
+export function effectiveVolumes(volumes: readonly VolumeListing[], services: readonly ServiceListing[], view: EnvironmentView): VolumeListing[] {
+  return volumes.map((volume) => ({ ...volume, mounts: services.flatMap((service) => {
+    if (service.change === "delete" || volume.change === "delete") return [];
+    const row = view.settings.find((setting) => setting.path === `${service.name}.mounts.${volume.name}`);
+    const path = row ? settingText(row.value ?? row.default) : volume.mounts.find((mount) => mount.service === service.name)?.path;
+    return path ? [{ service: service.name, path }] : [];
+  }) }));
 }
 
 /** Mounts of `volume` that the next Deploy removes, by Service and deployed path: detached, their data kept. */

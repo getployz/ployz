@@ -13,13 +13,29 @@ port: number | null, };
 
 export type Admit = { "admit": "deploy" } & Deploy | { "admit": "retry" } & Retry | { "admit": "remove" } & Removal;
 
-export type AdoptLeaseRequest = { lease: Lease, not_after_unix_seconds: number, name: DockerVolumeName, };
-
 export type AdvertisedEndpoint = string;
 
 export type AppliedVolume = { project: ProjectName, environment: EnvironmentName, volume: VolumeName, };
 
 export type Apply = "staged" | "immediate";
+
+export type AttachConfig = {
+/**
+ * The Environment they are in.
+ */
+environment: EnvironmentRef,
+/**
+ * The Service, by name.
+ */
+service: ServiceName,
+/**
+ * The Config, by name.
+ */
+config: ConfigName,
+/**
+ * The absolute directory in the Service's containers.
+ */
+dir: string, };
 
 export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig,
 /**
@@ -97,7 +113,7 @@ commands: Array<BatchCommand>,
  */
 expect?: Revision | null, };
 
-export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "edit" } & Edit | { "command": "discard" } & Discard | { "command": "never_sync" } & NeverSync;
+export type BatchCommand = { "command": "create_service" } & CreateService | { "command": "create_volume" } & CreateVolume | { "command": "create_config" } & CreateConfig | { "command": "put_config_file" } & PutConfigFile | { "command": "remove_config_file" } & RemoveConfigFile | { "command": "rename_config" } & RenameConfig | { "command": "delete_config" } & DeleteConfig | { "command": "attach_config" } & AttachConfig | { "command": "detach_config" } & DetachConfig | { "command": "edit" } & Edit | { "command": "discard" } & Discard | { "command": "never_sync" } & NeverSync;
 
 export type Batched = {
 /**
@@ -396,7 +412,7 @@ export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironme
 
 export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, nodeLineageId: string, encryptedRegistryUsername?: EncryptedSecretValue, encryptedRegistrySecret?: EncryptedSecretValue, nodeType: EnvironmentNodeType, configVersion: number, config: CompiledNodeConfig, };
 
-export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
+export type CompiledNodeConfig = ServiceConfig | VolumeConfig | ConfigNodeConfig;
 
 export type ConditionalSync = {
 /**
@@ -420,14 +436,16 @@ export type ConditionalSyncId = string;
 
 export type ConditionalSyncState = "standing" | "frozen" | "landed";
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "sync" } & SyncChanges | { "command": "undo_sync" } & UndoSync | { "command": "take" } & Take | { "command": "hold_secret" } & HoldSecret | { "command": "copy_node" } & CopyNode | { "command": "never_sync" } & NeverSync | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
+export type ConfigAttachment = { configResourceId: string, mountDir: ContainerPath, };
+
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "create_config" } & CreateConfig | { "command": "put_config_file" } & PutConfigFile | { "command": "remove_config_file" } & RemoveConfigFile | { "command": "rename_config" } & RenameConfig | { "command": "delete_config" } & DeleteConfig | { "command": "attach_config" } & AttachConfig | { "command": "detach_config" } & DetachConfig | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "sync" } & SyncChanges | { "command": "undo_sync" } & UndoSync | { "command": "take" } & Take | { "command": "hold_secret" } & HoldSecret | { "command": "copy_node" } & CopyNode | { "command": "never_sync" } & NeverSync | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
 
 export type ConfigCommitted = {
 /**
  * The open PR Environments' pull requests in the Project of the Environment it
  * wrote; none when it wrote none.
  */
-checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
+checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
 
 export type ConfigDomainEvidence = {
 /**
@@ -453,15 +471,164 @@ lookups: Array<DnsLookup>,
  */
 published?: Array<PublishedHostname>, };
 
+export type ConfigFileName = string;
+
+export type ConfigFileSummary = {
+/**
+ * Its path inside the Config.
+ */
+name: ConfigFileName,
+/**
+ * How many bytes its text is, as written, references unresolved.
+ */
+bytes: number,
+/**
+ * Its permission bits.
+ */
+mode: FileMode,
+/**
+ * The user ID that owns it.
+ */
+uid: number,
+/**
+ * The group ID that owns it.
+ */
+gid: number,
+/**
+ * The Services its text references, by name.
+ */
+references: Array<string>, };
+
+export type ConfigId = string;
+
+export type ConfigItemQuery = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name, or `@UUID` for one exact identity.
+ */
+config: ConfigRef, };
+
+export type ConfigItemView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * The lineage its Environment copies share.
+ */
+lineage: ConfigId,
+/**
+ * Each file's text as written, references by Service name.
+ */
+contents: { [key in ConfigFileName]: string },
+/**
+ * The Services mounting it in Working State.
+ */
+mounts: Array<ConfigMountAt>,
+/**
+ * Whether a Deploy applied it.
+ */
+deployed: boolean,
+/**
+ * What the next Deploy does to it; none when it is deployed as it is.
+ */
+change: ReviewLifecycleKind | null,
+/**
+ * Its durable identity.
+ */
+id: ConfigId,
+/**
+ * Its name, which mount paths address it by.
+ */
+name: ConfigName,
+/**
+ * Its files, by path.
+ */
+files: Array<ConfigFileSummary>, };
+
+export type ConfigListing = {
+/**
+ * The Services mounting it in Working State.
+ */
+mounts: Array<ConfigMountAt>,
+/**
+ * Whether a Deploy applied it.
+ */
+deployed: boolean,
+/**
+ * What the next Deploy does to it; none when it is deployed as it is.
+ */
+change: ReviewLifecycleKind | null,
+/**
+ * Its durable identity.
+ */
+id: ConfigId,
+/**
+ * Its name, which mount paths address it by.
+ */
+name: ConfigName,
+/**
+ * Its files, by path.
+ */
+files: Array<ConfigFileSummary>, };
+
 export type ConfigMount = { config_name: string,
 /**
  * Omission defaults to `/{config_name}`. Admitted specs retain the canonical target.
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
+export type ConfigMountAt = {
+/**
+ * The Service, by name.
+ */
+service: ServiceName,
+/**
+ * The absolute directory in its containers where the Config's files appear.
+ */
+dir: string, };
+
+export type ConfigName = string;
+
+export type ConfigNodeConfig = { version: 1, name: ConfigName, files: { [key in ConfigFileName]: SavedConfigFile }, };
+
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "numbered_deployment" } & NumberedDeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "namespaces" } & NamespacesQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "configs" } & ConfigsQuery | { "query": "config" } & ConfigItemQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "sync" } & SyncQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
+
+export type ConfigRef = string;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
+
+export type ConfigStaged = {
+/**
+ * The Config.
+ */
+config: ConfigSummary,
+/**
+ * The Environment, at its revision after the change.
+ */
+environment: EnvironmentSummary,
+/**
+ * What waits for a Deploy: the Config as `configs.NAME`, and each mount it
+ * gained or lost as `SERVICE.configs.NAME`.
+ */
+staged: Array<SettingPath>, };
+
+export type ConfigSummary = {
+/**
+ * Its durable identity.
+ */
+id: ConfigId,
+/**
+ * Its name, which mount paths address it by.
+ */
+name: ConfigName,
+/**
+ * Its files, by path.
+ */
+files: Array<ConfigFileSummary>, };
 
 export type ConfigTrusted = {
 /**
@@ -483,9 +650,25 @@ volumes?: VolumeObservation,
  */
 servers?: number, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "configs" } & ConfigsView | { "view": "config" } & ConfigItemView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
+
+export type ConfigsQuery = {
+/**
+ * The Environment to list.
+ */
+environment: EnvironmentRef, };
+
+export type ConfigsView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * Its Configs, by name.
+ */
+configs: Array<ConfigListing>, };
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null,
 /**
@@ -592,6 +775,24 @@ keep: boolean,
  * what the Parent runs.
  */
 fix?: DeploymentId | null, };
+
+export type CreateConfig = {
+/**
+ * The new Config's ID, also its lineage.
+ */
+id: ConfigId,
+/**
+ * The Environment to create it in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name, unique among the Environment's Configs.
+ */
+name: ConfigName,
+/**
+ * Where Services mount it.
+ */
+mounts: Array<ConfigMountAt>, };
 
 export type CreateEnvironment = {
 /**
@@ -700,6 +901,16 @@ export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
 
 export type DeclareMirrorRequest = { switch: Switch, name: DockerVolumeName, refquota_bytes: number, };
+
+export type DeleteConfig = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name.
+ */
+config: ConfigName, };
 
 export type DependencyCondition = "service_started" | "service_healthy";
 
@@ -886,7 +1097,11 @@ in_flight: boolean,
 /**
  * What its runner recorded at its end; none while it hasn't ended.
  */
-outcome: Outcome | null, };
+outcome: Outcome | null,
+/**
+ * What its runner was warned of when it claimed it.
+ */
+warnings?: Array<DeploymentWarning>, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -968,7 +1183,17 @@ in_flight: boolean,
 /**
  * What its runner recorded at its end; none while it hasn't ended.
  */
-outcome: Outcome | null, };
+outcome: Outcome | null,
+/**
+ * What its runner was warned of when it claimed it.
+ */
+warnings?: Array<DeploymentWarning>, };
+
+export type DeploymentWarning = { config: ConfigName, file: ConfigFileName,
+/**
+ * The variable as the file references it, such as `api.TOKEN`.
+ */
+variable: string, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -1014,6 +1239,20 @@ changes: number,
  * `SERVICE.env.KEY`: the check waits for one, its own or held for the merge.
  */
 waiting: Array<string>, };
+
+export type DetachConfig = {
+/**
+ * The Environment they are in.
+ */
+environment: EnvironmentRef,
+/**
+ * The Service, by name.
+ */
+service: ServiceName,
+/**
+ * The Config, by name.
+ */
+config: ConfigName, };
 
 export type DeviceMapping = { machine_path: MachinePath, container_path: ContainerPath, cgroup_permissions: string, };
 
@@ -1072,8 +1311,9 @@ export type Discard = {
  */
 environment: EnvironmentRef,
 /**
- * `SERVICE`, `volumes.VOLUME`, `SERVICE.SETTING`, `SERVICE.env.KEY` or
- * `SERVICE.mounts.VOLUME`; none discards everything.
+ * `SERVICE`, `volumes.VOLUME`, `configs.CONFIG`, `SERVICE.SETTING`,
+ * `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`; none
+ * discards everything.
  */
 path: SettingPath | null,
 /**
@@ -1306,7 +1546,7 @@ branch_setup: Array<SetupCommand>, };
 
 export type EnvironmentName = string;
 
-export type EnvironmentNodeType = "service" | "volume";
+export type EnvironmentNodeType = "service" | "volume" | "config";
 
 export type EnvironmentQuery = {
 /**
@@ -1385,7 +1625,9 @@ export type ExtraHost = string;
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
-export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step" | "refuse_expired";
+export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step";
+
+export type FileMode = string;
 
 export type FollowHint = {
 /**
@@ -1401,15 +1643,15 @@ value: JsonValue,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -1575,15 +1817,15 @@ from: EnvironmentName,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -1953,15 +2195,15 @@ export type NamedRow = {
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -2020,15 +2262,15 @@ marks: Array<Mark>,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -2058,7 +2300,12 @@ settings: Array<ServiceSettingChange>,
  * What the change does to Volume data: `deleted` for a deployed Volume it
  * removes, `kept` for a Service that stops mounting a Volume that stays.
  */
-data: DataEffect | null, type: EnvironmentNodeType, id: string, };
+data: DataEffect | null,
+/**
+ * For a Config changed in place, the deployed Services mounting it: they restart
+ * to take its new files.
+ */
+restarts: Array<ServiceName>, type: EnvironmentNodeType, id: string, };
 
 export type NodeName = string;
 
@@ -2066,7 +2313,7 @@ export type NodeOutcome = { outcome: NodeStatus,
 /**
  * Its work on each Server, once its runner started executing.
  */
-rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
+rows: Array<ServerRow>, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, } | { "type": "config", id: ConfigId, name: ConfigName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
@@ -2418,15 +2665,15 @@ landed: Landed,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };
@@ -2455,6 +2702,36 @@ passing: boolean,
  * Why, in a few words.
  */
 reason: string, };
+
+export type PutConfigFile = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * The Config, by name.
+ */
+config: ConfigName,
+/**
+ * The file's path inside the Config.
+ */
+file: ConfigFileName,
+/**
+ * Its text, at most 256 KB.
+ */
+content: string,
+/**
+ * Its permission bits; `0444` unless given.
+ */
+mode?: FileMode | null,
+/**
+ * The user ID that owns it; `0` unless given.
+ */
+uid?: number | null,
+/**
+ * The group ID that owns it; `0` unless given.
+ */
+gid?: number | null, };
 
 export type QualifiedService = string;
 
@@ -2533,6 +2810,20 @@ environment: EnvironmentSummary,
  */
 volumes: Array<RemovedVolume>, };
 
+export type RemoveConfigFile = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * The Config, by name.
+ */
+config: ConfigName,
+/**
+ * The file's path inside the Config.
+ */
+file: ConfigFileName, };
+
 export type RemoveDomain = { environment: EnvironmentRef,
 /**
  * Its hostname, or a generated domain's prefix.
@@ -2574,6 +2865,20 @@ export type RemovedVolume = { id: VolumeId, name: VolumeName,
  * The Docker Volume each Server holds its data in.
  */
 docker_volume: DockerVolumeName, };
+
+export type RenameConfig = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its current name.
+ */
+config: ConfigName,
+/**
+ * Its new name, unique among the Environment's Configs.
+ */
+name: ConfigName, };
 
 export type RenameProject = {
 /**
@@ -2755,9 +3060,22 @@ export type RuntimeWatchView = { services: Array<ServiceObservation>, effective_
  */
 observed_at: string, };
 
-export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, volumes: Array<SavedVolumeIntent>, };
+export type SavedConfigFile = { content: Array<ValuePart>, mode: FileMode, uid: number, gid: number, };
 
-export type SavedServiceIntent = { id: string, lineageId: string, slug: string, config: AuthoredServiceConfig, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>, };
+export type SavedConfigIntent = { resourceId: string, resourceLineageId: string, name: ConfigName, files: { [key in ConfigFileName]: SavedConfigFile }, };
+
+export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, volumes: Array<SavedVolumeIntent>,
+/**
+ * Written only when there are some, so documents from before Configs keep
+ * their bytes and fingerprints.
+ */
+configs?: Array<SavedConfigIntent>, };
+
+export type SavedServiceIntent = { id: string, lineageId: string, slug: string, config: AuthoredServiceConfig, variables: Array<SavedVariableIntent>, volumeAttachments: Array<VolumeAttachment>,
+/**
+ * Written only when there are some, like [`SavedEnvironmentIntent::configs`].
+ */
+configAttachments?: Array<ConfigAttachment>, };
 
 export type SavedVariableIntent = { id: string, key: string, description: string | null, exported: boolean,
 /**
@@ -2838,7 +3156,11 @@ export type ServiceBuildConfig = { buildMethod: BuildMethod, dockerfilePath: str
  */
 command: string | null, };
 
-export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig,
+export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>,
+/**
+ * Written only when there are some, so documents from before Configs hash the same.
+ */
+configs?: Array<ServiceDeployConfig>, version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig,
 /**
  * The Service Template it was created from; authoring metadata only.
  */
@@ -2869,6 +3191,8 @@ service: ServiceName,
  * Condition the dependency must satisfy before the dependent starts.
  */
 condition: DependencyCondition, };
+
+export type ServiceDeployConfig = { configResourceId: string, configName: string, mountDir: string, };
 
 export type ServiceDeployMount = { volumeResourceId: string, volumeName: string, mountPath: string, };
 
@@ -2966,7 +3290,11 @@ export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
 
-export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
+export type ServiceSettingChange = { path: string,
+/**
+ * The mounted Config's friendly name; its path keeps the exact identity.
+ */
+configName?: ConfigName, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
 /**
  * The Sync row it falls in, which joins it to what moved it; the Store's to fill
  * from the `At` its comparison hands alongside and the node's lineage.
@@ -3288,13 +3616,9 @@ export type Sweep = {
  */
 now: number, };
 
-export type Switch = { lease: Lease, pos: Pos,
-/**
- * Step deadline: step start plus the request timeout, as Unix seconds.
- */
-not_after_unix_seconds: number, };
+export type Switch = { lease: Lease, pos: Pos, };
 
-export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "expired", skew_seconds: number, } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "no_capacity" };
+export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "no_capacity" };
 
 export type SwitchReply = { decision: FenceDecision,
 /**
@@ -3386,15 +3710,15 @@ secret: SecretRow | null,
  */
 row: RowId,
 /**
- * Its Service or Volume.
+ * Its Service, Volume or Config.
  */
 node: NodeName,
 /**
- * Whether `node` is a Service or a Volume.
+ * Whether `node` is a Service, a Volume or a Config.
  */
 kind: EnvironmentNodeType,
 /**
- * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `name`; none for the
+ * Where in the node: `image`, `env.KEY`, `mounts.VOLUME`, `files.PATH`, `name`; none for the
  * node itself.
  */
 name: string | null, };

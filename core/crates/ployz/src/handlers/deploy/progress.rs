@@ -19,7 +19,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 view.namespace.clone(),
                 view.runtime_names.get(name).unwrap_or(name).clone(),
             )),
-            DeployedNode::Volume { .. } => None,
+            DeployedNode::Volume { .. } | DeployedNode::Config { .. } => None,
         };
         if let Some(service) = &service
             && !node.rows.is_empty()
@@ -48,13 +48,17 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
         } else {
             let build = view.builds.iter().find(|build| match &node.node {
                 DeployedNode::Service { name, .. } => build.service == *name,
-                DeployedNode::Volume { .. } => false,
+                DeployedNode::Volume { .. } | DeployedNode::Config { .. } => false,
             });
             rows.push(Row {
                 subject: service.map_or_else(
                     || Subject::Node {
                         index,
-                        name: format!("Volume {}", node.node.name()),
+                        name: match &node.node {
+                            DeployedNode::Config { name, .. } => format!("Config {name}"),
+                            DeployedNode::Volume { name, .. } => format!("Volume {name}"),
+                            DeployedNode::Service { name, .. } => name.to_string(),
+                        },
                     },
                     Subject::Service,
                 ),

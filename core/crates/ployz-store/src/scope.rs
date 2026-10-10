@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
-    parse_environment_intent,
+    EnvironmentNodeType, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVolumeIntent, parse_environment_intent,
 };
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -140,6 +140,51 @@ impl Environment {
             .find(|volume| volume.name == name.as_str())
             .ok_or_else(|| no_volume(name, &self.summary.name, &self.working))
     }
+
+    /// The Config named `name` in Working State, to change.
+    pub(crate) fn config_mut(
+        &mut self,
+        name: &ConfigName,
+    ) -> Result<&mut SavedConfigIntent, RpcError> {
+        let index = self
+            .working
+            .configs
+            .iter()
+            .position(|config| config.name == *name)
+            .ok_or_else(|| no_config(name, &self.summary.name, &self.working))?;
+        Ok(self
+            .working
+            .configs
+            .get_mut(index)
+            .expect("found by position"))
+    }
+
+    /// The Config named `name` in Working State.
+    pub(crate) fn config(&self, name: &ConfigName) -> Result<&SavedConfigIntent, RpcError> {
+        self.working
+            .configs
+            .iter()
+            .find(|config| config.name == *name)
+            .ok_or_else(|| no_config(name, &self.summary.name, &self.working))
+    }
+}
+
+/// `config` names no Config in Working State: list the ones it could mean.
+pub(crate) fn no_config(
+    config: &ConfigName,
+    environment: &EnvironmentName,
+    working: &SavedEnvironmentIntent,
+) -> RpcError {
+    let names = working
+        .configs
+        .iter()
+        .map(|config| config.name.as_str())
+        .collect::<Vec<_>>();
+    error::choices(
+        format!("No Config named {config} in Environment {environment}"),
+        config.as_str(),
+        names.iter().copied(),
+    )
 }
 
 /// `volume` names no Volume in Working State: list the ones it could mean.
@@ -183,13 +228,23 @@ pub(crate) fn no_service(
 pub(crate) enum Node<'a> {
     Service(&'a SavedServiceIntent),
     Volume(&'a SavedVolumeIntent),
+    Config(&'a SavedConfigIntent),
 }
 
-impl Node<'_> {
+impl<'a> Node<'a> {
     pub(crate) const fn node_type(self) -> EnvironmentNodeType {
         match self {
             Self::Service(_) => EnvironmentNodeType::Service,
             Self::Volume(_) => EnvironmentNodeType::Volume,
+            Self::Config(_) => EnvironmentNodeType::Config,
+        }
+    }
+
+    pub(crate) fn lineage(self) -> &'a str {
+        match self {
+            Self::Service(service) => &service.lineage_id,
+            Self::Volume(volume) => &volume.resource_lineage_id,
+            Self::Config(config) => &config.resource_lineage_id,
         }
     }
 
@@ -197,6 +252,7 @@ impl Node<'_> {
         match self {
             Self::Service(service) => serde_json::to_string(service),
             Self::Volume(volume) => serde_json::to_string(volume),
+            Self::Config(config) => serde_json::to_string(config),
         }
         .expect("a node is JSON")
     }
@@ -212,6 +268,7 @@ pub(crate) fn introduce(
     let id = match node {
         Node::Service(service) => service.id.as_str(),
         Node::Volume(volume) => volume.resource_id.as_str(),
+        Node::Config(config) => config.resource_id.as_str(),
     };
     tx.execute(
         "INSERT INTO config_node_introduction \
@@ -240,6 +297,7 @@ pub(crate) fn nodes(
         match row.variant(1, what)? {
             EnvironmentNodeType::Service => intent.services.push(row.json(0, what)?),
             EnvironmentNodeType::Volume => intent.volumes.push(row.json(0, what)?),
+            EnvironmentNodeType::Config => intent.configs.push(row.json(0, what)?),
         }
     }
     Ok(intent)
@@ -522,5 +580,6 @@ pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
         environment_slug: name.to_owned(),
         services: Vec::new(),
         volumes: Vec::new(),
+        configs: Vec::new(),
     }
 }

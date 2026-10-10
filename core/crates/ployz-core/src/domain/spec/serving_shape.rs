@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 use super::{
-    ConfigMount, ConfigSpec, Placement, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
+    ConfigMount, Placement, PortPublication, RequestedServiceSpec, ResolvedServiceSpec,
     ServiceContainerSpec, ServiceMode,
 };
 use crate::{ServiceMount, ServiceName, ServiceVolume};
@@ -16,6 +16,10 @@ use crate::{ServiceMount, ServiceName, ServiceVolume};
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ServingShape(u64);
 
+/// Serving Shape of a published observation, whose Config content is redacted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublishedServingShape(ServingShape);
+
 impl ServingShape {
     /// Shape of one observed Resolved Service Spec.
     #[must_use]
@@ -25,6 +29,13 @@ impl ServingShape {
 
     /// Canonical observed fields shared by serving identity and setting comparison.
     pub(super) fn fields_of_resolved(spec: &ResolvedServiceSpec) -> serde_json::Value {
+        Self::resolved_fields(spec, sorted_json(spec.mount_graph.config_graph().configs()))
+    }
+
+    fn resolved_fields(
+        spec: &ResolvedServiceSpec,
+        config_fields: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
         let ResolvedServiceSpec {
             service_id: _,
             name,
@@ -44,7 +55,7 @@ impl ServingShape {
             ports,
             mount_graph.volume_graph().volumes(),
             mount_graph.volume_graph().mounts(),
-            mount_graph.config_graph().configs(),
+            config_fields,
             mount_graph.config_graph().mounts(),
         )
     }
@@ -75,7 +86,7 @@ impl ServingShape {
             ports,
             mount_graph.volume_graph().volumes(),
             mount_graph.volume_graph().mounts(),
-            mount_graph.config_graph().configs(),
+            sorted_json(mount_graph.config_graph().configs()),
             mount_graph.config_graph().mounts(),
         )
     }
@@ -98,7 +109,7 @@ impl ServingShape {
         ports: &[PortPublication],
         volumes: &[ServiceVolume],
         mounts: &[ServiceMount],
-        configs: &[ConfigSpec],
+        configs: Vec<serde_json::Value>,
         config_mounts: &[ConfigMount],
     ) -> serde_json::Value {
         let ServiceContainerSpec {
@@ -154,7 +165,7 @@ impl ServingShape {
             "ports": sorted_json(ports),
             "volumes": sorted_json(volumes.iter().map(|volume| (&volume.reference, volume.source.kind(), volume.source.creation_labels()))),
             "mounts": sorted_json(mounts),
-            "configs": sorted_json(configs),
+            "configs": configs,
             "config_mounts": sorted_json(config_mounts),
         });
         payload
@@ -171,6 +182,16 @@ impl ResolvedServiceSpec {
     #[must_use]
     pub fn serving_shape(&self) -> ServingShape {
         ServingShape::of_resolved(self)
+    }
+
+    /// Serving Shape of this spec as a daemon publishes it.
+    #[must_use]
+    pub fn published_serving_shape(&self) -> PublishedServingShape {
+        let names = self.mount_graph.config_graph().configs().iter();
+        let configs = sorted_json(names.map(|config| &config.name));
+        PublishedServingShape(ServingShape::from_fields(&ServingShape::resolved_fields(
+            self, configs,
+        )))
     }
 }
 

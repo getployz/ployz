@@ -2,8 +2,6 @@
 
 use super::*;
 
-const FAR_FUTURE: i64 = 4_102_444_800;
-
 /// Serves the plugin over fake ZFS with the given marker files present.
 pub(super) fn start(
     test: &TestDir,
@@ -27,122 +25,37 @@ pub(super) fn set_property(test: &TestDir, dataset: &str, property: &str, value:
     fs::write(directory.join(property), format!("{value}\n")).unwrap();
 }
 
-fn property(test: &TestDir, dataset: &str, property: &str) -> Option<String> {
-    fs::read_to_string(test.0.join("props").join(dataset).join(property))
-        .ok()
-        .map(|value| value.trim_end().to_owned())
-}
-
-fn adopt(name: &str, lease: u64, not_after: i64) -> Value {
-    json!({"lease": lease, "not_after_unix_seconds": not_after, "name": name})
-}
-
 fn commands(test: &TestDir) -> String {
     fs::read_to_string(test.0.join("commands")).unwrap()
 }
 
-#[tokio::test]
-async fn adopt_lease_records_a_closed_lease_and_answers_the_copy() {
-    let test = TestDir::new();
-    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
-
-    let response = post(&socket, "/Volume.AdoptLease", adopt("data", 1, FAR_FUTURE)).await;
-    assert_eq!(
-        response,
-        json!({"Ok": {
-            "decision": "adopt",
-            "lease": {"lease": 1, "pos": {"seq": 2, "round": 0, "sub": 0}, "cycle": "closed"},
-            "copy": {"kind": "root", "writer": {"phase": "idle"}, "readonly": false, "newest": null},
-        }})
-    );
-    assert_eq!(
-        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
-        Some("1:2.0.0:closed")
-    );
-    server.abort();
+fn declare(name: &str, lease: u64) -> Value {
+    json!({
+        "switch": {"lease": lease, "pos": {"seq": 3, "round": 0, "sub": 0}},
+        "name": name,
+        "refquota_bytes": 1_073_741_824_u64,
+    })
 }
 
 #[tokio::test]
-async fn adopt_lease_preserves_open() {
-    let test = TestDir::new();
-    set_property(&test, "tank/ployz", "ployz:lease.data", "3:7.0.0:open");
-    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
-
-    let response = post(&socket, "/Volume.AdoptLease", adopt("data", 4, FAR_FUTURE)).await;
-    assert_eq!(response.pointer("/Ok/decision").unwrap(), "adopt");
-    assert_eq!(response.pointer("/Ok/lease/cycle").unwrap(), "open");
-    assert_eq!(
-        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
-        Some("4:2.0.0:open")
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn adopt_lease_refuses_stale_or_expired_requests_and_replays_its_own() {
-    let test = TestDir::new();
-    set_property(&test, "tank/ployz", "ployz:lease.data", "4:2.0.0:closed");
-    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
-
-    let stale = post(&socket, "/Volume.AdoptLease", adopt("data", 3, FAR_FUTURE)).await;
-    assert_eq!(stale.pointer("/Err/code").unwrap(), "conflict");
-    assert_eq!(stale.pointer("/Err/details/reason").unwrap(), "stale_lease");
-
-    let expired = post(&socket, "/Volume.AdoptLease", adopt("data", 5, 0)).await;
-    assert_eq!(expired.pointer("/Err/details/reason").unwrap(), "expired");
-    assert!(
-        expired
-            .pointer("/Err/details/skew_seconds")
-            .and_then(Value::as_i64)
-            .is_some_and(|skew| skew > 0)
-    );
-
-    let replay = post(&socket, "/Volume.AdoptLease", adopt("data", 4, FAR_FUTURE)).await;
-    assert_eq!(replay.pointer("/Ok/decision").unwrap(), "replay");
-
-    assert!(!commands(&test).contains("zfs set"));
-    assert_eq!(
-        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
-        Some("4:2.0.0:closed")
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn adopt_lease_creates_the_managed_root_to_hold_the_record() {
+async fn a_first_switch_verb_creates_the_managed_root_to_hold_the_record() {
     let test = TestDir::new();
     let (socket, server) = start(&test, USABLE_POOL, &[]);
 
-    let response = post(&socket, "/Volume.AdoptLease", adopt("data", 1, FAR_FUTURE)).await;
-    assert_eq!(response.pointer("/Ok/copy").unwrap(), &Value::Null);
-    let log = commands(&test);
-    assert!(
-        log.contains("zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz")
-    );
-    assert!(log.contains("zfs set ployz:lease.data=1:2.0.0:closed tank/ployz"));
-    server.abort();
-}
-
-#[tokio::test]
-async fn adopt_lease_records_its_own_step_whatever_position_the_caller_sends() {
-    let test = TestDir::new();
-    let (socket, server) = start(&test, USABLE_POOL, &["root"]);
-    let request = json!({
-        "lease": 1,
-        "pos": {"seq": 9, "round": 0, "sub": 0},
-        "not_after_unix_seconds": FAR_FUTURE,
-        "name": "data",
-    });
-
-    let response = post(&socket, "/Volume.AdoptLease", request).await;
+    let response = post(&socket, "/Volume.DeclareMirror", declare("data", 1)).await;
     assert_eq!(
-        response.pointer("/Ok/lease/pos"),
-        Some(&json!({"seq": 2, "round": 0, "sub": 0})),
+        response.pointer("/Ok/decision"),
+        Some(&json!("adopt")),
         "{response}"
     );
-    assert_eq!(
-        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
-        Some("1:2.0.0:closed")
+    let log = commands(&test);
+    assert!(
+        log.contains("zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz"),
+        "{log}"
+    );
+    assert!(
+        log.contains("zfs set ployz:lease.data=1:3.0.0:closed tank/ployz"),
+        "{log}"
     );
     server.abort();
 }
@@ -156,22 +69,18 @@ async fn lease_records_keep_apart_names_that_differ_only_in_case() {
     for (name, lease) in names {
         let response = post(
             &socket,
-            "/Volume.AdoptLease",
-            adopt(name, lease, FAR_FUTURE),
+            "/Volume.DestroyMirror",
+            json!({"switch": {"lease": lease, "pos": {"seq": 3, "round": 0, "sub": 0}}, "name": name}),
         )
         .await;
-        assert_eq!(
-            response.pointer("/Ok/decision"),
-            Some(&json!("adopt")),
-            "{name}: {response}"
-        );
+        assert!(response.get("Ok").is_some(), "{name}: {response}");
     }
     for (name, lease) in names {
         let response = post(&socket, "/Volume.Inspect", json!({"name": name})).await;
         assert_eq!(
             response.pointer("/Ok/lease"),
             Some(
-                &json!({"lease": lease, "pos": {"seq": 2, "round": 0, "sub": 0}, "cycle": "closed"})
+                &json!({"lease": lease, "pos": {"seq": 3, "round": 0, "sub": 0}, "cycle": "closed"})
             ),
             "{name}: {response}"
         );

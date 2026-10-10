@@ -17,6 +17,7 @@ export function ServiceCreatorDialog({
   position,
   params,
   onCreateVolume,
+  onCreateConfig,
   onCreated,
 }: {
   open: boolean;
@@ -29,6 +30,7 @@ export function ServiceCreatorDialog({
     environmentSlug: string;
   };
   onCreateVolume: () => void;
+  onCreateConfig: () => void;
   onCreated: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
 }) {
   // Escape or a click outside can't close it mid-create: the new service opens once it's saved.
@@ -55,6 +57,7 @@ export function ServiceCreatorDialog({
           environmentSlug={params.environmentSlug}
           canvasPosition={position}
           onCreateVolume={onCreateVolume}
+          onCreateConfig={onCreateConfig}
           onCreated={onCreated}
           onPendingChange={setCreating}
         />

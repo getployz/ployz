@@ -50,7 +50,6 @@ export type RunContext = {
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 
-const SWITCH_STEP_SECONDS = 60;
 const OBSERVE_TIMEOUT = "10 seconds";
 
 const clip = (text: string) =>
@@ -241,7 +240,7 @@ const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId
 
 const SwitchErrorDetails = Schema.Struct({
   details: Schema.Struct({
-    reason: Schema.Literals(["stale_lease", "stale_step", "expired", "precondition", "busy", "volume_switching", "no_writer", "no_capacity"]),
+    reason: Schema.Literals(["stale_lease", "stale_step", "precondition", "busy", "volume_switching", "no_writer", "no_capacity"]),
   }),
 });
 const decodeSwitchError = Schema.decodeUnknownOption(SwitchErrorDetails);
@@ -276,7 +275,6 @@ export function switchFailureMessage(
     case "no_capacity":
       return `${machine.name} has no room for ${name}'s mirror`;
     case "busy":
-    case "expired":
       return undefined;
   }
 }
@@ -298,14 +296,13 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
   ctx: RunContext,
   inngestRunId: string,
   machine: MachineRef,
-  build: (notAfterUnixSeconds: number) => R,
+  request: R,
   options: SwitchOptions = {},
 ) => {
   // SAFETY: a Machine answers each Volume Switch verb with that verb's reply; the session types the pair loosely.
   return Effect.gen(function* () {
     yield* requireOwner(ctx.id, inngestRunId);
     const session = yield* openSession(ctx.organizationId);
-    const request = build(Math.floor(Date.now() / 1000) + SWITCH_STEP_SECONDS);
     return yield* session.volumeSwitch(machine.id, request).pipe(
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
         const reason = switchErrorOf(error);
@@ -355,7 +352,7 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   from: MachineRef,
   holder: Holder,
   to: MachineRef,
-  stamp: (notAfter: number) => StartHanded["payload"]["switch"],
+  stamp: StartHanded["payload"]["switch"],
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
@@ -363,15 +360,15 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
     Effect.mapError((error) => new Error(`reading ${holder.redactedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error)}`)),
   );
   const spec = container.resolved_spec;
-  yield* sendSwitch(ctx, inngestRunId, to, (notAfter): StartHanded => ({
+  yield* sendSwitch(ctx, inngestRunId, to, {
     command: "start_handed_container",
     payload: {
-      switch: stamp(notAfter),
+      switch: stamp,
       name: ctx.dockerVolume,
       namespace: holder.namespace,
       resolved_spec: { ...spec, container: { ...spec.container, pull_policy: "never" } },
     },
-  }), { onRefusal: "throw" });
+  } satisfies StartHanded, { onRefusal: "throw" });
 }, Effect.scoped);
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
@@ -399,17 +396,15 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
 
-/** Above every lease the Machines hold and every lease this Volume's runs took, so a Cloud database reset can't reuse one. */
+/** Above every lease this Volume's runs took and every record its participants hold, so a Cloud database reset can't reuse one. */
 export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   ctx: RunContext,
   inngestRunId: string,
-  members: readonly Member[],
+  participants: readonly AnsweredMember[],
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const { drizzle } = yield* Database;
-  const answered = members.filter((member): member is AnsweredMember => member.answered);
-  const pooled = answered.filter((member) => member.pool);
-  const held = Math.max(0, ...answered.map((member) => member.view.lease?.lease ?? 0));
+  const held = Math.max(0, ...participants.map((member) => member.view.lease?.lease ?? 0));
   const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
   yield* drizzle.update(volumeRun)
@@ -418,13 +413,7 @@ export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   const row = yield* readRow(ctx.id);
   const lease = row?.lease;
   if (lease === null || lease === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no lease.`));
-  yield* Effect.forEach(pooled, (member) =>
-    sendSwitch(ctx, inngestRunId, member.machine, (notAfter) => ({
-      command: "adopt_lease",
-      payload: { lease, not_after_unix_seconds: notAfter, name: ctx.dockerVolume },
-    })), { concurrency: "unbounded", discard: true });
-  const skipped = answered.filter((member) => !member.pool).map((member) => member.machine.name);
-  return { lease, skipped };
+  return { lease };
 });
 
 const CLOSED_BY = {
