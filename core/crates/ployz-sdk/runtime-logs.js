@@ -23,8 +23,8 @@ function compare(a, b) {
   const time = BigInt(a.timestamp_nanos) - BigInt(b.timestamp_nanos);
   return time < 0n ? -1 : time > 0n ? 1 : a.id.localeCompare(b.id);
 }
-function input(container, tail, follow, before) {
-  return { machine_id: container.machine_id, container_id: container.container_id, tail, follow, before_nanos: before ?? null, since_unix_seconds: null };
+function input(container, tail, follow) {
+  return { machine_id: container.machine_id, container_id: container.container_id, tail, follow, since_unix_seconds: null };
 }
 
 /** One Corrosion watch discovers sources; slow Machines never block other sources. */
@@ -116,32 +116,127 @@ async function* logs(transport, options = {}) {
   }
 }
 
-/** Finite reads leave the viewer's live stream untouched. */
+const HISTORY_LIMIT = 5000;
+const KINDS = { service_container: "service", pre_deploy_hook: "pre_deploy_hook" };
+const later = (a, b) => (BigInt(a) > BigInt(b) ? a : b);
+const earlier = (a, b) => (BigInt(a) < BigInt(b) ? a : b);
+const rowTime = row => row.row === "gap" ? row.from_nanos : row.timestamp_nanos;
+
+/**
+ * Where each Server's next page starts: after a store cursor, before a time, or (an empty state) at its newest row.
+ * A Server missing from a cursor has nothing older.
+ */
+function encodeCursor(states) {
+  return Object.keys(states).length ? Buffer.from(JSON.stringify(states)).toString("base64url") : null;
+}
+function decodeCursor(cursor) {
+  try {
+    const states = JSON.parse(Buffer.from(cursor, "base64url").toString());
+    if (states && typeof states === "object" && !Array.isArray(states)) return states;
+  } catch {}
+  throw new TypeError("cursor did not come from a history page");
+}
+
+/** The store selects by its own saved names, so a Service ID becomes the name its containers were created with. */
+function selector(filter, containers) {
+  const live = filter.serviceId === undefined ? undefined
+    : containers.find(container => container.labels["cloud.ployz.service.id"] === filter.serviceId);
+  const service = filter.serviceName ?? (live && (live.labels["ployz.service.name"] ?? live.resolved_spec.name));
+  if (filter.serviceId !== undefined && service === undefined) return null;
+  const chosen = { namespace: filter.namespace, service, deployment: filter.deploymentId, container_id: filter.containerId };
+  return Object.values(chosen).some(value => value !== undefined) ? chosen : null;
+}
+
+async function readPage(transport, machineId, chosen, state, limit, signal) {
+  const reader = await transport.history({ machine_id: machineId, ...chosen, direction: "backward", limit, cursor: state.c ?? null, until_nanos: state.u ?? null });
+  const cancel = () => reader.cancel();
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const containers = new Map(); const rows = [];
+    for (;;) {
+      signal?.throwIfAborted();
+      const row = await reader.next();
+      if (!row) throw new Error("the Server's Log Store ended a page early");
+      if (row.row === "end") return { rows, next: row.next };
+      if (row.row === "container") containers.set(row.container_id, row);
+      else rows.push({ ...row, container: containers.get(row.container_id) });
+    }
+  } finally { cancel(); signal?.removeEventListener("abort", cancel); }
+}
+
+/**
+ * One page of every Server's Log Store, newest first. Each Server reads its own newest page; the page stops at the
+ * newest of their oldest rows, so a Server that went further back than another doesn't skip what the other has
+ * left. A Server that fails is named and asked again on the next page.
+ */
 async function history(transport, options) {
   options.signal?.throwIfAborted();
   const limit = options.limit ?? 200;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new RangeError("limit must be between 1 and 1000");
-  if (!options.before || Object.values(options.before).some(before => typeof before !== "string" || !/^-?\d+$/.test(before))) throw new TypeError("before must map log sources to nanosecond timestamps");
+  if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_LIMIT) throw new RangeError(`limit must be between 1 and ${HISTORY_LIMIT}`);
+  const filter = options.filter ?? {};
   const watch = transport.watch({ signal: options.signal })[Symbol.asyncIterator]();
-  let containers;
-  try { containers = (await watch.next()).value?.containers ?? []; }
+  let view;
+  try { view = (await watch.next()).value ?? { machines: [], containers: [] }; }
   finally { await watch.return?.(); }
-  const results = await Promise.all(containers.filter(container => matches(container, options.filter) && options.before[sourceKey(container)] !== undefined).map(async container => {
-    let reader;
-    const cancel = () => reader?.cancel();
-    options.signal?.addEventListener("abort", cancel, { once: true });
-    try {
-      reader = await transport.open(input(container, limit, false, options.before[sourceKey(container)]));
-      options.signal?.throwIfAborted();
-      const records = []; const counts = new Map();
-      for (;;) { const row = await reader.next(); if (!row) break; if (row.channel === "error") throw new Error(row.message); records.push(identify(row, counts)); }
-      return { records, errors: [] };
-    } catch (error) {
-      options.signal?.throwIfAborted();
-      return { records: [], errors: [{ type: "source_error", machineId: container.machine_id, containerId: container.container_id, message: error.message }] };
-    } finally { cancel(); options.signal?.removeEventListener("abort", cancel); }
-  }));
-  const all = results.flatMap(result => result.records).sort(compare);
-  return { records: all, errors: results.flatMap(result => result.errors) };
+  const page = { records: [], gaps: [], exits: [], failures: [], cursor: null };
+  const chosen = selector(filter, view.containers);
+  if (!chosen) return page;
+  const names = new Map(view.machines.map(({ machine }) => [machine.id, machine.name]));
+  const states = options.cursor === undefined
+    ? Object.fromEntries(view.machines.map(({ machine }) => [machine.id, options.before === undefined ? {} : { u: options.before }]))
+    : decodeCursor(options.cursor);
+  const machines = Object.keys(states).filter(id => !filter.machineId || id === filter.machineId);
+  const reads = await Promise.all(machines.map(machineId => readPage(transport, machineId, chosen, states[machineId], limit, options.signal)
+    .then(page => ({ machineId, page }), error => { options.signal?.throwIfAborted(); return { machineId, error }; })));
+  const oldest = rows => rows.reduce((min, row) => earlier(min, rowTime(row)), rowTime(rows[0]));
+  const horizon = reads.filter(read => read.page?.next && read.page.rows.length)
+    .reduce((max, read) => (max === null ? oldest(read.page.rows) : later(max, oldest(read.page.rows))), null);
+  const next = {};
+  for (const read of reads) {
+    const machineName = names.get(read.machineId) ?? read.machineId;
+    if (read.error) {
+      page.failures.push({ machineId: read.machineId, machineName, message: read.error.message });
+      next[read.machineId] = states[read.machineId];
+      continue;
+    }
+    const { rows } = read.page;
+    const whole = read.page.next && (!rows.length || oldest(rows) === horizon);
+    const kept = whole || horizon === null ? rows : rows.filter(row => BigInt(rowTime(row)) >= BigInt(horizon));
+    if (whole) next[read.machineId] = { c: read.page.next };
+    else if (kept.length < rows.length || read.page.next) next[read.machineId] = { u: horizon };
+    const state = states[read.machineId];
+    const counts = new Map(state.t === undefined ? [] : [[state.t, state.n]]);
+    for (const row of kept) {
+      const time = rowTime(row);
+      const ordinal = counts.get(time) ?? 0;
+      counts.set(time, ordinal + 1);
+      const container = row.container ?? { kind: "service", service: null, replica: "", namespace: null };
+      if (filter.kind && KINDS[filter.kind] !== container.kind) continue;
+      const serviceName = container.service ?? container.replica;
+      const source = { machineId: read.machineId, machineName, containerId: row.container_id, serviceName };
+      if (row.row === "gap") page.gaps.push({ ...source, fromNanos: row.from_nanos, toNanos: row.to_nanos, reason: row.reason });
+      else if (row.row === "exit") page.exits.push({ ...source, timestampNanos: row.timestamp_nanos, exitCode: row.exit_code, oomKilled: row.oom_killed });
+      else {
+        const group = `${read.machineId}/${row.container_id}/${row.timestamp_nanos}`;
+        const live = view.containers.find(candidate => candidate.container_id === row.container_id);
+        page.records.push({
+          id: `${group}/history/${ordinal}`,
+          source: {
+            origin: { origin: "service", service_id: live?.labels["cloud.ployz.service.id"] ?? filter.serviceId ?? "", service_name: serviceName, container_id: row.container_id, hook: container.kind === "pre_deploy_hook" ? container.replica : null },
+            machine_id: read.machineId, machine_name: machineName,
+          },
+          timestamp_nanos: row.timestamp_nanos, channel: row.stream, level: row.level, message: row.message,
+        });
+      }
+    }
+    if (whole) {
+      // Only the boundary timestamp can continue on the next store page.
+      const time = rows.length ? oldest(rows) : state.t;
+      if (time !== undefined) Object.assign(next[read.machineId], { t: time, n: counts.get(time) });
+    }
+  }
+  page.records.sort((a, b) => -compare(a, b));
+  page.cursor = encodeCursor(next);
+  return page;
 }
 module.exports = { logs, history };

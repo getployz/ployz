@@ -134,12 +134,28 @@ export type LogFilter = {
   namespace?: string; serviceId?: string; serviceName?: string; deploymentId?: string;
   machineId?: string; containerId?: string; kind?: "service_container" | "pre_deploy_hook";
 };
-export type LogRecord = ContainerLogRecord & { id: string };
+/** What a line says about itself; a line that says nothing is `info`, stderr included. */
+export type LogLevel = "error" | "warn" | "info" | "debug";
+export type LogRecord = ContainerLogRecord & { id: string; level: LogLevel };
 export type LogSourceError = { type: "source_error"; machineId: string; containerId: string; message: string };
 export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError;
 export type LogOptions = WatchOptions & { filter?: LogFilter; tail?: number; follow?: boolean };
-export type LogHistoryOptions = WatchOptions & { filter?: LogFilter; before: Record<string, string>; limit?: number };
-export type LogHistoryPage = { records: LogRecord[]; errors: LogSourceError[] };
+/** A stretch of one container's output its Server's Log Store doesn't have. */
+export type LogGap = {
+  machineId: string; machineName: string; containerId: string; serviceName: string;
+  fromNanos: string; toNanos: string; reason: "not_captured" | "corrupt";
+};
+/** A container stopping; `exitCode` is null when Docker didn't say. */
+export type LogExit = {
+  machineId: string; machineName: string; containerId: string; serviceName: string;
+  timestampNanos: string; exitCode: number | null; oomKilled: boolean;
+};
+/** A Server whose Log Store didn't answer, and why. */
+export type LogMachineFailure = { machineId: string; machineName: string; message: string };
+/** Without `cursor`, the first page starts at each Server's newest row, or before `before` (Unix nanoseconds). */
+export type LogHistoryOptions = WatchOptions & { filter: LogFilter; cursor?: string; before?: string; limit?: number };
+/** Newest first across every Server; `cursor` is null once none has anything older. */
+export type LogHistoryPage = { records: LogRecord[]; gaps: LogGap[]; exits: LogExit[]; failures: LogMachineFailure[]; cursor: string | null };
 
 export type ConfirmOptions = WatchOptions & {
   deploymentId?: string;
