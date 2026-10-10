@@ -84,6 +84,32 @@ impl Db {
             .unwrap();
     }
 
+    /// A Git Service on `acme/web`.
+    fn git_service(&self, environment: &str, n: u8, name: &str) {
+        self.store
+            .write_trusted(
+                &self.who,
+                &CreateGitService {
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                    environment: at(environment),
+                    name: ServiceName::parse(name).unwrap(),
+                    repository: backend::repo_name("acme/web"),
+                    branch: None,
+                },
+                &Trusted {
+                    repositories: vec![AuthorizedRepository {
+                        repository: backend::repo_name("acme/web"),
+                        repository_id: backend::repo_id(11),
+                        access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+                        default_branch: backend::git_branch("main"),
+                        branches: Vec::new(),
+                    }],
+                    ..Trusted::default()
+                },
+            )
+            .unwrap();
+    }
+
     fn branch(&self, n: u8, from: &str, name: &str, copy: &[&str]) {
         self.store
             .write(
@@ -831,28 +857,7 @@ fn an_introduced_service_with_a_registry_credential_refuses_remove() {
 #[test]
 fn an_introduced_service_with_a_deploy_policy_refuses_remove() {
     let db = Db::new();
-    db.store
-        .write_trusted(
-            &db.who,
-            &CreateGitService {
-                id: ServiceLineageId::parse(uuid(11)).unwrap(),
-                environment: at("dev"),
-                name: ServiceName::parse("web").unwrap(),
-                repository: backend::repo_name("acme/web"),
-                branch: None,
-            },
-            &Trusted {
-                repositories: vec![AuthorizedRepository {
-                    repository: backend::repo_name("acme/web"),
-                    repository_id: backend::repo_id(11),
-                    access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-                    default_branch: backend::git_branch("main"),
-                    branches: Vec::new(),
-                }],
-                ..Trusted::default()
-            },
-        )
-        .unwrap();
+    db.git_service("dev", 11, "web");
     db.put("dev", &[("web.waitForCi", json!(true))]);
     // The policy the Sync carried goes with the Service.
     let a = proposal(
@@ -869,6 +874,36 @@ fn an_introduced_service_with_a_deploy_policy_refuses_remove() {
     assert_eq!(code, RpcErrorCode::Conflict, "{message}");
     assert!(message.contains("Auto-deploy"), "{message}");
     assert_eq!(db.services("production"), ["api", "web"]);
+}
+
+#[test]
+fn a_source_credential_rotated_after_the_include_still_removes() {
+    let db = Db::new();
+    db.service("dev", 11, "cache");
+    let credential = |secret: &str| json!({"username": "u", "secret": secret});
+    db.put("dev", &[("cache.registryCredential", credential("dev"))]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.put("dev", &[("cache.registryCredential", credential("newer"))]);
+    assert_eq!(db.remove("production", &a), Ok(true));
+    assert_eq!(db.services("production"), ["api"]);
+}
+
+#[test]
+fn a_policy_set_here_to_the_source_newer_value_refuses_remove() {
+    let db = Db::new();
+    db.git_service("dev", 11, "web");
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.put("dev", &[("web.autoDeploy", json!(false))]);
+    db.put("production", &[("web.autoDeploy", json!(false))]);
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("Auto-deploy"), "{message}");
 }
 
 #[test]

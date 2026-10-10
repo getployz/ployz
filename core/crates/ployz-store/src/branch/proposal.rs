@@ -542,7 +542,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
             ) && (nodes.contains(arrived.row.lineage()) || *arrived.row.at() == At::Node)
         })
         .map(|arrived| arrived.row);
-    if let Some((service, set)) = set_here(tx, into, &proposal.source, &nodes)? {
+    if let Some((service, set)) = set_here(tx, into, &proposal.id, &nodes)? {
         return Err(error::conflict(
             format!(
                 "{service}'s {set} was set here since {source} was included: \
@@ -591,54 +591,98 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
     scope::save_working(tx, into)
 }
 
+/// What an introduced Service carried in besides its configuration: never the
+/// credential itself, only a digest of it sealed.
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+struct CarriedIn {
+    credential: Option<String>,
+    policy: Option<Policy>,
+}
+
+impl CarriedIn {
+    fn of(tx: &mut dyn Tx, environment: &EnvironmentId, service: &str) -> Result<Self, RpcError> {
+        let credential = registry::sealed(tx, environment, service)?.map(|sealed| {
+            let text = serde_json::to_string(&sealed).expect("a sealed credential is JSON");
+            hex::encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()))
+        });
+        Ok(Self {
+            credential,
+            policy: policy::stored(tx, environment, service)?,
+        })
+    }
+}
+
+fn carried(
+    tx: &mut dyn Tx,
+    proposal: &ProposalId,
+) -> Result<BTreeMap<String, CarriedIn>, RpcError> {
+    tx.query(
+        "SELECT carried FROM config_proposal WHERE id = ?1",
+        &[proposal.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("proposal"))?
+    .json(0, "proposal")
+}
+
+/// Keep what each Service `proposal` introduced into `into` carried in, as it first
+/// arrived: a later Sync brings no credential or policy to a Service already there.
+pub(crate) fn keep_carried(
+    tx: &mut dyn Tx,
+    into: &Environment,
+    proposal: &ProposalId,
+) -> Result<(), RpcError> {
+    let id = &into.summary.id;
+    let mut kept = carried(tx, proposal)?;
+    let nodes: BTreeSet<String> = pair::arrived(tx, id, Which::Owned(proposal))?
+        .into_iter()
+        .filter(|arrived| *arrived.row.at() == At::Node)
+        .map(|arrived| arrived.row.lineage().to_owned())
+        .collect();
+    for service in &into.working.services {
+        if nodes.contains(&service.lineage_id) && !kept.contains_key(&service.id) {
+            kept.insert(service.id.clone(), CarriedIn::of(tx, id, &service.id)?);
+        }
+    }
+    tx.execute(
+        "UPDATE config_proposal SET carried = ?1 WHERE id = ?2",
+        &[
+            serde_json::to_string(&kept)
+                .expect("carried settings are JSON")
+                .as_str()
+                .into(),
+            proposal.as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
 /// The first registry credential or Deployment Policy setting of a Service in `nodes`
-/// that `into` holds apart from what `source` holds now, which a Sync would have
-/// carried: Working State doesn't show it, and removing the Service would lose it.
+/// set in `into` since it arrived with `proposal`: Working State doesn't show it, and
+/// removing the Service would lose it.
 fn set_here(
     tx: &mut dyn Tx,
     into: &Environment,
-    source: &EnvironmentId,
+    proposal: &ProposalId,
     nodes: &BTreeSet<&str>,
 ) -> Result<Option<(String, &'static str)>, RpcError> {
-    let exists = !tx
-        .query(
-            "SELECT 1 FROM config_environment WHERE id = ?1",
-            &[source.as_str().into()],
-        )?
-        .is_empty();
-    let from = if exists {
-        Some(scope::load_by_id(tx, source)?.working)
-    } else {
-        None
-    };
+    let mut kept = carried(tx, proposal)?;
     for service in &into.working.services {
         if !nodes.contains(service.lineage_id.as_str()) {
             continue;
         }
-        let there = from.as_ref().and_then(|from| {
-            from.services
-                .iter()
-                .find(|there| there.lineage_id == service.lineage_id)
-        });
-        let credential = registry::sealed(tx, &into.summary.id, &service.id)?;
-        let carried = match there {
-            Some(there) => registry::sealed(tx, source, &there.id)?,
-            None => None,
-        };
-        if credential.is_some() && credential != carried {
+        let now = CarriedIn::of(tx, &into.summary.id, &service.id)?;
+        let was = kept.remove(&service.id).unwrap_or_default();
+        if now.credential != was.credential {
             return Ok(Some((service.slug.to_string(), "registry credential")));
         }
-        let Some(policy) = policy::stored(tx, &into.summary.id, &service.id)? else {
-            continue;
-        };
-        let carried = match there {
-            Some(there) => policy::stored(tx, source, &there.id)?,
-            None => None,
-        }
-        .unwrap_or_default();
+        let (now, was) = (
+            now.policy.unwrap_or_default(),
+            was.policy.unwrap_or_default(),
+        );
         if let Some(setting) = policy::PolicySetting::ALL
             .into_iter()
-            .find(|setting| setting.value(&policy) != setting.value(&carried))
+            .find(|setting| setting.value(&now) != setting.value(&was))
         {
             return Ok(Some((service.slug.to_string(), setting.label())));
         }

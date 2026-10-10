@@ -288,6 +288,7 @@ pub(crate) fn sync(
         sync: &id,
     };
     let staged = checked.apply(tx, who, &mut into, &picks, &values, owner)?;
+    proposal::keep_carried(tx, &into, &proposal)?;
     if close_after {
         crate::pull_request::close(tx, who, &from.summary.id, &mut Default::default())?;
     }
