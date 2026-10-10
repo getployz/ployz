@@ -1809,3 +1809,225 @@ fn undo_source_kind_requires_consent_for_a_later_branch_edit() {
         .unwrap();
     assert_eq!(value(&store, &who, "web.image"), Some(json!("nginx:1")));
 }
+
+#[test]
+fn discarding_new_variable_export_preserves_its_value_and_owner() {
+    for target in [
+        ployz_store::DiscardTarget::Head,
+        ployz_store::DiscardTarget::Saved,
+    ] {
+        for new_service in [false, true] {
+            let (store, who) = shop();
+            backend::deploy(&store, &who, "production", 1);
+            let service = if new_service {
+                store
+                    .write(
+                        &who,
+                        &CreateService {
+                            id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000009")
+                                .unwrap(),
+                            environment: EnvironmentRef::default(),
+                            name: ServiceName::parse("worker").unwrap(),
+                            image: Some("alpine:3".into()),
+                            template: None,
+                        },
+                    )
+                    .unwrap();
+                "worker"
+            } else {
+                "web"
+            };
+            let path = format!("{service}.env.NEW");
+            set(&store, &who, &path, json!("keep draft value"));
+            set(&store, &who, &format!("{path}.exported"), json!(true));
+            let history = store
+                .read(&who, &ployz_store::HistoryQuery::default())
+                .unwrap()
+                .revisions;
+            let result = store
+                .write(
+                    &who,
+                    &Discard {
+                        target,
+                        path: Some(SettingPath::parse(&format!("{path}.exported")).unwrap()),
+                        version: Some(diff(&store, &who).version),
+                        ..Discard::default()
+                    },
+                )
+                .unwrap();
+            assert!(result.changed);
+            assert_eq!(
+                value(&store, &who, &format!("{path}.exported")),
+                Some(json!(false))
+            );
+            assert_eq!(value(&store, &who, &path), Some(json!("keep draft value")));
+            assert!(value(&store, &who, &format!("{service}.image")).is_some());
+            assert_eq!(
+                store
+                    .read(&who, &ployz_store::HistoryQuery::default())
+                    .unwrap()
+                    .revisions,
+                history
+            );
+            let result = store
+                .write(
+                    &who,
+                    &Discard {
+                        target,
+                        path: Some(SettingPath::parse(&path).unwrap()),
+                        version: Some(diff(&store, &who).version),
+                        ..Discard::default()
+                    },
+                )
+                .unwrap();
+            assert!(result.changed);
+            assert_eq!(value(&store, &who, &path), None);
+            assert!(value(&store, &who, &format!("{service}.image")).is_some());
+        }
+    }
+}
+
+#[test]
+fn discarding_new_legacy_description_preserves_other_variable_fields() {
+    for target in [
+        ployz_store::DiscardTarget::Head,
+        ployz_store::DiscardTarget::Saved,
+    ] {
+        let fixture = LegacyWorking::new();
+        let (store, who) = (&fixture.store, &fixture.who);
+        backend::deploy(store, who, "production", 1);
+        set(
+            store,
+            who,
+            "web.env.KEY",
+            json!({ "value": "keep", "exported": true }),
+        );
+        fixture.variable(|variable| variable.description = Some("draft description".into()));
+        let mut expected = fixture.key();
+        expected.description = None;
+        let result = store
+            .write(
+                who,
+                &Discard {
+                    target,
+                    path: Some(SettingPath::parse("web.env.KEY.description").unwrap()),
+                    version: Some(diff(store, who).version),
+                    ..Discard::default()
+                },
+            )
+            .unwrap();
+        assert!(result.changed);
+        assert_eq!(fixture.key(), expected);
+        assert_eq!(diff(store, who).saved, Some(Revision(1)));
+    }
+}
+
+#[test]
+fn discarding_missing_child_preserves_a_new_service_and_history() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some("alpine:3".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap()
+        .revisions;
+    let result = store
+        .write(
+            &who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Saved,
+                path: Some(SettingPath::parse("worker.env.MISSING").unwrap()),
+                version: Some(diff(&store, &who).version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert!(!result.changed);
+    assert_eq!(value(&store, &who, "worker.image"), Some(json!("alpine:3")));
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions,
+        history
+    );
+}
+
+#[test]
+fn discarding_a_new_configs_child_never_deletes_its_owner() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    let id = "00000000-0000-4000-8000-000000000009";
+    let name = ployz_core::ConfigName::parse("sentry").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(id).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: name.clone(),
+                mounts: vec![],
+            },
+        )
+        .unwrap();
+    for file in ["present.conf", "unrelated.conf"] {
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: name.clone(),
+                    file: ployz_core::ConfigFileName::parse(file).unwrap(),
+                    content: file.into(),
+                    mode: None,
+                    uid: None,
+                    gid: None,
+                },
+            )
+            .unwrap();
+    }
+    let query = ployz_store::ConfigItemQuery {
+        environment: EnvironmentRef::default(),
+        config: name.into(),
+    };
+    let original = store.read(&who, &query).unwrap();
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap()
+        .revisions;
+    for file in ["present.conf", "missing.conf"] {
+        let result = store.write(
+            &who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Saved,
+                path: Some(SettingPath::parse(&format!("configs.@{id}.files.{file}")).unwrap()),
+                version: Some(diff(&store, &who).version),
+                ..Discard::default()
+            },
+        );
+        if file == "present.conf" {
+            assert_eq!(result.unwrap_err().code, RpcErrorCode::Conflict);
+        } else {
+            assert!(!result.unwrap().changed);
+        }
+        assert_eq!(store.read(&who, &query).unwrap(), original);
+        assert_eq!(
+            store
+                .read(&who, &ployz_store::HistoryQuery::default())
+                .unwrap()
+                .revisions,
+            history
+        );
+    }
+}

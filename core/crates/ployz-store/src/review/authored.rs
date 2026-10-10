@@ -190,6 +190,75 @@ macro_rules! field {
 }
 
 impl Plan {
+    fn variable_selection(
+        target: Option<&Target>,
+        node: &ReviewNodeIdentity,
+        before: &SavedEnvironmentIntent,
+        after: &SavedEnvironmentIntent,
+    ) -> Option<Self> {
+        let target = target?;
+        let key = match target {
+            Target::Variable(key) | Target::Exported(key) | Target::Description(key) => key,
+            Target::Setting(_) | Target::Source | Target::Mount(_) | Target::ConfigMount(_) => {
+                return None;
+            }
+        };
+        let find = |intent: &SavedEnvironmentIntent| {
+            intent
+                .services
+                .iter()
+                .find(|service| service.id == node.id)
+                .and_then(|service| {
+                    service
+                        .variables
+                        .iter()
+                        .find(|variable| variable.key == key.as_str())
+                })
+                .cloned()
+        };
+        let mut before = find(before);
+        let after = find(after);
+        if before.is_none()
+            && matches!(target, Target::Exported(_) | Target::Description(_))
+            && let Some(variable) = &after
+        {
+            let mut defaults = variable.clone();
+            defaults.exported = false;
+            defaults.description = None;
+            before = Some(defaults);
+        }
+        let mut effects = Vec::new();
+        variable_changes(
+            &mut effects,
+            &node.id,
+            key.as_str(),
+            before.as_ref(),
+            after.as_ref(),
+        );
+        effects.retain(|effect| match effect {
+            Effect::VariableLifecycle { .. } => !matches!(target, Target::Exported(_)),
+            Effect::Variable { field, .. } => matches!(
+                (target, field),
+                (
+                    Target::Variable(_),
+                    VariableField::Id(_) | VariableField::Value(_)
+                ) | (Target::Exported(_), VariableField::Exported(_))
+                    | (Target::Description(_), VariableField::Description(_))
+            ),
+            Effect::ServiceLifecycle(_)
+            | Effect::Service { .. }
+            | Effect::VolumeLifecycle(_)
+            | Effect::Volume { .. }
+            | Effect::ConfigLifecycle(_)
+            | Effect::Config { .. }
+            | Effect::Route { .. }
+            | Effect::VolumeMount { .. }
+            | Effect::ConfigMount { .. } => {
+                unreachable!("variable traversal emits variable effects")
+            }
+        });
+        Some(Self { effects })
+    }
     fn between(
         before: &SavedEnvironmentIntent,
         after: &SavedEnvironmentIntent,
@@ -548,52 +617,13 @@ fn service_changes(
         ManagedHostnames
     );
     for key in keys(&before.variables, variables, |variable| &variable.key) {
-        match (
+        variable_changes(
+            effects,
+            id,
+            &key,
             before.variables.iter().find(|variable| variable.key == key),
             variables.iter().find(|variable| variable.key == key),
-        ) {
-            (None, Some(after)) => effects.push(Effect::VariableLifecycle {
-                service: id.clone(),
-                key,
-                change: Lifecycle::Added(after.clone()),
-            }),
-            (Some(before), None) => effects.push(Effect::VariableLifecycle {
-                service: id.clone(),
-                key,
-                change: Lifecycle::Removed(before.clone()),
-            }),
-            (Some(before), Some(after)) => {
-                let SavedVariableIntent {
-                    id: variable_id,
-                    key,
-                    description,
-                    exported,
-                    value_fingerprint: _,
-                    value: _,
-                } = after;
-                let pair = VersionedValue::of(after);
-                let mut add = |field| {
-                    effects.push(Effect::Variable {
-                        service: id.clone(),
-                        key: key.clone(),
-                        field,
-                    })
-                };
-                if let Some(delta) = Delta::between(&before.id, variable_id) {
-                    add(VariableField::Id(delta));
-                }
-                if let Some(delta) = Delta::between(&VersionedValue::of(before), &pair) {
-                    add(VariableField::Value(delta));
-                }
-                if let Some(delta) = Delta::between(&before.description, description) {
-                    add(VariableField::Description(delta));
-                }
-                if let Some(delta) = Delta::between(&before.exported, exported) {
-                    add(VariableField::Exported(delta));
-                }
-            }
-            (None, None) => unreachable!("union contains a variable"),
-        }
+        );
     }
     for resource in keys(&before.volume_attachments, volume_attachments, |mount| {
         &mount.volume_resource_id
@@ -638,6 +668,58 @@ fn service_changes(
         }
     }
     Ok(())
+}
+
+fn variable_changes(
+    effects: &mut Vec<Effect>,
+    service: &str,
+    key: &str,
+    before: Option<&SavedVariableIntent>,
+    after: Option<&SavedVariableIntent>,
+) {
+    match (before, after) {
+        (None, Some(after)) => effects.push(Effect::VariableLifecycle {
+            service: service.to_owned(),
+            key: key.to_owned(),
+            change: Lifecycle::Added(after.clone()),
+        }),
+        (Some(before), None) => effects.push(Effect::VariableLifecycle {
+            service: service.to_owned(),
+            key: key.to_owned(),
+            change: Lifecycle::Removed(before.clone()),
+        }),
+        (Some(before), Some(after)) => {
+            let SavedVariableIntent {
+                id: variable_id,
+                key,
+                description,
+                exported,
+                value_fingerprint: _,
+                value: _,
+            } = after;
+            let pair = VersionedValue::of(after);
+            let mut add = |field| {
+                effects.push(Effect::Variable {
+                    service: service.to_owned(),
+                    key: key.clone(),
+                    field,
+                })
+            };
+            if let Some(delta) = Delta::between(&before.id, variable_id) {
+                add(VariableField::Id(delta));
+            }
+            if let Some(delta) = Delta::between(&VersionedValue::of(before), &pair) {
+                add(VariableField::Value(delta));
+            }
+            if let Some(delta) = Delta::between(&before.description, description) {
+                add(VariableField::Description(delta));
+            }
+            if let Some(delta) = Delta::between(&before.exported, exported) {
+                add(VariableField::Exported(delta));
+            }
+        }
+        (None, None) => {}
+    }
 }
 
 fn source_changes(
@@ -1675,19 +1757,47 @@ pub(super) fn prepare_discard(
                 &node,
             );
         }
-        let plan = Plan::between(&baseline, &environment.working)?;
+        let plan = if let Some(plan) =
+            Plan::variable_selection(path.target(), &node, &baseline, &environment.working)
+        {
+            plan
+        } else {
+            Plan::between(&baseline, &environment.working)?
+        };
         let (_, rows) = plan.render(&baseline, &environment.working)?;
         let whole = path.target().is_none() && path.node_field().is_none();
         let selected_path = selector_path(path, &node, &environment.working, &baseline)?;
+        if !whole
+            && rows.iter().any(|row| {
+                row.node == node
+                    && row.path == selected_path
+                    && row.effects.iter().any(|index| {
+                        plan.effects
+                            .get(*index)
+                            .expect("row belongs to plan")
+                            .lifecycle()
+                            .is_some()
+                    })
+            })
+        {
+            return Err(error::conflict(
+                "The authored baseline for this field is unavailable",
+                json!({ "path": path }),
+            ));
+        }
         let selected: Vec<_> = rows
             .iter()
             .filter(|row| {
                 row.node == node
                     && (whole
                         || row.path == selected_path
-                        || plan.effects.iter().enumerate().any(|(index, effect)| {
-                            row.effects.contains(&index) && effect.lifecycle().is_some()
-                        }))
+                            && row.effects.iter().all(|index| {
+                                plan.effects
+                                    .get(*index)
+                                    .expect("row belongs to plan")
+                                    .lifecycle()
+                                    .is_none()
+                            }))
             })
             .flat_map(|row| row.effects.iter().copied())
             .collect();
