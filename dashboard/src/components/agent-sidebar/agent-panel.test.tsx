@@ -53,7 +53,8 @@ it("sends on Enter, keeps Shift+Enter and composing input as a draft", async () 
   const fetched = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(Response.json({ messages: [] })));
   vi.stubGlobal("fetch", fetched);
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} onClose={() => {}} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} threadId="thread-acme"
+    onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
   const posted = () => fetched.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => String(init?.body));
   const box = screen.getByRole("textbox", { name: "Message the agent" });
   fireEvent.change(box, { target: { value: "list services" } });
