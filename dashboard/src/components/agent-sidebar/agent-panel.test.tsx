@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { UIMessage } from "@tanstack/ai-react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -46,4 +46,21 @@ it("switching Organization with the panel open talks to the new Organization's t
   await waitFor(() => expect(fetched.mock.lastCall?.[0]).toMatch(/^\/api\/agent\/acme\/chat\?.*threadId=thread-acme/));
   shown.rerender(panel("other"));
   await waitFor(() => expect(fetched.mock.lastCall?.[0]).toMatch(/^\/api\/agent\/other\/chat\?.*threadId=thread-other/));
+});
+
+it("sends on Enter, keeps Shift+Enter and composing input as a draft", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const fetched = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(Response.json({ messages: [] })));
+  vi.stubGlobal("fetch", fetched);
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} onClose={() => {}} /></QueryClientProvider>);
+  const posted = () => fetched.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => String(init?.body));
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: "list services" } });
+  fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+  fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+  expect(box).toHaveProperty("value", "list services");
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(posted().some((body) => body.includes("list services"))).toBe(true));
+  expect(box).toHaveProperty("value", "");
 });
