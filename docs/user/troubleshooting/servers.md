@@ -196,8 +196,9 @@ reached`.
 
 ## A server shows Offline
 
-The server's page says **Can't reach web-2**. Services that run only there are down. Stopping
-`ployz` alone doesn't cause this: the server keeps its place in the cluster while Ployz is stopped.
+The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz
+with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place in the
+cluster until it reboots or you remove it.
 
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.
@@ -218,9 +219,14 @@ A service on the server gets `NXDOMAIN` or a timeout for a name like `postgres.a
 while `ployz service ls` shows the target running.
 
 1. Run `sudo systemctl status ployz-dns`. Its Status line says `serving`, `loading`, or
-   `waiting for the Corrosion token`.
-2. Read its logs with `sudo journalctl -u ployz-dns -n 200`.
-3. If the unit is missing, run `sudo systemctl restart ployz`. Ployz recreates it.
+   `waiting for the Corrosion token` while it works. `idle` means the server isn't in an
+   organization yet, so it has no names to answer.
+2. If the Status line says `waiting for port 53 on 10.210.0.1` (your server's private address),
+   another program holds that port, often `dnsmasq` from libvirt or a local DNS cache. Find it
+   with `sudo ss -lunp 'sport = :53'`, then stop it or make it listen only on other addresses.
+   Private DNS starts answering on its own once the port is free.
+3. Read its logs with `sudo journalctl -u ployz-dns -n 200`.
+4. If the unit is missing, run `sudo systemctl restart ployz`. Ployz recreates it.
 
 ## The bottom bar shows Add a server instead of Deploy
 
