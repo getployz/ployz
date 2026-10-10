@@ -43,7 +43,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const matches = (row: ContainerLogRow) => row.kind === "gap" ? !search && !levels.length
     : (!levels.length || levels.includes(row.level)) && row.message.toLowerCase().includes(search.toLowerCase());
   const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && matches(row)).sort(compareLogRows);
-  const missingServers = [...missing.history, ...Object.entries(missing.live).filter(([id]) => !missing.history.some(server => server.machineId === id)).map(([machineId, server]) => ({ machineId, ...server }))];
+  const missingServers = [...missing.history, ...Object.entries(missing.live).filter(([id]) => !missing.history.some(server => server.machineId === id)).map(([machineId, { machineName, failed }]) => ({ machineId, machineName, message: Object.values(failed).at(-1) ?? "" }))];
   const touchY = useRef(0);
   const dragging = useRef(false);
   function loadAtTop(delta = 0) {

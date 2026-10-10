@@ -14,7 +14,7 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
  */
 type LogStreamState = {
   opened: boolean; offline: boolean; refused: boolean;
-  missing: { live: Record<string, Omit<MissingServer, "machineId"> & { containerIds: readonly string[] }>; history: readonly MissingServer[] };
+  missing: { live: Record<string, { machineName: string; failed: Readonly<Record<string, string>> }>; history: readonly MissingServer[] };
   historyPending: boolean; historyError: boolean;
 };
 
@@ -81,10 +81,10 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         // A container that failed is sending again or has left; the note stays while another on that Server is still down.
         const recovered = (machineId: string, containerId: string) => {
           const server = snapshot.missing.live[machineId];
-          if (!server?.containerIds.includes(containerId)) return;
+          if (!server || !(containerId in server.failed)) return;
           const { [machineId]: _, ...live } = snapshot.missing.live;
-          const containerIds = server.containerIds.filter(failed => failed !== containerId);
-          publish({ ...snapshot, missing: { ...snapshot.missing, live: containerIds.length ? { ...live, [machineId]: { ...server, containerIds } } : live } });
+          const { [containerId]: __, ...failed } = server.failed;
+          publish({ ...snapshot, missing: { ...snapshot.missing, live: Object.keys(failed).length ? { ...live, [machineId]: { ...server, failed } } : live } });
         };
         controller = new AbortController();
         const stop = liveStream(`/api/runtime/logs?${query}`, {
@@ -116,8 +116,8 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
               } else {
                 const { machineId, containerId, message } = decoded.value;
                 const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
-                const containerIds = [...(snapshot.missing.live[machineId]?.containerIds ?? []).filter(failed => failed !== containerId), containerId];
-                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, containerIds, message } } } });
+                const { [containerId]: _, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
+                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: message } } } } });
               }
             },
           },

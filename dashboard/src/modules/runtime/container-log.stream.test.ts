@@ -414,7 +414,7 @@ it("drops a read of the Log Store still in flight when the viewer returns to the
   }
 });
 
-it("clears a Server's missing note once every container that failed sends again or leaves", async () => {
+it("keeps each failed container's reason on a Server's missing note until every one sends again or leaves", async () => {
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {
     constructor() { super(); source = this; }
@@ -430,13 +430,13 @@ it("clears a Server's missing note once every container that failed sends again 
     kind: "line", id: `${containerId}/1`, timestamp: "1", machineId: "m", machineName: "Server", containerId, serviceName: "api", channel: "stdout", level: "info", message: "back",
   } });
   try {
-    send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "c", message: "unavailable" }));
-    send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "d", message: "unavailable" }));
+    send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "c", message: "c is unavailable" }));
+    send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "d", message: "d is unavailable" }));
     send(record("other"));
-    expect(stream.getSnapshot().missing.live["m"]?.containerIds).toEqual(["c", "d"]);
-    send(record("c"));
-    expect(stream.getSnapshot().missing.live["m"]?.containerIds).toEqual(["d"]);
-    send(JSON.stringify({ type: "source_gone", machineId: "m", containerId: "d" }));
+    expect(stream.getSnapshot().missing.live["m"]?.failed).toEqual({ c: "c is unavailable", d: "d is unavailable" });
+    send(record("d"));
+    expect(stream.getSnapshot().missing.live["m"]?.failed).toEqual({ c: "c is unavailable" });
+    send(JSON.stringify({ type: "source_gone", machineId: "m", containerId: "c" }));
     expect(stream.getSnapshot().missing.live).toEqual({});
   } finally {
     subscription.unsubscribe();
