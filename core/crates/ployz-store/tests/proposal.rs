@@ -336,6 +336,26 @@ impl Db {
         (diff.version, diff.environment.revision.0)
     }
 
+    /// The value `environment`'s Changes show at `path` after them.
+    fn change(&self, environment: &str, path: &str) -> serde_json::Value {
+        let diff = self
+            .store
+            .read(
+                &self.who,
+                &ployz_store::DiffQuery {
+                    environment: at(environment),
+                },
+            )
+            .unwrap();
+        diff.changes
+            .iter()
+            .flat_map(|change| &change.settings)
+            .find(|row| row.path == path)
+            .unwrap()
+            .after
+            .clone()
+    }
+
     /// The services `environment`'s Working State runs.
     fn services(&self, environment: &str) -> Vec<String> {
         self.store
@@ -819,9 +839,17 @@ fn a_secret_resolved_on_an_existing_service_survives_remove() {
             .unwrap(),
     );
     assert_eq!(db.env("production", "api")["KEY"], json!({"secret": false}));
+    assert_eq!(
+        db.change("production", "api.env.KEY"),
+        json!({"secret": false})
+    );
     db.put(
         "production",
         &[("api.env.KEY", json!({"secret": "prod-key"}))],
+    );
+    assert_eq!(
+        db.change("production", "api.env.KEY"),
+        json!({"secret": true})
     );
     assert_eq!(db.remove("production", &a), Ok(true));
     assert_eq!(db.env("production", "api")["KEY"], json!({"secret": true}));

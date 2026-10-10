@@ -99,6 +99,11 @@ it("words a healthcheck by its path or command and timeout", () => {
   expect(shownValue({ command: "pg_isready -h 127.0.0.1", timeoutSeconds: 300 })).toBe("pg_isready -h 127.0.0.1 within 300s");
 });
 
+it("words a secret as Sealed, or as needing a value until it has one", () => {
+  expect(shownValue({ secret: true })).toBe("Sealed");
+  expect(shownValue({ secret: false })).toBe("needs a value");
+});
+
 it("words a Volume's storage by its limit", () => {
   expect(shownValue({ kind: "provisioned", maximumBytes: 4_100_000_000 })).toBe("4.1 GB limit");
   expect(shownValue({ kind: "docker" })).toBe("Docker volume");

@@ -142,17 +142,18 @@ function sameReviewRow(left: ChangeRow, right: ChangeRow): boolean {
   return true;
 }
 
-/** The diff values a cell words: text, a sealed value (the Store never sends its plaintext), a route. */
+/** The diff values a cell words: text, a sealed value (the Store never sends its plaintext) or one still unset, a route. */
 const decodeShown = Schema.decodeUnknownOption(Schema.Union([
-  Schema.String, Schema.Struct({ secret: Schema.Literal(true) }), Schema.Struct({ hostname: Schema.String }),
+  Schema.String, Schema.Struct({ secret: Schema.Boolean }), Schema.Struct({ hostname: Schema.String }),
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
   // A Volume's storage.
   Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
 ]));
 
 /**
- * A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, a healthcheck by its
- * path or command and timeout, generated domains by name and port, a Volume's storage by its limit; else its JSON.
+ * A diff value as a cell shows it: text as is, a sealed one as Sealed or needing a value, a route by its hostname, a
+ * healthcheck by its path or command and timeout, generated domains by name and port, a Volume's storage by its limit;
+ * else its JSON.
  */
 export function shownValue(value: JsonValue): string {
   if (value === null) return "";
@@ -163,7 +164,7 @@ export function shownValue(value: JsonValue): string {
     onSome: (shown) => {
       if (Schema.is(Schema.String)(shown)) return shown;
       if ("hostname" in shown) return shown.hostname;
-      if ("secret" in shown) return "Sealed";
+      if ("secret" in shown) return shown.secret ? "Sealed" : "needs a value";
       if ("kind" in shown) return volumeStorageText(shown);
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },
