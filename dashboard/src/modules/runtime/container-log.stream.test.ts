@@ -323,3 +323,75 @@ it("clears a Server's missing note once every container that failed sends again"
     queryClient.clear(); vi.unstubAllGlobals();
   }
 });
+
+
+it("retries a failed cursor page after its Server recovers", async () => {
+  class FakeEventSource extends EventTarget { close() {} }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  let recovered = false;
+  const reads: string[] = [];
+  const line = (at: number) => ({ kind: "line", id: String(at), timestamp: String(at), machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: String(at) });
+  vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+    const { cursor } = JSON.parse(String(init.body)) as { cursor?: string };
+    reads.push(cursor ?? "newest");
+    return Response.json(cursor === undefined ? { rows: [line(100)], cursor: "retry", failures: [] }
+      : recovered ? { rows: [line(50)], cursor: null, failures: [] }
+      : { rows: [], cursor: "retry", failures: [{ machineId: "m", machineName: "Server", message: "unavailable" }] });
+  });
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "retry-history" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  try {
+    await stream.loadOlder();
+    await stream.loadOlder();
+    expect(stream.getSnapshot().missing.history).toHaveLength(1);
+    const attempted = reads.length;
+    recovered = true;
+    await stream.loadOlder();
+    expect(reads.length).toBeGreaterThan(attempted);
+    expect(stream.collection.has("50")).toBe(true);
+    expect(stream.getSnapshot().missing.history).toEqual([]);
+    expect(stream.hasOlder).toBe(false);
+  } finally {
+    subscription.unsubscribe(); await stream.collection.cleanup();
+    queryClient.clear(); vi.unstubAllGlobals();
+  }
+});
+
+it("clears an aborted history read so the reconnected stream can load again", async () => {
+  vi.useFakeTimers();
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    static CLOSED = 2;
+    readyState = FakeEventSource.CLOSED;
+    constructor() { super(); sources.push(this); }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  let first = true;
+  const fetcher = vi.fn(async (_url: string, { signal }: { signal: AbortSignal }) => {
+    if (!first) return Response.json({ rows: [], failures: [], cursor: null });
+    first = false;
+    return new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  });
+  vi.stubGlobal("fetch", fetcher);
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "abort-history" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  try {
+    const loading = stream.loadOlder();
+    expect(stream.getSnapshot().historyPending).toBe(true);
+    sources.at(-1)?.dispatchEvent(new Event("error"));
+    await loading;
+    expect(stream.getSnapshot().historyPending).toBe(false);
+    expect(stream.getSnapshot().historyError).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    sources.at(-1)?.dispatchEvent(new Event("open"));
+    await stream.loadOlder();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(stream.hasOlder).toBe(false);
+  } finally {
+    subscription.unsubscribe(); await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});
