@@ -24,11 +24,12 @@ use crate::{
     cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, OperatorError, ProxyPorts, ServiceArg, asked_machines, exec_options,
+        ExecMode, OperatorError, PreparedHistory, ProxyPorts, ServiceArg, asked_machines,
+        exec_options,
         history::{HistoryEvent, HistoryRecord, HistoryWindow, read_history},
         history_selectors, merge_logs, observe_service_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
-        select_proxy_container,
+        prepare_service_history, select_proxy_container,
     },
 };
 
@@ -263,6 +264,17 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             let started = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
+            if let Some(prepared) = prepare_service_history(
+                client,
+                &machines,
+                &args,
+                &options,
+                deployment.as_ref().map(DeploymentId::as_str),
+            )
+            .await?
+            {
+                return print_prepared_history(client, &prepared, window, &cancellation, utc).await;
+            }
             let scope = observe_service_logs(client, &machines).await?;
             let names = &scope.unanswered.names;
             let named = || names.iter().map(|(machine_id, name)| (*machine_id, name));
@@ -332,6 +344,47 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             gaps.outcome()
         })
     })
+}
+
+async fn print_prepared_history(
+    client: &crate::connect::Client,
+    prepared: &PreparedHistory,
+    window: HistoryWindow,
+    cancellation: &tokio_util::sync::CancellationToken,
+    utc: bool,
+) -> Result<(), Error> {
+    let named = || {
+        prepared
+            .targets
+            .iter()
+            .chain(&prepared.omissions)
+            .map(|(id, name)| (*id, name))
+    };
+    let mut gaps = crate::ui::Gaps::default().named(named());
+    let omissions = prepared
+        .omissions
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    gaps.extend(&[], &omissions);
+    gaps.warn();
+    let failures = read_history(
+        client,
+        &prepared.targets,
+        &prepared.selectors,
+        window,
+        cancellation,
+        |record| print_history(&record, utc),
+    )
+    .await?;
+    let mut missed = crate::ui::Gaps::default().named(named());
+    missed.extend(&failures, &[]);
+    missed.warn();
+    gaps.extend(&failures, &[]);
+    if crate::ui::json() && gaps.outcome().is_err() {
+        crate::ui::emit_line(&gaps)?;
+    }
+    gaps.outcome()
 }
 
 /// Print Deployment `id`'s build logs: each Service in `named`, or every build.

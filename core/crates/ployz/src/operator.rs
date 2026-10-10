@@ -486,6 +486,76 @@ pub async fn observe_service_logs(
     })
 }
 
+/// Exact Service history targets and membership omissions, before any history RPC.
+pub(crate) struct PreparedHistory {
+    pub(crate) targets: Vec<(MachineId, MachineName)>,
+    pub(crate) omissions: Vec<(MachineId, MachineName)>,
+    pub(crate) selectors: Vec<HistorySelector>,
+}
+
+/// Prepare qualified Service history without observing live Containers.
+/// Returns `None` when selector resolution or follow needs a live observation.
+///
+/// # Errors
+/// Returns Machine-list and Machine-selector errors.
+pub(crate) async fn prepare_service_history(
+    client: &mut Client,
+    machine_selectors: &[FanoutSelector],
+    args: &[ServiceArg],
+    options: &LogsOptions,
+    deployment: Option<&str>,
+) -> Result<Option<PreparedHistory>, OperatorError> {
+    if options.follow {
+        return Ok(None);
+    }
+    let Some(selectors) = qualified_history_selectors(args, deployment) else {
+        return Ok(None);
+    };
+    let machines = client.machines().await?;
+    let asked = asked_machines(&machines, machine_selectors)?;
+    let mut prepared = PreparedHistory {
+        targets: Vec::new(),
+        omissions: Vec::new(),
+        selectors,
+    };
+    for observation in machines {
+        if !asked.contains(&observation.machine.id) {
+            continue;
+        }
+        let invites_rpc = observation.invites_rpc();
+        let machine = (observation.machine.id, observation.machine.name);
+        if invites_rpc {
+            prepared.targets.push(machine);
+        } else {
+            prepared.omissions.push(machine);
+        }
+    }
+    Ok(Some(prepared))
+}
+
+fn qualified_history_selectors(
+    args: &[ServiceArg],
+    deployment: Option<&str>,
+) -> Option<Vec<HistorySelector>> {
+    if args.is_empty() {
+        return None;
+    }
+    args.iter()
+        .map(|arg| {
+            if !arg.containers.is_empty() {
+                return None;
+            }
+            let service = QualifiedService::parse(arg.service.as_str()).ok()?;
+            Some(HistorySelector {
+                namespace: Some(service.namespace.to_string()),
+                service: Some(service.name.to_string()),
+                deployment: deployment.map(str::to_owned),
+                container_id: None,
+            })
+        })
+        .collect()
+}
+
 /// The Servers a logs command asks: those `selectors` name, whatever their
 /// membership, or every Server without one.
 pub(crate) fn asked_machines(

@@ -558,6 +558,61 @@ fn logs_ask_a_down_server_so_it_can_be_named_as_a_gap() {
         HashSet::from([down_id])
     );
     assert!(asked_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
+    assert_eq!(
+        asked_machines(
+            &machines,
+            &[FanoutSelector::parse(down_id.to_string()).unwrap()]
+        )
+        .unwrap(),
+        HashSet::from([down_id])
+    );
+    let ambiguous = [
+        machine_observation(1, "edge"),
+        machine_observation(2, "edge"),
+    ];
+    assert!(matches!(
+        asked_machines(&ambiguous, &[FanoutSelector::parse("edge").unwrap()]),
+        Err(OperatorError::MachineSelector(_))
+    ));
+}
+
+#[test]
+fn exact_history_preserves_selectors_and_rejects_live_resolution() {
+    let args = ["app/api", "app/gone", "app/api"].map(|service| ServiceArg {
+        service: service_selector(service),
+        containers: Vec::new(),
+    });
+    let read = |service: &str| HistorySelector {
+        namespace: Some("app".into()),
+        service: Some(service.into()),
+        deployment: Some("dep_old".into()),
+        container_id: None,
+    };
+    assert_eq!(
+        qualified_history_selectors(&args, Some("dep_old")),
+        Some(vec![read("api"), read("gone"), read("api")])
+    );
+    assert_eq!(
+        qualified_history_selectors(&args, None)
+            .unwrap()
+            .first()
+            .unwrap()
+            .deployment,
+        None
+    );
+    for named in [
+        vec![],
+        strings(["api"]),
+        strings(["app/api", "gone"]),
+        strings(["11111111111111111111111111111111"]),
+        strings(["app/api:api-1"]),
+        strings(["app/gone", "app/api:aaaaaaaaaaaa"]),
+    ] {
+        assert!(
+            qualified_history_selectors(&parse_service_args(&named).unwrap(), None).is_none(),
+            "{named:?}"
+        );
+    }
 }
 
 #[test]

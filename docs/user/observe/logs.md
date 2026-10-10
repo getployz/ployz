@@ -32,6 +32,17 @@ new containers printed, including the pre-deploy command. See
 
 ![A deployment's Build logs while it builds](../images/deployment-page-build.png)
 
+## Read retained logs from the CLI
+
+`ployz logs app/api` reads retained logs without asking Docker to list containers.
+This also works for a removed service. Every service argument must be qualified
+as `namespace/name`, either explicitly or through project or deployment scope.
+The command still needs a server observation and access to each selected server's
+log store. Servers that do not answer are named, and partial results exit with code 3.
+
+Unqualified names without scope, service IDs, container selectors, commands with
+no service arguments, and `--follow` still use live container discovery.
+
 ## Good to know
 
 - **Logs stay on your servers, for a while.** Ployz doesn't copy them anywhere else. Each
