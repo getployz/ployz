@@ -100,6 +100,10 @@ pub(crate) enum Opened {
 pub(crate) struct InterruptedReset(LocalMachineStore);
 
 impl InterruptedReset {
+    pub(crate) fn record(&self) -> &LocalMachineRecord {
+        self.0.record()
+    }
+
     pub(crate) fn complete(self) -> Result<LocalMachineStore, StoreError> {
         let store = self.0;
         store.complete_reset()?;

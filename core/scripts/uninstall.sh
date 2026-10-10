@@ -77,6 +77,19 @@ main() {
         fi
     fi
 
+    if command -v ip >/dev/null 2>&1; then
+        local link
+        for link in ployz-wg ployz; do
+            if ip link show "$link" >/dev/null 2>&1; then
+                ip link delete "$link" || error "Cannot remove $link; uninstall aborted before deleting Machine state"
+            elif [ -e "/sys/class/net/$link" ]; then
+                error "Cannot inspect $link; uninstall aborted before deleting Machine state"
+            fi
+        done
+    elif [ -e /sys/class/net/ployz-wg ] || [ -e /sys/class/net/ployz ]; then
+        error "ip is required to remove Ployz networking; uninstall aborted before deleting Machine state"
+    fi
+
     systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
     systemctl disable ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
     rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
@@ -86,10 +99,6 @@ main() {
         "$RUNTIME_SYSTEMD_DIR/ployz-dns.service"
     systemctl daemon-reload
     rm -f "$INSTALL_BIN_DIR/ployzd"
-
-    if command -v ip >/dev/null 2>&1 && ip link show ployz >/dev/null 2>&1; then
-        ip link delete ployz
-    fi
 
     rm -rf "$PLOYZ_DATA_DIR"
     # Preserve the locked inode until reboot; replacing it would bypass exclusion.

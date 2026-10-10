@@ -87,6 +87,10 @@ EOF
 cat > "$TMP/bin/ip" <<'EOF'
 #!/bin/sh
 echo "ip $*" >> "$LOG"
+if [ "$SCENARIO" = wireguard-delete-failure ] && [ "$*" = 'link delete ployz-wg' ]; then
+    [ -e "$PLOYZ_DATA_DIR/receipt" ] || exit 2
+    exit 1
+fi
 exit 0
 EOF
 for command in getent userdel groupdel; do
@@ -100,7 +104,7 @@ run_uninstall() {
         PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/uninstall.sh"
 }
 
-for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent worker-stop-failure list-failure daemon-stop-failure busy; do
+for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent worker-stop-failure list-failure daemon-stop-failure wireguard-delete-failure busy; do
     : > "$LOG"
     mkdir -p "$TMP/state" "$TMP/run"
     touch "$TMP/state/receipt" "$TMP/run/socket"
@@ -159,12 +163,17 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         grep -Fq 'docker rm -f managed-container' "$LOG"
         grep -Fq 'docker rm -f corrosion-container' "$LOG"
         grep -Fq 'docker network rm ployz-network' "$LOG"
-        grep -Fq 'ip link delete ployz' "$LOG"
+        grep -Fxq 'ip link delete ployz-wg' "$LOG"
+        grep -Fxq 'ip link delete ployz' "$LOG"
     else
         case "$SCENARIO" in *failure|busy) ;; *) echo "unexpected uninstall failure: $SCENARIO" >&2; exit 1 ;; esac
         [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
         [ -e "$TMP/state/receipt" ] && [ -e "$TMP/run/socket" ] && [ -e "$TMP/runtime-systemd/ployz-dns.service" ]
-        if grep -q '^docker ' "$LOG"; then exit 1; fi
+        if [ "$SCENARIO" = wireguard-delete-failure ]; then
+            grep -Fxq 'ip link delete ployz-wg' "$LOG"
+        elif grep -q '^docker ' "$LOG"; then
+            exit 1
+        fi
     fi
     if grep -q '^unsafe cleanup:' "$LOG"; then exit 1; fi
     if [ "$SCENARIO" = busy ]; then exec {lock_fd}>&-; fi

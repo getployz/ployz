@@ -132,8 +132,10 @@ impl Daemon {
         let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
             Opened::Ready(store) => store,
             Opened::Resetting(interrupted) => {
+                let record = interrupted.record().clone();
                 finish_interrupted_reset(
                     interrupted,
+                    NetworkPlane::cleanup_retained(&record),
                     remove_retained(&CorrosionPaths::under(&config.data_dir, &run_dir).run_dir),
                 )
                 .await?
@@ -462,7 +464,14 @@ impl Daemon {
                     None => Ok(()),
                 }
             };
-            if let Err(error) = finish_reset(&self.local, removal).await {
+            let record = self.local.record();
+            if let Err(error) = finish_reset(
+                &self.local,
+                NetworkPlane::cleanup_retained(&record),
+                removal,
+            )
+            .await
+            {
                 errors.push(ployz_core::error_chain::inline(&error));
             }
         }
@@ -604,20 +613,22 @@ async fn serve_volume_send(
     }
 }
 
-// Corrosion outlives the daemon and holds files in the data directory, so both resets
-// remove it first. A failed removal keeps the Resetting record, and the next start retries.
 async fn finish_interrupted_reset(
     interrupted: InterruptedReset,
+    remove_network: impl Future<Output = Result<(), NetworkError>>,
     remove_corrosion: impl Future<Output = Result<(), CorrosionError>>,
 ) -> Result<LocalMachineStore, Error> {
+    remove_network.await?;
     remove_corrosion.await?;
     Ok(interrupted.complete()?)
 }
 
 async fn finish_reset(
     local: &RecordOwner,
+    remove_network: impl Future<Output = Result<(), NetworkError>>,
     remove_corrosion: impl Future<Output = Result<(), CorrosionError>>,
 ) -> Result<(), Error> {
+    remove_network.await?;
     remove_corrosion.await?;
     Ok(local.mutate(|store| store.complete_reset()).await??)
 }
@@ -741,7 +752,7 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        fs, io,
         path::{Path, PathBuf},
     };
 
@@ -756,7 +767,7 @@ mod tests {
 
     use super::{
         ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
-        LocalMachineStore, MachineApiSocket, ManagementConfig, Opened, StoreError,
+        LocalMachineStore, MachineApiSocket, ManagementConfig, NetworkError, Opened, StoreError,
         finish_interrupted_reset, finish_reset, wait_for_participation, wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
@@ -1008,10 +1019,23 @@ mod tests {
         let (old_id, interrupted) = interrupted_reset(&data_dir);
         let machine_json = data_dir.join("machine.json");
 
-        let store = finish_interrupted_reset(interrupted, async {
-            assert!(machine_json.exists(), "Corrosion is removed first");
-            Ok(())
-        })
+        let store = finish_interrupted_reset(
+            interrupted,
+            async {
+                assert!(
+                    machine_json.exists(),
+                    "networking is removed before the record"
+                );
+                Ok(())
+            },
+            async {
+                assert!(
+                    machine_json.exists(),
+                    "Corrosion is removed before the record"
+                );
+                Ok(())
+            },
+        )
         .await
         .unwrap();
 
@@ -1023,12 +1047,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_network_removal_keeps_interrupted_reset_identity_for_retry() {
+        let root = TestDir::new("ployzd-interrupted-network-reset-retry");
+        let data_dir = root.0.join("data");
+        let (old_id, interrupted) = interrupted_reset(&data_dir);
+        let result = finish_interrupted_reset(
+            interrupted,
+            async {
+                Err(NetworkError::WireGuardConflict {
+                    reason: "unrelated identity",
+                })
+            },
+            async { Ok(()) },
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Network(_))));
+        let record: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(record.id(), old_id);
+        assert_eq!(record.phase(), ployz_core::LocalMachinePhase::Resetting);
+        let Opened::Resetting(interrupted) =
+            LocalMachineStore::open_with_admission(&data_dir, data_dir.join(".run")).unwrap()
+        else {
+            panic!("network cleanup failure must remain retryable");
+        };
+        let store = finish_interrupted_reset(
+            interrupted,
+            async {
+                assert!(data_dir.join("machine.json").exists());
+                Ok(())
+            },
+            async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_ne!(store.record().id(), old_id);
+        assert_eq!(
+            store.record().phase(),
+            ployz_core::LocalMachinePhase::Uninitialized
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_network_removal_keeps_live_reset_identity_for_retry() {
+        let root = TestDir::new("ployzd-live-network-reset-retry");
+        let data_dir = root.0.join("data");
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        let old_id = store.record().id();
+        store.begin_reset().unwrap();
+        let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+        let result = finish_reset(
+            &owner,
+            async {
+                Err(NetworkError::Io(io::Error::other(
+                    "Docker network still attached",
+                )))
+            },
+            async { Ok(()) },
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Network(_))));
+        let record: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(record.id(), old_id);
+        assert_eq!(record.phase(), ployz_core::LocalMachinePhase::Resetting);
+    }
+
+    #[tokio::test]
     async fn failed_corrosion_removal_keeps_the_reset_for_retry() {
         let root = TestDir::new("ployzd-interrupted-reset-retry");
         let data_dir = root.0.join("data");
         let (old_id, interrupted) = interrupted_reset(&data_dir);
 
-        let result = finish_interrupted_reset(interrupted, async {
+        let result = finish_interrupted_reset(interrupted, async { Ok(()) }, async {
             Err(CorrosionError::Api("docker unavailable".into()))
         })
         .await;
@@ -1053,7 +1144,7 @@ mod tests {
         store.begin_reset().unwrap();
         let owner = crate::machine::RecordOwner::spawn(store).unwrap();
 
-        let result = finish_reset(&owner, async {
+        let result = finish_reset(&owner, async { Ok(()) }, async {
             Err(CorrosionError::Api("docker unavailable".into()))
         })
         .await;

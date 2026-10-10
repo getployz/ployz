@@ -42,6 +42,9 @@ Private DNS keeps answering while Ployz restarts or upgrades on a server, and wh
 can't reach the others. It answers from the last copy it loaded. After a reboot it starts
 answering once the server has loaded where your services run.
 
+The private network also stays connected while Ployz stops, restarts or upgrades on a server.
+Your running services keep reaching services on the other servers.
+
 ## Connect to another service
 
 Reference the other service's address in a variable. Every service has a
