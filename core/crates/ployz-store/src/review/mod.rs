@@ -111,7 +111,14 @@ pub(crate) fn same_setting(left: &ServiceSettingChange, right: &ServiceSettingCh
                 };
                 route(left) == route(right)
             }
-            _ => true,
+            At::Node
+            | At::Data
+            | At::Name
+            | At::Storage
+            | At::File(_)
+            | At::Setting(_)
+            | At::Mount(_)
+            | At::ConfigMount(_) => true,
         },
         (Some(_), Some(_)) => false,
         _ => left.path == right.path,
@@ -473,7 +480,7 @@ fn compare(
         applied: project("applied", &head.applied),
         saved: saved.as_ref().map(|saved| project("saved", &saved.intent)),
         submitted: (head.intent != head.applied).then(|| project(&head.token, &head.intent)),
-        node_introductions: project("introductions", &introductions),
+        node_introductions: project("introductions", introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;
     let intents = [&environment.working, &head.intent];

@@ -23,7 +23,6 @@ type HistoryReview =
   | { kind: "preview"; preview: HistoryPreview; saving: boolean; error?: string }
   | { kind: "failed"; message: string };
 
-/** Immutable Saved versions; Undo and Restore stage the one Environment draft. */
 export function EnvironmentHistory() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });

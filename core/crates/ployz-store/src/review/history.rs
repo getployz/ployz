@@ -384,25 +384,32 @@ fn preview_of(
                      right: Option<&ployz_core::config::SavedVariableIntent>| {
                         match (left, right) {
                             (Some(left), Some(right)) => {
-                                left.id == right.id
-                                    && left.value == right.value
+                                left.value == right.value
                                     && left.value_fingerprint == right.value_fingerprint
                             }
                             (None, None) => true,
                             _ => false,
                         }
                     };
-                if !same_value(before, current) && !same_value(after, current) {
+                let same_id =
+                    |left: Option<&ployz_core::config::SavedVariableIntent>,
+                     right: Option<&ployz_core::config::SavedVariableIntent>| {
+                        left.map(|variable| &variable.id) == right.map(|variable| &variable.id)
+                    };
+                if (!same_value(before, current) && !same_value(after, current))
+                    || (!same_id(before, current) && !same_id(after, current))
+                    || (before.is_none() && current.is_some() && current != after)
+                {
                     overwritten.insert(format!("{}.env.{key}", service.slug));
                 }
                 if let Some(current) = current {
                     if before.is_some_and(|before| before.description != current.description)
-                        && after.is_some_and(|after| after.description != current.description)
+                        && after.is_none_or(|after| after.description != current.description)
                     {
                         overwritten.insert(format!("{}.env.{key}.description", service.slug));
                     }
                     if before.is_some_and(|before| before.exported != current.exported)
-                        && after.is_some_and(|after| after.exported != current.exported)
+                        && after.is_none_or(|after| after.exported != current.exported)
                     {
                         overwritten.insert(format!("{}.env.{key}.exported", service.slug));
                     }

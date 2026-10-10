@@ -337,6 +337,7 @@ fn restore_part(
                 (Some(variable), Some(was)) if exported => variable.exported = was.exported,
                 (Some(variable), None) if exported => variable.exported = false,
                 (Some(variable), Some(was)) => {
+                    variable.id.clone_from(&was.id);
                     variable.value.clone_from(&was.value);
                     variable
                         .value_fingerprint

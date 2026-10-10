@@ -263,7 +263,6 @@ pub(crate) enum Target {
     Variable(VariableKey),
     /// Whether a variable is exported.
     Exported(VariableKey),
-    /// Template/import metadata; only reads and Discard address it.
     Description(VariableKey),
     /// Where the Service mounts a Volume.
     Mount(VolumeName),

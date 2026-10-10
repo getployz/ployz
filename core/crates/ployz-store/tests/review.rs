@@ -18,7 +18,10 @@ const ENVIRONMENT: &str = "00000000-0000-4000-8000-000000000002";
 
 /// A store with Project `shop` and new Services `web` (nginx) and `api` (caddy).
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -1330,4 +1333,306 @@ fn restoring_a_deleted_draft_variable_requires_explicit_overwrite_consent() {
         RpcErrorCode::ConfirmationRequired
     );
     assert_eq!(value(&store, &who, "web.env.KEY"), None);
+}
+
+#[test]
+fn undo_variable_creation_requires_consent_for_later_export_and_value_edits() {
+    for (field, later, overwritten) in [
+        ("web.env.KEY.exported", json!(true), "web.env.KEY.exported"),
+        ("web.env.KEY", json!("later"), "web.env.KEY"),
+    ] {
+        let (store, who) = shop();
+        publish(&store, &who, None).unwrap();
+        set(&store, &who, "web.env.KEY", json!("saved"));
+        publish(&store, &who, None).unwrap();
+        set(&store, &who, field, later.clone());
+        let preview = store
+            .read(
+                &who,
+                &ployz_store::HistoryPreviewQuery {
+                    environment: EnvironmentRef::default(),
+                    revision: Revision(2),
+                    action: ployz_store::HistoryAction::Undo,
+                },
+            )
+            .unwrap();
+        assert_eq!(preview.overwritten, [overwritten]);
+        let command = ployz_store::StageHistory {
+            environment: EnvironmentRef::default(),
+            revision: Revision(2),
+            action: preview.action,
+            version: preview.version,
+            accept_overwrite: false,
+        };
+        assert_eq!(
+            store.write(&who, &command).unwrap_err().code,
+            RpcErrorCode::ConfirmationRequired
+        );
+        assert_eq!(value(&store, &who, field), Some(later));
+        store
+            .write(
+                &who,
+                &ployz_store::StageHistory {
+                    accept_overwrite: true,
+                    ..command
+                },
+            )
+            .unwrap();
+        assert_eq!(value(&store, &who, "web.env.KEY"), None);
+        assert_eq!(diff(&store, &who).saved, Some(Revision(2)));
+    }
+}
+
+struct LegacyWorking {
+    _dir: tempfile::TempDir,
+    store: ConfigStore,
+    who: Actor,
+    sql: rusqlite::Connection,
+}
+
+impl LegacyWorking {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let (store, who) = shop_in(
+            ConfigStore::open(&format!("sqlite:{}", path.display()), backend::key()).unwrap(),
+        );
+        Self {
+            _dir: dir,
+            store,
+            who,
+            sql: rusqlite::Connection::open(path).unwrap(),
+        }
+    }
+
+    fn intent(&self) -> ployz_core::config::SavedEnvironmentIntent {
+        let text: String = self
+            .sql
+            .query_row(
+                "SELECT working FROM config_environment WHERE id = ?1",
+                [ENVIRONMENT],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn variable(&self, change: impl FnOnce(&mut ployz_core::config::SavedVariableIntent)) {
+        let mut intent = self.intent();
+        let variable = intent
+            .services
+            .iter_mut()
+            .find(|service| service.slug == "web")
+            .unwrap()
+            .variables
+            .iter_mut()
+            .find(|variable| variable.key == "KEY")
+            .unwrap();
+        change(variable);
+        self.sql.execute("UPDATE config_environment SET working = ?1, working_revision = working_revision + 1 WHERE id = ?2",
+            rusqlite::params![serde_json::to_string(&intent).unwrap(), ENVIRONMENT]).unwrap();
+    }
+
+    fn key(&self) -> ployz_core::config::SavedVariableIntent {
+        self.intent()
+            .services
+            .into_iter()
+            .find(|service| service.slug == "web")
+            .unwrap()
+            .variables
+            .into_iter()
+            .find(|variable| variable.key == "KEY")
+            .unwrap()
+    }
+}
+
+#[test]
+fn legacy_metadata_inverse_preserves_later_value_and_export_without_consent() {
+    let fixture = LegacyWorking::new();
+    let (store, who) = (&fixture.store, &fixture.who);
+    set(store, who, "web.env.KEY", json!("saved"));
+    fixture.variable(|variable| variable.description = Some("original description".into()));
+    let original = fixture.key();
+    publish(store, who, None).unwrap();
+    fixture.variable(|variable| {
+        variable.id = "00000000-0000-4000-8000-000000000091".into();
+        variable.description = Some("new description".into());
+    });
+    publish(store, who, None).unwrap();
+    set(
+        store,
+        who,
+        "web.env.KEY",
+        json!({ "value": "later", "exported": true }),
+    );
+    let preview = store
+        .read(
+            who,
+            &ployz_store::HistoryPreviewQuery {
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    assert!(preview.overwritten.is_empty());
+    store
+        .write(
+            who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: preview.action,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    let restored = fixture.key();
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.description, original.description);
+    assert_eq!(
+        restored.value,
+        ployz_core::config::SavedVariableValue::Literal {
+            value: "later".into()
+        }
+    );
+    assert!(restored.exported);
+}
+
+#[test]
+fn legacy_id_only_saved_and_review_discard_restore_the_visible_field() {
+    for target in [
+        ployz_store::DiscardTarget::Saved,
+        ployz_store::DiscardTarget::Review,
+    ] {
+        let fixture = LegacyWorking::new();
+        let (store, who) = (&fixture.store, &fixture.who);
+        set(store, who, "web.env.KEY", json!("saved"));
+        backend::deploy(store, who, "production", 1);
+        let original = fixture.key();
+        fixture.variable(|variable| variable.id = "00000000-0000-4000-8000-000000000091".into());
+        let review = diff(store, who);
+        assert!(
+            review
+                .draft_changes
+                .iter()
+                .flat_map(|node| &node.settings)
+                .any(|row| row.path == "web.env.KEY" && row.can_restore)
+        );
+        let result = store
+            .write(
+                who,
+                &Discard {
+                    target,
+                    path: (target == ployz_store::DiscardTarget::Saved)
+                        .then(|| SettingPath::parse("web.env.KEY").unwrap()),
+                    version: Some(review.version),
+                    ..Discard::default()
+                },
+            )
+            .unwrap();
+        assert!(result.changed);
+        assert_eq!(fixture.key(), original);
+        assert_eq!(diff(store, who).draft_count, 0);
+    }
+}
+
+#[test]
+fn legacy_description_discard_is_individual_and_not_an_editor() {
+    let fixture = LegacyWorking::new();
+    let (store, who) = (&fixture.store, &fixture.who);
+    set(store, who, "web.env.KEY", json!("saved"));
+    fixture.variable(|variable| variable.description = Some("saved description".into()));
+    publish(store, who, None).unwrap();
+    set(store, who, "web.env.KEY", json!("later"));
+    fixture.variable(|variable| variable.description = Some("draft description".into()));
+    let draft = fixture.key();
+    let path = SettingPath::parse("web.env.KEY.description").unwrap();
+    let rows = diff(store, who).draft_changes;
+    assert!(
+        rows.iter()
+            .flat_map(|node| &node.settings)
+            .any(|row| row.path == path.to_string() && row.can_restore)
+    );
+    assert_eq!(
+        store
+            .write(
+                who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Set {
+                        path: path.clone(),
+                        value: json!("new description")
+                    }]
+                }
+            )
+            .unwrap_err()
+            .code,
+        RpcErrorCode::InvalidArgument
+    );
+    assert_eq!(fixture.key(), draft);
+    store
+        .write(
+            who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Saved,
+                path: Some(path.clone()),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    let restored = fixture.key();
+    assert_eq!(restored.description.as_deref(), Some("saved description"));
+    assert_eq!(restored.value, draft.value);
+    assert_eq!(restored.id, draft.id);
+    assert_eq!(
+        store
+            .read(
+                who,
+                &EnvironmentQuery {
+                    path: Some(path),
+                    ..EnvironmentQuery::default()
+                }
+            )
+            .unwrap()
+            .settings[0]
+            .value,
+        json!("saved description")
+    );
+}
+
+#[test]
+fn undo_variable_creation_requires_consent_for_legacy_description_edit() {
+    let fixture = LegacyWorking::new();
+    let (store, who) = (&fixture.store, &fixture.who);
+    publish(store, who, None).unwrap();
+    set(store, who, "web.env.KEY", json!("saved"));
+    publish(store, who, None).unwrap();
+    fixture.variable(|variable| variable.description = Some("draft description".into()));
+    let draft = fixture.intent();
+    let preview = store
+        .read(
+            who,
+            &ployz_store::HistoryPreviewQuery {
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    assert_eq!(preview.overwritten, ["web.env.KEY.description"]);
+    let result = store.write(
+        who,
+        &ployz_store::StageHistory {
+            environment: EnvironmentRef::default(),
+            revision: Revision(2),
+            action: preview.action,
+            version: preview.version,
+            accept_overwrite: false,
+        },
+    );
+    assert_eq!(result.unwrap_err().code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(fixture.intent(), draft);
 }
