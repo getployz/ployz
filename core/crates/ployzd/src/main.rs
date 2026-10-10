@@ -149,7 +149,8 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         command: Some(ObserveCommand::Decode { paths }),
     }) = &args.command
     {
-        return ployzd::observe::decode(paths).map_err(Error::from);
+        ployzd::observe::decode(paths)?;
+        return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::DialStdio)) {
         dial_stdio(&args.socket).await?;
@@ -198,7 +199,8 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     if matches!(args.command, Some(Command::Observe { command: None })) {
-        return ployzd::observe::run(&run_dir).await.map_err(Error::from);
+        ployzd::observe::run(&run_dir).await?;
+        return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::VolumePlugin)) {
         let listener = volume_plugin::inherited_listener()?;
