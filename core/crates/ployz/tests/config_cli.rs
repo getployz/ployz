@@ -1833,7 +1833,13 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         ok(store, &["set", "web.replicas=2"]);
         let stale = error(store, &["deploy", "--expect-version", &version]);
         assert_eq!(stale["code"], json!("conflict"));
-        assert_eq!(stale["details"]["next"], json!("ployz diff"));
+        assert_eq!(
+            stale["details"]["next"],
+            json!(format!(
+                "ployz deploy --expect-version {}",
+                stale["details"]["diff"]["version"].as_str().unwrap()
+            ))
+        );
 
         let (code, deployed) = ployz(
             Some(store),

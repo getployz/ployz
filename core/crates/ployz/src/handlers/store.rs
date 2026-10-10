@@ -280,6 +280,28 @@ impl<'m> Store<'m> {
         };
         self.fail(refusal)
     }
+
+    /// A conflict handing back the fresh review (`details.diff`) names this command
+    /// again at its version; any other names `read`, as [`with_refresh_hint`] does.
+    pub(crate) fn at_review(&self, error: impl Into<Refusal>, read: &str) -> Refusal {
+        let refusal = error.into();
+        let version = match &refusal.error {
+            StoreCallError::Refused(error) if error.code == RpcErrorCode::Conflict => error
+                .details
+                .pointer("/diff/version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            StoreCallError::Refused(_) | StoreCallError::Cloud(_) => None,
+        };
+        match version {
+            Some(version) => with_next(
+                refusal,
+                |_| true,
+                || self.again(&["--expect-version", &version]),
+            ),
+            None => with_refresh_hint(refusal, self.matches, read),
+        }
+    }
 }
 
 /// The Config Store `root`'s command reads and writes.
@@ -543,6 +565,46 @@ mod tests {
         assert_eq!(
             error.message,
             "This Deploy permanently deletes the data of data"
+        );
+    }
+
+    #[test]
+    fn a_refused_review_names_this_command_at_the_fresh_version() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
+            .unwrap();
+        let key = SealingKey::new(&[7; 32]).unwrap();
+        let local = ConfigStore::open("sqlite::memory:", key).unwrap();
+        let store = Store {
+            backend: Backend::Local(
+                std::sync::Arc::new(local),
+                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+            ),
+            matches: leaf_matches(&root),
+            words: vec!["deploy".to_owned()],
+        };
+        let next_of = |details| {
+            let refusal = store.at_review(
+                StoreCallError::Refused(ployz_core::RpcError {
+                    code: RpcErrorCode::Conflict,
+                    message: "This draft includes a pull request: review it and pass its version"
+                        .into(),
+                    details,
+                    cause: Vec::new(),
+                }),
+                "diff",
+            );
+            Error::from(refusal.error).hint(refusal.hint).hints()
+        };
+        assert_eq!(
+            next_of(json!({ "diff": { "version": "3:1:0.1" } })),
+            [Hint::Next(
+                "ployz deploy --expect-version 3:1:0.1 --env staging".into()
+            )]
+        );
+        assert_eq!(
+            next_of(json!({})),
+            [Hint::Next("ployz diff --env staging".into())]
         );
     }
 

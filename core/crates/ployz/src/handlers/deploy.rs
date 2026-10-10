@@ -23,7 +23,7 @@ use ployz_store::{
     UploadedSource, VolumeName,
 };
 
-use super::store::{Next, Store, environment, mint, next, scoped, store, with_refresh_hint};
+use super::store::{Next, Store, environment, mint, next, scoped, store};
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
@@ -227,7 +227,7 @@ pub(super) fn upload_and_ship(
             accept_volume_loss: accept,
             message,
         }))
-        .map_err(|error| store.accepting(with_refresh_hint(error, matches, "diff")))?;
+        .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
     execute(matches, store, &admitted, source.as_deref(), events)
 }
 
