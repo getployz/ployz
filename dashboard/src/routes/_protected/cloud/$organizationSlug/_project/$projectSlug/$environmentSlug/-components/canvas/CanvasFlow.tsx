@@ -37,6 +37,7 @@ import { SyncButton } from "../sync/SyncButton";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
+import { needsValue } from "#/modules/config-store/store-offers";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
@@ -247,8 +248,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
               return [];
             } catch (error) {
               if (!(error instanceof StoreRefused) || error.code !== "conflict") return [];
-              const needed = (error.details as { needs_value?: unknown } | null)?.needs_value;
-              if (Array.isArray(needed)) return needed.filter((name): name is string => typeof name === "string");
+              const needed = needsValue(error);
+              if (needed !== null) return needed;
               toast.error(error.message);
               return [];
             }

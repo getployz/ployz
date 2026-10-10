@@ -1,4 +1,5 @@
 import type { Included, Readiness } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 
 /**
  * Words for offers and pull request readiness, in one place: this copy is provisional, so each string lives here to
@@ -39,4 +40,12 @@ export function blockingPullRequest(included: readonly Included[]): number | nul
     if (!item.offered && item.source.kind === "pull_request" && item.readiness !== undefined && item.readiness !== "ready") return item.source.number;
   }
   return null;
+}
+
+const decodeNeedsValue = Schema.decodeUnknownOption(Schema.Struct({ needs_value: Schema.Array(Schema.String) }));
+
+/** The secrets an Include the Store refused with `conflict` needs a value for, by full name; null for any other refusal. */
+export function needsValue(refusal: { code: string; details: unknown }): readonly string[] | null {
+  if (refusal.code !== "conflict") return null;
+  return Option.getOrNull(Option.map(decodeNeedsValue(refusal.details), ({ needs_value }) => needs_value));
 }
