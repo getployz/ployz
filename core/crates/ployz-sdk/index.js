@@ -338,6 +338,7 @@ async function connect(options) {
 async function openConfigStore(url, sealingSecret) {
   const store = await withRpcError(native.openConfigStore(url, sealingSecret));
   return {
+    converted: () => store.converted(),
     read: (organization, query, trusted) => withRpcError(store.read(organization, query, trusted)),
     write: (organization, command, trusted, principal) =>
       withRpcError(store.write(organization, command, trusted, principal)),

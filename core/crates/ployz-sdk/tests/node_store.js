@@ -32,10 +32,16 @@ async function expectInvalid(what, fn) {
 }
 
 (async () => {
-  const store = await sdk.openConfigStore(
-    `sqlite:${path.join(dir, "store.db")}`,
-    "a sealing secret long enough for tests",
-  );
+  const open = () => sdk.openConfigStore(`sqlite:${path.join(dir, "store.db")}`, "a sealing secret long enough for tests");
+  const store = await open();
+  // The open that converts Conditional Syncs to offers hands back its receipt, once.
+  const converted = store.converted();
+  if (converted === null || Object.values(converted).some((count) => count !== 0)) {
+    throw new Error(`a fresh Store converts nothing: ${JSON.stringify(converted)}`);
+  }
+  if ((await open()).converted() !== null) {
+    throw new Error("a reopened Store has no receipt");
+  }
   for (const call of ["branchHead", "pendingSyncs"]) {
     await expectInvalid(`${call} organization`, () => store[call]("Not An Id!", 1, "main"));
     await expectInvalid(`${call} repository`, () => store[call]("acme", -1, "main"));
