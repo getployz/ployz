@@ -209,9 +209,10 @@ function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string) => v
       <InputGroup>
         <InputGroupTextarea aria-label="Message the agent" placeholder="Ask about your servers…" rows={1} value={draft}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} className="max-h-40 min-h-9" />
-        <InputGroupAddon align="inline-end">
-          <InputGroupButton type="submit" size="icon-xs" variant="default" aria-label="Send" disabled={busy || !draft.trim()}>
+        <InputGroupAddon align="block-end">
+          <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={busy || !draft.trim()}>
             <ArrowUpIcon />
+            <span className="sr-only">Send</span>
           </InputGroupButton>
         </InputGroupAddon>
       </InputGroup>
