@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Backoff, DnsExit, Fixture, InstalledExe, serve_with};
 use crate::{
-    corrosion::fake_cluster::FakeCluster,
+    corrosion::fake_cluster::{FakeCluster, unclaimed_loopback},
     dns::{
         listeners::{Keeper, Listeners, MemoryKeeper},
         spec::{CorrosionEndpoint, DnsSpec, SpecFile},
@@ -53,7 +53,7 @@ impl Harness {
         fs::write(&token_file, cluster.token()).unwrap();
         let spec = DnsSpec {
             machine: MachineId::random(),
-            listen: free_loopback_port(),
+            listen: unclaimed_loopback(),
             local_subnet: "127.0.0.0/8".parse().unwrap(),
             upstreams: Vec::new(),
             corrosion: CorrosionEndpoint {
@@ -297,7 +297,7 @@ async fn a_changed_spec_ends_the_process_and_the_next_one_rebinds() {
     harness.wait_for_replicas(2).await;
     let old_names = harness.keeper.stored_names();
 
-    harness.spec.listen = free_loopback_port();
+    harness.spec.listen = unclaimed_loopback();
     harness.spec_file.publish(Some(&harness.spec)).unwrap();
     assert_eq!(first.await.unwrap().unwrap(), DnsExit::SpecChanged);
     assert_eq!(harness.keeper.stored_names(), old_names);
@@ -328,7 +328,7 @@ async fn a_removed_spec_ends_the_process_and_an_idle_process_holds_no_sockets() 
     let second = harness.spawn(&CancellationToken::new());
     wait_for_status(&harness.keeper, "idle").await;
     assert!(harness.keeper.stored_names().is_empty());
-    assert!(Listeners::bind(harness.spec.listen).is_ok());
+    wait_for_free_port(harness.spec.listen).await;
 
     harness.spec_file.publish(Some(&harness.spec)).unwrap();
     assert_eq!(
@@ -460,7 +460,7 @@ async fn abdicates_only_when_the_installed_binary_cannot_serve_dns() {
         DnsExit::Abdicated
     );
     assert!(harness.keeper.stored_names().is_empty());
-    assert!(Listeners::bind(harness.spec.listen).is_ok());
+    wait_for_free_port(harness.spec.listen).await;
 }
 
 #[tokio::test]
@@ -498,14 +498,20 @@ async fn wait_for_status(keeper: &MemoryKeeper, status: &str) {
     }
 }
 
+/// A child another test forks keeps a copy of every socket this process had
+/// open until it execs or exits, so a released port frees a moment later.
+async fn wait_for_free_port(listen: SocketAddrV4) {
+    let deadline = Instant::now() + SETTLE;
+    while let Err(error) = Listeners::bind(listen) {
+        assert!(Instant::now() < deadline, "{listen} stayed busy: {error}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn install(path: &std::path::Path, body: &str) {
     let staged = path.with_extension("new");
     write_script(&staged, body);
     fs::rename(staged, path).unwrap();
-}
-
-fn free_loopback_port() -> SocketAddrV4 {
-    Listeners::bind_ephemeral().listen()
 }
 
 fn query(name: &str) -> Vec<u8> {

@@ -1,7 +1,8 @@
 use std::{
     collections::BTreeMap,
     convert::Infallible,
-    net::SocketAddr,
+    hash::{BuildHasher, RandomState},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{Arc, Mutex},
 };
 
@@ -92,6 +93,18 @@ fn router(kv: Arc<Mutex<ClusterKv>>) -> Router {
         .with_state(kv)
 }
 
+/// A loopback address that stays free after a test releases it. The kernel
+/// autobinds ports only from the ephemeral range, which starts at 32768 on
+/// Linux, and the random 127/8 address keeps concurrent tests apart.
+pub(crate) fn unclaimed_loopback() -> SocketAddrV4 {
+    let [a, b, c, low, high, ..] = RandomState::new().hash_one(()).to_le_bytes();
+    let port = 1024 + u16::from_le_bytes([low, high]) % (32768 - 1024);
+    SocketAddrV4::new(
+        Ipv4Addr::new(127, a.clamp(1, 254), b, c.clamp(1, 254)),
+        port,
+    )
+}
+
 /// A Corrosion stand-in on its own runtime, so stopping it severs every open
 /// connection including subscription streams, and restarting it reuses the
 /// address.
@@ -103,7 +116,7 @@ pub(crate) struct FakeCluster {
 
 impl FakeCluster {
     pub(crate) fn start() -> Self {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = std::net::TcpListener::bind(unclaimed_loopback()).unwrap();
         let mut cluster = Self {
             address: listener.local_addr().unwrap(),
             kv: Arc::new(Mutex::new(ClusterKv::new(true))),
