@@ -607,7 +607,10 @@ fn an_offer_without_a_pull_request_is_refused() {
             )
         })
     };
-    assert!(insert("NULL").is_err(), "an offer without a pull request was stored");
+    assert!(
+        insert("NULL").is_err(),
+        "an offer without a pull request was stored"
+    );
     insert("8").unwrap();
 }
 
