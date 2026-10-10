@@ -332,8 +332,132 @@ fn decode_record(payload: &OpaquePayload) -> Result<Option<ContainerLogRecord>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connect::test_support::rpc_stream_client;
     use crate::sdk::SessionInner;
     use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    async fn streaming_session() -> (
+        Session,
+        mpsc::Sender<Result<OpaquePayload, tonic::Status>>,
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    ) {
+        let (sender, receiver) = mpsc::channel(4);
+        let receiver = Arc::new(std::sync::Mutex::new(Some(receiver)));
+        let (client, server) = rpc_stream_client(move |_| {
+            let receiver = receiver.lock().unwrap().take().unwrap();
+            async move { Ok(tonic::Response::new(ReceiverStream::new(receiver))) }
+        })
+        .await;
+        let session = Session {
+            inner: Arc::new(SessionInner {
+                client: std::sync::Mutex::new(Some(client)),
+                cancel: CancellationToken::new(),
+            }),
+        };
+        (session, sender, server)
+    }
+
+    async fn history_reader(session: &Session) -> LogHistoryStream {
+        session
+            .log_history(LogHistoryInput {
+                machine_id: MachineId::random(),
+                namespace: None,
+                service: None,
+                deployment: None,
+                container_id: None,
+                since_nanos: None,
+                until_nanos: None,
+                direction: LogDirection::Backward,
+                limit: 200,
+                cursor: None,
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_history_reader_fails_after_ten_seconds() {
+        let (session, _sender, server) = streaming_session().await;
+        let reader = history_reader(&session).await;
+        let started = tokio::time::Instant::now();
+        let error = tokio::time::timeout(Duration::from_secs(11), reader.next())
+            .await
+            .expect("silent history reader did not time out")
+            .unwrap_err();
+        assert_eq!(started.elapsed(), Duration::from_secs(10));
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.message, "the Server's Log Store stopped answering");
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn history_heartbeats_renew_the_row_deadline() {
+        let (session, sender, server) = streaming_session().await;
+        let reader = history_reader(&session).await;
+        let writer = tokio::spawn(async move {
+            for row in [
+                HistoryRow::Heartbeat,
+                HistoryRow::Heartbeat,
+                HistoryRow::End { next: None },
+            ] {
+                tokio::time::sleep(Duration::from_secs(9)).await;
+                sender.send(Ok(row.encode().unwrap())).await.unwrap();
+            }
+        });
+        let started = tokio::time::Instant::now();
+        let record = tokio::time::timeout(Duration::from_secs(30), reader.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(record, Some(LogHistoryRecord::End { next: None })));
+        assert_eq!(started.elapsed(), Duration::from_secs(27));
+        writer.await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_history_reader_stops_a_pending_read_only() {
+        let (session, _sender, server) = streaming_session().await;
+        let reader = history_reader(&session).await;
+        let next = reader.next();
+        tokio::pin!(next);
+        tokio::select! {
+            biased;
+            result = &mut next => panic!("silent history read completed before cancellation: {result:?}"),
+            () = tokio::task::yield_now() => {},
+        }
+        reader.cancel();
+        assert!(next.await.unwrap().is_none());
+        assert!(session.client().is_ok());
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn silent_live_reader_can_wait_past_history_deadline() {
+        let (session, sender, server) = streaming_session().await;
+        let reader = session
+            .container_logs(ContainerLogInput {
+                machine_id: MachineId::random(),
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                tail: 0,
+                follow: true,
+                since_unix_seconds: None,
+            })
+            .await
+            .unwrap();
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            drop(sender);
+        });
+        let started = tokio::time::Instant::now();
+        assert!(reader.next().await.unwrap().is_none());
+        assert_eq!(started.elapsed(), Duration::from_secs(11));
+        writer.await.unwrap();
+        server.abort();
+    }
 
     #[tokio::test]
     async fn invalid_log_options_fail_before_opening_a_session() {
