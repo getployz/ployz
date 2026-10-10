@@ -745,6 +745,24 @@ fn remove_is_refused_once_the_draft_edited_a_service_it_introduced() {
     assert_eq!(db.services("production"), ["api", "cache"]);
 }
 
+#[test]
+fn remove_ignores_a_service_an_earlier_saved_proposal_introduced() {
+    let db = Db::new();
+    db.service("dev", 11, "cache");
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.save("production");
+    db.set("dev", &[("api.env.X", "1")]);
+    let b = proposal(
+        &db.include(("dev", "production"), &sync_id(2), None)
+            .unwrap(),
+    );
+    // cache arrived with the Save before b, so it is not b's to keep or lose.
+    assert_eq!(db.remove("production", &b), Ok(true));
+    assert_eq!(db.env("production", "api")["X"], "0");
+    assert_eq!(db.services("production"), ["api", "cache"]);
+}
+
 // Case 8.
 
 #[test]

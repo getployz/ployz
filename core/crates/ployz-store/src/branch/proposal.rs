@@ -513,19 +513,30 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
             was,
         });
     }
-    // A node it brought goes whole, so a row of it the draft made its own (released,
-    // still pending) is an edit Remove would lose; so is a node from the source the
-    // draft edited, which the draft can't keep without what it was brought with.
+    // A node it brought goes whole, so a row of it the draft made its own (released
+    // from one of its Syncs, still pending) is an edit Remove would lose; so is a node
+    // one of its Syncs brought that the draft edited, which the draft can't keep
+    // without what it was brought with. An earlier, saved proposal's rows are not its.
     let nodes: BTreeSet<&str> = landed
         .iter()
         .filter(|landed| *landed.row.at() == At::Node)
         .map(|landed| landed.row.lineage())
         .collect();
+    let syncs: BTreeSet<SyncId> = tx
+        .query(
+            "SELECT sync_id FROM config_sync_receipt WHERE proposal_id = ?1",
+            &[proposal.id.as_str().into()],
+        )?
+        .iter()
+        .map(|row| row.parse(0, "Sync receipt"))
+        .collect::<Result<_, _>>()?;
     let released = pair::arrived(tx, &id, Which::From(&proposal.source))?
         .into_iter()
         .find(|arrived| {
-            matches!(arrived.arrival, Arrival::Pending { owner: None, .. })
-                && (nodes.contains(arrived.row.lineage()) || *arrived.row.at() == At::Node)
+            matches!(
+                &arrived.arrival,
+                Arrival::Pending { owner: None, sync: Some(sync), .. } if syncs.contains(sync)
+            ) && (nodes.contains(arrived.row.lineage()) || *arrived.row.at() == At::Node)
         })
         .map(|arrived| arrived.row);
     let unapplied = match released {
