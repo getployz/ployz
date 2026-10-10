@@ -122,10 +122,6 @@ const later = (a, b) => (BigInt(a) > BigInt(b) ? a : b);
 const earlier = (a, b) => (BigInt(a) < BigInt(b) ? a : b);
 const rowTime = row => row.row === "gap" ? row.from_nanos : row.timestamp_nanos;
 
-/**
- * Where each Server's next page starts: after a store cursor, before a time, or (an empty state) at its newest row.
- * A Server missing from a cursor has nothing older.
- */
 function encodeCursor(states) {
   return Object.keys(states).length ? Buffer.from(JSON.stringify(states)).toString("base64url") : null;
 }
@@ -137,7 +133,6 @@ function decodeCursor(cursor) {
   throw new TypeError("cursor did not come from a history page");
 }
 
-/** The store selects by its own saved names, so a Service ID becomes the name its containers were created with. */
 function selector(filter, containers) {
   const live = filter.serviceId === undefined ? undefined
     : containers.find(container => container.labels["cloud.ployz.service.id"] === filter.serviceId);
@@ -230,7 +225,6 @@ async function history(transport, options) {
       }
     }
     if (whole) {
-      // Only the boundary timestamp can continue on the next store page.
       const time = rows.length ? oldest(rows) : state.t;
       if (time !== undefined) Object.assign(next[read.machineId], { t: time, n: counts.get(time) });
     }

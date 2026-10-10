@@ -80,7 +80,6 @@ test("history reads a removed deployment from every Server's store and pages pas
     [["fsn-1", "120", "error"], ["fsn-2", "110", "info"], ["fsn-1", "100", "info"], ["fsn-1", "100", "info"]]);
   assert.equal(new Set(first.records.map(record => record.id)).size, 4);
   assert.deepEqual(first.exits, [{ machineId: "m1", machineName: "fsn-1", containerId: "a", serviceName: "api", timestampNanos: "130", exitCode: 137, oomKilled: true }]);
-  // fsn-2 went further back than fsn-1; its rows older than fsn-1's oldest wait for the next page.
   assert.deepEqual(first.gaps, []);
   assert.deepEqual(first.failures, []);
   t.inputs.length = 0;
