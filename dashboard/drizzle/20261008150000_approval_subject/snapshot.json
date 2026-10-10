@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "cf50f1ae-0d64-4bd9-b8bd-236f50cffee7",
+  "id": "aa18f8f3-d8ff-4f5a-9181-cc5b367a301e",
   "prevIds": [
-    "0c2094b5-3066-4f2b-9fda-6cb2c9f7938b"
+    "e2081788-c89b-4c7a-9125-08f257366983"
   ],
   "ddl": [
     {
@@ -5665,7 +5665,7 @@
       "table": "server_upgrade_attempt"
     },
     {
-      "value": "\"kind\" in ('mirror','sync','delete_mirror')",
+      "value": "\"kind\" in ('mirror','sync','delete_mirror','move','release')",
       "name": "volume_run_kind_check",
       "entityType": "checks",
       "schema": "public",
@@ -5714,5 +5714,8 @@
       "table": "operation_approvals"
     }
   ],
-  "renames": []
+  "renames": [
+    "public.operation_approvals.environment_id->public.operation_approvals.subject",
+    "public.operation_approvals.operation_approvals_environment_idx->public.operation_approvals.operation_approvals_subject_idx"
+  ]
 }
