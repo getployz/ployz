@@ -152,7 +152,7 @@ case "$*" in
   'set readonly=on tank/ployz-mirror/data/fs')
     if [ -e '{props}/fail-properties' ]; then echo 'property unavailable' >&2; exit 1; fi
     require tank/ployz-mirror/data/fs
-    [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/readonly'; }}
+    [ -e '{readonly_lost}' ] || {{ mkdir -p '{props}/tank/ployz-mirror/data/fs'; echo on > '{props}/tank/ployz-mirror/data/fs/.readonly.new'; mv '{props}/tank/ployz-mirror/data/fs/.readonly.new' '{props}/tank/ployz-mirror/data/fs/readonly'; }}
     ;;
   'set readonly=on tank/ployz/data')
     require "$3"
@@ -167,7 +167,9 @@ case "$*" in
     check_property "${{2%%=*}}"
     f='{props}'/"$3/${{2%%=*}}"
     mkdir -p "${{f%/*}}"
-    printf '%s\n' "${{2#*=}}" > "$f"
+    temporary="${{f%/*}}/.${{f##*/}}.new"
+    printf '%s\n' "${{2#*=}}" > "$temporary"
+    mv "$temporary" "$f"
     ;;
   'inherit '*)
     if [ -e '{inherit_fails}' ]; then echo 'property unavailable' >&2; exit 1; fi
@@ -268,12 +270,14 @@ case "$*" in
         # A first receive lands the stream's properties; a lost connection loses them.
         if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
         mv "$d/readonly.new" "$d/readonly"
-        printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
+        printf '%s\n' "${{7#refquota=}}" > "$d/.refquota.new"
+        mv "$d/.refquota.new" "$d/refquota"
         ;;
       break)
         cat >/dev/null
         echo 'cannot receive: connection reset' >&2
-        echo 'token-1' > "$d/receive_resume_token"
+        echo 'token-1' > "$d/.receive_resume_token.new"
+        mv "$d/.receive_resume_token.new" "$d/receive_resume_token"
         echo off > "$d/readonly.new"
         mv "$d/readonly.new" "$d/readonly"
         exit 1
