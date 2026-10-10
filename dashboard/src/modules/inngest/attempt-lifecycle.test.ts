@@ -1,7 +1,7 @@
 import { InngestTestEngine } from "@inngest/test";
 import { Inngest } from "inngest";
 import { describe, expect, it } from "vitest";
-import { createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
+import { createCancelNamespaceCleanup, createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
 import { createCancelServerDrain, createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
 import { createCancelServerUpgrade, createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createCancelVolumeRun, createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
@@ -22,6 +22,7 @@ describe("attemptLifecycle", () => {
 
   it.each([
     ["ployz-cloud-drain-server", createCancelServerDrain, "ployz-cloud-roll-out-server-upgrade"],
+    ["ployz-cloud-clean-namespace", createCancelNamespaceCleanup, "ployz-cloud-drain-server"],
     ["ployz-cloud-roll-out-server-upgrade", createCancelServerUpgrade, "ployz-cloud-run-volume"],
     ["ployz-cloud-run-volume", createCancelVolumeRun, "ployz-cloud-drain-server"],
   ])("closes the run when Inngest cancels %s, and skips another function's cancellation", async (functionId, createCancel, otherFunctionId) => {

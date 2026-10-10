@@ -67,7 +67,7 @@ describe("clean-namespace", () => {
     events: [{
       name: "inngest/function.cancelled",
       data: {
-        function_id: "clean-namespace",
+        function_id: "test-clean-namespace",
         run_id: runId,
         event: { name: "namespace/cleanup.requested", data: { cleanupId, organizationId } },
       },
