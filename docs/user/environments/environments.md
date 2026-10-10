@@ -78,13 +78,50 @@ Syncing stages staging's changes in production, like a draft. It never deploys t
 Sync never moves data or deletes anything in production. Replicas, CPU and memory limits, domains
 and the Git branch stay as each environment has them. A change marked **Changed in production**
 replaces production's value when you sync it. A secret's value never syncs: one staging added
-arrives in production marked **Secret**, without a value, and production's deploy asks you to set
-it first. To set it as you sync, type production's value in the secret's row of the dialog.
+arrives in production without a value, marked **needs a value** in its variables and in **Changes**,
+and production's deploy asks you to set it first. To set it as you sync, type production's value in the secret's row of the dialog.
 
 To keep a setting out of every sync, like a variable each environment sets its own way, click
 **Never sync** beside it in the dialog, or in the variable's ⋮ menu.
 The exclusion takes effect immediately. If it also discards an arrived change, the
 reversal stays in the draft until you Save it.
+
+### Take a sync back out
+
+Until you save or deploy them, the changes a sync staged stay grouped under where they came
+from. In production's bottom bar, click **Details**: **Included** lists `staging · 1 change`.
+
+- **Remove:** in the row's ⋮ menu, click **Remove**. Production gets back what it had before
+  staging was included. A change you made in production since stays.
+- **Include newer changes:** when staging changed again, the row says so. Its ⋮ menu offers
+  **Include newer changes**, which opens the Sync dialog for just what's new. A pull request's
+  preview can't be included again from here: sync from its own canvas.
+- **Undo:** the toast's **Undo** removes staging, as long as you haven't synced staging again
+  since. After that, Undo is refused: Remove it in Details instead.
+
+`ployz env sync` groups what it stages the same way, but its `--json` output leaves out what was
+included: check **Details** in Ployz Cloud.
+
+Remove is refused, and says why, when taking staging out would lose your work:
+
+- A service staging brought was edited in production since. Discard that service, or keep staging.
+- A service staging brought got its own registry credential or deployment setting (such as
+  auto-deploy) in production since. Those take effect at once, outside the draft. Discard that
+  service, or keep staging.
+- Staging turned on a registry credential for a service in production, replacing the one
+  production kept for it. Removing staging wouldn't bring production's back. Set that service's
+  credential again, or keep staging.
+- Another included environment changed a service staging brought. Remove that one first, or keep
+  staging.
+- Another service in production uses one staging brought. Change that service first, or Remove
+  what brought it.
+
+A change another included environment brought shows **Included with** that environment in the
+Sync dialog, and you can't tick it, even where production also changed it: Remove that one first
+to sync over it.
+
+Clicking **Save** or **Deploy** ends what was included: the changes are production's own, and
+**Included** is empty again. **Save** ends them even when no change is left to save.
 
 ## Other choices
 

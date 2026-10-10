@@ -17,7 +17,7 @@ function cached() {
   const put = (query: Parameters<typeof storeViewOptions>[2], value: DiffView | EnvironmentView | ServicesView) =>
     queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   put(diffQuery(ref), {
-    environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], total_count: 3, changes: [
+    environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], included: [], total_count: 3, changes: [
       { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
         { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true, row: null },
         { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true, row: null },
@@ -168,10 +168,10 @@ it("takes a newly marked row out of a Sync from the marking Environment at once,
   const query = syncQuery(fix, "production");
   const offer = (name: string) => ({
     row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
-    change: "changed" as const, from: "x", into: "y", ticked: true, requires: null, secret: null,
+    change: "changed" as const, from: "x", into: "y", ticked: true, requires: null, secret: null, held_by: null,
   });
   queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
-    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [offer("A"), offer("B")], never_synced: [],
+    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [offer("A"), offer("B")], never_synced: [], proposal: null,
   } satisfies SyncView });
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [offer("A").row] });
   const view = read<SyncView>(query);
@@ -188,7 +188,7 @@ it("takes an unmarked row's mark out of a Sync at once, dropping a row left with
     marks: environments.map((environment) => ({ environment, row: `a:variables.${name}` as RowId })),
   });
   queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
-    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [],
+    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [], proposal: null,
     never_synced: [marked("A", ["fix-api"]), marked("B", ["fix-api", "production"]), marked("C", ["fix-api"])],
   } satisfies SyncView });
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [marked("A", []).row, marked("B", []).row], off: true });

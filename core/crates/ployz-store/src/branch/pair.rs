@@ -38,6 +38,18 @@ pub(crate) struct Move {
     pub(super) rules: Rules,
 }
 
+/// Who owns what a [`Checked::apply`] lands.
+#[derive(Clone, Copy)]
+pub(crate) enum Owner<'a> {
+    /// Nobody: Follow, Own Copy, and a Sync at a pull request's merge.
+    None,
+    /// Proposal `id`, included by Sync `sync`.
+    Proposal {
+        id: &'a ProposalId,
+        sync: &'a SyncId,
+    },
+}
+
 /// A plan of a [`Move`] whose guard held, ready to land.
 pub(crate) struct Checked<'way> {
     of: &'way Move,
@@ -97,6 +109,8 @@ impl Move {
                     .filter(|lineage| !copied.contains(lineage))
                     .collect(),
                 own: None,
+                held: BTreeSet::new(),
+                accepted: BTreeMap::new(),
             },
         })
     }
@@ -118,11 +132,21 @@ impl Move {
             },
         };
         // Syncing anywhere but into its Parent, a Branch's own changes are those since
-        // it last shared with its Parent; the rest it only inherited.
+        // it last shared with its Parent; the rest it only inherited. A change still
+        // proposed in the Parent's draft is not shared until the Parent saves it.
         let own = match row(tx, &from.summary.id)? {
             Some(row) if row.parent != into.summary.id => {
                 let parent = base_of(tx, (&from.summary.id, &row.parent))?;
-                Some(changed(&parent, &from.working))
+                let mut own = changed(&parent, &from.working);
+                own.extend(
+                    arrived(tx, &row.parent, Which::From(&from.summary.id))?
+                        .into_iter()
+                        .filter(|arrived| {
+                            matches!(arrived.arrival, Arrival::Pending { owner: Some(_), .. })
+                        })
+                        .map(|arrived| arrived.row),
+                );
+                Some(own)
             }
             _ => None,
         };
@@ -143,8 +167,28 @@ impl Move {
                 into_marks,
                 live: used_live(&into.working).into_keys().collect(),
                 own,
+                held: BTreeSet::new(),
+                accepted: BTreeMap::new(),
             },
         })
+    }
+
+    /// A Sync now of `from` into `into` that includes it: the rows other proposals
+    /// own there are held, and the rows `from`'s own proposal owns compare against
+    /// what it accepted and count as its own.
+    pub(crate) fn include(
+        tx: &mut dyn Tx,
+        from: &Environment,
+        into: &Environment,
+        owners: &Owners,
+    ) -> Result<Self, RpcError> {
+        let mut way = Self::sync(tx, from, into)?;
+        way.rules.held = owners.held.keys().cloned().collect();
+        way.rules.accepted = owners.accepted.clone();
+        if let Some(own) = &mut way.rules.own {
+            own.extend(owners.owned.iter().cloned());
+        }
+        Ok(way)
     }
 
     /// An Own Copy of the `copied` lineages from `owner` into `branch`: what `owner`
@@ -214,8 +258,10 @@ impl Checked<'_> {
     }
 
     /// Land `picks` in `into`, `values` filling the secrets that need one, and advance
-    /// the pair's base by exactly what landed, recording each row's arrival. `sync`
-    /// names the Sync that lands them, for Undo. Returns the nodes staged.
+    /// the pair's base by exactly what landed, recording each row's arrival for
+    /// `owner`. Arrivals are recorded before the rows land, so the release that
+    /// saving the Working State runs sees them as they landed. Returns the nodes
+    /// staged.
     pub(crate) fn apply(
         &self,
         tx: &mut dyn Tx,
@@ -223,7 +269,7 @@ impl Checked<'_> {
         into: &mut Environment,
         picks: &BTreeSet<RowId>,
         values: &BTreeMap<RowId, SealedSecret>,
-        sync: Option<&SyncId>,
+        owner: Owner<'_>,
     ) -> Result<Vec<NodeName>, RpcError> {
         let of = self.of;
         if picks.is_empty() {
@@ -234,12 +280,23 @@ impl Checked<'_> {
         }
         let applied = self.plan.apply(picks, values).map_err(config)?;
         let carried = Carried::of(tx, &of.source, &of.from)?;
-        let staged = land(tx, who, into, (&of.from, &carried), applied.next, picks)?;
         let how = match of.rules.way {
             Way::Follow => How::Follow,
             Way::Sync | Way::Copy => How::Sync,
         };
+        let (sync, proposal) = match owner {
+            Owner::None => (None, None),
+            Owner::Proposal { id, sync } => (Some(sync.clone()), Some(id.clone())),
+        };
         for landed in applied.landed {
+            let source = proposal.as_ref().map(|_| {
+                self.plan
+                    .rows()
+                    .iter()
+                    .find(|row| row.id == landed.row)
+                    .map_or(Cell::Absent, |row| row.from.clone())
+            });
+            let source = source.map(Box::new);
             let arrived = Arrived {
                 other: of.other.clone(),
                 row: landed.row,
@@ -248,11 +305,14 @@ impl Checked<'_> {
                 arrival: Arrival::Pending {
                     prior: landed.prior,
                     was: landed.was,
-                    sync: sync.cloned(),
+                    sync: sync.clone(),
+                    owner: proposal.clone(),
+                    source,
                 },
             };
             arrive(tx, who, &into.summary.id, &arrived)?;
         }
+        let staged = land(tx, who, into, (&of.from, &carried), applied.next, picks)?;
         share(tx, (&into.summary.id, &of.other), &applied.base)?;
         Ok(staged)
     }
@@ -397,7 +457,7 @@ pub(crate) fn shown(
 }
 
 /// What the pair `ids` last shared: a Branch and its Parent always have one.
-fn base_of(
+pub(super) fn base_of(
     tx: &mut dyn Tx,
     ids: (&EnvironmentId, &EnvironmentId),
 ) -> Result<SavedEnvironmentIntent, RpcError> {
@@ -411,7 +471,7 @@ fn ordered<'id>(a: &'id EnvironmentId, b: &'id EnvironmentId) -> [&'id str; 2] {
 }
 
 /// What the pair last shared; none when it never synced.
-fn stored(
+pub(super) fn stored(
     tx: &mut dyn Tx,
     (a, b): (&EnvironmentId, &EnvironmentId),
 ) -> Result<Option<SavedEnvironmentIntent>, RpcError> {
@@ -457,7 +517,7 @@ pub(super) fn share(
 
 /// Put `cells` into the bases `receiver` shares with each other side, as one write
 /// per pair. A pair gone with its other side has no base left to put back.
-fn rewind_bases(
+pub(super) fn rewind_bases(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
     cells: Vec<(EnvironmentId, RowId, Cell)>,
@@ -542,9 +602,11 @@ pub(crate) fn deployed(
         if !lineages.contains(row.lineage()) || *saved.at(row) != arrived.value {
             continue;
         }
+        // An owned row stays pending: its proposal ends at a manual Save or Deploy.
         tx.execute(
             "UPDATE config_sync_arrival SET state = 'settled', prior = NULL, was = NULL \
-             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4",
+             WHERE environment_id = ?1 AND other_id = ?2 AND lineage = ?3 AND at = ?4 \
+             AND proposal_id IS NULL",
             &[
                 receiver.as_str().into(),
                 arrived.other.as_str().into(),
@@ -577,20 +639,23 @@ pub(super) fn hint(
 /// How a row arrived.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum How {
+pub(super) enum How {
     Follow,
     Sync,
 }
 
 /// Where an arrived row stands in its receiver.
-enum Arrival {
+pub(super) enum Arrival {
     /// Staged, not deployed: `prior` is what the pair base held before it landed and
     /// `was` the receiver's own, to rewind a discard and to undo `sync`, the Sync
-    /// that landed it.
+    /// that landed it. `owner` is the proposal that still owns it, and `source` the
+    /// source's cell it accepted.
     Pending {
         prior: Cell,
         was: SealedCell,
         sync: Option<SyncId>,
+        owner: Option<ProposalId>,
+        source: Option<Box<Cell>>,
     },
     /// A Follow the receiver changed too, or discarded.
     Hint,
@@ -599,42 +664,66 @@ enum Arrival {
 }
 
 /// A row that arrived in a receiver from `other`.
-struct Arrived {
-    other: EnvironmentId,
-    row: RowId,
-    how: How,
+pub(super) struct Arrived {
+    pub(super) other: EnvironmentId,
+    pub(super) row: RowId,
+    pub(super) how: How,
     /// The cell delivered; redacted.
-    value: Cell,
-    arrival: Arrival,
+    pub(super) value: Cell,
+    pub(super) arrival: Arrival,
 }
 
 /// Record `arrived` in `receiver`, replacing what arrived at that row from that side
-/// before. A row still pending keeps the base's cell from before its first arrival.
+/// before. A row still pending under the same owner keeps the base's cell from
+/// before its first arrival, and one its proposal still owns keeps the receiver's own
+/// from before it too; a new proposal starts from the base it found. A hint never
+/// replaces an owned row.
 fn arrive(
     tx: &mut dyn Tx,
     who: &Actor,
     receiver: &EnvironmentId,
     arrived: &Arrived,
 ) -> Result<(), RpcError> {
-    let (state, prior, was, sync) = match &arrived.arrival {
-        Arrival::Pending { prior, was, sync } => (
+    let (state, prior, was, sync, owner, source) = match &arrived.arrival {
+        Arrival::Pending {
+            prior,
+            was,
+            sync,
+            owner,
+            source,
+        } => (
             "pending",
             Some(json_of(prior)),
             Some(json_of(was)),
             sync.as_ref().map(SyncId::as_str),
+            owner.as_ref().map(ProposalId::as_str),
+            source.as_deref().map(json_of),
         ),
-        Arrival::Hint => ("hint", None, None, None),
-        Arrival::Settled => ("settled", None, None, None),
+        Arrival::Hint => ("hint", None, None, None, None, None),
+        Arrival::Settled => ("settled", None, None, None, None, None),
+    };
+    let hint = if matches!(arrived.arrival, Arrival::Hint) {
+        " WHERE config_sync_arrival.proposal_id IS NULL"
+    } else {
+        ""
     };
     tx.execute(
-        "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, \
-         organization_id, how, state, value, prior, was, sync_id) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
-         ON CONFLICT (environment_id, other_id, lineage, at) DO UPDATE SET \
-         how = excluded.how, state = excluded.state, value = excluded.value, \
-         was = excluded.was, sync_id = excluded.sync_id, prior = CASE \
-         WHEN config_sync_arrival.state = 'pending' AND excluded.state = 'pending' \
-         THEN config_sync_arrival.prior ELSE excluded.prior END",
+        &format!(
+            "INSERT INTO config_sync_arrival (environment_id, other_id, lineage, at, \
+             organization_id, how, state, value, prior, was, sync_id, proposal_id, source) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+             ON CONFLICT (environment_id, other_id, lineage, at) DO UPDATE SET \
+             how = excluded.how, state = excluded.state, value = excluded.value, \
+             sync_id = excluded.sync_id, proposal_id = excluded.proposal_id, \
+             source = excluded.source, was = CASE \
+             WHEN config_sync_arrival.state = 'pending' \
+             AND config_sync_arrival.proposal_id = excluded.proposal_id \
+             THEN config_sync_arrival.was ELSE excluded.was END, prior = CASE \
+             WHEN config_sync_arrival.state = 'pending' AND excluded.state = 'pending' \
+             AND COALESCE(config_sync_arrival.proposal_id, '') \
+             = COALESCE(excluded.proposal_id, '') \
+             THEN config_sync_arrival.prior ELSE excluded.prior END{hint}"
+        ),
         &[
             receiver.as_str().into(),
             arrived.other.as_str().into(),
@@ -647,29 +736,33 @@ fn arrive(
             prior.as_deref().into(),
             was.as_deref().into(),
             sync.into(),
+            owner.into(),
+            source.as_deref().into(),
         ],
     )?;
     Ok(())
 }
 
 /// Which of an Environment's arrivals [`arrived`] reads.
-enum Which<'id> {
+pub(super) enum Which<'id> {
     /// Those not yet deployed.
     Pending,
     /// Those from this Environment.
     From(&'id EnvironmentId),
     /// Those this Sync landed.
     Of(&'id SyncId),
+    /// Those this proposal owns.
+    Owned(&'id ProposalId),
 }
 
 /// What arrived in `receiver` that `which` selects.
-fn arrived(
+pub(super) fn arrived(
     tx: &mut dyn Tx,
     receiver: &EnvironmentId,
     which: Which<'_>,
 ) -> Result<Vec<Arrived>, RpcError> {
-    const SELECT: &str = "SELECT other_id, lineage, at, how, state, value, prior, was, sync_id \
-         FROM config_sync_arrival WHERE environment_id = ?1";
+    const SELECT: &str = "SELECT other_id, lineage, at, how, state, value, prior, was, sync_id, \
+         proposal_id, source FROM config_sync_arrival WHERE environment_id = ?1";
     let receiver = receiver.as_str().into();
     let rows = match which {
         Which::Pending => tx.query(&format!("{SELECT} AND state = 'pending'"), &[receiver])?,
@@ -681,6 +774,10 @@ fn arrived(
             &format!("{SELECT} AND sync_id = ?2"),
             &[receiver, sync.as_str().into()],
         )?,
+        Which::Owned(proposal) => tx.query(
+            &format!("{SELECT} AND proposal_id = ?2"),
+            &[receiver, proposal.as_str().into()],
+        )?,
     };
     rows.iter()
         .map(|row| {
@@ -689,6 +786,12 @@ fn arrived(
                     prior: row.json(6, "Sync")?,
                     was: row.json(7, "Sync")?,
                     sync: row.parse_optional(8, "Sync")?,
+                    owner: row.parse_optional(9, "Sync")?,
+                    source: row
+                        .optional_text(10)?
+                        .map(serde_json::from_str)
+                        .transpose()
+                        .map_err(|_| error::corrupt("Sync"))?,
                 },
                 "hint" => Arrival::Hint,
                 "settled" => Arrival::Settled,
@@ -788,7 +891,8 @@ pub(crate) fn changes_into(
     from: &Environment,
     into: &Environment,
 ) -> Result<usize, RpcError> {
-    Ok(Move::sync(tx, from, into)?
+    let (way, _, _) = super::proposal::planned(tx, from, into)?;
+    Ok(way
         .plan(&into.working)
         .rows()
         .iter()

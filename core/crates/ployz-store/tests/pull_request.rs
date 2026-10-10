@@ -41,7 +41,11 @@ fn at(environment: &str) -> EnvironmentRef {
 /// Project `shop`: `production` runs Git Services `web` and `api` from `acme/web`'s
 /// `main`, published.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+/// `shop` on `store`.
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -799,4 +803,425 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
     assert_eq!(destinations[0].name.as_str(), "qa");
     assert_eq!(destinations[0].changes, review.rows.len());
     assert_eq!(view.reason, "1 change to sync in Ployz");
+}
+
+/// Run `sql` on the database at `url`, beside the Store.
+fn execute(url: &str, sql: &str) -> usize {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(sql, [])
+            .unwrap(),
+        None => usize::try_from(
+            postgres::Client::connect(url, postgres::NoTls)
+                .unwrap()
+                .execute(sql, &[])
+                .unwrap(),
+        )
+        .unwrap(),
+    }
+}
+
+fn now_when() -> ployz_store::When {
+    ployz_store::When::Now { close_after: false }
+}
+
+/// Include what `pr-5` offers into production as Sync `n`; the proposal, or the refusal.
+fn include_pr(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+) -> Result<ployz_store::ProposalId, (RpcErrorCode, String)> {
+    include_from_pr(store, who, "production", Some(now_when()), n)
+}
+
+/// Include what `pr-5` offers into `into` as Sync `n`, saying `when` as the Dashboard
+/// does; the proposal, or the refusal.
+fn include_from_pr(
+    store: &ConfigStore,
+    who: &Actor,
+    into: &str,
+    when: Option<ployz_store::When>,
+    n: u8,
+) -> Result<ployz_store::ProposalId, (RpcErrorCode, String)> {
+    let view = store
+        .read(
+            who,
+            &ployz_store::SyncQuery {
+                from: at("pr-5"),
+                into: Some(at(into)),
+                when,
+            },
+        )
+        .unwrap();
+    let synced = store
+        .write(
+            who,
+            &ployz_store::SyncChanges {
+                from: at("pr-5"),
+                into: Some(at(into)),
+                when,
+                version: view.version,
+                picks: None,
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: Some(
+                    ployz_store::SyncId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}"))
+                        .unwrap(),
+                ),
+            },
+        )
+        .map_err(|error| (error.code, error.message))?;
+    let ployz_store::SyncedWhen::Now { proposal, .. } = synced.when else {
+        panic!("an Include stages now")
+    };
+    Ok(proposal)
+}
+
+/// Included into one of its Destinations, a pull request's preview is the pull
+/// request's proposal; included anywhere else, it is that Environment's, as any
+/// other source is.
+#[test]
+fn a_preview_is_its_pull_requests_proposal_only_in_a_destination() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(6)).unwrap(),
+                from: EnvironmentRef::default(),
+                name: EnvironmentName::parse("staging").unwrap(),
+                copy: vec![node("web")],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: true,
+                fix: None,
+            },
+        )
+        .unwrap();
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_from_pr(&store, &who, "staging", None, 1).unwrap();
+    include_pr(&store, &who, 2).unwrap();
+
+    let source = |environment: &str| {
+        let diff = store
+            .read(
+                &who,
+                &ployz_store::DiffQuery {
+                    environment: at(environment),
+                },
+            )
+            .unwrap();
+        let [included] = &diff.included[..] else {
+            panic!("one proposal: {:?}", diff.included)
+        };
+        included.source.clone()
+    };
+    assert!(
+        matches!(&source("staging"), ployz_store::ProposalSource::Environment { name, .. } if name == "pr-5"),
+        "{:?}",
+        source("staging")
+    );
+    assert!(
+        matches!(
+            source("production"),
+            ployz_store::ProposalSource::PullRequest { number, .. } if number.get() == 5
+        ),
+        "{:?}",
+        source("production")
+    );
+}
+
+/// `pr-5`'s facts at `updated`, open and targeting `branch`.
+fn targeting(branch: &str, updated: &str) -> PullRequest {
+    PullRequest {
+        target_branch: backend::git_branch(branch),
+        ..facts(true, updated)
+    }
+}
+
+/// The one proposal included in production's draft.
+fn included_in_production(store: &ConfigStore, who: &Actor) -> ployz_store::Included {
+    let diff = store
+        .read(
+            who,
+            &ployz_store::DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap();
+    let [included] = &diff.included[..] else {
+        panic!("one proposal: {:?}", diff.included)
+    };
+    included.clone()
+}
+
+/// Remove `proposal` from production's draft.
+fn remove_from_production(store: &ConfigStore, who: &Actor, proposal: ployz_store::ProposalId) {
+    let removed = store
+        .write(
+            who,
+            &ployz_store::RemoveProposal {
+                environment: at("production"),
+                proposal,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(removed.removed);
+}
+
+/// Production's `web` env now, if it has any.
+fn production_env(store: &ConfigStore, who: &Actor) -> Option<serde_json::Value> {
+    store
+        .read(
+            who,
+            &ployz_store::ServiceQuery {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap()
+        .values
+        .get("env")
+        .cloned()
+}
+
+/// A preview included before its pull request targeted the draft's branch is still
+/// one proposal there once it does: the next Include makes it the pull request's.
+#[test]
+fn a_preview_included_before_it_was_destined_becomes_its_pull_requests_proposal() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, targeting("release", "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    let first = include_pr(&store, &who, 1).unwrap();
+
+    pull(&store, &who, targeting("main", "2026-09-29T11:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.Y", json!("2"));
+    assert_eq!(include_pr(&store, &who, 2), Ok(first.clone()));
+    let included = included_in_production(&store, &who);
+    assert!(
+        matches!(
+            included.source,
+            ployz_store::ProposalSource::PullRequest { number, .. } if number.get() == 5
+        ),
+        "{:?}",
+        included.source
+    );
+    assert_eq!(included.changes, 2);
+
+    remove_from_production(&store, &who, first);
+    assert_eq!(production_env(&store, &who), None);
+}
+
+/// A pull request's proposal in a draft that stops being one of its Destinations is
+/// its preview's own from the next Include on.
+#[test]
+fn a_pull_requests_proposal_outside_its_destinations_becomes_its_previews() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    let first = include_pr(&store, &who, 1).unwrap();
+
+    pull(&store, &who, targeting("release", "2026-09-29T11:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.Y", json!("2"));
+    assert_eq!(include_pr(&store, &who, 2), Ok(first.clone()));
+    let included = included_in_production(&store, &who);
+    assert!(
+        matches!(&included.source, ployz_store::ProposalSource::Environment { name, .. } if name == "pr-5"),
+        "{:?}",
+        included.source
+    );
+    assert_eq!(included.changes, 2);
+
+    remove_from_production(&store, &who, first);
+    assert_eq!(production_env(&store, &who), None);
+}
+
+/// A preview's change included in its Parent's draft is still its own: until the
+/// Parent saves it, its Sync into its Destination carries it.
+#[test]
+fn a_change_included_in_the_previews_parent_still_syncs_to_its_destination() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(6)).unwrap(),
+                from: EnvironmentRef::default(),
+                name: EnvironmentName::parse("staging").unwrap(),
+                copy: vec![node("web")],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: true,
+                fix: None,
+            },
+        )
+        .unwrap();
+    plan(
+        &store,
+        &who,
+        SetPrPlan {
+            start_from: Some(EnvironmentName::parse("staging").unwrap()),
+            ..on()
+        },
+    );
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_from_pr(&store, &who, "staging", None, 1).unwrap();
+
+    let view = store
+        .read(
+            &who,
+            &ployz_store::SyncQuery {
+                from: at("pr-5"),
+                into: Some(at("production")),
+                when: None,
+            },
+        )
+        .unwrap();
+    let ticked: Vec<_> = view
+        .rows
+        .iter()
+        .filter(|row| row.ticked)
+        .map(|row| row.at.to_string())
+        .collect();
+    assert_eq!(ticked, ["web.env.X"], "{:?}", view.rows);
+}
+
+/// A pull request's recreated preview finds the proposal its first one made, unless
+/// a row the proposal owns already arrived from the new preview.
+#[test]
+fn a_recreated_preview_rebinds_its_proposal_and_refuses_a_colliding_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    let first = include_pr(&store, &who, 1).unwrap();
+    // Closed before it deployed: the preview is deleted at once, the proposal stays.
+    pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
+    assert_eq!(listed(&store, &who), ["production"]);
+    pull(&store, &who, facts(true, "2026-09-29T12:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.Y", json!("2"));
+
+    // A row the proposal owns arrived from the new preview too: rebinding would
+    // merge the two, so Include refuses and names it.
+    let collide = format!(
+        "INSERT INTO config_sync_arrival \
+         (environment_id, other_id, lineage, at, organization_id, how, state, value) \
+         SELECT environment_id, (SELECT id FROM config_environment WHERE name = 'pr-5'), \
+         lineage, at, organization_id, how, 'settled', value \
+         FROM config_sync_arrival WHERE proposal_id = '{first}'"
+    );
+    assert_eq!(execute(&url, &collide), 1);
+    let (code, message) = include_pr(&store, &who, 2).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("web.env.X"), "{message}");
+
+    execute(
+        &url,
+        "DELETE FROM config_sync_arrival WHERE proposal_id IS NULL \
+         AND other_id = (SELECT id FROM config_environment WHERE name = 'pr-5')",
+    );
+    assert_eq!(include_pr(&store, &who, 3), Ok(first));
+    let production = store
+        .read(
+            &who,
+            &ployz_store::ServiceQuery {
+                environment: at("production"),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(production.values["env"], json!({"X": "1", "Y": "2"}));
+}
+
+/// A reopened pull request's new preview is where its proposal now comes from, before
+/// any Include from it rebinds the proposal.
+#[test]
+fn a_recreated_preview_is_listed_as_its_proposals_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_pr(&store, &who, 1).unwrap();
+    pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
+    let source = || {
+        let diff = store
+            .read(
+                &who,
+                &ployz_store::DiffQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap();
+        let [included] = &diff.included[..] else {
+            panic!("one proposal: {:?}", diff.included)
+        };
+        let ployz_store::ProposalSource::PullRequest { environment, .. } = &included.source else {
+            panic!("a pull request's proposal")
+        };
+        (environment.clone(), included.newer)
+    };
+    assert_eq!(source(), (None, false));
+
+    pull(&store, &who, facts(true, "2026-09-29T12:00:00Z"));
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: at("pr-5"),
+            },
+        )
+        .unwrap()
+        .environment
+        .id;
+    assert_eq!(source(), (Some(preview), true));
+}
+
+/// Reopened while its deployed preview is still closing, the new preview is listed.
+#[test]
+fn a_preview_reopened_while_the_old_one_closes_is_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_pr(&store, &who, 1).unwrap();
+    let source = || {
+        let diff = store
+            .read(
+                &who,
+                &ployz_store::DiffQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap();
+        let [included] = &diff.included[..] else {
+            panic!("one proposal: {:?}", diff.included)
+        };
+        let ployz_store::ProposalSource::PullRequest { environment, .. } = &included.source else {
+            panic!("a pull request's proposal")
+        };
+        (environment.clone(), included.newer)
+    };
+    let (old, _) = source();
+    let closing = pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
+    assert_eq!(closing.closing.len(), 1, "{closing:?}");
+
+    let reopened = pull(&store, &who, facts(true, "2026-09-29T12:00:00Z"));
+    assert_eq!(reopened.admitted.len(), 1, "{reopened:?}");
+    let (now, newer) = source();
+    assert!(now.is_some() && now != old, "{now:?}");
+    assert!(newer);
 }

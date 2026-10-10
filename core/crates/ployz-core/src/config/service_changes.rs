@@ -340,7 +340,8 @@ fn redacted_env(value: &Value) -> Value {
     if value.is_null() {
         Value::Null
     } else if value["kind"] == "secret" {
-        json!({"kind": "secret"})
+        // Only a secret without a value has no fingerprint.
+        json!({"kind": "secret", "valued": value["fingerprint"] != ""})
     } else if value["parts"].is_array() {
         json!({"kind": "literal", "value": value["value"]})
     } else {

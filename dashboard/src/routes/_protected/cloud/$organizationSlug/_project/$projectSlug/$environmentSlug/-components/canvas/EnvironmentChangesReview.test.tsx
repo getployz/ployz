@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RowId } from "@ployz/sdk";
+import type { Included, RowId } from "@ployz/sdk";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
 import { EnvironmentChangesReview, type EnvironmentChangesReviewProps } from "./EnvironmentChangesReview";
 
@@ -198,4 +198,38 @@ it("offers a Save message when the draft reverses Saved with no runtime changes"
   expect(screen.getByRole("textbox", { name: "Change message" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
   expect(screen.queryByRole("button", { name: "Deploy changes" })).toBeNull();
+});
+
+describe("Included", () => {
+  const staging: Included = {
+    proposal: "p-staging", source: { kind: "environment", id: "e-staging", name: "staging", live: true },
+    revision: 4, newer: true, changes: 2, sync: "s-1",
+  };
+  const pr: Included = {
+    proposal: "p-pr", source: { kind: "pull_request", repository_id: 1, number: 142, name: "pr-142", environment: "e-pr" },
+    revision: 2, newer: true, changes: 1, sync: "s-2",
+  };
+
+  it("lists each included source with Remove, and Include newer changes once an Environment changed since", async () => {
+    const onRemoveIncluded = vi.fn();
+    const onIncludeNewer = vi.fn();
+    review({ groups: [], totalChanges: 0, canPublish: true, included: [staging], onRemoveIncluded, onIncludeNewer });
+
+    const list = within(screen.getByRole("region", { name: "Included" }));
+    expect(list.getByText("staging · 2 changes")).toBeTruthy();
+    expect(list.getByText("staging changed since")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click((await menuOf("staging")).getByRole("menuitem", { name: "Include newer changes" }));
+    expect(onIncludeNewer).toHaveBeenCalledWith(staging);
+    fireEvent.click((await menuOf("staging")).getByRole("menuitem", { name: "Remove" }));
+    expect(onRemoveIncluded).toHaveBeenCalledWith(staging);
+  });
+
+  it("offers no Include newer changes for a pull request: its preview syncs its own", async () => {
+    review({ groups: [], totalChanges: 0, canPublish: true, included: [pr], onRemoveIncluded: vi.fn(), onIncludeNewer: vi.fn() });
+
+    const items = await menuOf("pr-142");
+    expect(items.getByRole("menuitem", { name: "Remove" })).toBeTruthy();
+    expect(items.queryByRole("menuitem", { name: "Include newer changes" })).toBeNull();
+  });
 });

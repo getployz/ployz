@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { RowId, SyncRow, SyncView } from "@ployz/sdk";
 import { Suspense } from "react";
 import { toast } from "sonner";
@@ -19,7 +19,7 @@ const fixApi = { project: "shop", environment: "fix-api" };
 const summary = (name: string) => ({ id: `id-${name}`, project: "shop", name, revision: 1 });
 const id = (value: string) => value as RowId;
 const row = (row: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
-  row: id(row), node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
+  row: id(row), node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, held_by: null, ...extra,
 });
 const secret = { held: false };
 const rows = [
@@ -31,7 +31,7 @@ const rows = [
   row("w:variables.KEY", "worker", "env.KEY", { from: { secret: true }, change: "new", secret, requires: id("w:node") }),
 ];
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
-  from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
+  from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows, proposal: null,
   never_synced: [{ row: id("a:variables.STRIPE_KEY"), node: "api", kind: "service", name: "env.STRIPE_KEY", marks: [{ environment: "fix-api", row: id("a:variables.STRIPE_KEY") }] }],
   ...extra,
 });
@@ -51,7 +51,7 @@ function open({ view = syncView(), closable = true } = {}) {
       </Suspense>
     </QueryClientProvider>,
   );
-  return { write };
+  return { write, queryClient };
 }
 
 const dialog = async () => within(await screen.findByRole("dialog", { name: "Sync to production" }));
@@ -99,4 +99,46 @@ it("says a Conditional Sync goes live at the merge, offers no Close, and shows a
   expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Value held");
+});
+
+it("holds a row another source's included change holds: unticked, Included with that source, no Never sync", async () => {
+  open({ view: syncView({ rows: [
+    row("a:variables.LOG_LEVEL", "api", "env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict", ticked: false, held_by: "staging" }),
+    row("a:variables.MODE", "api", "env.MODE", { from: "fast" }),
+  ] }) });
+  const sync = await dialog();
+  expect(section(sync, "api")[0]).toContain("Included with staging");
+  const held = sync.getByRole("checkbox", { name: /^LOG_LEVEL/u });
+  expect(held.getAttribute("aria-checked")).toBe("false");
+  expect(held.hasAttribute("data-disabled")).toBe(true);
+  expect(sync.queryByRole("button", { name: "Never sync" })).toBeNull();
+  expect(sync.getByRole("button", { name: "Sync 1 change" })).toBeTruthy();
+});
+
+it("sends one Sync id however often the Sync is sent", async () => {
+  const { write } = open();
+  write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
+  const sync = await dialog();
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await sync.findByText("These changed since you opened them. Here they are now.");
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  const ids = write.mock.calls.map(([{ data }]) => (data.command as { id?: string }).id);
+  expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/u);
+  expect(ids[1]).toBe(ids[0]);
+});
+
+it("drops a flip once its change moves under the review, and says so", async () => {
+  const { queryClient } = open();
+  const sync = await dialog();
+  fireEvent.click(sync.getByRole("checkbox", { name: /^LOG_LEVEL/u }));
+  fireEvent.click(sync.getByRole("checkbox", { name: /^MODE/u }));
+  expect(sync.getByRole("button", { name: "Sync 3 changes" })).toBeTruthy();
+  const moved = rows.map((one) => one.row === id("a:variables.LOG_LEVEL") ? { ...one, from: "trace" } : one);
+  act(() => queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", syncQuery(fixApi, "production")],
+    { ok: true, value: { view: "sync", ...syncView({ rows: moved }) } }));
+  await sync.findByText("These changed since you opened them. Here they are now.");
+  expect(sync.getByRole("checkbox", { name: /^LOG_LEVEL/u }).getAttribute("aria-checked")).toBe("true");
+  expect(sync.getByRole("checkbox", { name: /^MODE/u }).getAttribute("aria-checked")).toBe("false");
+  expect(sync.getByRole("button", { name: "Sync 4 changes" })).toBeTruthy();
 });

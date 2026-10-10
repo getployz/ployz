@@ -32,7 +32,7 @@ const branchView = (extra: Partial<BranchView> = {}): BranchView => ({
   closes_at: Date.now() / 1000 + 5 * 24 * 60 * 60 - 60, pull_request: null, ...extra,
 });
 const row = (name: string, extra: Partial<SyncRow> = {}): SyncRow => ({
-  row: `a:${name}` as RowId, node: "api", kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null,
+  row: `a:${name}` as RowId, node: "api", kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, held_by: null,
   ...extra,
 });
 const rows = [
@@ -45,7 +45,7 @@ const neverSynced = (name: string) =>
   ({ row: `a:${name}` as RowId, node: "api", kind: "service" as const, name, marks: [{ environment: "fix-api", row: `a:${name}` as RowId }] });
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
   from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows,
-  never_synced: [neverSynced("env.STRIPE_KEY")], ...extra,
+  never_synced: [neverSynced("env.STRIPE_KEY")], proposal: null, ...extra,
 });
 /** What a Sync answers: its id, and the Conditional Sync standing for one at the merge. */
 const synced = (atMerge: number | null) => ({ ok: true, value: {
@@ -205,6 +205,7 @@ it("syncs what's ticked, closes the Branch after, lands on the receiver, and Und
   expect(app.commands()).toEqual([{
     command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, version: "4:abc",
     when: { kind: "now", close_after: true }, picks: ["a:source", "a:env.LOG_LEVEL", "a:env.STRIPE_WEBHOOK_SECRET"], values: {},
+    id: expect.any(String),
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 3 changes from fix-api");
   // SAFETY: the Sync button's toast action is a label and a click, never a node.
@@ -271,7 +272,7 @@ it("syncs a PR Environment into another Environment now, from the menu", async (
   expect(app.commands()).toEqual([{
     command: "sync", from: fixApi, into: staging, when: null, version: "4:abc",
     picks: ["a:source", "a:env.LOG_LEVEL", "a:env.APP_ENV", "a:env.STRIPE_WEBHOOK_SECRET"],
-    values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
+    values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" }, id: expect.any(String),
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });

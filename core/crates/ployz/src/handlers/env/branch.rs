@@ -117,6 +117,8 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         picks: Some(refs("only")).filter(|only| !only.is_empty()),
         skip: refs("skip"),
         values,
+        // One receipt for this run: a retry of the same request replays, not repeats.
+        id: Some(SyncId::parse(uuid::Uuid::new_v4().to_string())?),
     };
     let synced = store.try_write(&request).map_err(|error| {
         // Stale, nothing to sync, or no such row: the plan shows what there is now.
@@ -325,7 +327,15 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
     let next = matches!(&synced.when, SyncedWhen::Now { staged, .. } if !staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    crate::ui::finish(&Next::new(synced, next.clone()), || {
+    // The proposal is the Dashboard's to Remove; here a Sync is undone by its id.
+    let mut json = serde_json::to_value(synced).expect("a Sync serializes");
+    if let Some(when) = json
+        .get_mut("when")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        when.remove("proposal");
+    }
+    crate::ui::finish(&Next::new(&json, next.clone()), || {
         let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
         match &synced.when {
@@ -343,7 +353,9 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
                 ));
                 crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
             }
-            SyncedWhen::Now { staged, closing } => {
+            SyncedWhen::Now {
+                staged, closing, ..
+            } => {
                 crate::ui::stream(format_args!("Synced {from} → {into}."));
                 if !staged.is_empty() {
                     crate::ui::stream(format_args!("Staged: {}", crate::handlers::joined(staged)));

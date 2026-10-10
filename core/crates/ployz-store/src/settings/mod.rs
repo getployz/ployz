@@ -645,11 +645,12 @@ impl ServiceSetting {
 }
 
 /// A core change row's value at `field` as reads show it: never a secret, a
-/// credential or a repository ID. A variable shows its text or `{"secret": true}`.
+/// credential or a repository ID. A variable shows its text, `{"secret": true}`, or
+/// `{"secret": false}` for a secret still without a value.
 pub(crate) fn shown(field: &str, value: Value) -> Value {
     if field.starts_with("env.") || field.starts_with("variables.") {
         return match value.get("kind").and_then(Value::as_str) {
-            Some("secret") => json!({ "secret": true }),
+            Some("secret") => json!({ "secret": value.get("valued") != Some(&json!(false)) }),
             Some(_) => value.get("value").cloned().unwrap_or_default(),
             None => value,
         };

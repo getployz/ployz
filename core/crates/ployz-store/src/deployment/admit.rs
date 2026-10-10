@@ -244,6 +244,8 @@ fn deploy(
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
+    // A manual Deploy ends the draft's proposals: what they brought is its own now.
+    crate::branch::consume(tx, id)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
     gate(

@@ -570,6 +570,7 @@ pub(crate) fn remove_organization(
         "config_check_suite",
         "config_build_order",
         "config_pull_request",
+        "config_sync_receipt",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),

@@ -1,4 +1,4 @@
-import { use, useState } from "react";
+import { Suspense, use, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -33,6 +33,8 @@ import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
+import { SyncDialog } from "../sync/SyncDialog";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
@@ -216,13 +218,16 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
   const groups = reviewGroups(diff, store.services.map(({ service }) => service));
+  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
+  const writer = useStoreWriter(params.organizationSlug);
+  const [including, setIncluding] = useState<string | null>(null);
   return (
     <>
       <BottomBar
         groups={groups}
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
         runtimeChanges={diff.total_count}
-        canPublish={(diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0}
+        canPublish={hasSomethingToSave}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
         onPublish={actions.publish}
@@ -231,10 +236,21 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardRow={(group, path) => actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
         active={inFlight}
         notes={storeHintNotes(diff, groups, actions.neverSync)}
+        proposals={{
+          included: diff.included,
+          onRemoveIncluded: ({ proposal }) => void writer.commit({ command: "remove_proposal", environment: ref, proposal, version: diff.version }),
+          onIncludeNewer: ({ source }) => setIncluding(source.name),
+        }}
         waiting={waiting}
         noServers={noServers}
       />
       {actions.dialog}
+      {including === null ? null : (
+        <Suspense fallback={null}>
+          <SyncDialog organizationSlug={params.organizationSlug} from={{ project: ref.project, environment: including }}
+            into={diff.environment.name} closable={false} onClose={() => setIncluding(null)} onSynced={() => setIncluding(null)} />
+        </Suspense>
+      )}
     </>
   );
 }

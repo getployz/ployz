@@ -18,7 +18,7 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
     // A whole node is named by its kind; its section names it.
     ...row.name === null ? { name: row.kind === "volume" ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
-    badge: row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
+    badge: row.held_by !== null ? `Included with ${row.held_by}` : row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
     before: whole || row.secret ? "" : rowText(row.into, row.name),
     after: whole || row.secret ? "" : rowText(row.from, row.name),
   };
@@ -35,14 +35,35 @@ export function syncSections(rows: readonly SyncRow[]) {
   return [...sections.values()];
 }
 
+/** A row as the user reviewed it: a flip holds only while the row still reads the same. */
+export function reviewed(row: SyncRow) {
+  return JSON.stringify([row.ticked, row.change, row.from, row.into]);
+}
+
+/** The rows the user flipped away from their default, each as they reviewed it. */
+export type Flips = ReadonlyMap<RowId, string>;
+
+/** Flips `row` back, or away from its default as it reads now. */
+export function flipRow(flips: Flips, row: SyncRow): Flips {
+  const next = new Map(flips);
+  if (next.get(row.row) === reviewed(row)) next.delete(row.row);
+  else next.set(row.row, reviewed(row));
+  return next;
+}
+
+/** Whether a row the user flipped changed since: it is back at its default. */
+export function flipsMoved(rows: readonly SyncRow[], flips: Flips) {
+  return rows.some((row) => flips.has(row.row) && flips.get(row.row) !== reviewed(row));
+}
+
 /**
- * What a Sync carries, from the rows the user flipped away from their default (`flipped`). A row `requires` its new
+ * What a Sync carries, from the rows the user flipped away from their default (`flips`). A row `requires` its new
  * node: leaving the node out leaves it out; ticked, each can still be left out on its own.
  */
-export function syncPicks(rows: readonly SyncRow[], flipped: ReadonlySet<RowId>) {
-  const ticked = (row: SyncRow) => row.ticked !== flipped.has(row.row);
+export function syncPicks(rows: readonly SyncRow[], flips: Flips) {
+  const ticked = (row: SyncRow) => row.ticked !== (flips.get(row.row) === reviewed(row));
   const left = new Set(rows.filter((row) => !ticked(row)).map((row) => row.row));
-  return rows.filter((row) => ticked(row) && !(row.requires !== null && left.has(row.requires)));
+  return rows.filter((row) => row.held_by === null && ticked(row) && !(row.requires !== null && left.has(row.requires)));
 }
 
 /**

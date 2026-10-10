@@ -63,6 +63,10 @@ pub struct DiffView {
     /// changes, or that it discarded: take one to stage it.
     #[serde(default)]
     pub follow_hints: Vec<crate::FollowHint>,
+    /// The sources included in this draft: Remove one to put back what it still
+    /// brings. Save or Deploy ends them.
+    #[serde(default)]
+    pub included: Vec<crate::Included>,
 }
 
 impl DiffView {
@@ -253,6 +257,7 @@ fn compare(
         hints: Vec::new(),
         incoming: Vec::new(),
         follow_hints: Vec::new(),
+        included: Vec::new(),
         changes: changes
             .groups
             .into_iter()

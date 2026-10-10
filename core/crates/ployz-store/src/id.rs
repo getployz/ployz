@@ -149,6 +149,11 @@ store_string!(
     SyncId, "a Sync ID (a UUID)", is_uuid
 );
 store_string!(
+    /// A proposal's identity: one source included in a destination's draft, minted by
+    /// the Store when it is first included.
+    ProposalId, "a proposal ID (a UUID)", is_uuid
+);
+store_string!(
     /// A Deployment's durable identity, minted by the caller that admits it.
     DeploymentId, "a Deployment ID (a UUID)", is_uuid
 );

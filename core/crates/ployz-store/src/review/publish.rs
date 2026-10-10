@@ -101,14 +101,20 @@ pub(crate) fn publish(
     publish: &Publish,
     trusted: &Trusted,
 ) -> Result<Published, RpcError> {
-    let environment = scope::lock(tx, who, &publish.environment)?;
+    let mut environment = scope::lock(tx, who, &publish.environment)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, publish.version.as_deref())?;
+    // A manual Save ends the draft's proposals: what they brought is its own now.
+    let consumed = crate::branch::consume(tx, &environment.summary.id)?;
     if review.saved.is_none()
         && canonicalize_environment_intent(environment.working.clone())
             == canonicalize_environment_intent(review.head.intent.clone())
     {
-        // Nothing staged: Head already is Working State.
+        // Nothing staged: Head already is Working State. Proposals ending still
+        // moves the revision, so a review of them is stale.
+        if consumed {
+            scope::persist_working(tx, &mut environment)?;
+        }
         return Ok(Published {
             environment: environment.summary,
             saved: None,
@@ -134,8 +140,15 @@ pub(crate) fn publish(
         review.saved.as_ref(),
         publish.message.as_deref(),
     )?;
+    // Saved State already held it: proposals ending still moves the revision.
+    let mut summary = environment.summary;
+    if consumed && !created {
+        let mut whole = scope::load_by_id(tx, &summary.id)?;
+        scope::persist_working(tx, &mut whole)?;
+        summary = whole.summary;
+    }
     Ok(Published {
-        environment: environment.summary,
+        environment: summary,
         saved: Some(saved),
         created,
     })
@@ -156,7 +169,13 @@ pub(crate) fn discard(
         discard.target,
         discard.path.as_ref(),
     )?;
-    let (environment, changed) = prepared.persist(tx)?;
+    let (mut environment, changed) = prepared.persist(tx)?;
+    // Discarding the whole draft ends its proposals; a path keeps them.
+    if discard.path.is_none() && crate::branch::consume(tx, &environment.id)? && !changed {
+        let mut whole = scope::load_by_id(tx, &environment.id)?;
+        scope::persist_working(tx, &mut whole)?;
+        environment = whole.summary;
+    }
     Ok(Discarded {
         environment,
         saved: reviewed.saved.as_ref().map(|saved| saved.revision),

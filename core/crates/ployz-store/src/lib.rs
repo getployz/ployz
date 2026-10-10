@@ -48,8 +48,8 @@ pub use branch::{
     SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
 };
 pub use branch::{
-    FollowHint, HintSource, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
-    RowRef, SecretRow, SyncChange,
+    FollowHint, HintSource, Included, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced,
+    NeverSyncedRow, ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,

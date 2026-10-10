@@ -281,6 +281,7 @@ fn sync(review: &SyncView, labels: Option<&[&str]>) -> SyncChanges {
         ),
         skip: Vec::new(),
         values: BTreeMap::new(),
+        id: None,
     }
 }
 

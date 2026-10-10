@@ -5,6 +5,8 @@
 //
 // Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
+//   staging     a kept Branch of production (api, worker) that includes search's changes, then sets one itself
+//   search      a Branch of staging, synced into it and changed again since: Details offers Include newer changes
 // A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
 // real Servers that enroll next, so the queued Deploy is skipped: the Store admits none before a Server joins.
 import { createHash, createHmac, randomUUID } from "node:crypto";
@@ -122,6 +124,33 @@ const seed = Effect.gen(function* () {
     { op: "set", path: "api.image", value: "traefik/whoami:v1.11.0" },
     { op: "set", path: "api.env.FEATURE_SEARCH", value: "on" },
   ]);
+
+  // staging includes search's changes, overrides one of them, and search moves on.
+  yield* write("branch staging", {
+    command: "create_branch", id: randomUUID(), from: at("production"), name: "staging",
+    copy: ["api", "worker"], live: [], setup: [], keep: true,
+  });
+  yield* write("branch search", {
+    command: "create_branch", id: randomUUID(), from: at("staging"), name: "search",
+    copy: ["api", "worker"], live: [], setup: [], keep: false,
+  });
+  yield* edit("search edits", "search", [
+    { op: "set", path: "api.env.FEATURE_SEARCH", value: "on" },
+    { op: "set", path: "api.env.SEARCH_URL", value: "http://search:7700" },
+    { op: "set", path: "worker.env.MODE", value: "index" },
+  ]);
+  const review = yield* callStore(organizationId, ada.id, {
+    operation: "read", query: { query: "sync", from: at("search"), into: at("staging") },
+  });
+  if (review.ok && review.value.view === "sync") {
+    yield* write("sync search into staging", {
+      command: "sync", from: at("search"), into: at("staging"), version: review.value.version, id: randomUUID(),
+    });
+  } else {
+    writes["sync search into staging"] = review.ok ? `unexpected view ${review.value.view}` : `refused: ${review.refusal.code} ${review.refusal.message}`;
+  }
+  yield* edit("staging overrides search", "staging", [{ op: "set", path: "worker.env.MODE", value: "index-slow" }]);
+  yield* edit("search moves on", "search", [{ op: "set", path: "api.env.SEARCH_URL", value: "http://search:7701" }]);
 
   return { organizationSlug, cookie, cliToken, writes, skipped };
 });

@@ -10,7 +10,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
-import { syncLine, syncPicks, syncSections } from "#/modules/config-store/store-sync";
+import { flipRow, flipsMoved, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -32,13 +32,14 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
 }) {
   const writer = useStoreWriter(organizationSlug);
   const view = useStoreView(organizationSlug, syncQuery(from, into));
-  // Rows the user flipped from their default: they survive a refetch.
-  const [flipped, setFlipped] = useState<ReadonlySet<RowId>>(new Set());
+  // Rows the user flipped from their default: a flip survives a refetch until its row changes.
+  const [flips, setFlips] = useState<Flips>(new Map());
   // `into`'s values typed for secrets it lacks: sent with the Sync, never shown back.
   const [values, setValues] = useState<Readonly<Partial<Record<RowId, string>>>>({});
   const [closeAfter, setCloseAfter] = useState(true);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
+  const [syncId] = useState(() => crypto.randomUUID());
   // The never-synced list, opened from the footer.
   const [listing, setListing] = useState(false);
   const name = from.environment ?? "";
@@ -46,13 +47,8 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   const atMerge = view.ok ? view.value.at_merge : null;
   // A PR Environment closes with its pull request.
   const closing = closable && atMerge === null;
-  const picked = syncPicks(rows, flipped);
+  const picked = syncPicks(rows, flips);
   const pickedRows = new Set(picked.map((row) => row.row));
-  const flip = (row: RowId) => setFlipped((current) => {
-    const next = new Set(current);
-    if (!next.delete(row)) next.add(row);
-    return next;
-  });
   const neverSync = (environment: string, row: RowId, off: boolean) =>
     writer.commit({ command: "never_sync", environment: { project: from.project, environment }, rows: [row], off });
 
@@ -72,7 +68,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
       // The Store decides when it lands, as the review read it; only closing after says now.
       written = await writer.commit({
         command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
+        values: typed, version: view.value.version, id: syncId, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.
@@ -106,13 +102,13 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
                 {section.rows.map((row) => (
                   <SyncRowItem key={row.row} row={row} into={into} ticked={pickedRows.has(row.row)}
                     left={row.requires !== null && !pickedRows.has(row.requires)}
-                    onFlip={() => flip(row.row)} onNeverSync={() => neverSync(name, row.row, false)}
+                    onFlip={() => setFlips((current) => flipRow(current, row))} onNeverSync={() => neverSync(name, row.row, false)}
                     value={values[row.row] ?? ""} onValue={(value) => setValues((current) => ({ ...current, [row.row]: value }))} />
                 ))}
               </ul>
             </section>
           ))}
-          {stale ? <p role="status" className="text-muted-foreground">These changed since you opened them. Here they are now.</p> : null}
+          {stale || flipsMoved(rows, flips) ? <p role="status" className="text-muted-foreground">These changed since you opened them. Here they are now.</p> : null}
         </div>
         {listing && neverSynced.length ? (
           <ul id="never-synced" aria-label="Never synced" className="max-h-40 shrink-0 overflow-y-auto border-t">
@@ -157,15 +153,16 @@ function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onVa
 }) {
   const line = syncLine(row, into);
   const id = `sync-${row.row}`;
+  const held = row.held_by !== null;
   return (
     <li className={cn("grid min-h-10 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 border-b last:border-b-0",
       row.requires !== null && "pl-6")}>
-      <Checkbox id={id} checked={ticked} disabled={left} onCheckedChange={onFlip} className={cn(!ticked && "opacity-40")} />
+      <Checkbox id={id} checked={ticked} disabled={left || held} onCheckedChange={onFlip} className={cn(!ticked && "opacity-40")} />
       <label htmlFor={id} className={cn("flex min-w-0 items-center gap-2", !ticked && "opacity-40")}>
         <span className={cn("truncate", line.variable && "font-mono")}>{line.name}</span>
         {line.badge ? <Badge variant={row.change === "conflict" && !row.secret ? "warning" : "secondary"}>{line.badge}</Badge> : null}
       </label>
-      {!ticked && row.name !== null && !left ? (
+      {!ticked && row.name !== null && !left && !held ? (
         <Button variant="outline" size="sm" onClick={onNeverSync}><PinIcon data-icon="inline-start" />Never sync</Button>
       ) : row.secret ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}

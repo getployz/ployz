@@ -242,6 +242,9 @@ commands! {
     /// Undo a Sync while what it staged is undeployed and unchanged, or withdraw the
     /// Conditional Sync it made.
     UndoSync(crate::UndoSync) -> Undone(crate::Undone) => crate::branch::undo(tx, who, c);
+    /// Remove a source included in a draft: what it still owns there goes back.
+    RemoveProposal(crate::RemoveProposal) -> Removed(crate::Removed)
+        => crate::branch::remove_proposal(tx, who, c);
     /// Stage the hints a Conditional Sync or a Parent left in an Environment.
     Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
     /// Hold a Destination's value for a secret a pull request brings it by name.
@@ -476,6 +479,7 @@ impl Written {
             Self::SecretHeld(held) => Some(&held.environment.id),
             Self::Synced(synced) => Some(&synced.into.id),
             Self::Undone(undone) => Some(&undone.into.id),
+            Self::Removed(removed) => Some(&removed.environment.id),
             Self::NeverSynced(marked) => Some(&marked.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
             // A new Project or Branch has no pull request yet; the rest write no
@@ -552,6 +556,8 @@ pub enum Written {
     Synced(crate::Synced),
     /// A Sync was undone, or its Conditional Sync withdrawn.
     Undone(crate::Undone),
+    /// A proposal was removed from its draft, or was gone already.
+    Removed(crate::Removed),
     /// Hints were staged.
     Taken(crate::Taken),
     /// A secret's value was held for a pull request's merge.

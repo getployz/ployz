@@ -3,6 +3,7 @@
 //! It never deletes and never deploys; a secret the receiver lacks arrives with the
 //! value the person syncing gives it, or without one.
 
+use super::proposal::{self, Owners};
 use super::*;
 use crate::SealingKey;
 use crate::pull_request::{PullRequest, PullRequestRef};
@@ -44,6 +45,11 @@ pub struct SyncChanges {
     #[serde(default)]
     #[ts(as = "Option<BTreeMap<RowRef, String>>", optional)]
     pub values: BTreeMap<RowRef, String>,
+    /// The Sync's ID, so a retry is answered with what it did; omitted, a new one.
+    /// Only a Sync now takes one.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub id: Option<SyncId>,
 }
 
 /// Read what a Sync would stage.
@@ -79,6 +85,8 @@ pub struct SyncView {
     pub rows: Vec<SyncRow>,
     /// The rows it would carry but that either side marked Never sync.
     pub never_synced: Vec<NeverSyncedRow>,
+    /// `from` as it is included in `into`'s draft already; none when it isn't.
+    pub proposal: Option<Included>,
 }
 
 /// A row a Sync would carry but for Never sync.
@@ -122,6 +130,9 @@ pub struct SyncRow {
     pub requires: Option<RowId>,
     /// A secret's row.
     pub secret: Option<SecretRow>,
+    /// The source whose included change the receiver holds at this row: it can't
+    /// be synced until that is removed.
+    pub held_by: Option<String>,
 }
 
 /// What a row does in the receiver.
@@ -167,6 +178,8 @@ pub enum SyncedWhen {
         staged: Vec<NodeName>,
         /// The Branch is closing, as [`When::Now`] asked.
         closing: bool,
+        /// The proposal that includes `from` in `into`'s draft.
+        proposal: ProposalId,
     },
     /// Held for the pull request's merge.
     AtMerge {
@@ -222,6 +235,17 @@ pub(crate) fn sync(
         }
         Lands::Now { close_after } => close_after,
     };
+    let identity = proposal::identity(tx, &from, &into.summary.id)?;
+    let mut found = proposal::find(tx, &into.summary.id, &identity)?;
+    // A retry of the Sync that last included `from` is answered with what it did.
+    if let Some(found) = &found
+        && request.id.as_ref() == Some(&found.last_sync)
+    {
+        return proposal::receipt(tx, (from, into), found, close_after);
+    }
+    if let Some(id) = &request.id {
+        proposal::refuse_reused_sync_id(tx, who, id)?;
+    }
     if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)? {
         return Err(crate::teardown::being_removed(&from, &removal));
     }
@@ -237,13 +261,35 @@ pub(crate) fn sync(
         }
         closable(tx, &from)?;
     }
-    let sync = Move::sync(tx, &from, &into)?;
+    if let Some(found) = &mut found {
+        proposal::rebind(tx, &into, found, &from)?;
+    }
+    let owners = proposal::owners(tx, &into.summary.id, found.as_ref().map(|found| &found.id))?;
+    let sync = Move::include(tx, &from, &into, &owners)?;
     let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
     let sides = [&from.working, &into.working];
     let (picks, values) = picks(checked.rows(), &sides, request)?;
+    proposal::refuse_held(checked.rows(), &sides, &picks, &owners)?;
     let values = sealed(sealing, checked.rows(), &sides, &picks, &values)?;
-    let id = SyncId::parse(uuid::Uuid::new_v4().to_string())?;
-    let staged = checked.apply(tx, who, &mut into, &picks, &values, Some(&id))?;
+    let id = match &request.id {
+        Some(id) => id.clone(),
+        None => SyncId::parse(uuid::Uuid::new_v4().to_string())?,
+    };
+    let proposal = proposal::record(
+        tx,
+        who,
+        &into.summary.id,
+        &from,
+        (found.as_ref(), &identity),
+        &id,
+    )?;
+    let owner = Owner::Proposal {
+        id: &proposal,
+        sync: &id,
+    };
+    let before = proposal::credentials(tx, &into)?;
+    let staged = checked.apply(tx, who, &mut into, &picks, &values, owner)?;
+    proposal::keep_carried(tx, &into, &proposal, &before)?;
     if close_after {
         crate::pull_request::close(tx, who, &from.summary.id, &mut Default::default())?;
     }
@@ -254,6 +300,7 @@ pub(crate) fn sync(
         when: SyncedWhen::Now {
             staged,
             closing: close_after,
+            proposal,
         },
     })
 }
@@ -274,7 +321,10 @@ pub(crate) fn sync_view(
         Some(pr) => crate::conditional_sync::held(tx, &into.summary.id, &pr.reference())?,
         None => BTreeMap::new(),
     };
-    let sync = Move::sync(tx, &from, &into)?;
+    let (sync, found, owners) = match &pr {
+        Some(_) => (Move::sync(tx, &from, &into)?, None, Owners::default()),
+        None => proposal::planned(tx, &from, &into)?,
+    };
     let plan = sync.plan(&into.working);
     let (from_names, into_names) = (from.names(), into.names());
     let mut rows = Vec::new();
@@ -298,6 +348,25 @@ pub(crate) fn sync_view(
                 secret: (row.from.is_secret() || row.into.is_secret()).then(|| SecretRow {
                     held: held.contains_key(&row.id),
                 }),
+                held_by: None,
+                at,
+            }),
+            Verdict::Differs(Why::Included) => rows.push(SyncRow {
+                change: match &row.into {
+                    Cell::Absent => SyncChange::New,
+                    into if *into != row.base => SyncChange::Conflict,
+                    Cell::Value(_) | Cell::Secret { .. } | Cell::SecretWithoutValue => {
+                        SyncChange::Changed
+                    }
+                },
+                from: shown(&from.working, &from_names, &row.id, &row.from),
+                into: shown(&into.working, &into_names, &row.id, &row.into),
+                ticked: false,
+                requires: row.requires.clone(),
+                secret: (row.from.is_secret() || row.into.is_secret()).then(|| SecretRow {
+                    held: held.contains_key(&row.id),
+                }),
+                held_by: owners.held.get(&row.id).cloned(),
                 at,
             }),
             Verdict::Differs(Why::NeverSynced) => never_synced.push(NeverSyncedRow {
@@ -318,7 +387,14 @@ pub(crate) fn sync_view(
             Verdict::Differs(_) => {}
         }
     }
+    let proposal = match found {
+        Some(found) => proposal::included(tx, &into.summary.id)?
+            .into_iter()
+            .find(|included| included.proposal == found.id),
+        None => None,
+    };
     Ok(SyncView {
+        proposal,
         version: version(&into, &plan),
         at_merge: pr.map(|pr| pr.number),
         from: from.summary,
@@ -466,9 +542,12 @@ pub(crate) fn picks(
     sides: &[&SavedEnvironmentIntent; 2],
     request: &SyncChanges,
 ) -> Result<(BTreeSet<RowId>, BTreeMap<RowId, String>), RpcError> {
-    let moves = rows
-        .iter()
-        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }));
+    let moves = rows.iter().filter(|row| {
+        matches!(
+            row.verdict,
+            Verdict::Moves { .. } | Verdict::Differs(Why::Included)
+        )
+    });
     let named = named_in(sides, moves.map(|row| &row.id));
     let values = request
         .values
@@ -575,8 +654,13 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
 }
 
 /// Undo Sync `request.sync` in its receiver, or withdraw the Conditional Sync it made.
+/// A Sync that included a proposal is undone by removing it, while it is that
+/// proposal's only Sync.
 pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<Undone, RpcError> {
     let id = &request.sync;
+    if let Some(undone) = proposal::undo(tx, who, id)? {
+        return Ok(undone);
+    }
     let landed = tx.query(
         "SELECT environment_id FROM config_sync_arrival \
          WHERE sync_id = ?1 AND organization_id = ?2",
