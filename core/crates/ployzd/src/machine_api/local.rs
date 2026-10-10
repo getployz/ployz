@@ -1497,7 +1497,8 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::UnsafeDataDirectory(_)
         | StoreError::UnownedDataDirectory(_)
         | StoreError::OwnershipLost(_)
-        | StoreError::ResetPreparationLost(_) => RpcErrorCode::Internal,
+        | StoreError::ResetPreparationLost(_)
+        | StoreError::ResetInterrupted(_) => RpcErrorCode::Internal,
     };
     RpcError::caused(code, &error)
 }

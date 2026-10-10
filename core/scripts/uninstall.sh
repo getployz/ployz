@@ -5,6 +5,7 @@ set -euo pipefail
 PLOYZ_AUTO_CONFIRM=${PLOYZ_AUTO_CONFIRM:-false}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 INSTALL_SYSTEMD_DIR=${INSTALL_SYSTEMD_DIR:-/etc/systemd/system}
+RUNTIME_SYSTEMD_DIR=${RUNTIME_SYSTEMD_DIR:-/run/systemd/system}
 PLOYZ_USER=ployz
 PLOYZ_DATA_DIR=${PLOYZ_DATA_DIR:-/var/lib/ployz}
 PLOYZ_RUN_DIR=${PLOYZ_RUN_DIR:-/run/ployz}
@@ -60,6 +61,7 @@ main() {
     stop_loaded_units ployz.service
     # Catch an accepted worker launched during the first stop, now blocked on our lock.
     stop_loaded_units 'ployz-upgrade-*.service'
+    stop_loaded_units ployz-dns.service
     if command -v docker >/dev/null 2>&1; then
         readarray -t containers < <(docker ps -aq --filter label=ployz.managed)
         if [ "${#containers[@]}" -gt 0 ]; then
@@ -75,18 +77,28 @@ main() {
         fi
     fi
 
+    if command -v ip >/dev/null 2>&1; then
+        local link
+        for link in ployz-wg ployz; do
+            if ip link show "$link" >/dev/null 2>&1; then
+                ip link delete "$link" || error "Cannot remove $link; uninstall aborted before deleting Machine state"
+            elif [ -e "/sys/class/net/$link" ]; then
+                error "Cannot inspect $link; uninstall aborted before deleting Machine state"
+            fi
+        done
+    elif [ -e /sys/class/net/ployz-wg ] || [ -e /sys/class/net/ployz ]; then
+        error "ip is required to remove Ployz networking; uninstall aborted before deleting Machine state"
+    fi
+
     systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
     systemctl disable ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
     rm -f "$INSTALL_SYSTEMD_DIR/ployz.service" \
         "$INSTALL_SYSTEMD_DIR/ployz.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
-        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service"
+        "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service" \
+        "$RUNTIME_SYSTEMD_DIR/ployz-dns.service"
     systemctl daemon-reload
     rm -f "$INSTALL_BIN_DIR/ployzd"
-
-    if command -v ip >/dev/null 2>&1 && ip link show ployz >/dev/null 2>&1; then
-        ip link delete ployz
-    fi
 
     rm -rf "$PLOYZ_DATA_DIR"
     # Preserve the locked inode until reboot; replacing it would bypass exclusion.

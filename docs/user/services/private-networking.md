@@ -38,6 +38,19 @@ Every server keeps its own copy of where each service runs and answers from it. 
 traffic never passes through Ployz Cloud, so your services keep reaching each other while Ployz
 Cloud is down, and the rest keep working when one server goes offline.
 
+Private DNS keeps answering while Ployz restarts or upgrades on a server, and while the server
+can't reach the others. It answers from the last copy it loaded. After a reboot it starts
+answering once the server has loaded where your services run.
+
+Two cases still interrupt it briefly. The first upgrade from 0.2.3 or earlier pauses private DNS
+and the server's place in the cluster on each server, while they move out of Ployz into
+their own processes. When an upgrade replaces private DNS itself, lookups over UDP
+carry on, but a connection a service holds open to it over TCP can close, and the service has to
+reconnect.
+
+The private network also stays connected while Ployz stops, restarts or upgrades on a server.
+Your running services keep reaching services on the other servers.
+
 ## Connect to another service
 
 Reference the other service's address in a variable. Every service has a

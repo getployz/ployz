@@ -3,7 +3,7 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends ca-certificates curl openssh-server wireguard-tools iproute2 iputils-ping
+apt-get install -y -qq --no-install-recommends ca-certificates curl openssh-server wireguard-tools iproute2 iputils-ping dnsutils socat
 # The actual installer prepares Docker, ZFS and systemd once, in the template.
 /opt/ployz-verify/ployzd install --version "$1" --storage zfs
 docker pull "$2"
@@ -14,6 +14,10 @@ caddy_version=$(docker run --rm --entrypoint caddy caddy:2 version)
 caddy_version=${caddy_version%% *}
 docker tag caddy:2 "caddy:${caddy_version#v}"
 systemctl stop ployz.socket ployz.service ployz-volume-plugin.socket ployz-volume-plugin.service
+# ployz-dns.service exists only after the daemon has written it under /run.
+if [ -n "$(systemctl list-units --all --plain --no-legend ployz-dns.service)" ]; then
+    systemctl stop ployz-dns.service
+fi
 systemctl disable ployz.socket ployz.service ployz-volume-plugin.socket
 systemctl enable ssh docker
 # Clone dependencies and cached images, then create each Machine's identity on first start.

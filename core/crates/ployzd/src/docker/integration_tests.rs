@@ -4,7 +4,6 @@ use std::{
     future::Future,
     net::{Ipv6Addr, TcpListener},
     os::unix::fs::{MetadataExt, PermissionsExt},
-    path::PathBuf,
     time::Duration,
 };
 
@@ -53,15 +52,13 @@ async fn image_ingest_reconciles_observed_docker_state_on_every_open() {
         .inspect_container("ployz-unregistry", None)
         .await
         .unwrap();
-    let socket = PathBuf::from(
-        first
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get("ployz.unregistry.socket"))
-            .unwrap(),
-    );
-    assert!(unregistry_matches(&first, &socket, management_address.0));
+    ingest.open(management_address).await.unwrap();
+    let reopened = docker
+        .client
+        .inspect_container("ployz-unregistry", None)
+        .await
+        .unwrap();
+    assert_eq!(reopened.id, first.id);
 
     docker
         .client

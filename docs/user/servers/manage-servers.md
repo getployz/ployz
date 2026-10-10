@@ -144,7 +144,8 @@ ployz server upgrade stable web-1 web-2
 ```
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
-running, Ployz stops at the first server that fails, and a server whose upgrade fails goes back to
+running and private DNS keeps answering (with the exceptions in
+[Private networking](../services/private-networking.md)), Ployz stops at the first server that fails, and a server whose upgrade fails goes back to
 the release it ran before.
 A server that doesn't answer within a minute counts as failed, so an offline server stops the
 command quickly instead of waiting out the upgrade.
@@ -181,6 +182,11 @@ A server removed this way doesn't know it was removed. If it comes back, its ser
 running on its copy of a volume. Ployz no longer uses that copy. Anything written to it after the
 removal stays on that server and never reaches your other servers. The volume's copy on your
 current servers is the real one.
+
+`sudo systemctl stop ployz.socket ployz` stops Ployz's control of the server. Stop the socket too:
+any `ployz` command on the server starts Ployz again through it. Your services, their private DNS,
+the private network and the server's place in the cluster keep running until the server reboots or
+you remove it.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
