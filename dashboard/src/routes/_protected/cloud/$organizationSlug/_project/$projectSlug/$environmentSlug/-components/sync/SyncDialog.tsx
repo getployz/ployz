@@ -10,7 +10,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
-import { syncLine, syncPicks, syncSections } from "#/modules/config-store/store-sync";
+import { flipRow, flipsMoved, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -32,8 +32,8 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
 }) {
   const writer = useStoreWriter(organizationSlug);
   const view = useStoreView(organizationSlug, syncQuery(from, into));
-  // Rows the user flipped from their default: they survive a refetch.
-  const [flipped, setFlipped] = useState<ReadonlySet<RowId>>(new Set());
+  // Rows the user flipped from their default: a flip survives a refetch until its row changes.
+  const [flips, setFlips] = useState<Flips>(new Map());
   // `into`'s values typed for secrets it lacks: sent with the Sync, never shown back.
   const [values, setValues] = useState<Readonly<Partial<Record<RowId, string>>>>({});
   const [closeAfter, setCloseAfter] = useState(true);
@@ -47,13 +47,8 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   const atMerge = view.ok ? view.value.at_merge : null;
   // A PR Environment closes with its pull request.
   const closing = closable && atMerge === null;
-  const picked = syncPicks(rows, flipped);
+  const picked = syncPicks(rows, flips);
   const pickedRows = new Set(picked.map((row) => row.row));
-  const flip = (row: RowId) => setFlipped((current) => {
-    const next = new Set(current);
-    if (!next.delete(row)) next.add(row);
-    return next;
-  });
   const neverSync = (environment: string, row: RowId, off: boolean) =>
     writer.commit({ command: "never_sync", environment: { project: from.project, environment }, rows: [row], off });
 
@@ -107,13 +102,13 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
                 {section.rows.map((row) => (
                   <SyncRowItem key={row.row} row={row} into={into} ticked={pickedRows.has(row.row)}
                     left={row.requires !== null && !pickedRows.has(row.requires)}
-                    onFlip={() => flip(row.row)} onNeverSync={() => neverSync(name, row.row, false)}
+                    onFlip={() => setFlips((current) => flipRow(current, row))} onNeverSync={() => neverSync(name, row.row, false)}
                     value={values[row.row] ?? ""} onValue={(value) => setValues((current) => ({ ...current, [row.row]: value }))} />
                 ))}
               </ul>
             </section>
           ))}
-          {stale ? <p role="status" className="text-muted-foreground">These changed since you opened them. Here they are now.</p> : null}
+          {stale || flipsMoved(rows, flips) ? <p role="status" className="text-muted-foreground">These changed since you opened them. Here they are now.</p> : null}
         </div>
         {listing && neverSynced.length ? (
           <ul id="never-synced" aria-label="Never synced" className="max-h-40 shrink-0 overflow-y-auto border-t">

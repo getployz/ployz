@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { RowId, SyncRow, SyncView } from "@ployz/sdk";
 import { Suspense } from "react";
 import { toast } from "sonner";
@@ -51,7 +51,7 @@ function open({ view = syncView(), closable = true } = {}) {
       </Suspense>
     </QueryClientProvider>,
   );
-  return { write };
+  return { write, queryClient };
 }
 
 const dialog = async () => within(await screen.findByRole("dialog", { name: "Sync to production" }));
@@ -126,4 +126,19 @@ it("sends one Sync id however often the Sync is sent", async () => {
   const ids = write.mock.calls.map(([{ data }]) => (data.command as { id?: string }).id);
   expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/u);
   expect(ids[1]).toBe(ids[0]);
+});
+
+it("drops a flip once its change moves under the review, and says so", async () => {
+  const { queryClient } = open();
+  const sync = await dialog();
+  fireEvent.click(sync.getByRole("checkbox", { name: /^LOG_LEVEL/u }));
+  fireEvent.click(sync.getByRole("checkbox", { name: /^MODE/u }));
+  expect(sync.getByRole("button", { name: "Sync 3 changes" })).toBeTruthy();
+  const moved = rows.map((one) => one.row === id("a:variables.LOG_LEVEL") ? { ...one, from: "trace" } : one);
+  act(() => queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", syncQuery(fixApi, "production")],
+    { ok: true, value: { view: "sync", ...syncView({ rows: moved }) } }));
+  await sync.findByText("These changed since you opened them. Here they are now.");
+  expect(sync.getByRole("checkbox", { name: /^LOG_LEVEL/u }).getAttribute("aria-checked")).toBe("true");
+  expect(sync.getByRole("checkbox", { name: /^MODE/u }).getAttribute("aria-checked")).toBe("false");
+  expect(sync.getByRole("button", { name: "Sync 4 changes" })).toBeTruthy();
 });

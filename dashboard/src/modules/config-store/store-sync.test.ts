@@ -1,7 +1,7 @@
 import type { DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncSections } from "./store-sync";
+import { closesIn, flipRow, flipsMoved, goesLive, syncButtonState, syncLine, syncPicks, syncSections, type Flips } from "./store-sync";
 
 // A row by its RowId, node and name in the node; no name brings the node whole.
 const row = (id: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
@@ -42,11 +42,22 @@ describe("the Sync dialog over the Store", () => {
 
   it("picks the defaults, then what the user flipped; a new node left out leaves its settings out", () => {
     const rows = [image, appEnv, cache, cacheMode];
-    expect(syncPicks(rows, new Set()).map((one) => one.row)).toEqual(["a:source", "c:node", "c:variables.MODE"]);
-    expect(syncPicks(rows, new Set([image.row, appEnv.row, cache.row])).map((one) => one.row))
+    const flipped = (...flips: SyncRow[]) => flips.reduce<Flips>(flipRow, new Map());
+    expect(syncPicks(rows, flipped()).map((one) => one.row)).toEqual(["a:source", "c:node", "c:variables.MODE"]);
+    expect(syncPicks(rows, flipped(image, appEnv, cache)).map((one) => one.row))
       .toEqual(["a:variables.APP_ENV"]);
     // A new node's setting can be left out on its own.
-    expect(syncPicks(rows, new Set([cacheMode.row])).map((one) => one.row)).toEqual(["a:source", "c:node"]);
+    expect(syncPicks(rows, flipped(cacheMode)).map((one) => one.row)).toEqual(["a:source", "c:node"]);
+    // Flipped twice, it is back at its default.
+    expect(syncPicks(rows, flipped(image, image)).map((one) => one.row)).toEqual(["a:source", "c:node", "c:variables.MODE"]);
+  });
+
+  it("drops a flip whose row changed since it was reviewed", () => {
+    const flips = flipRow(new Map(), image);
+    const moved = { ...image, from: { image: "web:3" } };
+    expect(flipsMoved([image], flips)).toBe(false);
+    expect(flipsMoved([moved], flips)).toBe(true);
+    expect(syncPicks([moved], flips).map((one) => one.row)).toEqual(["a:source"]);
   });
 });
 
