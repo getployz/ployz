@@ -9,6 +9,7 @@ mod convert;
 mod pg;
 mod sqlite;
 
+pub use convert::Converted;
 use ployz_core::RpcError;
 
 use crate::error;
@@ -59,7 +60,7 @@ enum Step {
     /// A script of parameterless statements.
     Sql(&'static str),
     /// Rust run inside the migrating transaction, for what SQL alone cannot convert.
-    Rust(fn(&mut dyn Tx, Backend) -> Result<(), RpcError>),
+    Rust(fn(&mut dyn Tx, Backend) -> Result<Converted, RpcError>),
 }
 
 /// Which database a migration runs on.
@@ -76,8 +77,9 @@ pub(crate) enum Storage {
 
 impl Storage {
     /// Open `url` (`postgres://…`, `sqlite:PATH` or `sqlite::memory:`) and apply
-    /// pending migrations.
-    pub(crate) fn open(url: &str) -> Result<Self, RpcError> {
+    /// pending migrations, with what converting Conditional Syncs did when this open
+    /// was the one that converted them.
+    pub(crate) fn open(url: &str) -> Result<(Self, Option<Converted>), RpcError> {
         Self::open_with(url, MIGRATIONS)
     }
 
@@ -90,17 +92,21 @@ impl Storage {
             .position(|(name, _)| *name == last)
             .expect("a known migration");
         Self::open_with(url, MIGRATIONS.get(..=end).expect("a known migration"))
+            .map(|(storage, _)| storage)
     }
 
-    fn open_with(url: &str, migrations: &[(&str, Step)]) -> Result<Self, RpcError> {
+    fn open_with(
+        url: &str,
+        migrations: &[(&str, Step)],
+    ) -> Result<(Self, Option<Converted>), RpcError> {
         if url.starts_with("postgres://") || url.starts_with("postgresql://") {
             let storage = Self::Postgres(Box::new(pg::Postgres::open(url)?));
-            storage.write(|tx| {
+            let converted = storage.write(|tx| {
                 // Processes opening one database at once migrate it one at a time.
                 tx.execute("SELECT pg_advisory_xact_lock(1225)", &[])?;
                 migrate(tx, Backend::Postgres, migrations)
             })?;
-            return Ok(storage);
+            return Ok((storage, converted));
         }
         let Some(path) = url.strip_prefix("sqlite:") else {
             return Err(error::invalid(
@@ -109,8 +115,8 @@ impl Storage {
             ));
         };
         let storage = Self::Sqlite(sqlite::Sqlite::open(path)?);
-        storage.write(|tx| migrate(tx, Backend::Sqlite, migrations))?;
-        Ok(storage)
+        let converted = storage.write(|tx| migrate(tx, Backend::Sqlite, migrations))?;
+        Ok((storage, converted))
     }
 
     /// Run `work` in one transaction that commits only when it returns `Ok`.
@@ -313,7 +319,12 @@ impl Row {
     }
 }
 
-fn migrate(tx: &mut dyn Tx, backend: Backend, migrations: &[(&str, Step)]) -> Result<(), RpcError> {
+fn migrate(
+    tx: &mut dyn Tx,
+    backend: Backend,
+    migrations: &[(&str, Step)],
+) -> Result<Option<Converted>, RpcError> {
+    let mut converted = None;
     tx.execute(
         "CREATE TABLE IF NOT EXISTS config_migration (name TEXT PRIMARY KEY)",
         &[],
@@ -328,12 +339,12 @@ fn migrate(tx: &mut dyn Tx, backend: Backend, migrations: &[(&str, Step)]) -> Re
         }
         match step {
             Step::Sql(sql) => tx.batch(sql)?,
-            Step::Rust(step) => step(tx, backend)?,
+            Step::Rust(step) => converted = Some(step(tx, backend)?),
         }
         tx.execute(
             "INSERT INTO config_migration (name) VALUES (?1)",
             &[(*name).into()],
         )?;
     }
-    Ok(())
+    Ok(converted)
 }

@@ -53,6 +53,12 @@ export class ConfigStoreOpenFailure extends Data.TaggedError("ConfigStoreOpenFai
   readonly publicErrorCategory = "internal" as const;
 }
 
+/** The open that converted Conditional Syncs to offers logs what it did, once. */
+const logConverted = (store: ConfigStore) => {
+  const converted = store.converted();
+  return converted === null ? Effect.void : Effect.logInfo("Conditional Syncs converted to offers.", converted);
+};
+
 /**
  * The Config Store in `database`, whose URL is `url`, with Cloud's change log attached to its tables. It seals secrets
  * with Cloud's encryption secret, so its ciphertext stays readable by Cloud's own sealing.
@@ -61,7 +67,7 @@ export const openCloudStore = (url: string, database: DatabaseService, sealingSe
   Effect.tryPromise({
     try: () => openConfigStore(url, sealingSecret),
     catch: (cause) => new ConfigStoreOpenFailure({ cause }),
-  }).pipe(Effect.tap(() => attachChangeLog.pipe(
+  }).pipe(Effect.tap(logConverted), Effect.tap(() => attachChangeLog.pipe(
     Effect.provideService(Database, database),
     Effect.mapError((cause) => new ConfigStoreOpenFailure({ cause })),
   )));

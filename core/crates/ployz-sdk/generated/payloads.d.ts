@@ -713,6 +713,28 @@ export type ContractDescription = { machine_id: MachineId, protocol_major: numbe
  */
 daemon_version: string, capabilities: Array<CapabilityName>, };
 
+export type Converted = {
+/**
+ * Standing Conditional Syncs offered.
+ */
+standing: number,
+/**
+ * Frozen ones offered, their pull request merged.
+ */
+frozen: number,
+/**
+ * Landed ones, dropped: what landed is Saved, and any hint one left goes too.
+ */
+landed_dropped: number,
+/**
+ * Held secret values no offer took, dropped with their table.
+ */
+orphan_held: number,
+/**
+ * Waiting pushes that carried frozen Conditional Syncs: they deploy from Saved now.
+ */
+retired_attachments: number, };
+
 export type CopyNode = {
 /**
  * The Branch.

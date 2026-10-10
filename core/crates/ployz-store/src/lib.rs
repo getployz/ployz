@@ -86,6 +86,7 @@ pub use review::{DataEffect, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
+pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
@@ -118,6 +119,7 @@ impl Actor {
 pub struct ConfigStore {
     storage: storage::Storage,
     sealing: SealingKey,
+    converted: Option<Converted>,
 }
 
 impl ConfigStore {
@@ -127,10 +129,19 @@ impl ConfigStore {
     /// # Errors
     /// Returns `invalid_argument` for an unsupported URL, or a storage error.
     pub fn open(url: &str, sealing: SealingKey) -> Result<Self, RpcError> {
+        let (storage, converted) = storage::Storage::open(url)?;
         Ok(Self {
-            storage: storage::Storage::open(url)?,
+            storage,
             sealing,
+            converted,
         })
+    }
+
+    /// What converting Conditional Syncs to offers did, when this open converted them:
+    /// the receipt its caller logs. `None` once an earlier open did.
+    #[must_use]
+    pub const fn converted(&self) -> Option<&Converted> {
+        self.converted.as_ref()
     }
 
     /// Answer `query` — a [`Query`], or one of its payloads for its own view —

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 
-use super::{Converted, convert, fault};
+use super::{Converted, fault};
 use crate::conditional_sync::Offer;
 use crate::id::ProposalId;
 use crate::storage::{Storage, Tx};
@@ -353,7 +353,7 @@ fn every_pending_conditional_sync_becomes_an_offer_of_what_it_stored() {
             "{gone} is still there"
         );
     }
-    let storage = Storage::open(&url).unwrap();
+    let (storage, _) = Storage::open(&url).unwrap();
     storage
         .read(|tx| {
             let waiting = columns(tx, "config_waiting_deploy")?;
@@ -457,23 +457,30 @@ fn every_pending_conditional_sync_becomes_an_offer_of_what_it_stored() {
         .unwrap();
 }
 
+/// The open that converts hands its caller the receipt, counting what it dropped;
+/// later opens have none, and a Store that never had a Conditional Sync counts zero.
 #[test]
-fn the_conversion_counts_what_it_drops() {
+fn the_open_that_converts_returns_what_it_counted_once() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::load();
+    let open = |url: &str| {
+        crate::ConfigStore::open(url, crate::SealingKey::new(b"test").unwrap()).unwrap()
+    };
     let url = legacy(&dir, "store", &fixture);
-    let storage = Storage::open_through(&url, "0008_proposal_offer").unwrap();
-    let converted = storage.write(|tx| convert(tx)).unwrap();
     assert_eq!(
-        converted,
-        Converted {
+        open(&url).converted(),
+        Some(&Converted {
             standing: 1,
             frozen: 1,
             landed_dropped: 1,
             orphan_held: 1,
             retired_attachments: 1,
-        }
+        })
     );
+    assert_eq!(open(&url).converted(), None);
+    let empty = fresh(&dir, "empty");
+    assert_eq!(open(&empty).converted(), Some(&Converted::default()));
+    assert_eq!(open(&empty).converted(), None);
 }
 
 #[test]
@@ -592,7 +599,7 @@ fn an_offer_without_a_pull_request_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::load();
     let url = legacy(&dir, "store", &fixture);
-    let storage = Storage::open(&url).unwrap();
+    let (storage, _) = Storage::open(&url).unwrap();
     let insert = |number: &str| {
         storage.write(|tx| {
             tx.execute(

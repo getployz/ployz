@@ -8,27 +8,30 @@
 //! names the row; the transaction rolls back and the legacy tables stay as they were.
 
 use ployz_core::RpcError;
+use serde::Serialize;
 use serde_json::{Map, Value, json};
+use ts_rs::TS;
 
 use super::{Backend, Param, Tx};
 use crate::error;
 
-/// What the conversion did, for the log.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Converted {
+/// What converting a Store's Conditional Syncs to offers did: its one receipt, which
+/// the process that opened the Store logs.
+#[derive(Debug, Default, PartialEq, Eq, Serialize, TS)]
+pub struct Converted {
     /// Standing Conditional Syncs offered.
-    pub(crate) standing: usize,
+    pub standing: usize,
     /// Frozen ones offered, their pull request merged.
-    pub(crate) frozen: usize,
+    pub frozen: usize,
     /// Landed ones, dropped: what landed is Saved, and any hint one left goes too.
-    pub(crate) landed_dropped: usize,
+    pub landed_dropped: usize,
     /// Held secret values no offer took, dropped with their table.
-    pub(crate) orphan_held: usize,
+    pub orphan_held: usize,
     /// Waiting pushes that carried frozen Conditional Syncs: they deploy from Saved now.
-    pub(crate) retired_attachments: usize,
+    pub retired_attachments: usize,
 }
 
-pub(super) fn step(tx: &mut dyn Tx, backend: Backend) -> Result<(), RpcError> {
+pub(super) fn step(tx: &mut dyn Tx, backend: Backend) -> Result<Converted, RpcError> {
     if backend == Backend::Postgres {
         // A process still on the old schema writes none of these while they convert.
         tx.execute(
@@ -46,10 +49,10 @@ pub(super) fn step(tx: &mut dyn Tx, backend: Backend) -> Result<(), RpcError> {
         retired_attachments = converted.retired_attachments,
         "Conditional Syncs converted to offers"
     );
-    Ok(())
+    Ok(converted)
 }
 
-pub(crate) fn convert(tx: &mut dyn Tx) -> Result<Converted, RpcError> {
+fn convert(tx: &mut dyn Tx) -> Result<Converted, RpcError> {
     let mut converted = Converted::default();
     facts(tx)?;
     let rows = tx.query(

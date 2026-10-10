@@ -115,6 +115,17 @@ impl ConfigStore {
             .await
     }
 
+    /// What converting Conditional Syncs to offers did (`Converted`) when opening this
+    /// Store converted them, for Cloud to log; null after an earlier open did.
+    ///
+    /// # Errors
+    /// Returns an error if the receipt can't be serialized.
+    #[napi]
+    pub fn converted(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self.store.converted())
+            .map_err(|error| Error::from_reason(error.to_string()))
+    }
+
     /// The pull requests (`PullRequestRef[]`) whose checks a change in Environment
     /// `environment` may move, such as a Deployment of it ending. Only Cloud calls this.
     ///

@@ -7,6 +7,7 @@ import type {
   ConfigView,
   ConfigWritten,
   ConfigCommitted,
+  Converted,
   PullRequestRef,
   OrganizationRemoved,
   AppliedVolume,
@@ -364,6 +365,8 @@ export interface ConfigStore {
    * as readable repositories; never the caller's.
    */
   write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted, principal?: string | null): Promise<ConfigCommitted>;
+  /** What converting Conditional Syncs to offers did, when opening this Store converted them; null once an earlier open did. */
+  converted(): Converted | null;
   /** Cloud only: the pull requests whose checks a change in Environment `environment` (its ID) may move. */
   checks(environment: string): Promise<PullRequestRef[]>;
   /** Cloud's worker only: the Git Services the Deployment builds, each with its pinned commit, if any. */
