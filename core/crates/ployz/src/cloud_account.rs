@@ -482,10 +482,6 @@ async fn store_answer<T: DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, StoreCallError> {
     #[derive(Deserialize)]
-    struct Refusal {
-        error: RpcError,
-    }
-    #[derive(Deserialize)]
     #[serde(tag = "_tag")]
     enum Public {
         PublicError { code: String, message: String },
@@ -496,8 +492,8 @@ async fn store_answer<T: DeserializeOwned>(
         .await
         .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
     if !status.is_success() {
-        if let Ok(refusal) = serde_json::from_slice::<Refusal>(&bytes) {
-            return Err(StoreCallError::Refused(refusal.error));
+        if let Some(refused) = refusal(&bytes) {
+            return Err(StoreCallError::Refused(refused));
         }
         if !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
             && let Ok(Public::PublicError { code, message }) = serde_json::from_slice(&bytes)
@@ -757,7 +753,8 @@ pub(crate) async fn upload(
     Ok(())
 }
 
-/// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface.
+/// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface,
+/// unless Cloud sent its refusal envelope with it.
 pub(crate) async fn call<T: DeserializeOwned>(
     credential: &Credential,
     method: Method,
@@ -767,10 +764,26 @@ pub(crate) async fn call<T: DeserializeOwned>(
     let read_only = method == Method::GET;
     let url = format!("{}/api/cli/{path}", credential.cloud());
     let response = send(credential, method, &url, body).await?;
-    if read_only && response.status() == StatusCode::NOT_FOUND {
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    if read_only && status == StatusCode::NOT_FOUND && refusal(&body).is_none() {
         return Err(LoginError::Unsupported(credential.cloud().to_owned()));
     }
-    read(credential, response).await
+    answer(credential, status, &body)
+}
+
+/// Cloud's refusal of a call, as it sent it.
+pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
+    #[derive(Deserialize)]
+    struct Refusal {
+        error: RpcError,
+    }
+    serde_json::from_slice::<Refusal>(body)
+        .ok()
+        .map(|refusal| refusal.error)
 }
 
 async fn send(
@@ -928,6 +941,28 @@ mod tests {
         // A Cloud without the CLI surface (or with it switched off).
         let error = credentials(&credential).await.unwrap_err();
         assert!(matches!(error, LoginError::Unsupported(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_reads_refusal_reaches_the_caller() {
+        let refused = serde_json::json!({ "error": {
+            "code": "not_found",
+            "message": "No repository by that name that this Organization can read.",
+            "details": { "valid_children": ["acme/web"] },
+        }});
+        let cloud = fake_cloud(move |_, _| (404, refused.clone()));
+        let error = call::<serde_json::Value>(&token(&cloud), Method::GET, "github/tree", None)
+            .await
+            .unwrap_err();
+        let LoginError::Status { status: 404, body } = error else {
+            panic!("expected the refusal, got {error}");
+        };
+        let refused = refusal(body.as_bytes()).expect("the body is a refusal");
+        assert_eq!(refused.code, ployz_core::RpcErrorCode::NotFound);
+        assert_eq!(
+            refused.details,
+            serde_json::json!({ "valid_children": ["acme/web"] })
+        );
     }
 
     #[tokio::test]

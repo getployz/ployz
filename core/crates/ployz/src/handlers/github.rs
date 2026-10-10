@@ -6,9 +6,13 @@ use super::catalog::{Approval::*, Runnable, cloud};
 use std::time::{Duration, Instant};
 
 use clap::{ArgMatches, Command};
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::RpcErrorCode;
+use ployz_store::{
+    GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView,
+    RepositoryName,
+};
 use reqwest::Method;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 
 use super::account::in_cloud;
@@ -114,29 +118,6 @@ struct Branches {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct Tree {
-    repository: String,
-    #[serde(rename = "ref")]
-    git_ref: String,
-    paths: Vec<String>,
-    /// Whether GitHub or Cloud cut the listing short.
-    truncated: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct File {
-    repository: String,
-    #[serde(rename = "ref")]
-    git_ref: String,
-    path: String,
-    size: u64,
-    /// The text, or `None` for a binary or oversized file, which `note` explains.
-    content: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 struct Disconnected {
     disconnected: Disconnection,
     uninstall_url: String,
@@ -222,20 +203,9 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         }
         return Ok(());
     };
-    if !valid_repository(repository) {
-        return Err(Error::usage(
-            "Expected a repository as OWNER/REPO, like acme/web",
-        ));
-    }
-    let path = format!("github/branches?repository={repository}");
-    let branches: Branches = in_cloud(root, async |_, credential| {
-        match cloud_account::call(credential, Method::GET, &path, None).await {
-            // A GET's 404 reads as "no CLI surface"; the surface answering means no such repository.
-            Err(LoginError::Unsupported(_)) if connection(credential).await.is_ok() => Ok(None),
-            reply => found(reply),
-        }
-    })?
-    .ok_or_else(|| not_found("No repository by that name that this Organization can read"))?;
+    let repository = repository_name(repository)?;
+    let branches: Branches =
+        read_repository(root, "branches", &json!({ "repository": repository }))?;
     let mut table = Table::new(
         ["BRANCH", "DEFAULT"],
         format!("No branches in {} yet.", branches.repository),
@@ -258,7 +228,14 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn tree(root: &ArgMatches) -> Result<(), Error> {
-    let tree: Tree = read_repository(root, "tree", &["path", "ref", "match"])?;
+    let matches = leaf_matches(root);
+    let query = GithubTreeQuery {
+        repository: required_repository(matches)?,
+        path: matches.get_one::<String>("path").cloned(),
+        git_ref: matches.get_one::<String>("ref").cloned(),
+        glob: matches.get_one::<String>("match").cloned(),
+    };
+    let tree: GithubTreeView = read_repository(root, "tree", &query)?;
     crate::ui::finish(&tree, || {
         if tree.paths.is_empty() {
             crate::ui::note(format_args!(
@@ -279,63 +256,65 @@ fn tree(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn cat(root: &ArgMatches) -> Result<(), Error> {
-    let file: File = read_repository(root, "file", &["path", "ref"])?;
-    crate::ui::finish(&file, || match &file.content {
-        Some(content) => {
+    let matches = leaf_matches(root);
+    let query = GithubFileQuery {
+        repository: required_repository(matches)?,
+        path: matches
+            .get_one::<String>("path")
+            .expect("path is required")
+            .clone(),
+        git_ref: matches.get_one::<String>("ref").cloned(),
+    };
+    let file: GithubFileView = read_repository(root, "file", &query)?;
+    crate::ui::finish(&file, || match &file.body {
+        GithubFileBody::Text { content } => {
             let _ = std::io::Write::write_all(&mut anstream::stdout(), content.as_bytes());
         }
-        None => crate::ui::note(file.note.as_deref().unwrap_or("This file isn't text.")),
+        GithubFileBody::Withheld { note } => crate::ui::note(note),
     })?;
     Ok(())
 }
 
-fn read_repository<T: serde::de::DeserializeOwned>(
+fn required_repository(matches: &ArgMatches) -> Result<RepositoryName, Error> {
+    repository_name(
+        matches
+            .get_one::<String>("repository")
+            .expect("repository is required"),
+    )
+}
+
+fn repository_name(given: &str) -> Result<RepositoryName, Error> {
+    RepositoryName::parse(given)
+        .map_err(|_| Error::usage("Expected a repository as OWNER/REPO, like acme/web"))
+}
+
+/// `GET /api/cli/github/<route>` with `query`'s fields as its query string; Cloud's
+/// refusal, such as no readable repository by that name, as the error.
+fn read_repository<T: DeserializeOwned>(
     root: &ArgMatches,
     route: &str,
-    options: &[&str],
+    query: &impl Serialize,
 ) -> Result<T, Error> {
-    let matches = leaf_matches(root);
-    let repository = matches
-        .get_one::<String>("repository")
-        .expect("repository is required");
-    if !valid_repository(repository) {
-        return Err(Error::usage(
-            "Expected a repository as OWNER/REPO, like acme/web",
-        ));
-    }
-    let mut query = reqwest::Url::parse("ployz:/").expect("a constant URL parses");
-    query
-        .query_pairs_mut()
-        .append_pair("repository", repository);
-    for &key in options {
-        if let Some(value) = matches.get_one::<String>(key) {
-            query.query_pairs_mut().append_pair(key, value);
+    let mut url = reqwest::Url::parse("ployz:/").expect("a constant URL parses");
+    if let serde_json::Value::Object(fields) = json!(query) {
+        let mut pairs = url.query_pairs_mut();
+        for (key, value) in fields {
+            if let serde_json::Value::String(value) = value {
+                pairs.append_pair(&key, &value);
+            }
         }
     }
-    let path = format!("github/{route}?{}", query.query().unwrap_or_default());
+    let path = format!("github/{route}?{}", url.query().unwrap_or_default());
     in_cloud(root, async |_, credential| {
         match cloud_account::call(credential, Method::GET, &path, None).await {
-            // A GET's 404 reads as "no CLI surface"; the surface answering means no such repository.
-            Err(LoginError::Unsupported(_)) if connection(credential).await.is_ok() => Ok(Err(
-                not_found("No repository by that name that this Organization can read"),
-            )),
-            Err(LoginError::Status { body, .. }) if let Some(refused) = refusal(&body) => {
+            Err(LoginError::Status { body, .. })
+                if let Some(refused) = cloud_account::refusal(body.as_bytes()) =>
+            {
                 Ok(Err(refused.into()))
             }
             reply => reply.map(Ok),
         }
     })?
-}
-
-/// Cloud's refusal of a call, as it sent it.
-fn refusal(body: &str) -> Option<RpcError> {
-    #[derive(Deserialize)]
-    struct Refusal {
-        error: RpcError,
-    }
-    serde_json::from_str::<Refusal>(body)
-        .ok()
-        .map(|refusal| refusal.error)
 }
 
 fn disconnect(root: &ArgMatches) -> Result<(), Error> {
@@ -398,16 +377,4 @@ fn found<T>(reply: Result<T, LoginError>) -> Result<Option<T>, LoginError> {
 
 fn not_found(message: &'static str) -> Error {
     Error::not_found(message).hint(Hint::Next("ployz github ls".into()))
-}
-
-fn valid_repository(name: &str) -> bool {
-    name.split_once('/').is_some_and(|(owner, repository)| {
-        let fits = |part: &str| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
-        };
-        fits(owner) && fits(repository) && name.len() <= 300
-    })
 }

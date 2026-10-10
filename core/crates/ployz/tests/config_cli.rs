@@ -248,25 +248,37 @@ fn serve(
                 "repositories": [{ "repository": "acme/web", "private": true, "default_branch": "main", "installation": 7 }],
             }),
         ),
-        (Some(_), "/api/cli/github/branches?repository=acme/web") => (
+        (Some(_), "/api/cli/github/branches?repository=acme%2Fweb") => (
             200,
             json!({ "repository": "acme/web", "access": "installation", "default_branch": "main", "branches": ["dev", "main"] }),
         ),
         (
             Some(_),
-            "/api/cli/github/tree?repository=acme%2Fweb&path=src&ref=dev&match=**%2F*.rs",
+            "/api/cli/github/tree?match=**%2F*.rs&path=src&ref=dev&repository=acme%2Fweb",
         ) => (
             200,
             json!({ "repository": "acme/web", "ref": "dev", "paths": ["src/main.rs"], "truncated": false }),
         ),
-        (Some(_), "/api/cli/github/file?repository=acme%2Fweb&path=Dockerfile") => (
+        (Some(_), "/api/cli/github/file?path=Dockerfile&repository=acme%2Fweb") => (
             200,
             json!({ "repository": "acme/web", "ref": "main", "path": "Dockerfile", "size": 12, "content": "FROM alpine\n" }),
         ),
-        (Some(_), "/api/cli/github/file?repository=acme%2Fweb&path=src") => (
+        (Some(_), "/api/cli/github/file?path=src&repository=acme%2Fweb") => (
             422,
             json!({ "error": { "code": "invalid_argument", "message": "src is a directory: list it with github tree.", "details": null } }),
         ),
+        (Some(_), route)
+            if route.starts_with("/api/cli/github/") && route.contains("acme%2Fnope") =>
+        {
+            (
+                404,
+                json!({ "error": {
+                "code": "not_found",
+                "message": "No repository by that name that this Organization can read.",
+                "details": { "valid_children": ["acme/web"] },
+            } }),
+            )
+        }
         (Some(_), "/api/cli/github/7") => (
             200,
             json!({
@@ -2798,6 +2810,7 @@ fn github_lists_branches_reads_files_and_disconnects_in_cloud() {
     assert_eq!(branches["branches"], json!(["dev", "main"]));
     let missing = error(&cloud, &["github", "ls", "acme/nope"]);
     assert_eq!(missing["code"], "not_found");
+    assert_eq!(missing["details"]["valid_children"], json!(["acme/web"]));
     assert_eq!(
         failed(&cloud, &["github", "ls", "not a repo"], 2)["code"],
         "invalid_argument"
