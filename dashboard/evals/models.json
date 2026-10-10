@@ -1,9 +1,9 @@
 {
   "providers": {
-    "claude-haiku-4-5": "anthropic",
-    "gpt-5-mini": "openai",
-    "claude-sonnet-5-5": "anthropic"
+    "claude-haiku-5-5": "claude-cli",
+    "claude-sonnet-5-5": "claude-cli",
+    "gpt-6-luna": "codex-cli"
   },
-  "simulator": "claude-haiku-4-5",
-  "agents": ["claude-haiku-4-5", "gpt-5-mini", "claude-sonnet-5-5"]
+  "simulator": "claude-haiku-5-5",
+  "agents": ["claude-haiku-5-5", "claude-sonnet-5-5", "gpt-6-luna"]
 }

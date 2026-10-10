@@ -9,6 +9,7 @@ import { TASKS } from "./tasks";
 import { runTrial } from "./trial";
 
 const TRIALS = Number(process.env["PLOYZ_EVAL_TRIALS"] ?? 8);
+const CONCURRENCY = Number(process.env["PLOYZ_EVAL_CONCURRENCY"] ?? 4);
 const only = (list: string | undefined) => (name: string) => list === undefined || list.split(",").includes(name);
 const RESULTS = new URL("../results/", import.meta.url);
 const GOLDEN = new URL("./golden/", import.meta.url);
@@ -33,7 +34,7 @@ describe.skipIf(process.env["PLOYZ_EVAL_LIVE"] !== "1")("live agent eval", () =>
         writeFileSync(new URL(`${task.id}.json`, GOLDEN), `${JSON.stringify(golden, null, 2)}\n`);
       }
       return trialOf(task.id, name, result);
-    }), { concurrency: 4 });
+    }), { concurrency: CONCURRENCY });
     const summary = summarize(trials);
     mkdirSync(RESULTS, { recursive: true });
     writeFileSync(new URL("latest.json", RESULTS), `${JSON.stringify({ trials, summary }, null, 2)}\n`);
