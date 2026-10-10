@@ -4,12 +4,66 @@ use std::{
     process::{Child, ChildStdout, Command, Stdio},
 };
 
+use defguard_wireguard_rs::{
+    Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
+};
 use ployz_core::{MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
 use ployzd::network::{NetworkError, apply_firewall_rules};
 
 const TEST_NAME: &str = "mesh_firewall_policy";
 const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
 const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
+
+#[test]
+#[ignore = "requires passwordless sudo and Linux network namespaces"]
+fn wireguard_multipart_dump_preserves_peer() {
+    const CHILD: &str = "PLOYZ_WIREGUARD_MULTIPART_TEST_CHILD";
+    if env::var_os(CHILD).is_some() {
+        let mut wireguard = WGApi::<Kernel>::new("multipart-wg").unwrap();
+        wireguard.create_interface().unwrap();
+        let mut peer = Peer::new(Key::new([7; 32]));
+        peer.endpoint = Some("192.0.2.2:51820".parse().unwrap());
+        peer.persistent_keepalive_interval = Some(25);
+        // This exceeds Linux's 8 KiB maximum NLMSG_GOODSIZE, even with 64 KiB pages.
+        peer.allowed_ips = (0..1024)
+            .map(|index| {
+                IpAddrMask::host(std::net::IpAddr::V6(std::net::Ipv6Addr::from(
+                    (0xfdcc_u128 << 112) | index,
+                )))
+            })
+            .collect();
+        wireguard.configure_peer(&peer).unwrap();
+        let mut host = wireguard.read_interface_data().unwrap();
+        assert_eq!(host.peers.len(), 1);
+        let mut installed = host.peers.remove(&peer.public_key).unwrap();
+        assert_eq!(installed.endpoint, peer.endpoint);
+        assert_eq!(installed.persistent_keepalive_interval, Some(25));
+        installed.allowed_ips.sort_by_key(|address| address.address);
+        assert_eq!(installed.allowed_ips, peer.allowed_ips);
+        return;
+    }
+
+    let namespace = format!("p35-wg-dump-{}", std::process::id());
+    let _namespaces = Namespaces::new([&namespace]);
+    let output = Command::new("sudo")
+        .args(["-n", "ip", "netns", "exec", &namespace, "env"])
+        .arg(format!("{CHILD}=1"))
+        .arg(env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "wireguard_multipart_dump_preserves_peer",
+            "--ignored",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "WireGuard multipart dump failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 #[test]
 fn firewall_surfaces_command_start_errors() {

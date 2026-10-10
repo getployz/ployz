@@ -37,7 +37,7 @@ const NETWORK_MTU: u32 = 1420;
 const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
 
 pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
-    let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
+    let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME)?;
     let host = wireguard.read_interface_data()?;
     let public_key = host
         .private_key
@@ -51,7 +51,7 @@ pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
             let allowed_ips = peer
                 .allowed_ips
                 .into_iter()
-                .map(|address| IpNet::new(address.ip, address.cidr))
+                .map(|address| IpNet::new(address.address, address.cidr))
                 .collect::<Result<_, _>>()
                 .map_err(|error| NetworkError::Io(io::Error::other(error)))?;
             Ok(WireGuardPeer {
@@ -102,7 +102,7 @@ impl NetworkPlane {
         let private_key = record.private_key().clone();
 
         let docker = Docker::connect_with_socket_defaults()?;
-        let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
+        let mut wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME)?;
         wireguard.create_interface()?;
         let now = SystemTime::now();
         let (peers, _) = attach_peer_selections(
@@ -273,7 +273,7 @@ impl NetworkPlane {
                 addresses: vec![IpAddrMask::host(IpAddr::V6(
                     self.machine.management_address().0,
                 ))],
-                port: u32::from(WIREGUARD_PORT),
+                port: WIREGUARD_PORT,
                 peers: wg_peers.clone(),
                 mtu: Some(self.mtu),
             })?;
