@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -15,11 +16,15 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
 function show(pending: ApprovalView[]) {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   client.setQueryData(pendingApprovalsOptions("acme").queryKey, pending);
-  render(
-    <QueryClientProvider client={client}>
-      <AgentSidebar canvas scope={{ kind: "environment", organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" }}
-        collectionScope={{ queryClient: client, sessionId: "s", userId: "u" }} />
-    </QueryClientProvider>,
+  render(<QueryClientProvider client={client}><Sidebar client={client} /></QueryClientProvider>);
+}
+
+/** The Organization route's `chat` search param, held in state. */
+function Sidebar({ client }: { client: QueryClient }) {
+  const [chat, setChat] = useState<string>();
+  return (
+    <AgentSidebar canvas scope={{ kind: "environment", organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" }}
+      collectionScope={{ queryClient: client, sessionId: "s", userId: "u" }} chat={chat} onChat={setChat} />
   );
 }
 

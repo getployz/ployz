@@ -38,7 +38,8 @@ it("switching Organization with the panel open talks to the new Organization's t
   localStorage.setItem("ployz.agent.thread.other", "thread-other");
   const panel = (organizationSlug: string) => (
     <QueryClientProvider client={client}>
-      <AgentPanel organizationSlug={organizationSlug} environment={null} scope={scope} onClose={() => {}} />
+      <AgentPanel organizationSlug={organizationSlug} environment={null} scope={scope} threadId={`thread-${organizationSlug}`}
+        onNewChat={() => {}} onClose={() => {}} />
     </QueryClientProvider>
   );
   const shown = render(panel("acme"));

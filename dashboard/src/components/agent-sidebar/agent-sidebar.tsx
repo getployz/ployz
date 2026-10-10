@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SparklesIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
@@ -10,24 +10,38 @@ import { pendingApprovalsOptions } from "./approvals.queries";
 type Panel = typeof import("./agent-panel").default;
 const loadPanel = () => import("./agent-panel").then((module) => module.default);
 
+const threadKey = (organizationSlug: string) => `ployz.agent.thread.${organizationSlug}`;
+
 /**
  * The agent, on every Organization page: a tab on the right edge that counts approvals waiting on a human, opening into
  * the conversation. Over the canvas it floats above the graph instead of squeezing it.
  *
+ * `chat` is the open thread, kept in the URL by the Organization route, so a reload or a shared link lands in the same conversation. Closing drops it;
+ * opening again returns to the Organization's last thread, remembered in localStorage.
+ *
  * The panel loads on first hover or open and renders as soon as it arrives. A lazy Suspense boundary would hold it back
  * for React's 300 ms reveal throttle.
  */
-export function AgentSidebar({ scope, collectionScope, canvas }: { scope: DashboardScope; collectionScope: CollectionScope; canvas: boolean }) {
-  const [open, setOpen] = useState(false);
+export function AgentSidebar({ scope, collectionScope, canvas, chat, onChat }: {
+  scope: DashboardScope;
+  collectionScope: CollectionScope;
+  canvas: boolean;
+  chat: string | undefined;
+  onChat: (thread: string | undefined) => void;
+}) {
+  const { organizationSlug } = scope;
   const [AgentPanel, setAgentPanel] = useState<Panel | null>(null);
-  const { data: pending } = useQuery(pendingApprovalsOptions(scope.organizationSlug));
+  const { data: pending } = useQuery(pendingApprovalsOptions(organizationSlug));
   const waiting = pending?.length ?? 0;
-  const openPanel = () => {
-    setOpen(true);
-    void loadPanel().then((panel) => setAgentPanel(() => panel));
-  };
+  const openPanel = () => onChat(localStorage.getItem(threadKey(organizationSlug)) ?? crypto.randomUUID());
 
-  if (!open) {
+  useEffect(() => {
+    if (chat === undefined) return;
+    localStorage.setItem(threadKey(organizationSlug), chat);
+    void loadPanel().then((panel) => setAgentPanel(() => panel));
+  }, [organizationSlug, chat]);
+
+  if (chat === undefined) {
     return (
       <button type="button" onClick={openPanel} onPointerEnter={() => void loadPanel()}
         aria-label={waiting > 0 ? `Open agent, ${waiting} ${waiting === 1 ? "approval" : "approvals"} waiting` : "Open agent"}
@@ -41,8 +55,8 @@ export function AgentSidebar({ scope, collectionScope, canvas }: { scope: Dashbo
     <aside className={cn("z-30 flex min-h-0 w-full flex-col border-l bg-background sm:w-96",
       canvas ? "absolute inset-y-0 right-0 shadow-lg" : "max-sm:absolute max-sm:inset-y-0 max-sm:right-0 sm:shrink-0")}>
       {AgentPanel && (
-        <AgentPanel organizationSlug={scope.organizationSlug} environment={scope.kind === "environment" ? scope.environmentSlug : null}
-          scope={collectionScope} onClose={() => setOpen(false)} />
+        <AgentPanel organizationSlug={organizationSlug} environment={scope.kind === "environment" ? scope.environmentSlug : null}
+          scope={collectionScope} threadId={chat} onNewChat={() => onChat(crypto.randomUUID())} onClose={() => onChat(undefined)} />
       )}
     </aside>
   );

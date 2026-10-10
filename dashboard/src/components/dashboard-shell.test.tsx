@@ -85,7 +85,7 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug", component: () => (
     <DashboardShell scope={scope === "all"
       ? { kind: "all", organizationSlug: "acme" }
-      : { kind: "environment", organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" }}><Outlet /></DashboardShell>
+      : { kind: "environment", organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" }} chat={undefined} onChat={() => {}}><Outlet /></DashboardShell>
   ) });
   const projectLayout = createRoute({ getParentRoute: () => organization, id: "_project" });
   const project = createRoute({ getParentRoute: () => projectLayout, path: "$projectSlug" });

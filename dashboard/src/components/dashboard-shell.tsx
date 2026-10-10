@@ -16,9 +16,14 @@ import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_o
 
 export function DashboardShell({
   scope,
+  chat,
+  onChat,
   children,
 }: {
   scope: DashboardScope;
+  /** The agent thread open in the sidebar, if any. */
+  chat: string | undefined;
+  onChat: (thread: string | undefined) => void;
   children: ReactNode;
 }) {
   const collectionScope = useCollectionScope();
@@ -70,7 +75,7 @@ export function DashboardShell({
         </div>
         <PhoneTabBar places={places} />
       </main>
-      <AgentSidebar scope={scope} collectionScope={collectionScope} canvas={canvas} />
+      <AgentSidebar scope={scope} collectionScope={collectionScope} canvas={canvas} chat={chat} onChat={onChat} />
     </div>
   );
 }

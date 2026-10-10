@@ -15,48 +15,43 @@ import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
 import { toolOutcome, ToolRow } from "./tool-row";
 
-const threadKey = (organizationSlug: string) => `ployz.agent.thread.${organizationSlug}`;
 const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;
 const Asked = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 type Asked = typeof Asked.Type;
 
-function storedThread(organizationSlug: string) {
-  const stored = localStorage.getItem(threadKey(organizationSlug));
-  if (stored) return stored;
-  const fresh = crypto.randomUUID();
-  localStorage.setItem(threadKey(organizationSlug), fresh);
-  return fresh;
-}
+type PanelProps = {
+  organizationSlug: string;
+  environment: string | null;
+  scope: CollectionScope;
+  threadId: string;
+  onNewChat: () => void;
+  onClose: () => void;
+};
 
-type PanelProps = { organizationSlug: string; environment: string | null; scope: CollectionScope; onClose: () => void };
-
-/** The active Organization's agent: switching Organization swaps in that Organization's thread and connection. */
-export default function AgentPanel(props: PanelProps) {
-  return <OrganizationPanel key={props.organizationSlug} {...props} />;
-}
-
-/** The Organization's one agent conversation, kept across reloads; "New chat" starts another. */
-function OrganizationPanel({ organizationSlug, environment, scope, onClose }: PanelProps) {
-  const [threadId, setThreadId] = useState(() => storedThread(organizationSlug));
-  const newChat = () => {
-    const fresh = crypto.randomUUID();
-    localStorage.setItem(threadKey(organizationSlug), fresh);
-    setThreadId(fresh);
-  };
+/** One agent conversation; the sidebar picks the thread, and switching Organization or thread swaps in a fresh connection. */
+export default function AgentPanel({ organizationSlug, environment, scope, threadId, onNewChat, onClose }: PanelProps) {
   return (
     <section aria-label="Ployz agent" className="flex h-full min-h-0 flex-col bg-background">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
         <h2 className="text-sm font-semibold">Ployz agent</h2>
         <span className="truncate text-xs text-muted-foreground">{environment ? `${organizationSlug} / ${environment}` : organizationSlug}</span>
-        <Button className="ml-auto" size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={newChat}><SquarePenIcon /></Button>
+        <Button className="ml-auto" size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="Close agent" title="Close" onClick={onClose}><XIcon /></Button>
       </header>
-      <Conversation key={threadId} organizationSlug={organizationSlug} scope={scope} threadId={threadId} />
+      <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} threadId={threadId} onNewChat={onNewChat} />
     </section>
   );
 }
 
-function Conversation({ organizationSlug, scope, threadId }: { organizationSlug: string; scope: CollectionScope; threadId: string }) {
+/** The client reports any refused request only as text; a 403 means the thread in the link is another member's. */
+const refused = (error: Error | undefined) => error?.message.includes("status: 403") ?? false;
+
+function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
+  organizationSlug: string;
+  scope: CollectionScope;
+  threadId: string;
+  onNewChat: () => void;
+}) {
   const [connection] = useState(() => fetchServerSentEvents(`/api/agent/${encodeURIComponent(organizationSlug)}/chat`));
   const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true });
   const bound = chat.interrupts.flatMap((interrupt) =>
@@ -87,7 +82,7 @@ function Conversation({ organizationSlug, scope, threadId }: { organizationSlug:
                 </section>
               </MessageScrollerItem>
             )}
-            {chat.messages.length === 0 && waiting.length === 0 && !chat.isHydrating && (
+            {chat.messages.length === 0 && waiting.length === 0 && !chat.isHydrating && !chat.error && (
               <p className="text-sm text-muted-foreground">Ask about your Projects, Deployments and Servers, or have the agent deploy for you. It stops to ask before anything is destroyed.</p>
             )}
             {chat.messages.map((message) => (
@@ -95,7 +90,12 @@ function Conversation({ organizationSlug, scope, threadId }: { organizationSlug:
                 <Message organizationSlug={organizationSlug} scope={scope} message={message} asked={asked} bound={bound} />
               </MessageScrollerItem>
             ))}
-            {chat.error && <p role="alert" className="text-sm text-destructive">{chat.error.message}</p>}
+            {refused(chat.error) ? (
+              <div role="alert" className="flex items-center gap-2 text-sm text-muted-foreground">
+                This chat isn't yours.
+                <Button size="sm" variant="outline" onClick={onNewChat}>New chat</Button>
+              </div>
+            ) : chat.error && <p role="alert" className="text-sm text-destructive">{chat.error.message}</p>}
           </MessageScrollerContent>
         </MessageScrollerViewport>
         <MessageScrollerButton />

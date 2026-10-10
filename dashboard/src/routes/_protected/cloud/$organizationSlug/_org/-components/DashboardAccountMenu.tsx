@@ -133,7 +133,8 @@ export default function DashboardAccountMenu({
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
                   <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={(slug: string) => {
-                    void navigate(getDashboardDestination({ kind: "all", organizationSlug: slug }, section));
+                    // The open agent thread belongs to this Organization, so it stays behind.
+                    void navigate({ ...getDashboardDestination({ kind: "all", organizationSlug: slug }, section), search: { chat: undefined } });
                   }}>
                     {organizations.map((candidate) => (
                       <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
