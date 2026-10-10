@@ -241,11 +241,12 @@ A service on the server gets `NXDOMAIN` or a timeout for a name like `postgres.a
 while `ployz service ls` shows the target running.
 
 1. Run `sudo systemctl status ployz-dns`. Its Status line says `serving`, `loading`, or
-   `waiting for the Corrosion token` while it works. `idle` means the server isn't in an
-   organization yet, so it has no names to answer.
+   `waiting for the Corrosion token` while it works. `idle` means it has no names to answer.
+   Either the server isn't in an organization yet, or it couldn't read its list of names. In
+   the second case its logs say why, and it starts answering once the list is readable.
 2. If the Status line says `waiting for port 53 on 10.210.0.1` (your server's private address),
    another program holds that port, often `dnsmasq` from libvirt or a local DNS cache. Find it
-   with `sudo ss -lunp 'sport = :53'`, then stop it or make it listen only on other addresses.
+   with `sudo ss -lntup 'sport = :53'`, then stop it or make it listen only on other addresses.
    Private DNS starts answering on its own once the port is free.
 3. Read its logs with `sudo journalctl -u ployz-dns -n 200`.
 4. If the unit is missing, run `sudo systemctl restart ployz`. Ployz recreates it.
