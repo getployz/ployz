@@ -15,7 +15,7 @@ import {
   toolDefinition,
   uiMessagesToWire,
 } from "@tanstack/ai";
-import { createAnthropicChat } from "@tanstack/ai-anthropic";
+import { type AnthropicTextProviderOptions, createAnthropicChat } from "@tanstack/ai-anthropic";
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
@@ -30,6 +30,7 @@ import {
   startRun,
   Superseded,
 } from "#/modules/agent/persistence.server";
+import { latestPageContext, PageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore } from "#/modules/config-store/config-store.server";
@@ -204,19 +205,49 @@ Every tool answers { ok: true, value } or { ok: false, refusal: { code, message,
 
 A Publish or Deploy that removes a Volume whose data a Server holds refuses with confirmation_required, naming the Version and the Volumes in details. Retry only when the member explicitly asked for exactly that loss. Preserve the original action, Project and Environment. Pass accept_volume_loss with those Volumes and the complete Version using version for Publish or expect_version for Deploy. Human Approval alone never accepts data loss. Publish saves the removal for a later Deploy and does not delete live data or start a Deployment.
 
-Publish and deploy may wait for a human to approve the plan. Call either one alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing was published or deployed.`;
+Publish and deploy may wait for a human to approve the plan. Call either one alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing was published or deployed.
 
-/** The model the sidebar talks to: the scripted stub under `PLOYZ_AGENT_STUB=1`, Claude when Cloud has an Anthropic key. */
-const agentAdapter = Effect.gen(function* () {
-  if ((yield* Config.option(Config.string("PLOYZ_AGENT_STUB"))).pipe(Option.contains("1"))) return new ScriptedAdapter(stubScript);
+A member message may begin with a <dashboard-page …/> block naming the dashboard page they are viewing. The latest block is where they are now. When they say "this service", "here" or name no Project, Environment or Service, use the latest block's. Never mention the block itself.`;
+
+/**
+ * Opens the member's new message with where they are in the dashboard, when that differs from the thread's last block.
+ * It runs after withPersistence merged the stored thread, so the block is saved with the message: replays send the same
+ * bytes and the prompt prefix stays cached.
+ */
+const pageMarker = (page: PageContext) => defineChatMiddleware({
+  name: "ployz-page-context",
+  onConfig: (ctx, config) => {
+    if (ctx.phase !== "init") return undefined;
+    const last = config.messages.at(-1);
+    if (last?.role !== "user") return undefined;
+    const earlier = config.messages.slice(0, -1);
+    const block = renderPageContext(page);
+    if (latestPageContext(earlier) === block) return undefined;
+    return { messages: [...earlier, withPageContext(last, block)] };
+  },
+});
+
+type AgentModel = { adapter: AnyTextAdapter; modelOptions?: AnthropicTextProviderOptions };
+const scripted = (script: ConstructorParameters<typeof ScriptedAdapter>[0]): AgentModel => ({ adapter: new ScriptedAdapter(script) });
+
+/**
+ * The model the sidebar talks to: the scripted stub under `PLOYZ_AGENT_STUB=1`, Claude when Cloud has an Anthropic key.
+ * Claude caches the prompt up to its last block, so a turn rereads the thread before it from cache.
+ */
+const agentModel = Effect.gen(function* () {
+  if ((yield* Config.option(Config.string("PLOYZ_AGENT_STUB"))).pipe(Option.contains("1"))) return scripted(stubScript);
   const key = yield* Config.option(Config.redacted("ANTHROPIC_API_KEY"));
   return Option.match(key, {
-    onNone: (): AnyTextAdapter => new ScriptedAdapter(notSetUpScript),
-    onSome: (secret): AnyTextAdapter => createAnthropicChat("claude-sonnet-5-5", Redacted.value(secret)),
+    onNone: () => scripted(notSetUpScript),
+    onSome: (secret): AgentModel => ({
+      adapter: createAnthropicChat("claude-sonnet-5-5", Redacted.value(secret)),
+      modelOptions: { cache_control: { type: "ephemeral" } },
+    }),
   });
 }).pipe(Effect.orDie);
 
-type ChatRequest = Pick<Awaited<ReturnType<typeof chatParamsFromRequest>>, "messages" | "threadId" | "runId" | "resume"> & {
+type ChatParams = Awaited<ReturnType<typeof chatParamsFromRequest>>;
+type ChatRequest = Pick<ChatParams, "messages" | "threadId" | "runId" | "resume"> & Partial<Pick<ChatParams, "forwardedProps">> & {
   readonly abortController?: AbortController;
 };
 
@@ -348,17 +379,20 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
   const scope: AgentScope = { organizationId: caller.organization.id, userId: caller.userId };
   const persistence = yield* agentPersistence(scope);
-  const adapter = yield* agentAdapter;
+  const { adapter, modelOptions } = yield* agentModel;
   const { resume } = request;
+  // A page the client sent malformed is no page: the turn still answers.
+  const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
   const turn = (stores: Persistence) => {
     const base = {
       adapter,
+      modelOptions,
       messages: added(request),
       threadId: request.threadId,
       runId: request.runId,
       tools: agentTools(caller, run, request.runId),
       systemPrompts: [systemPrompt(caller)],
-      middleware: [withPersistence(stores), approvalGate(caller, run)],
+      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run)],
       interrupts: [approvalInterrupt],
     };
     const options: typeof base & { resume?: ChatRequest["resume"]; abortController?: AbortController } = base;

@@ -1,6 +1,7 @@
 import { it } from "@effect/vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { expect } from "vitest";
+import type { PageContext } from "#/modules/agent/page-context";
 import { agentPersistence } from "#/modules/agent/persistence.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
@@ -28,11 +29,11 @@ const signUp = Effect.fn(function* (name: string) {
 });
 
 /** What the sidebar posts for one turn, and the status and stream it gets back. */
-const reply = Effect.fn(function* (slug: string, headers: Readonly<Record<string, string>>, threadId: string) {
+const reply = Effect.fn(function* (slug: string, headers: Readonly<Record<string, string>>, threadId: string, forwardedProps: { readonly page?: PageContext } = {}) {
   const request = new Request(`${origin}/api/agent/${slug}/chat`, {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
-    body: JSON.stringify({ threadId, runId: crypto.randomUUID(), messages: [{ id: crypto.randomUUID(), role: "user", content: "hello" }], tools: [], context: [] }),
+    body: JSON.stringify({ threadId, runId: crypto.randomUUID(), messages: [{ id: crypto.randomUUID(), role: "user", content: "hello" }], tools: [], context: [], forwardedProps }),
   });
   return yield* handleAgentChat(request, slug).pipe(
     Effect.flatMap((response) => Effect.promise(() => response.text()).pipe(Effect.map((body) => ({ status: response.status, body })))),
@@ -92,3 +93,16 @@ it.live("a Cloud without an Anthropic key answers that the agent isn't set up", 
     expect(answered.status).toBe(200);
     expect(answered.body).toContain("The Ployz agent is not set up on this Cloud yet: it needs an Anthropic API key.");
   }), {}));
+
+it.live("the page the sidebar forwards opens the member's stored message", () =>
+  inCloud(Effect.gen(function* () {
+    const ada = yield* signUp("ada");
+    const page = { page: "architecture", project: "web", environment: "production", service: "api" };
+    expect((yield* reply(ada.caller.organization.slug, { cookie: ada.cookie }, "thread-ada", { page })).status).toBe(200);
+    const persistence = yield* agentPersistence({ organizationId: ada.caller.organization.id, userId: ada.caller.userId });
+    const [asked] = yield* Effect.promise(() => persistence.stores.messages.loadThread("thread-ada"));
+    expect(asked?.content).toEqual([
+      { type: "text", content: '<dashboard-page page="architecture" project="web" environment="production" service="api"/>' },
+      { type: "text", content: "hello" },
+    ]);
+  })));

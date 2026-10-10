@@ -3,6 +3,7 @@ import { type AdapterYieldChunk, type DefaultMessageMetadataByModality, EventTyp
 import { BaseTextAdapter, type StructuredOutputResult } from "@tanstack/ai/adapters";
 import { Option, Schema } from "effect";
 import type { JsonObject } from "#/db/tables";
+import { isPageContext, latestPageContext } from "#/modules/agent/page-context";
 import { volumeLoss } from "#/modules/config-store/store-volumes";
 
 /** One model turn: words for the member, or the tool calls it makes at once. */
@@ -100,16 +101,37 @@ const lossRetry = (messages: ReadonlyArray<ModelMessage>, asked: number, action:
 const text = ({ content }: ModelMessage) =>
   Array.isArray(content) ? content.flatMap((part) => (part.type === "text" ? [part.content] : [])).join("") : content ?? "";
 
+/** What the member typed, without the page block Cloud put before it, so a page named "deploy" deploys nothing. */
+const typed = ({ content }: ModelMessage) =>
+  Array.isArray(content)
+    ? content.flatMap((part) => (part.type === "text" && !isPageContext(part.content) ? [part.content] : [])).join("")
+    : content ?? "";
+
+const unescape = (value: string) =>
+  value.replaceAll("&quot;", "\"").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+
+/** The latest page block in plain words. */
+const whereAbouts = (messages: ReadonlyArray<ModelMessage>): string => {
+  const block = latestPageContext(messages);
+  if (block === undefined) return "I don't know where you are.";
+  const at = new Map([...block.matchAll(/(\w+)="([^"]*)"/g)].map(([, key = "", value = ""]) => [key, unescape(value)]));
+  const place = [at.get("project"), at.get("environment")].filter((part) => part !== undefined).join(" / ");
+  const named = [["Service", at.get("service")], ["Deployment", at.get("deployment")], ["Server", at.get("server")]]
+    .flatMap(([noun, value]) => value === undefined ? [] : [`, ${noun} ${value}`]).join("");
+  return `You are on ${at.get("page") ?? "a page"}${place ? ` in ${place}` : ""}${named}.`;
+};
+
 /**
  * `PLOYZ_AGENT_STUB=1`'s model. It reads the member's latest message and the tool results since: "list services" lists
  * them by name, "list services and deploy" calls both at once, "set <path>=<value>" stages that Setting, "remove <service>"
  * and "drop <volume>" stage their removal, "publish" publishes (at `--version "<version>"` when named), and "deploy" deploys the
  * Environment, each in `--project` and `--env` when named. After a Publish or Deploy refuses Volume loss, an explicit request to accept it
  * retries that action in its original scope, accepting exactly what the Store named. A denial is quoted, never retried.
+ * "Where am I" answers from the thread's latest page block.
  */
 export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn {
   const asked = messages.map((message) => message.role).lastIndexOf("user");
-  const raw = asked < 0 ? "" : text(messages[asked] ?? { role: "user", content: "" });
+  const raw = asked < 0 ? "" : typed(messages[asked] ?? { role: "user", content: "" });
   const said = raw.toLowerCase();
   const last = messages.slice(asked + 1).filter((message) => message.role === "tool").map(text).at(-1);
   if (last !== undefined) {
@@ -122,6 +144,7 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
     return { text: code === "approval_denied" ? `I won't retry that. ${message}` : `The Store refused: ${message}` };
   }
 
+  if (said.includes("where am i")) return { text: whereAbouts(messages) };
   const assigned = /\bset ([a-z0-9._-]+=\S+)/.exec(said)?.[1];
   if (assigned !== undefined) return { calls: [{ tool: "set", input: { assignment: [assigned] } }] };
   const removed = /remove ([a-z0-9-]+)/.exec(said)?.[1];

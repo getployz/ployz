@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { agentChat, KEEPALIVE_MS } from "#/modules/agent/agent-chat.server";
+import type { PageContext } from "#/modules/agent/page-context";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals, setOrganizationSettings } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -20,6 +21,9 @@ const SERVICE = "00000000-0000-4000-8000-00000000a605";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000a606";
 const here = { project: null, environment: null };
 const THREAD = "thread-1";
+
+/** What the sidebar forwards with a request: where the member is, well-formed or not. */
+type Forwarded = { readonly page?: PageContext | Readonly<Record<string, string | number>> };
 
 const Outcome = Schema.fromJsonString(Schema.Struct({
   ok: Schema.Boolean,
@@ -72,15 +76,17 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
   if (options.removeWeb) yield* write({ command: "remove_service", environment: here, service: "web" });
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" } };
   let runs = 0;
-  const say = (content: string) => provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}` }))
-    .pipe(Effect.flatMap(drain));
+  const say = (content: string, forwardedProps: Forwarded = {}) =>
+    provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}`, forwardedProps }))
+      .pipe(Effect.flatMap(drain));
   const persistence = yield* provided(agentPersistence({ organizationId: ORGANIZATION, userId }));
   const waiting = Effect.promise(() => persistence.stores.interrupts.listPending(THREAD))
     .pipe(Effect.map(([first]) => first?.interruptId ?? expect.fail("nothing is waiting")));
-  const answer = (interruptId: string, status: RunAgentResumeItem["status"]) =>
-    provided(agentChat(caller, { messages: [], threadId: THREAD, runId: `run-${++runs}`, resume: [status === "resolved" ? { interruptId, status, payload: {} } : { interruptId, status }] }))
+  const answer = (interruptId: string, status: RunAgentResumeItem["status"], forwardedProps: Forwarded = {}) =>
+    provided(agentChat(caller, { messages: [], threadId: THREAD, runId: `run-${++runs}`, forwardedProps, resume: [status === "resolved" ? { interruptId, status, payload: {} } : { interruptId, status }] }))
       .pipe(Effect.flatMap(drain));
-  const resume = (status: RunAgentResumeItem["status"]) => waiting.pipe(Effect.flatMap((interruptId) => answer(interruptId, status)));
+  const resume = (status: RunAgentResumeItem["status"], forwardedProps: Forwarded = {}) =>
+    waiting.pipe(Effect.flatMap((interruptId) => answer(interruptId, status, forwardedProps)));
   const watchWrites = () => vi.spyOn(store, "write");
   const pending = provided(pendingApprovals(ORGANIZATION));
   const deployments = provided(Effect.gen(function* () {
@@ -136,6 +142,55 @@ it.live("a read tool answers straight from the Store", () =>
     expect(answered.interrupts).toEqual([]);
     expect(answered.results).toMatchObject([{ ok: true }]);
     expect(answered.said).toBe("Services: web.");
+  }));
+
+const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };
+const ARCHITECTURE = '<dashboard-page page="architecture" project="shop" environment="production" service="web"/>';
+const SERVERS = '<dashboard-page page="servers"/>';
+
+/** Each member message's text parts, in order, as the thread stores them. */
+const memberTexts = (thread: ReadonlyArray<ModelMessage>) => thread.flatMap((message) => message.role !== "user" ? [] : [
+  Array.isArray(message.content) ? message.content.flatMap((part) => part.type === "text" ? [part.content] : []) : [message.content ?? ""],
+]);
+
+it.live("a member message opens with where they are only when that changed since the thread last said", () =>
+  Effect.gen(function* () {
+    const { persistence, say } = yield* sidebar({ removeWeb: false });
+    const thread = Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+    yield* say("list services", { page: architecture });
+    expect(memberTexts(yield* thread)).toEqual([[ARCHITECTURE, "list services"]]);
+    const first = JSON.stringify((yield* thread)[0]);
+    yield* say("list services", { page: architecture });
+    yield* say("list services", { page: { page: "servers" } });
+    const stored = yield* thread;
+    expect(memberTexts(stored)).toEqual([[ARCHITECTURE, "list services"], ["list services"], [SERVERS, "list services"]]);
+    expect(JSON.stringify(stored[0])).toBe(first);
+  }));
+
+it.live("a page the client sends malformed is left out, and the turn still answers", () =>
+  Effect.gen(function* () {
+    const { persistence, say } = yield* sidebar({ removeWeb: false });
+    const answered = yield* say("list services", { page: { page: "", service: 7 } });
+    expect(answered.said).toBe("Services: web.");
+    expect(memberTexts(yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD)))).toEqual([["list services"]]);
+  }));
+
+it.live("answering an approval adds no page, even from another page", () =>
+  Effect.gen(function* () {
+    const { persistence, say, resume } = yield* sidebar({ removeWeb: true });
+    yield* say("deploy", { page: architecture });
+    yield* resume("resolved", { page: { page: "servers" } });
+    expect(memberTexts(yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD)))).toEqual([[ARCHITECTURE, "deploy"]]);
+  }));
+
+it.live("the stub answers where the member is from the thread's latest page", () =>
+  Effect.gen(function* () {
+    const { say } = yield* sidebar({ removeWeb: false });
+    expect((yield* say("Where am I?")).said).toBe("I don't know where you are.");
+    expect((yield* say("where am i", { page: architecture })).said).toBe("You are on architecture in shop / production, Service web.");
+    expect((yield* say("and now, where am i?")).said).toBe("You are on architecture in shop / production, Service web.");
+    expect((yield* say("where am i", { page: { page: "servers", server: "srv-1" } })).said).toBe("You are on servers, Server srv-1.");
+    expect((yield* say("hello", { page: { page: "deploy" } })).said).toBe("I can list services, remove one, or deploy.");
   }));
 
 it.live("a turn that posts the client's whole transcript back stores each tool result once", () =>
