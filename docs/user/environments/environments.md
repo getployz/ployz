@@ -86,6 +86,32 @@ To keep a setting out of every sync, like a variable each environment sets its o
 The exclusion takes effect immediately. If it also discards an arrived change, the
 reversal stays in the draft until you Save it.
 
+### Take a sync back out
+
+Until you save or deploy them, the changes a sync staged stay grouped under where they came
+from. In production's bottom bar, click **Details**: **Included** lists `staging · 1 change`.
+
+- **Remove:** in the row's ⋮ menu, click **Remove**. Production gets back what it had before
+  staging was included. A change you made in production since stays.
+- **Include newer changes:** when staging changed again, the row says so. Its ⋮ menu offers
+  **Include newer changes**, which opens the Sync dialog for just what's new. A pull request's
+  preview can't be included again from here: sync from its own canvas.
+- **Undo:** the toast's **Undo** removes staging, as long as you haven't synced staging again
+  since. After that, Undo is refused: Remove it in Details instead.
+
+Remove is refused, and says why, when taking staging out would lose your work:
+
+- A service staging brought was edited in production since. Discard that service, or keep staging.
+- Another service in production uses one staging brought. Change that service first, or Remove
+  what brought it.
+
+A change another included environment brought shows **Included with** that environment in the
+Sync dialog, and you can't tick it, even where production also changed it: Remove that one first
+to sync over it.
+
+Clicking **Save** or **Deploy** ends what was included: the changes are production's own, and
+**Included** is empty again. **Save** ends them even when no change is left to save.
+
 ## Other choices
 
 ### Share a service or leave it out
