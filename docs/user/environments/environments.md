@@ -95,7 +95,7 @@ from. In production's bottom bar, click **Details**: **Included** lists `staging
   staging was included. A change you made in production since stays.
 - **Include newer changes:** when staging changed again, the row says so. Its ⋮ menu offers
   **Include newer changes**, which opens the Sync dialog for just what's new. A pull request's
-  preview can't be included again from here: sync from its own canvas.
+  preview works the same way while it's open.
 - **Undo:** the toast's **Undo** removes staging, as long as you haven't synced staging again
   since. After that, Undo is refused: Remove it in Details instead.
 
