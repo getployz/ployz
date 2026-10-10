@@ -330,7 +330,11 @@ fn removal(
     }
     let forget = deployment::forgettable(tx, id, trusted)?;
     let review = review::review(tx, &environment)?;
-    review::check(&review, admit.version.as_deref())?;
+    // A removal consumes no draft, so whether its pull requests merged doesn't
+    // matter: no version is needed, a stale one is still refused.
+    if let Some(version) = admit.version.as_deref() {
+        review::check(&review, Some(version))?;
+    }
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = crate::scope::empty(&environment.working.environment_slug);
     let losses = match forget {
