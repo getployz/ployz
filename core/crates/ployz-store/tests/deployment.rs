@@ -507,6 +507,7 @@ fn a_deployed_configs_rename_and_file_edits_discard_by_their_rows() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -2195,6 +2196,7 @@ fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse("front").unwrap()),
                 version: None,
             },
@@ -2825,6 +2827,7 @@ fn deleted_config_discard_does_not_target_same_name_replacement() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -2923,6 +2926,7 @@ fn discard_config_mount_preserves_same_name_replacement() {
         &who,
         &Discard {
             environment: EnvironmentRef::default(),
+            target: ployz_store::DiscardTarget::Head,
             path: Some(SettingPath::parse(&removed.path).unwrap()),
             version: Some(review.version.clone()),
         },
@@ -2934,6 +2938,7 @@ fn discard_config_mount_preserves_same_name_replacement() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse("web.configs.sentry").unwrap()),
                 version: None,
             },

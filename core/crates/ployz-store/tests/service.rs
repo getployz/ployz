@@ -331,6 +331,7 @@ fn a_service_keeps_the_template_it_was_created_from_until_unset() {
             &Command::Publish(ployz_store::Publish {
                 environment: EnvironmentRef::default(),
                 version: None,
+                message: None,
                 accept_volume_loss: Vec::new(),
             }),
         )

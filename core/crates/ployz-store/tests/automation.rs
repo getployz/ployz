@@ -75,6 +75,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
             &Command::Publish(Publish {
                 environment: EnvironmentRef::default(),
                 version: None,
+                message: None,
                 accept_volume_loss: Vec::new(),
             }),
         )
@@ -226,6 +227,7 @@ fn discarding_a_renamed_config_mount_restores_saved_state_for_the_next_push() {
             &who,
             &ployz_store::Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse("web.configs.errors").unwrap()),
                 version: None,
             },

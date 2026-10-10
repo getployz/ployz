@@ -48,6 +48,8 @@ pub struct ChangeSetInput {
 pub enum ReviewComparisonRole {
     /// Compare with the latest submitted revision, or the applied revision if none exists.
     Head,
+    /// Compare the draft or a History revision with immutable Saved State.
+    Saved,
     /// Compare an unsaved, unapplied node with its initial authored configuration.
     Introduction,
 }

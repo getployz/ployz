@@ -17,7 +17,8 @@ pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
     RenameProject,
 };
-pub use crate::review::publish::{Discard, Discarded, Publish, Published};
+pub use crate::review::history::{HistoryStaged, StageHistory};
+pub use crate::review::publish::{Discard, DiscardTarget, Discarded, Publish, Published};
 pub use crate::service::{
     CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,
 };
@@ -208,6 +209,9 @@ commands! {
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
         => crate::review::publish::publish(tx, who, c, trusted);
+    /// Stage a guarded Restore or Undo of an immutable Saved revision.
+    StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
+        => crate::review::history::stage(tx, who, c);
     /// Return Working State, or part of it, to what is deployed.
     Discard(Discard) -> Discarded(Discarded) => crate::review::publish::discard(tx, who, c);
     /// Freeze Saved State into a queued Deployment, publishing Working State first,
@@ -465,6 +469,7 @@ impl Written {
             Self::Edited(edited) => Some(&edited.environment.id),
             Self::Published(published) => Some(&published.environment.id),
             Self::Discarded(discarded) => Some(&discarded.environment.id),
+            Self::HistoryStaged(staged) => Some(&staged.environment.id),
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
@@ -531,6 +536,8 @@ pub enum Written {
     Published(Published),
     /// Changes were discarded.
     Discarded(Discarded),
+    /// A Saved revision was restored or undone into the draft.
+    HistoryStaged(HistoryStaged),
     /// A Deployment admitted, started or cancelled, or what its runner recorded.
     Deployment(crate::DeploymentSummary),
     /// A public domain was added or removed.

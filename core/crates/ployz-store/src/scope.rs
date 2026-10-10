@@ -524,6 +524,29 @@ pub(crate) fn save_working_from(
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
 ) -> Result<(), RpcError> {
+    validate_working_from(tx, environment, from)?;
+    environment.summary.revision = environment.summary.revision.next();
+    tx.execute(
+        "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
+        &[
+            revision_param(environment.summary.revision)?.into(),
+            serde_json::to_string(&environment.working)
+                .expect("Working State is JSON")
+                .as_str()
+                .into(),
+            environment.summary.id.as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Validate a complete authored candidate using the same rules as a Working write.
+/// Refreshes its live names without persisting a revision.
+pub(crate) fn validate_working_from(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+    from: Option<&SavedEnvironmentIntent>,
+) -> Result<(), RpcError> {
     let document = serde_json::to_value(&environment.working).expect("Working State is JSON");
     environment.working = parse_environment_intent(document)
         .map_err(|error| error::invalid(error.message, json!({ "path": error.path })))?;
@@ -553,18 +576,6 @@ pub(crate) fn save_working_from(
             live: &environment.live,
             setup: &setup,
         },
-    )?;
-    environment.summary.revision = environment.summary.revision.next();
-    tx.execute(
-        "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
-        &[
-            revision_param(environment.summary.revision)?.into(),
-            serde_json::to_string(&environment.working)
-                .expect("Working State is JSON")
-                .as_str()
-                .into(),
-            environment.summary.id.as_str().into(),
-        ],
     )?;
     Ok(())
 }

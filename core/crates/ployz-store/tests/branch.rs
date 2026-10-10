@@ -810,6 +810,7 @@ fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
             &who,
             &ployz_store::Discard {
                 environment: at("fix-web"),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(ployz_store::SettingPath::parse("web.configs.sentinel").unwrap()),
                 version: None,
             },

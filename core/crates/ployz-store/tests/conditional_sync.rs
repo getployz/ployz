@@ -143,6 +143,7 @@ fn publish(store: &ConfigStore, who: &Actor, environment: &str) {
             &Command::Publish(Publish {
                 environment: at(environment),
                 version: None,
+                message: None,
                 accept_volume_loss: Vec::new(),
             }),
         )
@@ -734,6 +735,7 @@ fn discarding_a_staged_landed_row_offers_it_again() {
             &who,
             &Discard {
                 environment: at("production"),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse("web.env.MODE").unwrap()),
                 version: None,
             },

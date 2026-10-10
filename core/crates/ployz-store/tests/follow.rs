@@ -173,6 +173,7 @@ fn discard(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {
             who,
             &Discard {
                 environment: at(environment),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -538,6 +539,7 @@ fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
             }),
             BatchCommand::Discard(Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: Some(version),
             }),
@@ -570,6 +572,7 @@ fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
     let publish = Publish {
         environment: at("fix-web"),
         version: Some(diff(&store, &who, "fix-web").version),
+        message: None,
         accept_volume_loss: Vec::new(),
     };
     store

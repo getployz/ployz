@@ -94,6 +94,7 @@ fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Pu
         &Publish {
             environment: EnvironmentRef::default(),
             version: version.map(Into::into),
+            message: None,
             accept_volume_loss: Vec::new(),
         },
         &Trusted::default(),
@@ -110,6 +111,7 @@ fn discard(
         who,
         &Discard {
             environment: EnvironmentRef::default(),
+            target: ployz_store::DiscardTarget::Head,
             path: path.map(|path| SettingPath::parse(path).unwrap()),
             version: version.map(Into::into),
         },
@@ -253,27 +255,27 @@ fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets()
         Some(Value::Null)
     );
     assert!(changed(&store, &who, "web").is_empty());
-    // Published with the edit, a discard resets Saved State too.
+    // A saved edit is reversed only in Working State until the next Save.
     set(&store, &who, "web.replicas", json!(4));
     publish(&store, &who, None).unwrap();
     assert_eq!(changed(&store, &who, "web"), ["web.replicas"]);
     let discarded = discard(&store, &who, Some("web.replicas"), None).unwrap();
-    assert_eq!(discarded.saved, Some(Revision(3)));
+    assert_eq!(discarded.saved, Some(Revision(2)));
     assert_eq!(value(&store, &who, "web.replicas"), Some(json!(1)));
     let view = diff(&store, &who);
-    assert!(view.published);
+    assert!(!view.published);
     assert!(changed(&store, &who, "web").is_empty());
 }
 
 #[test]
-fn discarding_a_new_service_removes_it_from_working_and_saved_state() {
+fn discarding_a_new_service_removes_only_working_state() {
     let (store, who) = shop();
     publish(&store, &who, None).unwrap();
     let discarded = discard(&store, &who, Some("web"), None).unwrap();
-    assert_eq!(discarded.saved, Some(Revision(2)));
+    assert_eq!(discarded.saved, Some(Revision(1)));
     assert_eq!(value(&store, &who, "web.image"), None);
     let view = diff(&store, &who);
-    assert!(view.published);
+    assert!(!view.published);
     assert_eq!(
         view.changes
             .iter()
@@ -288,14 +290,15 @@ fn discarding_everything_returns_to_head() {
     let (store, who) = shop();
     publish(&store, &who, None).unwrap();
     let discarded = discard(&store, &who, None, None).unwrap();
-    assert_eq!(discarded.saved, Some(Revision(2)));
+    assert_eq!(discarded.saved, Some(Revision(1)));
     assert!(working(&store, &who).is_empty());
     let view = diff(&store, &who);
-    assert!(view.changes.is_empty() && view.published);
+    assert!(view.changes.is_empty() && !view.published);
+    assert_eq!(view.draft_count, 2);
     // Nothing left to discard keeps the revision.
     let again = discard(&store, &who, None, None).unwrap();
     assert_eq!(again.environment.revision, discarded.environment.revision);
-    assert_eq!(again.saved, Some(Revision(2)));
+    assert_eq!(again.saved, Some(Revision(1)));
 }
 
 #[test]
@@ -404,7 +407,7 @@ fn discard_keeps_mounts_it_does_not_name() {
 }
 
 #[test]
-fn discarding_a_renamed_config_mount_restores_working_and_saved_state() {
+fn discarding_a_renamed_config_mount_stages_a_reversal() {
     let (store, who) = shop();
     backend::deploy(&store, &who, "production", 1);
     store
@@ -437,7 +440,7 @@ fn discarding_a_renamed_config_mount_restores_working_and_saved_state() {
     rename("sentry", "errors");
 
     let discarded = discard(&store, &who, Some("web.configs.errors"), None).unwrap();
-    assert_eq!(discarded.saved, Some(Revision(saved.0 + 1)));
+    assert_eq!(discarded.saved, Some(saved));
     assert_eq!(value(&store, &who, "web.configs.errors"), None);
     let configs = store
         .read(&who, &ployz_store::ConfigsQuery::default())
@@ -449,11 +452,11 @@ fn discarding_a_renamed_config_mount_restores_working_and_saved_state() {
     assert!(!diff(&store, &who).published);
 
     rename("errors", "sentry");
-    assert!(diff(&store, &who).published);
+    assert!(!diff(&store, &who).published);
 }
 
 #[test]
-fn discarding_a_variable_or_its_export_restores_working_and_saved_state() {
+fn discarding_a_variable_or_its_export_stages_a_reversal() {
     let (store, who) = shop();
     set(&store, &who, "web.env.KEY", json!("old"));
     backend::deploy(&store, &who, "production", 1);
@@ -467,13 +470,14 @@ fn discarding_a_variable_or_its_export_restores_working_and_saved_state() {
         Some(json!(false))
     );
     assert_eq!(value(&store, &who, "web.env.KEY"), Some(json!("new")));
-    assert!(diff(&store, &who).published);
+    assert!(!diff(&store, &who).published);
 
     discard(&store, &who, Some("web.env.KEY"), None).unwrap();
     assert_eq!(value(&store, &who, "web.env.KEY"), Some(json!("old")));
     let view = diff(&store, &who);
     assert!(view.changes.is_empty());
-    assert!(view.published);
+    assert!(!view.published);
+    assert_eq!(view.draft_count, 1);
 }
 
 /// A row of a compound Setting discards that Setting: a healthcheck's path edit
@@ -509,4 +513,275 @@ fn a_compound_settings_row_discards_that_setting() {
     }
     assert!(diff(&store, &who).changes.is_empty());
     assert_eq!(value(&store, &who, "api.image"), Some(json!("caddy:2")));
+}
+
+#[test]
+fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
+    let (store, mut who) = shop();
+    who.principal = Some(ployz_store::Principal::parse("Ada Lovelace").unwrap());
+    let save = |message: &str| {
+        store
+            .write_trusted(
+                &who,
+                &Publish {
+                    message: Some(message.into()),
+                    ..Publish::default()
+                },
+                &Trusted::default(),
+            )
+            .unwrap()
+    };
+    assert!(save("  First version  ").created);
+    let before = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    assert_eq!(
+        before.revisions[0].message.as_deref(),
+        Some("First version")
+    );
+    assert_eq!(before.revisions[0].saved_by, who.principal);
+    assert!(before.revisions[0].saved_at.is_some());
+    assert_eq!(before.revisions[0].predecessor, None);
+    assert!(!save("A duplicate must not replace the message").created);
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap(),
+        before
+    );
+    discard(&store, &who, Some("web"), None).unwrap();
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions,
+        before.revisions
+    );
+}
+
+#[test]
+fn history_restore_previews_exact_overwrites_and_refuses_stale_confirmation() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(2));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(5));
+    set(&store, &who, "api.startCommand", json!("keep"));
+    let query = ployz_store::HistoryPreviewQuery {
+        environment: EnvironmentRef::default(),
+        revision: Revision(1),
+        action: ployz_store::HistoryAction::Restore,
+    };
+    let preview = store.read(&who, &query).unwrap();
+    assert_eq!(preview.overwritten, ["api.startCommand", "web.replicas"]);
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(5)));
+    let command = ployz_store::StageHistory {
+        environment: EnvironmentRef::default(),
+        revision: query.revision,
+        action: query.action,
+        version: preview.version,
+        accept_overwrite: false,
+    };
+    let error = store.write(&who, &command).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(5)));
+    set(&store, &who, "web.replicas", json!(6));
+    let error = store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                accept_overwrite: true,
+                ..command
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    let fresh = store.read(&who, &query).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: query.revision,
+                action: query.action,
+                version: fresh.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(1)));
+    assert_eq!(diff(&store, &who).saved, Some(Revision(2)));
+}
+
+#[test]
+fn history_undo_stages_only_its_delta_and_preserves_later_unrelated_edits() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(4));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "api.startCommand", json!("keep"));
+    let query = ployz_store::HistoryPreviewQuery {
+        environment: EnvironmentRef::default(),
+        revision: Revision(2),
+        action: ployz_store::HistoryAction::Undo,
+    };
+    let preview = store.read(&who, &query).unwrap();
+    assert!(preview.overwritten.is_empty());
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: query.revision,
+                action: query.action,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(1)));
+    assert_eq!(value(&store, &who, "api.startCommand"), Some(json!("keep")));
+    assert_eq!(diff(&store, &who).saved, Some(Revision(2)));
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions
+            .len(),
+        2
+    );
+    let error = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                revision: Revision(1),
+                ..query
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+}
+
+#[test]
+fn discard_inverse_returns_to_saved_without_history_and_save_records_reversal() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    set(&store, &who, "web.replicas", json!(3));
+    let saved = publish(&store, &who, None).unwrap().saved;
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    discard(&store, &who, Some("web.replicas"), None).unwrap();
+    let reversed = diff(&store, &who);
+    assert_eq!(reversed.total_count, 0);
+    assert_eq!(reversed.draft_count, 1);
+    assert_eq!(
+        reversed.review_changes()[0].settings[0].path,
+        "web.replicas"
+    );
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Saved,
+                path: Some(SettingPath::parse("web.replicas").unwrap()),
+                version: Some(reversed.version),
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(3)));
+    assert_eq!(diff(&store, &who).draft_count, 0);
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions,
+        history.revisions
+    );
+    discard(&store, &who, Some("web.replicas"), None).unwrap();
+    assert_eq!(diff(&store, &who).saved, saved);
+    assert!(publish(&store, &who, None).unwrap().created);
+    assert_eq!(diff(&store, &who).draft_count, 0);
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions
+            .len(),
+        history.revisions.len() + 1
+    );
+}
+
+#[test]
+fn discard_review_restores_mixed_runtime_and_inverse_rows_once() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    set(&store, &who, "web.replicas", json!(3));
+    publish(&store, &who, None).unwrap();
+    discard(&store, &who, Some("web.replicas"), None).unwrap();
+    set(&store, &who, "web.startCommand", json!("runtime change"));
+    let before = diff(&store, &who);
+    assert_eq!(before.total_count, 1);
+    assert_eq!(before.review_changes()[0].settings.len(), 2);
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    let written = store
+        .write(
+            &who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Review,
+                version: Some(before.version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert!(written.changed);
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(3)));
+    assert_eq!(value(&store, &who, "web.startCommand"), Some(Value::Null));
+    assert_eq!(diff(&store, &who).draft_count, 0);
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions,
+        history.revisions
+    );
+}
+
+#[test]
+fn discard_review_whole_runtime_node_dominates_draft_children() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(3));
+    let before = diff(&store, &who);
+    assert_eq!(before.review_changes().len(), 2);
+    assert_eq!(
+        before.review_changes()[0].lifecycle,
+        ReviewLifecycleKind::Create
+    );
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Review,
+                version: Some(before.version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert!(working(&store, &who).is_empty());
+    assert_eq!(diff(&store, &who).total_count, 0);
+    assert!(diff(&store, &who).draft_count > 0);
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions,
+        history.revisions
+    );
 }

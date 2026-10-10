@@ -84,6 +84,7 @@ fn shop() -> (ConfigStore, Actor) {
             &ployz_store::Command::Publish(ployz_store::Publish {
                 environment: EnvironmentRef::default(),
                 version: None,
+                message: None,
                 accept_volume_loss: Vec::new(),
             }),
         )
@@ -763,6 +764,7 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
             &ployz_store::Command::Publish(ployz_store::Publish {
                 environment: at("qa"),
                 version: None,
+                message: None,
                 accept_volume_loss: Vec::new(),
             }),
         )

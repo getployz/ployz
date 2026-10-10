@@ -14,6 +14,7 @@ pub use crate::deployment::query::{
     NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView,
 };
 pub use crate::review::diff::DiffQuery;
+pub use crate::review::history::{HistoryPreview, HistoryPreviewQuery, HistoryQuery, HistoryView};
 pub use crate::service::query::{
     ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
 };
@@ -133,6 +134,10 @@ queries! {
         => crate::settings::query::environment(tx, who, q);
     /// What Publish would save and Deploy would apply.
     Diff(DiffQuery) -> crate::DiffView => crate::review::diff::diff(tx, who, q);
+    /// Immutable Saved revisions and their redacted summaries.
+    History(HistoryQuery) -> HistoryView => crate::review::history::history(tx, who, q);
+    /// What Restore or Undo would stage and overwrite in the draft.
+    HistoryPreview(HistoryPreviewQuery) -> HistoryPreview => crate::review::history::preview(tx, who, q);
     /// What a Deploy would ship, from authored state alone.
     Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, q);
     /// One page of an Environment's Deployments.
