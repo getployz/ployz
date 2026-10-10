@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "0c2094b5-3066-4f2b-9fda-6cb2c9f7938b",
+  "id": "e2081788-c89b-4c7a-9125-08f257366983",
   "prevIds": [
-    "a9131837-0ef7-4169-b5e9-a4967d29bd5b"
+    "ff9436c3-c43d-4abe-a540-30c3a87f9015"
   ],
   "ddl": [
     {
@@ -5665,7 +5665,7 @@
       "table": "server_upgrade_attempt"
     },
     {
-      "value": "\"kind\" in ('mirror','sync','delete_mirror')",
+      "value": "\"kind\" in ('mirror','sync','delete_mirror','move','release')",
       "name": "volume_run_kind_check",
       "entityType": "checks",
       "schema": "public",
