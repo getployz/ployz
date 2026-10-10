@@ -323,9 +323,13 @@ _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. Unless it is a Kept Branch, it may close once it syncs into its Parent, and closes on its own a week after its latest Deployment. Branching rules are pure authored-configuration rules, the same for every client.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch
 
-**Conditional Sync**:
-A PR Environment's Sync into one of its Destinations that goes live with its pull request's merge; a Sync from it into any other Environment stages now. It keeps what landing needs, sealed secrets and registry credentials included, so it lands even once the PR Environment is gone. Where the Destination changed a row too, the pull request's value lands only as a hint, which a take stages. The author's own edits to the PR Environment, or a new target Git branch, withdraw it; what the PR Environment follows from its Parent doesn't.
-_Avoid_: Approval, deferred sync, Conditional Save
+**Offer**:
+A PR Environment's Sync into one of its Destinations: its changes wait there, outside the Destination's changes, until someone there Includes them; a Sync from it into any other Environment stages now. It keeps what Include needs, sealed secrets included, so it outlives the PR Environment. A merge, close or retarget never saves it or drops it; it only changes the pull request's Readiness. Included, its changes are the Destination's changes to deploy, and Save and Deploy refuse until the pull request is Ready. On the wire it keeps the older name: `ConditionalSync`, `at_merge`.
+_Avoid_: Conditional Sync, approval, deferred sync, Conditional Save
+
+**Readiness**:
+Where an offered or included pull request stands for the Environment it was synced into: Awaits (still open), Ready (merged into a Git branch that Environment deploys), Closed (closed without merging) or Elsewhere (merged into a Git branch it doesn't deploy). Only Ready lets Save and Deploy take its changes.
+_Avoid_: Merged, landed, mergeable
 
 **Parent**:
 The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.
