@@ -12,9 +12,8 @@ bollard = { version = "0.21.0", features = ["json_data_content"] }
 bytes = "1.12.1"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
-defguard_wireguard_rs = "=0.7.1"
-# 0.2.4 mixes incompatible netlink-packet-generic major versions with defguard 0.7.
-netlink-packet-wireguard = "=0.2.3"
+defguard_wireguard_rs = "=0.8.0"
+netlink-packet-wireguard = "=0.2.4"
 fs2 = "0.4.3"
 futures-util = { version = "0.3.34", features = ["sink"] }
 hickory-server = "0.26.1"
@@ -34,9 +33,10 @@ ployz-build.workspace = true
 rcgen = "0.14.6"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls", "stream"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
-sd-notify = "0.5.0"
+sd-notify = { version = "0.5.0", features = ["fdstore"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+socket2 = "0.6.5"
 sha2 = "0.11.0"
 thiserror = "2.0.20"
 tempfile = "3.27.0"
@@ -54,6 +54,7 @@ x509-parser = "0.18.1"
 verify-faults = []
 
 [dev-dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http2"] }
 base64 = "0.22.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }
 ployz = { path = "../ployz" }

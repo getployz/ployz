@@ -26,15 +26,15 @@ use tonic::transport::Server;
 use crate::{
     certificates,
     corrosion::{
-        CorrosionConfig, DEFAULT_CONTAINER_NAME, Error as CorrosionError, MachineView,
-        RunningCorrosion, run_machine_publisher,
+        CorrosionConfig, CorrosionPaths, DEFAULT_CONTAINER_NAME, Error as CorrosionError,
+        MachineView, RunningCorrosion, remove_retained, run_machine_publisher,
     },
-    dns,
+    dns::{DnsService, DnsSupervision},
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     ingress,
     machine::{
-        LocalMachineBody, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped,
-        StoreError,
+        InterruptedReset, LocalMachineBody, LocalMachineRecord, LocalMachineStore, Opened,
+        RecordOwner, RecordOwnerStopped, StoreError,
     },
     machine_api::MachineApi,
     machine_api_socket::MachineApiSocket,
@@ -56,6 +56,7 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     pub socket: PathBuf,
     pub dns_upstreams: Vec<SocketAddr>,
+    pub dns: DnsSupervision,
     pub machine_api_address: Option<SocketAddr>,
     pub containerd_socket: Option<PathBuf>,
     /// Volume plugin socket; None uses the Docker plugin socket.
@@ -71,6 +72,7 @@ pub struct Daemon {
     shutdown: CancellationToken,
     local: RecordOwner,
     corrosion: Option<RunningCorrosion>,
+    dns: DnsService,
     ingest: Arc<ImageIngest>,
     restart_requested: watch::Receiver<bool>,
     servers: JoinHandle<io::Result<()>>,
@@ -94,6 +96,29 @@ pub enum Error {
     Transport(#[from] tonic::transport::Error),
     #[error(transparent)]
     RecordOwner(#[from] RecordOwnerStopped),
+}
+
+impl Error {
+    /// Startup refused a conflict only the operator can resolve, so starting
+    /// again fails the same way until they act.
+    #[must_use]
+    pub fn needs_operator(&self) -> bool {
+        matches!(
+            self,
+            Self::Network(
+                NetworkError::DockerNetworkConflict { .. } | NetworkError::WireGuardConflict { .. }
+            )
+        )
+    }
+}
+
+/// Closes every connection queued on the nonblocking `listener` when startup
+/// refused a conflict. Left queued, each would have `ployz.socket` start the
+/// daemon again at once, only for it to refuse again until systemd's start limit.
+fn close_queued_if_refused(listener: &std::os::unix::net::UnixListener, error: &Error) {
+    if error.needs_operator() {
+        while listener.accept().is_ok() {}
+    }
 }
 
 impl Daemon {
@@ -127,10 +152,33 @@ impl Daemon {
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
-        let local = RecordOwner::spawn(LocalMachineStore::open_with_admission(
-            &config.data_dir,
-            run_dir,
-        )?)?;
+        let queued = socket.listener.try_clone()?;
+        let started = Self::start_planes(config, socket, build_policy, run_dir).await;
+        if let Err(error) = &started {
+            close_queued_if_refused(&queued, error);
+        }
+        started
+    }
+
+    async fn start_planes(
+        config: DaemonConfig,
+        socket: MachineApiSocket,
+        build_policy: ployz_build::HostPolicy,
+        run_dir: PathBuf,
+    ) -> Result<Self, Error> {
+        let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
+            Opened::Ready(store) => store,
+            Opened::Resetting(interrupted) => {
+                let record = interrupted.record().clone();
+                finish_interrupted_reset(
+                    interrupted,
+                    NetworkPlane::cleanup_retained(&record),
+                    remove_retained(&CorrosionPaths::under(&config.data_dir, &run_dir).run_dir),
+                )
+                .await?
+            }
+        };
+        let local = RecordOwner::spawn(store)?;
         let cleanup = tokio::task::spawn_blocking({
             let policy = build_policy.clone();
             move || ployz_build::Admission::cleanup_abandoned(&policy)
@@ -147,6 +195,15 @@ impl Daemon {
         let local_id = local_record.id();
         let local_phase = local_record.phase();
         let local_machine = local_record.machine().cloned();
+        let dns = DnsService::start(
+            config.dns,
+            &config.data_dir,
+            &run_dir,
+            &config.socket,
+            config.dns_upstreams.clone(),
+            &local_record,
+        )
+        .await?;
         let mut network = NetworkPlane::start(&local_record).await?;
         let machine_api_listener = match config
             .machine_api_address
@@ -161,8 +218,6 @@ impl Daemon {
             }
             None => None,
         };
-        let dns_upstreams =
-            (!config.dns_upstreams.is_empty()).then(|| config.dns_upstreams.clone());
         let containers = match config.containers {
             ContainerMode::Absent => None,
             ContainerMode::Auto => {
@@ -181,7 +236,6 @@ impl Daemon {
         };
         let corrosion = start_corrosion(&config, &local).await?;
         let replicated_store = corrosion.as_ref().map(|running| running.store().clone());
-        let admin = corrosion.as_ref().map(RunningCorrosion::admin_client);
         let plugin = config
             .volume_plugin_socket
             .clone()
@@ -201,6 +255,7 @@ impl Daemon {
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
         let records = local.watch();
+        let dns_service = dns.clone();
         let restart_requested = local.restart_requested();
         let certificate_data_dir = config.data_dir.clone();
         let acme_directory = certificates::directory_url();
@@ -292,33 +347,7 @@ impl Daemon {
                     }
                 }
             };
-            let dns = async {
-                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
-                    return Ok(());
-                }
-                match (
-                    local_machine.clone(),
-                    replicated_store.clone(),
-                    machine_view.clone(),
-                    admin,
-                ) {
-                    (Some(machine), Some(replicated), Some(machines), Some(admin)) => {
-                        dns::run(
-                            machine,
-                            replicated,
-                            machines,
-                            admin,
-                            dns_upstreams,
-                            shutdown.clone(),
-                        )
-                        .await
-                    }
-                    _ => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
-                }
-            };
+            let dns = dns_service.run(records.clone(), shutdown.clone());
             let ingress = async {
                 if !wait_for_participation(records.clone(), shutdown.clone()).await? {
                     return Ok(());
@@ -384,6 +413,7 @@ impl Daemon {
             shutdown,
             local,
             corrosion,
+            dns,
             ingest,
             restart_requested,
             servers,
@@ -448,34 +478,38 @@ impl Daemon {
         self.shutdown.cancel();
         // Reset must not wait for active Machine API connections.
         // CLI wait_phase has 60s to see Uninitialized after systemd restarts us.
-        let server_result = stop_servers(
-            completed_servers,
-            &mut servers,
-            (!resetting).then_some(SERVER_DRAIN),
-        )
-        .await;
+        let (server_result, ()) = tokio::join!(
+            stop_servers(
+                completed_servers,
+                &mut servers,
+                (!resetting).then_some(SERVER_DRAIN),
+            ),
+            self.dns.stopping(resetting),
+        );
         if let Err(error) = server_result {
             errors.push(ployz_core::error_chain::inline(&error));
         }
 
-        if let Some(running) = &mut self.corrosion {
-            let result = if resetting {
-                running.cleanup().await
-            } else {
-                running.stop().await
-            };
-            if let Err(error) = result {
-                errors.push(ployz_core::error_chain::inline(&error));
-            }
-        }
         if let Err(error) = self.ingest.shutdown().await {
             errors.push(ployz_core::error_chain::inline(&error));
         }
         if resetting {
-            match self.local.mutate(|store| store.complete_reset()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => errors.push(ployz_core::error_chain::inline(&error)),
-                Err(error) => errors.push(ployz_core::error_chain::inline(&error)),
+            let corrosion = self.corrosion.as_mut();
+            let removal = async {
+                match corrosion {
+                    Some(running) => running.cleanup().await,
+                    None => Ok(()),
+                }
+            };
+            let record = self.local.record();
+            if let Err(error) = finish_reset(
+                &self.local,
+                NetworkPlane::cleanup_retained(&record),
+                removal,
+            )
+            .await
+            {
+                errors.push(ployz_core::error_chain::inline(&error));
             }
         }
         // Admitted work is detached from its RPC and outlives the server drain. Give
@@ -616,6 +650,26 @@ async fn serve_volume_send(
     }
 }
 
+async fn finish_interrupted_reset(
+    interrupted: InterruptedReset,
+    remove_network: impl Future<Output = Result<(), NetworkError>>,
+    remove_corrosion: impl Future<Output = Result<(), CorrosionError>>,
+) -> Result<LocalMachineStore, Error> {
+    remove_network.await?;
+    remove_corrosion.await?;
+    Ok(interrupted.complete()?)
+}
+
+async fn finish_reset(
+    local: &RecordOwner,
+    remove_network: impl Future<Output = Result<(), NetworkError>>,
+    remove_corrosion: impl Future<Output = Result<(), CorrosionError>>,
+) -> Result<(), Error> {
+    remove_network.await?;
+    remove_corrosion.await?;
+    Ok(local.mutate(|store| store.complete_reset()).await??)
+}
+
 async fn start_corrosion(
     config: &DaemonConfig,
     local: &RecordOwner,
@@ -631,8 +685,8 @@ async fn start_corrosion(
     let run_dir = config
         .socket
         .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?
-        .join("corrosion");
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent"))?;
+    let paths = CorrosionPaths::under(&config.data_dir, run_dir);
     let bootstrap = record.bootstrap().iter().map(|machine| {
         SocketAddr::new(
             IpAddr::V6(machine.management_address().0),
@@ -643,8 +697,8 @@ async fn start_corrosion(
     let _extend = extend_systemd_start_timeout();
     Ok(Some(
         CorrosionConfig::new(
-            config.data_dir.join("corrosion"),
-            run_dir,
+            paths.data_dir,
+            paths.run_dir,
             SocketAddr::from((Ipv4Addr::LOCALHOST, CORROSION_API_PORT)),
             SocketAddr::new(
                 IpAddr::V6(machine.management_address().0),
@@ -735,12 +789,13 @@ fn extend_systemd_start_timeout() -> SystemdStartTimeoutExtend {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        fs, io,
         path::{Path, PathBuf},
     };
 
     use tokio::net::UnixListener;
 
+    use crate::dns::DnsSupervision;
     use ployz_core::{
         CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
         LIST_CONTAINERS_CAPABILITY, MachineRpcClient, ResetRequest, op,
@@ -748,8 +803,10 @@ mod tests {
     use tonic::transport::Endpoint;
 
     use super::{
-        ContainerMode, Daemon, DaemonConfig, MachineApiSocket, ManagementConfig,
-        wait_for_participation, wait_until_socket_accepts,
+        ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
+        LocalMachineStore, MachineApiSocket, ManagementConfig, NetworkError, Opened, StoreError,
+        close_queued_if_refused, finish_interrupted_reset, finish_reset, wait_for_participation,
+        wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -762,6 +819,7 @@ mod tests {
                 data_dir: root.join("data"),
                 socket: socket.clone(),
                 dns_upstreams: Vec::new(),
+                dns: DnsSupervision::External,
                 machine_api_address: None,
                 containerd_socket: None,
                 volume_plugin_socket: None,
@@ -863,6 +921,47 @@ mod tests {
         daemon.wait().await.unwrap();
     }
 
+    #[test]
+    fn a_refused_start_closes_queued_connections_and_a_failed_one_keeps_them() {
+        use std::{io::Read as _, os::unix::net::UnixStream, time::Duration};
+
+        let root = TestDir::new("ployzd-daemon-refused");
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let claimed = MachineApiSocket::claim(&config.socket).unwrap();
+        let queue = || {
+            let client = UnixStream::connect(&socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .unwrap();
+            client
+        };
+        let refusals = [
+            NetworkError::WireGuardConflict {
+                reason: "unrelated identity",
+                recovery: "recovery",
+            },
+            NetworkError::DockerNetworkConflict {
+                expected: String::new(),
+                observed: String::new(),
+                reason: "containers are attached".to_owned(),
+                recovery: "recovery",
+            },
+        ];
+
+        let mut kept = queue();
+        close_queued_if_refused(&claimed.listener, &Error::Io(io::Error::other("transient")));
+        assert!(
+            kept.read(&mut [0; 1]).is_err(),
+            "a transient failure leaves the connection for the next start"
+        );
+        for refusal in refusals {
+            let mut refused = queue();
+            close_queued_if_refused(&claimed.listener, &Error::Network(refusal));
+            assert_eq!(refused.read(&mut [0; 1]).unwrap(), 0);
+        }
+        assert_eq!(kept.read(&mut [0; 1]).unwrap(), 0);
+    }
+
     #[tokio::test]
     async fn absent_containers_start_without_container_capabilities() {
         let root = TestDir::new("ployzd-daemon-absent");
@@ -896,6 +995,7 @@ mod tests {
             data_dir: root.0.join("data-a"),
             socket: socket.clone(),
             dns_upstreams: Vec::new(),
+            dns: DnsSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,
@@ -908,6 +1008,7 @@ mod tests {
             data_dir: root.0.join("data-b"),
             socket,
             dns_upstreams: Vec::new(),
+            dns: DnsSupervision::External,
             machine_api_address: None,
             containerd_socket: None,
             volume_plugin_socket: None,
@@ -977,6 +1078,162 @@ mod tests {
             .expect("reset shutdown must not wait on a held Machine API connection")
             .unwrap();
         assert!(!data_dir.exists());
+    }
+
+    fn interrupted_reset(data_dir: &Path) -> (ployz_core::MachineId, InterruptedReset) {
+        let mut store = LocalMachineStore::open(data_dir).unwrap();
+        let id = store.record().id();
+        store.begin_reset().unwrap();
+        drop(store);
+        match LocalMachineStore::open_with_admission(data_dir, data_dir.join(".run")).unwrap() {
+            Opened::Resetting(interrupted) => (id, interrupted),
+            Opened::Ready(_) => panic!("a begun reset must reopen as Resetting"),
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_reset_removes_corrosion_before_clearing_the_data_dir() {
+        let root = TestDir::new("ployzd-interrupted-reset");
+        let data_dir = root.0.join("data");
+        let (old_id, interrupted) = interrupted_reset(&data_dir);
+        let machine_json = data_dir.join("machine.json");
+
+        let store = finish_interrupted_reset(
+            interrupted,
+            async {
+                assert!(
+                    machine_json.exists(),
+                    "networking is removed before the record"
+                );
+                Ok(())
+            },
+            async {
+                assert!(
+                    machine_json.exists(),
+                    "Corrosion is removed before the record"
+                );
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_ne!(store.record().id(), old_id);
+        assert_eq!(
+            store.record().phase(),
+            ployz_core::LocalMachinePhase::Uninitialized
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_network_removal_keeps_interrupted_reset_identity_for_retry() {
+        let root = TestDir::new("ployzd-interrupted-network-reset-retry");
+        let data_dir = root.0.join("data");
+        let (old_id, interrupted) = interrupted_reset(&data_dir);
+        let result = finish_interrupted_reset(
+            interrupted,
+            async {
+                Err(NetworkError::WireGuardConflict {
+                    reason: "unrelated identity",
+                    recovery: "recovery",
+                })
+            },
+            async { Ok(()) },
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Network(_))));
+        let record: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(record.id(), old_id);
+        assert_eq!(record.phase(), ployz_core::LocalMachinePhase::Resetting);
+        let Opened::Resetting(interrupted) =
+            LocalMachineStore::open_with_admission(&data_dir, data_dir.join(".run")).unwrap()
+        else {
+            panic!("network cleanup failure must remain retryable");
+        };
+        let store = finish_interrupted_reset(
+            interrupted,
+            async {
+                assert!(data_dir.join("machine.json").exists());
+                Ok(())
+            },
+            async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_ne!(store.record().id(), old_id);
+        assert_eq!(
+            store.record().phase(),
+            ployz_core::LocalMachinePhase::Uninitialized
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_network_removal_keeps_live_reset_identity_for_retry() {
+        let root = TestDir::new("ployzd-live-network-reset-retry");
+        let data_dir = root.0.join("data");
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        let old_id = store.record().id();
+        store.begin_reset().unwrap();
+        let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+        let result = finish_reset(
+            &owner,
+            async {
+                Err(NetworkError::Io(io::Error::other(
+                    "Docker network still attached",
+                )))
+            },
+            async { Ok(()) },
+        )
+        .await;
+        assert!(matches!(result, Err(Error::Network(_))));
+        let record: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(record.id(), old_id);
+        assert_eq!(record.phase(), ployz_core::LocalMachinePhase::Resetting);
+    }
+
+    #[tokio::test]
+    async fn failed_corrosion_removal_keeps_the_reset_for_retry() {
+        let root = TestDir::new("ployzd-interrupted-reset-retry");
+        let data_dir = root.0.join("data");
+        let (old_id, interrupted) = interrupted_reset(&data_dir);
+
+        let result = finish_interrupted_reset(interrupted, async { Ok(()) }, async {
+            Err(CorrosionError::Api("docker unavailable".into()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Corrosion(_))));
+        assert!(matches!(
+            LocalMachineStore::open(&data_dir),
+            Err(StoreError::ResetInterrupted(_))
+        ));
+        let persisted: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(persisted.id(), old_id);
+        assert_eq!(persisted.phase(), ployz_core::LocalMachinePhase::Resetting);
+    }
+
+    #[tokio::test]
+    async fn failed_corrosion_removal_keeps_a_live_reset_for_retry() {
+        let root = TestDir::new("ployzd-live-reset-retry");
+        let data_dir = root.0.join("data");
+        let mut store = LocalMachineStore::open(&data_dir).unwrap();
+        let old_id = store.record().id();
+        store.begin_reset().unwrap();
+        let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+
+        let result = finish_reset(&owner, async { Ok(()) }, async {
+            Err(CorrosionError::Api("docker unavailable".into()))
+        })
+        .await;
+
+        assert!(matches!(result, Err(Error::Corrosion(_))));
+        let persisted: crate::machine::LocalMachineRecord =
+            serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
+        assert_eq!(persisted.id(), old_id);
+        assert_eq!(persisted.phase(), ployz_core::LocalMachinePhase::Resetting);
     }
 
     #[tokio::test]

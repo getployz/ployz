@@ -1,4 +1,7 @@
-use std::process::Command;
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 use ployz_core::{MANAGEMENT_PORT, MachineSubnet, ManagementAddress, VOLUME_SEND_PORT};
 
@@ -14,6 +17,10 @@ const INPUT_CHAIN: &str = "PLOYZ-INPUT";
 /// Apply the Machine's ingress and forwarding policy, including the private
 /// Machine API, Direct Image Transfer and Volume send endpoints on `management_address`.
 ///
+/// Each address family's policy lands in one restore transaction, so a running
+/// Machine never passes through a state that admits less or more than either the
+/// old policy or the new one.
+///
 /// # Errors
 ///
 /// Returns an error when an iptables command cannot be executed or rejects a
@@ -22,151 +29,28 @@ pub fn apply_firewall_rules(
     subnet: MachineSubnet,
     management_address: ManagementAddress,
 ) -> Result<(), NetworkError> {
-    for program in ["iptables", "ip6tables"] {
-        ensure_chain(program, INPUT_CHAIN)?;
-        replace_first_rule(program, "filter", "INPUT", &["-j", INPUT_CHAIN])?;
-        ensure_rule(
-            program,
-            "filter",
-            INPUT_CHAIN,
-            &[
-                "-p",
-                "udp",
-                "--dport",
-                &WIREGUARD_PORT.to_string(),
-                "-j",
-                "ACCEPT",
-            ],
-        )?;
-        ensure_rule(
-            program,
-            "filter",
-            INPUT_CHAIN,
-            &[
-                "-p",
-                "udp",
-                "--dport",
-                &MANAGEMENT_PORT.to_string(),
-                "-j",
-                "ACCEPT",
-            ],
-        )?;
-    }
+    let gateway = subnet.gateway().0;
+    let dns_port = dns::PORT;
+    let mut ipv4 = mesh_ports();
     for protocol in ["udp", "tcp"] {
-        ensure_rule(
-            "iptables",
-            "filter",
-            INPUT_CHAIN,
-            &[
-                "-i",
-                DOCKER_NETWORK_NAME,
-                "-d",
-                &subnet.gateway().0.to_string(),
-                "-p",
-                protocol,
-                "--dport",
-                &dns::PORT.to_string(),
-                "-j",
-                "ACCEPT",
-            ],
-        )?;
+        ipv4.push(format!(
+            "-i {DOCKER_NETWORK_NAME} -d {gateway} -p {protocol} --dport {dns_port} -j ACCEPT"
+        ));
     }
-    // Rules are inserted at the top, so these drops sit below the WireGuard
-    // and loopback accepts added after them.
-    let management_destination = format!("{}/128", management_address.0);
-    for port in [MACHINE_API_PORT, UNREGISTRY_PORT, VOLUME_SEND_PORT] {
-        ensure_rule(
-            "ip6tables",
-            "filter",
-            INPUT_CHAIN,
-            &[
-                "-d",
-                &management_destination,
-                "-p",
-                "tcp",
-                "--dport",
-                &port.to_string(),
-                "-j",
-                "DROP",
-            ],
-        )?;
-    }
-    for (protocol, port) in [("tcp", MACHINE_API_PORT), ("udp", CORROSION_GOSSIP_PORT)] {
-        ensure_rule(
-            "ip6tables",
-            "filter",
-            INPUT_CHAIN,
-            &[
-                "-i",
-                WIREGUARD_INTERFACE_NAME,
-                "-s",
-                "fdcc::/16",
-                "-p",
-                protocol,
-                "--dport",
-                &port.to_string(),
-                "-j",
-                "ACCEPT",
-            ],
-        )?;
-    }
-    for port in [UNREGISTRY_PORT, VOLUME_SEND_PORT] {
-        ensure_rule(
-            "ip6tables",
-            "filter",
-            INPUT_CHAIN,
-            &[
-                "-i",
-                WIREGUARD_INTERFACE_NAME,
-                "-s",
-                "fdcc::/16",
-                "-d",
-                &management_destination,
-                "-p",
-                "tcp",
-                "--dport",
-                &port.to_string(),
-                "-j",
-                "ACCEPT",
-            ],
-        )?;
-    }
-    let ingest_port = UNREGISTRY_PORT.to_string();
-    ensure_rule(
-        "ip6tables",
-        "filter",
-        INPUT_CHAIN,
-        &[
-            "-i",
-            "lo",
-            "-s",
-            &management_destination,
-            "-d",
-            &management_destination,
-            "-p",
-            "tcp",
-            "--sport",
-            &ingest_port,
-            "-j",
-            "ACCEPT",
-        ],
+    let mut ipv4_document = filter_document("iptables", &ipv4)?;
+    let nat_moves = move_to_top(
+        "iptables",
+        "nat",
+        "POSTROUTING",
+        &format!("-s {subnet} -o {WIREGUARD_INTERFACE_NAME} -j RETURN"),
     )?;
-    ensure_rule(
+    if !nat_moves.is_empty() {
+        ipv4_document.push_str(&format!("*nat\n{nat_moves}COMMIT\n"));
+    }
+    restore("iptables", &ipv4_document)?;
+    restore(
         "ip6tables",
-        "filter",
-        INPUT_CHAIN,
-        &[
-            "-i",
-            "lo",
-            "-d",
-            &management_destination,
-            "-p",
-            "tcp",
-            "--dport",
-            &ingest_port,
-            "-j",
-            "ACCEPT",
-        ],
+        &filter_document("ip6tables", &management_policy(management_address))?,
     )?;
     ensure_rule(
         "iptables",
@@ -180,20 +64,108 @@ pub fn apply_firewall_rules(
             "-j",
             "ACCEPT",
         ],
-    )?;
-    let nat_rule = [
-        "-s",
-        &subnet.to_string(),
-        "-o",
-        WIREGUARD_INTERFACE_NAME,
-        "-j",
-        "RETURN",
-    ];
-    delete_rule("iptables", "nat", "POSTROUTING", &nat_rule)?;
-    let mut insert = vec!["-t", "nat", "-I", "POSTROUTING", "1"];
-    insert.extend(nat_rule);
-    checked_command("iptables", &insert)?;
-    Ok(())
+    )
+}
+
+fn mesh_ports() -> Vec<String> {
+    [WIREGUARD_PORT, MANAGEMENT_PORT]
+        .into_iter()
+        .map(|port| format!("-p udp --dport {port} -j ACCEPT"))
+        .collect()
+}
+
+/// Accepts come first: the drops close the management ports to everything the
+/// accepts don't name.
+fn management_policy(management_address: ManagementAddress) -> Vec<String> {
+    let management = format!("{}/128", management_address.0);
+    let mut rules = mesh_ports();
+    for (protocol, port) in [("tcp", MACHINE_API_PORT), ("udp", CORROSION_GOSSIP_PORT)] {
+        rules.push(format!(
+            "-i {WIREGUARD_INTERFACE_NAME} -s fdcc::/16 -p {protocol} --dport {port} -j ACCEPT"
+        ));
+    }
+    for port in [UNREGISTRY_PORT, VOLUME_SEND_PORT] {
+        rules.push(format!(
+            "-i {WIREGUARD_INTERFACE_NAME} -s fdcc::/16 -d {management} -p tcp --dport {port} -j ACCEPT"
+        ));
+    }
+    rules.push(format!(
+        "-i lo -s {management} -d {management} -p tcp --sport {UNREGISTRY_PORT} -j ACCEPT"
+    ));
+    rules.push(format!(
+        "-i lo -d {management} -p tcp --dport {UNREGISTRY_PORT} -j ACCEPT"
+    ));
+    for port in [MACHINE_API_PORT, UNREGISTRY_PORT, VOLUME_SEND_PORT] {
+        rules.push(format!("-d {management} -p tcp --dport {port} -j DROP"));
+    }
+    rules
+}
+
+/// Declaring the chain in a `--noflush` restore replaces its rules in the same
+/// commit that fills it again.
+fn filter_document(program: &str, rules: &[String]) -> Result<String, NetworkError> {
+    let mut document = format!("*filter\n:{INPUT_CHAIN} - [0:0]\n");
+    for rule in rules {
+        document.push_str(&format!("-A {INPUT_CHAIN} {rule}\n"));
+    }
+    document.push_str(&move_to_top(
+        program,
+        "filter",
+        "INPUT",
+        &format!("-j {INPUT_CHAIN}"),
+    )?);
+    document.push_str("COMMIT\n");
+    Ok(document)
+}
+
+/// Restore lines that make `rule` the first in `chain`; none when it already is.
+fn move_to_top(
+    program: &str,
+    table: &str,
+    chain: &str,
+    rule: &str,
+) -> Result<String, NetworkError> {
+    let listing = checked_command(program, &["-t", table, "-S", chain])?;
+    let expected = format!("-A {chain} {rule}");
+    let first = String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .find(|line| line.starts_with("-A "))
+        .map(str::to_owned);
+    if first.as_deref() == Some(expected.as_str()) {
+        return Ok(String::new());
+    }
+    let mut check = vec!["-t", table, "-C", chain];
+    check.extend(rule.split(' '));
+    let mut moves = String::new();
+    if command_succeeds(program, &check) {
+        moves.push_str(&format!("-D {chain} {rule}\n"));
+    }
+    moves.push_str(&format!("-I {chain} 1 {rule}\n"));
+    Ok(moves)
+}
+
+fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
+    let program = format!("{program}-restore");
+    let mut child = Command::new(&program)
+        .arg("--noflush")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(document.as_bytes())?;
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(NetworkError::Command {
+            program,
+            stderr: String::from_utf8_lossy(&output.stderr).trim().into(),
+        })
+    }
 }
 
 pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
@@ -236,7 +208,7 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             "INPUT",
             &["-j", INPUT_CHAIN],
         ));
-        if command_succeeds(program, &["-t", "filter", "-L", INPUT_CHAIN]) {
+        if command_succeeds(program, &["-t", "filter", "-n", "-L", INPUT_CHAIN]) {
             attempt(checked_command(program, &["-t", "filter", "-F", INPUT_CHAIN]).map(|_| ()));
             attempt(checked_command(program, &["-t", "filter", "-X", INPUT_CHAIN]).map(|_| ()));
         }
@@ -248,14 +220,6 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     }
 }
 
-fn ensure_chain(program: &str, chain: &str) -> Result<(), NetworkError> {
-    if !command_succeeds(program, &["-t", "filter", "-L", chain]) {
-        checked_command(program, &["-t", "filter", "-N", chain])?;
-    }
-    checked_command(program, &["-t", "filter", "-F", chain])?;
-    Ok(())
-}
-
 fn ensure_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result<(), NetworkError> {
     let mut check = vec!["-t", table, "-C", chain];
     check.extend_from_slice(rule);
@@ -264,19 +228,6 @@ fn ensure_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result
         insert.extend_from_slice(rule);
         checked_command(program, &insert)?;
     }
-    Ok(())
-}
-
-fn replace_first_rule(
-    program: &str,
-    table: &str,
-    chain: &str,
-    rule: &[&str],
-) -> Result<(), NetworkError> {
-    delete_rule(program, table, chain, rule)?;
-    let mut insert = vec!["-t", table, "-I", chain, "1"];
-    insert.extend_from_slice(rule);
-    checked_command(program, &insert)?;
     Ok(())
 }
 

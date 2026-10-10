@@ -4,15 +4,15 @@ use std::{
     collections::{HashMap, HashSet},
     fs, io,
     net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::{Path, PathBuf},
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use hickory_server::proto::{
     op::{Edns, Header, HeaderCounts, Message, Metadata, ResponseCode},
     rr::{Name, RData, Record, RecordType, rdata::A},
@@ -26,28 +26,33 @@ use hickory_server::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ContainerObservation, Machine, MachineId, MembershipObservation, Namespace, QualifiedService,
-    ServiceId, service_containers, serving_containers, synthesize_membership,
+    ContainerObservation, MachineId, MembershipObservation, Namespace, QualifiedService, ServiceId,
+    service_containers, serving_containers, synthesize_membership,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UdpSocket},
+    net::{TcpStream, UdpSocket},
+    sync::watch,
 };
-use tokio_stream::wrappers::IntervalStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::corrosion::{
-    AdminClient, Error as CorrosionError, MachineView, ReplicatedStore, Subscription,
-    membership_states_by_address,
+    AdminClient, Error as CorrosionError, MachineView, membership_states_by_address,
 };
 
+mod listeners;
+mod process;
 mod query;
+mod service;
+mod spec;
 
+pub use process::{ABDICATED, DnsExit, serve};
 use query::{InternalQuery, MachineServiceTarget, Query, parse};
+pub use service::{DnsService, DnsSupervision};
 
 pub const PORT: u16 = 53;
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(3);
-const MEMBERSHIP_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_RESPONSE_BUFFER: usize = 32;
@@ -285,10 +290,175 @@ fn unique_caller_namespaces(containers: &[ContainerObservation]) -> HashMap<Ipv4
         .collect()
 }
 
-struct Handler {
-    projection: Arc<RwLock<Projection>>,
+#[derive(Clone)]
+pub(crate) struct Answers(Arc<Shared>);
+
+struct Shared {
+    projection: RwLock<Projection>,
     local_subnet: Ipv4Net,
-    upstreams: Vec<SocketAddr>,
+    upstreams: Upstreams,
+}
+
+impl Answers {
+    fn loaded(projection: Projection, local_subnet: Ipv4Net, upstreams: Upstreams) -> Self {
+        Self(Arc::new(Shared {
+            projection: RwLock::new(projection),
+            local_subnet,
+            upstreams,
+        }))
+    }
+
+    fn replace(&self, projection: Projection) -> io::Result<()> {
+        *self
+            .0
+            .projection
+            .write()
+            .map_err(|_| io::Error::other("DNS projection lock poisoned"))? = projection;
+        Ok(())
+    }
+
+    fn upstreams(&self) -> &Upstreams {
+        &self.0.upstreams
+    }
+
+    fn plan(&self, name: &Name, query_type: RecordType, caller: IpAddr) -> ResponsePlan {
+        self.0
+            .projection
+            .read()
+            .map(|projection| projection.plan(name, query_type, self.0.local_subnet, caller))
+            .unwrap_or(ResponsePlan::Internal {
+                code: ResponseCode::ServFail,
+                answers: Vec::new(),
+            })
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Upstreams(Arc<UpstreamSource>);
+
+enum UpstreamSource {
+    Fixed(Vec<SocketAddr>),
+    ResolvConf {
+        path: PathBuf,
+        skip: Ipv4Addr,
+        state: Mutex<ResolvConf>,
+    },
+}
+
+#[derive(Default)]
+struct ResolvConf {
+    text: Option<String>,
+    nameservers: Vec<SocketAddr>,
+}
+
+impl Upstreams {
+    fn of(fixed: &[SocketAddr], resolv_conf: &Path, listen: Ipv4Addr) -> Self {
+        if fixed.is_empty() {
+            Self::follow(resolv_conf, listen)
+        } else {
+            Self::fixed(fixed.to_vec())
+        }
+    }
+
+    fn fixed(addresses: Vec<SocketAddr>) -> Self {
+        Self(Arc::new(UpstreamSource::Fixed(addresses)))
+    }
+
+    fn follow(path: &Path, listen: Ipv4Addr) -> Self {
+        let upstreams = Self(Arc::new(UpstreamSource::ResolvConf {
+            path: path.to_path_buf(),
+            skip: listen,
+            state: Mutex::new(ResolvConf::default()),
+        }));
+        upstreams.reload_if_changed();
+        upstreams
+    }
+
+    fn snapshot(&self) -> Vec<SocketAddr> {
+        match &*self.0 {
+            UpstreamSource::Fixed(addresses) => addresses.clone(),
+            UpstreamSource::ResolvConf { state, .. } => state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .nameservers
+                .clone(),
+        }
+    }
+
+    fn reload_if_changed(&self) -> bool {
+        let UpstreamSource::ResolvConf { path, skip, state } = &*self.0 else {
+            return false;
+        };
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let text = match fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(error) => {
+                if state.text.is_some() {
+                    eprintln!(
+                        "failed to load DNS upstreams from {}: {error}",
+                        path.display(),
+                        error = ployz_core::error_chain::inline(&error),
+                    );
+                }
+                None
+            }
+        };
+        if state.text == text {
+            return false;
+        }
+        state.nameservers = text
+            .as_deref()
+            .map(|text| nameservers_from_resolv_conf(text, *skip))
+            .unwrap_or_default();
+        state.text = text;
+        true
+    }
+}
+
+#[derive(Clone)]
+struct InFlight(watch::Sender<usize>);
+
+impl InFlight {
+    fn new() -> Self {
+        Self(watch::Sender::new(0))
+    }
+
+    fn enter(&self) -> InFlightGuard {
+        self.0.send_modify(|count| *count += 1);
+        InFlightGuard(self.0.clone())
+    }
+
+    async fn drained(&self) {
+        let _ = self.0.subscribe().wait_for(|count| *count == 0).await;
+    }
+}
+
+struct InFlightGuard(watch::Sender<usize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count -= 1);
+    }
+}
+
+pub(crate) struct Handler {
+    answers: Answers,
+    in_flight: InFlight,
+}
+
+impl Handler {
+    fn new(answers: Answers) -> Self {
+        Self {
+            answers,
+            in_flight: InFlight::new(),
+        }
+    }
+
+    fn in_flight(&self) -> InFlight {
+        self.in_flight.clone()
+    }
 }
 
 #[async_trait]
@@ -298,24 +468,15 @@ impl RequestHandler for Handler {
         request: &Request,
         mut response_handle: R,
     ) -> ResponseInfo {
+        let _guard = self.in_flight.enter();
         let Ok(info) = request.request_info() else {
             return send_error(request, response_handle, ResponseCode::FormErr).await;
         };
-        let plan = self
-            .projection
-            .read()
-            .map(|projection| {
-                projection.plan(
-                    info.query.original().name(),
-                    info.query.query_type(),
-                    self.local_subnet,
-                    info.src.ip(),
-                )
-            })
-            .unwrap_or(ResponsePlan::Internal {
-                code: ResponseCode::ServFail,
-                answers: Vec::new(),
-            });
+        let plan = self.answers.plan(
+            info.query.original().name(),
+            info.query.query_type(),
+            info.src.ip(),
+        );
         match plan {
             ResponsePlan::Internal { code, answers } => {
                 let mut metadata = Metadata::response_from_request(&request.metadata);
@@ -370,11 +531,11 @@ impl RequestHandler for Handler {
 impl Handler {
     async fn forward(&self, request: &Request) -> io::Result<Message> {
         let mut last_error = io::Error::other("no upstream DNS servers configured");
-        for upstream in &self.upstreams {
+        for upstream in self.answers.upstreams().snapshot() {
             let result = tokio::time::timeout(FORWARD_TIMEOUT, async {
                 match request.protocol() {
-                    Protocol::Udp => forward_udp(request.as_slice(), *upstream).await,
-                    Protocol::Tcp => forward_tcp(request.as_slice(), *upstream).await,
+                    Protocol::Udp => forward_udp(request.as_slice(), upstream).await,
+                    Protocol::Tcp => forward_tcp(request.as_slice(), upstream).await,
                     protocol => Err(io::Error::other(format!(
                         "unsupported forwarding transport {protocol}"
                     ))),
@@ -393,119 +554,42 @@ impl Handler {
     }
 }
 
-/// Serve Internal DNS from this Machine's observer-local Container and membership views.
-///
-/// # Errors
-///
-/// Returns an I/O error when replicated observations cannot be read or watched, the UDP listener
-/// cannot bind, the DNS server fails, or the projection lock is poisoned.
-pub async fn run(
-    machine: Machine,
-    replicated: ReplicatedStore,
-    machines: MachineView,
-    admin: AdminClient,
-    upstreams: Option<Vec<SocketAddr>>,
+/// Hickory aborts request tasks when its loops stop, so the loops keep
+/// accepting during the bounded drain; arrivals in that window are answered too.
+async fn run_server(
+    mut server: Server<Handler>,
+    in_flight: InFlight,
+    listen: SocketAddr,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
-    let gateway = machine.subnet.gateway().0;
-    let listen_address = SocketAddr::new(IpAddr::V4(gateway), PORT);
-    let mut changes = replicated
-        .subscribe_container_changes()
-        .await
-        .map_err(io::Error::other)?;
-    let local_id = machine.id;
-    let observations = replicated.containers().await.map_err(io::Error::other)?;
-    let inputs = ProjectionInputs {
-        local_id,
-        observations: observations.observations,
-        down_machines: None,
-    };
-    let projection = Arc::new(RwLock::new(inputs.build()));
-    let handler = Handler {
-        projection: Arc::clone(&projection),
-        local_subnet: machine.subnet.into(),
-        upstreams: configured_upstreams(upstreams, gateway),
-    };
-    let udp = UdpSocket::bind(listen_address).await?;
-    let tcp = match TcpListener::bind(listen_address).await {
-        Ok(listener) => Some(listener),
-        Err(error) => {
-            eprintln!(
-                "failed to bind best-effort DNS TCP listener on {listen_address}: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            );
-            None
-        }
-    };
-    let mut server = Server::new(handler);
-    server.register_socket(udp);
-    if let Some(tcp) = tcp {
-        server.register_listener(tcp, TCP_REQUEST_TIMEOUT, TCP_RESPONSE_BUFFER);
-    }
-    let server = run_server(server, shutdown.clone());
-    let projection = watch_projection(
-        replicated,
-        machines,
-        admin,
-        projection,
-        inputs,
-        &mut changes,
-        shutdown,
-    );
-    tokio::try_join!(server, projection).map(|_| ())
-}
-
-async fn run_server(mut server: Server<Handler>, shutdown: CancellationToken) -> io::Result<()> {
     tokio::select! {
         result = server.block_until_done() => result.map_err(io::Error::other),
         () = shutdown.cancelled() => {
+            let drained = async {
+                in_flight.drained().await;
+                flush_udp(listen).await
+            };
+            match tokio::time::timeout(DRAIN_TIMEOUT, drained).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("failed to flush Internal DNS UDP responses: {error}"),
+                Err(_) => eprintln!("stopping Internal DNS with responses still undelivered after {DRAIN_TIMEOUT:?}"),
+            }
             server.shutdown_gracefully().await.map_err(io::Error::other)
         }
     }
 }
 
-async fn watch_projection(
-    replicated: ReplicatedStore,
-    machines: MachineView,
-    admin: AdminClient,
-    projection: Arc<RwLock<Projection>>,
-    mut inputs: ProjectionInputs,
-    changes: &mut Subscription,
-    shutdown: CancellationToken,
-) -> io::Result<()> {
-    let local_id = inputs.local_id;
-    let mut interval =
-        tokio::time::interval_at(tokio::time::Instant::now(), MEMBERSHIP_SAMPLE_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // `Then` retains an in-flight membership read when another select branch wins, so slow
-    // membership I/O never delays Container-change withdrawal.
-    let membership =
-        IntervalStream::new(interval).then(|_| load_down_machines(&machines, &admin, &local_id));
-    tokio::pin!(membership);
-    loop {
-        let rebuild = tokio::select! {
-            changed = changes.changed() => {
-                changed.map_err(io::Error::other)?;
-                match replicated.containers().await {
-                    Ok(next) => {
-                        inputs.observations = next.observations;
-                        true
-                    }
-                    Err(error) => {
-                        eprintln!("failed to rebuild DNS projection: {error}", error = ployz_core::error_chain::inline(&error),);
-                        false
-                    }
-                }
-            }
-            Some(result) = membership.next() => inputs.update_membership(result),
-            () = shutdown.cancelled() => return Ok(()),
-        };
-        if rebuild {
-            *projection
-                .write()
-                .map_err(|_| io::Error::other("DNS projection lock poisoned"))? = inputs.build();
-        }
-    }
+/// A finished handler has only queued its UDP response; Hickory's receive loop
+/// sends it later, and shutdown can stop that loop first. The loop sends its
+/// queue in order before reading the next datagram, and Hickory answers a
+/// header-only query itself, so that answer arriving proves the queue sent.
+async fn flush_udp(listen: SocketAddr) -> io::Result<()> {
+    const HEADER_ONLY_QUERY: [u8; 12] = [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    let socket = UdpSocket::bind(SocketAddr::new(listen.ip(), 0)).await?;
+    socket.connect(listen).await?;
+    socket.send(&HEADER_ONLY_QUERY).await?;
+    socket.recv(&mut [0; 512]).await?;
+    Ok(())
 }
 
 async fn load_down_machines(
@@ -537,26 +621,6 @@ async fn load_down_machines(
             })
             .collect(),
     )
-}
-
-fn configured_upstreams(
-    upstreams: Option<Vec<SocketAddr>>,
-    listen_address: Ipv4Addr,
-) -> Vec<SocketAddr> {
-    upstreams.unwrap_or_else(|| system_upstreams(listen_address))
-}
-
-fn system_upstreams(listen_address: Ipv4Addr) -> Vec<SocketAddr> {
-    match fs::read_to_string("/etc/resolv.conf") {
-        Ok(text) => nameservers_from_resolv_conf(&text, listen_address),
-        Err(error) => {
-            eprintln!(
-                "failed to load DNS upstreams from /etc/resolv.conf: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            );
-            Vec::new()
-        }
-    }
 }
 
 fn nameservers_from_resolv_conf(text: &str, listen: Ipv4Addr) -> Vec<SocketAddr> {

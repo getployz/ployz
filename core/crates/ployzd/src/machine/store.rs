@@ -89,16 +89,51 @@ impl Drop for LocalMachineStore {
     }
 }
 
+/// A store opened by the daemon. A reset that stopped before clearing the data
+/// directory comes back as [`Opened::Resetting`], so the caller removes what
+/// still runs from that directory before it is deleted.
+pub(crate) enum Opened {
+    Ready(LocalMachineStore),
+    Resetting(InterruptedReset),
+}
+
+pub(crate) struct InterruptedReset(LocalMachineStore);
+
+impl InterruptedReset {
+    pub(crate) fn record(&self) -> &LocalMachineRecord {
+        self.0.record()
+    }
+
+    pub(crate) fn complete(self) -> Result<LocalMachineStore, StoreError> {
+        let store = self.0;
+        store.complete_reset()?;
+        let data_dir = store.data_dir.clone();
+        let run_dir = store.run_dir.clone();
+        drop(store);
+        match LocalMachineStore::open_with_admission(&data_dir, run_dir)? {
+            Opened::Ready(store) => Ok(store),
+            Opened::Resetting(_) => Err(StoreError::ResetInterrupted(data_dir)),
+        }
+    }
+}
+
 impl LocalMachineStore {
+    /// # Errors
+    ///
+    /// Returns [`StoreError::ResetInterrupted`] when the record is Resetting:
+    /// only the daemon may finish that reset.
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self, StoreError> {
         let data_dir = data_dir.as_ref();
-        Self::open_with_admission(data_dir, data_dir.join(".run"))
+        match Self::open_with_admission(data_dir, data_dir.join(".run"))? {
+            Opened::Ready(store) => Ok(store),
+            Opened::Resetting(_) => Err(StoreError::ResetInterrupted(data_dir.to_owned())),
+        }
     }
 
     pub(crate) fn open_with_admission(
         data_dir: impl AsRef<Path>,
         run_dir: impl AsRef<Path>,
-    ) -> Result<Self, StoreError> {
+    ) -> Result<Opened, StoreError> {
         let data_dir = data_dir.as_ref().to_owned();
         let run_dir = run_dir.as_ref().to_owned();
         validate_data_dir(&data_dir)?;
@@ -152,13 +187,10 @@ impl LocalMachineStore {
             mutation_gate: crate::mutation::MutationGate::new(&run_dir, &data_dir),
         };
         if store.record.phase() == LocalMachinePhase::Resetting {
-            let data_dir = store.data_dir.clone();
-            store.complete_reset()?;
-            drop(store);
-            return Self::open_with_admission(data_dir, run_dir);
+            return Ok(Opened::Resetting(InterruptedReset(store)));
         }
         store.refresh_runtime()?;
-        Ok(store)
+        Ok(Opened::Ready(store))
     }
 
     #[must_use]
@@ -586,4 +618,6 @@ pub enum StoreError {
     OwnershipLost(PathBuf),
     #[error("local Machine record changed before prepared reset was committed in {}", display_data_directory(.0))]
     ResetPreparationLost(PathBuf),
+    #[error("a reset of data directory {} did not finish; start the ployz daemon to finish it", display_data_directory(.0))]
+    ResetInterrupted(PathBuf),
 }

@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType, RestartPolicyNameEnum};
+use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use ployz_core::{
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, RpcError,
 };
@@ -15,12 +15,11 @@ use tokio::{net::TcpStream, sync::Mutex};
 
 use crate::network::UNREGISTRY_PORT;
 
-use super::{Error, LocalDocker, ManagedService};
+use super::{DesiredContainer, Error, LocalDocker, ManagedService};
 
 pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
 const NAME: &str = "ployz-unregistry";
 const CONTAINER_SOCKET_PARENT: &str = "/run/ployz-containerd";
-const CONFIG_VERSION: &str = "2";
 const READY_RETRY: Duration = Duration::from_millis(10);
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKETS: &[&str] = &[
@@ -174,9 +173,10 @@ impl LocalDocker {
         socket: &Path,
     ) -> Result<(), Error> {
         ManagedService::endpoint(self.clone(), NAME, IMAGE)
-            .ensure_endpoint(unregistry_config(socket, management_address), |container| {
-                unregistry_matches(container, socket, management_address)
-            })
+            .ensure_endpoint(DesiredContainer::new(
+                unregistry_config(socket, management_address),
+                &[],
+            ))
             .await
     }
 }
@@ -195,21 +195,7 @@ fn unregistry_config(socket: &Path, management_address: Ipv6Addr) -> ContainerCr
             "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
             format!("UNREGISTRY_CONTAINERD_SOCK={container_socket}"),
         ]),
-        labels: Some(HashMap::from([
-            ("ployz.managed".into(), String::new()),
-            (
-                "ployz.unregistry.socket".into(),
-                socket.to_string_lossy().into_owned(),
-            ),
-            (
-                "ployz.unregistry.management-address".into(),
-                management_address.to_string(),
-            ),
-            (
-                "ployz.unregistry.config-version".into(),
-                CONFIG_VERSION.into(),
-            ),
-        ])),
+        labels: Some(HashMap::from([("ployz.managed".into(), String::new())])),
         host_config: Some(HostConfig {
             mounts: Some(vec![Mount {
                 typ: Some(MountType::BIND),
@@ -224,77 +210,6 @@ fn unregistry_config(socket: &Path, management_address: Ipv6Addr) -> ContainerCr
         }),
         ..Default::default()
     }
-}
-
-/// Whether an observed helper exactly matches this Machine's ingest configuration.
-#[must_use]
-pub fn unregistry_matches(
-    container: &bollard::models::ContainerInspectResponse,
-    socket: &Path,
-    management_address: Ipv6Addr,
-) -> bool {
-    let socket_path = socket.to_string_lossy();
-    let Some(config) = container.config.as_ref() else {
-        return false;
-    };
-    let Some(labels) = config.labels.as_ref() else {
-        return false;
-    };
-    let expected_env = unregistry_config(socket, management_address)
-        .env
-        .expect("unregistry environment");
-    let management_address = management_address.to_string();
-    let Some(host) = container.host_config.as_ref() else {
-        return false;
-    };
-    let Some(mounts) = host.mounts.as_deref() else {
-        return false;
-    };
-    let [mount] = mounts else {
-        return false;
-    };
-    let Some(parent) = socket_parent(socket) else {
-        return false;
-    };
-    let no_restart = host
-        .restart_policy
-        .as_ref()
-        .and_then(|policy| policy.name.as_ref())
-        .is_none_or(|name| {
-            matches!(
-                name,
-                RestartPolicyNameEnum::EMPTY | RestartPolicyNameEnum::NO
-            )
-        });
-
-    let Some(env) = config.env.as_ref() else {
-        return false;
-    };
-
-    config.image.as_deref() == Some(IMAGE)
-        && expected_env.iter().all(|expected| env.contains(expected))
-        && env
-            .iter()
-            .filter(|value| value.starts_with("UNREGISTRY_"))
-            .count()
-            == expected_env.len()
-        && labels.get("ployz.unregistry.socket").map(String::as_str) == Some(socket_path.as_ref())
-        && labels
-            .get("ployz.unregistry.management-address")
-            .map(String::as_str)
-            == Some(management_address.as_str())
-        && labels
-            .get("ployz.unregistry.config-version")
-            .map(String::as_str)
-            == Some(CONFIG_VERSION)
-        && labels.contains_key("ployz.managed")
-        && mount.typ == Some(MountType::BIND)
-        && mount.source.as_deref() == Some(parent.to_string_lossy().as_ref())
-        && mount.target.as_deref() == Some(CONTAINER_SOCKET_PARENT)
-        && mount.read_only == Some(true)
-        && host.network_mode.as_deref() == Some("host")
-        && host.port_bindings.as_ref().is_none_or(HashMap::is_empty)
-        && no_restart
 }
 
 fn detect_socket(configured: Option<&Path>) -> Option<PathBuf> {
@@ -473,22 +388,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn socket_recreation_keeps_the_parent_mounted_unregistry_current() {
-        let root = temp_root("inode");
-        let socket = root.join("containerd.sock");
-        let management_address = Ipv6Addr::LOCALHOST;
-        let first = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let bound = inspect_bound_to(&socket, management_address);
-        assert!(unregistry_matches(&bound, &socket, management_address));
-
-        drop(first);
-        std::fs::remove_file(&socket).unwrap();
-        let _recreated = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        assert!(unregistry_matches(&bound, &socket, management_address));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     #[tokio::test(start_paused = true)]
     async fn readiness_waits_until_the_endpoint_accepts_tcp() {
         let reservation = std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).unwrap();
@@ -515,23 +414,5 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
-    }
-
-    fn inspect_bound_to(
-        socket: &Path,
-        management_address: Ipv6Addr,
-    ) -> bollard::models::ContainerInspectResponse {
-        let config = unregistry_config(socket, management_address);
-        bollard::models::ContainerInspectResponse {
-            config: Some(bollard::models::ContainerConfig {
-                image: config.image,
-                env: config.env,
-                exposed_ports: config.exposed_ports,
-                labels: config.labels,
-                ..Default::default()
-            }),
-            host_config: config.host_config,
-            ..Default::default()
-        }
     }
 }

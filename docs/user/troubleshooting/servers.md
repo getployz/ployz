@@ -166,6 +166,28 @@ your first server.
    front of them.
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`.
 
+## Ployz stops over a leftover network
+
+`sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say
+`refusing to change the retained WireGuard interface` or `refusing to replace the existing Docker
+network`. Something else, or an earlier install, left a network Ployz can't prove is its own, so
+Ployz stops rather than take it over. It won't start again until you clear it. The log line ends
+with the safe recovery for your case.
+
+For a leftover `ployz-wg` interface:
+
+```sh
+sudo systemctl stop ployz.socket ployz
+sudo ip link delete ployz-wg
+sudo systemctl reset-failed ployz.socket ployz
+sudo systemctl start ployz
+```
+
+For a Docker network named `ployz`, stop Ployz the same way. Run `docker network inspect ployz`
+and find its owner from its labels and attached containers. Move or remove those containers through
+whatever deployed them. Once the network is empty and nothing needs it, run
+`docker network rm ployz`, then the last two commands above.
+
 ## My first server never finished joining
 
 You'll see `This Organization's Servers can't be reached` when you add another server, and an
@@ -196,7 +218,9 @@ reached`.
 
 ## A server shows Offline
 
-The server's page says **Can't reach web-2**. Services that run only there are down.
+The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz
+with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place in the
+cluster until it reboots or you remove it.
 
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.
@@ -210,6 +234,22 @@ The server's page says **Can't reach web-2**. Services that run only there are d
 
    See [When a server goes down](../services/scaling.md#when-a-server-goes-down) for which
    services come back.
+
+## Services can't resolve each other's names
+
+A service on the server gets `NXDOMAIN` or a timeout for a name like `postgres.app.internal`,
+while `ployz service ls` shows the target running.
+
+1. Run `sudo systemctl status ployz-dns`. Its Status line says `serving`, `loading`, or
+   `waiting for the Corrosion token` while it works. `idle` means it has no names to answer.
+   Either the server isn't in an organization yet, or it couldn't read its list of names. In
+   the second case its logs say why, and it starts answering once the list is readable.
+2. If the Status line says `waiting for port 53 on 10.210.0.1` (your server's private address),
+   another program holds that port, often `dnsmasq` from libvirt or a local DNS cache. Find it
+   with `sudo ss -lntup 'sport = :53'`, then stop it or make it listen only on other addresses.
+   Private DNS starts answering on its own once the port is free.
+3. Read its logs with `sudo journalctl -u ployz-dns -n 200`.
+4. If the unit is missing, run `sudo systemctl restart ployz`. Ployz recreates it.
 
 ## The bottom bar shows Add a server instead of Deploy
 
