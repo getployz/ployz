@@ -208,8 +208,9 @@ pub(crate) fn pending(
 /// PR Environment `pr`'s offer or included proposal in Destination `into`, as the
 /// pull request's page shows it.
 /// A Follow staged the Parent's changes in PR Environment `branch`, whose Working
-/// State was at revision `before`: what it offered or had included still stands, as
-/// only the author's own edits make a pull request's proposals stale.
+/// State was at revision `before`: what it offered still stands, as only the
+/// author's own edits make an offer stale. An included proposal's source moves on
+/// as any source does, so the draft lists it newer and keeps its version.
 pub(crate) fn followed(
     tx: &mut dyn Tx,
     branch: &EnvironmentSummary,
@@ -220,7 +221,7 @@ pub(crate) fn followed(
     }
     tx.execute(
         "UPDATE config_proposal SET source_revision = ?3 \
-         WHERE source_environment_id = ?1 AND number IS NOT NULL AND source_revision = ?2",
+         WHERE source_environment_id = ?1 AND offered IS NOT NULL AND source_revision = ?2",
         &[
             branch.id.as_str().into(),
             scope::revision_param(before)?.into(),

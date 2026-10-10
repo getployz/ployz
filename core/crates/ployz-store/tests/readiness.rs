@@ -1103,6 +1103,45 @@ fn a_follow_into_the_pr_environment_leaves_its_offer_standing() {
     );
 }
 
+/// pr-5 is a Branch of staging, and production includes its offer: staging deploys
+/// a change that follows into pr-5. production's draft lists PR #5 newer, and its
+/// version stays, so a review of it is still current.
+#[test]
+fn a_follow_into_the_pr_environment_marks_its_included_proposal_newer() {
+    let db = shop_from("staging");
+    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    let proposal = offer(&db);
+    include(&db, &proposal, &[]).unwrap();
+    let review = diff(&db);
+    assert!(!review.included[0].newer);
+    set(&db, "staging", &[("web.env.SHARED", json!("1"))]);
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000250").unwrap();
+    db.store
+        .write_trusted(
+            &db.who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: at("staging"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    backend::run(&db.store, &id);
+    db.probe();
+    assert_eq!(env(&db, "pr-5")["SHARED"], json!("1"));
+    let after = diff(&db);
+    assert_eq!(after.version, review.version);
+    assert_eq!(
+        (after.included[0].proposal.clone(), after.included[0].newer),
+        (proposal, true)
+    );
+}
+
 #[test]
 fn a_pr_environment_syncs_into_its_parent_now_and_into_its_destination_at_the_merge() {
     // pr-5 is a Branch of staging, which the merge doesn't reach.
