@@ -132,11 +132,21 @@ impl Move {
             },
         };
         // Syncing anywhere but into its Parent, a Branch's own changes are those since
-        // it last shared with its Parent; the rest it only inherited.
+        // it last shared with its Parent; the rest it only inherited. A change still
+        // proposed in the Parent's draft is not shared until the Parent saves it.
         let own = match row(tx, &from.summary.id)? {
             Some(row) if row.parent != into.summary.id => {
                 let parent = base_of(tx, (&from.summary.id, &row.parent))?;
-                Some(changed(&parent, &from.working))
+                let mut own = changed(&parent, &from.working);
+                own.extend(
+                    arrived(tx, &row.parent, Which::From(&from.summary.id))?
+                        .into_iter()
+                        .filter(|arrived| {
+                            matches!(arrived.arrival, Arrival::Pending { owner: Some(_), .. })
+                        })
+                        .map(|arrived| arrived.row),
+                );
+                Some(own)
             }
             _ => None,
         };

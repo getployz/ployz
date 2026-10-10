@@ -1042,6 +1042,57 @@ fn a_pull_requests_proposal_outside_its_destinations_becomes_its_previews() {
     assert_eq!(production_env(&store, &who), None);
 }
 
+/// A preview's change included in its Parent's draft is still its own: until the
+/// Parent saves it, its Sync into its Destination carries it.
+#[test]
+fn a_change_included_in_the_previews_parent_still_syncs_to_its_destination() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(6)).unwrap(),
+                from: EnvironmentRef::default(),
+                name: EnvironmentName::parse("staging").unwrap(),
+                copy: vec![node("web")],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: true,
+                fix: None,
+            },
+        )
+        .unwrap();
+    plan(
+        &store,
+        &who,
+        SetPrPlan {
+            start_from: Some(EnvironmentName::parse("staging").unwrap()),
+            ..on()
+        },
+    );
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_from_pr(&store, &who, "staging", None, 1).unwrap();
+
+    let view = store
+        .read(
+            &who,
+            &ployz_store::SyncQuery {
+                from: at("pr-5"),
+                into: Some(at("production")),
+                when: None,
+            },
+        )
+        .unwrap();
+    let ticked: Vec<_> = view
+        .rows
+        .iter()
+        .filter(|row| row.ticked)
+        .map(|row| row.at.to_string())
+        .collect();
+    assert_eq!(ticked, ["web.env.X"], "{:?}", view.rows);
+}
+
 /// A pull request's recreated preview finds the proposal its first one made, unless
 /// a row the proposal owns already arrived from the new preview.
 #[test]

@@ -14,9 +14,9 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     Deploy, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
-    KeepBranch, OrganizationId, ProjectId, ProjectName, RemoveService, RenameService, SecretRow,
-    ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery,
-    SyncRow, SyncView, Synced, SyncedWhen, Trusted, UndoSync, When,
+    KeepBranch, OrganizationId, ProjectId, ProjectName, Publish, RemoveService, RenameService,
+    SecretRow, ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId,
+    SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Trusted, UndoSync, When,
 };
 use serde_json::{Value, json};
 
@@ -953,12 +953,24 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
         ["web.source"]
     );
 
-    // Once synced into its Parent, a change is no longer fix-a's own: unticked
-    // sideways, a Sync reviewed while it was ticked is stale.
+    // A change synced into its Parent stays fix-a's own until the Parent saves it:
+    // then it is unticked sideways, and a Sync reviewed while it was ticked is stale.
     set(&store, &who, "fix-a", &[("web.env.SIDE", json!("1"))]);
     let before = offered(&store, &who, "fix-a", "fix-b");
     assert!(row(&before, "web.env.SIDE").ticked);
     sync_into(&store, &who, ("fix-a", "fix-web"), Some(&["web.env.SIDE"]));
+    assert!(row(&offered(&store, &who, "fix-a", "fix-b"), "web.env.SIDE").ticked);
+    store
+        .write(
+            &who,
+            &Publish {
+                environment: at("fix-web"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+        )
+        .unwrap();
     let after = offered(&store, &who, "fix-a", "fix-b");
     assert!(!row(&after, "web.env.SIDE").ticked);
     assert_eq!(
