@@ -537,13 +537,11 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
     let before = store
         .read(&who, &ployz_store::HistoryQuery::default())
         .unwrap();
-    assert_eq!(
-        before.revisions[0].message.as_deref(),
-        Some("First version")
-    );
-    assert_eq!(before.revisions[0].saved_by, who.principal);
-    assert!(before.revisions[0].saved_at.is_some());
-    assert_eq!(before.revisions[0].predecessor, None);
+    let revision = before.revisions.first().unwrap();
+    assert_eq!(revision.message.as_deref(), Some("First version"));
+    assert_eq!(revision.saved_by, who.principal);
+    assert!(revision.saved_at.is_some());
+    assert_eq!(revision.predecessor, None);
     assert!(!save("A duplicate must not replace the message").created);
     assert_eq!(
         store
@@ -678,7 +676,14 @@ fn discard_inverse_returns_to_saved_without_history_and_save_records_reversal() 
     assert_eq!(reversed.total_count, 0);
     assert_eq!(reversed.draft_count, 1);
     assert_eq!(
-        reversed.review_changes()[0].settings[0].path,
+        reversed
+            .review_changes()
+            .first()
+            .unwrap()
+            .settings
+            .first()
+            .unwrap()
+            .path,
         "web.replicas"
     );
     store
@@ -725,7 +730,7 @@ fn discard_review_restores_mixed_runtime_and_inverse_rows_once() {
     set(&store, &who, "web.startCommand", json!("runtime change"));
     let before = diff(&store, &who);
     assert_eq!(before.total_count, 1);
-    assert_eq!(before.review_changes()[0].settings.len(), 2);
+    assert_eq!(before.review_changes().first().unwrap().settings.len(), 2);
     let history = store
         .read(&who, &ployz_store::HistoryQuery::default())
         .unwrap();
@@ -760,7 +765,7 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
     let before = diff(&store, &who);
     assert_eq!(before.review_changes().len(), 2);
     assert_eq!(
-        before.review_changes()[0].lifecycle,
+        before.review_changes().first().unwrap().lifecycle,
         ReviewLifecycleKind::Create
     );
     let history = store
@@ -971,7 +976,14 @@ fn export_only_draft_is_reviewable_and_undo_preserves_a_later_export() {
     set(&store, &who, "web.env.KEY.exported", json!(true));
     assert_eq!(diff(&store, &who).draft_count, 1);
     assert_eq!(
-        diff(&store, &who).draft_changes[0].settings[0].path,
+        diff(&store, &who)
+            .draft_changes
+            .first()
+            .unwrap()
+            .settings
+            .first()
+            .unwrap()
+            .path,
         "web.env.KEY.exported"
     );
     let preview = store
@@ -1069,7 +1081,9 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
         !store
             .read(&who, &ployz_store::VolumesQuery::default())
             .unwrap()
-            .volumes[0]
+            .volumes
+            .first()
+            .unwrap()
             .volume
             .shared_writes
     );
@@ -1200,7 +1214,10 @@ fn undo_domain_revision_preserves_later_unrelated_route_without_confirmation() {
         .read(&who, &ployz_store::DomainsQuery::default())
         .unwrap();
     assert_eq!(domains.domains.len(), 1);
-    assert_eq!(domains.domains[0].domain.shown(), "later.example.com");
+    assert_eq!(
+        domains.domains.first().unwrap().domain.shown(),
+        "later.example.com"
+    );
 }
 
 #[test]
@@ -1597,7 +1614,9 @@ fn legacy_description_discard_is_individual_and_not_an_editor() {
                 }
             )
             .unwrap()
-            .settings[0]
+            .settings
+            .first()
+            .unwrap()
             .value,
         json!("saved description")
     );
