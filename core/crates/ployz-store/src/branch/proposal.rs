@@ -340,13 +340,32 @@ pub(crate) fn record(
 }
 
 /// What a retried Include whose Sync `found` already recorded returns: that Sync's
-/// nodes, as they stand. Nothing is planned or written.
+/// nodes, as they stand, and whether `from` is closing. Nothing is planned or
+/// written, so a retry asking to close a Branch its Sync left open is refused.
 pub(crate) fn receipt(
     tx: &mut dyn Tx,
     (from, into): (Environment, Environment),
     found: &Proposal,
-    closing: bool,
+    close_after: bool,
 ) -> Result<Synced, RpcError> {
+    let closing = tx
+        .query(
+            "SELECT closing FROM config_environment_branch WHERE environment_id = ?1",
+            &[from.summary.id.as_str().into()],
+        )?
+        .first()
+        .map(|row| row.int(0))
+        .transpose()?
+        .is_some_and(|closing| closing != 0);
+    if close_after && !closing {
+        return Err(error::conflict(
+            format!(
+                "Sync {} already ran without close_after: sync again to close {}",
+                found.last_sync, from.summary.name
+            ),
+            json!({}),
+        ));
+    }
     let rows = tx.query(
         "SELECT lineage, at FROM config_sync_arrival \
          WHERE environment_id = ?1 AND proposal_id = ?2 AND sync_id = ?3",

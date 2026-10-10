@@ -14,7 +14,7 @@ use ployz_store::{
     Actor, ConfigStore, CreateBranch, CreateProject, CreateService, Edit, EnvironmentId,
     EnvironmentName, EnvironmentRef, OrganizationId, ProjectId, ProjectName, ProposalId,
     RemoveProposal, ServiceLineageId, ServiceQuery, SettingPath, SyncChanges, SyncId, SyncQuery,
-    SyncView, Synced, SyncedWhen,
+    SyncView, Synced, SyncedWhen, When,
 };
 use serde_json::{Value, json};
 
@@ -870,6 +870,56 @@ fn stale_versions_are_refused_and_a_retry_replays() {
     );
     assert!(removed.unwrap().removed);
     assert_eq!(db.remove("production", &a), Ok(false));
+}
+
+/// What Sync `id` of `view` says about closing its source.
+fn replayed(
+    db: &Db,
+    view: &SyncView,
+    id: &SyncId,
+    close_after: bool,
+) -> Result<bool, (RpcErrorCode, String)> {
+    let request = SyncChanges {
+        when: Some(When::Now { close_after }),
+        ..changes(view, id, None)
+    };
+    let synced = db
+        .store
+        .write(&db.who, &request)
+        .map_err(|error| (error.code, error.message))?;
+    let SyncedWhen::Now { closing, .. } = synced.when else {
+        panic!("an Include stages now")
+    };
+    Ok(closing)
+}
+
+#[test]
+fn a_retry_reports_whether_its_sync_closed_the_branch() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let view = db.offered("dev", "production");
+    assert_eq!(replayed(&db, &view, &sync_id(1), false), Ok(false));
+    // A retry can't close what its Sync left open.
+    let (code, message) = replayed(&db, &view, &sync_id(1), true).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert_eq!(replayed(&db, &view, &sync_id(1), false), Ok(false));
+
+    db.set("dev", &[("api.env.X", "2")]);
+    let view = db.offered("dev", "production");
+    assert_eq!(replayed(&db, &view, &sync_id(2), true), Ok(true));
+    // Nothing of dev ran, so it closed at once: a retry finds no dev to answer for.
+    let (code, _) = replayed(&db, &view, &sync_id(2), false).unwrap_err();
+    assert_eq!(code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_retry_of_a_closing_sync_reports_the_branch_closing() {
+    let db = Db::new();
+    backend::deploy(&db.store, &db.who, "dev", 1);
+    db.set("dev", &[("api.env.X", "1")]);
+    let view = db.offered("dev", "production");
+    assert_eq!(replayed(&db, &view, &sync_id(1), true), Ok(true));
+    assert_eq!(replayed(&db, &view, &sync_id(1), false), Ok(true));
 }
 
 // Lifetime.
