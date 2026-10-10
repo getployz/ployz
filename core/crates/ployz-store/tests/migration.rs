@@ -279,3 +279,155 @@ fn a_legacy_configs_service_can_be_renamed_without_losing_data_or_references() {
     );
     assert_eq!(inspect("worker").values, worker.values);
 }
+
+/// Every row `sql` selects at `url`, each column as text (`NULL` for none).
+fn select(url: &str, sql: &str) -> Vec<Vec<String>> {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            let connection = rusqlite::Connection::open(path).unwrap();
+            let mut statement = connection.prepare(sql).unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|index| {
+                            row.get::<_, Option<String>>(index)
+                                .map(|cell| cell.unwrap_or_else(|| "NULL".into()))
+                        })
+                        .collect()
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        }
+        None => postgres::Client::connect(url, postgres::NoTls)
+            .unwrap()
+            .query(sql, &[])
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (0..row.len())
+                    .map(|index| {
+                        row.get::<_, Option<String>>(index)
+                            .unwrap_or_else(|| "NULL".into())
+                    })
+                    .collect()
+            })
+            .collect(),
+    }
+}
+
+/// The schema as it was before `0005_proposal`, with arrivals a Store of then wrote:
+/// pending and settled, with and without a Sync, two of one Sync.
+const BEFORE_PROPOSAL: &str = "
+    DROP TABLE config_sync_receipt;
+    DROP TABLE config_sync_arrival;
+    DROP TABLE config_proposal;
+    DELETE FROM config_migration
+    WHERE name IN ('0005_proposal', '0006_sync_receipt', '0007_proposal_carried');
+    CREATE TABLE config_sync_arrival (
+        environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+        other_id TEXT NOT NULL,
+        lineage TEXT NOT NULL,
+        at TEXT NOT NULL,
+        organization_id TEXT NOT NULL,
+        how TEXT NOT NULL,
+        state TEXT NOT NULL,
+        value TEXT NOT NULL,
+        prior TEXT,
+        was TEXT,
+        sync_id TEXT,
+        PRIMARY KEY (environment_id, other_id, lineage, at)
+    );
+    INSERT INTO config_sync_arrival VALUES
+    ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000004',
+     '00000000-0000-4000-8000-000000000003', 'env.A', 'org', 'sync', 'pending',
+     '\"1\"', '\"0\"', '\"0\"', '00000000-0000-4000-8000-000000000101'),
+    ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000004',
+     '00000000-0000-4000-8000-000000000003', 'env.B', 'org', 'sync', 'pending',
+     '\"2\"', '\"0\"', '\"0\"', '00000000-0000-4000-8000-000000000101'),
+    ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000004',
+     '00000000-0000-4000-8000-000000000003', 'env.C', 'org', 'sync', 'settled',
+     '\"3\"', NULL, NULL, '00000000-0000-4000-8000-000000000102'),
+    ('00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000002',
+     '00000000-0000-4000-8000-000000000003', 'env.D', 'org', 'follow', 'settled',
+     '\"4\"', NULL, NULL, NULL),
+    ('00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000002',
+     '00000000-0000-4000-8000-000000000003', 'env.E', 'org', 'sync', 'pending',
+     '\"5\"', '\"0\"', NULL, NULL);
+";
+
+#[test]
+fn legacy_arrivals_migrate_unowned_with_their_syncs_receipted() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("web").unwrap(),
+                    image: Some("web:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        store
+            .write(
+                &who,
+                &CreateBranch {
+                    id: EnvironmentId::parse(uuid(4)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse("fix-web").unwrap(),
+                    copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: false,
+                    fix: None,
+                },
+            )
+            .unwrap();
+    }
+    run(&url, BEFORE_PROPOSAL);
+    let legacy = "SELECT environment_id, other_id, lineage, at, organization_id, how, state, \
+                  value, prior, was, sync_id FROM config_sync_arrival ORDER BY at";
+    let before = select(&url, legacy);
+    assert_eq!(before.len(), 5);
+
+    ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(select(&url, legacy), before);
+    let owners = select(
+        &url,
+        "SELECT proposal_id, source FROM config_sync_arrival ORDER BY at",
+    );
+    assert_eq!(owners, vec![vec!["NULL".to_owned(), "NULL".to_owned()]; 5]);
+    let receipts = select(
+        &url,
+        "SELECT organization_id, sync_id, environment_id, source_environment_id, proposal_id \
+         FROM config_sync_receipt ORDER BY sync_id",
+    );
+    let receipt = |sync: u8| {
+        vec![
+            "org".to_owned(),
+            format!("00000000-0000-4000-8000-000000000{sync}"),
+            uuid(2),
+            uuid(4),
+            "NULL".to_owned(),
+        ]
+    };
+    assert_eq!(receipts, [receipt(101), receipt(102)]);
+}
