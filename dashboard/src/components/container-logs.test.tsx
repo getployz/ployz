@@ -9,6 +9,8 @@ import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { ContainerLogs } from "./container-logs";
 
+const cursorOf = (init: RequestInit | undefined): string | undefined => (JSON.parse(String(init?.body)) as { cursor?: string }).cursor;
+
 it("retains logs and exhausted history across navigation, and reconnects only on failure", async () => {
   const sources: FakeEventSource[] = [];
   class FakeEventSource extends EventTarget {
@@ -17,9 +19,9 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     close() { this.closed = true; }
   }
   vi.stubGlobal("EventSource", FakeEventSource);
-  const fetchHistory = vi.fn(async (url: string, init: RequestInit) => {
+  const fetchHistory = vi.fn(async (_url: string, init: RequestInit) => {
     expect(init.signal?.aborted).toBe(false);
-    return Response.json({ rows: [], failures: [], cursor: url.includes("cursor=") ? null : "older" });
+    return Response.json({ rows: [], failures: [], cursor: cursorOf(init) === undefined ? "older" : null });
   });
   vi.stubGlobal("fetch", fetchHistory);
   const client = new QueryClient();
@@ -47,13 +49,13 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     // A short tail reads the Log Store's newest page at once.
     expect(fetchHistory).toHaveBeenCalledTimes(1);
-    expect(fetchHistory.mock.calls[0]?.[0]).not.toContain("cursor=");
+    expect(cursorOf(fetchHistory.mock.calls[0]?.[1])).toBeUndefined();
     fireEvent.change(screen.getByLabelText("Search loaded logs"), { target: { value: "missing" } });
     expect(screen.getByText("No logs match your filters")).toBeTruthy();
     expect(screen.getByText("Scroll up or press Home to check older logs.")).toBeTruthy();
     fireEvent.wheel(screen.getByLabelText("Container logs"), { deltaY: -100 });
     await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(2));
-    expect(fetchHistory.mock.calls[1]?.[0]).toContain("cursor=older");
+    expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("older");
     await waitFor(() => expect(stream.getSnapshot().historyPending).toBe(false));
     expect(screen.queryByText("Scroll up or press Home to check older logs.")).toBeNull();
     expect(stream.collection.size).toBe(1);
@@ -189,7 +191,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
   const line = (timestamp: string, level: string, message: string) => ({
     kind: "line", id: `store/hel-1/c/${timestamp}/0`, timestamp, machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", channel: "stderr", level, message,
   });
-  const fetchHistory = vi.fn(async (url: string) => Response.json(url.includes("cursor=") ? { rows: [line("10", "error", "boom")], failures: [], cursor: null } : {
+  const fetchHistory = vi.fn(async (_url: string, init: RequestInit) => Response.json(cursorOf(init) !== undefined ? { rows: [line("10", "error", "boom")], failures: [], cursor: null } : {
     rows: [line("50", "info", "listening"), line("60", "warn", "slow query"), { kind: "gap", id: "hel-1/c/gap/40", timestamp: "40", until: "45", machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", reason: "not_captured" }],
     failures: [{ machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." }],
     cursor: "page-2",
@@ -217,7 +219,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     expect(screen.queryByText("boom")).toBeNull();
     fireEvent.wheel(screen.getByLabelText("Container logs"), { deltaY: -100 });
     await waitFor(() => expect(screen.getByText("boom")).toBeTruthy());
-    expect(fetchHistory.mock.calls[1]?.[0]).toContain("cursor=page-2");
+    expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("page-2");
     expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "error" }));
     expect(screen.getByText("boom")).toBeTruthy();

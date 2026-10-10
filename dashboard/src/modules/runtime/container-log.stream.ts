@@ -117,7 +117,9 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           // A page behind a cursor never changes; the newest page is read fresh each time.
           staleTime: from === undefined ? 0 : Infinity,
           queryFn: async ({ signal }) => {
-            const response = await fetch(`/api/runtime/logs?${query}&history=1${from === undefined ? "" : `&cursor=${encodeURIComponent(from)}`}`, { signal: AbortSignal.any([signal, streamSignal]) });
+            const response = await fetch("/api/runtime/logs", {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from }), signal: AbortSignal.any([signal, streamSignal]),
+            });
             if (!response.ok) throw new Error("Could not load older logs.");
             return Schema.decodeUnknownSync(containerLogPageSchema)(await response.json());
           },

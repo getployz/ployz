@@ -89,6 +89,12 @@ test("history reads a removed deployment from every Server's store and pages pas
   assert.equal(second.cursor, null);
   await assert.rejects(history(t, { filter: { namespace: "env" }, cursor: "not ours" }), /history page/);
 });
+test("history narrowed only by Server and kind reads that Server's hooks", async () => {
+  const t = store(() => [described("a"), described("h", "pre_deploy_hook"), line("a", 20, "served"), line("h", 10, "migrated"), end(null)]);
+  const page = await history(t, { filter: { machineId: "m2", kind: "pre_deploy_hook" } });
+  assert.deepEqual(t.inputs.map(input => input.machine_id), ["m2"]);
+  assert.deepEqual(page.records.map(record => [record.source.machine_id, record.message]), [["m2", "migrated"]]);
+});
 test("a first page asked to start before a time reads every Server from there", async () => {
   const t = store(() => [described("a"), line("a", 40), end(null)]);
   const page = await history(t, { filter: { namespace: "env" }, before: "50" });

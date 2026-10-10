@@ -138,8 +138,7 @@ function selector(filter, containers) {
     : containers.find(container => container.labels["cloud.ployz.service.id"] === filter.serviceId);
   const service = filter.serviceName ?? (live && (live.labels["ployz.service.name"] ?? live.resolved_spec.name));
   if (filter.serviceId !== undefined && service === undefined) return null;
-  const chosen = { namespace: filter.namespace, service, deployment: filter.deploymentId, container_id: filter.containerId };
-  return Object.values(chosen).some(value => value !== undefined) ? chosen : null;
+  return { namespace: filter.namespace, service, deployment: filter.deploymentId, container_id: filter.containerId };
 }
 
 async function readPage(transport, machineId, chosen, state, limit, signal) {
