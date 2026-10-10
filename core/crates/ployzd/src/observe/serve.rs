@@ -1,8 +1,8 @@
-//! `observe.sock`: history queries and namespace forgets for ployzd.
+//! `observe.sock`: history queries for ployzd.
 //!
 //! A request is one frame, `[u32 BE length][JSON]`. A query answers with one
 //! frame per [`HistoryRow`], a heartbeat each second while it reads, and
-//! [`HistoryRow::End`] last. A forget answers with one JSON frame.
+//! [`HistoryRow::End`] last.
 
 use std::{
     io,
@@ -13,12 +13,12 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{ForgetLogsRequest, HistoryRow, LogHistoryRequest, LogsForgotten};
+use ployz_core::{HistoryRow, LogHistoryRequest};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, BufWriter},
     net::{UnixListener, UnixStream},
-    sync::{Semaphore, mpsc, oneshot},
+    sync::Semaphore,
 };
 
 use super::{
@@ -41,22 +41,9 @@ const STALL: Duration = Duration::from_secs(10);
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Request {
     Query(LogHistoryRequest),
-    Forget(ForgetLogsRequest),
 }
 
-pub(crate) type ForgetReply = Result<LogsForgotten, String>;
-
-/// A forget for the harvester, which owns what the store holds.
-pub(super) struct ForgetJob {
-    pub namespace: String,
-    pub reply: oneshot::Sender<io::Result<u32>>,
-}
-
-pub(super) async fn serve(
-    listener: UnixListener,
-    store: StoreRoot,
-    forgets: mpsc::Sender<ForgetJob>,
-) {
+pub(super) async fn serve(listener: UnixListener, store: StoreRoot) {
     let reading = Reading {
         store,
         bounds: Arc::new(Bounds::default()),
@@ -66,7 +53,7 @@ pub(super) async fn serve(
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(answer(stream, reading.clone(), forgets.clone()));
+                tokio::spawn(answer(stream, reading.clone()));
             }
             Err(error) => {
                 tracing::warn!(%error, "cannot accept a history reader");
@@ -85,7 +72,7 @@ struct Reading {
     stall: Duration,
 }
 
-async fn answer(mut stream: UnixStream, reading: Reading, forgets: mpsc::Sender<ForgetJob>) {
+async fn answer(mut stream: UnixStream, reading: Reading) {
     let request =
         match tokio::time::timeout(REQUEST_DEADLINE, read_frame(&mut stream, MAX_REQUEST)).await {
             Ok(Ok(Some(bytes))) => serde_json::from_slice::<Request>(&bytes),
@@ -101,7 +88,6 @@ async fn answer(mut stream: UnixStream, reading: Reading, forgets: mpsc::Sender<
         };
     let result = match request {
         Ok(Request::Query(request)) => answer_query(stream, reading, request).await,
-        Ok(Request::Forget(request)) => answer_forget(stream, forgets, request).await,
         Err(error) => {
             let row = HistoryRow::Error(format!("unreadable history request: {error}"));
             write_row(&mut stream, &row).await
@@ -186,29 +172,6 @@ async fn within(stall: Duration, write: impl Future<Output = io::Result<()>>) ->
             format!("the reader took no row for {} s", stall.as_secs()),
         )
     })?
-}
-
-async fn answer_forget(
-    mut stream: UnixStream,
-    forgets: mpsc::Sender<ForgetJob>,
-    request: ForgetLogsRequest,
-) -> io::Result<()> {
-    let (reply, replied) = oneshot::channel();
-    let job = ForgetJob {
-        namespace: request.namespace,
-        reply,
-    };
-    let answer: ForgetReply = if forgets.send(job).await.is_err() {
-        Err("the harvester stopped".into())
-    } else {
-        match replied.await {
-            Ok(Ok(containers)) => Ok(LogsForgotten { containers }),
-            Ok(Err(error)) => Err(error.to_string()),
-            Err(_) => Err("the harvester stopped".into()),
-        }
-    };
-    let bytes = serde_json::to_vec(&answer).map_err(io::Error::other)?;
-    write_frame(&mut stream, &bytes).await
 }
 
 async fn write_row(stream: &mut (impl AsyncWrite + Unpin), row: &HistoryRow) -> io::Result<()> {

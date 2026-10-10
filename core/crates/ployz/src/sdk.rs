@@ -623,20 +623,6 @@ impl Session {
         self.until_closed(client.remove_volumes(request)).await
     }
 
-    /// Ask every Server's Log Store to drop `namespace`'s logs. A Server that
-    /// misses it ages them out under its normal cap.
-    pub(crate) async fn forget_logs(&self, namespace: &Namespace) {
-        let Ok(mut client) = self.client() else {
-            return;
-        };
-        let _ = self
-            .until_closed(async {
-                client.forget_logs(namespace).await;
-                Ok(())
-            })
-            .await;
-    }
-
     /// Which Machines hold each of the Docker Volumes `sought`, naming every Machine
     /// that did not answer.
     ///

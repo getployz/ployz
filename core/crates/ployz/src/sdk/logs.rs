@@ -1,8 +1,9 @@
 //! On-demand Container log transport for SDK readers.
 use ployz_core::{
-    ContainerId, ContainerLogsRequest, HistoryContainer, HistoryGapReason, HistoryRow,
-    HistoryStream, LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata,
-    LogsOptions, MachineId, MachineTarget, OpaquePayload, RpcError, RpcErrorCode, log_level, op,
+    ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LiveLogTarget,
+    LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata, LogsOptions,
+    MachineId, MachineTarget, OpaquePayload, RpcError, RpcErrorCode, TailLogsRequest, log_level,
+    op,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -115,8 +116,8 @@ impl Session {
         }
         let client = self.client()?;
         let target = MachineTarget::from(&input.machine_id);
-        let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-            container_id: input.container_id,
+        let request = op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Container(input.container_id),
             options: LogsOptions {
                 tail: input.tail,
                 follow: input.follow,
@@ -131,7 +132,7 @@ impl Session {
         let stream = self
             .until_closed(async {
                 client
-                    .container_logs_stream(&target, request)
+                    .tail_logs_stream(&target, request)
                     .await
                     .map_err(|error| RpcError::from(ConnectError::Rpc(error)))
             })

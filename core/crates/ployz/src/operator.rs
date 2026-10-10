@@ -11,10 +11,10 @@ use std::{
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
-    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
-    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
-    QualifiedService, ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError,
+    ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
+    FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
+    MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, QualifiedService,
+    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, TailLogsRequest,
     op, resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
@@ -641,8 +641,8 @@ pub async fn open_service_logs(
         }
         for container in containers {
             let observation = container.as_observation();
-            let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                container_id: observation.container_id,
+            let request = op::TailLogs::into_request(TailLogsRequest {
+                target: LiveLogTarget::Container(observation.container_id),
                 options: options.clone(),
             })
             .encode()?;
@@ -652,7 +652,7 @@ pub async fn open_service_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .container_logs_stream(&target, request)
+                    .tail_logs_stream(&target, request)
                     .await
                     .map(|stream| stream_input(identity, stream))
             })
@@ -863,8 +863,8 @@ pub async fn open_machine_logs(
     let mut inputs = Vec::new();
     for service in services {
         for machine in &machines {
-            let request = op::MachineLogs::into_request(MachineLogsRequest {
-                service,
+            let request = op::TailLogs::into_request(TailLogsRequest {
+                target: LiveLogTarget::Machine(service),
                 options: options.clone(),
             })
             .encode()?;
@@ -874,7 +874,7 @@ pub async fn open_machine_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .machine_logs_stream(&target, request)
+                    .tail_logs_stream(&target, request)
                     .await
                     .map(|stream| stream_input(identity, stream))
             })

@@ -1139,7 +1139,7 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
 }
 
 #[tokio::test]
-async fn cloud_runner_forgets_an_environment_s_logs_once_its_removal_applies() {
+async fn cloud_runner_applies_an_environment_removal() {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
         DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
@@ -1174,7 +1174,6 @@ async fn cloud_runner_forgets_an_environment_s_logs_once_its_removal_applies() {
         )
         .unwrap();
     let service = DeployService::new(machine('a', "one"));
-    let forgotten = Arc::clone(&service.forgotten);
     let (address, server) = listening(service).await;
     let run = |id: DeploymentId, runner: &str| {
         ployz::sdk::run_deployment(
@@ -1204,10 +1203,6 @@ async fn cloud_runner_forgets_an_environment_s_logs_once_its_removal_applies() {
         .unwrap();
     let ran = run(deployed, "cloud-run-1").await.unwrap();
     assert_eq!(ran.status, DeploymentStatus::Applied);
-    assert!(
-        forgotten.lock().unwrap().is_empty(),
-        "a deploy keeps its logs"
-    );
 
     let removal = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
     store
@@ -1226,7 +1221,6 @@ async fn cloud_runner_forgets_an_environment_s_logs_once_its_removal_applies() {
     let ran = run(removal, "cloud-run-2").await.unwrap();
     assert_eq!(ran.status, DeploymentStatus::Applied);
     assert!(ran.remove);
-    assert_eq!(*forgotten.lock().unwrap(), ["shop-production"]);
     server.abort();
 }
 

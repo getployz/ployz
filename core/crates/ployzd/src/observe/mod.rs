@@ -25,7 +25,7 @@ pub use client::ObserveClient;
 use frame::{Event, Frames, Stream};
 use fs2::FileExt;
 use layout::{LogFileName, StoreRoot};
-use tokio::{net::UnixListener, sync::mpsc};
+use tokio::net::UnixListener;
 
 const DOCKER_LOG_FILE: &str = "container.log";
 pub const SOCKET_FILE: &str = "observe.sock";
@@ -54,9 +54,8 @@ pub async fn run(run_dir: &Path) -> io::Result<()> {
     store.prepare()?;
     let listener = bind_socket(&run_dir.join(SOCKET_FILE))?;
     tracing::info!(store = %store.path().display(), "holding Ployz container logs");
-    let (forget, forgets) = mpsc::channel(16);
-    tokio::spawn(serve::serve(listener, store.clone(), forget));
-    harvest::Harvester::run(docker, &docker_root, store, forgets).await
+    tokio::spawn(serve::serve(listener, store.clone()));
+    harvest::Harvester::run(docker, &docker_root, store).await
 }
 
 fn lock_store(store: &StoreRoot) -> io::Result<File> {

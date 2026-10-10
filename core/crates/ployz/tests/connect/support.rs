@@ -479,8 +479,7 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
     type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
-    type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -1235,13 +1234,6 @@ impl MachineRpc for DiscoveryService {
         )))
     }
 
-    async fn container_logs(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogsStream>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     /// Every Server's Log Store holds one line of a removed `app/gone`.
     async fn log_history(
         &self,
@@ -1290,17 +1282,10 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(tokio_stream::iter(payloads)))
     }
 
-    async fn forget_logs(
+    async fn tail_logs(
         &self,
         _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
-    async fn machine_logs(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::MachineLogsStream>, Status> {
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
         self.stream_opens.fetch_add(1, Ordering::SeqCst);
         Ok(Response::new(tokio_stream::empty()))
     }

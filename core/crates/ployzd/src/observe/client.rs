@@ -4,12 +4,12 @@
 
 use std::{io, path::PathBuf, time::Duration};
 
-use ployz_core::{ForgetLogsRequest, LogHistoryRequest, LogsForgotten, OpaquePayload};
+use ployz_core::{LogHistoryRequest, OpaquePayload};
 use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
-use super::serve::{ForgetReply, Request, read_frame, write_frame};
+use super::serve::{Request, read_frame, write_frame};
 use crate::logs::RpcStream;
 
 const DEADLINE: Duration = Duration::from_secs(3);
@@ -50,20 +50,6 @@ impl ObserveClient {
             }
         });
         Ok(ReceiverStream::new(receiver))
-    }
-
-    /// # Errors
-    ///
-    /// Returns `Unavailable` when ployz-observe does not answer within 3 s,
-    /// and `Internal` when it could not forget the namespace.
-    pub async fn forget(&self, request: ForgetLogsRequest) -> Result<LogsForgotten, Status> {
-        let mut stream = self.send(&Request::Forget(request)).await?;
-        let reply = deadline(read_frame(&mut stream, MAX_ROW))
-            .await?
-            .ok_or_else(|| Status::unavailable("ployz-observe closed without answering"))?;
-        serde_json::from_slice::<ForgetReply>(&reply)
-            .map_err(|error| Status::internal(format!("unreadable forget reply: {error}")))?
-            .map_err(Status::internal)
     }
 
     async fn send(&self, request: &Request) -> Result<UnixStream, Status> {

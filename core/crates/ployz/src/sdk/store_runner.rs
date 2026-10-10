@@ -225,10 +225,6 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
-        let forget = claimed
-            .deployment
-            .remove
-            .then(|| claimed.intent.namespace.clone());
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -272,11 +268,7 @@ impl Run {
             Ok((outcome, progress)) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
-                    let removed = self.renewing(remove_volumes(session, deletes), || ()).await;
-                    if let Some(namespace) = &forget {
-                        session.forget_logs(namespace).await;
-                    }
-                    removed
+                    self.renewing(remove_volumes(session, deletes), || ()).await
                 } else {
                     Vec::new()
                 };

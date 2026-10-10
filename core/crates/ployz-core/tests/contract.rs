@@ -1149,7 +1149,7 @@ fn stream_frames_round_trip_binary_exec_payloads_and_control_kinds() {
 
 #[test]
 fn streaming_requests_keep_typed_control_options_outside_raw_frames() {
-    use ployz_core::{ContainerLogsRequest, LogsOptions, MachineLogService, MachineLogsRequest};
+    use ployz_core::{LiveLogTarget, LogsOptions, MachineLogService, TailLogsRequest};
 
     let options = LogsOptions {
         follow: true,
@@ -1158,16 +1158,89 @@ fn streaming_requests_keep_typed_control_options_outside_raw_frames() {
         until_unix_seconds: Some(1_786_701_600),
     };
     for request in [
-        op::ContainerLogs::into_request(ContainerLogsRequest {
-            container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Container(
+                ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+            ),
             options: options.clone(),
         }),
-        op::MachineLogs::into_request(MachineLogsRequest {
-            service: MachineLogService::Ployz,
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Machine(MachineLogService::Ployz),
             options,
         }),
     ] {
         assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    }
+}
+
+#[test]
+fn tail_logs_wire_names_one_target_and_retires_the_split_commands() {
+    use ployz_core::{LiveLogTarget, LogsOptions, MachineLogService, TailLogsRequest};
+
+    let container_id = "c".repeat(64);
+    let options = LogsOptions {
+        follow: false,
+        tail: 10,
+        since_nanos: None,
+        until_unix_seconds: None,
+    };
+    let wire = |target: serde_json::Value| {
+        OpaquePayload::new(
+            serde_json::to_vec(&json!({
+                "protocol_major": PROTOCOL_MAJOR,
+                "command": "tail_logs",
+                "payload": { "target": target, "options": { "follow": false, "tail": 10 } },
+            }))
+            .unwrap(),
+        )
+    };
+
+    assert_eq!(
+        wire(json!({ "container": container_id }))
+            .decode_request()
+            .unwrap(),
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Container(ContainerId::parse(container_id.clone()).unwrap()),
+            options: options.clone(),
+        })
+    );
+    assert_eq!(
+        wire(json!({ "machine": "corrosion" }))
+            .decode_request()
+            .unwrap(),
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Machine(MachineLogService::Corrosion),
+            options,
+        })
+    );
+    for target in [
+        json!({ "machine": "journald" }),
+        json!({ "container": "not-a-container-id" }),
+        json!({ "volume": container_id }),
+        json!({ "container": container_id, "machine": "ployz" }),
+        json!("ployz"),
+    ] {
+        assert!(
+            matches!(
+                wire(target.clone()).decode_request(),
+                Err(CodecError::DecodeJson(_))
+            ),
+            "{target} must not decode"
+        );
+    }
+    for retired in ["container_logs", "machine_logs", "forget_logs"] {
+        let payload = OpaquePayload::new(
+            serde_json::to_vec(&json!({
+                "protocol_major": PROTOCOL_MAJOR,
+                "command": retired,
+                "payload": {},
+            }))
+            .unwrap(),
+        );
+        assert!(matches!(
+            payload.decode_request(),
+            Err(CodecError::UnsupportedCommand(command)) if command == retired
+        ));
     }
 }
 

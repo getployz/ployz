@@ -8,7 +8,7 @@ use bollard::{
 use chrono::DateTime;
 use futures_util::{Stream, StreamExt};
 use ployz_core::{
-    ContainerLogsRequest, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
+    ContainerId, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
     MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
 };
 use serde_json::Value;
@@ -143,10 +143,11 @@ impl ContainerRuntime {
         &self,
         machine_id: &MachineId,
         machine_name: &MachineName,
-        request: ContainerLogsRequest,
+        container_id: ContainerId,
+        options: &LogsOptions,
     ) -> Result<RpcStream, Status> {
         let observation = self
-            .inspect_managed(&request.container_id, machine_id)
+            .inspect_managed(&container_id, machine_id)
             .await
             .map_err(docker_status)?;
         let metadata = LogMetadata {
@@ -159,8 +160,8 @@ impl ContainerRuntime {
             machine_id: *machine_id,
             machine_name: machine_name.clone(),
         };
-        let source = self.raw_logs(request.container_id.as_str(), &request.options)?;
-        Ok(serve_logs(source, metadata, request.options.follow))
+        let source = self.raw_logs(container_id.as_str(), options)?;
+        Ok(serve_logs(source, metadata, options.follow))
     }
 
     #[allow(clippy::result_large_err)]

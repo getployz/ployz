@@ -364,9 +364,17 @@ pub struct LogsOptions {
     pub until_unix_seconds: Option<i64>,
 }
 
+/// What a live log read follows: one Container's output, or one service on the Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ContainerLogsRequest {
-    pub container_id: ContainerId,
+#[serde(rename_all = "snake_case")]
+pub enum LiveLogTarget {
+    Container(ContainerId),
+    Machine(MachineLogService),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TailLogsRequest {
+    pub target: LiveLogTarget,
     pub options: LogsOptions,
 }
 
@@ -430,23 +438,6 @@ pub enum LogDirection {
     Forward,
     /// Newest first: the last rows of the range.
     Backward,
-}
-
-/// Delete every stored container whose metadata names `namespace`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ForgetLogsRequest {
-    pub namespace: String,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct LogsForgotten {
-    pub containers: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MachineLogsRequest {
-    pub service: MachineLogService,
-    pub options: LogsOptions,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1068,7 +1059,6 @@ define_responses! {
     MachineRemoved(MachineRemoved) => "machine_removed";
     WireGuardInspected(WireGuardInspected) => "wireguard_inspected";
     ResetAccepted(ResetAccepted) => "reset_accepted";
-    LogsForgotten(LogsForgotten) => "logs_forgotten";
     Error(RpcError) => "error";
 }
 

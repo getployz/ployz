@@ -214,20 +214,19 @@ fn failure_causes(error: &ExecutionError) -> Vec<String> {
 
 async fn log_tail(client: &Client, machine: MachineId, container: ContainerId) -> Vec<String> {
     let read = async {
-        let request =
-            ployz_core::op::ContainerLogs::into_request(ployz_core::ContainerLogsRequest {
-                container_id: container,
-                options: ployz_core::LogsOptions {
-                    follow: false,
-                    tail: 10,
-                    since_nanos: None,
-                    until_unix_seconds: None,
-                },
-            })
-            .encode()
-            .ok()?;
+        let request = ployz_core::op::TailLogs::into_request(ployz_core::TailLogsRequest {
+            target: ployz_core::LiveLogTarget::Container(container),
+            options: ployz_core::LogsOptions {
+                follow: false,
+                tail: 10,
+                since_nanos: None,
+                until_unix_seconds: None,
+            },
+        })
+        .encode()
+        .ok()?;
         let mut stream = client
-            .container_logs_stream(&ployz_core::MachineTarget::from(&machine), request)
+            .tail_logs_stream(&ployz_core::MachineTarget::from(&machine), request)
             .await
             .ok()?;
         let mut lines = std::collections::VecDeque::new();
