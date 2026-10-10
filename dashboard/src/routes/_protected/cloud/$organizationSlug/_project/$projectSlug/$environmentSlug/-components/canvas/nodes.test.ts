@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { DiffView, RowId, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { ConfigListing, DiffView, RowId, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
+import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { buildStoreEdges, buildStoreNodes, canvasNodeOf, shownNodeIds, volumeTrays } from "./nodes";
 
@@ -32,12 +33,17 @@ describe("Config Store nodes", () => {
     volume("orphan", [{ service: "gone", path: "/data" }]),
   ];
   // The next Deploy mounts `shared` into web; postgres's mount of it stays.
-  const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "web", lifecycle: "update", comparison: "head", data: null,
+  const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "web", lifecycle: "update", restarts: [], comparison: "head", data: null,
     settings: [{ path: "web.mounts.shared", kind: "add", before: null, after: "/srv", canRestore: true }] }] });
   const { trays, unmounted } = volumeTrays(listings, volumes, diff);
+  const config = (id: string, mounts: { service: string; dir: string }[]): ConfigListing =>
+    ({ id, name: id, files: [], mounts, deployed: true, change: null });
+  const configs = configTrays(listings, [config("sentry", [{ service: "web", dir: "/etc/sentry" }]), config("spare", [])], diff);
   const store = {
-    services: listings.map((service) => ({ service, domains: [], changeCount: 0, runtimeIdentity: null, desiredReplicas: null, trays: trays.get(service.id) ?? [] })),
+    services: listings.map((service) => ({ service, domains: [], changeCount: 0, runtimeIdentity: null, desiredReplicas: null,
+      trays: trays.get(service.id) ?? [], configTrays: configs.trays.get(service.id) ?? [] })),
     unmountedVolumes: unmounted,
+    unmountedConfigs: configs.unmounted,
   };
 
   it("puts a mounted Volume in a tray under each Service that mounts it, naming the others", () => {
@@ -51,15 +57,16 @@ describe("Config Store nodes", () => {
     expect(trays.get("s1")?.map((tray) => [tray.volume.id, tray.mountChanged])).toEqual([["shared", false], ["own", false]]);
   });
 
-  it("draws only a Volume nothing here mounts as a node, and grows each Service by its trays", () => {
+  it("draws only a Volume or Config nothing here mounts as a node, and grows each Service by its trays", () => {
     const positions = [createCanvasPosition({ resourceId: "s1", x: 480, y: 96 })];
     const nodes = buildStoreNodes(store, positions, "e");
     expect(nodes.map((node) => [node.id, node.type])).toEqual([
-      ["s1", "storeService"], ["s2", "storeService"], ["loose", "storeVolume"], ["orphan", "storeVolume"],
+      ["s1", "storeService"], ["s2", "storeService"], ["loose", "storeVolume"], ["orphan", "storeVolume"], ["spare", "storeConfig"],
     ]);
     expect(nodes[0]).toMatchObject({ position: { x: 480, y: 96 }, height: 144 + 2 * 40 });
-    expect(nodes[1]?.height).toBe(144 + 40);
+    expect(nodes[1]?.height).toBe(144 + 2 * 40);
     expect(nodes[2]?.data).toMatchObject({ resourceType: "volume", resourceId: "loose", environmentId: "e" });
+    expect(nodes[4]?.data).toMatchObject({ resourceType: "config", resourceId: "spare", environmentId: "e" });
   });
 
   it("places a new node clear of each node's whole height, trays included", () => {
@@ -79,6 +86,7 @@ describe("Config Store nodes", () => {
   it("finds the node that shows a selection: a tray's first Service, else the node itself", () => {
     const nodes = buildStoreNodes(store, [], "e");
     expect(canvasNodeOf(nodes, "shared")).toBe("s1");
+    expect(canvasNodeOf(nodes, "sentry")).toBe("s2");
     expect(canvasNodeOf(nodes, "s2")).toBe("s2");
     expect(canvasNodeOf(nodes, "loose")).toBe("loose");
     expect(canvasNodeOf(nodes, "unknown")).toBeNull();

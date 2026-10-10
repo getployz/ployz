@@ -105,7 +105,7 @@ fn decode<T: DeserializeOwned + Serialize>(value: Value) -> Result<T, ConfigErro
     Ok(decoded)
 }
 
-fn redact_operation(operation: &mut DeployOperation) -> Result<(), ConfigError> {
+fn redact_operation(operation: &mut DeployOperation) {
     let spec = match operation {
         DeployOperation::RunContainer { spec, .. } | DeployOperation::RunHook { spec, .. } => spec,
         DeployOperation::ReplaceContainer(replacement) => &mut replacement.spec,
@@ -114,24 +114,13 @@ fn redact_operation(operation: &mut DeployOperation) -> Result<(), ConfigError> 
         | DeployOperation::StopContainer { .. }
         | DeployOperation::RemoveContainer { .. }
         | DeployOperation::StopHook { .. }
-        | DeployOperation::RemoveVolume { .. } => return Ok(()),
+        | DeployOperation::RemoveVolume { .. } => return,
     };
     spec.container.environment.clear();
-    let mut configs = spec.configs().to_vec();
-    for config in &mut configs {
-        config.content.clear();
+    if let Some(hook) = &mut spec.pre_deploy {
+        hook.environment.clear();
     }
-    let mut requested = spec.to_requested();
-    requested
-        .set_config_graph(
-            crate::ServiceConfigGraph::parse(configs, spec.config_mounts().to_vec())
-                .map_err(|_| invalid())?,
-        )
-        .map_err(|_| invalid())?;
-    *spec = requested
-        .to_resolved(spec.service_id, spec.update.clone())
-        .map_err(|_| invalid())?;
-    Ok(())
+    spec.mount_graph.redact_config_content();
 }
 
 /// Validate the current SDK preview and remove resolved environment/config values.
@@ -139,11 +128,17 @@ fn redact_operation(operation: &mut DeployOperation) -> Result<(), ConfigError> 
 /// # Errors
 /// Rejects malformed SDK values and unknown fields without echoing their contents.
 pub fn parse_runtime_preview(value: Value) -> Result<DeployPreview, ConfigError> {
-    let mut preview: DeployPreview = decode(value)?;
+    Ok(redacted_runtime_preview(decode(value)?))
+}
+
+/// Preview without resolved environment values or Config content, whatever
+/// Store version recorded it.
+#[must_use]
+pub fn redacted_runtime_preview(mut preview: DeployPreview) -> DeployPreview {
     for row in &mut preview.operations {
-        redact_operation(&mut row.operation)?;
+        redact_operation(&mut row.operation);
     }
-    Ok(preview)
+    preview
 }
 
 /// Validate one version-1 SDK outcome against its exact preview, as
@@ -200,6 +195,7 @@ pub fn project_runtime_outcome(
     if completed.len() + usize::from(failed.is_some()) + pending.len() != preview.operations.len() {
         return Err(invalid());
     }
+    let preview = redacted_runtime_preview(preview.clone());
     let mut matched = vec![false; preview.operations.len()];
     let mut services: BTreeMap<ServiceName, Progress> = BTreeMap::new();
     for (mut operation, progress) in completed
@@ -216,7 +212,7 @@ pub fn project_runtime_outcome(
                 .map(|operation| (operation, Progress::Unattempted)),
         )
     {
-        redact_operation(&mut operation)?;
+        redact_operation(&mut operation);
         // ponytail: quadratic matching for bounded plans; index operation identities if large plans make this measurable.
         let (index, row) = preview
             .operations

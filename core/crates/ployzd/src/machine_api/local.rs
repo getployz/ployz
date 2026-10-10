@@ -379,7 +379,7 @@ impl MachineRpc for MachineService {
                 if request.environment == EnvironmentValues::Redacted {
                     observations
                         .iter_mut()
-                        .for_each(ContainerObservation::redact_environment);
+                        .for_each(ContainerObservation::redact_values);
                 }
                 respond(ContainerList {
                     containers: observations,

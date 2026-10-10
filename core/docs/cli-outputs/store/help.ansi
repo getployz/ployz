@@ -9,8 +9,8 @@ Commands:
   ctx         Show where commands act, or manage local contexts
   deploy      Publish staged changes if needed, then deploy them and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
-  diff        Show staged Service and Volume changes
-  discard     Undo staged Service, Volume or Setting changes
+  diff        Show staged Service, Volume and Config changes
+  discard     Undo staged Service, Volume, Config or Setting changes
   domain      Manage public domains
   env         Manage Environments and Branches
   exec        Run a command in a Service's container
@@ -77,8 +77,8 @@ Commands:
   ctx         Show where commands act, or manage local contexts
   deploy      Publish staged changes if needed, then deploy them and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
-  diff        Show staged Service and Volume changes
-  discard     Undo staged Service, Volume or Setting changes
+  diff        Show staged Service, Volume and Config changes
+  discard     Undo staged Service, Volume, Config or Setting changes
   domain      Manage public domains
   env         Manage Environments and Branches
   exec        Run a command in a Service's container
@@ -127,8 +127,8 @@ Commands:
   ctx         Show where commands act, or manage local contexts
   deploy      Publish staged changes if needed, then deploy them and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
-  diff        Show staged Service and Volume changes
-  discard     Undo staged Service, Volume or Setting changes
+  diff        Show staged Service, Volume and Config changes
+  discard     Undo staged Service, Volume, Config or Setting changes
   domain      Manage public domains
   env         Manage Environments and Branches
   exec        Run a command in a Service's container

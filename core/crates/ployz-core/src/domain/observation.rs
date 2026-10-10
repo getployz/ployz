@@ -335,8 +335,9 @@ impl ContainerObservation {
         QualifiedService::new(self.namespace.clone(), self.service_name().clone())
     }
 
-    /// Replace every Service and pre-deploy hook environment value, keeping the keys.
-    pub fn redact_environment(&mut self) {
+    /// Replace every Service and pre-deploy hook environment value, keeping the keys,
+    /// and empty every Config's content, keeping its name and mounts.
+    pub fn redact_values(&mut self) {
         self.try_update(|parts| {
             let spec = &mut parts.resolved_spec;
             let hook = spec.pre_deploy.iter_mut().map(|hook| &mut hook.environment);
@@ -345,6 +346,7 @@ impl ContainerObservation {
                     .values_mut()
                     .for_each(|value| *value = REDACTED_ENVIRONMENT_VALUE.into());
             }
+            spec.mount_graph.redact_config_content();
         })
         .expect("environment redaction preserves Container identity");
     }
@@ -771,6 +773,61 @@ mod tests {
 
     fn hook_container_id() -> ContainerId {
         ContainerId::parse("2".repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn redact_values_clears_config_content_and_keeps_mounts() {
+        let mut observed: ContainerObservation = serde_json::from_value(serde_json::json!({
+            "container_id": "a".repeat(64),
+            "display_name": "api-test",
+            "machine_id": "b".repeat(32),
+            "namespace": "app",
+            "kind": "service_container",
+            "runtime": { "state": "created" },
+            "resolved_spec": {
+                "service_id": "c".repeat(32),
+                "name": "api",
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": {
+                    "image": "alpine:3.23.3",
+                    "environment": { "TOKEN": "service-secret" },
+                    "pull_policy": "missing",
+                    "config_mounts": [{ "config_name": "settings", "target": "/etc/settings.conf" }]
+                },
+                "configs": [{ "name": "settings", "content": b"token=config-secret".to_vec() }]
+            }
+        }))
+        .unwrap();
+        let mounts = observed.resolved_spec.config_mounts().to_vec();
+
+        observed.redact_values();
+
+        assert_eq!(
+            observed.resolved_spec.configs(),
+            [crate::ConfigSpec {
+                name: "settings".into(),
+                content: Vec::new(),
+            }]
+        );
+        assert_eq!(observed.resolved_spec.config_mounts(), mounts.as_slice());
+        assert_eq!(
+            observed
+                .resolved_spec
+                .container
+                .environment
+                .get("TOKEN")
+                .map(String::as_str),
+            Some(crate::REDACTED_ENVIRONMENT_VALUE)
+        );
+        let wire = serde_json::to_value(&observed).unwrap();
+        assert_eq!(
+            wire.pointer("/resolved_spec/configs"),
+            Some(&serde_json::json!([{ "name": "settings", "content": [] }]))
+        );
+        assert_eq!(
+            serde_json::from_value::<ContainerObservation>(wire).unwrap(),
+            observed
+        );
     }
 
     #[test]

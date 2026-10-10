@@ -2,6 +2,7 @@
 //! put them in Saved State, or undo them.
 
 use clap::{ArgMatches, Command};
+use ployz_core::ServiceName;
 use ployz_store::{DiffQuery, Discard, Publish, SettingPath};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
@@ -9,7 +10,7 @@ use super::{Error, leaf_matches};
 use crate::cli::{positional, value};
 
 pub(crate) fn diff_command() -> Command {
-    scoped(Command::new("diff").about("Show staged Service and Volume changes"))
+    scoped(Command::new("diff").about("Show staged Service, Volume and Config changes"))
 }
 
 pub(crate) fn publish_command() -> Command {
@@ -18,10 +19,10 @@ pub(crate) fn publish_command() -> Command {
 }
 
 pub(crate) fn discard_command() -> Command {
-    scoped(Command::new("discard").about("Undo staged Service, Volume or Setting changes"))
+    scoped(Command::new("discard").about("Undo staged Service, Volume, Config or Setting changes"))
         .arg(
             positional("path", false)
-                .help("SERVICE, SERVICE.SETTING or volumes.VOLUME [default: everything]"),
+                .help("SERVICE, SERVICE.SETTING, volumes.VOLUME, configs.CONFIG or a `ployz diff` row [default: everything]"),
         )
         .arg(version())
 }
@@ -66,6 +67,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                     from(row.row.as_ref())
                 ));
             }
+            restarts(change);
             match change.data {
                 Some(ployz_store::DataEffect::Deleted) => crate::ui::stream(format_args!(
                     "  deletes this Volume's data on the Servers: deploy asks to accept it by name"
@@ -132,6 +134,14 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             crate::ui::hint(&crate::ui::Hint::Next(hint.clone()));
         }
     })
+}
+
+/// The Services a Config change restarts, under its rows.
+pub(super) fn restarts(change: &ployz_store::NodeChange) {
+    if !change.restarts.is_empty() {
+        let services: Vec<&str> = change.restarts.iter().map(ServiceName::as_str).collect();
+        crate::ui::stream(format_args!("  restarts {}", services.join(", ")));
+    }
 }
 
 pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {

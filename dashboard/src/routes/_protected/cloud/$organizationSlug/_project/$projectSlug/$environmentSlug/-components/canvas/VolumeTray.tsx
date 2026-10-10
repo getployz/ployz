@@ -1,6 +1,6 @@
 import { createContext, use, useState, type ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { HardDriveIcon, LinkIcon } from "lucide-react";
+import { FolderIcon, HardDriveIcon, LinkIcon } from "lucide-react";
 import { listNames } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { useNodeLighting } from "../deployment-page";
@@ -9,6 +9,7 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../enviro
 import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
+import type { MountedConfig } from "#/modules/config-store/store-configs";
 import { SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
@@ -73,7 +74,32 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   );
 }
 
-/** A Service's Volume trays, under its card. */
-export function ServiceTrays({ trays, selectedNodeId }: { trays: MountedVolume[]; selectedNodeId: string | null }) {
-  return trays.map((tray) => <VolumeTray key={tray.volume.id} tray={tray} selected={tray.volume.id === selectedNodeId} />);
+export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { tray: MountedConfig; selected: boolean }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const lighting = useNodeLighting(config.id);
+  const surface = stagedSurface(lighting, config.change ?? (mountChanged ? "update" : null));
+  return (
+    <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: config.id }}
+      search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
+      data-canvas-node={config.id} aria-current={selected ? "page" : undefined} draggable={false}
+      preload="intent"
+      className={cn(
+        "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
+        surface && STAGED_CLASSES[surface].surface,
+        lighting === null && "opacity-40",
+        selected && "ring-2 ring-foreground",
+      )}>
+      <FolderIcon className="size-3.5 shrink-0" />
+      <span className={cn("shrink-0", surface && STAGED_CLASSES[surface].name)}>{config.name}</span>
+      <span className="min-w-0 flex-1 truncate text-right font-mono">{surface === "destructive" ? "Removing" : dir}</span>
+    </Link>
+  );
+}
+
+export function ServiceTrays({ trays, configTrays, selectedNodeId }:
+  { trays: MountedVolume[]; configTrays: MountedConfig[]; selectedNodeId: string | null }) {
+  return <>
+    {configTrays.map((tray) => <ConfigTray key={tray.config.id} tray={tray} selected={tray.config.id === selectedNodeId} />)}
+    {trays.map((tray) => <VolumeTray key={tray.volume.id} tray={tray} selected={tray.volume.id === selectedNodeId} />)}
+  </>;
 }
