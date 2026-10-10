@@ -547,6 +547,45 @@ fn a_proposal_already_there_stops_the_open_naming_both() {
     );
 }
 
+/// The legacy table keys no pull request: a row standing beside a frozen one for the
+/// same Destination and pull request stops the open, naming both, until one goes.
+#[test]
+fn two_conditional_syncs_on_one_pull_request_stop_the_open_naming_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::load();
+    let url = legacy(&dir, "store", &fixture);
+    let twin = "00000000-0000-4000-8000-000000000062";
+    run(
+        &url,
+        &format!(
+            "INSERT INTO config_conditional_sync (id, organization_id, environment_id, state, \
+             pr_environment_id, repository_id, number, target_branch, working_revision, \
+             merge_commit, synced_at, stored) \
+             SELECT '{twin}', organization_id, environment_id, 'standing', NULL, repository_id, \
+             number, target_branch, working_revision, NULL, synced_at, stored \
+             FROM config_conditional_sync WHERE id = '{FROZEN}'"
+        ),
+    );
+    let before = dump(&url, LEGACY_TABLES);
+    let error = Storage::open(&url).err().expect("the open fails closed");
+    assert!(error.message.contains(FROZEN), "{}", error.message);
+    assert!(error.message.contains(twin), "{}", error.message);
+    assert!(error.message.contains("delete one"), "{}", error.message);
+    assert!(
+        dump(&url, LEGACY_TABLES) == before,
+        "a failed open changed the Store"
+    );
+    run(
+        &url,
+        &format!("DELETE FROM config_conditional_sync WHERE id = '{twin}'"),
+    );
+    Storage::open(&url).unwrap();
+    assert!(
+        dump_all(&url) == clean(&dir, &fixture),
+        "a repaired open differs from a clean one"
+    );
+}
+
 #[test]
 fn opens_at_once_convert_once() {
     if !postgres() {

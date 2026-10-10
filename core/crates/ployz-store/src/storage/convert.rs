@@ -235,10 +235,25 @@ fn collide(
         return Ok(());
     };
     let proposal = row.text(0)?;
-    Err(error::conflict(
+    // The legacy table has no key on its pull request: two of its rows may wait on
+    // the same one for the same Destination, and only one becomes the offer.
+    let converted = !tx
+        .query(
+            "SELECT id FROM config_conditional_sync WHERE id = ?1",
+            &[proposal.into()],
+        )?
+        .is_empty();
+    let message = if converted {
+        format!(
+            "Conditional Syncs {proposal} and {id} wait on the same pull request in the same Environment: delete one, then open the Config Store again"
+        )
+    } else {
         format!(
             "Conditional Sync {id} can't become an offer: proposal {proposal} is already there. Remove it, then open the Config Store again"
-        ),
+        )
+    };
+    Err(error::conflict(
+        message,
         json!({ "conditional_sync": id, "proposal": proposal }),
     ))
 }
