@@ -38,12 +38,14 @@ it("keeps only the newest lines past the limit, and a batch with repeats lands o
   await collection.cleanup();
 });
 
-it("live lines that overflowed while waiting keep only the page's lines as new as they are", async () => {
+it("live lines that overflowed while waiting land beside the page's lines as new as they are, the larger copy of a group kept", async () => {
   const collection = createCollection(localOnlyCollectionOptions({ id: "log-restart-test", getKey: (row: ContainerLogRow) => row.id }));
   await collection.preload();
-  appendContainerLogs(collection, [row("a", "1", 0, "store"), row("a", "10"), row("b", "12")]);
-  restartContainerLogs(collection, [row("a", "11"), row("b", "13")]);
-  expect([...collection.values()].map(kept => kept.timestamp)).toEqual(["12"]);
+  appendContainerLogs(collection, [row("a", "1", 0, "store"), row("a", "10"), row("b", "12", 0, "store"), row("c", "14", 0, "store")]);
+  restartContainerLogs(collection, [row("a", "11"), row("b", "12"), row("c", "14"), row("c", "14", 1)]);
+  expect([...collection.values()].map(kept => kept.id).sort()).toEqual([
+    "live/server/a/11/0", "live/server/c/14/0", "live/server/c/14/1", "store/server/b/12/0",
+  ]);
   restartContainerLogs(collection, []);
   expect(collection.size).toBe(0);
   await collection.cleanup();

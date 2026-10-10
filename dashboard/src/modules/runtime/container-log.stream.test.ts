@@ -324,6 +324,49 @@ it("holds each line once when lines waiting past the limit land after a read of 
   }
 });
 
+it("keeps every waiting line of a timestamp group the Log Store had only part of when they overflow", async () => {
+  vi.useFakeTimers();
+  let source: EventTarget | undefined;
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); source = this; }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const stored = span("busy", 1, 300);
+  vi.stubGlobal("fetch", storeFetch(stored, []));
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "partial-group", environmentSlug: "env", projectSlug: "p" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  const seen = new Map<number, number>();
+  const send = async (rows: readonly Stored[]) => {
+    for (const { container, at } of rows) {
+      const ordinal = seen.get(at) ?? 0;
+      seen.set(at, ordinal + 1);
+      source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
+        kind: "line", id: `live/${container}/${at}/${ordinal}`, timestamp: String(at), machineId: "m", machineName: "Server", containerId: container, serviceName: container, channel: "stdout", level: "info", message: `${container} ${at}`,
+      } }) }));
+    }
+    await vi.advanceTimersByTimeAsync(260);
+  };
+  try {
+    await send(span("busy", 1, 300));
+    stream.follow(false);
+    const line = { container: "busy", at: 10_400 };
+    // The Store is a moment behind: its newest page holds one of the three lines written in the same nanosecond.
+    stored.push(...span("busy", 301, 10_399), line);
+    await send([...span("busy", 301, 10_399), line, line, line]);
+    await stream.loadOlder();
+    stored.push(line, line, ...span("busy", 10_401, 10_500));
+    await send(span("busy", 10_401, 10_500));
+    stream.follow(true);
+    expect([...stream.collection.values()].filter(row => row.timestamp === "10400")).toHaveLength(3);
+  } finally {
+    subscription.unsubscribe();
+    await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});
+
 it("drops a read of the Log Store still in flight when the viewer returns to the newest lines past the limit", async () => {
   vi.useFakeTimers();
   let source: EventTarget | undefined;

@@ -73,6 +73,11 @@ export function projectLogExit(exit: LogExit): ContainerLogLine {
 export type ContainerLogs = Collection<ContainerLogRow, string>;
 
 const group = (row: ContainerLogRow) => `${row.machineId}/${row.containerId}/${row.timestamp}`;
+function byGroup(rows: readonly ContainerLogRow[]) {
+  const groups = new Map<string, ContainerLogRow[]>();
+  for (const row of rows) groups.set(group(row), [...(groups.get(group(row)) ?? []), row]);
+  return groups;
+}
 
 /**
  * One insert for the whole batch: a live query recomputes once, not once per line. A live line whose timestamp group
@@ -100,12 +105,23 @@ export function trimContainerLogs(collection: ContainerLogs, limit = LIVE_LOG_LI
 
 /**
  * Live lines that waited past the limit lost their oldest, so what the page had can't meet them without a hole. The
- * page keeps only what's as new as the oldest one left.
+ * page keeps only what's as new as the oldest one left, then lands them. A timestamp group the Store's read also holds
+ * keeps the larger copy: their ids can't be matched, and a Store a moment behind, or a page end, has only part of it.
  */
 export function restartContainerLogs(collection: ContainerLogs, waiting: readonly ContainerLogRow[]) {
   const from = waiting.reduce<bigint | null>((min, row) => (min === null || BigInt(row.timestamp) < min ? BigInt(row.timestamp) : min), null);
-  const older = [...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id);
-  if (older.length) collection.delete(older);
+  const waitingGroups = byGroup(waiting.filter(row => !collection.has(row.id)));
+  const shown = byGroup([...collection.values()].filter(row => from !== null && BigInt(row.timestamp) >= from && row.kind === "line"));
+  const dropped = [...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id);
+  const landing: ContainerLogRow[] = [];
+  for (const [key, rows] of waitingGroups) {
+    const held = shown.get(key) ?? [];
+    if (rows.length <= held.length) continue;
+    dropped.push(...held.map(row => row.id));
+    landing.push(...rows);
+  }
+  if (dropped.length) collection.delete(dropped);
+  if (landing.length) collection.insert(landing);
 }
 
 /**
