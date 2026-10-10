@@ -47,6 +47,9 @@ no service arguments, and `--follow` still use live container discovery.
 
 ## Good to know
 
+- **Log collection shares a CPU budget with retained-log reads.** By default, Ployz caps its log helper at
+  10% of one CPU core. Some historical reads can take several seconds. The main daemon's
+  work serving those reads has a separate CPU cost.
 - **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
   so an older deployment's **Deploy** tab still shows its output. Ployz keeps up to 5% of the
   disk for them, between 512 MB and 5 GB, for 30 days, and the oldest go first. It doesn't copy
