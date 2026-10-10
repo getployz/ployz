@@ -33,9 +33,12 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   // The Log Store's position: not read yet, a cursor, or null once it has nothing older.
   let cursor: string | null | undefined;
   const stored = new Set<string>();
+  // Bumped by each reset, so a read begun before it lands nothing.
+  let generation = 0;
   const resetHistory = () => {
     cursor = undefined;
     stored.clear();
+    generation++;
   };
   // Scrolled up, live lines wait so the ones being read stay put; past the limit the oldest waiting go.
   let following = true;
@@ -137,6 +140,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   async function loadOlder() {
     if (controller.signal.aborted || snapshot.historyPending || cursor === null || collection.size >= SCROLLBACK_LIMIT) return;
     const streamSignal = controller.signal;
+    const begun = generation;
     const cancelHistory = () => { void scope.queryClient.cancelQueries({ queryKey: [id, "history"] }); };
     streamSignal.addEventListener("abort", cancelHistory, { once: true });
     publish({ ...snapshot, historyPending: true, historyError: false });
@@ -159,6 +163,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           },
         });
         streamSignal.throwIfAborted();
+        if (generation !== begun) break;
         mergeContainerHistory(collection, page.rows, stored);
         cursor = page.cursor;
         failures = page.failures;

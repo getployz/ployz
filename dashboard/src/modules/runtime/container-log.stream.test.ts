@@ -324,6 +324,53 @@ it("holds each line once when lines waiting past the limit land after a read of 
   }
 });
 
+it("drops a read of the Log Store still in flight when the viewer returns to the newest lines past the limit", async () => {
+  vi.useFakeTimers();
+  let source: EventTarget | undefined;
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); source = this; }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const stored = span("busy", 1, 1_300);
+  const store = storeFetch(stored, []);
+  let held: Promise<void> | undefined;
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => { await held; return store(url, init); });
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "stale-read", environmentSlug: "env", projectSlug: "p" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  const send = async (rows: readonly Stored[]) => {
+    for (const { container, at } of rows) {
+      source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
+        kind: "line", id: `live/${container}/${at}`, timestamp: String(at), machineId: "m", machineName: "Server", containerId: container, serviceName: container, channel: "stdout", level: "info", message: `${container} ${at}`,
+      } }) }));
+    }
+    await vi.advanceTimersByTimeAsync(260);
+  };
+  try {
+    await send(span("busy", 801, 1_300));
+    await stream.loadOlder();
+    stream.follow(false);
+    const flood = span("busy", 1_301, 11_400);
+    stored.push(...flood);
+    await send(flood);
+    let release = () => {};
+    held = new Promise(resolve => { release = resolve; });
+    const stale = stream.loadOlder();
+    stream.follow(true);
+    release();
+    await stale;
+    held = undefined;
+    for (let scroll = 0; scroll < 50 && stream.hasOlder; scroll++) await stream.loadOlder();
+    const lines = [...stream.collection.values()].map(row => `${row.containerId} ${row.timestamp}`).sort();
+    expect(lines).toEqual(stored.map(({ container, at }) => `${container} ${at}`).sort());
+  } finally {
+    subscription.unsubscribe();
+    await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});
+
 it("clears a Server's missing note once every container that failed sends again", async () => {
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {
