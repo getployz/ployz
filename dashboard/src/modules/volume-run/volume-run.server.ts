@@ -112,7 +112,7 @@ const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   return row;
 });
 
-const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
+export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   organizationId: string,
   environment: EnvironmentRef,
   volumeId: string,
