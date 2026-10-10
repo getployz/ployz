@@ -1,6 +1,7 @@
 import type { BranchView, ConditionalSyncId, DeploymentSummary, PullRequestView, RowId, SyncRow } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { rowText, settingName } from "./store-branches";
+import { OFFERED } from "./store-offers";
 
 /** One change of the Sync dialog in words: its name (a variable's is its key, in monospace) and at most one badge. */
 export type SyncLine = {
@@ -67,12 +68,12 @@ export function syncPicks(rows: readonly SyncRow[], flips: Flips) {
 }
 
 /**
- * A PR Environment's Destination, as its pull request's view has it: where a Sync goes live at the merge (#`number`),
- * how many changes it would hold, and whether one stands there. The first Destination, or the one a Sync stands in.
+ * A PR Environment's Destination, as its pull request's view has it: where a Sync is offered to include after the merge
+ * (#`number`), how many changes it would hold, and whether one is offered there. The first Destination, or the offered one.
  */
 export type MergeSync = {
   number: number; into: string; changes: number;
-  /** The Conditional Sync standing there: what Undo passes. */
+  /** The Sync offered there: what Undo passes. */
   standing: ConditionalSyncId | null;
 };
 
@@ -91,7 +92,7 @@ export function mergeSync(view: PullRequestView, environment: string): MergeSync
 export type SyncButtonState = { label: string; into: string; changes: number; count: number | null };
 
 /**
- * The Sync button's words, the first that applies: a shutdown under way or failed, Off, a Conditional Sync standing,
+ * The Sync button's words, the first that applies: a shutdown under way or failed, Off, a Sync offered at the merge,
  * then what a Sync into the Parent (a PR Environment's Destination, `merge`) carries. A PR Environment shuts down until
  * its next push; any other Branch comes off the Servers to close.
  */
@@ -103,13 +104,8 @@ export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" 
   if (removal?.in_flight) return say(shuts ? "Shutting down" : "Closing");
   if (removal?.status === "applied") return say(shuts ? "Off" : "Closing");
   if (removal) return say(shuts ? "Shutdown failed" : "Closing failed");
-  if (merge?.standing) return say(`Goes live with #${merge.number}`);
+  if (merge?.standing) return say(OFFERED);
   return changes > 0 ? say(`Sync to ${into}`, changes) : say(`In sync with ${into}`);
-}
-
-/** "3 changes go live in production when #142 merges". */
-export function goesLive(changes: number, into: string, number: number) {
-  return `${plural(changes, "change")} ${changes === 1 ? "goes" : "go"} live in ${into} when #${number} merges`;
 }
 
 const DAY = 24 * 60 * 60;

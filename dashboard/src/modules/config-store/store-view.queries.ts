@@ -10,7 +10,6 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
 import type { CommittedViews, StoreResult, StoreViewOf } from "./store.contract";
-import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 
 /**
  * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
@@ -18,7 +17,8 @@ import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
  */
 const refreshedBy = {
   environment: ["store_environment"],
-  diff: ["store_environment", "store_deployment"],
+  // Included pull requests carry their readiness.
+  diff: ["store_environment", "store_deployment", "store_pull_request"],
   history: ["store_environment"],
   history_preview: ["store_environment", "store_deployment"],
   plan: ["store_environment", "store_deployment"],
@@ -48,8 +48,8 @@ const refreshedBy = {
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
-  // A Sync compares two Environments over what they last shared; from a PR Environment into a Destination it is a
-  // Conditional Sync, which reads the pull request.
+  // A Sync compares two Environments over what they last shared; from a PR Environment into a Destination it is
+  // offered for after the merge, which reads the pull request.
   sync: ["store_environment", "store_deployment", "store_pull_request"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
@@ -353,25 +353,6 @@ export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizat
 /** Reads one Store view; see `useStoreViews`. */
 export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
   return useStoreViews(organizationSlug, [query] as const)[0];
-}
-
-/**
- * Changes open pull requests synced into `environment` for their merge (standing Conditional Syncs), by pull request:
- * the bottom bar's "goes live when #N merges". Chrome, so nothing waits on it; the Project's plans name the open ones.
- */
-// ponytail: one pull request view per open PR of the Project; a Store view of Conditional Syncs into an Environment when PRs pile up.
-export function useConditionalSyncsInto(organizationSlug: string, project: string, environment: string) {
-  const scope = useCollectionScope();
-  const plans = useCachedStoreView(organizationSlug, prPlansQuery(project));
-  const open = plans?.ok ? plans.value.plans.flatMap((plan) => plan.open.map((pr) => ({ repository_id: plan.repository_id, number: pr.number }))) : [];
-  const views = useQueries({ queries: open.map((pr) => storeViewOptions(organizationSlug, scope, pullRequestQuery(pr))) });
-  return views.flatMap(({ data }) => {
-    if (!data?.ok || !data.value.pull_request) return [];
-    const { number } = data.value.pull_request;
-    return data.value.environments.flatMap((pr) => pr.destinations.flatMap((destination) =>
-      destination.name === environment && destination.conditional_sync?.standing
-        ? [{ number, changes: destination.conditional_sync.changes, environment: pr.environment.name }] : []));
-  });
 }
 
 /**

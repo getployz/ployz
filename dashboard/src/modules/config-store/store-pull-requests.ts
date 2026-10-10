@@ -1,7 +1,7 @@
 import type {
   NamedRow, PrPlan, PrPlansQuery, PullRequestQuery, PullRequestRef, RowId,
 } from "@ployz/sdk";
-import { listNames, plural } from "#/lib/plural";
+import { listNames } from "#/lib/plural";
 
 /** A Project's PR plans: one per repository its Services deploy from through the GitHub App. */
 export function prPlansQuery(project: string): { query: "pr_plans" } & PrPlansQuery {
@@ -22,9 +22,6 @@ export function planSummary(plan: PrPlan) {
   if (plan.setup.length) parts.push(`then ${plan.setup.map((setup) => setup.command).join(", ")}`);
   return parts.join(" · ");
 }
-
-/** "2 changes go live when #142 merges". */
-export const goLiveWhen = (changes: number, number: number) => `${plural(changes, "change")} · go live when #${number} merges`;
 
 /**
  * A Parent's values as hints, split by where Details shows them: beside the change to deploy

@@ -1,7 +1,7 @@
 import type { DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { closesIn, flipRow, flipsMoved, goesLive, syncButtonState, syncLine, syncPicks, syncSections, type Flips } from "./store-sync";
+import { closesIn, flipRow, flipsMoved, syncButtonState, syncLine, syncPicks, syncSections, type Flips } from "./store-sync";
 
 // A row by its RowId, node and name in the node; no name brings the node whole.
 const row = (id: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
@@ -86,7 +86,7 @@ describe("the Sync button", () => {
     expect(syncButtonState(pr, removal("applied", false))).toMatchObject({ into: "production", changes: 4 });
   });
 
-  it("reads a PR Environment's Destination: Goes live once its Conditional Sync stands, after Off", () => {
+  it("reads a PR Environment's Destination: Offered once its Sync is offered there, after Off", () => {
     const pr = { parent: "staging", to_parent: 1, pull_request: { repository_id: 1, number: 142 } };
     const merge = { number: 142, into: "production", changes: 3, standing: null };
     const off = asTestDouble<DeploymentSummary>()({ status: "applied", in_flight: false });
@@ -94,12 +94,10 @@ describe("the Sync button", () => {
       syncButtonState(pr, null, merge),
       syncButtonState(pr, null, { ...merge, standing: "cs-1" }),
       syncButtonState(pr, off, { ...merge, standing: "cs-1" }),
-      goesLive(1, "production", 142),
     ]).toEqual([
       { label: "Sync to production", into: "production", changes: 3, count: 3 },
-      { label: "Goes live with #142", into: "production", changes: 3, count: null },
+      { label: "Offered", into: "production", changes: 3, count: null },
       { label: "Off", into: "production", changes: 3, count: null },
-      "1 change goes live in production when #142 merges",
     ]);
   });
 
