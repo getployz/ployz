@@ -340,7 +340,8 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "Read the file from PATH instead of stdin"
+        "help": "Read the file from PATH instead of stdin",
+        "stdin": "if-absent"
       },
       {
         "name": "--mode",
@@ -4557,7 +4558,8 @@
         "type": "boolean",
         "multiple": false,
         "trailing": false,
-        "help": "Wait for the run to end; it fails unless the run is done"
+        "help": "Wait for the run to end; it fails unless the run is done",
+        "keeps_running": true
       }
     ]
   },
@@ -4602,7 +4604,8 @@
         "type": "boolean",
         "multiple": false,
         "trailing": false,
-        "help": "Wait for the run to end; it fails unless the run is done"
+        "help": "Wait for the run to end; it fails unless the run is done",
+        "keeps_running": true
       }
     ]
   },

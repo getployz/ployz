@@ -328,7 +328,7 @@ fn tool(entry: &CommandEntry) -> Tool {
     let mut required = Vec::new();
     for arg in entry.args.iter().filter(|arg| offered(arg)) {
         let key = property(arg);
-        if arg.required {
+        if arg.required || arg.stdin == Some(Stdin::IfAbsent) {
             required.push(Value::String(key.clone()));
         }
         let conflicts: Vec<&str> = arg
@@ -448,11 +448,9 @@ fn argv(
             None => argv.extend(values.into_iter().map(|word| format!("--{key}={word}"))),
         }
     }
-    if let Some(missing) = entry
-        .args
-        .iter()
-        .find(|arg| arg.required && !arg_given(arg, &argv, &positionals))
-    {
+    if let Some(missing) = entry.args.iter().find(|arg| {
+        (arg.required || arg.stdin == Some(Stdin::IfAbsent)) && !arg_given(arg, &argv, &positionals)
+    }) {
         return Err(McpError::invalid_params(
             format!(
                 "`{}` needs `{}`",
@@ -715,7 +713,12 @@ mod tests {
             "tools/call",
             json!({ "name": "service_add", "arguments": { "name": null } }),
         ));
-        frames.push(request(5, "tools/list", json!({})));
+        frames.push(request(
+            5,
+            "tools/call",
+            json!({ "name": "config_put", "arguments": { "config": "app", "file": "app.conf" } }),
+        ));
+        frames.push(request(6, "tools/list", json!({})));
         let replies = exchange(&frames).await;
         assert_eq!(replies[1]["error"]["code"], -32602, "{}", replies[1]);
         assert_eq!(replies[2]["error"]["code"], -32602, "{}", replies[2]);
@@ -724,7 +727,18 @@ mod tests {
             "{}",
             replies[3]
         );
-        assert!(replies[4]["result"]["tools"].is_array(), "{}", replies[4]);
+        assert_eq!(replies[4]["error"]["message"], "`config_put` needs `from`");
+        let tools = replies[5]["result"]["tools"].as_array().unwrap();
+        let config_put = tools
+            .iter()
+            .find(|tool| tool["name"] == "config_put")
+            .unwrap();
+        assert!(
+            config_put["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("from"))
+        );
     }
 
     #[test]

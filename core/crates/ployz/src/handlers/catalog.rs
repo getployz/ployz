@@ -157,9 +157,11 @@ pub(crate) struct ArgEntry {
 pub(crate) enum Stdin {
     Only,
     OnDash,
+    IfAbsent,
 }
 
-const STDIN: [(&str, &str, Stdin); 5] = [
+const STDIN: [(&str, &str, Stdin); 6] = [
+    ("config put", "--from", Stdin::IfAbsent),
     ("env sync", "--value", Stdin::Only),
     ("set", "--at-merge", Stdin::Only),
     ("set", "--from-env-file", Stdin::OnDash),
@@ -167,13 +169,15 @@ const STDIN: [(&str, &str, Stdin); 5] = [
     ("set", "--secret", Stdin::Only),
 ];
 
-const KEEPS_RUNNING_ARGS: [(&str, &str); 7] = [
+const KEEPS_RUNNING_ARGS: [(&str, &str); 9] = [
     ("github connect", "--wait"),
     ("logs", "--follow"),
     ("server add", "--wait"),
     ("server logs", "--follow"),
     ("volume mirror", "--wait"),
     ("volume mirror rm", "--wait"),
+    ("volume move", "--wait"),
+    ("volume release", "--wait"),
     ("volume sync", "--wait"),
 ];
 
