@@ -1056,6 +1056,7 @@ mod tests {
             async {
                 Err(NetworkError::WireGuardConflict {
                     reason: "unrelated identity",
+                    recovery: "recovery",
                 })
             },
             async { Ok(()) },

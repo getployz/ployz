@@ -13,7 +13,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use ployz_core::{
-    DOCKER_NETWORK_CONFLICT_EXIT_STATUS, MachineRelease, MachineUpgradeAttemptId, StorageChoice,
+    MachineRelease, MachineUpgradeAttemptId, NETWORK_CONFLICT_EXIT_STATUS, StorageChoice,
 };
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
@@ -121,9 +121,11 @@ fn main() -> ExitCode {
 fn daemon_error_exit_code(error: &Error) -> ExitCode {
     if matches!(
         error,
-        Error::Network(NetworkError::DockerNetworkConflict { .. })
+        Error::Network(
+            NetworkError::DockerNetworkConflict { .. } | NetworkError::WireGuardConflict { .. }
+        )
     ) {
-        ExitCode::from(DOCKER_NETWORK_CONFLICT_EXIT_STATUS)
+        ExitCode::from(NETWORK_CONFLICT_EXIT_STATUS)
     } else {
         ExitCode::FAILURE
     }
@@ -277,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_network_conflict_uses_the_dedicated_exit_status() {
+    fn network_conflicts_use_the_dedicated_exit_status() {
         let conflict = Error::Network(NetworkError::DockerNetworkConflict {
             reason: "ownership is unproven".into(),
             expected: "expected".into(),
@@ -287,7 +289,15 @@ mod tests {
 
         assert_eq!(
             daemon_error_exit_code(&conflict),
-            ExitCode::from(DOCKER_NETWORK_CONFLICT_EXIT_STATUS)
+            ExitCode::from(NETWORK_CONFLICT_EXIT_STATUS)
+        );
+        let wireguard = Error::Network(NetworkError::WireGuardConflict {
+            reason: "the existing device identity differs from the Machine record",
+            recovery: "recovery",
+        });
+        assert_eq!(
+            daemon_error_exit_code(&wireguard),
+            ExitCode::from(NETWORK_CONFLICT_EXIT_STATUS)
         );
         assert_eq!(
             daemon_error_exit_code(&Error::RecordOwner(ployzd::machine::RecordOwnerStopped)),

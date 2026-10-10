@@ -225,7 +225,6 @@ impl NetworkPlane {
             return Ok(());
         };
         let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME)?;
-        read_retained_device(&wireguard, record.private_key(), machine)?;
         Self {
             machine: machine.clone(),
             docker: Docker::connect_with_socket_defaults()?,
@@ -247,7 +246,7 @@ impl NetworkPlane {
         if let Err(error) = self.remove_docker_network().await {
             failures.push(ployz_core::error_chain::inline(&error));
         }
-        if Path::new("/sys/class/net/ployz-wg").try_exists()?
+        if wireguard_device_exists()?
             && let Err(error) = self.wireguard.remove_interface()
         {
             failures.push(ployz_core::error_chain::inline(&error));
@@ -506,7 +505,7 @@ fn read_retained_device(
     machine: &Machine,
 ) -> Result<Option<Host>, NetworkError> {
     validate_machine_identity(private_key, machine.public_key)?;
-    if !Path::new("/sys/class/net/ployz-wg").try_exists()? {
+    if !wireguard_device_exists()? {
         return Ok(None);
     }
     let host = wireguard.read_interface_data()?;
@@ -519,6 +518,15 @@ fn read_retained_device(
     Ok(Some(host))
 }
 
+fn wireguard_device_exists() -> io::Result<bool> {
+    Path::new("/sys/class/net")
+        .join(WIREGUARD_INTERFACE_NAME)
+        .try_exists()
+}
+
+const RETAINED_DEVICE_RECOVERY: &str =
+    "run `systemctl stop ployz`; run `ip link delete ployz-wg`; run `systemctl start ployz`";
+
 fn validate_machine_identity(
     private_key: &WireGuardPrivateKey,
     machine_key: WireGuardPublicKey,
@@ -526,6 +534,7 @@ fn validate_machine_identity(
     if private_key.public_key() != machine_key {
         return Err(NetworkError::WireGuardConflict {
             reason: "the private key identity differs from the Machine record",
+            recovery: "rerun the Ployz install command with `--reset` at the end; this removes every container Ployz runs on the server",
         });
     }
     Ok(())
@@ -545,17 +554,20 @@ fn validate_retained_device(
         } else {
             Err(NetworkError::WireGuardConflict {
                 reason: "the keyless device has peers or unrelated addresses",
+                recovery: RETAINED_DEVICE_RECOVERY,
             })
         };
     };
     if WireGuardPublicKey(key.public_key().as_array()) != machine.public_key {
         return Err(NetworkError::WireGuardConflict {
             reason: "the existing device identity differs from the Machine record",
+            recovery: RETAINED_DEVICE_RECOVERY,
         });
     }
     if host.listen_port != WIREGUARD_PORT {
         return Err(NetworkError::WireGuardConflict {
             reason: "the existing device listen port differs from the mesh port",
+            recovery: RETAINED_DEVICE_RECOVERY,
         });
     }
     Ok(())

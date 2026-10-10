@@ -512,3 +512,146 @@ fn stale_network_refusal_is_actionable() {
     assert!(error.contains("docker network rm ployz"));
     assert!(error.contains("systemctl start ployz"));
 }
+
+const RESET_CHILD: &str = "PLOYZ_RESET_MISMATCHED_DEVICE_CHILD";
+
+#[test]
+#[ignore = "needs passwordless sudo to create a network namespace and a WireGuard device"]
+fn reset_deletes_a_mismatched_retained_device() {
+    if std::env::var_os(RESET_CHILD).is_some() {
+        reset_mismatched_device_in_namespace();
+        return;
+    }
+    let namespace = format!("p35-reset-{}", std::process::id());
+    let sudo = |args: &[&str]| {
+        let status = Command::new("sudo").arg("-n").args(args).status().unwrap();
+        assert!(status.success(), "sudo {args:?} failed");
+    };
+    sudo(&["ip", "netns", "add", &namespace]);
+    let _namespace = NamespaceGuard(namespace.clone());
+    sudo(&[
+        "ip",
+        "-n",
+        &namespace,
+        "link",
+        "add",
+        WIREGUARD_INTERFACE_NAME,
+        "type",
+        "wireguard",
+    ]);
+    sudo(&[
+        "ip",
+        "-n",
+        &namespace,
+        "address",
+        "add",
+        "192.0.2.9/32",
+        "dev",
+        WIREGUARD_INTERFACE_NAME,
+    ]);
+    let output = Command::new("sudo")
+        .args(["-n", "ip", "netns", "exec", &namespace, "env"])
+        .arg(format!("{RESET_CHILD}=1"))
+        .args(["unshare", "--mount", "sh", "-c"])
+        .arg(r#"mount -t tmpfs tmpfs /run && exec "$0" "$@""#)
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "network::linux::tests::reset_deletes_a_mismatched_retained_device",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "reset child failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let links = Command::new("sudo")
+        .args(["-n", "ip", "-n", &namespace, "-o", "link", "show"])
+        .output()
+        .unwrap();
+    assert!(links.status.success());
+    assert!(
+        !String::from_utf8_lossy(&links.stdout).contains(WIREGUARD_INTERFACE_NAME),
+        "reset left the mismatched device behind"
+    );
+}
+
+struct NamespaceGuard(String);
+
+impl Drop for NamespaceGuard {
+    fn drop(&mut self) {
+        let _ = Command::new("sudo")
+            .args(["-n", "ip", "netns", "delete", &self.0])
+            .status();
+    }
+}
+
+/// Runs inside the namespace with a private `/run`, so Docker calls reach a
+/// fake socket that has no `ployz` network instead of the host's daemon.
+fn reset_mismatched_device_in_namespace() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+        sync::{Arc, Mutex},
+    };
+
+    use crate::machine::{LocalMachineBody, LocalMachineRecord, ParticipationOrigin};
+
+    let listener = UnixListener::bind("/run/docker.sock").unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut header = String::new();
+            while reader.read_line(&mut header).unwrap() > 2 {
+                header.clear();
+            }
+            seen.lock()
+                .unwrap()
+                .push(request_line.trim_end().to_owned());
+            let body = r#"{"message":"network ployz not found"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+
+    let private_key = WireGuardPrivateKey::from_bytes([7; 32]);
+    let machine = machine(7, private_key.public_key());
+    let record = LocalMachineRecord::parse(
+        LocalMachineBody::Participating {
+            machine: machine.clone(),
+            origin: ParticipationOrigin::Join {
+                bootstrap: vec![machine],
+            },
+        },
+        private_key,
+    )
+    .unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(NetworkPlane::cleanup_retained(&record))
+        .unwrap();
+    assert!(!wireguard_device_exists().unwrap());
+    let requests = requests.lock().unwrap();
+    let [request] = requests.as_slice() else {
+        panic!("unexpected Docker calls: {requests:?}");
+    };
+    assert!(
+        request.starts_with("GET ") && request.contains("/networks/ployz "),
+        "unexpected Docker call: {request}"
+    );
+}
