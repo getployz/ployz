@@ -11,8 +11,7 @@ use std::time::Duration;
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, Failure, LOG_TAIL, RowState, RowTracker, RunEvidence,
-    RunnerId,
+    DeploymentStatus, DeploymentSummary, Failure, RowState, RowTracker, RunEvidence, RunnerId,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -28,8 +27,6 @@ const CANCEL_POLL: Duration = Duration::from_secs(2);
 
 /// How often a build's new log output is recorded.
 const LOG_FLUSH: Duration = Duration::from_secs(3);
-
-const LOG_READ: Duration = Duration::from_secs(5);
 
 /// Each Git Service's checkout at its pinned commit, by runtime Service name, and the
 /// Deployment's upload, if Cloud still holds it; or why Cloud could not read them.
@@ -492,9 +489,10 @@ impl Run {
             };
             for mut row in tracker.changes(&rows) {
                 let container = tracker.container(&row);
-                if let (RowState::Failed { log, .. }, Some(container)) = (&mut row.state, container)
+                if let (RowState::Failed { log, .. }, Some(container), Ok(client)) =
+                    (&mut row.state, container, session.client())
                 {
-                    *log = log_tail(session, row.machine, container).await;
+                    *log = crate::deploy::log_tail(&client, row.machine, container).await;
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }
@@ -774,38 +772,6 @@ pub(super) fn log_line(event: &Value) -> String {
         return format!("{} {name}\n", if cached { "CACHED" } else { "DONE" });
     }
     String::new()
-}
-
-async fn log_tail(
-    session: &Session,
-    machine: ployz_core::MachineId,
-    container: ployz_core::ContainerId,
-) -> Vec<String> {
-    let read = async {
-        let stream = session
-            .container_logs(super::logs::ContainerLogInput {
-                machine_id: machine,
-                container_id: container,
-                tail: i32::try_from(LOG_TAIL).unwrap_or(i32::MAX),
-                follow: false,
-                before_nanos: None,
-                since_unix_seconds: None,
-            })
-            .await
-            .ok()?;
-        let mut lines = Vec::new();
-        while let Ok(Some(record)) = stream.next().await {
-            lines.extend(record.message.lines().map(str::to_owned));
-        }
-        Some(lines)
-    };
-    let mut lines = tokio::time::timeout(LOG_READ, read)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    lines.drain(..lines.len().saturating_sub(LOG_TAIL));
-    lines
 }
 
 /// Delete exactly the Docker Volumes admission accepted, never others of the same

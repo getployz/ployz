@@ -3,7 +3,7 @@
 #[cfg(feature = "verify-faults")]
 pub(crate) use enabled::{apply, check_env};
 #[cfg(feature = "verify-faults")]
-pub use enabled::{hold_task, kill_after_record, kill_inside};
+pub use enabled::{hold_task, kill_after_record, kill_inside, leak_memory};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
@@ -20,6 +20,9 @@ pub fn kill_after_record(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub async fn hold_task(_verb: &'static str) {}
+
+#[cfg(not(feature = "verify-faults"))]
+pub fn leak_memory() {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) fn check_env() -> std::io::Result<()> {
@@ -51,11 +54,15 @@ mod enabled {
             secs: u64,
         },
         Unanswered,
+        /// Grows the process by `mib_per_sec` MiB of touched memory every second, forever.
+        LeakMemory {
+            mib_per_sec: usize,
+        },
     }
 
     #[derive(Debug, thiserror::Error)]
     #[error(
-        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, hold-task:<verb>:<secs>, unanswered)"
+        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, hold-task:<verb>:<secs>, unanswered, leak-memory:<mib-per-sec>)"
     )]
     pub(crate) struct FaultParseError(String);
 
@@ -89,6 +96,13 @@ mod enabled {
                     }
                 }
                 (Some("unanswered"), None, None, None) => FaultPoint::Unanswered,
+                (Some("leak-memory"), Some(mib), None, None) => FaultPoint::LeakMemory {
+                    mib_per_sec: mib
+                        .parse()
+                        .ok()
+                        .filter(|mib| *mib > 0)
+                        .ok_or_else(malformed)?,
+                },
                 _ => return Err(malformed()),
             };
             Ok(fault)
@@ -131,8 +145,24 @@ mod enabled {
             FaultPoint::DelayRpc { .. }
             | FaultPoint::KillDaemon { .. }
             | FaultPoint::KillAfterRecord { .. }
-            | FaultPoint::HoldTask { .. } => {}
+            | FaultPoint::HoldTask { .. }
+            | FaultPoint::LeakMemory { .. } => {}
         }
+    }
+
+    /// Starts a thread that leaks memory when `leak-memory:<mib-per-sec>` is set, so a run
+    /// can watch the kernel kill the process at its unit's `MemoryMax`.
+    pub fn leak_memory() {
+        let Ok(Some(FaultPoint::LeakMemory { mib_per_sec })) = FaultPoint::from_env() else {
+            return;
+        };
+        tracing::warn!(mib_per_sec, "fault: leaking memory");
+        std::thread::spawn(move || {
+            loop {
+                std::mem::forget(vec![1_u8; mib_per_sec << 20]);
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
     }
 
     /// Sleeps inside `verb`'s spawned task when `hold-task:<verb>:<secs>` names it.
@@ -202,6 +232,7 @@ mod enabled {
                     },
                 ),
                 ("unanswered", FaultPoint::Unanswered),
+                ("leak-memory:16", FaultPoint::LeakMemory { mib_per_sec: 16 }),
             ] {
                 assert_eq!(value.parse::<FaultPoint>().unwrap(), fault, "{value}");
             }
@@ -218,6 +249,9 @@ mod enabled {
                 "hold-task:Promote:later",
                 "busy-mount:data",
                 "unanswered:Freeze",
+                "leak-memory",
+                "leak-memory:0",
+                "leak-memory:lots",
                 "explode",
             ] {
                 assert!(value.parse::<FaultPoint>().is_err(), "{value:?}");

@@ -58,7 +58,8 @@ pub(super) struct DeployService {
     hold_observations: bool,
     advertise_observations: bool,
     exec_exit: Option<i32>,
-    hold_health: bool,
+    runtime: ContainerRuntimeObservation,
+    removed: Arc<Mutex<BTreeSet<ContainerId>>>,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -88,7 +89,10 @@ impl DeployService {
             hold_observations: false,
             advertise_observations: false,
             exec_exit: None,
-            hold_health: false,
+            runtime: ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            removed: Arc::new(Mutex::new(BTreeSet::new())),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -116,7 +120,10 @@ impl DeployService {
             hold_observations: false,
             advertise_observations: false,
             exec_exit: None,
-            hold_health: false,
+            runtime: ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            removed: Arc::new(Mutex::new(BTreeSet::new())),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -167,7 +174,14 @@ impl DeployService {
     }
 
     pub(super) fn hold_health(mut self) -> Self {
-        self.hold_health = true;
+        self.runtime = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Starting,
+        };
+        self
+    }
+
+    pub(super) fn crash_containers(mut self) -> Self {
+        self.runtime = ContainerRuntimeObservation::Exited { code: 1 };
         self
     }
 
@@ -229,6 +243,10 @@ impl DeployService {
         self.created_namespaces.clone()
     }
 
+    pub(super) fn removed_containers(&self) -> Arc<Mutex<BTreeSet<ContainerId>>> {
+        Arc::clone(&self.removed)
+    }
+
     pub(super) fn created_specs(&self) -> Arc<Mutex<Vec<ResolvedServiceSpec>>> {
         self.created_specs.clone()
     }
@@ -277,9 +295,8 @@ impl MachineRpc for DeployService {
             .ok_or_else(|| Status::unimplemented("Build is not used by this fixture"))?
             .stream(request)
     }
-    type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
+    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -565,11 +582,6 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected inspect_container"));
         };
-        let health = if self.hold_health {
-            HealthObservation::Starting
-        } else {
-            HealthObservation::Healthy
-        };
         let spec = spec("web")
             .to_resolved(
                 ServiceId::random(),
@@ -598,7 +610,7 @@ impl MachineRpc for DeployService {
                         .unwrap_or_else(MachineId::random),
                     namespace: Namespace::parse("app").unwrap(),
                     kind: ContainerKind::ServiceContainer,
-                    runtime: ContainerRuntimeObservation::Running { health },
+                    runtime: self.runtime.clone(),
                     effective_healthcheck: None,
                     resolved_spec: spec,
                     address: None,
@@ -861,6 +873,7 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected remove_container"));
         };
+        self.removed.lock().unwrap().insert(remove.container_id);
         encoded(RpcResponse::from(ployz_core::ContainerChanged {
             container_id: remove.container_id,
         }))
@@ -889,23 +902,61 @@ impl MachineRpc for DeployService {
             receiver,
         )))
     }
-    async fn container_logs(
+    async fn tail_logs(
         &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogsStream>, Status> {
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
+        let RpcRequestBody::TailLogs(tail) = request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected tail_logs"));
+        };
+        if let ployz_core::LiveLogTarget::Container(id) = tail.target
+            && self.removed.lock().unwrap().contains(&id)
+        {
+            return Err(Status::not_found(format!("No such container: {id}")));
+        }
         unused()
     }
-    async fn container_log_history(
+    /// Every Container's Log Store holds `line 1`..`line 12` and then its exit,
+    /// paged newest first.
+    async fn log_history(
         &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
-        unused()
-    }
-    async fn machine_logs(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::MachineLogsStream>, Status> {
-        unused()
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        let RpcRequestBody::LogHistory(history) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected log_history"));
+        };
+        assert_eq!(history.direction, ployz_core::LogDirection::Backward);
+        let container_id = history.container_id.unwrap();
+        let mut stored = (1..=12)
+            .map(|n| ployz_core::HistoryRow::Line {
+                container_id,
+                ts: n,
+                stream: ployz_core::HistoryStream::Stdout,
+                text: format!("line {n}").into_bytes(),
+            })
+            .collect::<Vec<_>>();
+        stored.push(ployz_core::HistoryRow::Exit {
+            container_id,
+            ts: 13,
+            exit_code: Some(1),
+            oom_killed: false,
+        });
+        stored.reverse();
+        let total = stored.len();
+        let from = history.cursor.map_or(0, |cursor| cursor.parse().unwrap());
+        let to = total.min(from + usize::from(history.limit));
+        let mut page = stored.drain(from..to).collect::<Vec<_>>();
+        page.push(ployz_core::HistoryRow::End {
+            next: (to < total).then(|| to.to_string()),
+        });
+        let mut payloads = Vec::new();
+        for row in &page {
+            payloads.push(Ok(row.encode().unwrap()));
+        }
+        Ok(Response::new(tokio_stream::iter(payloads)))
     }
     async fn runtime_watch(
         &self,

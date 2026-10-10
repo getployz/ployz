@@ -22,6 +22,17 @@ use super::{
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
 
+pub(crate) fn container_log_config() -> HostConfigLogConfig {
+    HostConfigLogConfig {
+        typ: Some("local".into()),
+        config: Some(HashMap::from([
+            ("max-size".into(), "10m".into()),
+            ("max-file".into(), "3".into()),
+            ("compress".into(), "false".into()),
+        ])),
+    }
+}
+
 /// Caddy binds a fresh `SO_REUSEPORT` listener on every reload and closes the old one.
 /// Without migration the kernel resets connections still queued on the closing listener.
 pub(super) fn migrate_ingress_requests(
@@ -106,19 +117,7 @@ pub(super) fn container_create_body(
         dns_options: Some(vec!["ndots:1".into()]),
         init: container.init,
         network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),
-        log_config: container
-            .log_driver
-            .as_ref()
-            .map(|driver| HostConfigLogConfig {
-                typ: Some(driver.name.clone()),
-                config: Some(
-                    driver
-                        .options
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect(),
-                ),
-            }),
+        log_config: Some(container_log_config()),
         port_bindings,
         restart_policy: Some(docker_restart(if hook.is_some() {
             ployz_core::RestartPolicy::No
@@ -431,4 +430,26 @@ pub(super) fn docker_mounts(graph: &ResolvedServiceVolumeGraph) -> Result<Vec<Mo
             Ok(translated)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::container_log_config;
+
+    #[test]
+    fn container_log_config_is_local_uncompressed_rotation() {
+        let log_config = container_log_config();
+
+        assert_eq!(log_config.typ.as_deref(), Some("local"));
+        assert_eq!(
+            log_config.config,
+            Some(HashMap::from([
+                ("max-size".to_string(), "10m".to_string()),
+                ("max-file".to_string(), "3".to_string()),
+                ("compress".to_string(), "false".to_string()),
+            ]))
+        );
+    }
 }

@@ -49,6 +49,7 @@ use checks::CheckRecords;
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
+pub(crate) use create::container_log_config;
 pub(crate) use lifecycle::{ContainerRequest, require_eligible};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
@@ -1124,6 +1125,7 @@ mod tests {
         assert_eq!(regular.cmd, Some(vec!["serve".into()]));
         assert_eq!(regular.hostname.as_deref(), Some("shared-host"));
         let regular_host = regular.host_config.unwrap();
+        assert_eq!(regular_host.log_config, Some(container_log_config()));
         assert_eq!(
             regular_host.network_mode.as_deref(),
             Some(crate::network::DOCKER_NETWORK_NAME)
@@ -1179,6 +1181,7 @@ mod tests {
         assert!(hook_env.contains(&"PLOYZ_HOOK_PRE_DEPLOY=true".into()));
         assert_eq!(hook.healthcheck.unwrap().test, Some(vec!["NONE".into()]));
         let hook_host = hook.host_config.unwrap();
+        assert_eq!(hook_host.log_config, Some(container_log_config()));
         assert_eq!(hook_host.dns, Some(vec![gateway.0.to_string()]));
         assert_eq!(hook_host.dns_search, Some(vec!["shop.internal".into()]));
         assert_eq!(hook_host.dns_options, Some(vec!["ndots:1".into()]));
@@ -1269,7 +1272,9 @@ mod tests {
             )
             .unwrap();
             create::migrate_ingress_requests(&mut body, namespace, &spec, kernel_supports);
-            body.host_config.unwrap().sysctls
+            let host = body.host_config.unwrap();
+            assert_eq!(host.log_config, Some(container_log_config()));
+            host.sysctls
         };
         let ingress_name = ingress.name.to_string();
         assert_eq!(

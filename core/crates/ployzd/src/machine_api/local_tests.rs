@@ -450,6 +450,90 @@ async fn runtime_watch_without_a_cluster_store_is_unavailable() {
 }
 
 #[tokio::test]
+async fn tail_logs_reads_each_target_from_its_live_source_without_the_observer() {
+    use futures_util::StreamExt;
+    use ployz_core::{LiveLogTarget, LogsOptions, MachineLogService, TailLogsRequest};
+    let tail = |target| {
+        Request::new(
+            op::TailLogs::into_request(TailLogsRequest {
+                target,
+                options: LogsOptions {
+                    follow: false,
+                    tail: 10,
+                    since_nanos: None,
+                    until_unix_seconds: None,
+                },
+            })
+            .encode()
+            .unwrap(),
+        )
+    };
+    let missing = ContainerId::parse("d".repeat(64)).unwrap();
+
+    let outside_dir =
+        std::env::temp_dir().join(format!("ployzd-tail-outside-{}", MachineId::random()));
+    let outside = MachineService::with_cluster(
+        RecordOwner::spawn(LocalMachineStore::open(&outside_dir).unwrap()).unwrap(),
+        None,
+    );
+    for target in [
+        LiveLogTarget::Container(missing),
+        LiveLogTarget::Machine(MachineLogService::Ployz),
+    ] {
+        let error = outside
+            .tail_logs(tail(target))
+            .await
+            .expect_err("a Machine outside the cluster has no live logs");
+        assert_eq!(error.code(), Code::Unavailable);
+        assert_eq!(error.message(), "Machine is not participating");
+    }
+
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-tail-logs").await;
+    let service = service.with_observe_socket(data_dir.join("no-observer.sock"));
+    let error = service
+        .tail_logs(tail(LiveLogTarget::Container(missing)))
+        .await
+        .expect_err("an unknown Container has no live logs");
+    assert_eq!(error.code(), Code::NotFound);
+    let mut corrosion = service
+        .tail_logs(tail(LiveLogTarget::Machine(MachineLogService::Corrosion)))
+        .await
+        .unwrap()
+        .into_inner();
+    tokio::time::timeout(std::time::Duration::from_secs(5), corrosion.next())
+        .await
+        .expect("Corrosion logs answer from Docker");
+    let paths: Vec<String> = fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect();
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.ends_with(&format!("/containers/{missing}/json"))),
+        "{paths:?}"
+    );
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.ends_with(&format!("/containers/{missing}/logs"))),
+        "{paths:?}"
+    );
+    assert!(
+        paths.iter().any(|path| path.ends_with(&format!(
+            "/containers/{}/logs",
+            crate::corrosion::DEFAULT_CONTAINER_NAME
+        ))),
+        "{paths:?}"
+    );
+    let _ = std::fs::remove_dir_all(outside_dir);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     use ployz_core::CreateContainerRequest;
     use serde_json::json;

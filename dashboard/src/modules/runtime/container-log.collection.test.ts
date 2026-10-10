@@ -1,21 +1,29 @@
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { expect, it } from "vitest";
-import { appendContainerLogs, historyBoundaries, remainingHistory, mergeContainerHistory, trimContainerLogs, type ContainerLogRow } from "./container-log.collection";
+import { appendContainerLogs, mergeContainerHistory, projectLogExit, restartContainerLogs, trimContainerLogs, type ContainerLogLine, type ContainerLogRow } from "./container-log.collection";
 
-const row = (containerId: string, timestamp: string, ordinal = 0): ContainerLogRow => ({
-  id: `server/${containerId}/${timestamp}/${ordinal}`, timestamp,
-  machineId: "server", machineName: "Server", containerId, serviceName: "api", channel: "stdout", message: "same message",
+const row = (containerId: string, timestamp: string, ordinal = 0, origin = "live"): ContainerLogLine => ({
+  kind: "line", id: `${origin}/server/${containerId}/${timestamp}/${ordinal}`, timestamp,
+  machineId: "server", machineName: "Server", containerId, serviceName: "api", channel: "stdout", level: "info", message: "same message",
 });
-it("extends per-container history without clearing live output or collapsing identical records", async () => {
+
+it("the Log Store's read of a timestamp group replaces the live tail's, and a replayed tail stays out", async () => {
   const collection = createCollection(localOnlyCollectionOptions({ id: "log-test", getKey: (row: ContainerLogRow) => row.id }));
   await collection.preload();
-  appendContainerLogs(collection, [row("busy", "100"), row("quiet", "10"), row("busy", "110")]);
-  expect(historyBoundaries([...collection.values()])).toEqual({ "server/busy": "100", "server/quiet": "10" });
-  mergeContainerHistory(collection, [row("busy", "99"), row("busy", "100"), row("busy", "100", 1), row("quiet", "9")]);
+  const stored = new Set<string>();
+  // The tail began inside the group at 100: it has one of its two identical lines.
+  appendContainerLogs(collection, [row("busy", "100", 1), row("busy", "110"), row("quiet", "10")], stored);
+  mergeContainerHistory(collection, [row("busy", "99", 0, "store"), row("busy", "100", 0, "store"), row("busy", "100", 1, "store")], stored);
+  expect([...collection.values()].map(kept => kept.id).sort()).toEqual([
+    "live/server/busy/110/0", "live/server/quiet/10/0", "store/server/busy/100/0", "store/server/busy/100/1", "store/server/busy/99/0",
+  ]);
+  appendContainerLogs(collection, [row("busy", "100", 1), row("busy", "110"), row("busy", "120")], stored);
   expect(collection.size).toBe(6);
-  expect(collection.has("server/busy/110/0")).toBe(true);
-  expect(collection.has("server/busy/100/1")).toBe(true);
-  expect(historyBoundaries([...collection.values()])).toEqual({ "server/busy": "99", "server/quiet": "9" });
+  expect(collection.has("live/server/busy/120/0")).toBe(true);
+  // A group split across two Store pages keeps both halves.
+  mergeContainerHistory(collection, [row("busy", "100", 2, "store")], stored);
+  expect(collection.has("store/server/busy/100/0")).toBe(true);
+  expect(collection.has("store/server/busy/100/2")).toBe(true);
   await collection.cleanup();
 });
 
@@ -24,12 +32,34 @@ it("keeps only the newest lines past the limit, and a batch with repeats lands o
   await collection.preload();
   appendContainerLogs(collection, [row("a", "30"), row("a", "10"), row("a", "20"), row("a", "20")]);
   expect(collection.size).toBe(3);
-  trimContainerLogs(collection, 2);
+  expect(trimContainerLogs(collection, 3)).toBe(false);
+  expect(trimContainerLogs(collection, 2)).toBe(true);
   expect([...collection.values()].map(kept => kept.timestamp).sort()).toEqual(["20", "30"]);
   await collection.cleanup();
 });
 
-it("new sources remain pageable after earlier sources exhaust their history", () => {
-  const exhausted = { "server/a": "10" };
-  expect(remainingHistory([row("a", "10"), row("b", "100")], exhausted)).toEqual({ "server/b": "100" });
+it("live lines that overflowed while waiting land beside the page's lines as new as they are, the larger copy of a group kept", async () => {
+  const collection = createCollection(localOnlyCollectionOptions({ id: "log-restart-test", getKey: (row: ContainerLogRow) => row.id }));
+  await collection.preload();
+  appendContainerLogs(collection, [row("a", "1", 0, "store"), row("a", "10"), row("b", "12", 0, "store"), row("c", "14", 0, "store")]);
+  appendContainerLogs(collection, [row("d", "16", 0, "store"), row("d", "16", 1, "store")]);
+  // A reconnect replayed d's one line three times; the Store's two lines at 16 still outnumber it.
+  restartContainerLogs(collection, [row("a", "11"), row("b", "12"), row("c", "14"), row("c", "14", 1), row("d", "16"), row("d", "16"), row("d", "16")]);
+  expect([...collection.values()].map(kept => kept.id).sort()).toEqual([
+    "live/server/a/11/0", "live/server/c/14/0", "live/server/c/14/1", "store/server/b/12/0", "store/server/d/16/0", "store/server/d/16/1",
+  ]);
+  restartContainerLogs(collection, []);
+  expect(collection.size).toBe(0);
+  await collection.cleanup();
+});
+
+it("a container's exit reads as a lifecycle line, an error unless it exited cleanly", () => {
+  const exit = { machineId: "server", machineName: "Server", containerId: "a", serviceName: "api", timestampNanos: "5" };
+  expect([
+    projectLogExit({ ...exit, exitCode: 137, oomKilled: true }),
+    projectLogExit({ ...exit, exitCode: 1, oomKilled: false }),
+    projectLogExit({ ...exit, exitCode: 0, oomKilled: false }),
+  ].map(line => [line.channel, line.level, line.message])).toEqual([
+    ["lifecycle", "error", "Out of memory (exit code 137)"], ["lifecycle", "error", "Exited with code 1"], ["lifecycle", "info", "Exited with code 0"],
+  ]);
 });
