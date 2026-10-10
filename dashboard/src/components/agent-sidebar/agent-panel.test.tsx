@@ -10,6 +10,7 @@ import { approvalOptions, type ApprovalView } from "./approvals.queries";
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 
 const scope = { queryClient: new QueryClient(), sessionId: "s", userId: "u" };
+const page = { page: "architecture", project: "web", environment: "production", service: "api" };
 
 it("says a denied call was denied once, on its approval card", () => {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
@@ -38,7 +39,7 @@ it("switching Organization with the panel open talks to the new Organization's t
   localStorage.setItem("ployz.agent.thread.other", "thread-other");
   const panel = (organizationSlug: string) => (
     <QueryClientProvider client={client}>
-      <AgentPanel organizationSlug={organizationSlug} environment={null} scope={scope} threadId={`thread-${organizationSlug}`}
+      <AgentPanel organizationSlug={organizationSlug} environment={null} scope={scope} page={page} threadId={`thread-${organizationSlug}`}
         onNewChat={() => {}} onClose={() => {}} />
     </QueryClientProvider>
   );
@@ -53,7 +54,7 @@ it("sends on Enter, keeps Shift+Enter and composing input as a draft", async () 
   const fetched = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(Response.json({ messages: [] })));
   vi.stubGlobal("fetch", fetched);
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
-  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} threadId="thread-acme"
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
     onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
   const posted = () => fetched.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => String(init?.body));
   const box = screen.getByRole("textbox", { name: "Message the agent" });
@@ -64,4 +65,19 @@ it("sends on Enter, keeps Shift+Enter and composing input as a draft", async () 
   fireEvent.keyDown(box, { key: "Enter" });
   await waitFor(() => expect(posted().some((body) => body.includes("list services"))).toBe(true));
   expect(box).toHaveProperty("value", "");
+  expect(posted().map((body) => (JSON.parse(body) as { forwardedProps?: unknown }).forwardedProps)).toContainEqual(expect.objectContaining({ page }));
+});
+
+it("shows a member message without the page block it opens with", () => {
+  const message = asTestDouble<UIMessage>()({
+    id: "m1",
+    role: "user",
+    parts: [
+      { type: "text", content: '<dashboard-page page="architecture" project="web"/>' },
+      { type: "text", content: "restart this service" },
+    ],
+  });
+  render(<QueryClientProvider client={new QueryClient()}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
+  expect(screen.getByText("restart this service").textContent).toBe("restart this service");
+  expect(screen.queryByText(/dashboard-page/)).toBeNull();
 });

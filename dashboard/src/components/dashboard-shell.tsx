@@ -4,6 +4,7 @@ import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-r
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { AgentSidebar } from "./agent-sidebar/agent-sidebar";
+import { useAgentPage } from "./agent-sidebar/use-agent-page";
 import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
 import { HomeLink, PhoneSections, PhoneTabBar, Rail } from "./dashboard-rail";
 import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
@@ -31,6 +32,7 @@ export function DashboardShell({
   const Crumb = useRouteCrumb();
   const { places, organization } = useDashboardNavigation(scope);
   const canvas = useCanvasShowing();
+  const page = useAgentPage(scope);
   // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
@@ -75,7 +77,7 @@ export function DashboardShell({
         </div>
         <PhoneTabBar places={places} />
       </main>
-      <AgentSidebar scope={scope} collectionScope={collectionScope} canvas={canvas} chat={chat} onChat={onChat} />
+      <AgentSidebar scope={scope} collectionScope={collectionScope} page={page} canvas={canvas} chat={chat} onChat={onChat} />
     </div>
   );
 }

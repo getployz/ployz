@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
 import { Option, Schema } from "effect";
@@ -19,6 +19,7 @@ import {
 } from "#/components/ui/message-scroller";
 import { Spinner } from "#/components/ui/spinner";
 import { approvalInterrupt } from "#/modules/agent/agent";
+import { isPageContext, type PageContext } from "#/modules/agent/page-context";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
 import { toolOutcome, ToolRow } from "./tool-row";
@@ -31,13 +32,15 @@ type PanelProps = {
   organizationSlug: string;
   environment: string | null;
   scope: CollectionScope;
+  /** Where the member is; each message carries it, so the agent reads "this service" as the one on screen. */
+  page: PageContext;
   threadId: string;
   onNewChat: () => void;
   onClose: () => void;
 };
 
 /** One agent conversation; the sidebar picks the thread, and switching Organization or thread swaps in a fresh connection. */
-export default function AgentPanel({ organizationSlug, environment, scope, threadId, onNewChat, onClose }: PanelProps) {
+export default function AgentPanel({ organizationSlug, environment, scope, page, threadId, onNewChat, onClose }: PanelProps) {
   return (
     <section aria-label="Ployz agent" className="flex h-full min-h-0 flex-col bg-background">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
@@ -46,7 +49,7 @@ export default function AgentPanel({ organizationSlug, environment, scope, threa
         <Button className="ml-auto" size="icon-sm" variant="ghost" aria-label="New chat" title="New chat" onClick={onNewChat}><SquarePenIcon /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="Close agent" title="Close" onClick={onClose}><XIcon /></Button>
       </header>
-      <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} threadId={threadId} onNewChat={onNewChat} />
+      <Conversation key={`${organizationSlug}/${threadId}`} organizationSlug={organizationSlug} scope={scope} page={page} threadId={threadId} onNewChat={onNewChat} />
     </section>
   );
 }
@@ -54,14 +57,17 @@ export default function AgentPanel({ organizationSlug, environment, scope, threa
 /** The client reports any refused request only as text; a 403 means the thread in the link is another member's. */
 const refused = (error: Error | undefined) => error?.message.includes("status: 403") ?? false;
 
-function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
+function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
   organizationSlug: string;
   scope: CollectionScope;
+  page: PageContext;
   threadId: string;
   onNewChat: () => void;
 }) {
   const [connection] = useState(() => fetchServerSentEvents(`/api/agent/${encodeURIComponent(organizationSlug)}/chat`));
-  const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true });
+  // useChat hands new forwardedProps to its client on every change of identity.
+  const forwardedProps = useMemo(() => ({ page }), [page]);
+  const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps });
   const bound = chat.interrupts.flatMap((interrupt) =>
     interrupt.kind === "generic" && "definitionId" in interrupt && interrupt.definitionId === approvalInterrupt.id && interrupt.payload
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
@@ -156,7 +162,7 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
   bound: readonly Bound[];
 }) {
   if (message.role === "user") {
-    const text = message.parts.flatMap((part) => part.type === "text" ? [part.content] : []).join("\n");
+    const text = message.parts.flatMap((part) => part.type === "text" && !isPageContext(part.content) ? [part.content] : []).join("\n");
     return (
       <Message align="end">
         <MessageContent>

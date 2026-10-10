@@ -24,7 +24,7 @@ function Sidebar({ client }: { client: QueryClient }) {
   const [chat, setChat] = useState<string>();
   return (
     <AgentSidebar canvas scope={{ kind: "environment", organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" }}
-      collectionScope={{ queryClient: client, sessionId: "s", userId: "u" }} chat={chat} onChat={setChat} />
+      collectionScope={{ queryClient: client, sessionId: "s", userId: "u" }} page={{ page: "architecture" }} chat={chat} onChat={setChat} />
   );
 }
 
