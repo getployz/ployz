@@ -42,9 +42,11 @@ it("live lines that overflowed while waiting land beside the page's lines as new
   const collection = createCollection(localOnlyCollectionOptions({ id: "log-restart-test", getKey: (row: ContainerLogRow) => row.id }));
   await collection.preload();
   appendContainerLogs(collection, [row("a", "1", 0, "store"), row("a", "10"), row("b", "12", 0, "store"), row("c", "14", 0, "store")]);
-  restartContainerLogs(collection, [row("a", "11"), row("b", "12"), row("c", "14"), row("c", "14", 1)]);
+  appendContainerLogs(collection, [row("d", "16", 0, "store"), row("d", "16", 1, "store")]);
+  // A reconnect replayed d's one line three times; the Store's two lines at 16 still outnumber it.
+  restartContainerLogs(collection, [row("a", "11"), row("b", "12"), row("c", "14"), row("c", "14", 1), row("d", "16"), row("d", "16"), row("d", "16")]);
   expect([...collection.values()].map(kept => kept.id).sort()).toEqual([
-    "live/server/a/11/0", "live/server/c/14/0", "live/server/c/14/1", "store/server/b/12/0",
+    "live/server/a/11/0", "live/server/c/14/0", "live/server/c/14/1", "store/server/b/12/0", "store/server/d/16/0", "store/server/d/16/1",
   ]);
   restartContainerLogs(collection, []);
   expect(collection.size).toBe(0);

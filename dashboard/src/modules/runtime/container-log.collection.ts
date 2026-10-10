@@ -110,7 +110,7 @@ export function trimContainerLogs(collection: ContainerLogs, limit = LIVE_LOG_LI
  */
 export function restartContainerLogs(collection: ContainerLogs, waiting: readonly ContainerLogRow[]) {
   const from = waiting.reduce<bigint | null>((min, row) => (min === null || BigInt(row.timestamp) < min ? BigInt(row.timestamp) : min), null);
-  const waitingGroups = byGroup(waiting.filter(row => !collection.has(row.id)));
+  const waitingGroups = byGroup([...new Map(waiting.filter(row => !collection.has(row.id)).map(row => [row.id, row])).values()]);
   const shown = byGroup([...collection.values()].filter(row => from !== null && BigInt(row.timestamp) >= from && row.kind === "line"));
   const dropped = [...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id);
   const landing: ContainerLogRow[] = [];
