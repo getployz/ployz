@@ -861,6 +861,65 @@ fn removing_the_pr_unblocks_the_rest_of_the_draft() {
     assert_ne!(db.production()[1], saved);
 }
 
+/// Remove reviewed before PR #5 merged still takes it out: only the content the
+/// review showed must be current, not whether the pull request merged.
+#[test]
+fn a_merge_since_the_review_does_not_refuse_its_remove() {
+    let db = shop();
+    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    let proposal = offer(&db);
+    include(&db, &proposal, &[]).unwrap();
+    let reviewed = diff(&db).version;
+    observe(&db, merged());
+    assert_ne!(diff(&db).version, reviewed);
+    assert!(remove(&db, &proposal, Some(reviewed)).removed);
+    assert!(included(&db).is_empty());
+    assert!(env(&db, "production").get("MODE").is_none());
+}
+
+/// Removing production consumes no draft: it needs no version while its draft
+/// includes the unmerged PR #5, and a stale one is still refused.
+#[test]
+fn an_environment_including_a_pr_is_removed_without_a_version() {
+    let db = shop();
+    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    let proposal = offer(&db);
+    include(&db, &proposal, &[]).unwrap();
+    assert_eq!(included(&db)[0].readiness, Some(Readiness::Open));
+    let stale = diff(&db).version;
+    set(&db, "production", &[("web.env.OTHER", json!("1"))]);
+    // With no Server left a removal applies at once, after the same version check.
+    let removal = |environment: &str, n: u8, version: Option<String>| {
+        db.store.write_trusted(
+            &db.who,
+            &Admit::Remove(ployz_store::Removal {
+                id: DeploymentId::parse(uuid(n)).unwrap(),
+                environment: at(environment),
+                version,
+                accept_volume_loss: Vec::new(),
+                close: false,
+            }),
+            &Trusted {
+                servers: Some(0),
+                ..Trusted::default()
+            },
+        )
+    };
+    // production's Branch pr-5 must be off the Servers first.
+    removal("pr-5", 30, None).unwrap();
+    let refused = removal("production", 31, Some(stale)).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert!(
+        refused
+            .message
+            .starts_with("The Environment changed after this review"),
+        "{}",
+        refused.message
+    );
+    let removed = removal("production", 31, None).unwrap();
+    assert_eq!(removed.status, ployz_store::DeploymentStatus::Applied);
+}
+
 #[test]
 fn a_merge_after_review_makes_that_review_stale() {
     let db = shop();
