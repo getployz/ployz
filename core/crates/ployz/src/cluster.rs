@@ -402,7 +402,6 @@ impl Client {
     ) -> Result<Streaming<OpaquePayload>, TransportError> {
         let mut rpc = self
             .machine_rpc()
-            .accept_compressed(CompressionEncoding::Gzip)
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
         Ok(rpc
             .log_history(target_request(request, Some(target)))
