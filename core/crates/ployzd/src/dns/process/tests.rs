@@ -342,6 +342,29 @@ async fn a_removed_spec_ends_the_process_and_an_idle_process_holds_no_sockets() 
 }
 
 #[tokio::test]
+async fn an_unreadable_spec_idles_until_a_readable_one_arrives() {
+    let harness = Harness::new();
+    fs::write(harness.spec_file.path(), "not json").unwrap();
+    let process = harness.spawn(&CancellationToken::new());
+    wait_for_status(&harness.keeper, "idle").await;
+    tokio::time::sleep(TICK * 5).await;
+    assert!(
+        !process.is_finished(),
+        "an unreadable spec ended the process"
+    );
+
+    harness.spec_file.publish(Some(&harness.spec)).unwrap();
+    assert_eq!(
+        tokio::time::timeout(SETTLE, process)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+        DnsExit::SpecChanged
+    );
+}
+
+#[tokio::test]
 async fn inherited_sockets_carry_queries_queued_across_a_restart() {
     let harness = Harness::new();
     harness.publish_replicas(2).await;

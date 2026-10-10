@@ -127,7 +127,11 @@ pub(crate) async fn serve_with(
     shutdown: CancellationToken,
 ) -> io::Result<DnsExit> {
     let inherited = fixture.keeper.inherited()?;
-    let Some(spec) = fixture.spec.read()? else {
+    let spec = fixture.spec.read().unwrap_or_else(|error| {
+        eprintln!("Internal DNS stays idle until its spec is readable: {error}");
+        None
+    });
+    let Some(spec) = spec else {
         fixture.keeper.forget(&names(&inherited))?;
         drop(inherited);
         fixture.keeper.ready("idle")?;
@@ -521,7 +525,7 @@ async fn idle_until_spec(
             () = tokio::time::sleep(fixture.tick) => {}
             () = shutdown.cancelled() => return Ok(DnsExit::Stopped),
         }
-        if fixture.spec.read()?.is_some() {
+        if let Ok(Some(_)) = fixture.spec.read() {
             return Ok(DnsExit::SpecChanged);
         }
     }
