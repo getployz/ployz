@@ -99,8 +99,9 @@ it("recognizes unexported Config references without offering them in autocomplet
     { path: "api.env.CONFIG_MODE.exported", value: false, default: false, apply: "staged" },
   ]);
   test.edit("token: ${{ api.CONFIG_SENTINEL }}\nmode: ${{ api.CONFIG_MODE }}\nmissing: ${{ api.MISSING }}");
-  expect(screen.getByRole("region", { name: "Depends on" }).textContent).toContain("api");
-  expect(within(screen.getByRole("region", { name: "Secrets" })).getByText("api.CONFIG_SENTINEL")).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Depends on" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Size" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Secrets" })).toBeNull();
   const editor = screen.getByRole("textbox", { name: "config.yml contents" });
   expect(Array.from(editor.querySelectorAll(".cm-config-ref"), (token) => token.textContent))
     .toEqual(["${{ api.CONFIG_SENTINEL }}", "${{ api.CONFIG_MODE }}"]);
@@ -166,7 +167,7 @@ it("does not restore an older refused save over a newer submitted save", async (
   test.store.item = { ...initial, contents: { "config.yml": "newer" } };
   await act(async () => { second.resolve(accepted); });
   await waitFor(() => expect(test.text()).toBe("newer"));
-  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true);
+  expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true);
   await act(async () => { await test.router.navigate({ to: "/" }); });
   expect(screen.queryByRole("alertdialog")).toBeNull();
 });
@@ -182,7 +183,7 @@ it("keeps a queued save visible through the preceding save's refresh and subsequ
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
   test.edit("version: B");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  await waitFor(() => expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true));
   test.store.item = { ...initial, contents: { "config.yml": "version: A" } };
   await act(async () => { first.resolve(accepted); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
@@ -200,7 +201,7 @@ it("keeps a queued save visible through the preceding save's refresh and subsequ
   expect(test.text()).toBe("version: B\nadded: true");
   test.store.item = { ...initial, contents: { "config.yml": "version: B\nadded: true" } };
   await act(async () => { third.resolve(accepted); });
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  await waitFor(() => expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true));
 });
 
 it("keeps unsaved text and new files through a successful Config rename", async () => {
@@ -262,6 +263,7 @@ it("adds a nested filename and submits its contents", async () => {
 it("restores a refused mount form without losing its directory", async () => {
   const test = await openDrawer();
   test.write.mockResolvedValueOnce(refused);
+  fireEvent.click(screen.getByRole("button", { name: "Mount on a service" }));
   fireEvent.click(screen.getByRole("combobox", { name: "Service" }));
   fireEvent.click(await screen.findByRole("option", { name: "api" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Directory" }), { target: { value: "/etc/attempt" } });
@@ -278,7 +280,7 @@ it("guards a pending save and retains its text when persistence is refused", asy
   test.edit("valuable unsaved text");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  await waitFor(() => expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true));
   act(() => { void test.router.navigate({ to: "/" }); });
   const dialog = await screen.findByRole("alertdialog");
   expect(dialog.textContent).toContain("config.yml");
@@ -314,7 +316,7 @@ it("lets the user explicitly discard a pending save without restoring its refuse
   test.edit("discard this text");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  await waitFor(() => expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true));
   fireEvent.click(screen.getByRole("button", { name: "Discard" }));
   await act(async () => { pending.resolve(refused); });
   await waitFor(() => expect(test.text()).toBe("initial"));
@@ -330,7 +332,7 @@ it.each(["retry", "discard"].flatMap((action) => ["unchanged", "newer", "returne
   test.edit("valuable offline text");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true));
+  await waitFor(() => expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true));
   if (edit !== "unchanged") test.edit("temporary newer text");
   if (edit === "returned") test.edit("valuable offline text");
   const remainingText = test.text();
@@ -368,4 +370,14 @@ it("reads the removed Config by ID and keeps that identity when undoing its dele
   expect(test.text()).toBe("deployed original");
   fireEvent.click(screen.getByRole("button", { name: "Keep config" }));
   expect(test.discard).toHaveBeenCalledWith("configs.@config");
+});
+
+it("keeps an oversized dirty file's error visible after selecting another file", async () => {
+  const test = await openDrawer({ ...initial, files: [...initial.files, { name: "other.yml", bytes: 2, mode: "0444", uid: 0, gid: 0, references: [] }],
+    contents: { ...initial.contents, "other.yml": "ok" } });
+  test.edit("x".repeat(256 * 1024 + 1));
+  fireEvent.click(screen.getByRole("tab", { name: "other.yml" }));
+  expect(screen.getByText(/config.yml: Over the 256 KB limit/u)).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true);
+  expect(test.write).not.toHaveBeenCalled();
 });

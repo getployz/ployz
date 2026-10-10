@@ -1,12 +1,13 @@
+import { StoreRefused } from "#/modules/config-store/store.contract";
+import { StoreConfigMounts } from "#/modules/config-store/StoreConfigMounts";
+import { StoreVolumeMounts } from "#/modules/config-store/StoreVolumeMounts";
 import { Suspense, useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { Change, ConfigListing, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow, VolumeListing } from "@ployz/sdk";
-import { attachConfigCommand } from "#/modules/config-store/store-configs";
-import { volumeStorageText } from "#/modules/config-store/store-volumes";
-import { replicaCap, replicaCount, volumeWriters, writersText } from "#/modules/config-store/volume-sharing";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow, VolumeListing } from "@ployz/sdk";
+import { effectiveVolumes } from "#/modules/config-store/store-volumes";
+import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
 import { InfoHint } from "#/components/info-hint";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
@@ -35,7 +36,7 @@ import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { HealthcheckField } from "./HealthcheckField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
-import { RowWarning, SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
@@ -108,7 +109,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const services = requireView(views[0]).services;
   const settings = requireView(views[1]);
   const diff = requireView(views[2]);
-  const volumes = requireView(views[3]).volumes;
+  const volumes = effectiveVolumes(requireView(views[3]).volumes, services, settings);
   const namespace = views[4].ok ? views[4].value.namespace : null;
   const configs = requireView(views[5]).configs;
   const writer = useStoreWriter(organizationSlug);
@@ -143,8 +144,6 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const capped = cap && replicasOf(service.name) <= 1 ? cap : null;
   const mounts = volumes.flatMap((volume) => volume.mounts.filter((mount) => mount.service === service.name)
     .map((mount) => ({ volume, path: mount.path })));
-  const configMounts = configs.flatMap((config) => config.mounts.filter((mount) => mount.service === service.name)
-    .map((mount) => ({ config, dir: mount.dir })));
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
   const buildMethod = settingText(state.rows.get("buildMethod")?.value ?? state.rows.get("buildMethod")?.default);
@@ -159,10 +158,13 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>
     ),
-    storage: mounts.length || configs.length || database ? (
+    storage: volumes.length || configs.length || database ? (
       <FieldGroup>
-        {configs.length ? <StoreServiceConfigs state={state} params={params} configs={configs} mounts={configMounts} /> : null}
-        {mounts.length || database ? <StoreServiceStorage state={state} params={params} mounts={mounts} replicasOf={replicasOf} /> : null}
+        {database && mounts.length === 0 ? <Field data-invalid><FieldContent><FieldLabel>No volume</FieldLabel><FieldDescription>Data is lost on redeploy.</FieldDescription></FieldContent></Field> : null}
+        {configs.length ? <StoreConfigMounts key={`configs:${service.id}`} context={{ serviceId: service.id }} organizationSlug={organizationSlug}
+          environment={store} services={services} configs={configs} diff={diff} params={params} /> : null}
+        {volumes.length ? <StoreVolumeMounts key={`volumes:${service.id}`} context={{ serviceId: service.id }} organizationSlug={organizationSlug}
+          environment={store} services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} params={params} /> : null}
       </FieldGroup>
     ) : null,
     scale: <FieldGroup>{capped ? <StoreReplicasCapped params={params} volume={capped} /> : field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
@@ -551,115 +553,6 @@ function StoreDangerSection({ state }: { state: StoreService }) {
         </Button>
       )} />
   );
-}
-
-function StoreServiceConfigs({ state, params, configs, mounts }: {
-  state: StoreService;
-  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
-  configs: readonly ConfigListing[];
-  mounts: { config: ConfigListing; dir: string }[];
-}) {
-  const writer = useStoreWriter(state.organizationSlug);
-  const [adding, setAdding] = useState<{ config: string; dir: string; error: string | null }>({ config: "", dir: "", error: null });
-  const unmountedOrPicked = (config: ConfigListing) => config.name === adding.config || !mounts.some((mount) => mount.config.id === config.id);
-  const available = configs.filter((config) => config.change !== "delete" && unmountedOrPicked(config));
-
-  function mount() {
-    if (adding.config === "") return setAdding({ ...adding, error: "Select a config." });
-    const dir = adding.dir || `/etc/${adding.config}`;
-    const cleared = { config: "", dir: "", error: null };
-    writer.commit(attachConfigCommand(state.environment, state.service.name, adding.config, dir), ["invalid", "conflict"])
-      .isPersisted.promise.catch((error) => {
-        setAdding((current) => current.config === "" && current.dir === "" && current.error === null
-          ? { ...adding, error: error instanceof StoreRefused ? error.message : "Couldn't mount it." } : current);
-      });
-    setAdding(cleared);
-  }
-
-  return <>
-    {mounts.map(({ config, dir }) => (
-      <Field key={config.id} orientation="responsive">
-        <FieldContent>
-          <FieldLabel>
-            <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: config.id }} className="hover:underline">{config.name}</Link>
-          </FieldLabel>
-          <FieldDescription>Config · {config.files.length} file{config.files.length === 1 ? "" : "s"}</FieldDescription>
-        </FieldContent>
-        <span className="truncate font-mono text-sm">{dir}</span>
-      </Field>
-    ))}
-    {available.length ? (
-      <Field data-invalid={adding.error ? true : undefined}>
-        <FieldLabel>Mount a config</FieldLabel>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Select value={adding.config} onValueChange={(config) => setAdding({ ...adding, config: config ?? "", error: null })}>
-            <SelectTrigger className="w-full sm:w-auto sm:flex-1" aria-label="Config"><SelectValue placeholder="Select a config" /></SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {available.map((config) => <SelectItem key={config.id} value={config.name} label={config.name}>{config.name}</SelectItem>)}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          <Input className="flex-1 font-mono" aria-label="Directory" value={adding.dir}
-            placeholder={adding.config ? `/etc/${adding.config}` : "/etc/app"} aria-invalid={adding.error ? true : undefined}
-            onChange={(event) => setAdding({ ...adding, dir: event.target.value, error: null })} />
-          <Button onClick={mount}><PlusIcon data-icon="inline-start" />Mount</Button>
-        </div>
-        {adding.error ? <FieldError>{adding.error}</FieldError> : null}
-      </Field>
-    ) : null}
-  </>;
-}
-
-/**
- * The volumes this service mounts, each opening its own panel. A database without one is warned: its data lives in the
- * container and goes with the next replacement.
- */
-function StoreServiceStorage({ state, params, mounts, replicasOf }: {
-  state: StoreService;
-  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
-  mounts: { volume: VolumeListing; path: string }[];
-  replicasOf: (service: string) => number;
-}) {
-  if (mounts.length === 0) {
-    return (
-      <Field orientation="responsive" data-invalid>
-        <FieldContent>
-          <FieldLabel>No volume</FieldLabel>
-          <FieldDescription>Data is lost on redeploy.</FieldDescription>
-        </FieldContent>
-      </Field>
-    );
-  }
-  const self = state.service.name;
-  return mounts.map(({ volume, path }) => {
-    // One warning per volume, on its row, with the fix beside it: fewer replicas here, or the other service's volume.
-    const { shared, writers, total } = volumeWriters(volume, replicasOf);
-    const mine = replicasOf(self);
-    const alone = writers.every((writer) => writer.service === self);
-    const open = (
-      <Button variant="outline" size="xs" nativeButton={false}
-        render={<Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} />}>Open {volume.name}</Button>
-    );
-    return (
-      <Field key={volume.id} orientation="responsive">
-        <FieldContent>
-          <FieldLabel>
-            <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} className="hover:underline">{volume.name}</Link>
-          </FieldLabel>
-          <FieldDescription>{volumeStorageText(volume.storage)}</FieldDescription>
-          {shared ? (
-            <RowWarning why={SHARED_VOLUME_WHY} action={mine > 1
-              ? <Button type="button" variant="outline" size="xs" onClick={() => state.set("replicas", 1)}>Use 1 replica</Button>
-              : open}>
-              {alone ? `${mine} replicas share this volume.` : `${total} containers write here: ${writersText(writers)}.`} Can corrupt data.
-            </RowWarning>
-          ) : null}
-        </FieldContent>
-        <span className="truncate font-mono text-sm">{path}</span>
-      </Field>
-    );
-  });
 }
 
 /** Replicas while a volume without shared writes is attached: one, fixed, and the way to allow more. */

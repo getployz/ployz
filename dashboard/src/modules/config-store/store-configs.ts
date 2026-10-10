@@ -3,7 +3,7 @@ import type {
   PutConfigFile, ServiceListing,
 } from "@ployz/sdk";
 import type { ReferenceValue } from "./config-references";
-import { serviceChanges, serviceSettingRows } from "./store-services";
+import { serviceChanges, serviceSettingRows, settingText } from "./store-services";
 import { serviceVariables, storeManagedExports } from "./store-variables";
 
 /** The most text one Config file holds, in bytes; the Store's `MAX_FILE_BYTES`. */
@@ -85,6 +85,14 @@ export function configTrays(services: readonly Pick<ServiceListing, "id" | "name
     })),
     unmounted: configs.filter((config) => !config.mounts.some((mount) => names.has(mount.service))),
   };
+}
+
+/** Detached rows belong to the exact Config, even when a replacement shares its name. */
+export function detachedConfigMounts(diff: DiffView, configId: string) {
+  return diff.changes.flatMap((node) => node.type !== "service" ? [] : node.settings.flatMap((row) =>
+    row.path === `${node.name}.configs.@${configId}` && row.after === null && row.before !== null
+      ? [{ serviceId: node.id, service: node.name, directory: settingText(row.before) }]
+      : []));
 }
 
 /** A file's unsaved text and, when the user flipped Executable, its mode. */

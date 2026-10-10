@@ -17,12 +17,15 @@ Several services can share the same config.
 ![A saved app.conf file with Edit and Preview controls](../images/config-editor.png)
 
 **Save** stages your file changes. Your running services keep their current files until you deploy.
+**Save** writes every edited file together. Each file's options menu shows its size and permissions;
+each file holds up to 256 KB. Unsaved edits stay visible if a save fails.
+
 File names can include folders, such as `conf.d/site.conf`, with up to four path segments.
 Use relative paths without `..`.
 
 ## Mount it into a service
 
-1. In the config's **Mounts**, choose a **Service** under **Mount on a service**.
+1. In the config's **Mounts**, click **Mount on a service**, then choose a **Service**.
 2. Enter an absolute **Directory**, such as `/etc/app`, and click **Mount**.
 3. Repeat for another service that needs the same files.
 4. Click **Deploy** in the bottom bar.
@@ -32,6 +35,11 @@ Use relative paths without `..`.
 The service reads `app.conf` at `/etc/app/app.conf`. You can also mount an existing config from
 the service's **Settings** → **Storage** → **Mount a config**. Each directory holds one config
 or volume, so choose another directory if one is already mounted there.
+
+Both panels show each mount's actual directory. Open the menu at the end of its row and choose
+**Edit directory** to move it, or **Unmount** to detach it on the next deploy.
+Unmounting keeps the config and its files.
+A refused mount keeps your entered directory so you can correct it and retry.
 
 ## Reference a service's variable
 
@@ -79,7 +87,7 @@ The dashboard shows custom permissions and preserves them when you edit the text
   image or a [volume](volumes.md).
 - **Shared changes.** Editing one config affects every service that mounts it. Create another
   config when a service needs different files.
-- **Remove or unmount.** **Remove file** removes a file after deployment. **Unmount from web**
+- **Remove or unmount.** **Remove file** removes a file after deployment. **Unmount**
   keeps the config and its files. **Delete config** removes its mounts everywhere on the next
   deploy, and you can discard the change before deploying.
 

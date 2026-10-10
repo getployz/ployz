@@ -119,3 +119,14 @@ describe("Preview values", () => {
     expect(values.get("api.SECRET_KEY")).toEqual({ secret: true });
   });
 });
+
+it("keeps detached mounts separate from a replacement Config with the same name", async () => {
+  const { detachedConfigMounts } = await import("./store-configs");
+  const { asTestDouble } = await import("#/lib/test-double");
+  const diff = asTestDouble<import("@ployz/sdk").DiffView>()({ changes: [{ type: "service", id: "web-id", name: "web", settings: [
+    { path: "web.configs.@old-id", configName: "app", before: "/etc/old", after: null },
+    { path: "web.configs.@new-id", configName: "app", before: null, after: "/etc/new" },
+  ] }] });
+  expect(detachedConfigMounts(diff, "old-id")).toEqual([{ serviceId: "web-id", service: "web", directory: "/etc/old" }]);
+  expect(detachedConfigMounts(diff, "new-id")).toEqual([]);
+});

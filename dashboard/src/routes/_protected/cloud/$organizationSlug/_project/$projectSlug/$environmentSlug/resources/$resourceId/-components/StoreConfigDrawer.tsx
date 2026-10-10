@@ -1,13 +1,13 @@
+import { StoreConfigMounts } from "#/modules/config-store/StoreConfigMounts";
 import { useRef, useState } from "react";
 import { Schema } from "effect";
 import { useBlocker, useLoaderData, useNavigate } from "@tanstack/react-router";
 import { EllipsisIcon, LockIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import type { ConfigItemView, ConfigListing, EnvironmentRef, ServiceListing } from "@ployz/sdk";
+import type { ConfigItemView, ConfigListing, DiffView, EnvironmentRef, ServiceListing } from "@ployz/sdk";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader,
   AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
-import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
@@ -15,14 +15,12 @@ import {
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Field, FieldError, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
-import { configReferences, previewSegments } from "#/modules/config-store/config-references";
+import { previewSegments } from "#/modules/config-store/config-references";
 import {
-  attachConfigCommand, configBytesText, configEdits, configFileSizeError, configReferenceValues, EXECUTABLE_MODE, fileAccess, READ_ONLY_MODE,
+  configBytesText, configEdits, configFileSizeError, configReferenceValues, EXECUTABLE_MODE, fileAccess, READ_ONLY_MODE,
   saveConfigCommand, utf8Bytes, type FileDraft,
 } from "#/modules/config-store/store-configs";
 import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
@@ -85,15 +83,15 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
         </p>
       </CanvasInspectorHeader>
       <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
-        values={values} removing={removing} params={params} version={diff.version} />
+        values={values} removing={removing} params={params} version={diff.version} configs={configs} diff={diff} />
     </div>
   );
 }
 
-function ConfigBody({ state, item, services, targets, serviceNames, values, removing, params, version }: {
+function ConfigBody({ state, item, services, targets, serviceNames, values, removing, params, version, configs, diff }: {
   state: StoreConfig; item: ConfigItemView; services: readonly ServiceListing[]; targets: readonly ReferenceTarget[];
   serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>; removing: boolean;
-  params: ConfigRouteParams; version: string;
+  params: ConfigRouteParams; version: string; configs: readonly ConfigListing[]; diff: DiffView;
 }) {
   const writer = useStoreWriter(state.organizationSlug);
   const [drafts, setDrafts] = useState<ReadonlyMap<string, FileDraft>>(new Map());
@@ -164,10 +162,6 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
       });
   }
 
-  const references = fileNames.flatMap((file) => configReferences(textOf(file), values, serviceNames));
-  const dependsOn = [...new Set(references.flatMap((ref) => ref.kind === "ref" ? [ref.service] : []))];
-  const secrets = [...new Set(references.flatMap((ref) => ref.kind === "ref" && ref.secret ? [`${ref.service}.${ref.key}`] : []))];
-
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
@@ -182,44 +176,15 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
                 {unsaved.size > 0 ? (
                   <Button variant="ghost" onClick={() => { submittedFiles.current.clear(); setPendingSaves(new Set()); setFailedSaves(new Set()); setDrafts(new Map()); setSaveError(null); }}>Discard</Button>
                 ) : null}
-                <Button onClick={save} disabled={dirty.size === 0 || oversized !== undefined}>Save</Button>
+                {unsaved.size > 0 ? <Button onClick={save} disabled={dirty.size === 0 || oversized !== undefined}>Save</Button> : null}
+                {pendingSaves.size > 0 ? <span role="status" className="text-sm text-muted-foreground">Saving…</span> : null}
               </div>
             )} />
         </SettingsSection>
-        <SettingsSection id="depends-on" title="Depends on">
-          {dependsOn.length === 0 ? <p className="text-sm text-muted-foreground">No references.</p> : (
-            <div className="flex flex-wrap gap-2">{dependsOn.map((service) => <Badge key={service} variant="outline">{service}</Badge>)}</div>
-          )}
-        </SettingsSection>
-        <SettingsSection id="secrets" title="Secrets">
-          {secrets.length === 0 ? <p className="text-sm text-muted-foreground">No secrets.</p> : (
-            <div className="flex flex-wrap gap-2">
-              {secrets.map((secret) => <Badge key={secret} variant="outline"><LockIcon data-icon="inline-start" />{secret}</Badge>)}
-            </div>
-          )}
-        </SettingsSection>
-        <SettingsSection id="mounts" title="Mounts">
-          {removing ? (
+        {removing ? <SettingsSection id="mounts" title="Mounts">
             <Empty variant="placeholder"><EmptyDescription>Removed on next deploy.</EmptyDescription></Empty>
-          ) : <ConfigMounts state={state} services={services} />}
-        </SettingsSection>
-        <SettingsSection id="size" title="Size">
-          <div className="flex flex-col gap-1 text-sm">
-            {fileNames.map((file) => {
-              const bytes = utf8Bytes(textOf(file));
-              const error = configFileSizeError(bytes);
-              return (
-                <div key={file} className="flex items-center gap-3">
-                  <span className="min-w-0 flex-1 truncate font-mono">{file}</span>
-                  <span className={cn("tabular-nums", error ? "text-destructive" : "text-muted-foreground")}>
-                    {error ?? configBytesText(bytes)}
-                  </span>
-                </div>
-              );
-            })}
-            <p className="text-muted-foreground">Up to 256 KB per file.</p>
-          </div>
-        </SettingsSection>
+          </SettingsSection> : <StoreConfigMounts key={state.config.id} context={{ resourceId: state.config.id }} organizationSlug={state.organizationSlug}
+            environment={state.environment} configs={configs} services={services} diff={diff} params={params} />}
         <SettingsSection id="danger" title="Danger">
           <ConfigDanger state={state} params={params} version={version} />
         </SettingsSection>
@@ -286,6 +251,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start">
                       <DropdownMenuGroup>
+                        <DropdownMenuLabel>{configBytesText(utf8Bytes(textOf(file)))} · Permissions {access.kind === "fixed" ? access.label : mode}</DropdownMenuLabel>
                         {access.kind === "toggle" ? (
                           <DropdownMenuCheckboxItem checked={access.executable}
                             onCheckedChange={(executable) => onDraft(file, { mode: executable ? EXECUTABLE_MODE : READ_ONLY_MODE })}>
@@ -294,7 +260,6 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
                         ) : (
                           <>
                             <DropdownMenuCheckboxItem checked={false} disabled>Executable</DropdownMenuCheckboxItem>
-                            <DropdownMenuLabel className="font-mono">{access.label}</DropdownMenuLabel>
                           </>
                         )}
                         <DropdownMenuItem variant="destructive" onClick={() => onRemove(file)}>Remove file</DropdownMenuItem>
@@ -306,8 +271,8 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
             );
           })}
           {readOnly ? null : (
-            <Button variant="ghost" size="icon-sm" aria-label="Add file" onClick={() => setAdding({ name: "", error: null })}>
-              <PlusIcon />
+            <Button variant="ghost" size={fileNames.length ? "icon-sm" : "sm"} aria-label="Add file" onClick={() => setAdding({ name: "", error: null })}>
+              <PlusIcon />{fileNames.length === 0 ? "Add file" : null}
             </Button>
           )}
         </div>
@@ -340,7 +305,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
       ) : ConfigFileEditor === null ? (
         <Skeleton className="h-80 w-full" />
       ) : (
-        <div className="overflow-hidden rounded-md border">
+        <div className="max-h-[32rem] overflow-auto rounded-md border">
           <ConfigFileEditor key={current} fileName={current} value={textOf(current)} targets={targets} values={values} services={serviceNames}
             ariaLabel={`${current} contents`} onSave={onSave}
             onChange={(content) => { if (!readOnly) onDraft(current, { content }); }} />
@@ -362,81 +327,6 @@ function ConfigPreview({ text, values }: { text: string; values: ReturnType<type
             aria-label="Secret"><LockIcon className="size-3" />••••••</span>
         ) : <span key={index} className="text-destructive underline decoration-wavy">{segment.text}</span>)}
     </pre>
-  );
-}
-
-function ConfigMounts({ state, services }: { state: StoreConfig; services: readonly ServiceListing[] }) {
-  const writer = useStoreWriter(state.organizationSlug);
-  const defaultDir = `/etc/${state.config.name}`;
-  const [adding, setAdding] = useState<{ service: string; dir: string; error: string | null }>({ service: "", dir: defaultDir, error: null });
-  const [detachError, setDetachError] = useState<string | null>(null);
-  const mounted = new Set(state.config.mounts.map((mount) => mount.service));
-  const unmountedOrPicked = (service: ServiceListing) => service.name === adding.service || !mounted.has(service.name);
-  const available = services.filter((service) => service.change !== "delete" && unmountedOrPicked(service));
-
-  function attach() {
-    if (adding.service === "") return setAdding({ ...adding, error: "Select a service." });
-    if (!adding.dir.startsWith("/")) return setAdding({ ...adding, error: "Enter an absolute directory, like /etc/app." });
-    const cleared = { service: "", dir: defaultDir, error: null };
-    writer.commit(attachConfigCommand(state.environment, adding.service, state.config.name, adding.dir), SHOWN_REFUSALS)
-      .isPersisted.promise.catch((error) => {
-        setAdding((current) => current.service === "" && current.dir === defaultDir && current.error === null
-          ? { ...adding, error: error instanceof StoreRefused ? error.message : "Couldn't mount it." } : current);
-      });
-    setAdding(cleared);
-  }
-
-  function detach(service: string) {
-    setDetachError(null);
-    writer.commit({ command: "detach_config", environment: state.environment, service, config: state.config.name }, SHOWN_REFUSALS)
-      .isPersisted.promise.catch((error: Error) => setDetachError(error instanceof StoreRefused ? error.message : "Couldn't unmount it."));
-  }
-
-  return (
-    <div className="flex flex-col gap-6">
-      {state.config.mounts.length === 0 ? (
-        <Empty variant="placeholder"><EmptyDescription>Not mounted.</EmptyDescription></Empty>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {state.config.mounts.map((mount) => (
-            <Item key={mount.service} variant="outline">
-              <ItemContent>
-                <ItemTitle>{mount.service}</ItemTitle>
-                <ItemDescription className="truncate font-mono">{mount.dir}</ItemDescription>
-              </ItemContent>
-              <ItemActions>
-                <Button variant="ghost" size="icon-sm" aria-label={`Unmount from ${mount.service}`} onClick={() => detach(mount.service)}>
-                  <Trash2Icon />
-                </Button>
-              </ItemActions>
-            </Item>
-          ))}
-          {detachError ? <FieldError>{detachError}</FieldError> : null}
-        </div>
-      )}
-      {available.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{services.length > 0 ? "Every service mounts it." : "Add a service to mount this config."}</p>
-      ) : (
-        <Field data-invalid={adding.error ? true : undefined}>
-          <FieldLabel>Mount on a service</FieldLabel>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Select value={adding.service} onValueChange={(service) => setAdding({ ...adding, service: service ?? "", error: null })}>
-              <SelectTrigger className="w-full sm:w-auto sm:flex-1" aria-label="Service"><SelectValue placeholder="Select a service" /></SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {available.map((service) => <SelectItem key={service.id} value={service.name} label={service.name}>{service.name}</SelectItem>)}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Input className="flex-1 font-mono" aria-label="Directory" value={adding.dir} placeholder={defaultDir}
-              aria-invalid={adding.error ? true : undefined}
-              onChange={(event) => setAdding({ ...adding, dir: event.target.value, error: null })} />
-            <Button onClick={attach}><PlusIcon data-icon="inline-start" />Mount</Button>
-          </div>
-          {adding.error ? <FieldError>{adding.error}</FieldError> : null}
-        </Field>
-      )}
-    </div>
   );
 }
 

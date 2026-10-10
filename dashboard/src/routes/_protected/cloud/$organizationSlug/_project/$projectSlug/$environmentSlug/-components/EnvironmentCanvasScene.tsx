@@ -1,3 +1,4 @@
+import { effectiveVolumes } from "#/modules/config-store/store-volumes";
 import { replicaCount } from "#/modules/config-store/volume-sharing";
 import { CANVAS_FIT_VIEW } from "./canvas/constants";
 import { Suspense, useState } from "react";
@@ -89,7 +90,7 @@ function CanvasWithData() {
   const services = requireView(servicesResult);
   const settings = requireView(settingsResult);
   const diff = requireView(diffResult);
-  const volumes = requireView(volumesResult);
+  const volumes = { ...requireView(volumesResult), volumes: effectiveVolumes(requireView(volumesResult).volumes, services.services, settings) };
   const domains = requireView(domainsResult).domains;
   const configListings = requireView(configsResult).configs;
   const configs = configTrays(services.services, configListings, diff);

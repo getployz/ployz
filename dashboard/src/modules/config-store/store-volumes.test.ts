@@ -57,3 +57,25 @@ describe("store volumes", () => {
     expect(detachedMounts(diff, "other")).toEqual([]);
   });
 });
+
+it("projects pending mount moves, unsets and new mounts into the writer rules", async () => {
+  const { effectiveVolumes } = await import("./store-volumes");
+  const { replicaCap, mountRefusal, volumeWriters } = await import("./volume-sharing");
+  const { asTestDouble } = await import("#/lib/test-double");
+  const { withPendingChanges } = await import("./store-view.queries");
+  const volumes = [asTestDouble<import("@ployz/sdk").VolumeListing>()({ id: "v", name: "data", shared_writes: false, mounts: [{ service: "web", path: "/old" }] })];
+  const services = ["web", "worker", "removed"].map((name) => asTestDouble<import("@ployz/sdk").ServiceListing>()({ id: name, name, change: name === "removed" ? "delete" : null }));
+  const view = asTestDouble<import("@ployz/sdk").EnvironmentView>()({ settings: [{ path: "web.mounts.data", value: "/old", default: null, apply: "staged" }] });
+  const project = (changes: import("@ployz/sdk").Change[]) => effectiveVolumes(volumes, services, withPendingChanges(view, changes));
+  const moved = project([mountChange("web", "data", "/new")]);
+  expect(moved[0]?.mounts).toEqual([{ service: "web", path: "/new" }]);
+  expect(replicaCap("web", moved)?.id).toBe("v");
+  const detached = project([mountChange("web", "data", null)]);
+  expect(detached[0]?.mounts).toEqual([]);
+  expect(replicaCap("web", detached)).toBeNull();
+  const attached = project([mountChange("web", "data", null), mountChange("worker", "data", "/data"), mountChange("removed", "data", "/ignored")]);
+  expect(attached[0]?.mounts).toEqual([{ service: "worker", path: "/data" }]);
+  expect(attached[0] && mountRefusal(attached[0], "web", 1)).toBe("Already used by worker");
+  expect(attached[0] && volumeWriters(attached[0], () => 2)).toMatchObject({ total: 2, shared: true });
+  expect(effectiveVolumes(volumes, services, { ...view, settings: [] })[0]?.mounts).toEqual(volumes[0]?.mounts);
+});
