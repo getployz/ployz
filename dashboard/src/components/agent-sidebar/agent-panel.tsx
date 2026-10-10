@@ -2,6 +2,9 @@ import { Fragment, useEffect, useState, type FormEvent, type KeyboardEvent } fro
 import { useQuery } from "@tanstack/react-query";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
 import { Option, Schema } from "effect";
+import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remend from "remend";
 import { ArrowUpIcon, SquarePenIcon, XIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
@@ -136,6 +139,12 @@ function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
   );
 }
 
+/** Replies stream in, so remend closes the bold or code span still being written. A wide table scrolls on its own. */
+const markdownComponents: Components = {
+  table: ({ node: _node, ...props }) => <div className="typeset-scroll"><table {...props} /></div>,
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+};
+
 type Bound = { key: string; approvalId: string; interrupt: { canResolve: boolean; status: string; resolveInterrupt: (response: Record<string, never>) => void } };
 
 /** One turn of the conversation. A call a human denied says so once, on its approval card. */
@@ -163,12 +172,11 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
       <MessageContent>
         {message.parts.map((part, index) => {
           if (part.type === "text") {
-            const paragraphs = part.content.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
-            if (paragraphs.length === 0) return null;
+            if (!part.content.trim()) return null;
             return (
               <Bubble key={index} variant="ghost">
-                <BubbleContent className="flex flex-col gap-2">
-                  {paragraphs.map((paragraph, at) => <p key={at} className="whitespace-pre-wrap">{paragraph}</p>)}
+                <BubbleContent className="typeset typeset-chat">
+                  <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{remend(part.content)}</Markdown>
                 </BubbleContent>
               </Bubble>
             );
