@@ -17,7 +17,7 @@ it("keeps the pending selection and refused directory, allows retry and ignores 
   const retry = deferred();
   const submit = vi.fn().mockReturnValueOnce({ isPersisted: first }).mockReturnValueOnce({ isPersisted: retry });
   const closed = vi.fn();
-  const props = { label: "Service" as const, initial: { counterpart: choice.id, directory: "/attempt", editing: false }, submit, onClose: closed };
+  const props = { initial: { counterpart: choice.id, directory: "/attempt", editing: false }, submit, onClose: closed };
   const view = render(<MountEditor {...props} choices={[choice]} />);
   fireEvent.click(screen.getByRole("button", { name: "Mount" }));
   view.rerender(<MountEditor {...props} choices={[]} />);
@@ -39,7 +39,7 @@ it("keeps the pending selection and refused directory, allows retry and ignores 
 it("submits a changed directory by keyboard and keeps local validation visible", () => {
   const submit = vi.fn().mockReturnValue(null);
   const closed = vi.fn();
-  render(<MountEditor label="Volume" choices={[choice]} initial={{ counterpart: choice.id, directory: "relative", editing: true }} submit={submit} onClose={closed} />);
+  render(<MountEditor choices={[choice]} initial={{ counterpart: choice.id, directory: "relative", editing: true }} submit={submit} onClose={closed} />);
   fireEvent.click(screen.getByRole("button", { name: "Save directory" }));
   expect(screen.getByRole("alert").textContent).toContain("absolute");
   expect(submit).not.toHaveBeenCalled();
@@ -53,7 +53,7 @@ it("submits a changed directory by keyboard and keeps local validation visible",
 
 it("lets the picker handle Escape and closes only on an unmodified Escape inside the form", async () => {
   const closed = vi.fn();
-  render(<MountEditor label="Service" choices={[choice]} initial={{ counterpart: choice.id, directory: "/data", editing: false }}
+  render(<MountEditor choices={[choice]} initial={{ counterpart: choice.id, directory: "/data", editing: false }}
     submit={() => null} onClose={closed} />);
   fireEvent.click(screen.getByRole("combobox", { name: "Service" }));
   const option = await screen.findByRole("option", { name: "web" });

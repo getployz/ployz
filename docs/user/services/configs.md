@@ -32,11 +32,10 @@ Use relative paths without `..`.
 
 ![The same config mounted on web and worker at /etc/app](../images/config-mounts.png)
 
-The service reads `app.conf` at `/etc/app/app.conf`. You can also mount an existing config from
-the service's **Settings** → **Storage** → **Mount a config**. Each directory holds one config
-or volume, so choose another directory if one is already mounted there.
+The service reads `app.conf` at `/etc/app/app.conf`. Each directory holds one config or volume,
+so choose another directory if one is already mounted there.
 
-Both panels show each mount's actual directory. Open the menu at the end of its row and choose
+The config's panel shows each mount's actual directory. Open the menu at the end of its row and choose
 **Edit directory** to move it, or **Unmount** to detach it on the next deploy.
 Unmounting keeps the config and its files.
 A refused mount keeps your entered directory so you can correct it and retry.

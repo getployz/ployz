@@ -8,14 +8,13 @@ import { StoreRefused } from "./store.contract";
 import { mountPathError } from "./store-volumes";
 
 export type MountChoice = { id: string; name: string; refusal: string | null; directory: string };
-export type MountContext = { resourceId: string; serviceId?: never } | { serviceId: string; resourceId?: never };
 export type MountEditing = { counterpart: string; directory: string; editing: boolean };
 
 export const mountFailure = (error: Error) => error instanceof StoreRefused ? error.message : "Couldn't save the mount. Try again.";
 
 /** Persistence completes only this form; the writer still applies changes immediately. */
-export function MountEditor({ label, choices, initial, submit, onClose }: {
-  label: "Service" | "Config" | "Volume"; choices: readonly MountChoice[]; initial: MountEditing;
+export function MountEditor({ choices, initial, submit, onClose }: {
+  choices: readonly MountChoice[]; initial: MountEditing;
   submit: (counterpart: string, directory: string) => Persistable | null; onClose: () => void;
 }) {
   const directoryId = useId();
@@ -30,7 +29,7 @@ export function MountEditor({ label, choices, initial, submit, onClose }: {
 
   function save() {
     if (pending) return;
-    const error = !selected ? `Select a ${label.toLowerCase()}.` : mountPathError(directory);
+    const error = !selected ? "Select a service." : mountPathError(directory);
     if (error) return setStatus({ kind: "idle", error });
     const identity = ++attempt.current;
     try {
@@ -55,13 +54,13 @@ export function MountEditor({ label, choices, initial, submit, onClose }: {
         event.preventDefault(); event.stopPropagation(); attempt.current++; onClose();
       }}>
       <Field>
-        <FieldLabel>{label}</FieldLabel>
+        <FieldLabel>Service</FieldLabel>
         <Select items={shown.map((choice) => ({ value: choice.id, label: choice.name }))} value={selected?.id ?? ""} disabled={pending || initial.editing} onValueChange={(id) => {
           const choice = choices.find((one) => one.id === id) ?? null;
           if (directory === (selected?.directory ?? initial.directory)) setDirectory(choice?.directory ?? initial.directory);
           setSelected(choice); setStatus({ kind: "idle", error: null });
         }}>
-          <SelectTrigger aria-label={label} autoFocus={!initial.editing}><SelectValue placeholder={`Select a ${label.toLowerCase()}`} /></SelectTrigger>
+          <SelectTrigger aria-label="Service" autoFocus={!initial.editing}><SelectValue placeholder="Select a service" /></SelectTrigger>
           <SelectContent><SelectGroup>{shown.map((choice) => (
             <SelectItem key={choice.id} value={choice.id} disabled={choice.refusal !== null} label={choice.name}>
               {choice.name}{choice.refusal ? ` · ${choice.refusal}` : ""}

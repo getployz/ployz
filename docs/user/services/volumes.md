@@ -25,8 +25,8 @@ runs on that server.
 
 The volume shows as a tray under the service's card, and your app reads and writes files at
 that directory. Open the menu at the end of the mount's row and choose **Edit directory** to move it.
-You can also add, edit, and unmount volumes from the service's **Settings** → **Storage**. Mount forms appear when
-you choose an action, and keep your entered directory if a write fails.
+Manage mounts from the volume's panel. Mount forms appear when you choose an action, and keep
+your entered directory if a write fails.
 
 ## Choose the storage limit
 
@@ -103,7 +103,7 @@ storage limit, so it can fill the server's disk.
 
 ## Detach a volume
 
-In the volume's panel or the service's **Storage**, open the menu at the end of a mount's row
+In the volume's panel, open the menu at the end of a mount's row
 and choose **Unmount**, then deploy. The detached row shows what the next deploy removes.
 The volume and its data stay.
 

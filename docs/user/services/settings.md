@@ -204,11 +204,8 @@ stays stopped.
 
 ## Storage
 
-### Mount a config
-
-Choose a **Config** and an absolute **Directory**, then click **Mount** to stage its read-only
-files in the service. The default directory is `/etc/CONFIG-NAME`; deployed files appear after
-your next deploy. See [Configs](configs.md) to create files, share them, and review changes.
+Shown for a database without a volume. **No volume** warns that data is lost on redeploy.
+Manage mounts from the [config](configs.md) or [volume](volumes.md) panel.
 
 ## Danger
 

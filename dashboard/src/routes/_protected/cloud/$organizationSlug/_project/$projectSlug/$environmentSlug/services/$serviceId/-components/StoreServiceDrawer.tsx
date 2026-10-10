@@ -1,6 +1,4 @@
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { StoreConfigMounts } from "#/modules/config-store/StoreConfigMounts";
-import { StoreVolumeMounts } from "#/modules/config-store/StoreVolumeMounts";
 import { Suspense, useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
@@ -24,7 +22,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { templateLabel } from "#/modules/config-store/database-presets";
 import { changedProps, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
-import { configsQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
@@ -105,13 +103,12 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
   const views = useStoreViews(organizationSlug,
-    [servicesQuery(store), environmentSettingsQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store), configsQuery(store)] as const);
+    [servicesQuery(store), environmentSettingsQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store)] as const);
   const services = requireView(views[0]).services;
   const settings = requireView(views[1]);
   const diff = requireView(views[2]);
   const volumes = effectiveVolumes(requireView(views[3]).volumes, services, settings);
   const namespace = views[4].ok ? views[4].value.namespace : null;
-  const configs = requireView(views[5]).configs;
   const writer = useStoreWriter(organizationSlug);
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
@@ -133,17 +130,13 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     edit,
     set: (name, value) => edit(value === null ? { op: "unset", path: path(name) } : { op: "set", path: path(name), value }),
   };
-  // A service made from a database template is reached privately and keeps its data in a volume: its panel leads with
-  // that, where a web service leads with its public domain.
   const database = service.template != null;
-  // Staged counts count: a shared volume warns before the Deploy that would share it.
   const replicasOf = (name: string) => replicaCount(serviceSettingRows(settings, name).get("replicas"));
   // A volume without shared writes holds this service to one replica. More than one already (from before the rule)
   // isn't capped: its volume's writers warning says so, with the fix.
   const cap = replicaCap(service.name, volumes);
   const capped = cap && replicasOf(service.name) <= 1 ? cap : null;
-  const mounts = volumes.flatMap((volume) => volume.mounts.filter((mount) => mount.service === service.name)
-    .map((mount) => ({ volume, path: mount.path })));
+  const hasVolume = volumes.some((volume) => volume.mounts.some((mount) => mount.service === service.name));
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
   const buildMethod = settingText(state.rows.get("buildMethod")?.value ?? state.rows.get("buildMethod")?.default);
@@ -158,13 +151,9 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>
     ),
-    storage: volumes.length || configs.length || database ? (
+    storage: database && !hasVolume ? (
       <FieldGroup>
-        {database && mounts.length === 0 ? <Field data-invalid><FieldContent><FieldLabel>No volume</FieldLabel><FieldDescription>Data is lost on redeploy.</FieldDescription></FieldContent></Field> : null}
-        {configs.length ? <StoreConfigMounts key={`configs:${service.id}`} context={{ serviceId: service.id }} organizationSlug={organizationSlug}
-          environment={store} services={services} configs={configs} diff={diff} params={params} /> : null}
-        {volumes.length ? <StoreVolumeMounts key={`volumes:${service.id}`} context={{ serviceId: service.id }} organizationSlug={organizationSlug}
-          environment={store} services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} params={params} /> : null}
+        <Field data-invalid><FieldContent><FieldLabel>No volume</FieldLabel><FieldDescription>Data is lost on redeploy.</FieldDescription></FieldContent></Field>
       </FieldGroup>
     ) : null,
     scale: <FieldGroup>{capped ? <StoreReplicasCapped params={params} volume={capped} /> : field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,

@@ -183,8 +183,8 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
         </SettingsSection>
         {removing ? <SettingsSection id="mounts" title="Mounts">
             <Empty variant="placeholder"><EmptyDescription>Removed on next deploy.</EmptyDescription></Empty>
-          </SettingsSection> : <StoreConfigMounts key={state.config.id} context={{ resourceId: state.config.id }} organizationSlug={state.organizationSlug}
-            environment={state.environment} configs={configs} services={services} diff={diff} params={params} />}
+          </SettingsSection> : <StoreConfigMounts key={state.config.id} resourceId={state.config.id} organizationSlug={state.organizationSlug}
+            environment={state.environment} configs={configs} services={services} diff={diff} />}
         <SettingsSection id="danger" title="Danger">
           <ConfigDanger state={state} params={params} version={version} />
         </SettingsSection>

@@ -5,9 +5,10 @@ The Canvas draws an Environment's services, volumes, configs and domains as node
 ## Sub-features
 
 - Nodes: one per service, with its domain, status, mounted configs (`link "sentry /etc/sentry"`) and attached volumes (`link "pg-data"`). A config no service mounts is its own node.
-- Config drawer: Files (a tab per file, Edit | Preview, Save), Depends on, Secrets, Mounts (Mount on a service), Size, Danger (Delete config, then Keep config)
+- Config drawer: Files (a tab per file, Edit | Preview, Save; file options show size and permissions), Mounts (Mount on a service; row menu has Edit directory and Unmount), Danger (Delete config, then Keep config)
+- Volume drawer: Mounts (Mount on a service; row menu has Edit directory and Unmount), Storage, Danger
 - Inspector tabs: Deployments, Variables, Logs, Settings
-- Settings sections: Source (image, credentials), Networking (domains, private address), Storage (configs, Mount a config, volumes), Scale (Replicas, CPU limit, Memory limit), Deploy (Start command, Pre-deploy command, Healthcheck, Restart policy), Danger (Delete service)
+- Settings sections: Source (image, credentials), Networking (domains, private address), Storage (only a database without a volume warning), Scale (Replicas, CPU limit, Memory limit), Deploy (Start command, Pre-deploy command, Healthcheck, Restart policy), Danger (Delete service)
 - Variables: "N Service Variables", Raw editor, New Variable, and per row Show value, Copy value and Variable actions; then "Ployz reference defaults"
 - Find (`/`) and Create (adds a service, volume, config or domain)
 

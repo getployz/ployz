@@ -80,8 +80,8 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
               <Empty variant="placeholder">
                 <EmptyDescription>Removed on next deploy.</EmptyDescription>
               </Empty>
-            </SettingsSection> : <StoreVolumeMounts key={volume.id} context={{ resourceId: volume.id }} organizationSlug={organizationSlug} environment={store}
-              services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} params={params} />}
+            </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={store}
+              services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} />}
           <SettingsSection id="storage" title="Storage">
             <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
           </SettingsSection>
