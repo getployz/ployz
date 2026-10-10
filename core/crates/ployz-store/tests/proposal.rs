@@ -551,6 +551,37 @@ fn the_worked_trace() {
 }
 
 /// `label`'s row in `view`.
+/// Amendment 3, with G5 as the trap: saving the Working State releases an owned row
+/// whose cell differs from what arrived. `apply` must record arrivals before it
+/// lands the rows and shares the base after, and Remove must save last, or a
+/// refreshed row is released as a local edit, or a row put back is left behind.
+#[test]
+fn apply_arrives_before_it_lands_and_remove_saves_last() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    db.set("dev", &[("api.env.X", "2")]);
+    db.include(("dev", "production"), &sync_id(2), None)
+        .unwrap();
+    // The refresh stays the proposal's own, at the base it landed.
+    assert_eq!(
+        arrivals(&db)["X"],
+        stored(["pending", "2", "0", "0", "S2", "owned", "2"])
+    );
+    assert_eq!(db.base()["X"], "2");
+    assert_eq!(db.included(), [("dev".to_owned(), false, 1)]);
+
+    assert_eq!(db.remove("production", &a), Ok(true));
+    // Nothing of it is left behind, owned or released.
+    assert!(arrivals(&db).is_empty(), "{:?}", arrivals(&db));
+    assert_eq!(db.base()["X"], "0");
+    assert_eq!(db.env("production", "api")["X"], "0");
+    assert!(db.included().is_empty());
+}
+
 fn row<'view>(view: &'view SyncView, label: &str) -> &'view ployz_store::SyncRow {
     view.rows
         .iter()
