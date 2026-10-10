@@ -182,8 +182,9 @@ running on its copy of a volume. Ployz no longer uses that copy. Anything writte
 removal stays on that server and never reaches your other servers. The volume's copy on your
 current servers is the real one.
 
-`sudo systemctl stop ployz` stops Ployz's control of the server; your services, their private DNS
-and the server's place in the cluster keep running. To stop everything, run `sudo ployz-uninstall`.
+`sudo systemctl stop ployz.socket ployz` stops Ployz's control of the server. Stop the socket too:
+any `ployz` command on the server starts Ployz again through it. Your services, their private DNS
+and the server's place in the cluster keep running until the server reboots or you remove it.
 
 Ployz stays installed on a removed server, so you can add it again later. To remove Ployz itself,
 run `sudo ployz-uninstall` on the server after you remove it. Docker, your images and your volume
