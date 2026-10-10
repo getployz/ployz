@@ -339,6 +339,25 @@ pub(crate) fn record(
     Ok(id)
 }
 
+/// Refuse Sync `id` when a Sync of that id already ran, so an id names one Sync and
+/// Undo of it one proposal. A retry of the Include it made is answered before this.
+pub(crate) fn unused(tx: &mut dyn Tx, who: &Actor, id: &SyncId) -> Result<(), RpcError> {
+    let known = tx.query(
+        "SELECT 1 FROM config_proposal WHERE organization_id = ?2 \
+         AND (first_sync = ?1 OR last_sync = ?1) \
+         UNION ALL SELECT 1 FROM config_sync_arrival WHERE organization_id = ?2 \
+         AND sync_id = ?1",
+        &[id.as_str().into(), who.organization.as_str().into()],
+    )?;
+    if known.is_empty() {
+        return Ok(());
+    }
+    Err(error::conflict(
+        format!("Sync {id} already ran: review the Sync again to start a new one"),
+        json!({ "sync": id }),
+    ))
+}
+
 /// What a retried Include whose Sync `found` already recorded returns: that Sync's
 /// nodes, as they stand, and whether `from` is closing. Nothing is planned or
 /// written, so a retry asking to close a Branch its Sync left open is refused.

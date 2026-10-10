@@ -953,6 +953,35 @@ fn a_retry_of_a_closing_sync_reports_the_branch_closing() {
     assert_eq!(replayed(&db, &view, &sync_id(1), false), Ok(true));
 }
 
+#[test]
+fn a_sync_id_names_one_sync() {
+    let db = Db::new();
+    with_qa(&db);
+    db.set("dev", &[("api.env.X", "1")]);
+    db.set("qa", &[("api.env.Y", "2")]);
+    let a = db
+        .include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    // Reused for another source, or again after the pair moved on, it's refused.
+    let (code, message) = db
+        .include(("qa", "production"), &sync_id(1), None)
+        .unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    db.set("dev", &[("api.env.X", "3")]);
+    db.include(("dev", "production"), &sync_id(2), None)
+        .unwrap();
+    db.set("dev", &[("api.env.X", "4")]);
+    let (code, message) = db
+        .include(("dev", "production"), &sync_id(1), None)
+        .unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    // So Undo of it means dev's proposal, refreshed since.
+    let (code, message) = db.undo(&a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("refreshed"), "{message}");
+    assert_eq!(db.env("production", "api"), json!({"X": "3", "Y": "0"}));
+}
+
 // Lifetime.
 
 #[test]
