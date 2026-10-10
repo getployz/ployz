@@ -114,6 +114,33 @@ workspace, leave the root directory at `/`. Set a
 [**Start command**](../services/settings.md#start-command) for that app instead, such as
 `pnpm --filter web build`, and add the shared folder to its watch paths.
 
+## Read a repository from the CLI
+
+To see what's in a repository before you deploy it, list its files and read one. Both work on
+any repository the Ployz GitHub App can read, and on public repositories.
+
+```sh
+# Every file on the default branch
+ployz github tree acme/web
+
+# Only files under apps/web, on the dev branch
+ployz github tree acme/web apps/web --ref dev
+
+# Only files whose path matches a glob
+ployz github tree acme/web --match '**/Dockerfile'
+
+# The text of one file
+ployz github cat acme/web apps/web/package.json
+```
+
+`--match` matches the whole path from the top of the repository, so `*.toml` finds only files at
+the top, and `**/*.toml` finds them in every folder. Quote the glob so your shell doesn't expand
+it. A listing stops at 500 files. When it's cut short, name a folder or a narrower `--match` to
+see the rest.
+
+`github cat` prints text files up to 64 KiB. For a larger file or a binary one, it says so
+instead of printing it. Pass `--ref` to read a branch, tag or commit other than the default.
+
 ## Good to know
 
 - **Every deploy ships the newest commit.** Clicking **Deploy** to apply a setting also picks up

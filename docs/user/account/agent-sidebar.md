@@ -7,6 +7,10 @@ The Ployz agent lives on the right edge of every organization page. Ask it about
 deployments and servers, or ask it to change something and deploy. Before a deploy removes
 anything, it stops and asks you.
 
+The agent can create projects, environments, services from a GitHub repository,
+[configs](../services/configs.md) and domains, and set variables. Ask it to deploy a repository, like "deploy acme/web", and it reads the repository's
+files to work out how to build and start your app, then sets it up and deploys it.
+
 ## Talk to the agent
 
 1. Click the tab on the right edge of the page.
