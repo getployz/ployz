@@ -4,12 +4,15 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RowId } from "@ployz/sdk";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { placementChanges, placementGroup } from "#/modules/volume-placement/volume-placement";
 import { EnvironmentChangesReview, type EnvironmentChangesReviewProps } from "./EnvironmentChangesReview";
 
 const nginx: ChangeGroup = {
   nodeType: "service",
   nodeId: "00000000-0000-4000-8000-000000000001",
   nodeName: "nginx",
+  owner: "store",
   discardPath: "nginx",
   changeCount: 1,
   restarts: [],
@@ -51,6 +54,19 @@ async function menuOf(label: string) {
 afterEach(cleanup);
 
 describe("Details", () => {
+  it("words a staged move and discards the Volume's whole placement", async () => {
+    const volume = { id: "v1", name: "pg-data" };
+    const id = (server: string) => member(server, "empty").machine.id;
+    const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
+      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, deploymentId: null,
+    });
+    const handlers = review({ groups: [placementGroup(volume, changes)] });
+    const line = lineOf("Copies pg-data to web-3 first, then a short stop.");
+    expect(line.getByText("Move pg-data to web-3")).toBeTruthy();
+    fireEvent.click((await menuOf("pg-data Move pg-data to web-3")).getByRole("menuitem", { name: "Discard" }));
+    expect(handlers.onDiscardRow).toHaveBeenCalledWith(expect.objectContaining({ owner: "placement", nodeId: "v1" }), "v1");
+  });
+
   it("shows complete file text and metadata, distinguishing an empty file from a missing one", () => {
     const before = { content: "first line\nlast line\n", mode: "0444", uid: 0, gid: 0 };
     const after = { content: "new first line\nnew last line\n", mode: "0555", uid: 1000, gid: 1001 };

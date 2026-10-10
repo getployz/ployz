@@ -27,17 +27,21 @@ export type ChangeRow = {
   newValue: string;
   configFile?: { before: typeof reviewFile.Type | null; after: typeof reviewFile.Type | null };
   canDiscard: boolean;
+  /** A placement change's second line, in words, where a Setting shows its before and after. */
+  detail?: string;
 };
 
 /** One changed node in Details, with its changed Settings. */
 export type ChangeGroup = {
+  /** Who keeps the change and takes its Discard: the Config Store, or the dashboard's Volume placement. */
+  owner: "store" | "placement";
   nodeType: NodeChange["type"];
   nodeId: string;
   nodeName: string;
   /** What Discard names to put the whole node back: `SERVICE`, or `volumes.VOLUME`. */
   discardPath: string;
-  /** The node's own Sync row. */
-  row: RowId;
+  /** The node's own Sync row; none for a placement change, which never syncs. */
+  row: RowId | null;
   lifecycle: NodeChange["lifecycle"];
   rows: ChangeRow[];
   changeCount: number;
@@ -65,6 +69,7 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
  */
 export function changeGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
   return diff.changes.map((node) => ({
+    owner: "store",
     nodeType: node.type,
     nodeId: node.id,
     nodeName: node.name,

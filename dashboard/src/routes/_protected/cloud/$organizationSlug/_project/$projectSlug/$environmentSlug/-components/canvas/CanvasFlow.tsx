@@ -28,7 +28,8 @@ import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
-import { changeGroups } from "#/modules/config-store/store-deployments";
+import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-deployments";
+import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
@@ -214,21 +215,27 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
   const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
-  const groups = changeGroups(diff, store.services.map(({ service }) => service));
+  const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
+  const storeGroups = changeGroups(diff, store.services.map(({ service }) => service));
+  const groups = [...storeGroups, ...placements.groups];
+  const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath);
   return (
     <>
       <BottomBar
         groups={groups}
-        totalChanges={diff.total_count}
+        totalChanges={diff.total_count + placements.count}
         canPublish={diff.total_count > 0 && !diff.published}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
         onPublish={actions.publish}
-        onDiscardAll={() => actions.discard(null)}
-        onDiscardNode={(group) => actions.discard(group.discardPath)}
-        onDiscardRow={(_, path) => actions.discard(path)}
+        onDiscardAll={() => {
+          placements.discardAll();
+          if (storeGroups.length > 0 || diff.total_count > 0) actions.discard(null);
+        }}
+        onDiscardNode={discardNode}
+        onDiscardRow={(group, path) => group.owner === "placement" ? discardNode(group) : actions.discard(path)}
         active={inFlight}
-        notes={storeHintNotes(diff, groups, actions.neverSync)}
+        notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
         waiting={waiting}
         noServers={noServers}
       />

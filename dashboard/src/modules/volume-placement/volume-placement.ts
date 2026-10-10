@@ -1,4 +1,5 @@
-import type { MachineId, MachineName } from "@ployz/sdk";
+import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { planFromCopies } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
@@ -259,5 +260,39 @@ export function placementTargets(
   return {
     move: candidates.filter((member) => accepts("move", member)).map((member) => member.machine),
     mirror: mirrors.length > 0 ? [] : candidates.filter((member) => accepts("mirror", member)).map((member) => member.machine),
+  };
+}
+
+const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;
+
+/** A Volume's staged placement as one group in Details, beside the Store's changes. Discard drops all of it. */
+export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[]): ChangeGroup {
+  return {
+    owner: "placement",
+    nodeType: "volume",
+    nodeId: volume.id,
+    nodeName: volume.name,
+    discardPath: volume.id,
+    row: null,
+    lifecycle: "update",
+    changeCount: changes.length,
+    restarts: [],
+    canDiscard: true,
+    rows: changes.map((change, index) => {
+      const words = placementWords(change);
+      return {
+        changeKey: `${volume.id}:placement:${index}`,
+        label: words.title,
+        name: words.title,
+        variable: false,
+        kind: CHANGE_KINDS[change.kind],
+        path: volume.id,
+        row: null,
+        currentValue: "",
+        newValue: "",
+        detail: words.detail,
+        canDiscard: changes.length === 1,
+      };
+    }),
   };
 }
