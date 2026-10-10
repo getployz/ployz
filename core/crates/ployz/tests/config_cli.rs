@@ -1557,6 +1557,14 @@ fn the_catalog_describes_settings_without_a_store() {
         )
     };
     assert_eq!(classified("ctx"), ("never", "local"));
+    for action in [
+        "add", "put", "rm-file", "inspect", "ls", "rename", "rm", "mount", "unmount",
+    ] {
+        assert_eq!(classified(&format!("config {action}")), ("never", "cloud"));
+    }
+    for action in ["move", "release"] {
+        assert_eq!(classified(&format!("volume {action}")), ("never", "cloud"));
+    }
     assert_eq!(classified("volume mirror"), ("never", "cloud"));
     assert_eq!(classified("volume mirror rm"), ("always", "cloud"));
     assert_eq!(classified("deploy"), ("depends", "cloud"));

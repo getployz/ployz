@@ -5,6 +5,7 @@
 
 use std::io::{self, IsTerminal};
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::{FileMode, ReviewLifecycleKind};
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
@@ -108,17 +109,17 @@ pub(crate) fn command() -> Command {
     )
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "add" => create,
-        "put" => put,
-        "rm-file" => remove_file,
-        "inspect" => inspect,
-        "ls" => list,
-        "rename" => rename,
-        "rm" => delete,
-        "mount" => mount,
-        "unmount" => unmount,
+        "add" => cloud(Never, create),
+        "put" => cloud(Never, put),
+        "rm-file" => cloud(Never, remove_file),
+        "inspect" => cloud(Never, inspect),
+        "ls" => cloud(Never, list),
+        "rename" => cloud(Never, rename),
+        "rm" => cloud(Never, delete),
+        "mount" => cloud(Never, mount),
+        "unmount" => cloud(Never, unmount),
         _ => return None,
     })
 }

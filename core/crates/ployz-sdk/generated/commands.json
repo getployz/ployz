@@ -126,6 +126,438 @@
     ]
   },
   {
+    "command": "config add",
+    "about": "Add a Config; staged until you deploy",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Config name, unique in the Environment"
+      },
+      {
+        "name": "--mount",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Mount it into a Service at an absolute directory; repeatable"
+      }
+    ]
+  },
+  {
+    "command": "config inspect",
+    "about": "Show a Config, its files' text and its mounts",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "CONFIG",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "config ls",
+    "about": "List Configs and what the next Deploy does to them",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "config mount",
+    "about": "Mount a Config into a Service at a directory",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "CONFIG",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false
+      },
+      {
+        "name": "DIR",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 3,
+        "trailing": false,
+        "help": "Absolute directory, like /etc/nginx/conf.d"
+      }
+    ]
+  },
+  {
+    "command": "config put",
+    "about": "Write one file into a Config, from --from or stdin; staged",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "CONFIG",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "FILE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "Path inside the Config, like nginx.conf or conf.d/site.conf"
+      },
+      {
+        "name": "--from",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Read the file from PATH instead of stdin"
+      },
+      {
+        "name": "--mode",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Permission bits [default: 0444, or the file's current mode]",
+        "conflicts": [
+          "--executable"
+        ]
+      },
+      {
+        "name": "--executable",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Shorthand for --mode 0555",
+        "conflicts": [
+          "--mode"
+        ]
+      },
+      {
+        "name": "--uid",
+        "required": false,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "trailing": false,
+        "help": "Owning user ID [default: 0, or the file's current owner]"
+      },
+      {
+        "name": "--gid",
+        "required": false,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "trailing": false,
+        "help": "Owning group ID [default: 0, or the file's current group]"
+      }
+    ]
+  },
+  {
+    "command": "config rename",
+    "about": "Rename a Config; its files and mounts stay",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "CONFIG",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "NAME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "config rm",
+    "about": "Remove a Config and unmount it everywhere",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "CONFIG",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "config rm-file",
+    "about": "Remove one file from a Config; staged",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "CONFIG",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "FILE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "config unmount",
+    "about": "Unmount a Config from a Service",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "CONFIG",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false
+      }
+    ]
+  },
+  {
     "command": "ctx",
     "about": "Show where commands act, or manage local contexts",
     "json": true,
@@ -591,7 +1023,7 @@
   },
   {
     "command": "diff",
-    "about": "Show staged Service and Volume changes",
+    "about": "Show staged Service, Volume and Config changes",
     "json": true,
     "approval": "never",
     "surface": "cloud",
@@ -618,7 +1050,7 @@
   },
   {
     "command": "discard",
-    "about": "Undo staged Service, Volume or Setting changes",
+    "about": "Undo staged Service, Volume, Config or Setting changes",
     "json": true,
     "approval": "never",
     "surface": "cloud",
@@ -649,7 +1081,7 @@
         "multiple": false,
         "index": 1,
         "trailing": false,
-        "help": "SERVICE, SERVICE.SETTING or volumes.VOLUME [default: everything]"
+        "help": "SERVICE, SERVICE.SETTING, volumes.VOLUME, configs.CONFIG or a `ployz diff` row [default: everything]"
       },
       {
         "name": "--version",
@@ -4076,6 +4508,105 @@
     ]
   },
   {
+    "command": "volume move",
+    "about": "Move a Volume and its Service onto another Server (Ployz Cloud); the Service stops for the last copy",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--to",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Server the Volume moves to; a Move that stopped continues when asked again"
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the run to end; it fails unless the run is done"
+      }
+    ]
+  },
+  {
+    "command": "volume release",
+    "about": "Start a Volume's Service again where it was, ending a Move that stopped before the handover (Ployz Cloud)",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the run to end; it fails unless the run is done"
+      }
+    ]
+  },
+  {
     "command": "volume rename",
     "about": "Rename a Volume: staged; its data and mounts stay",
     "json": true,
@@ -4158,7 +4689,7 @@
   },
   {
     "command": "volume runs",
-    "about": "List a Volume's Mirror and Sync runs, or show one (Ployz Cloud)",
+    "about": "List a Volume's runs, or show one (Ployz Cloud)",
     "json": true,
     "approval": "never",
     "surface": "cloud",
