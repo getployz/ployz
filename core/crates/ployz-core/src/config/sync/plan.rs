@@ -777,8 +777,15 @@ pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
         .filter(|c| c.resource_lineage_id != lineage)
     {
         for (name, file) in &config.files {
-            if file.referenced_lineages().into_iter().any(|used| used == lineage) {
-                rows.push(RowId::of(&config.resource_lineage_id, At::File(name.clone())));
+            if file
+                .referenced_lineages()
+                .into_iter()
+                .any(|used| used == lineage)
+            {
+                rows.push(RowId::of(
+                    &config.resource_lineage_id,
+                    At::File(name.clone()),
+                ));
             }
         }
     }

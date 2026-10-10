@@ -10,7 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
     PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
-    dependents, name_of, parse_environment_intent, plan, put, put_back, redact_environment_intent, unapply,
+    dependents, name_of, parse_environment_intent, plan, put, put_back, redact_environment_intent,
+    unapply,
 };
 use serde_json::{Value, json};
 

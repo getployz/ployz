@@ -453,7 +453,8 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         });
     }
     // A node it brought goes whole, so a row of it the draft made its own (released,
-    // still pending) is an edit Remove would lose.
+    // still pending) is an edit Remove would lose; so is a node from the source the
+    // draft edited, which the draft can't keep without what it was brought with.
     let nodes: BTreeSet<&str> = landed
         .iter()
         .filter(|landed| *landed.row.at() == At::Node)
@@ -463,7 +464,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         .into_iter()
         .find(|arrived| {
             matches!(arrived.arrival, Arrival::Pending { owner: None, .. })
-                && nodes.contains(arrived.row.lineage())
+                && (nodes.contains(arrived.row.lineage()) || *arrived.row.at() == At::Node)
         })
         .map(|arrived| arrived.row);
     let unapplied = match released {
@@ -474,17 +475,13 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         Ok(working) => working,
         Err(Unapplied::Changed(row)) => {
             let (node, at) = label(&row).map_or_else(
-                || (row.lineage().to_owned(), row.to_string()),
-                |n| {
-                    (
-                        n.node.to_string(),
-                        n.name.unwrap_or_else(|| n.node.to_string()),
-                    )
-                },
+                || (row.lineage().to_owned(), None),
+                |n| (n.node.to_string(), n.name),
             );
+            let edited = at.map_or_else(|| node.clone(), |at| format!("{node}'s {at}"));
             return Err(error::conflict(
                 format!(
-                    "{node}'s {at} was edited here since {source} was included: \
+                    "{edited} was edited here since {source} was included: \
                      Discard {node}, or keep {source}"
                 ),
                 json!({ "row": row, "proposal": proposal.id }),

@@ -140,8 +140,15 @@ pub(crate) fn publish(
         review.saved.as_ref(),
         publish.message.as_deref(),
     )?;
+    // Saved State already held it: proposals ending still moves the revision.
+    let mut summary = environment.summary;
+    if consumed && !created {
+        let mut whole = scope::load_by_id(tx, &summary.id)?;
+        scope::touch_working(tx, &mut whole)?;
+        summary = whole.summary;
+    }
     Ok(Published {
-        environment: environment.summary,
+        environment: summary,
         saved: Some(saved),
         created,
     })
