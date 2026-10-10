@@ -54,17 +54,16 @@ async function menuOf(label: string) {
 afterEach(cleanup);
 
 describe("Details", () => {
-  it("words a staged move and discards the Volume's whole placement", async () => {
+  it("shows a staged move as the primary's Server before and after, and undoes just that change", async () => {
     const volume = { id: "v1", name: "pg-data" };
     const id = (server: string) => member(server, "empty").machine.id;
     const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
       volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, deploymentId: null,
     });
     const handlers = review({ groups: [placementGroup(volume, changes)] });
-    const line = lineOf("Copies pg-data to web-3 first, then a short stop.");
-    expect(line.getByText("Move pg-data to web-3")).toBeTruthy();
-    fireEvent.click((await menuOf("pg-data Move pg-data to web-3")).getByRole("menuitem", { name: "Discard" }));
-    expect(handlers.onDiscardRow).toHaveBeenCalledWith(expect.objectContaining({ owner: "placement", nodeId: "v1" }), "v1");
+    expect(lineOf("Primary").getByTitle("web-3").textContent).toBe("web-1web-3");
+    fireEvent.click((await menuOf("pg-data Primary")).getByRole("menuitem", { name: "Discard" }));
+    expect(handlers.onDiscardRow).toHaveBeenCalledWith(expect.objectContaining({ owner: "placement", nodeId: "v1" }), "0");
   });
 
   it("shows complete file text and metadata, distinguishing an empty file from a missing one", () => {

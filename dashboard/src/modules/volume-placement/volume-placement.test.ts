@@ -12,10 +12,12 @@ import {
   placementChanges,
   placementSteps,
   placementTargets,
-  placementWords,
+  placementEntries,
+  placementGroup,
   stagedOffServer,
   storageStep,
   targetPlacement,
+  undoPlacement,
   type PlacementRow,
 } from "./volume-placement";
 
@@ -36,7 +38,10 @@ const mirrorAsOf = (server: string, when: Date): Member => {
   return { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: { name: "s", guid: "12", created_unix_seconds: when.getTime() / 1000 } } } };
 };
 const changes = (members: Member[], placement: PlacementRow | null) => placementChanges(volume, members, placement);
-const words = (members: Member[], placement: PlacementRow | null) => changes(members, placement).map(placementWords);
+const review = (members: Member[], placement: PlacementRow | null) => placementGroup(volume, changes(members, placement)).rows
+  .map(({ kind, name, currentValue, newValue, detail }) => ({ kind, name, currentValue, newValue, detail }));
+const primaryMove = (from: string, to: string, detail?: string) =>
+  ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail });
 const steps = (members: Member[], placement: PlacementRow | null) => placementSteps(changes(members, placement));
 
 describe("placementChanges", () => {
@@ -48,24 +53,18 @@ describe("placementChanges", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
     const staged = changes(members, row(["web-2"], { primary: "web-2" }));
     expect(staged.map((change) => change.kind)).toEqual(["move"]);
-    expect(words(members, row(["web-2"], { primary: "web-2" }))).toEqual([
-      { title: "Move pg-data to web-2", detail: "Uses the mirror on web-2, then a short stop. web-1 keeps pg-data-old." },
-    ]);
+    expect(review(members, row(["web-2"], { primary: "web-2" }))).toEqual([primaryMove("web-1", "web-2")]);
   });
 
   it("keeps a move to the mirror as the same move after the hand-over, never as removing that mirror", () => {
     const members = [member("web-1", "handed", { lease: 3 }), member("web-2", "promoted", { lease: 4 })];
     expect(changes(members, row(["web-2"], { primary: "web-2" })).map((change) => change.kind)).toEqual(["move"]);
-    expect(words(members, row(["web-2"], { primary: "web-2" }))).toEqual([
-      { title: "Move pg-data to web-2", detail: "Uses the mirror on web-2, then a short stop. web-1 keeps pg-data-old." },
-    ]);
+    expect(review(members, row(["web-2"], { primary: "web-2" }))).toEqual([primaryMove("web-1", "web-2")]);
   });
 
   it("copies first when the target holds nothing, and leaves the mirror list alone", () => {
     const members = [member("web-1", "writer"), pooled("web-3")];
-    expect(words(members, row([], { primary: "web-3" }))).toEqual([
-      { title: "Move pg-data to web-3", detail: "Copies pg-data to web-3 first, then a short stop." },
-    ]);
+    expect(review(members, row([], { primary: "web-3" }))).toEqual([primaryMove("web-1", "web-3")]);
     expect(steps(members, row([], { primary: "web-3" }))).toEqual([{ kind: "move", args: { to: "web-3" } }]);
   });
 
@@ -73,9 +72,7 @@ describe("placementChanges", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
     const [change] = changes(members, row(["web-2"], { primary: "web-2" }));
     expect(change).toMatchObject({ kind: "move", how: "restore", lostAfter: at, from: { name: "web-1" } });
-    expect(words(members, row(["web-2"], { primary: "web-2" }))).toEqual([
-      { title: "Use mirror on web-2", detail: "web-1 is not answering. Changes after 10:36 lost." },
-    ]);
+    expect(review(members, row(["web-2"], { primary: "web-2" }))).toEqual([primaryMove("web-1", "web-2", "Changes after 10:36 lost")]);
     expect(steps(members, row(["web-2"], { primary: "web-2" }))).toEqual([{ kind: "restore", args: { from: "web-2" } }]);
   });
 
@@ -92,10 +89,7 @@ describe("placementChanges", () => {
   it("deletes a detached copy before adding a mirror, and the review says so", () => {
     const members = [member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")];
     const placement = row([], { primary: "web-2", mirrors: ["web-3"] });
-    expect(words(members, placement)).toEqual([{
-      title: "Add mirror on web-3",
-      detail: "Copies pg-data to web-3. Refreshes on every deploy. Deletes pg-data-old on web-1 first.",
-    }]);
+    expect(review(members, placement)).toEqual([{ kind: "add", name: "Mirror", currentValue: "", newValue: "web-3", detail: "Deletes pg-data-old first" }]);
     expect(steps(members, placement)).toEqual([
       { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null } },
       { kind: "mirror", args: { to: "web-3" } },
@@ -109,14 +103,14 @@ describe("placementChanges", () => {
 
   it("deletes a staged detached copy and nothing else", () => {
     const members = [member("web-2", "writer"), member("web-1", "mirror")];
-    expect(words(members, row([], { primary: "web-2", deletes: ["web-1"] }))).toEqual([
-      { title: "Delete pg-data-old", detail: "Deletes the old copy on web-1." },
+    expect(review(members, row([], { primary: "web-2", deletes: ["web-1"] }))).toEqual([
+      { kind: "remove", name: "Detached copy", currentValue: "web-1", newValue: "" },
     ]);
   });
 
   it("removes a mirror the user took off the list", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
-    expect(words(members, row(["web-2"], { primary: "web-1" }))).toEqual([{ title: "Remove mirror on web-2", detail: "Deletes pg-data-web-2." }]);
+    expect(review(members, row(["web-2"], { primary: "web-1" }))).toEqual([{ kind: "remove", name: "Mirror", currentValue: "web-2", newValue: "" }]);
   });
 
   it("orders runs so deletions free the copy slot before a move, and a new mirror comes last", () => {
@@ -129,6 +123,67 @@ describe("placementChanges", () => {
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
       { kind: "move", args: { to: "web-3" } },
     ]);
+  });
+});
+
+describe("placementEntries", () => {
+  const entries = (members: Member[], placement: PlacementRow | null) => placementEntries(volume, members, placement)
+    .map(({ role, server, change, movedFrom, undo }) => ({ role, server: server.name, change, movedFrom: movedFrom?.name ?? null, undo: undo?.kind ?? null }));
+
+  it("marks nothing when nothing is staged, even while the primary is silent", () => {
+    expect(entries([member("web-1", "unanswered"), member("web-2", "mirror")], row(["web-2"]))).toEqual([
+      { role: "primary", server: "web-1", change: null, movedFrom: null, undo: null },
+      { role: "mirror", server: "web-2", change: null, movedFrom: null, undo: null },
+    ]);
+  });
+
+  it("shows a staged move on the new Server, what it was, and the old copy it leaves detached", () => {
+    expect(entries([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }))).toEqual([
+      { role: "primary", server: "web-3", change: "update", movedFrom: "web-1", undo: "move" },
+      { role: "detached", server: "web-1", change: "add", movedFrom: null, undo: null },
+    ]);
+  });
+
+  it("strikes a detached copy a new mirror deletes first, with no Undo of its own", () => {
+    expect(entries([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual([
+      { role: "primary", server: "web-2", change: null, movedFrom: null, undo: null },
+      { role: "mirror", server: "web-3", change: "add", movedFrom: null, undo: "add_mirror" },
+      { role: "detached", server: "web-1", change: "remove", movedFrom: null, undo: null },
+    ]);
+  });
+
+  it("keeps a removed mirror and a deleted copy in the list, struck, each with its Undo", () => {
+    expect(entries([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"], { primary: "web-1" }))[1])
+      .toEqual({ role: "mirror", server: "web-2", change: "remove", movedFrom: null, undo: "remove_mirror" });
+    expect(entries([member("web-2", "writer"), member("web-1", "mirror")], row([], { primary: "web-2", deletes: ["web-1"] }))[1])
+      .toEqual({ role: "detached", server: "web-1", change: "remove", movedFrom: null, undo: "delete_copy" });
+  });
+});
+
+describe("undoPlacement", () => {
+  const undo = (members: Member[], placement: PlacementRow, kind: string) => {
+    const change = changes(members, placement).find((one) => one.kind === kind);
+    if (change === undefined) throw new Error(`no ${kind}`);
+    return undoPlacement(volume, members, placement, change);
+  };
+
+  it("drops one change and keeps the rest staged", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
+    const placement = row(["web-2"], { primary: "web-3" });
+    expect(undo(members, placement, "move")).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
+    expect(undo(members, placement, "remove_mirror")).toEqual({ primary: id("web-3"), mirrors: [id("web-2")], deletes: [] });
+  });
+
+  it("gives a promoted mirror back to the mirrors", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
+    const placement = row(["web-2"], { primary: "web-2", mirrors: ["web-3"] });
+    expect(undo(members, placement, "move")).toEqual({ primary: id("web-1"), mirrors: [id("web-3"), id("web-2")], deletes: [] });
+  });
+
+  it("is null when the change was the only one, so Undo discards", () => {
+    const members = [member("web-1", "writer"), pooled("web-3")];
+    expect(undo(members, row([], { primary: "web-3" }), "move")).toBeNull();
+    expect(undo([member("web-2", "writer"), member("web-1", "mirror")], row([], { primary: "web-2", deletes: ["web-1"] }), "delete_copy")).toBeNull();
   });
 });
 

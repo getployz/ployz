@@ -9,26 +9,29 @@ Without Cloud, volumes stay on the server that has them.
 
 ## In Ployz Cloud
 
-Open a managed volume after its first deploy. **Placement** shows its primary, the server your
-service writes it on, and its mirror as `data-web-2`. Every change here is staged. It shows in the
-bottom bar count and in Details, and the next deploy runs it before your services. Nothing runs on
-click.
+Open a managed volume after its first deploy. **Placement** lists its primary, the server your
+service writes it on, its mirror as `data-web-2`, and any detached copy. A change here waits for
+your next deploy, which runs it before your services. Until then its row shows pink with **Undo**,
+and it counts in the bottom bar and Details. Nothing runs on click.
 
 - **Add mirror** offers only servers that run services. A volume has one mirror for now.
-- **Move to web-2** changes the primary and leaves the mirror alone. A move to the mirror's server
-  promotes it. A move anywhere else copies the volume first, then stops your service briefly.
-- After a move the old copy stays as `data-old`, detached. Choose **Delete** on it to stage its
-  deletion.
-- A volume with no mirror after a move shows a quiet **No mirror** warning with **Add mirror**.
-- When the primary's server stops answering, the volume reads "web-1 is not answering · Use mirror
-  on web-2 · Changes after 10:36 lost". **Use mirror on web-2** stages the mirror as primary.
-- **Drain** on a server page also stages each primary there to move off, to its mirror or else to
-  the first other server that runs services. The page says "2 volumes staged to move". Each
-  environment's next deploy moves them.
+- **Move to web-2**, in the volume's menu, changes the primary and leaves the mirror alone. The row
+  then reads "web-2 · Was web-1". A move to the mirror's server promotes it. A move anywhere else
+  copies the volume first, then stops your service briefly.
+- A move leaves the old copy as `data-old`, detached. **Delete**, in its menu, deletes it with the
+  next deploy. A removed mirror or a deleted copy shows struck through until then.
+- A move or mirror onto a server that holds `data-old` deletes it first. Details says so.
+- **Undo** on a row, or in Details, drops just that change.
+- When the primary's server stops answering, Placement says "web-1 is not answering" and when
+  changes are lost from, for example "Changes after 10:36 lost". **Use mirror** makes the mirror
+  the primary at the next deploy.
+- **Drain** on a server page also moves each primary there off at the next deploy, to its mirror
+  or else to the first other server that runs services. The page says "Next deploy moves 2
+  volumes". Each environment's next deploy moves them.
 
-Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, the bottom
-bar and the deployment page say what it is doing, for example "data · Moving to web-2". Cancel
-lets the step under way finish, and the rest stays staged.
+Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, Placement, the
+bottom bar and the deployment page say what it is doing, for example "data · Moving to web-2".
+Cancel lets the step under way finish, and the rest waits for your next deploy.
 
 Backups are not part of Placement. See [Back up a database](databases.md#back-up-a-database).
 

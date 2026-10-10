@@ -139,7 +139,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
             const note = noteFor?.(row);
             return (
               <ChangeLine key={row.changeKey} kind={row.kind} label={`${group.nodeName} ${row.label}`}
-                value={row.configFile || row.detail !== undefined ? undefined : <Value kind={row.kind} before={row.currentValue} after={row.newValue} />}
+                value={row.configFile ? undefined : <Value kind={row.kind} before={row.currentValue} after={row.newValue} />}
                 onDiscard={row.canDiscard ? leaving(totalChanges === 1, () => onDiscardRow(group, row.path)) : undefined}
                 discardNode={(!row.canDiscard || firstConfig) && discardNode ? { name: group.nodeName, run: discardNode } : undefined}
                 onNeverSync={neverSync && leaving(totalChanges === 1, neverSync)}>

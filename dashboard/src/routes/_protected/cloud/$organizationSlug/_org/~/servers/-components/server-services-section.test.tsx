@@ -70,12 +70,12 @@ describe("Services section", () => {
     expect(onAcceptsServices).toHaveBeenCalledWith(false);
   });
 
-  it("counts the volumes staged to move off with the next Deploy, and says nothing when none are", () => {
+  it("counts the volumes that move off with the next Deploy, and says nothing when none are", () => {
     rows({ view: view(null), staged: 2 });
-    expect(screen.getByText("2 volumes staged to move")).toBeTruthy();
+    expect(screen.getByText("Next deploy moves 2 volumes")).toBeTruthy();
     cleanup();
     rows({ view: view(null) });
-    expect(screen.queryByText(/staged to move/)).toBeNull();
+    expect(screen.queryByText(/Next deploy moves/)).toBeNull();
   });
 
   it("explains a Server that takes no new Services", () => {

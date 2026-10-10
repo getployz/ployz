@@ -75,7 +75,7 @@ export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, l
           {view.kind === "finished" && view.stoppedEarly !== null ? (
             <FieldDescription className="text-warning">It stopped early: {view.stoppedEarly}.</FieldDescription>
           ) : null}
-          {staged > 0 ? <FieldDescription>{plural(staged, "volume")} staged to move</FieldDescription> : null}
+          {staged > 0 ? <FieldDescription>Next deploy moves {plural(staged, "volume")}</FieldDescription> : null}
         </FieldContent>
         <DrainButton view={view} onClick={onDrain} disabled={unavailable !== null} />
       </Field>

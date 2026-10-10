@@ -1,24 +1,25 @@
 import type { ReactNode } from "react";
-import { EllipsisIcon } from "lucide-react";
+import { MoreVerticalIcon } from "lucide-react";
 import type { EnvironmentRef, MachineId } from "@ployz/sdk";
-import { Alert, AlertDescription } from "#/components/ui/alert";
-import { Badge } from "#/components/ui/badge";
+import { InfoHint } from "#/components/info-hint";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
+import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  appliedMirrors, detachedCopies, detachedName, editPlacement, failover, lossTime, observePlacement, type Placement, placementChanges,
-  type PlacementEdit, type PlacementRow, placementTargets, type PlacementVolume, placementWords, targetPlacement,
+  appliedMirrors, detachedName, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementChange, type PlacementEdit,
+  type PlacementEntry, placementEntries, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement, undoPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useStagePlacement } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { copyName, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers } from "#/modules/volume-run/volume-run.queries";
-import { RowWarning } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 type StoreVolumePlacementProps = { organizationSlug: string; environment: EnvironmentRef; volume: PlacementVolume };
 
@@ -29,11 +30,17 @@ export function StoreVolumePlacement({ organizationSlug, environment, volume }: 
   const row = useVolumePlacements(organizationSlug).data?.find((entry) => entry.volumeId === volume.id) ?? null;
   const running = useActiveVolumeRuns(organizationSlug).data?.find((run) => run.volume_id === volume.id) ?? null;
   const { stage, pending } = useStagePlacement(organizationSlug, environment, volume);
-  if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
+  if (members === undefined) {
+    return <SettingsSection id="placement" title="Placement">
+      <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>
+    </SettingsSection>;
+  }
   const accepting = new Set(lens.machines.filter((machine) => machine.acceptsServices).map((machine) => machine.id));
   return <VolumePlacementPanel volume={volume} members={members} row={row} running={running} disabled={pending}
     accepting={members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id)} stage={stage} />;
 }
+
+const ROLE_WORDS = { primary: null, mirror: "Mirror", detached: "Detached" } as const satisfies Record<PlacementEntry["role"], string | null>;
 
 export function VolumePlacementPanel({ volume, members, row, running, accepting, disabled, stage }: {
   volume: PlacementVolume;
@@ -43,89 +50,85 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
   /** Servers that accept Services: the only ones a move or a mirror may name. */
   accepting: readonly MachineId[];
   disabled: boolean;
-  stage: (staged: Placement, mirrors: readonly MachineId[]) => void;
+  stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
 }) {
   const observed = observePlacement(members);
   const target = targetPlacement(observed, row);
-  if (target === null) return <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>;
-  const name = (id: MachineId) => members.find((member) => member.machine.id === id)?.machine.name ?? id;
+  if (target === null) {
+    return <SettingsSection id="placement" title="Placement">
+      <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>
+    </SettingsSection>;
+  }
   const deploying = row?.deploymentId != null;
   const locked = disabled || deploying;
-  const edit = (change: PlacementEdit) => stage(editPlacement(target, change), appliedMirrors(observed, row));
   const applied = appliedMirrors(observed, row);
+  const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
+  const undo = (change: PlacementChange) => { if (row !== null) stage(undoPlacement(volume, members, row, change), applied); };
+  const entries = placementEntries(volume, members, row);
   const targets = placementTargets(volume, members, row, accepting);
-  const moveTo = targets.move.filter((server) => server.id !== target.primary);
-  const mirrorOn = targets.mirror.filter((server) => server.id !== target.primary);
-  const detached = detachedCopies(observed, row).filter((copy) => !target.deletes.includes(copy.server.id) && copy.server.id !== target.primary);
-  const changes = placementChanges(volume, members, row);
+  const movedFrom = entries.find((entry) => entry.role === "primary")?.movedFrom ?? null;
+  const moveTo = targets.move.filter((server) => server.id !== target.primary && server.id !== movedFrom?.id);
+  const mirrorOn = target.mirrors.length > 0 ? [] : targets.mirror.filter((server) => server.id !== target.primary);
   const offer = failover(observed, row);
-  const moved = changes.some((change) => change.kind === "move") || detached.length > 0;
+  const nameOf = (entry: PlacementEntry) =>
+    entry.role === "primary" ? volume.name : entry.role === "mirror" ? copyName(volume.name, entry.server.name) : detachedName(volume);
 
-  return <div className="flex flex-col gap-4">
+  const menuOf = (entry: PlacementEntry, name: string): ReactNode => {
+    if (entry.change !== null) return null;
+    if (entry.role === "primary") {
+      return moveTo.length === 0 ? null : <Menu label={name} disabled={locked}>
+        {moveTo.map((server) => <DropdownMenuItem key={server.id} onClick={() => edit({ kind: "move", to: server.id })}>Move to {server.name}</DropdownMenuItem>)}
+      </Menu>;
+    }
+    const kind = entry.role === "mirror" ? "remove_mirror" : "delete_copy";
+    return <Menu label={name} disabled={locked}>
+      <DropdownMenuItem variant="destructive" onClick={() => edit({ kind, server: entry.server.id })}>{entry.role === "mirror" ? "Remove mirror" : "Delete"}</DropdownMenuItem>
+    </Menu>;
+  };
+
+  return <SettingsSection id="placement" title="Placement" action={mirrorOn.length > 0 ? <DropdownMenu>
+    <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={locked} />}>Add mirror</DropdownMenuTrigger>
+    <DropdownMenuContent align="end"><DropdownMenuGroup>
+      {mirrorOn.map((server) => <DropdownMenuItem key={server.id} onClick={() => edit({ kind: "add_mirror", server: server.id })}>{server.name}</DropdownMenuItem>)}
+    </DropdownMenuGroup></DropdownMenuContent>
+  </DropdownMenu> : null}>
     {offer ? <Alert variant="destructive">
-      <AlertDescription className="flex flex-wrap items-center gap-x-1.5">
-        <span>{offer.down.name} is not answering ·</span>
-        <Button variant="link" className="h-auto p-0" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror on {offer.mirror.name}</Button>
-        {offer.lostAfter ? <span>· Changes after {lossTime(offer.lostAfter)} lost</span> : null}
-      </AlertDescription>
+      <AlertTitle>{offer.down.name} is not answering</AlertTitle>
+      <AlertDescription>{offer.lostAfter ? `Changes after ${lossTime(offer.lostAfter)} lost` : "Recent changes lost"}</AlertDescription>
+      <AlertAction><Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button></AlertAction>
     </Alert> : null}
-    {running ? <div role="status" className="flex items-center gap-2 text-sm">
-      <Spinner role="presentation" aria-hidden="true" /><span>{runWords(running)}{running.message ? ` · ${running.message}` : ""}</span>
+    {running || deploying ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+      <Spinner role="presentation" aria-hidden="true" />
+      <span>{running ? [runWords(running), running.message].filter(Boolean).join(" · ") : "Deploying"}</span>
     </div> : null}
     <ItemGroup role="list" aria-label="Placement">
-      <Item role="listitem">
-        <ItemContent>
-          <ItemTitle>{volume.name}<Badge variant="secondary">Primary</Badge>{target.primary !== observed.primary?.id ? <Badge variant="info">Staged</Badge> : null}</ItemTitle>
-          <ItemDescription>{name(target.primary)}</ItemDescription>
-        </ItemContent>
-        {moveTo.length > 0 ? <ItemActions><Menu label={`${volume.name} options`} disabled={locked}>
-          {moveTo.map((server) => <DropdownMenuItem key={server.id} onClick={() => edit({ kind: "move", to: server.id })}>Move to {server.name}</DropdownMenuItem>)}
-        </Menu></ItemActions> : null}
-      </Item>
-      {target.mirrors.map((id) => <Item key={id} role="listitem">
-        <ItemContent>
-          <ItemTitle>{copyName(volume.name, name(id))}<Badge variant="info">Mirror</Badge>{applied.includes(id) ? null : <Badge variant="info">Staged</Badge>}</ItemTitle>
-          <ItemDescription>{name(id)} · Refreshes on every deploy and every 15 minutes</ItemDescription>
-        </ItemContent>
-        <ItemActions><Menu label={`${copyName(volume.name, name(id))} options`} disabled={locked}>
-          <DropdownMenuItem variant="destructive" onClick={() => edit({ kind: "remove_mirror", server: id })}>Remove mirror</DropdownMenuItem>
-        </Menu></ItemActions>
-      </Item>)}
-      {detached.map((copy) => <Item key={copy.server.id} role="listitem">
-        <ItemContent>
-          <ItemTitle>{detachedName(volume)}<Badge variant="outline">Detached</Badge></ItemTitle>
-          <ItemDescription>{copy.server.name} · Kept until you delete it</ItemDescription>
-        </ItemContent>
-        <ItemActions><Menu label={`${detachedName(volume)} options`} disabled={locked}>
-          <DropdownMenuItem variant="destructive" onClick={() => edit({ kind: "delete_copy", server: copy.server.id })}>Delete</DropdownMenuItem>
-        </Menu></ItemActions>
-      </Item>)}
+      {entries.map((entry) => {
+        const name = nameOf(entry);
+        const role = ROLE_WORDS[entry.role];
+        const struck = entry.change === "remove";
+        const change = deploying ? null : entry.undo;
+        return <Item key={entry.key} role="listitem" size="xs" data-changed={entry.change === null || deploying ? undefined : true}>
+          <ItemContent className="min-w-0">
+            <ItemTitle className={cn(struck && "text-muted-foreground line-through")}>{name}</ItemTitle>
+            <ItemDescription className="flex items-center gap-1">
+              {[entry.server.name, entry.movedFrom ? `Was ${entry.movedFrom.name}` : role].filter(Boolean).join(" · ")}
+              {entry.role === "mirror" && !struck ? <span className="-my-1 inline-flex">
+                <InfoHint label="When it refreshes">Refreshes on every deploy and every 15 minutes.</InfoHint>
+              </span> : null}
+            </ItemDescription>
+          </ItemContent>
+          <ItemActions>
+            {change ? <Button variant="ghost" size="sm" disabled={locked} onClick={() => undo(change)}>Undo</Button> : menuOf(entry, name)}
+          </ItemActions>
+        </Item>;
+      })}
     </ItemGroup>
-    {target.mirrors.length > 0 ? <p className="text-sm text-muted-foreground">One mirror for now</p>
-      : mirrorOn.length > 0 ? <AddMirror warn={moved} disabled={locked} servers={mirrorOn} add={(id) => edit({ kind: "add_mirror", server: id })} />
-      : moved ? <RowWarning>No mirror</RowWarning> : null}
-    {changes.length > 0 ? <div className="flex flex-col gap-1 text-sm">
-      {changes.map(placementWords).map((words) => <p key={words.title}><span className="font-medium">{words.title}</span> <span className="text-muted-foreground">{words.detail}</span></p>)}
-      <p className="text-muted-foreground">{deploying ? "Deploying" : "Staged for the next deploy"}</p>
-    </div> : null}
-  </div>;
+  </SettingsSection>;
 }
 
 function Menu({ label, disabled, children }: { label: string; disabled: boolean; children: ReactNode }) {
   return <DropdownMenu>
-    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-xs" aria-label={label} disabled={disabled} />}><EllipsisIcon /></DropdownMenuTrigger>
-    <DropdownMenuContent align="end"><DropdownMenuGroup>{children}</DropdownMenuGroup></DropdownMenuContent>
+    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${label}`} disabled={disabled} />}><MoreVerticalIcon /></DropdownMenuTrigger>
+    <DropdownMenuContent align="end" className="w-auto"><DropdownMenuGroup>{children}</DropdownMenuGroup></DropdownMenuContent>
   </DropdownMenu>;
-}
-
-function AddMirror({ warn, disabled, servers, add }: {
-  warn: boolean; disabled: boolean; servers: readonly { readonly id: MachineId; readonly name: string }[]; add: (id: MachineId) => void;
-}) {
-  const button = <DropdownMenu>
-    <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={disabled} />}>Add mirror</DropdownMenuTrigger>
-    <DropdownMenuContent align="start"><DropdownMenuGroup>
-      {servers.map((server) => <DropdownMenuItem key={server.id} onClick={() => add(server.id)}>{server.name}</DropdownMenuItem>)}
-    </DropdownMenuGroup></DropdownMenuContent>
-  </DropdownMenu>;
-  return warn ? <RowWarning action={button}>No mirror</RowWarning> : <div>{button}</div>;
 }

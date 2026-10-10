@@ -283,7 +283,7 @@ function StoreDeploymentActions({ deployment, storage, noServers }: { deployment
           <AlertDialogHeader>
             <AlertDialogTitle>Cancel deployment?</AlertDialogTitle>
             <AlertDialogDescription>
-              {storage ? "The step under way finishes first. The rest stays staged."
+              {storage ? "The step under way finishes first. The rest waits for your next deploy."
                 : deployment.status === "queued"
                 ? "It leaves the queue and never runs."
                 : "It stops at its next step. What it already changed stays until the next Deploy."}

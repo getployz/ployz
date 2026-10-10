@@ -79,9 +79,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
           {/* Copies exist once a Deploy made the managed Volume on a Server. */}
           {volume.deployed && volume.storage.kind === "provisioned" && !removing ? (
-            <SettingsSection id="placement" title="Placement">
-              <StoreVolumePlacement organizationSlug={organizationSlug} environment={store} volume={volume} />
-            </SettingsSection>
+            <StoreVolumePlacement organizationSlug={organizationSlug} environment={store} volume={volume} />
           ) : null}
           {removing ? <SettingsSection id="mounts" title="Mounts">
               <Empty variant="placeholder">

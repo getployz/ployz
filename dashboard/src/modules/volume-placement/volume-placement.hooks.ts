@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { EnvironmentRef, MachineId } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
-import { type Placement, placementChanges, placementGroup, type PlacementVolume, stagedOffServer, storageStep } from "./volume-placement";
+import {
+  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, stagedOffServer, storageStep, undoPlacement,
+} from "./volume-placement";
 import { discardPlacementServerFn, stagePlacementServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
@@ -39,6 +41,7 @@ export type StagedPlacements = {
   readonly groups: readonly ChangeGroup[];
   readonly count: number;
   readonly discard: (volumeId: string) => void;
+  readonly undo: (volumeId: string, path: string) => void;
   readonly discardAll: () => void;
 };
 
@@ -53,20 +56,37 @@ export function useStagedPlacements(
     .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
   const members = useQueries({ queries: rows.map((row) => volumeMembersQueryOptions(organizationSlug, environment, row.volumeId)) });
   const { settle } = useSettle("Could not discard the Volume changes");
-  const groups = rows.flatMap((row, index) => {
+  const staged = rows.flatMap((row, index) => {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     const answered = members[index]?.data;
     if (volume === undefined || answered === undefined) return [];
     const changes = placementChanges(volume, answered, row);
-    return changes.length === 0 ? [] : [placementGroup(volume, changes)];
+    return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
   });
+  const groups = staged.map(({ volume, changes }) => placementGroup(volume, changes));
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId } });
   return {
     groups,
     count: groups.reduce((total, group) => total + group.changeCount, 0),
     discard: (volumeId) => settle([discardOf(volumeId)]),
+    undo: (volumeId, path) => {
+      const entry = staged.find(({ volume }) => volume.id === volumeId);
+      const change = entry?.changes[Number(path)];
+      if (entry === undefined || change === undefined) return;
+      const mirrors = appliedMirrors(observePlacement(entry.members), entry.row);
+      settle([stagePlacementServerFn({ data: {
+        organizationSlug, volumeId, environment, staged: undoPlacement(entry.volume, entry.members, entry.row, change), mirrors: [...mirrors],
+      } })]);
+    },
     discardAll: () => settle(groups.map((group) => discardOf(group.nodeId))),
   };
+}
+
+export function usePlacementStaged(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {
+  const row = useVolumePlacements(organizationSlug).data?.find((entry) => entry.volumeId === volume.id) ?? null;
+  const waiting = row?.staged != null && row.deploymentId === null;
+  const members = useQuery({ ...volumeMembersQueryOptions(organizationSlug, environment, volume.id), enabled: waiting }).data;
+  return waiting && members !== undefined && placementChanges(volume, members, row).length > 0;
 }
 
 /** Each running Deploy's storage step, for the bottom bar and the Deployment page. */

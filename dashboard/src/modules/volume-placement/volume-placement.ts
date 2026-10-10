@@ -3,7 +3,7 @@ import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { type AnsweredMember, copyName, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -163,42 +163,6 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
 export const lossTime = (at: Date) => clock.format(at);
 
-const clearsWords = (volume: PlacementVolume, clears: readonly MachineRef[]) =>
-  clears.length === 0 ? "" : ` Deletes ${detachedName(volume)} on ${clears.map((server) => server.name).join(", ")} first.`;
-
-const MOVE_WORDS = {
-  copy: (change) => ({
-    title: `Move ${change.volume.name} to ${change.to.name}`,
-    detail: `Copies ${change.volume.name} to ${change.to.name} first, then a short stop.${clearsWords(change.volume, change.clears)}`,
-  }),
-  promote: (change) => ({
-    title: `Move ${change.volume.name} to ${change.to.name}`,
-    detail: `Uses the mirror on ${change.to.name}, then a short stop. ${change.from?.name ?? "The old server"} keeps ${detachedName(change.volume)}.`,
-  }),
-  restore: (change) => ({
-    title: `Use mirror on ${change.to.name}`,
-    detail: `${change.from?.name ?? "The primary"} is not answering. ${change.lostAfter === null ? "Recent changes lost." : `Changes after ${lossTime(change.lostAfter)} lost.`}`,
-  }),
-} satisfies Record<MoveHow, (change: Extract<PlacementChange, { kind: "move" }>) => PlacementWords>;
-
-export type PlacementWords = { readonly title: string; readonly detail: string };
-
-export function placementWords(change: PlacementChange): PlacementWords {
-  switch (change.kind) {
-    case "move":
-      return MOVE_WORDS[change.how](change);
-    case "add_mirror":
-      return {
-        title: `Add mirror on ${change.server.name}`,
-        detail: `Copies ${change.volume.name} to ${change.server.name}. Refreshes on every deploy.${clearsWords(change.volume, change.clears)}`,
-      };
-    case "remove_mirror":
-      return { title: `Remove mirror on ${change.server.name}`, detail: `Deletes ${copyName(change.volume.name, change.server.name)}.` };
-    case "delete_copy":
-      return { title: `Delete ${detachedName(change.volume)}`, detail: `Deletes the old copy on ${change.server.name}.` };
-  }
-}
-
 const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null } });
 
 /** Each change's runs; deletions free the one copy slot before a move or a mirror fills it. */
@@ -320,7 +284,80 @@ export function stagedOffServer(server: string, rows: readonly PlacementRow[], c
 
 const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;
 
-/** A Volume's staged placement as one group in Details, beside the Store's changes. Discard drops all of it. */
+export type PlacementEntry = {
+  readonly key: string;
+  readonly role: "primary" | "mirror" | "detached";
+  readonly server: MachineRef;
+  readonly change: ChangeKind | null;
+  readonly movedFrom: MachineRef | null;
+  readonly undo: PlacementChange | null;
+};
+
+export function placementEntries(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): PlacementEntry[] {
+  const observed = observePlacement(members);
+  const target = targetPlacement(observed, row);
+  if (target === null) return [];
+  const machine = (id: MachineId): MachineRef =>
+    members.find((member) => member.machine.id === id)?.machine ?? { id, name: id };
+  const changes = placementChanges(volume, members, row);
+  const move = changes.find((change) => change.kind === "move") ?? null;
+  const changeOn = (kinds: readonly PlacementChange["kind"][], id: MachineId) =>
+    changes.find((change) => kinds.includes(change.kind) && "server" in change && change.server.id === id) ?? null;
+  const cleared = new Set(changes.flatMap((change) => change.kind === "move" || change.kind === "add_mirror" ? change.clears.map((server) => server.id) : []));
+  const entry = (key: string, role: PlacementEntry["role"], server: MachineRef, undo: PlacementChange | null, change = undo && CHANGE_KINDS[undo.kind]): PlacementEntry =>
+    ({ key, role, server, change, movedFrom: null, undo });
+  const mirrors = [...new Set([...appliedMirrors(observed, row), ...target.mirrors])].filter((id) => id !== target.primary)
+    .map((id) => entry(`mirror:${id}`, "mirror", machine(id), changeOn(["add_mirror", "remove_mirror"], id)));
+  const left = move !== null && move.how !== "restore" && move.from !== null ? [entry(`detached:${move.from.id}`, "detached", move.from, null, "add")] : [];
+  const detached = detachedCopies(observed, row)
+    .filter((copy) => copy.server.id !== target.primary && !target.mirrors.includes(copy.server.id))
+    .map((copy) => {
+      const deleted = changeOn(["delete_copy"], copy.server.id);
+      return entry(`detached:${copy.server.id}`, "detached", copy.server, deleted, deleted || cleared.has(copy.server.id) ? "remove" : null);
+    });
+  return [{ ...entry("primary", "primary", machine(target.primary), move), movedFrom: move?.from ?? null }, ...mirrors, ...left, ...detached];
+}
+
+export function undoPlacement(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, change: PlacementChange): Placement | null {
+  const staged = row.staged;
+  if (staged === null) return null;
+  const applied = appliedMirrors(observePlacement(members), row);
+  const next = ((): Placement | null => {
+    switch (change.kind) {
+      case "move":
+        return change.from === null ? null : {
+          ...staged,
+          primary: change.from.id,
+          mirrors: applied.includes(change.to.id) ? [...staged.mirrors.filter((id) => id !== change.to.id), change.to.id] : staged.mirrors,
+        };
+      case "add_mirror":
+        return { ...staged, mirrors: staged.mirrors.filter((id) => id !== change.server.id) };
+      case "remove_mirror":
+        return { ...staged, mirrors: [...staged.mirrors, change.server.id] };
+      case "delete_copy":
+        return { ...staged, deletes: staged.deletes.filter((id) => id !== change.server.id) };
+    }
+  })();
+  return next === null || placementChanges(volume, members, { ...row, staged: next }).length === 0 ? null : next;
+}
+
+function detailsRow(volume: PlacementVolume, change: PlacementChange) {
+  const clears = "clears" in change && change.clears.length > 0 ? `Deletes ${detachedName(volume)} first` : undefined;
+  switch (change.kind) {
+    case "move":
+      return {
+        name: "Primary", currentValue: change.from?.name ?? "", newValue: change.to.name,
+        detail: change.how !== "restore" ? clears : change.lostAfter === null ? "Recent changes lost" : `Changes after ${lossTime(change.lostAfter)} lost`,
+      };
+    case "add_mirror":
+      return { name: "Mirror", currentValue: "", newValue: change.server.name, detail: clears };
+    case "remove_mirror":
+      return { name: "Mirror", currentValue: change.server.name, newValue: "" };
+    case "delete_copy":
+      return { name: "Detached copy", currentValue: change.server.name, newValue: "" };
+  }
+}
+
 export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[]): ChangeGroup {
   return {
     owner: "placement",
@@ -334,19 +371,16 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     restarts: [],
     canDiscard: true,
     rows: changes.map((change, index) => {
-      const words = placementWords(change);
+      const words = detailsRow(volume, change);
       return {
         changeKey: `${volume.id}:placement:${index}`,
-        label: words.title,
-        name: words.title,
+        label: words.name,
+        ...words,
         variable: false,
         kind: CHANGE_KINDS[change.kind],
-        path: volume.id,
+        path: String(index),
         row: null,
-        currentValue: "",
-        newValue: "",
-        detail: words.detail,
-        canDiscard: changes.length === 1,
+        canDiscard: true,
       };
     }),
   };

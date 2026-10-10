@@ -1,5 +1,5 @@
 import { createContext, use, useState, type ReactNode } from "react";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useLoaderData, useParams } from "@tanstack/react-router";
 import { FolderIcon, HardDriveIcon, LinkIcon } from "lucide-react";
 import { listNames } from "#/lib/plural";
 import { cn } from "#/lib/utils";
@@ -10,6 +10,7 @@ import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { usePlacementStaged } from "#/modules/volume-placement/volume-placement.hooks";
 import { trayCopy } from "#/modules/volume-run/volume-copies";
 import { useActiveVolumeRuns } from "#/modules/volume-run/volume-run.queries";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
@@ -22,12 +23,6 @@ export function LitVolumeProvider({ children }: { children: ReactNode }) {
   return <LitVolume value={useState<string | null>(null)}>{children}</LitVolume>;
 }
 
-/**
- * A Volume as a tray tucked under a Service that mounts it: its name, and only what must be said, green or blue when
- * the next Deploy creates or changes it, red, struck and "Removing" when it deletes it, marked when other Services mount
- * it too, and its mirror as `data-web-2` or a Move under way. Opens its panel; while a Branch is picked, a click toggles it instead. Under an open Deployment Page it dims
- * unless the attempt changed it.
- */
 export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }, selected }: { tray: MountedVolume; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const [litVolumeId, setLitVolumeId] = use(LitVolume);
@@ -36,8 +31,8 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   const lens = useRuntimeLens(params.organizationSlug);
   const { data: active = [] } = useActiveVolumeRuns(params.organizationSlug);
   const copy = trayCopy({ volume, copies: lens.volumeCopies, machines: lens.machines, active: active.find((run) => run.volume_id === volume.id) ?? null });
-  // Staged by its own lifecycle first, else by the next Deploy adding or changing this mount of it.
-  const surface = stagedSurface(lighting, volume.change ?? (mountChanged ? "update" : null));
+  const placed = usePlacementStaged(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store, volume);
+  const surface = stagedSurface(lighting, volume.change ?? (mountChanged || placed ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
   // Several writers on one directory must be said: it's how data gets corrupted.
   const shared = writers > 1;

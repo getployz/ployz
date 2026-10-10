@@ -234,7 +234,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
           if (storeGroups.length > 0 || diff.total_count > 0) actions.discard(null);
         }}
         onDiscardNode={discardNode}
-        onDiscardRow={(group, path) => group.owner === "placement" ? discardNode(group) : actions.discard(path)}
+        onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path) : actions.discard(path)}
         active={inFlight}
         storage={storage}
         notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
