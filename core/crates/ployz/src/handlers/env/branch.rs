@@ -345,7 +345,9 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
                 ));
                 crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
             }
-            SyncedWhen::Now { staged, closing, .. } => {
+            SyncedWhen::Now {
+                staged, closing, ..
+            } => {
                 crate::ui::stream(format_args!("Synced {from} → {into}."));
                 if !staged.is_empty() {
                     crate::ui::stream(format_args!("Staged: {}", crate::handlers::joined(staged)));
