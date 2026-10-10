@@ -460,9 +460,9 @@ fn proposal(synced: &Synced) -> ProposalId {
     proposal.clone()
 }
 
-/// Runner B's worked trace, step by step, with the rows stored after each.
+/// Include, override, amend, refresh and Remove, with the rows stored after each.
 #[test]
-fn the_worked_trace() {
+fn include_override_amend_refresh_and_remove() {
     let db = Db::new();
     let s = |n| format!("S{n}");
     let (s1, s2) = (s(1), s(2));
@@ -550,9 +550,7 @@ fn the_worked_trace() {
     assert_eq!(labels, ["api.env.Y"]);
 }
 
-/// `label`'s row in `view`.
-/// Amendment 3, with G5 as the trap: saving the Working State releases an owned row
-/// whose cell differs from what arrived. `apply` must record arrivals before it
+/// Saving the Working State releases an owned row whose cell differs from what arrived. `apply` must record arrivals before it
 /// lands the rows and shares the base after, and Remove must save last, or a
 /// refreshed row is released as a local edit, or a row put back is left behind.
 #[test]
@@ -582,6 +580,7 @@ fn apply_arrives_before_it_lands_and_remove_saves_last() {
     assert!(db.included().is_empty());
 }
 
+/// `label`'s row in `view`.
 fn row<'view>(view: &'view SyncView, label: &str) -> &'view ployz_store::SyncRow {
     view.rows
         .iter()
@@ -593,8 +592,6 @@ fn row<'view>(view: &'view SyncView, label: &str) -> &'view ployz_store::SyncRow
 fn with_qa(db: &Db) {
     db.branch(10, "production", "qa", &["api"]);
 }
-
-// Case 1.
 
 #[test]
 fn refresh_exposes_a_source_change_to_an_overridden_row_unticked() {
@@ -616,8 +613,6 @@ fn refresh_exposes_a_source_change_to_an_overridden_row_unticked() {
         .unwrap();
     assert_eq!(db.env("production", "api"), json!({"X": "local", "Y": "2"}));
 }
-
-// Case 2.
 
 #[test]
 fn a_second_proposal_cannot_take_an_owned_row() {
@@ -645,8 +640,6 @@ fn a_second_proposal_cannot_take_an_owned_row() {
     assert_eq!(db.env("production", "api"), json!({"X": "0", "Y": "0"}));
 }
 
-// Case 3.
-
 #[test]
 fn an_equal_claim_is_disclosed_and_offered_again_after_remove() {
     let db = Db::new();
@@ -665,8 +658,6 @@ fn an_equal_claim_is_disclosed_and_offered_again_after_remove() {
     assert_eq!((x.held_by.as_deref(), x.ticked), (None, true));
 }
 
-// Case 4.
-
 #[test]
 fn a_refreshed_remove_restores_the_original_value() {
     let db = Db::new();
@@ -682,8 +673,6 @@ fn a_refreshed_remove_restores_the_original_value() {
     assert_eq!(db.remove("production", &a), Ok(true));
     assert_eq!(db.env("production", "api")["X"], "0");
 }
-
-// Case 5.
 
 #[test]
 fn an_edit_and_back_is_local_and_a_no_op_write_is_not() {
@@ -704,8 +693,6 @@ fn an_edit_and_back_is_local_and_a_no_op_write_is_not() {
     assert_eq!(db.remove("production", &a), Ok(true));
     assert_eq!(db.env("production", "api"), json!({"X": "1", "Y": "0"}));
 }
-
-// Case 6, G7.
 
 #[test]
 fn remove_is_refused_while_the_draft_uses_a_service_it_introduced() {
@@ -763,8 +750,6 @@ fn remove_ignores_a_service_an_earlier_saved_proposal_introduced() {
     assert_eq!(db.services("production"), ["api", "cache"]);
 }
 
-// Case 8.
-
 #[test]
 fn a_secret_resolved_on_an_existing_service_survives_remove() {
     let db = Db::new();
@@ -805,8 +790,6 @@ fn an_introduced_service_with_a_resolved_secret_refuses_remove() {
     assert_eq!(db.services("production"), ["api", "cache"]);
 }
 
-// Case 10.
-
 #[test]
 fn a_deleted_source_stays_listed_and_removable() {
     let db = Db::new();
@@ -828,8 +811,6 @@ fn a_deleted_source_stays_listed_and_removable() {
     assert_eq!(db.env("production", "api")["X"], "0");
     assert!(db.proposals().is_empty());
 }
-
-// Case 11, amendment 1.
 
 #[test]
 fn cancelling_proposals_stay_listed_and_a_nothing_staged_save_consumes() {
@@ -856,8 +837,6 @@ fn cancelling_proposals_stay_listed_and_a_nothing_staged_save_consumes() {
     assert_eq!(db.remove("production", &b), Ok(false));
 }
 
-// Case 12, G9.
-
 #[test]
 fn an_admitted_retry_neither_settles_nor_consumes_a_later_proposal() {
     let db = Db::new();
@@ -878,8 +857,6 @@ fn an_admitted_retry_neither_settles_nor_consumes_a_later_proposal() {
         stored(["pending", "1", "0", "0", "S1", "owned", "1"])
     );
 }
-
-// G10.
 
 #[test]
 fn stale_versions_are_refused_and_a_retry_replays() {

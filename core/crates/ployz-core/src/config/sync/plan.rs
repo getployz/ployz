@@ -242,10 +242,10 @@ impl Policy {
         Some(if self.marked(row) {
             Verdict::Differs(Why::NeverSynced)
         } else {
+            let overwrites_own = conflict && self.way == Way::Sync;
             Verdict::Moves {
                 conflict,
-                // A Sync never overwrites the receiver's own change unless picked.
-                ticked: own && !(conflict && self.way == Way::Sync),
+                ticked: own && !overwrites_own,
                 arrives,
             }
         })

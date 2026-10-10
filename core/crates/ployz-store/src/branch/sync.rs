@@ -244,7 +244,7 @@ pub(crate) fn sync(
         return proposal::receipt(tx, (from, into), found, close_after);
     }
     if let Some(id) = &request.id {
-        proposal::unused(tx, who, id)?;
+        proposal::refuse_reused_sync_id(tx, who, id)?;
     }
     if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)? {
         return Err(crate::teardown::being_removed(&from, &removal));

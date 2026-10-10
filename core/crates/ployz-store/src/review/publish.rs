@@ -113,7 +113,7 @@ pub(crate) fn publish(
         // Nothing staged: Head already is Working State. Proposals ending still
         // moves the revision, so a review of them is stale.
         if consumed {
-            scope::touch_working(tx, &mut environment)?;
+            scope::persist_working(tx, &mut environment)?;
         }
         return Ok(Published {
             environment: environment.summary,
@@ -144,7 +144,7 @@ pub(crate) fn publish(
     let mut summary = environment.summary;
     if consumed && !created {
         let mut whole = scope::load_by_id(tx, &summary.id)?;
-        scope::touch_working(tx, &mut whole)?;
+        scope::persist_working(tx, &mut whole)?;
         summary = whole.summary;
     }
     Ok(Published {
@@ -173,7 +173,7 @@ pub(crate) fn discard(
     // Discarding the whole draft ends its proposals; a path keeps them.
     if discard.path.is_none() && crate::branch::consume(tx, &environment.id)? && !changed {
         let mut whole = scope::load_by_id(tx, &environment.id)?;
-        scope::touch_working(tx, &mut whole)?;
+        scope::persist_working(tx, &mut whole)?;
         environment = whole.summary;
     }
     Ok(Discarded {

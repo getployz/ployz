@@ -528,7 +528,10 @@ pub(crate) fn save_working_from(
     persist_working(tx, environment)
 }
 
-fn persist_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(), RpcError> {
+pub(crate) fn persist_working(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+) -> Result<(), RpcError> {
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
         "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
@@ -543,15 +546,6 @@ fn persist_working(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(),
     )?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
-}
-
-/// Advance `environment`'s revision with its Working State as it is: what it holds
-/// changed in another way, as when its proposals end.
-pub(crate) fn touch_working(
-    tx: &mut dyn Tx,
-    environment: &mut Environment,
-) -> Result<(), RpcError> {
-    persist_working(tx, environment)
 }
 
 pub(crate) struct ValidatedWorking {

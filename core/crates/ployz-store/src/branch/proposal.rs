@@ -183,7 +183,8 @@ pub(crate) fn owners(
     let mut owners = Owners::default();
     for row in &rows {
         let id = row_id(row.text(0)?, row.text(1)?)?;
-        if this.is_some_and(|this| this.as_str() == row.text(2).unwrap_or_default()) {
+        let owner = row.text(2)?;
+        if this.is_some_and(|this| this.as_str() == owner) {
             owners.accepted.insert(id.clone(), row.json(3, "proposal")?);
             owners.owned.insert(id);
         } else {
@@ -364,10 +365,12 @@ fn keep_receipt(
     Ok(())
 }
 
-/// Refuse Sync `id` when its receipt says a Sync of that id already ran, so an id
-/// names one Sync and Undo of it one proposal, whatever became of either since. A
-/// retry of the Include it made is answered before this.
-pub(crate) fn unused(tx: &mut dyn Tx, who: &Actor, id: &SyncId) -> Result<(), RpcError> {
+/// A retry of the Include it made is answered before this.
+pub(crate) fn refuse_reused_sync_id(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &SyncId,
+) -> Result<(), RpcError> {
     let known = tx.query(
         "SELECT 1 FROM config_sync_receipt WHERE organization_id = ?1 AND sync_id = ?2",
         &[who.organization.as_str().into(), id.as_str().into()],
@@ -702,13 +705,12 @@ pub(crate) fn included(
     rows.iter()
         .map(|row| {
             let revision = Revision(row.number::<u64>(3, "proposal")?);
+            let included_at = row.int(3)?;
             let now = row.optional_int(9)?;
             let name = row.optional_text(8)?.unwrap_or(row.text(2)?).to_owned();
-            // A pull request reopened since its proposal was included comes from its
-            // new preview, which an Include rebinds to; its revisions are its own, so
-            // all of it is newer.
-            let recreated: Option<EnvironmentId> = row.parse_optional(10, "proposal")?;
-            let id: EnvironmentId = match &recreated {
+            // A reopened pull request's preview counts revisions from zero, so all of it is newer.
+            let reopened_preview: Option<EnvironmentId> = row.parse_optional(10, "proposal")?;
+            let id: EnvironmentId = match &reopened_preview {
                 Some(preview) => preview.clone(),
                 None => row.parse(1, "proposal")?,
             };
@@ -726,8 +728,7 @@ pub(crate) fn included(
                 proposal: row.parse(0, "proposal")?,
                 source,
                 revision,
-                newer: recreated.is_some()
-                    || now.is_some_and(|now| now > row.int(3).unwrap_or(i64::MAX)),
+                newer: reopened_preview.is_some() || now.is_some_and(|now| now > included_at),
                 changes: usize::try_from(row.int(7)?).map_err(|_| error::corrupt("proposal"))?,
                 sync: row.parse(4, "proposal")?,
             })
