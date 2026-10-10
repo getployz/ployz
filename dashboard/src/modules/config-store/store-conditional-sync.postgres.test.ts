@@ -34,7 +34,7 @@ const github = fakeGithubApiBy(({ url }): JsonValue => url.endsWith("/pulls/5")
       : { id: 42, full_name: "acme/web", private: true }).service;
 
 it.live(
-  "a merge pushed before its closed delivery freezes the Conditional Sync, and that push lands it before it deploys",
+  "a merge pushed before its closed delivery reaches the Store with the push, so the offer reads ready and stays out of the deploy",
   () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(yield* storeTestCloud({ github }));
@@ -51,11 +51,11 @@ it.live(
       const opened: SystemEvent = {
         event: "pull_request", repository_id: 42, number: 5, title: "Add search", author: "ada", bot: false,
         head_branch: "search", head: PR_HEAD, target_branch: "main", commits: 1, open: true, merge_commit: null,
-        merge_reached: null, updated: "2026-09-29T10:00:00Z",
+        updated: "2026-09-29T10:00:00Z",
       };
       yield* Effect.promise(() => store.system(ORGANIZATION, opened));
 
-      // PR #5 changes a variable and syncs it for its merge; its check is named for Cloud to publish.
+      // PR #5 changes a variable and offers it to production; its check is named for Cloud to publish.
       const pr = { project: null, environment: "pr-5" };
       yield* write({ command: "edit", environment: pr, expect: null, changes: [{ op: "set", path: "web.env.MODE", value: "fast" }] });
       const view = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "sync", from: pr }));
@@ -81,8 +81,10 @@ it.live(
       }).execute()).result)) as { admitted: string[] };
       expect(pushed.admitted).toHaveLength(1);
       const web = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "service", environment: here, service: "web" }));
-      expect(web).toMatchObject({ values: { env: { MODE: "fast" } } });
-      expect(yield* Effect.promise(() => store.pendingSyncs(ORGANIZATION, 42, "main"))).toEqual({ standing: [], merged: [] });
+      expect(web).not.toMatchObject({ values: { env: { MODE: "fast" } } });
+      expect(yield* Effect.promise(() => store.pendingSyncs(ORGANIZATION, 42, "main"))).toEqual({ standing: [] });
+      const diff = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "diff", environment: here }));
+      expect(diff.included).toMatchObject([{ source: { kind: "pull_request", number: 5 }, offered: true, readiness: "ready" }]);
       const environments = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "environments", project: null }));
       expect(environments.environments.map((listing) => listing.name)).toEqual(["production"]);
     }),

@@ -19,8 +19,8 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
  * The one review of a Sync: each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
  * a change stays out this time and can be marked Never sync; the footer lists what is never synced, with undo.
  * Nothing deploys: the changes become `into`'s changes to deploy, or, from a PR Environment into its Destination, go
- * live there when the pull request merges. A secret `into` lacks arrives by name only: its row takes `into`'s own
- * value, set now or held for the merge. Monochrome: pink stays for staged intent and Deploy.
+ * offered there to include after the pull request merges. A secret `into` lacks arrives by name only: its row takes
+ * `into`'s own value. Monochrome: pink stays for staged intent and Deploy.
  */
 export function SyncDialog({ organizationSlug, from, into, closable, onClose, onSynced }: {
   organizationSlug: string; from: EnvironmentRef; into: string;
@@ -56,7 +56,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
     if (!view.ok) return;
     setPending(true);
     setStale(false);
-    // A value lands with the Sync, in one transaction: set now, or held for the merge.
+    // A value lands with the Sync, in one transaction, or with the offer for its Include.
     const typed: Record<RowId, string> = {};
     for (const row of picked) {
       const value = values[row.row];
@@ -166,7 +166,7 @@ function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onVa
         <Button variant="outline" size="sm" onClick={onNeverSync}><PinIcon data-icon="inline-start" />Never sync</Button>
       ) : row.secret ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}
-          placeholder={row.secret.held ? "Value held" : `Set ${into}'s value`} value={value}
+          placeholder={`Set ${into}'s value`} value={value}
           onChange={(event) => onValue(event.target.value)} className="ph-no-capture w-48" />
       ) : (
         <span className="ph-no-capture flex max-w-60 min-w-0 items-center justify-end gap-1.5 font-mono text-xs">

@@ -39,7 +39,7 @@ const rows = [
   row("source", { from: { type: "image", image: "shop/api:1.9", credentials: false }, into: { type: "image", image: "shop/api:1.8", credentials: false } }),
   row("env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" }),
   row("env.APP_ENV", { from: "staging", into: "production" }),
-  row("env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, change: "new", secret: { held: false } }),
+  row("env.STRIPE_WEBHOOK_SECRET", { from: { secret: true }, change: "new", secret: {} }),
 ];
 const neverSynced = (name: string) =>
   ({ row: `a:${name}` as RowId, node: "api", kind: "service" as const, name, marks: [{ environment: "fix-api", row: `a:${name}` as RowId }] });
@@ -58,7 +58,7 @@ const pr142 = { repository_id: 1, number: 142 };
 const pullRequestView = (synced: boolean): PullRequestView => ({
   pull_request: {
     ...pr142, title: "Add search", author: "ada", bot: false, head_branch: "search", head: "1".repeat(40), target_branch: "main",
-    commits: 1, open: true, merge_commit: null, merge_reached: null, updated: "2026-09-29T10:00:00Z",
+    commits: 1, open: true, merge_commit: null, updated: "2026-09-29T10:00:00Z",
   },
   environments: [{ environment: summary("fix-api"), deployment: null, destinations: [{
     name: "production", changes: 3, conditional_sync: synced ? { id: "cs", standing: true, changes: 3, waiting: [] } : null,

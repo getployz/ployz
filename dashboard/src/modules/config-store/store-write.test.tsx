@@ -191,7 +191,7 @@ it("runs a copied node after the edits made before it, not the ones queued behin
 
 it("puts the write's committed review in the cache as it answers, before any refetch", async () => {
   const test = setup(view(2, 1));
-  const diff = { environment: view(3, 1).environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], total_count: 1, changes: [] };
+  const diff = { environment: view(3, 1).environment, version: "3:1:1", saved: 1, published: false, incoming: [], follow_hints: [], total_count: 1, changes: [] };
   const key = storeViewOptions("acme", test.scope, diffQuery(ref)).queryKey;
   test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { ...diff, total_count: 0 } });
   test.write.mockResolvedValueOnce({ ok: true, value: { written: "published" } as never, views: { diff } } as never);

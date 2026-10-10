@@ -203,11 +203,11 @@ it("offers a Save message when the draft reverses Saved with no runtime changes"
 describe("Included", () => {
   const staging: Included = {
     proposal: "p-staging", source: { kind: "environment", id: "e-staging", name: "staging", live: true },
-    revision: 4, newer: true, changes: 2, sync: "s-1",
+    revision: 4, newer: true, changes: 2, sync: "s-1", offered: false,
   };
   const pr: Included = {
     proposal: "p-pr", source: { kind: "pull_request", repository_id: 1, number: 142, name: "pr-142", environment: "e-pr" },
-    revision: 2, newer: true, changes: 1, sync: "s-2",
+    revision: 2, newer: true, changes: 1, sync: "s-2", offered: false,
   };
 
   it("lists each included source with Remove, and Include newer changes once an Environment changed since", async () => {

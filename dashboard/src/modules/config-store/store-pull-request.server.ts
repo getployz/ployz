@@ -5,8 +5,8 @@ import { Effect, Option } from "effect";
 import { volumeLoss } from "./store-volumes";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
-import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
+import { StoreGithubFailure, pullRequestEvent } from "#/modules/config-store/store-github.server";
+import { fetchInstallationPullRequest, postInstallationCheckRun } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { member } from "#/modules/identity/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
@@ -43,24 +43,14 @@ const collect = Effect.fn("StorePullRequest.collect")(function* (organizationId:
  * closed one. The Store makes, retracks and closes PR Environments.
  */
 export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(function* (payload: GithubPullRequestReceivedEventData) {
-  const store = yield* cloudStore;
   const done: StoreOutcome = { deployments: [], closing: [], check: false };
   const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
   if (organizations.length === 0) return done;
   const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, payload.number);
   const { updatedAt } = live;
   if (updatedAt === null) return yield* new StoreGithubFailure({ message: "GitHub sent a pull request without updated_at." });
-  const merge = live.open ? null : live.mergeCommitSha;
-  const repository = merge === null ? null : yield* resolveGithubRepository(payload.installationId, payload.repositoryId);
+  const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt });
   for (const organizationId of organizations) {
-    // Merged: whether the head the Store last saw of the target branch already has the merge commit, so its
-    // Conditional Syncs land with what that push deployed.
-    let reached: string | null = null;
-    if (merge !== null && repository !== null) {
-      const head = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, live.targetBranch));
-      if (head !== null && (yield* descendsFrom(payload.installationId, repository, merge, head))) reached = head;
-    }
-    const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, reached);
     yield* collect(organizationId, yield* storeSystem(organizationId, event), done);
   }
   return done;

@@ -401,11 +401,10 @@ export interface ConfigStore {
   /** Cloud's GitHub workers only: the branch head the Store last saw, which a new head is compared from. */
   branchHead(organization: string, repositoryId: number, branch: string): Promise<string | null>;
   /**
-   * Cloud's GitHub workers only: before a push reaches the Store, the pull requests into the branch with a Conditional
-   * Sync standing (report each that merged first) and the merge commits of frozen ones (pass those the new head
-   * contains as the branch head's `merged`).
+   * Cloud's GitHub workers only: before a push reaches the Store, the pull requests into the branch that a draft
+   * includes or is offered, not known to have merged (report each that did).
    */
-  pendingSyncs(organization: string, repositoryId: number, branch: string): Promise<{ standing: number[]; merged: string[] }>;
+  pendingSyncs(organization: string, repositoryId: number, branch: string): Promise<{ standing: number[] }>;
   /**
    * Cloud's worker only: start GitHub build `build` (`DEPLOYMENT.SERVICE`). An earlier image may serve it (`reused`);
    * GitHub may be unable to take it (`skipped`, recorded for the next Builder); else dispatch on `runner`.

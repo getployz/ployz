@@ -21,7 +21,7 @@ const id = (value: string) => value as RowId;
 const row = (row: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
   row: id(row), node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, held_by: null, ...extra,
 });
-const secret = { held: false };
+const secret = {};
 const rows = [
   row("a:variables.LOG_LEVEL", "api", "env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict" }),
   // Changed in production too, but a secret: its value never syncs, so Secret is what it says.
@@ -93,12 +93,12 @@ it("lists what is never synced from the footer, and offers to close the Branch a
   expect(list.getByText(/api, marked in fix-api/u)).toBeTruthy();
 });
 
-it("says a Conditional Sync goes live at the merge, offers no Close, and shows a value already held", async () => {
-  open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: { held: true } })] }) });
+it("says a Conditional Sync goes live at the merge, offers no Close, and asks for a value", async () => {
+  open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: {} })] }) });
   const sync = await dialog();
   expect(sync.getByText("These changes from fix-api go live in production when #142 merges.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
-  expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Value held");
+  expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Set production's value");
 });
 
 it("holds a row another source's included change holds: unticked, Included with that source, no Never sync", async () => {

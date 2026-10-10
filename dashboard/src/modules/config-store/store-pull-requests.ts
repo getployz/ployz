@@ -27,7 +27,7 @@ export function planSummary(plan: PrPlan) {
 export const goLiveWhen = (changes: number, number: number) => `${plural(changes, "change")} · go live when #${number} merges`;
 
 /**
- * Hints, a merged pull request's or a Parent's values, split by where Details shows them: beside the change to deploy
+ * A Parent's values as hints, split by where Details shows them: beside the change to deploy
  * in the same row, else after the changes (a hint whose row nothing stages, like a variable edited here since).
  */
 export function hintNotes<Hint extends NamedRow>(hints: readonly Hint[], rows: ReadonlySet<RowId>) {

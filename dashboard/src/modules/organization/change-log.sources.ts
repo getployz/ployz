@@ -26,8 +26,6 @@ export const storeChangeSources = {
   config_build_order: { key: ["organization_id"] },
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },
-  config_conditional_sync: { key: ["environment_id"] },
-  config_held_secret: { key: ["environment_id"] },
   config_pull_request: { key: ["repository_id", "number"] },
 } satisfies Record<string, { key: readonly string[] }>;
 
