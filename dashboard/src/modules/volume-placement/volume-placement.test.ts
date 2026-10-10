@@ -4,6 +4,7 @@ import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
   detachedCopies,
+  drainPlacement,
   editPlacement,
   failover,
   nextPlacementStep,
@@ -12,6 +13,7 @@ import {
   placementSteps,
   placementTargets,
   placementWords,
+  stagedOffServer,
   storageStep,
   targetPlacement,
   type PlacementRow,
@@ -227,5 +229,40 @@ describe("storageStep", () => {
   it("ignores runs on Volumes another Deploy, or no Deploy, took", () => {
     expect(storageStep("dep-2", [taken], [run("v1", null)])).toBeNull();
     expect(storageStep("dep-1", [taken], [run("v9", null)])).toBeNull();
+  });
+});
+
+describe("drainPlacement", () => {
+  const drain = (members: Member[], placement: PlacementRow | null, accepting = ["web-1", "web-2", "web-3"]) =>
+    drainPlacement(volume, members, placement, accepting.map(id), id("web-1"));
+
+  it("moves the primary to its mirror", () => {
+    expect(drain([member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")], row(["web-2"])))
+      .toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
+  });
+
+  it("moves to the first other Server that accepts Services when there is no mirror", () => {
+    expect(drain([member("web-1", "writer"), pooled("web-2"), pooled("web-3")], row([]), ["web-1", "web-3"]))
+      .toEqual({ primary: id("web-3"), mirrors: [], deletes: [] });
+  });
+
+  it("leaves a Volume whose primary is elsewhere, or that nowhere takes", () => {
+    expect(drain([member("web-2", "writer"), member("web-1", "mirror")], row(["web-1"]))).toBeNull();
+    expect(drain([member("web-1", "writer"), pooled("web-2")], row([]), ["web-1"])).toBeNull();
+  });
+});
+
+describe("stagedOffServer", () => {
+  const copy = (server: string, volumeId: string, role: "writer" | "slot") => ({ machineId: id(server), name: `shop-production_vol-${volumeId}`, role });
+
+  it("counts staged moves of primaries on the Server, and nothing staged elsewhere", () => {
+    const rows = [
+      { ...row([], { primary: "web-2" }), volumeId: "v1" },
+      { ...row([], { primary: "web-1" }), volumeId: "v2" },
+      { ...row([], { primary: "web-3" }), volumeId: "v3" },
+      { ...row([]), volumeId: "v4" },
+    ];
+    const copies = [copy("web-1", "v1", "writer"), copy("web-1", "v2", "writer"), copy("web-2", "v3", "writer"), copy("web-1", "v3", "slot"), copy("web-1", "v4", "writer")];
+    expect(stagedOffServer(id("web-1"), rows, copies)).toBe(1);
   });
 });

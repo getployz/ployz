@@ -4,7 +4,10 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
-import { appliedMirrors, nextPlacementStep, observePlacement, placementChanges, type PlacementRow } from "#/modules/volume-placement/volume-placement";
+import { stagePlacement } from "#/modules/volume-placement/volume-placement.server";
+import {
+  appliedMirrors, drainPlacement, nextPlacementStep, observePlacement, placementChanges, type PlacementRow,
+} from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
 import {
   type CopyObserver, getVolumeRun, inspectVolumeCopies, listActiveVolumeRuns, observeOrganizationCopies, requestVolumeRun,
@@ -93,7 +96,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
 
 const NO_COPIES: CopyObservation["copies"] = [];
 
-type EnvironmentVolume = { readonly volumeId: string; readonly environment: EnvironmentRef; readonly dockerVolume: string };
+type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string };
 
 const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(function* (organizationId: string, onlyEnvironmentId: string | null) {
   const found: EnvironmentVolume[] = [];
@@ -103,7 +106,7 @@ const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(funct
     const { environment: summary, volumes } = yield* readStore(organizationId, { query: "volumes", environment });
     if (onlyEnvironmentId !== null && summary.id !== onlyEnvironmentId) continue;
     for (const volume of volumes) {
-      found.push({ volumeId: volume.id, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id) });
+      found.push({ volumeId: volume.id, name: volume.name, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id) });
     }
   }
   return found;
@@ -136,4 +139,35 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
     if (run.ok) requested.push(run.run.id);
   }
   return requested;
+});
+
+/**
+ * A Drain of `server`: stage each primary on it off to its mirror, else to the first Server in `accepting` the planner
+ * takes. A Volume a Deploy is moving keeps that move. Returns the names of Volumes nowhere takes.
+ */
+export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(function* (
+  organizationId: string, server: MachineId, accepting: readonly MachineId[],
+  observe: CopyObserver = observeOrganizationCopies, inspect: MemberInspector = inspectVolumeCopies,
+) {
+  const copies = yield* observe(organizationId);
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
+  const stuck: string[] = [];
+  for (const volume of yield* environmentVolumes(organizationId, null)) {
+    if (!copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer")) continue;
+    const found = rows.find((entry) => entry.volumeId === volume.volumeId);
+    if (found?.deploymentId != null) continue;
+    const row = found === undefined ? null : rowView(found);
+    const members = yield* inspect(organizationId, volume.environment, volume.volumeId);
+    const staged = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, accepting, server);
+    if (staged === null) {
+      stuck.push(volume.name);
+      continue;
+    }
+    const written = yield* stagePlacement(organizationId, {
+      environment: volume.environment, volumeId: volume.volumeId, staged, mirrors: appliedMirrors(observePlacement(members), row),
+    });
+    if (!written.ok) stuck.push(volume.name);
+  }
+  return { stuck };
 });

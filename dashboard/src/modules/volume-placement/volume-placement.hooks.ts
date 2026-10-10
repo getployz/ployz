@@ -3,9 +3,10 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { EnvironmentRef, MachineId } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
-import { type Placement, placementChanges, placementGroup, type PlacementVolume, storageStep } from "./volume-placement";
+import { type Placement, placementChanges, placementGroup, type PlacementVolume, stagedOffServer, storageStep } from "./volume-placement";
 import { discardPlacementServerFn, stagePlacementServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
@@ -73,4 +74,10 @@ export function useStorageSteps(organizationSlug: string) {
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   const runs = useActiveVolumeRuns(organizationSlug).data ?? [];
   return (deploymentId: string) => storageStep(deploymentId, rows, runs);
+}
+
+/** How many Volume primaries on `server` are staged to move off it. */
+export function useStagedOffServer(organizationSlug: string, server: string) {
+  const rows = useVolumePlacements(organizationSlug).data ?? [];
+  return stagedOffServer(server, rows, useRuntimeLens(organizationSlug).volumeCopies);
 }

@@ -2,7 +2,8 @@ import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
-import { type AnsweredMember, copyName, type Member, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
+import { type AnsweredMember, copyName, type Member, parseDockerVolumeName, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -290,6 +291,26 @@ export function placementTargets(
     move: candidates.filter((member) => accepts("move", member)).map((member) => member.machine),
     mirror: mirrors.length > 0 ? [] : candidates.filter((member) => accepts("mirror", member)).map((member) => member.machine),
   };
+}
+
+/**
+ * Where a Drain of `server` stages the Volume: its primary moves to its mirror, else to the first other Server that
+ * accepts Services and that the planner takes. Null when the primary is elsewhere, or nowhere takes it.
+ */
+export function drainPlacement(
+  volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null, accepting: readonly MachineId[], server: MachineId,
+): Placement | null {
+  const target = targetPlacement(observePlacement(members), row);
+  if (target === null || target.primary !== server) return null;
+  const to = placementTargets(volume, members, row, accepting.filter((id) => id !== server)).move[0];
+  return to === undefined ? null : editPlacement(target, { kind: "move", to: to.id });
+}
+
+/** How many Volumes whose primary is on `server` have a move off it staged, by the copies the Runtime Watch reports. */
+export function stagedOffServer(server: string, rows: readonly PlacementRow[], copies: readonly RuntimeVolumeCopy[]): number {
+  const primaries = new Set(copies.filter((copy) => copy.role === "writer" && copy.machineId === server)
+    .flatMap((copy) => parseDockerVolumeName(copy.name)?.volumeId ?? []));
+  return rows.filter((row) => primaries.has(row.volumeId) && row.staged !== null && row.staged.primary !== server).length;
 }
 
 const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;

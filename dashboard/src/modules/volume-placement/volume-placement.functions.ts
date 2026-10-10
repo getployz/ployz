@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { discardPlacement, listPlacements, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -35,4 +36,11 @@ export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(Schema.Struct({ ...Organization.fields, volumeId: Schema.NonEmptyString })))
   .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
     Effect.flatMap((organization) => discardPlacement(organization.id, data.volumeId)),
+  )));
+
+export const stageOffServerServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Schema.Struct({ ...Organization.fields, server: Machine, accepting: Schema.Array(Machine) })))
+  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
+    Effect.flatMap((organization) => stageOffServer(organization.id, data.server, data.accepting)),
   )));

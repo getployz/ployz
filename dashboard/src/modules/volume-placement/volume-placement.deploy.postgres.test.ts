@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { advancePlacement, type MemberInspector, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { advancePlacement, type MemberInspector, refreshMirrors, stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -130,6 +130,25 @@ describe("deploying a Volume placement", () => {
     it("leaves a Volume a Deploy is moving to that Deploy", async () => {
       await stageMove("web-2", ["web-2"]);
       expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toEqual([]);
+    });
+  });
+
+  describe("draining a Server", () => {
+    const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
+    const drain = (copies: CopyObservation["copies"], accepting: string[]) =>
+      run(stageOffServer(organizationId, web("web-1"), accepting.map(web), () => Effect.succeed(copies), inspect));
+
+    it("stages the primary on the drained Server to its mirror", async () => {
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      expect(await drain([copy("web-1", "writer"), copy("web-2", "slot")], ["web-2"])).toEqual({ stuck: [] });
+      expect(await placement()).toMatchObject({ mirrors: [web("web-2")], staged: { primary: web("web-2"), mirrors: [] }, deploymentId: null });
+    });
+
+    it("names a Volume nowhere takes, and leaves a primary on another Server alone", async () => {
+      members = [member("web-1", "writer")];
+      expect(await drain([copy("web-1", "writer")], [])).toEqual({ stuck: ["data"] });
+      expect(await drain([copy("web-2", "writer")], [])).toEqual({ stuck: [] });
+      expect(await run(listPlacements(organizationId))).toEqual([]);
     });
   });
 });

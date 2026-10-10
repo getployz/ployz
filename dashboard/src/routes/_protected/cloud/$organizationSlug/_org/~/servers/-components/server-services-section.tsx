@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { plural } from "#/lib/plural";
 import { RelativeTime } from "#/components/relative-time";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel, FieldTitle } from "#/components/ui/field";
@@ -7,6 +8,7 @@ import { Switch } from "#/components/ui/switch";
 import { drainBusy, drainButtonLabel, type DrainRow, type DrainView } from "#/modules/machines/server-drain-view";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import { useStagedOffServer } from "#/modules/volume-placement/volume-placement.hooks";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DrainResultList } from "./drain-result";
 
@@ -23,6 +25,7 @@ export function ServerServicesSection({ machine, organizationSlug, view, left, o
 }) {
   const policy = useServerPolicy(machine, organizationSlug, "services setting");
   const busy = drainBusy(view);
+  const staged = useStagedOffServer(organizationSlug, machine.id);
   return (
     <ServerServicesRows
       acceptsServices={policy.acceptsServices}
@@ -31,21 +34,25 @@ export function ServerServicesSection({ machine, organizationSlug, view, left, o
       left={left}
       onDrain={onDrain}
       unavailable={busy ? null : unavailable}
+      staged={staged}
     />
   );
 }
 
 /**
  * The Services section as it renders: the switch, the Drain row, and the latest Drain's result. While a Drain is under
- * way it lists what it still has to move, each Service leaving the list as it leaves this Server.
+ * way it lists what it still has to move, each Service leaving the list as it leaves this Server. Volumes move with the
+ * next Deploy, so the row counts those staged to leave.
  */
-export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, left, onDrain, unavailable }: {
+export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, left, onDrain, unavailable, staged }: {
   acceptsServices: boolean;
   onAcceptsServices: (acceptsServices: boolean) => void;
   view: DrainView;
   left: readonly DrainRow[];
   onDrain: () => void;
   unavailable: string | null;
+  /** Volume primaries here staged to move off. */
+  staged: number;
 }) {
   const switchId = useId();
   const busy = drainBusy(view);
@@ -68,6 +75,7 @@ export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, l
           {view.kind === "finished" && view.stoppedEarly !== null ? (
             <FieldDescription className="text-warning">It stopped early: {view.stoppedEarly}.</FieldDescription>
           ) : null}
+          {staged > 0 ? <FieldDescription>{plural(staged, "volume")} staged to move</FieldDescription> : null}
         </FieldContent>
         <DrainButton view={view} onClick={onDrain} disabled={unavailable !== null} />
       </Field>

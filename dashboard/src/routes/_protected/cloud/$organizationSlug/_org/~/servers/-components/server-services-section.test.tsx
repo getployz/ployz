@@ -31,7 +31,7 @@ const view = (latest: LatestDrain | null, requested: string | null = null) => dr
   serverNames: new Map([[web1.id, web1.name], [web2.id, web2.name]]),
   requested,
 });
-const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boolean; unavailable?: string | null }) => {
+const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boolean; unavailable?: string | null; staged?: number }) => {
   const onDrain = vi.fn();
   const onAcceptsServices = vi.fn();
   render(
@@ -42,6 +42,7 @@ const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boo
       left={input.left ?? []}
       onDrain={onDrain}
       unavailable={input.unavailable ?? null}
+      staged={input.staged ?? 0}
     />,
   );
   return { onDrain, onAcceptsServices };
@@ -67,6 +68,14 @@ describe("Services section", () => {
     expect(onDrain).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("switch"));
     expect(onAcceptsServices).toHaveBeenCalledWith(false);
+  });
+
+  it("counts the volumes staged to move off with the next Deploy, and says nothing when none are", () => {
+    rows({ view: view(null), staged: 2 });
+    expect(screen.getByText("2 volumes staged to move")).toBeTruthy();
+    cleanup();
+    rows({ view: view(null) });
+    expect(screen.queryByText(/staged to move/)).toBeNull();
   });
 
   it("explains a Server that takes no new Services", () => {
