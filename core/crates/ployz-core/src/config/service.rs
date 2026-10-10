@@ -62,6 +62,10 @@ pub struct ServiceConfig {
     pub env: BTreeMap<String, ServiceEnvValue>,
     #[serde(default)]
     pub mounts: Vec<ServiceDeployMount>,
+    /// Written only when there are some, so documents from before Configs hash the same.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceDeployConfig>>")]
+    pub configs: Vec<ServiceDeployConfig>,
 }
 
 impl From<AuthoredServiceConfig> for ServiceConfig {
@@ -70,6 +74,7 @@ impl From<AuthoredServiceConfig> for ServiceConfig {
             settings,
             env: BTreeMap::new(),
             mounts: Vec::new(),
+            configs: Vec::new(),
         }
     }
 }
@@ -249,6 +254,15 @@ pub struct ServiceDeployMount {
     pub volume_resource_id: String,
     pub volume_name: String,
     pub mount_path: String,
+}
+
+/// A compiled Config mount retaining its Cloud owner identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceDeployConfig {
+    pub config_resource_id: String,
+    pub config_name: String,
+    pub mount_dir: String,
 }
 
 /// The stable producer scope referenced by a template expression.

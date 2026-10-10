@@ -24,6 +24,8 @@ import { canvasNodeOf, shownNodeIds } from "./nodes";
 import { LitVolumeProvider } from "./VolumeTray";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
+import { useConfigCreator } from "./useConfigCreator";
+import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { changeGroups } from "#/modules/config-store/store-deployments";
@@ -70,7 +72,8 @@ export function CanvasFlow({
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
   const findableNodes = [...store.services.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
-    ...store.volumes.map((volume) => ({ id: volume.id, name: volume.name, type: "volume" as const }))];
+    ...store.volumes.map((volume) => ({ id: volume.id, name: volume.name, type: "volume" as const })),
+    ...store.configs.map((config) => ({ id: config.id, name: config.name, type: "config" as const }))];
   // A Volume in a tray shows on its Service's node, so that is the node the canvas brings into view.
   const focusNodeId = selectedNodeId === null ? null : canvasNodeOf(canvasNodes, selectedNodeId) ?? selectedNodeId;
   const focusNode = canvasNodes.find((node) => node.id === focusNodeId);
@@ -94,6 +97,13 @@ export function CanvasFlow({
     getViewportCenter,
   );
 
+  const configCreator = useConfigCreator(params, environmentId, getViewportCenter);
+
+  function openConfigCreatorFromServiceDialog() {
+    creator.setCreatorOpen(false);
+    configCreator.openCreatorAtPosition(creator.creatorPosition);
+  }
+
   function openVolumeCreatorFromServiceDialog() {
     creator.setCreatorOpen(false);
     volumeCreator.openCreatorAtPosition(creator.creatorPosition);
@@ -107,6 +117,7 @@ export function CanvasFlow({
           onCreateFromPanel={creator.openCreatorAtLastRightClick}
           onCreateBlank={creator.createBlankServiceAtLastRightClick}
           onCreateVolume={volumeCreator.openCreatorAtLastRightClick}
+          onCreateConfig={configCreator.openCreatorAtLastRightClick}
         >
           <ReactFlow
             key={`${params.projectSlug}/${params.environmentSlug}`}
@@ -132,6 +143,7 @@ export function CanvasFlow({
             onPaneContextMenu={(event) => {
               creator.onPaneContextMenu(event);
               volumeCreator.onPaneContextMenu(event);
+              configCreator.onPaneContextMenu(event);
             }}
           >
             <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
@@ -161,6 +173,7 @@ export function CanvasFlow({
         position={creator.creatorPosition}
         params={params}
         onCreateVolume={openVolumeCreatorFromServiceDialog}
+        onCreateConfig={openConfigCreatorFromServiceDialog}
         onCreated={async (result, stillHere) => {
           creator.setCreatorOpen(false);
           if (stillHere) await navigate({
@@ -182,6 +195,7 @@ export function CanvasFlow({
         position={volumeCreator.creatorPosition}
         onCreate={volumeCreator.createVolume}
       />
+      <ConfigCreatorDialog open={configCreator.creatorOpen} onOpenChange={configCreator.setCreatorOpen} onCreate={configCreator.createConfig} />
     </LitVolumeProvider>
   );
 }

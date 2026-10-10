@@ -12,6 +12,7 @@ const nginx: ChangeGroup = {
   nodeName: "nginx",
   discardPath: "nginx",
   changeCount: 1,
+  restarts: [],
   serviceSourceType: "image",
   lifecycle: "create",
   canDiscard: true,
@@ -24,6 +25,12 @@ const row = (path: string, extra: Partial<ChangeRow> = {}): ChangeRow => ({
   name: path.split(".").at(-1) ?? path, row: null, variable: true, currentValue: "60", newValue: "300", canDiscard: true, ...extra,
 });
 const api = (rows: ChangeRow[]): ChangeGroup => ({ ...nginx, nodeName: "api", discardPath: "api", lifecycle: "update", rows });
+const file = (path: string, configFile: NonNullable<ChangeRow["configFile"]>, extra: Partial<ChangeRow> = {}) => row(`configs.sentry.files.${path}`, {
+  label: path, name: path, variable: false, currentValue: "File", newValue: "File", configFile, ...extra,
+});
+const config = (rows: ChangeRow[]): ChangeGroup => ({
+  ...nginx, nodeType: "config", nodeId: "sentry", nodeName: "sentry", discardPath: "configs.sentry", lifecycle: "update", restarts: ["web", "worker"], rows,
+});
 const fromProduction = { title: "From production's deploy", description: "fix-api is a Branch of production, so what production deploys arrives here too." };
 
 function review(props: Partial<EnvironmentChangesReviewProps> & Pick<EnvironmentChangesReviewProps, "groups">) {
@@ -44,6 +51,74 @@ async function menuOf(label: string) {
 afterEach(cleanup);
 
 describe("Details", () => {
+  it("shows complete file text and metadata, distinguishing an empty file from a missing one", () => {
+    const before = { content: "first line\nlast line\n", mode: "0444", uid: 0, gid: 0 };
+    const after = { content: "new first line\nnew last line\n", mode: "0555", uid: 1000, gid: 1001 };
+    review({ groups: [config([
+      file("nested/app.conf", { before, after }),
+      file("empty.conf", { before: null, after: { ...before, content: "" } }, { kind: "add" }),
+      file("old.conf", { before, after: null }, { kind: "remove" }),
+    ])] });
+    const changed = lineOf("nested/app.conf");
+    expect(changed.getByText("Before")).toBeTruthy();
+    expect(changed.getByText("After")).toBeTruthy();
+    for (const text of [before.content, after.content]) {
+      const panel = changed.getByText(text, { exact: true, normalizer: (value) => value });
+      expect(panel.tagName).toBe("PRE");
+      expect(panel.closest(".ph-no-capture")).toBeTruthy();
+      expect(panel.className).toContain("max-h-48");
+    }
+    for (const text of ["Mode 0555", "UID 1000", "GID 1001"]) {
+      const metadata = changed.getByText(text);
+      expect(metadata.className).toContain("text-changed-deep");
+      expect(metadata.closest(".ph-no-capture")).toBeTruthy();
+    }
+    const added = lineOf("empty.conf");
+    expect(added.queryByText("Before")).toBeNull();
+    expect(added.getByText("After")).toBeTruthy();
+    expect(added.getByText("Empty file")).toBeTruthy();
+    const removed = lineOf("old.conf");
+    expect(removed.getByText("Before")).toBeTruthy();
+    expect(removed.queryByText("After")).toBeNull();
+    expect(screen.queryByText(/\{"content":/)).toBeNull();
+  });
+
+  it("shows metadata-only edits and restart effects once across origins without adding a change", () => {
+    const before = { content: "unchanged", mode: "0444", uid: 0, gid: 0 };
+    const arrived = file("arrived.conf", { before, after: before }, { row: "s:files.arrived.conf" as RowId });
+    const own = file("app.conf", { before, after: { ...before, mode: "0555" } });
+    review({ groups: [config([arrived, own])], originFor: (at) => at === arrived.row ? fromProduction : undefined });
+    const effects = screen.getAllByText("Deploying sentry restarts web and worker.");
+    expect(effects).toHaveLength(1);
+    expect(effects[0]?.closest("section")?.getAttribute("aria-label")).toBe("Your changes");
+    expect(screen.getByText("2 changes in fix-api, not yet published.")).toBeTruthy();
+    expect(lineOf("app.conf").getAllByText("unchanged")).toHaveLength(2);
+    expect(lineOf("app.conf").getByText("Mode 0555").className).toContain("text-changed-deep");
+  });
+
+  it("keeps file Discard and Discard all of the Config reachable with the exact file path", async () => {
+    const value = { content: "test", mode: "0444", uid: 0, gid: 0 };
+    const group = config([file("nested/app.conf", { before: value, after: value }), file("app.conf.bak", { before: null, after: value })]);
+    const test = review({ groups: [group] });
+    const menu = await menuOf("sentry nested/app.conf");
+    expect(menu.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Discard", "Discard all of sentry"]);
+    fireEvent.click(menu.getByRole("menuitem", { name: "Discard" }));
+    expect(test.onDiscardRow).toHaveBeenCalledWith(group, "configs.sentry.files.nested/app.conf");
+    fireEvent.click((await menuOf("sentry nested/app.conf")).getByRole("menuitem", { name: "Discard all of sentry" }));
+    expect(test.onDiscardNode).toHaveBeenCalledWith(group);
+  });
+
+  it("offers only whole Config discard for a file the Store cannot restore alone", async () => {
+    const value = { content: "test", mode: "0444", uid: 0, gid: 0 };
+    const group = config([file("app.conf", { before: null, after: value }, { canDiscard: false })]);
+    const test = review({ groups: [group] });
+    const menu = await menuOf("sentry app.conf");
+    expect(menu.queryByRole("menuitem", { name: "Discard" })).toBeNull();
+    fireEvent.click(menu.getByRole("menuitem", { name: "Discard all of sentry" }));
+    expect(test.onDiscardNode).toHaveBeenCalledWith(group);
+    expect(test.onDiscardRow).not.toHaveBeenCalled();
+  });
+
   it("reads a new node as one line, and Discard in its menu puts it back", async () => {
     const test = review({ groups: [nginx] });
 

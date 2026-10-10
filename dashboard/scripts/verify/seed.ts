@@ -4,7 +4,6 @@
 // (`cliToken`), every write's outcome and what was skipped.
 //
 // Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
-//   production  web, api, postgres (+ pg-data volume), worker; a domain on web; one queued Deploy; unpublished api edits
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 // A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
 // real Servers that enroll next, so the queued Deploy is skipped: the Store admits none before a Server joins.
@@ -64,7 +63,7 @@ const seed = Effect.gen(function* () {
     write(label, { command: "edit", environment: at(environment), expect: null, changes });
 
   yield* write("project shop", { command: "create_project", id: randomUUID(), name: "shop", default_environment: randomUUID() });
-  for (const [name, image] of [["web", "nginx:1.27-alpine"], ["api", "traefik/whoami:v1.10.3"], ["postgres", "postgres:16"], ["worker", "traefik/whoami:v1.10.3"]] as const) {
+  for (const [name, image] of [["web", "nginx:1.27-alpine"], ["api", "traefik/whoami:v1.10.3"], ["postgres", "postgres:16"], ["worker", "traefik/whoami:v1.10.3"], ["redis", "redis:7-alpine"]] as const) {
     yield* write(`service ${name}`, { command: "create_service", id: randomUUID(), environment: at(null), name, image });
   }
   yield* write("volume pg-data", {
@@ -76,7 +75,19 @@ const seed = Effect.gen(function* () {
     { op: "set", path: "api.env.LOG_LEVEL", value: "warn" },
     { op: "set", path: "api.env.DATABASE_URL", value: "postgres://postgres@postgres:5432/shop" },
     { op: "set", path: "postgres.env.POSTGRES_PASSWORD", value: "postgres" },
+    { op: "set", path: "api.env.SECRET_KEY", value: { secret: "verify-secret-key" } },
+    { op: "set", path: "api.env.SECRET_KEY.exported", value: true },
   ]);
+  yield* write("config sentry", {
+    command: "create_config", id: randomUUID(), environment: at("production"), name: "sentry",
+    mounts: [{ service: "web", dir: "/etc/sentry" }, { service: "worker", dir: "/etc/sentry" }],
+  });
+  for (const [file, content] of [
+    ["config.yml", "redis:\n  host: ${{ redis.PLOYZ_PRIVATE_DOMAIN }}\n  port: ${{ redis.PORT }}\nsecret_key: ${{ api.SECRET_KEY }}\n"],
+    ["sentry.conf.py", "SENTRY_OPTIONS = {\n    \"system.url-prefix\": \"https://sentry.acme.com\",\n}\n"],
+  ] as const) {
+    yield* write(`config sentry ${file}`, { command: "put_config_file", environment: at("production"), config: "sentry", file, content });
+  }
 
   if (process.env["VERIFY_REAL_SERVERS"] === "1") {
     skipped.push("deploy production: no Server has enrolled yet");

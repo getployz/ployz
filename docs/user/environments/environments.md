@@ -55,8 +55,8 @@ another, like `develop`, in its [Source settings](../deploy/github.md#choose-the
 Try a change in staging first, like a new variable that turns on a feature:
 
 1. On staging's canvas, open `web` and go to **Variables**.
-2. Click **New Variable**. Enter the **Key** `NEW_CHECKOUT` and the **Value** `true`, untick
-   **Sealed** (it isn't a secret), and click **Add**.
+2. Click **New Variable**. Enter the **Key** `NEW_CHECKOUT` and the **Value** `true`, and
+   click **Add**.
 3. Click **Deploy**.
 
 ![A branch's canvas, with the Sync button at the top right](../images/branch-canvas.png)

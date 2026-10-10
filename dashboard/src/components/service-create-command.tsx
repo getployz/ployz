@@ -85,6 +85,7 @@ type ServiceCommandProps = {
   /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
   onCreated?: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
   onCreateVolume?: () => void;
+  onCreateConfig?: () => void;
   /** Says when a create starts and ends, so the dialog around it can stay open meanwhile. */
   onPendingChange?: (pending: boolean) => void;
 };
@@ -309,6 +310,10 @@ function useServiceCreateActions({
     if (id === "volume") {
       // Only the canvas offers a Volume, and it places one itself.
       if (props.mode === "service") props.onCreateVolume?.();
+      return;
+    }
+    if (id === "config") {
+      if (props.mode === "service") props.onCreateConfig?.();
       return;
     }
 

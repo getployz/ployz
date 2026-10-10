@@ -12,6 +12,7 @@ use super::*;
 pub enum EnvironmentNodeType {
     Service,
     Volume,
+    Config,
 }
 
 impl EnvironmentNodeType {
@@ -19,6 +20,7 @@ impl EnvironmentNodeType {
         match self {
             Self::Service => "service",
             Self::Volume => "volume",
+            Self::Config => "config",
         }
     }
 }
@@ -94,6 +96,38 @@ pub fn restore_environment_node(
                                 .any(|a| a.volume_resource_id == node_id)
                         {
                             service.volume_attachments.push(attachment.clone());
+                        }
+                    }
+                }
+            }
+            EnvironmentNodeType::Config => {
+                let existed = current.configs.iter().any(|c| c.resource_id == node_id);
+                let prior =
+                    baseline.and_then(|b| b.configs.iter().find(|c| c.resource_id == node_id));
+                current.configs.retain(|c| c.resource_id != node_id);
+                if let Some(prior) = prior {
+                    current.configs.push(prior.clone());
+                }
+                for service in &mut current.services {
+                    if prior.is_none() {
+                        service
+                            .config_attachments
+                            .retain(|a| a.config_resource_id != node_id);
+                    } else if !existed {
+                        let attachment = baseline
+                            .and_then(|b| b.services.iter().find(|s| s.id == service.id))
+                            .and_then(|s| {
+                                s.config_attachments
+                                    .iter()
+                                    .find(|a| a.config_resource_id == node_id)
+                            });
+                        if let Some(attachment) = attachment
+                            && !service
+                                .config_attachments
+                                .iter()
+                                .any(|a| a.config_resource_id == node_id)
+                        {
+                            service.config_attachments.push(attachment.clone());
                         }
                     }
                 }

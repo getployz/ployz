@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ployz_core::config::{
-    CompiledEnvironmentIntent, ResolveVariablesInput, ResolveVariablesResult, ResolverValue,
-    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, ServiceEnvValue, ValuePart,
-    ValuePartOwner, VariableProducer, parse_variable_template, render_variable_parts,
-    resolve_variables,
+    CompiledEnvironmentIntent, CompiledNodeConfig, ResolveVariablesInput, ResolveVariablesResult,
+    ResolvedConfigFile, ResolverValue, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
+    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, parse_variable_template,
+    render_variable_parts, resolve_config_file, resolve_variables,
 };
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{ConfigFileName, RpcError, ServiceName};
 use serde_json::{Map, Value, json};
 
 use crate::error;
@@ -413,9 +413,18 @@ pub(crate) fn schema() -> Value {
     })
 }
 
-/// Every Service's environment resolved from compiled Saved State, by Service ID.
-/// References resolve against the frozen producers. With `unseal`, secrets and
-/// values that reference one resolve to plaintext; without, they are left out.
+/// Compiled Saved State with every reference resolved.
+pub(crate) struct Resolved {
+    /// Each Service's environment, by Service ID.
+    pub(crate) env: BTreeMap<String, BTreeMap<String, String>>,
+    /// Each Config's files, by Config ID.
+    pub(crate) configs: BTreeMap<String, BTreeMap<ConfigFileName, ResolvedConfigFile>>,
+}
+
+/// Every Service's environment and every Config's files, resolved from compiled
+/// Saved State against the frozen producers. With `unseal`, secrets and values
+/// that reference one resolve to plaintext. Without it, such a variable is left
+/// out and such a file is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, or `internal` when a sealed
@@ -423,7 +432,7 @@ pub(crate) fn schema() -> Value {
 pub(crate) fn resolve(
     compiled: &CompiledEnvironmentIntent,
     unseal: Option<&SealingKey>,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>, RpcError> {
+) -> Result<Resolved, RpcError> {
     let open = |sealed: Option<&ployz_core::config::EncryptedSecretValue>| match (unseal, sealed) {
         (Some(key), Some(sealed)) => key.open(sealed).map(Some),
         (Some(_), None) => Err(error::corrupt("sealed secret")),
@@ -456,10 +465,27 @@ pub(crate) fn resolve(
             value,
         });
     }
-    let mut resolved = BTreeMap::new();
+    let mut resolved = Resolved {
+        env: BTreeMap::new(),
+        configs: BTreeMap::new(),
+    };
     for node in &compiled.node_snapshots {
-        let ployz_core::config::CompiledNodeConfig::Service(config) = &node.snapshot.0 else {
-            continue;
+        let config = match &node.snapshot.0 {
+            CompiledNodeConfig::Service(config) => config,
+            CompiledNodeConfig::Config(config) => {
+                let mut files = BTreeMap::new();
+                for (name, file) in &config.files {
+                    let mut file = resolve_config_file(name.as_str(), &file.content, &producers)
+                        .map_err(|path| cycle(compiled, &path))?;
+                    if file.secret && unseal.is_none() {
+                        file.content.clear();
+                    }
+                    files.insert(name.clone(), file);
+                }
+                resolved.configs.insert(node.node_id.clone(), files);
+                continue;
+            }
+            CompiledNodeConfig::Volume(_) => continue,
         };
         let mut env = BTreeMap::new();
         for (key, value) in &config.env {
@@ -487,7 +513,7 @@ pub(crate) fn resolve(
                 env.insert(key.clone(), value);
             }
         }
-        resolved.insert(node.node_id.clone(), env);
+        resolved.env.insert(node.node_id.clone(), env);
     }
     Ok(resolved)
 }
@@ -506,7 +532,8 @@ fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
                     ployz_core::config::CompiledNodeConfig::Service(config) => {
                         Some(config.settings.private_dns.to_string())
                     }
-                    ployz_core::config::CompiledNodeConfig::Volume(_) => None,
+                    ployz_core::config::CompiledNodeConfig::Volume(_)
+                    | ployz_core::config::CompiledNodeConfig::Config(_) => None,
                 })
                 .unwrap_or_default();
             format!("{service}.env.{key}")
@@ -519,4 +546,79 @@ fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
         ),
         json!({ "cycle": names }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::ConfigName;
+    use ployz_core::config::{
+        CompiledEnvironmentNode, CompiledNodeSnapshot, ConfigNodeConfig, FileMode, SavedConfigFile,
+        SavedVariableProducer,
+    };
+
+    use super::*;
+
+    #[test]
+    fn a_config_file_that_reads_a_secret_is_empty_without_the_key() {
+        let key = SealingKey::new(b"test-encryption-secret").unwrap();
+        let file = |text: &str| SavedConfigFile {
+            content: parse_variable_template(text, |_| Some("web-lineage".to_owned())).parts,
+            mode: FileMode::READ_ONLY,
+            uid: 0,
+            gid: 0,
+        };
+        let compiled = CompiledEnvironmentIntent {
+            node_snapshots: vec![CompiledEnvironmentNode {
+                environment_id: "env".into(),
+                node_id: "sentry".into(),
+                node_lineage_id: "sentry".into(),
+                snapshot: CompiledNodeSnapshot(CompiledNodeConfig::Config(ConfigNodeConfig {
+                    version: 1,
+                    name: ConfigName::parse("sentry").unwrap(),
+                    files: BTreeMap::from([
+                        (
+                            ConfigFileName::parse("secret.yml").unwrap(),
+                            file("p: ${{ web.P }}"),
+                        ),
+                        (ConfigFileName::parse("plain.yml").unwrap(), file("plain")),
+                    ]),
+                })),
+                encrypted_registry_username: None,
+                encrypted_registry_secret: None,
+            }],
+            variable_producers: vec![SavedVariableProducer {
+                owner_scope: "service".into(),
+                owner_id: "web".into(),
+                owner_lineage_id: "web-lineage".into(),
+                key: "P".into(),
+                value: SavedVariableValue::Secret {
+                    encrypted_value: Some(key.seal("s3cr3t")),
+                },
+            }],
+        };
+        let contents = |unseal| {
+            resolve(&compiled, unseal)
+                .unwrap()
+                .configs
+                .remove("sentry")
+                .unwrap()
+                .iter()
+                .map(|(name, file)| (name.to_string(), file.content.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            contents(None),
+            [
+                ("plain.yml".into(), "plain".into()),
+                ("secret.yml".into(), String::new())
+            ]
+        );
+        assert_eq!(
+            contents(Some(&key)),
+            [
+                ("plain.yml".into(), "plain".into()),
+                ("secret.yml".into(), "p: s3cr3t".to_owned())
+            ]
+        );
+    }
 }

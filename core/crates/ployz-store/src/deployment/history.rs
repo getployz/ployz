@@ -74,12 +74,22 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         intent
             .volumes
             .retain(|volume| volume.resource_id != node.id());
+        intent
+            .configs
+            .retain(|config| config.resource_id != node.id());
         match node {
             TargetNode::Service { .. } => intent.services.extend(
                 saved
                     .services
                     .iter()
                     .filter(|service| service.id == node.id())
+                    .cloned(),
+            ),
+            TargetNode::Config { .. } => intent.configs.extend(
+                saved
+                    .configs
+                    .iter()
+                    .filter(|config| config.resource_id == node.id())
                     .cloned(),
             ),
             // A Volume the Deployment removes isn't in Head.
@@ -200,7 +210,7 @@ pub(crate) fn view(
         .iter()
         .filter_map(|node| match node {
             TargetNode::Service { name, runtime, .. } => Some((name.clone(), runtime.clone())),
-            TargetNode::Volume { .. } => None,
+            TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
         })
         .collect();
     let builds = build::views(tx, &stored)?;

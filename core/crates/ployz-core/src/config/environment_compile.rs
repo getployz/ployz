@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::{ConfigFileName, ConfigName};
+
 use super::*;
 
 /// Node snapshots and variable producers compiled from one authored document.
@@ -80,6 +82,7 @@ impl TryFrom<CompiledNodeSnapshotWire> for CompiledNodeSnapshot {
 pub enum CompiledNodeConfig {
     Service(Box<ServiceConfig>),
     Volume(VolumeConfig),
+    Config(ConfigNodeConfig),
 }
 
 impl CompiledNodeConfig {
@@ -89,6 +92,7 @@ impl CompiledNodeConfig {
         match self {
             Self::Service(_) => EnvironmentNodeType::Service,
             Self::Volume(_) => EnvironmentNodeType::Volume,
+            Self::Config(_) => EnvironmentNodeType::Config,
         }
     }
 
@@ -98,6 +102,7 @@ impl CompiledNodeConfig {
         match self {
             Self::Service(_) => 1,
             Self::Volume(_) => 2,
+            Self::Config(_) => 1,
         }
     }
 }
@@ -110,6 +115,17 @@ pub struct VolumeConfig {
     pub version: u8,
     pub name: String,
     pub storage: VolumeKind,
+}
+
+/// The configuration of a Config node snapshot: its files, references kept by
+/// Service lineage so renaming a Service changes no file.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigNodeConfig {
+    #[ts(type = "1")]
+    pub version: u8,
+    pub name: ConfigName,
+    pub files: BTreeMap<ConfigFileName, SavedConfigFile>,
 }
 
 /// A variable value associated with its stable producer owner and lineage.
@@ -233,6 +249,22 @@ pub fn compile_environment_intent(
                 }
             })
             .collect();
+        config.configs = service
+            .config_attachments
+            .iter()
+            .map(|a| {
+                let config = intent
+                    .configs
+                    .iter()
+                    .find(|c| c.resource_id == a.config_resource_id)
+                    .expect("validated attachment");
+                ServiceDeployConfig {
+                    config_resource_id: config.resource_id.clone(),
+                    config_name: config.name.to_string(),
+                    mount_dir: a.mount_dir.to_string(),
+                }
+            })
+            .collect();
         node_snapshots.push(CompiledEnvironmentNode {
             environment_id: environment_id.into(),
             node_id: service.id.clone(),
@@ -274,6 +306,18 @@ pub fn compile_environment_intent(
             version: 2,
             name: v.name.clone(),
             storage: v.storage,
+        })),
+        encrypted_registry_username: None,
+        encrypted_registry_secret: None,
+    }));
+    node_snapshots.extend(intent.configs.iter().map(|c| CompiledEnvironmentNode {
+        environment_id: environment_id.into(),
+        node_id: c.resource_id.clone(),
+        node_lineage_id: c.resource_lineage_id.clone(),
+        snapshot: CompiledNodeSnapshot(CompiledNodeConfig::Config(ConfigNodeConfig {
+            version: 1,
+            name: c.name.clone(),
+            files: c.files.clone(),
         })),
         encrypted_registry_username: None,
         encrypted_registry_secret: None,

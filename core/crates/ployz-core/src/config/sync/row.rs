@@ -7,10 +7,11 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
+use crate::ConfigFileName;
 use crate::config::service_changes::{at, default_value, source_cell};
 use crate::config::{
-    ConfigError, EncryptedSecretValue, SavedEnvironmentIntent as Intent, SavedServiceIntent,
-    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent,
+    ConfigError, EncryptedSecretValue, SavedConfigIntent, SavedEnvironmentIntent as Intent,
+    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, SavedVolumeIntent,
 };
 
 /// One row's address: a lineage and a place in its node. The only row address anywhere;
@@ -29,14 +30,18 @@ pub enum At {
     Node,
     /// A Volume's data, which never moves.
     Data,
-    /// A Volume's name.
+    /// A Volume's or a Config's name.
     Name,
     /// A Volume's storage.
     Storage,
+    /// A Config's file at this path: its content, mode and owner as one setting.
+    File(ConfigFileName),
     /// A Service setting.
     Setting(Setting),
     /// A mount on the Volume of this lineage.
     Mount(String),
+    /// A mount of the Config of this lineage.
+    ConfigMount(String),
     /// The variable of this key.
     Variable(String),
 }
@@ -140,7 +145,12 @@ impl At {
         match self {
             Self::Name | Self::Storage => true,
             Self::Setting(setting) => setting.carried(),
-            Self::Node | Self::Data | Self::Mount(_) | Self::Variable(_) => false,
+            Self::Node
+            | Self::Data
+            | Self::File(_)
+            | Self::Mount(_)
+            | Self::ConfigMount(_)
+            | Self::Variable(_) => false,
         }
     }
 
@@ -159,7 +169,9 @@ impl fmt::Display for At {
             Self::Name => f.write_str("name"),
             Self::Storage => f.write_str("storage"),
             Self::Setting(setting) => f.write_str(setting.path()),
+            Self::File(path) => write!(f, "files.{path}"),
             Self::Mount(volume) => write!(f, "mounts.{volume}"),
+            Self::ConfigMount(config) => write!(f, "configs.{config}"),
             Self::Variable(key) => write!(f, "variables.{key}"),
         }
     }
@@ -211,11 +223,19 @@ impl FromStr for RowId {
             "data" => At::Data,
             "name" => At::Name,
             "storage" => At::Storage,
-            at => match (at.strip_prefix("mounts."), at.strip_prefix("variables.")) {
-                (Some(volume), _) if !volume.is_empty() => At::Mount(volume.to_owned()),
-                (_, Some(key)) if !key.is_empty() => At::Variable(key.to_owned()),
-                _ => At::Setting(Setting::of_path(at).ok_or_else(unknown)?),
-            },
+            at => {
+                if let Some(path) = at.strip_prefix("files.") {
+                    At::File(ConfigFileName::parse(path).map_err(|_| unknown())?)
+                } else if let Some(config) = at.strip_prefix("configs.").filter(|c| !c.is_empty()) {
+                    At::ConfigMount(config.to_owned())
+                } else if let Some(volume) = at.strip_prefix("mounts.").filter(|v| !v.is_empty()) {
+                    At::Mount(volume.to_owned())
+                } else if let Some(key) = at.strip_prefix("variables.").filter(|k| !k.is_empty()) {
+                    At::Variable(key.to_owned())
+                } else {
+                    At::Setting(Setting::of_path(at).ok_or_else(unknown)?)
+                }
+            }
         };
         if lineage.is_empty() {
             return Err(unknown());
@@ -331,6 +351,8 @@ pub enum NodeRef<'intent> {
     Service(&'intent SavedServiceIntent),
     /// A Volume.
     Volume(&'intent SavedVolumeIntent),
+    /// A Config.
+    Config(&'intent SavedConfigIntent),
 }
 
 /// The node at `row` and where in it, with a mount named by its Volume; display only.
@@ -342,9 +364,14 @@ pub fn name_of<'intent>(
     let node = *nodes(intent).get(row.lineage.as_str())?;
     let at = match &row.at {
         At::Mount(lineage) => format!("mounts.{}", volume(intent, lineage)?.name),
-        at @ (At::Node | At::Data | At::Name | At::Storage | At::Setting(_) | At::Variable(_)) => {
-            at.to_string()
-        }
+        At::ConfigMount(lineage) => format!("configs.{}", config(intent, lineage)?.name),
+        at @ (At::Node
+        | At::Data
+        | At::Name
+        | At::Storage
+        | At::File(_)
+        | At::Setting(_)
+        | At::Variable(_)) => at.to_string(),
     };
     Some((node, at))
 }
@@ -357,6 +384,11 @@ pub(super) fn nodes(env: &Intent) -> BTreeMap<&str, NodeRef<'_>> {
             env.volumes
                 .iter()
                 .map(|v| (v.resource_lineage_id.as_str(), NodeRef::Volume(v))),
+        )
+        .chain(
+            env.configs
+                .iter()
+                .map(|c| (c.resource_lineage_id.as_str(), NodeRef::Config(c))),
         )
         .collect()
 }
@@ -384,6 +416,15 @@ pub(super) fn volume<'intent>(
         .find(|v| v.resource_lineage_id == lineage)
 }
 
+pub(super) fn config<'intent>(
+    env: &'intent Intent,
+    lineage: &str,
+) -> Option<&'intent SavedConfigIntent> {
+    env.configs
+        .iter()
+        .find(|c| c.resource_lineage_id == lineage)
+}
+
 /// Every row an Environment holds something at, with what it holds there, redacted,
 /// as a plan reads it: projected once per Environment, then read by row.
 pub struct Cells(BTreeMap<RowId, Cell>);
@@ -409,9 +450,14 @@ impl Cells {
     pub fn at(&self, row: &RowId) -> &Cell {
         let found = match row.at {
             At::Data => self.0.get(&RowId::node(&row.lineage)),
-            At::Node | At::Name | At::Storage | At::Setting(_) | At::Mount(_) | At::Variable(_) => {
-                self.0.get(row)
-            }
+            At::Node
+            | At::Name
+            | At::Storage
+            | At::File(_)
+            | At::Setting(_)
+            | At::Mount(_)
+            | At::ConfigMount(_)
+            | At::Variable(_) => self.0.get(row),
         };
         found.unwrap_or(&Cell::Absent)
     }
@@ -483,6 +529,16 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
                 (At::Storage, Cell::Value(json!(volume.storage))),
             ]);
         }
+        NodeRef::Config(config) => {
+            return std::iter::once((At::Name, Cell::Value(json!(config.name))))
+                .chain(
+                    config
+                        .files
+                        .iter()
+                        .map(|(path, file)| (At::File(path.clone()), Cell::Value(json!(file)))),
+                )
+                .collect();
+        }
         NodeRef::Service(service) => service,
     };
     let config = json!(service.config);
@@ -530,6 +586,18 @@ fn cells(env: &Intent, node: NodeRef, suffix: &str) -> BTreeMap<At, Cell> {
             cells.insert(
                 At::Mount(volume.resource_lineage_id.clone()),
                 Cell::Value(json!(attachment.mount_path)),
+            );
+        }
+    }
+    for attachment in &service.config_attachments {
+        if let Some(config) = env
+            .configs
+            .iter()
+            .find(|c| c.resource_id == attachment.config_resource_id)
+        {
+            cells.insert(
+                At::ConfigMount(config.resource_lineage_id.clone()),
+                Cell::Value(json!(attachment.mount_dir)),
             );
         }
     }

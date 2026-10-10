@@ -12,6 +12,21 @@ const socketDirectory = process.env.PLOYZ_SOCKET_DIRECTORY;
 const connectionsFor = (id) => [{ unix: path.join(socketDirectory, `${id}.sock`) }];
 const machineId = process.env.PLOYZ_MACHINE_ID;
 const unknownMachineId = process.env.PLOYZ_UNKNOWN_MACHINE_ID;
+const configText = "C6_PRIVATE_CONFIG_SENTINEL\n";
+const configBytes = Array.from(Buffer.from(configText));
+const configName = "sentry/app.conf";
+const configTarget = "/etc/sentry/app.conf";
+
+function assertPrivatePreview(preview) {
+  const serialized = JSON.stringify(preview);
+  assert.ok(!serialized.includes(configText.trim()), "public preview omits Config text");
+  assert.ok(!serialized.includes(JSON.stringify(configBytes)), "public preview omits Config bytes");
+  const spec = preview.operations[0].operation.spec;
+  assert.equal(spec.name, "web");
+  assert.deepEqual(spec.configs, [{ name: configName, content: [] }]);
+  assert.equal(spec.container.config_mounts[0].config_name, configName);
+  assert.equal(spec.container.config_mounts[0].target, configTarget);
+}
 
 if (!addon || !pkg || !socketDirectory || !machineId || !unknownMachineId) {
   throw new Error("Node smoke is missing environment");
@@ -55,7 +70,8 @@ async function expectRpc(fn, code) {
       {
         name: "web",
         mode: { mode: "replicated", replicas: 1 },
-        container: { image: "nginx", pull_policy: "always" },
+        container: { image: "nginx", pull_policy: "always", config_mounts: [{ config_name: configName, target: configTarget }] },
+        configs: [{ name: configName, content: configBytes }],
       },
     ],
     options: {
@@ -66,6 +82,7 @@ async function expectRpc(fn, code) {
     },
   };
     const preview = await client.preview(intent);
+    assertPrivatePreview(preview);
     if (!Array.isArray(preview.operations) || !Array.isArray(preview.warnings)) {
       throw new Error("preview() must return operations and warnings");
     }
@@ -102,6 +119,26 @@ async function expectRpc(fn, code) {
     await expectRpc(() => client.setManagementClient("Cloud"), "invalid_argument");
     await expectRpc(() => client.requestMachineUpgrade("worker", "not a request"), "invalid_argument");
     await expectRpc(() => client.inspectMachineUpgrade("worker", "not a request"), "invalid_argument");
+  const preparation = client.prepare({
+    deployment: {
+      namespace: "app",
+      snapshots: [{ config: {
+        version: 2, privateDns: "web",
+        source: { version: 1, type: "image", image: "nginx", credentials: { type: "none" } },
+        preDeployCommand: null, startCommand: null,
+        healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
+        configs: [{ configResourceId: "sentry-id", configName: "sentry", mountDir: "/etc/sentry" }],
+      } }],
+      configs: [{ configResourceId: "sentry-id", name: "sentry", files: {
+        "app.conf": { content: configText, mode: "0444", uid: 0, gid: 0 },
+      } }],
+    },
+    sources: {},
+  });
+  const prepared = await preparation.finished;
+  assertPrivatePreview(prepared);
+  const preparedOutcome = await prepared.confirm().finished;
+  assert.equal(preparedOutcome.type, "success", JSON.stringify(preparedOutcome));
   const after = await client.about();
   if (!after.capabilities.includes("ployz.rpc.describe-contract.v1")) {
     throw new Error("Client must stay usable after deploy");

@@ -79,6 +79,94 @@ pub fn resolve_variables(input: &ResolveVariablesInput) -> ResolveVariablesResul
     }
 }
 
+/// A Config file with its references resolved. Its `Debug` leaves the content out.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ResolvedConfigFile {
+    pub content: String,
+    /// Whether a secret reached `content`.
+    pub secret: bool,
+    /// References whose value may break the file's syntax, each once.
+    pub fragile: Vec<FragileReference>,
+}
+
+impl std::fmt::Debug for ResolvedConfigFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedConfigFile")
+            .field("content_len", &self.content.len())
+            .field("secret", &self.secret)
+            .field("fragile", &self.fragile)
+            .finish()
+    }
+}
+
+/// A reference whose value holds a line break or the quote it sits inside, or holds a
+/// line break in a YAML file. Pasted raw, it may corrupt the file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FragileReference {
+    pub owner: ValuePartOwner,
+    pub key: String,
+}
+
+/// Resolve Config file `name`'s `parts` against `producers`. A Config names no
+/// owner of its own, so every reference names its Service.
+///
+/// # Errors
+/// Returns the cycle that prevents resolution, as [`ResolveVariablesResult::Cycle`] does.
+pub fn resolve_config_file(
+    name: &str,
+    parts: &[ValuePart],
+    producers: &[VariableProducer],
+) -> Result<ResolvedConfigFile, Vec<String>> {
+    let name = name.to_ascii_lowercase();
+    let yaml = name.ends_with(".yml") || name.ends_with(".yaml");
+    let mut warnings = Vec::new();
+    let mut memo = BTreeMap::new();
+    let mut stack = Vec::new();
+    let mut file = ResolvedConfigFile {
+        content: String::new(),
+        secret: false,
+        fragile: Vec::new(),
+    };
+    let mut quote = None;
+    for part in parts {
+        let (owner, key) = match part {
+            ValuePart::Text { value } => {
+                for c in value.chars() {
+                    quote = match (quote, c) {
+                        (_, '\n') => None,
+                        (None, '"' | '\'') => Some(c),
+                        (Some(open), c) if c == open => None,
+                        (open, _) => open,
+                    };
+                }
+                file.content.push_str(value);
+                continue;
+            }
+            ValuePart::Ref { owner, key } => (owner, key),
+        };
+        let (value, secret) = resolve_parts(
+            std::slice::from_ref(part),
+            "",
+            producers,
+            &mut warnings,
+            &mut memo,
+            &mut stack,
+        )?;
+        let newline = value.contains('\n');
+        let breaks = quote.is_some_and(|open| newline || value.contains(open)) || (yaml && newline);
+        let reference = FragileReference {
+            owner: owner.clone(),
+            key: key.clone(),
+        };
+        if breaks && !file.fragile.contains(&reference) {
+            file.fragile.push(reference);
+        }
+        file.content.push_str(&value);
+        file.secret |= secret;
+    }
+    Ok(file)
+}
+
 /// A display template parsed into parts, and the Service names that matched no producer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedTemplate {
@@ -87,6 +175,8 @@ pub struct ParsedTemplate {
     pub unresolved: Vec<String>,
     /// Whether a `${{` (not `$${{`) has no `}}` after it.
     pub unterminated: bool,
+    /// Whether a closed `${{ … }}` is not a reference, such as `${{ a-b }}`; it stays text.
+    pub malformed: bool,
 }
 
 /// Parse display text into template parts: `${{ KEY }}` reads the owner's own
@@ -101,8 +191,10 @@ pub fn parse_variable_template(
     let mut parts = Vec::new();
     let mut unresolved = Vec::new();
     let mut unterminated = false;
+    let mut malformed = false;
     let mut pending = String::new();
     let mut rest = text;
+    let last_close = text.rfind("}}");
     while !rest.is_empty() {
         if let Some(after) = rest.strip_prefix("$${{") {
             pending.push_str("${{");
@@ -116,7 +208,9 @@ pub fn parse_variable_template(
             continue;
         };
         let Some((owner, key, after)) = template_token(after) else {
-            unterminated |= !after.contains("}}");
+            let closed = last_close.is_some_and(|at| at >= text.len() - after.len());
+            unterminated |= !closed;
+            malformed |= closed;
             pending.push_str("${{");
             rest = after;
             continue;
@@ -151,6 +245,7 @@ pub fn parse_variable_template(
         parts,
         unresolved,
         unterminated,
+        malformed,
     }
 }
 
@@ -299,7 +394,13 @@ mod tests {
             "${{ a-b }}",
         ] {
             assert_eq!(parse(malformed).parts, [text(malformed)], "{malformed}");
+            assert_eq!(
+                parse(malformed).malformed,
+                malformed != "${{ not-valid",
+                "{malformed}"
+            );
         }
+        assert!(!parse("a ${{ db.USER }} $${{ b }}").malformed);
         assert!(parse("${{ db.URL").unterminated);
         assert!(!parse("${{ oops ${{ db.URL }}").unterminated);
         assert!(!parse("$${{ literal").unterminated);

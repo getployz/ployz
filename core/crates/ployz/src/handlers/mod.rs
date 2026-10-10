@@ -12,6 +12,7 @@ pub(crate) mod build;
 pub(crate) mod catalog;
 pub(crate) mod cloud;
 pub(crate) mod config;
+pub(crate) mod config_item;
 pub(crate) mod context;
 mod data_loss;
 pub(crate) mod debug;
@@ -383,6 +384,7 @@ fn handler_for(path: &str) -> Option<Handler> {
         ("build", "") => Some(build::build),
         ("completion", "") => Some(completion),
         ("cloud", rest) => cloud::handler(rest),
+        ("config", rest) => config_item::handler(rest),
         ("ctx", rest) => context::handler(rest),
         ("debug", rest) => debug::handler(rest),
         ("deploy", "") => Some(deploy::deploy),

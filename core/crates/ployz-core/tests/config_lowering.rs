@@ -162,7 +162,7 @@ fn lowering_explains_root_and_colliding_mount_destinations() {
         ),
         (
             vec!["/data", "/x/../data"],
-            "Two volume mounts resolve to the same container path",
+            "Two mounts resolve to the same container path",
         ),
     ] {
         let ids = [
@@ -343,5 +343,165 @@ fn reference_cycles_drop_only_their_own_edges() {
             "app":[{"service":"a","condition":"service_started"}],
             "a":[{"service":"db","condition":"service_started"}]
         })
+    );
+}
+
+fn mounting(services: Value, configs: &[(&str, &str, &[&str], Value)]) -> Value {
+    let configs: Vec<Value> = configs
+        .iter()
+        .map(|(id, name, references, files)| {
+            json!({"configResourceId": id, "name": name, "files": files,
+                "references": references.iter().map(|lineage| format!("lineage-{lineage}")).collect::<Vec<_>>()})
+        })
+        .collect();
+    json!({"namespace": "production", "snapshots": services, "configs": configs})
+}
+
+fn web(configs: Value) -> Value {
+    json!({"serviceId": "id-web", "config": {
+        "version": 2, "privateDns": "web",
+        "source": {"version": 1, "type": "image", "image": "nginx:stable", "credentials": {"type": "none"}},
+        "healthcheck": {"type": "none"}, "restartPolicy": "on-failure", "configs": configs,
+    }})
+}
+
+#[test]
+fn each_config_file_mounts_read_only_at_its_own_path_with_its_mode_and_owner() {
+    let files = json!({
+        "config.yml": {"content": "dsn: redis.internal\n", "mode": "0444", "uid": 0, "gid": 0},
+        "certs/ca.pem": {"content": "pem", "mode": "0600", "uid": 1000, "gid": 1001},
+    });
+    let intent = lowered(mounting(
+        json!([web(json!([
+            {"configResourceId": "cfg-sentry", "configName": "sentry", "mountDir": "/etc/sentry"},
+            {"configResourceId": "cfg-sentry", "configName": "sentry", "mountDir": "/srv/sentry"},
+            {"configResourceId": "cfg-gone", "configName": "gone", "mountDir": "/etc/gone"},
+        ]))]),
+        &[("cfg-sentry", "sentry", &[], files)],
+    ))
+    .unwrap();
+    let service = &intent["target"][0];
+    assert_eq!(
+        service["configs"],
+        json!([
+            {"name": "sentry/certs/ca.pem", "content": b"pem".to_vec()},
+            {"name": "sentry/config.yml", "content": b"dsn: redis.internal\n".to_vec()},
+        ])
+    );
+    let mount = |name: &str, target: &str, mode: u32, uid: u32, gid: u32| json!({"config_name": name, "target": target, "mode": mode, "uid": uid, "gid": gid});
+    assert_eq!(
+        service["container"]["config_mounts"],
+        json!([
+            mount(
+                "sentry/certs/ca.pem",
+                "/etc/sentry/certs/ca.pem",
+                0o600,
+                1000,
+                1001
+            ),
+            mount("sentry/config.yml", "/etc/sentry/config.yml", 0o444, 0, 0),
+            mount(
+                "sentry/certs/ca.pem",
+                "/srv/sentry/certs/ca.pem",
+                0o600,
+                1000,
+                1001
+            ),
+            mount("sentry/config.yml", "/srv/sentry/config.yml", 0o444, 0, 0),
+        ])
+    );
+}
+
+#[test]
+fn a_config_file_and_a_volume_cannot_share_a_container_path() {
+    let mut input = mounting(
+        json!([web(json!([
+            {"configResourceId": "cfg-sentry", "configName": "sentry", "mountDir": "/data"},
+        ]))]),
+        &[(
+            "cfg-sentry",
+            "sentry",
+            &[],
+            json!({"x": {"content": "", "mode": "0444", "uid": 0, "gid": 0}}),
+        )],
+    );
+    let volume = "00000000-0000-4000-8000-000000000002";
+    input["snapshots"][0]["config"]["mounts"] =
+        json!([{"volumeResourceId": volume, "volumeName": "data", "mountPath": "/data/x"}]);
+    input["volumes"] = json!([{"volumeResourceId": volume, "storage": {"kind": "docker"}}]);
+    let error = lowered(input).unwrap_err();
+    assert_eq!(error.path, "mounts");
+    assert_eq!(
+        error.message,
+        "Two mounts resolve to the same container path"
+    );
+}
+
+fn referencing_configs(
+    edges: &[(&str, &[&str])],
+    mounts: &[(&str, &[&str])],
+    configs: &[(&str, &[&str])],
+) -> Value {
+    let mut input = referencing(edges);
+    for (service, mounted) in mounts {
+        let index = edges.iter().position(|(name, _)| name == service).unwrap();
+        input["snapshots"][index]["config"]["configs"] = mounted
+            .iter()
+            .map(|config| json!({"configResourceId": format!("cfg-{config}"), "configName": config, "mountDir": format!("/etc/{config}")}))
+            .collect();
+    }
+    input["configs"] = configs
+        .iter()
+        .map(|(config, references)| {
+            json!({"configResourceId": format!("cfg-{config}"), "name": config,
+                "references": references.iter().map(|lineage| format!("lineage-{lineage}")).collect::<Vec<_>>(),
+                "files": {"f": {"content": "", "mode": "0444", "uid": 0, "gid": 0}}})
+        })
+        .collect();
+    input
+}
+
+#[test]
+fn a_service_waits_for_what_its_mounted_configs_reference() {
+    let mut input = referencing_configs(
+        &[("web", &[]), ("postgres", &[]), ("redis", &[])],
+        &[("web", &["sentry"])],
+        &[("sentry", &["postgres", "redis", "web"])],
+    );
+    input["snapshots"][1]["config"]["healthcheck"] =
+        json!({"type":"http","path":"/health","timeoutSeconds":10});
+    assert_eq!(
+        dependencies(&input),
+        json!({"web":[
+            {"service":"postgres","condition":"service_healthy"},
+            {"service":"redis","condition":"service_started"},
+        ]})
+    );
+}
+
+#[test]
+fn config_reference_cycles_drop_only_their_own_edges() {
+    let input = referencing_configs(
+        &[("app", &["a"]), ("a", &[]), ("b", &["a"]), ("db", &[])],
+        &[("a", &["shared"])],
+        &[("shared", &["b", "db"])],
+    );
+    let intent = lowered(input).unwrap();
+    assert_eq!(
+        intent["dependencies"],
+        json!({
+            "app":[{"service":"a","condition":"service_started"}],
+            "a":[{"service":"db","condition":"service_started"}]
+        })
+    );
+    let names: Vec<&Value> = intent["target"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|service| &service["name"])
+        .collect();
+    assert_eq!(
+        names,
+        [&json!("app"), &json!("a"), &json!("b"), &json!("db")]
     );
 }

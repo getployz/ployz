@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { BoxIcon, DatabaseIcon, SearchIcon } from "lucide-react";
+import { BoxIcon, DatabaseIcon, SearchIcon, FolderIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   Command,
@@ -15,9 +15,9 @@ import { Kbd } from "#/components/ui/kbd";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { nodeDestination, type NavigationNode } from "../environment-node-navigation";
 
-const nodeIcons = { service: BoxIcon, volume: DatabaseIcon };
+const nodeIcons = { service: BoxIcon, volume: DatabaseIcon, config: FolderIcon };
 
-/** Find: the button and `/` open a finder over the Environment's services and volumes; choosing one opens its panel. */
+/** Find: the button and `/` open a finder over the Environment's services, volumes and configs; choosing one opens its panel. */
 export function CanvasFinder({ nodes }: { nodes: NavigationNode[] }) {
   const [open, setOpen] = useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -45,9 +45,9 @@ export function CanvasFinder({ nodes }: { nodes: NavigationNode[] }) {
         <Kbd>/</Kbd>
       </Button>
       <CommandDialog open={open} onOpenChange={setOpen} title="Find a resource"
-        description="Open a service or volume" className="max-w-md">
+        description="Open a service, volume or config" className="max-w-md">
         <Command label="Resources">
-          <CommandInput placeholder="Find a service or volume…" />
+          <CommandInput placeholder="Find a service, volume or config…" />
           <CommandList>
             <CommandEmpty>No matching resources</CommandEmpty>
             <CommandGroup>

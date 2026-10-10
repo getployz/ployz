@@ -526,4 +526,24 @@ mod tests {
         };
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
     }
+
+    #[test]
+    fn a_build_receives_its_own_service_and_no_config_file() {
+        let input = serde_json::json!({
+            "namespace": "production",
+            "snapshots": [{"config": {"privateDns": "web"}}, {"config": {"privateDns": "api"}}],
+            "selected": [{"name": "web"}],
+            "configs": [{"configResourceId": "cfg", "name": "sentry", "references": [],
+                "files": {"config.yml": {"content": "dsn: redis.internal", "mode": "0444", "uid": 0, "gid": 0}}}],
+        });
+        let narrowed = only(&input, &ployz_core::ServiceName::parse("web").unwrap());
+        assert_eq!(
+            narrowed,
+            serde_json::json!({
+                "namespace": "production",
+                "snapshots": [{"config": {"privateDns": "web"}}],
+                "selected": [],
+            })
+        );
+    }
 }

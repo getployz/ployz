@@ -1,6 +1,7 @@
 import type { ComponentType, SVGProps } from "react";
 import {
   DatabaseIcon,
+  FolderIcon,
   HardDriveIcon,
   PackageIcon,
   SquareTerminalIcon,
@@ -13,6 +14,7 @@ export type CreateMenuItemId =
   | "database"
   | "empty-service"
   | "volume"
+  | "config"
   | "empty-project";
 
 export type CreateMenuItem = {
@@ -32,6 +34,7 @@ export const SERVICE_CREATE_MENU_ITEMS: CreateMenuItem[] = [
   { id: "database", icon: DatabaseIcon, label: "Database", panel: "database" },
   { id: "empty-service", icon: SquareTerminalIcon, label: "Empty service" },
   { id: "volume", icon: HardDriveIcon, label: "Volume" },
+  { id: "config", icon: FolderIcon, label: "Config" },
 ];
 
 const EMPTY_PROJECT_CREATE_MENU_ITEM: CreateMenuItem = {

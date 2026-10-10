@@ -4,7 +4,7 @@ import { asRecord } from "#/lib/json";
 import { settingTitle } from "./catalog";
 
 /** A node as the user names it: `data`, not `volumes.data`. */
-export const nodeName = (node: string) => node.replace(/^volumes\./, "");
+export const nodeName = (node: string) => node.replace(/^(volumes|configs)\./, "");
 
 /** A Setting `name`'s value as the Sync dialog and hints show it: a secret is hidden, a source in its own words. */
 export function rowText(value: JsonValue, name: string | null): string {
@@ -44,6 +44,9 @@ export function sourceText(value: JsonValue): string {
 
 /** A row and the value it offers in words: which setting of which node ("New" for the node itself). */
 export function presentRow(row: NamedRow & { value: JsonValue }) {
+  if (row.node.startsWith("configs.") && row.name?.startsWith("files.")) {
+    return { node: nodeName(row.node), label: row.name.slice("files.".length), after: row.value === null ? "" : "File" };
+  }
   return { node: nodeName(row.node), label: row.name === null ? "New" : settingName(row.name).name, after: row.name === null ? "" : rowText(row.value, row.name) };
 }
 

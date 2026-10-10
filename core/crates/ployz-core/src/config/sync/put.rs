@@ -5,8 +5,9 @@ use serde_json::{Value, json};
 use super::*;
 use crate::config::service_changes::{default_value, keep_branch};
 use crate::config::{
-    ConfigError, SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, ServiceGitBranch, ServiceImageCredentials, ServiceSource, VolumeAttachment,
+    ConfigAttachment, ConfigError, SavedEnvironmentIntent as Intent, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, ServiceGitBranch, ServiceImageCredentials,
+    ServiceSource, VolumeAttachment,
 };
 
 /// Give `intent` `cell` at `row`, the inverse of the projection a plan's cells come
@@ -31,7 +32,9 @@ pub fn put_back(intent: &Intent, row: &RowId, cell: &Cell) -> Result<Intent, Con
     // bring back reads as the receiver's own. Put it back whole if that matters.
     let nodes = nodes(intent);
     let gone = |lineage: &str| !nodes.contains_key(lineage);
-    if gone(&row.lineage) || matches!(&row.at, At::Mount(volume) if gone(volume)) {
+    if gone(&row.lineage)
+        || matches!(&row.at, At::Mount(resource) | At::ConfigMount(resource) if gone(resource))
+    {
         return Ok(intent.clone());
     }
     put(intent, row, cell)
@@ -70,6 +73,7 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
             Cell::Absent => {
                 env.services.retain(|s| s.lineage_id != lineage);
                 env.volumes.retain(|v| v.resource_lineage_id != lineage);
+                env.configs.retain(|c| c.resource_lineage_id != lineage);
             }
             // ponytail: a node row only adds or removes its node; a rename doesn't move.
             Cell::Value(_) | Cell::Secret { .. } | Cell::SecretWithoutValue
@@ -79,6 +83,71 @@ pub(super) fn put_into(env: &mut Intent, row: &RowId, cell: &Cell) -> Result<(),
             }
         },
         At::Data => return Err(invalid("A Volume's data never moves")),
+        At::Name if config(env, lineage).is_some() => {
+            let Cell::Value(value) = cell else {
+                return Err(invalid("A Config always has a name"));
+            };
+            let name = serde_json::from_value(value.clone())
+                .map_err(|_| invalid("Not a value this holds"))?;
+            if let Some(target) = env
+                .configs
+                .iter_mut()
+                .find(|c| c.resource_lineage_id == lineage)
+            {
+                target.name = name;
+            }
+        }
+        At::File(path) => {
+            let Some(target) = env
+                .configs
+                .iter_mut()
+                .find(|c| c.resource_lineage_id == lineage)
+            else {
+                return missing();
+            };
+            match cell {
+                Cell::Absent => {
+                    target.files.remove(path);
+                }
+                Cell::Value(value) => {
+                    let file = serde_json::from_value(value.clone())
+                        .map_err(|_| invalid("Not a Config file"))?;
+                    target.files.insert(path.clone(), file);
+                }
+                Cell::Secret { .. } | Cell::SecretWithoutValue => {
+                    return Err(invalid("A Config file is never secret"));
+                }
+            }
+        }
+        At::ConfigMount(config_lineage) => {
+            let mounted = config(env, config_lineage).map(|c| c.resource_id.clone());
+            let Some(service) = service_mut(env, lineage) else {
+                return missing();
+            };
+            let attachments = &mut service.config_attachments;
+            match (cell, mounted) {
+                (Cell::Absent, Some(id)) => attachments.retain(|a| a.config_resource_id != id),
+                (Cell::Absent, None) => {}
+                (Cell::Value(value), Some(id)) => {
+                    let mount_dir = serde_json::from_value(value.clone())
+                        .map_err(|_| invalid("Not a mount directory"))?;
+                    attachments.retain(|a| a.config_resource_id != id);
+                    attachments.push(ConfigAttachment {
+                        config_resource_id: id,
+                        mount_dir,
+                    });
+                }
+                (Cell::Value(_), None) => {
+                    return Err(ConfigError::at(
+                        "picks",
+                        "Mounted Config is not in the receiving configuration",
+                    ));
+                }
+                (Cell::Secret { .. } | Cell::SecretWithoutValue, _) => {
+                    return Err(invalid("Not a mount directory"));
+                }
+            }
+        }
         At::Name | At::Storage => {
             let Some(target) = env
                 .volumes

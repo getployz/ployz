@@ -72,6 +72,7 @@ pub(crate) fn admit(
         message,
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
+        warnings: Vec::new(),
     };
     tx.execute(
         "INSERT INTO config_deployment \
@@ -248,6 +249,7 @@ pub(crate) fn retry(
         ended_at: None,
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
+        warnings: Vec::new(),
         ..stored.summary
     })
 }
@@ -331,14 +333,23 @@ pub(crate) fn claim(
     let uploads = build::uploads_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let (input, mut intent) = lower(
+    let Lowered {
+        input,
+        mut intent,
+        warnings,
+    } = lower(
         &stored.summary.environment_id,
         &saved,
         &stored.summary.services,
-        (stored.namespace, stored.cluster_domain.as_ref()),
+        (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
     )?;
+    if stored.run.warnings != warnings {
+        stored.run.warnings = warnings.clone();
+        stored.summary.warnings = warnings;
+        save(tx, &mut stored)?;
+    }
     let credentials = tx.query(
         "SELECT credentials FROM config_deployment WHERE id = ?1",
         &[id.as_str().into()],
@@ -357,7 +368,7 @@ pub(crate) fn claim(
         .iter()
         .filter_map(|node| match node {
             TargetNode::Volume { deletes, .. } => deletes.clone(),
-            TargetNode::Service { .. } => None,
+            TargetNode::Service { .. } | TargetNode::Config { .. } => None,
         })
         .flatten()
         .collect();
@@ -431,15 +442,15 @@ pub(crate) fn input(
 ) -> Result<Value, RpcError> {
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
-    let (input, _) = lower(
+    lower(
         &stored.summary.environment_id,
         &saved,
         &stored.summary.services,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
-    )?;
-    Ok(input)
+    )
+    .map(|lowered| lowered.input)
 }
 
 /// Cancel a Deployment of `who`'s Organization. A queued one never runs; a running
@@ -530,7 +541,9 @@ pub(crate) fn record(
                 .and_then(|preview| parse_runtime_preview(preview).ok())
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
             match &stored.run.preview {
-                Some(recorded) if *recorded == preview => return Ok(stored.summary),
+                Some(recorded) if redacted_runtime_preview(recorded.clone()) == preview => {
+                    return Ok(stored.summary);
+                }
                 Some(_) => {
                     return Err(error::conflict(
                         "This Deployment already recorded a different Deploy Preview",
@@ -749,7 +762,9 @@ fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceNam
             TargetNode::Service {
                 name, runtime: of, ..
             } if of == runtime => Some(name.as_str()),
-            TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
+            TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                None
+            }
         })
         .unwrap_or(runtime.as_str())
 }
@@ -779,8 +794,6 @@ pub(super) enum Evidence<'run> {
 /// succeeded. A removed
 /// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
 /// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
-/// While it runs, a Deployment stores only what is settled; its Pending nodes matter
-/// only to the Volumes they mount.
 pub(super) fn node_outcomes(
     nodes: &[TargetNode],
     saved: &SavedEnvironmentIntent,
@@ -886,6 +899,50 @@ pub(super) fn node_outcomes(
             NodeStatus::Deployed
         }
     };
+    let kept_config = |config: &SavedConfigIntent| {
+        let mounting: Vec<NodeStatus> = saved
+            .services
+            .iter()
+            .filter(|service| {
+                nodes.iter().any(|node| node.id() == service.id)
+                    && service
+                        .config_attachments
+                        .iter()
+                        .any(|mount| mount.config_resource_id == config.resource_id)
+            })
+            .map(|mounting| service(&mounting.config.private_dns, true))
+            .collect();
+        let held = applied.configs.contains(config);
+        let fresh = !applied
+            .configs
+            .iter()
+            .any(|held| held.resource_id == config.resource_id);
+        let deployed = mounting.contains(&NodeStatus::Deployed);
+        if fresh && deployed {
+            NodeStatus::Deployed
+        } else if mounting.contains(&NodeStatus::Failed) {
+            NodeStatus::Failed
+        } else if mounting.contains(&NodeStatus::NotAttempted) {
+            NodeStatus::NotAttempted
+        } else if mounting.contains(&NodeStatus::Pending) {
+            NodeStatus::Pending
+        } else if held {
+            NodeStatus::Unchanged
+        } else if deployed {
+            NodeStatus::Deployed
+        } else if matches!(evidence, Evidence::Planned { .. }) {
+            NodeStatus::Pending
+        } else if succeeded(evidence) {
+            NodeStatus::Deployed
+        } else {
+            NodeStatus::NotAttempted
+        }
+    };
+    let removed_config = || match evidence {
+        Evidence::Planned { .. } => NodeStatus::Pending,
+        Evidence::Executed { .. } if succeeded(evidence) => NodeStatus::Removed,
+        Evidence::Executed { .. } => NodeStatus::NotAttempted,
+    };
     nodes
         .iter()
         .map(|node| {
@@ -905,6 +962,11 @@ pub(super) fn node_outcomes(
                     .iter()
                     .find(|volume| volume.resource_id == id.as_str())
                     .map_or(NodeStatus::Unchanged, kept_volume),
+                TargetNode::Config { id, .. } => saved
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_id == id.as_str())
+                    .map_or_else(removed_config, kept_config),
             };
             (node.id().to_owned(), status)
         })
@@ -979,13 +1041,14 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
                     .iter()
                     .find(|volume| volume.resource_id == node.id())
                     .map(scope::Node::Volume),
+                TargetNode::Config { .. } => saved
+                    .configs
+                    .iter()
+                    .find(|config| config.resource_id == node.id())
+                    .map(scope::Node::Config),
             };
             if let Some(applied) = applied {
-                let lineage = match applied {
-                    scope::Node::Service(service) => &service.lineage_id,
-                    scope::Node::Volume(volume) => &volume.resource_lineage_id,
-                };
-                deployed.insert(lineage.clone());
+                deployed.insert(applied.lineage().to_owned());
             }
             match applied {
                 Some(applied) => tx.execute(

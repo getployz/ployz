@@ -320,6 +320,48 @@ fn row_ids_read_back_as_they_print() {
 }
 
 #[test]
+fn config_row_ids_read_back_as_they_print() {
+    let config = "00000000-0000-4000-8000-000000000010";
+    for (text, at) in [
+        (
+            format!("{config}:files.conf.d/a.b.yml"),
+            "files.conf.d/a.b.yml",
+        ),
+        (format!("{config}:files..htpasswd"), "files..htpasswd"),
+        (
+            format!("{API}:configs.{config}"),
+            "configs.00000000-0000-4000-8000-000000000010",
+        ),
+    ] {
+        let id: RowId = text.parse().unwrap();
+        assert_eq!(id.to_string(), text);
+        assert_eq!(id.at().to_string(), at);
+        assert_eq!(serde_json::from_value::<RowId>(json!(text)).unwrap(), id);
+    }
+    assert_eq!(
+        format!("{config}:files.conf.d/a.b.yml")
+            .parse::<RowId>()
+            .unwrap()
+            .lineage(),
+        config
+    );
+    for bad in [
+        format!("{config}:files."),
+        format!("{config}:files./etc/a"),
+        format!("{config}:files.a/../b"),
+        format!("{config}:files.a/b/c/d/e"),
+        format!("{API}:configs."),
+    ] {
+        let error = bad.parse::<RowId>().unwrap_err();
+        assert_eq!(
+            (error.path.as_str(), error.message.as_str()),
+            ("row", "Unknown change"),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn own_copy_with_fresh_ids_has_only_meant_to_differ_rows() {
     let plan = compare(Some(&parent()), &branch(), &parent(), Way::Sync);
     assert_eq!(

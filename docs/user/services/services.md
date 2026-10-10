@@ -26,6 +26,9 @@ environment's canvas is a service, and Ployz runs it as one or more replicas on 
 The new service shows **New** on the canvas until you deploy. It has no public address until you
 [generate a domain](domains.md#generate-a-domain).
 
+For shared settings files or startup scripts, [create a config](configs.md) and mount it into
+the services that need it.
+
 ## Find your way around a service
 
 Click a service on the canvas to open its panel. **Deployments** lists its
@@ -41,6 +44,15 @@ source to its restart policy: [Service settings](settings.md) explains each fiel
 The rename is staged. Other services keep reaching it at its private name, which stays the same,
 and [references](variables.md#reference-another-services-variable) to it keep working. To change
 the private name, see [Private Networking](settings.md#private-networking).
+
+If an older environment has a service named `configs`, rename it before editing its settings:
+
+```sh
+ployz service rename configs settings-service
+```
+
+`configs` is now reserved for shared config paths. Renaming preserves the service’s private name,
+data, and references.
 
 ## Delete a service
 

@@ -35,6 +35,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 - [Variables](services/variables.md): variables, secrets, references between services
 - [Databases](services/databases.md): PostgreSQL, MySQL, Redis and MongoDB, connecting, backups
 - [Volumes](services/volumes.md): files that survive deploys
+- [Configs](services/configs.md): shared text files mounted read-only into services
 - [Move a volume](services/move-a-volume.md): mirror a volume and move it to another server
 - [Domains](services/domains.md): generated addresses, custom domains, https
 - [Private networking](services/private-networking.md): how services reach each other

@@ -11,17 +11,56 @@ const diff = asTestDouble<DiffView>()({
   total_count: 3,
   changes: [
     {
-      type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null,
+      type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [],
       settings: [
         { path: "web.replicas", kind: "update", before: 1, after: 2, canRestore: true, row: null },
         { path: "web.env.TOKEN", kind: "add", before: null, after: "abc", canRestore: true, row: null },
         { path: "web.mounts.pg-data", kind: "remove", before: "/data", after: null, canRestore: true, row: null },
       ],
     },
-    { type: "volume", id: "v1", row: "v1:node" as RowId, name: "pg-data", lifecycle: "create", comparison: null, data: null, settings: [] },
+    { type: "volume", id: "v1", row: "v1:node" as RowId, name: "pg-data", lifecycle: "create", comparison: null, data: null, restarts: [], settings: [] },
   ],
 });
 const services = [asTestDouble<ServiceListing>()({ id: "s1", source: "image" })];
+
+it("keeps atomic Config files, literal paths and restart facts in the review", () => {
+  const before = { content: "PORT=80\nTOKEN=${{ web.TOKEN }}\n", mode: "0444", uid: 0, gid: 0 };
+  const after = { ...before, mode: "0555", uid: 1000, gid: 1001 };
+  const rows: DiffView["changes"][number]["settings"] = [
+    { path: "configs.@c.files.nested/app.conf", kind: "update", before, after, canRestore: true, row: "c:files.nested/app.conf" as RowId },
+    { path: "configs.@c.files.empty.conf", kind: "add", before: null, after: { ...before, content: "" }, canRestore: false, row: null },
+    { path: "configs.@c.files.old.conf", kind: "remove", before, after: null, canRestore: true, row: null },
+  ];
+  const restarts = ["web", "worker"];
+  const [config, web] = changeGroups({ ...diff, changes: [
+    { type: "config", id: "c", row: "c:node" as RowId, name: "sentry", lifecycle: "update", comparison: "head", data: null, restarts, settings: rows },
+    { type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [],
+      settings: [{ path: "web.configs.@c", configName: "sentry", kind: "add", before: null, after: "/etc/sentry", canRestore: true, row: null }] },
+  ] }, services);
+  expect(config).toMatchObject({ discardPath: "configs.@c", changeCount: 3, restarts });
+  expect(config?.restarts).toBe(restarts);
+  expect(config?.rows.map((row) => [row.path, row.label, row.currentValue, row.newValue, row.canDiscard])).toEqual([
+    [rows[0]?.path, "nested/app.conf", "File", "File", true],
+    [rows[1]?.path, "empty.conf", "", "File", false],
+    [rows[2]?.path, "old.conf", "File", "", true],
+  ]);
+  expect(config?.rows[0]).toMatchObject({ row: rows[0]?.row, configFile: { before, after } });
+  expect(config?.rows[1]?.configFile).toEqual({ before: null, after: { ...before, content: "" } });
+  expect(config?.rows[2]?.configFile).toEqual({ before, after: null });
+  expect(web?.rows[0]?.label).toBe("Config mount sentry");
+});
+
+const malformedFiles: JsonValue[] = [{ content: "private" }, "private", { content: "private", mode: "0444", uid: "0", gid: 0 }];
+it.each(malformedFiles)(
+  "refuses a malformed non-null Config file without exposing its value", (value) => {
+    const adapt = () => changeGroups({ ...diff, changes: [{
+      type: "config", id: "c", row: "c:node" as RowId, name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [],
+      settings: [{ path: "configs.@c.files.app.conf", kind: "update", before: null, after: value, canRestore: true, row: null }],
+    }] }, []);
+    expect(adapt).toThrow("Could not read Config file comparison for configs.@c.files.app.conf.");
+    expect(adapt).not.toThrow(/private/);
+  },
+);
 
 it("groups the Store's review by node, labelling rows from the catalog; a whole node, a Setting, a variable or a mount discards", () => {
   const [web, volume] = changeGroups(diff, services);
@@ -36,7 +75,7 @@ it("groups the Store's review by node, labelling rows from the catalog; a whole 
 });
 
 it("lets a deployed Volume's row discard alone when the Store can restore it", () => {
-  const [volume] = changeGroups({ ...diff, changes: [{ type: "volume", id: "v1", row: "v1:node" as RowId, name: "store", lifecycle: "update", comparison: null, data: null, settings: [
+  const [volume] = changeGroups({ ...diff, changes: [{ type: "volume", id: "v1", row: "v1:node" as RowId, name: "store", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
     { path: "volumes.store.name", kind: "update", before: "pg-data", after: "store", canRestore: true, row: null },
     { path: "volumes.store.storage", kind: "update", before: null, after: { kind: "docker" }, canRestore: false, row: null },
   ] }] }, services);
@@ -45,7 +84,7 @@ it("lets a deployed Volume's row discard alone when the Store can restore it", (
 
 it("words a source change that moves only its root directory or its credentials", () => {
   const source = (before: JsonValue, after: JsonValue) => ({ path: "web.source", kind: "update" as const, before, after, canRestore: true, row: null });
-  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+  const [web] = changeGroups({ ...diff, changes: [{ type: "service", id: "s1", row: "s1:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
     source({ type: "git", repository: "acme/web", rootDir: "/" }, { type: "git", repository: "acme/web", rootDir: "apps/web" }),
     source({ type: "image", image: "web:2", credentials: false }, { type: "image", image: "web:2", credentials: true }),
   ] }] }, services);
@@ -182,4 +221,17 @@ it("preserves reasons without a cause and outcomes without a reason", () => {
   expect(outcomeReason({ type: "not_executed", reason: "No source", needs_upload: [], cause: [] })).toBe("No source");
   expect(outcomeReason(asTestDouble<Outcome>()({ type: "executed", summary: null, reason: "Old execution failure" }))).toBe("Old execution failure");
   expect(outcomeReason(asTestDouble<Outcome>()({ type: "not_executed", reason: "Old preparation failure", needs_upload: [] }))).toBe("Old preparation failure");
+});
+
+
+it("gives same-name Configs separate whole and file discard targets", () => {
+  const file = { content: "draft", mode: "0444", uid: 0, gid: 0 };
+  const groups = changeGroups({ ...diff, changes: ["old", "new"].map((id) => ({ type: "config", id, row: `${id}:node` as RowId,
+    name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
+      { path: `configs.@${id}.files.app.conf`, kind: "update", before: file, after: file, canRestore: true, row: null },
+    ] })) }, []);
+  expect(groups.map((group) => [group.discardPath, group.rows[0]?.path, group.rows[0]?.label])).toEqual([
+    ["configs.@old", "configs.@old.files.app.conf", "app.conf"],
+    ["configs.@new", "configs.@new.files.app.conf", "app.conf"],
+  ]);
 });

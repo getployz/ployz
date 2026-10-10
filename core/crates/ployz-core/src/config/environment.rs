@@ -1,10 +1,12 @@
 //! Authored Environment documents, identity admission, and private-value redaction.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
+
+use crate::{ConfigFileName, ConfigName, ContainerPath};
 
 use super::{
     AuthoredServiceConfig, ConfigError, EncryptedSecretValue, ValuePart, ValuePartOwner,
@@ -20,6 +22,11 @@ pub struct SavedEnvironmentIntent {
     pub environment_slug: String,
     pub services: Vec<SavedServiceIntent>,
     pub volumes: Vec<SavedVolumeIntent>,
+    /// Written only when there are some, so documents from before Configs keep
+    /// their bytes and fingerprints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<SavedConfigIntent>>")]
+    pub configs: Vec<SavedConfigIntent>,
 }
 
 /// A Service owner with authored settings, variables, and resource relationships.
@@ -32,6 +39,140 @@ pub struct SavedServiceIntent {
     pub config: AuthoredServiceConfig,
     pub variables: Vec<SavedVariableIntent>,
     pub volume_attachments: Vec<VolumeAttachment>,
+    /// Written only when there are some, like [`SavedEnvironmentIntent::configs`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<ConfigAttachment>>")]
+    pub config_attachments: Vec<ConfigAttachment>,
+}
+
+/// A Config owner reference and the Service directory where its files appear.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigAttachment {
+    pub config_resource_id: String,
+    pub mount_dir: ContainerPath,
+}
+
+impl ConfigAttachment {
+    /// Whether `dir` names one directory one way: absolute, below `/`, with no
+    /// empty, `.` or `..` segment and no trailing `/`, so equal directories compare
+    /// equal.
+    #[must_use]
+    pub fn is_canonical_dir(dir: &str) -> bool {
+        dir.strip_prefix('/').is_some_and(|rest| {
+            rest.split('/')
+                .all(|segment| !matches!(segment, "" | "." | ".."))
+        })
+    }
+}
+
+/// A named folder of text files that Services mount read-only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedConfigIntent {
+    pub resource_id: String,
+    pub resource_lineage_id: String,
+    pub name: ConfigName,
+    pub files: BTreeMap<ConfigFileName, SavedConfigFile>,
+}
+
+impl SavedConfigIntent {
+    /// A file at a path another file needs as its directory, with that other file:
+    /// `a` beside `a/b`. No folder holds both.
+    #[must_use]
+    pub fn file_in_the_way(&self) -> Option<(&ConfigFileName, &ConfigFileName)> {
+        let names: BTreeMap<&str, &ConfigFileName> = self
+            .files
+            .keys()
+            .map(|name| (name.as_str(), name))
+            .collect();
+        self.files.keys().find_map(|name| {
+            name.as_str()
+                .match_indices('/')
+                .find_map(|(at, _)| names.get(&name.as_str()[..at]))
+                .map(|file| (*file, name))
+        })
+    }
+}
+
+/// One file of a Config. Its content is template parts whose references always
+/// name a Service: a Config belongs to no Service, so a bare `${{ KEY }}` has no owner.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedConfigFile {
+    pub content: Vec<ValuePart>,
+    pub mode: FileMode,
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl SavedConfigFile {
+    /// The service lineages this file reads through references.
+    pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
+        self.content.iter().filter_map(|part| match part {
+            ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                ..
+            } => Some(lineage_id.as_str()),
+            ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
+        })
+    }
+}
+
+/// A file's permission bits, at most `0777`: no setuid, setgid or sticky bit.
+/// Written as octal text such as `"0444"`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(as = "String")]
+pub struct FileMode(u32);
+
+impl FileMode {
+    /// What a file gets unless it asks otherwise: readable by everyone, writable by none.
+    pub const READ_ONLY: Self = Self(0o444);
+    /// `--executable`: readable and runnable by everyone.
+    pub const EXECUTABLE: Self = Self(0o555);
+
+    /// Parse octal text such as `0644` or `644`.
+    ///
+    /// # Errors
+    /// Returns ConfigError unless `text` is 1 to 4 octal digits at most `0777`.
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        let invalid = || ConfigError::at("mode", "Expected an octal file mode from 0000 to 0777");
+        if text.is_empty() || text.len() > 4 || !text.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+            return Err(invalid());
+        }
+        let bits = u32::from_str_radix(text, 8).map_err(|_| invalid())?;
+        if bits > 0o777 {
+            return Err(invalid());
+        }
+        Ok(Self(bits))
+    }
+
+    /// The permission bits.
+    #[must_use]
+    pub fn bits(self) -> u32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for FileMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:04o}", self.0)
+    }
+}
+
+impl TryFrom<String> for FileMode {
+    type Error = ConfigError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<FileMode> for String {
+    fn from(value: FileMode) -> Self {
+        value.to_string()
+    }
 }
 
 /// A Volume owner reference and the Service path where it is mounted.
@@ -125,13 +266,18 @@ pub enum SavedVariableValue {
 }
 
 impl SavedVariableValue {
+    /// The template parts of this value; none unless it is a template.
+    #[must_use]
+    pub fn parts(&self) -> &[ValuePart] {
+        match self {
+            Self::Template { parts } => parts,
+            Self::Literal { .. } | Self::Secret { .. } | Self::SecretWithoutValue => &[],
+        }
+    }
+
     /// The service lineages this value reads through template references.
     pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
-        let parts = match self {
-            Self::Template { parts } => parts.as_slice(),
-            Self::Literal { .. } | Self::Secret { .. } | Self::SecretWithoutValue => &[],
-        };
-        parts.iter().filter_map(|part| match part {
+        self.parts().iter().filter_map(|part| match part {
             ValuePart::Ref {
                 owner: ValuePartOwner::Service { lineage_id },
                 ..
@@ -187,7 +333,11 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         false,
     )?;
     unique(
-        intent.volumes.iter().map(|v| v.resource_id.as_str()),
+        intent
+            .volumes
+            .iter()
+            .map(|v| v.resource_id.as_str())
+            .chain(intent.configs.iter().map(|c| c.resource_id.as_str())),
         "resources.id",
         true,
     )?;
@@ -195,10 +345,47 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         intent
             .volumes
             .iter()
-            .map(|v| v.resource_lineage_id.as_str()),
+            .map(|v| v.resource_lineage_id.as_str())
+            .chain(
+                intent
+                    .configs
+                    .iter()
+                    .map(|c| c.resource_lineage_id.as_str()),
+            ),
         "resources.lineageId",
         true,
     )?;
+    unique(
+        intent.configs.iter().map(|c| c.name.as_str()),
+        "configs.name",
+        false,
+    )?;
+    if intent.configs.iter().any(|c| c.file_in_the_way().is_some()) {
+        return Err(ConfigError::at(
+            "configs.files",
+            "A Config file sits where another file needs a directory",
+        ));
+    }
+    if intent
+        .configs
+        .iter()
+        .flat_map(|c| c.files.values())
+        .flat_map(|file| &file.content)
+        .any(|part| {
+            matches!(
+                part,
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Self_,
+                    ..
+                }
+            )
+        })
+    {
+        return Err(ConfigError::at(
+            "configs.files.content",
+            "A Config reference must name its Service",
+        ));
+    }
     unique(
         intent
             .services
@@ -230,6 +417,43 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
             "volumeAttachments.mountPath",
             false,
         )?;
+        unique(
+            service
+                .config_attachments
+                .iter()
+                .map(|a| a.config_resource_id.as_str()),
+            "configAttachments",
+            true,
+        )?;
+        if service
+            .config_attachments
+            .iter()
+            .any(|a| !ConfigAttachment::is_canonical_dir(a.mount_dir.as_str()))
+        {
+            return Err(ConfigError::at(
+                "configAttachments.mountDir",
+                "Expected an absolute directory like /etc/app, without . or .. segments or a trailing /",
+            ));
+        }
+        unique(
+            service
+                .config_attachments
+                .iter()
+                .map(|a| a.mount_dir.as_str()),
+            "configAttachments.mountDir",
+            false,
+        )?;
+        if service.config_attachments.iter().any(|config| {
+            service.volume_attachments.iter().any(|volume| {
+                normalize_container_path(volume.mount_path.as_str()) == config.mount_dir.as_str()
+            })
+        }) {
+            return Err(ConfigError::at(
+                "mountPath",
+                "A Volume and a Config share one directory",
+            ));
+        }
+        mounted_files(service, &intent.configs)?;
         if service.volume_attachments.iter().any(|a| {
             !intent
                 .volumes
@@ -246,6 +470,72 @@ pub fn parse_environment_intent(value: Value) -> Result<SavedEnvironmentIntent, 
         nonempty(&volume.name, "volumes.name")?;
     }
     Ok(intent)
+}
+
+fn normalize_container_path(path: &str) -> String {
+    let mut segments = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            segment => segments.push(segment),
+        }
+    }
+    format!("/{}", segments.join("/"))
+}
+
+fn mounted_files(
+    service: &SavedServiceIntent,
+    configs: &[SavedConfigIntent],
+) -> Result<(), ConfigError> {
+    let mut paths = BTreeSet::new();
+    for attachment in &service.config_attachments {
+        let config = configs
+            .iter()
+            .find(|c| c.resource_id == attachment.config_resource_id)
+            .ok_or_else(|| {
+                ConfigError::at(
+                    "attachments",
+                    "Attachment must reference an authored resource",
+                )
+            })?;
+        let dir = attachment.mount_dir.as_str();
+        for name in config.files.keys() {
+            if !paths.insert(format!("{dir}/{name}")) {
+                return Err(ConfigError::at(
+                    "configAttachments.mountDir",
+                    "Two mounted Config files share one path",
+                ));
+            }
+        }
+    }
+    let collides = paths.iter().any(|path| {
+        path.match_indices('/')
+            .any(|(at, _)| paths.contains(&path[..at]))
+    });
+    if collides {
+        return Err(ConfigError::at(
+            "configAttachments.mountDir",
+            "A mounted Config file sits where another needs a directory",
+        ));
+    }
+    let volume_on_file = service.volume_attachments.iter().any(|volume| {
+        let at = normalize_container_path(volume.mount_path.as_str());
+        let at = at.as_str();
+        paths.contains(at)
+            || at
+                .match_indices('/')
+                .any(|(end, _)| paths.contains(&at[..end]))
+    });
+    if volume_on_file {
+        return Err(ConfigError::at(
+            "mountPath",
+            "A Volume mounts where a Config file sits",
+        ));
+    }
+    Ok(())
 }
 
 fn unique<'a>(
@@ -327,7 +617,13 @@ pub fn canonicalize_environment_intent(
     intent
         .volumes
         .sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
+    intent
+        .configs
+        .sort_by(|a, b| a.resource_id.cmp(&b.resource_id));
     for service in &mut intent.services {
+        service.config_attachments.sort_by(|a, b| {
+            (&a.mount_dir, &a.config_resource_id).cmp(&(&b.mount_dir, &b.config_resource_id))
+        });
         service.variables.sort_by(|a, b| a.id.cmp(&b.id));
         service.volume_attachments.sort_by(|a, b| {
             (&a.mount_path, &a.volume_resource_id).cmp(&(&b.mount_path, &b.volume_resource_id))

@@ -48,7 +48,7 @@ function Architecture() {
     } : null}
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
-      <CanvasNodeList store={{ services: [], unmountedVolumes: [volume] }} selectedNodeId={nodeId} />
+      <CanvasNodeList store={{ services: [], unmountedVolumes: [volume], unmountedConfigs: [] }} selectedNodeId={nodeId} />
     </div>}
   >
     <Outlet />

@@ -49,7 +49,7 @@ describe("catalog fields", () => {
 
 it("reads one Service's pink trail from the Environment's diff, a rename under `name`", () => {
   const diff = asTestDouble<DiffView>()({
-    changes: [{ type: "service", id: "a", name: "frontend", lifecycle: "update", comparison: "head", settings: [
+    changes: [{ type: "service", id: "a", name: "frontend", lifecycle: "update", restarts: [], comparison: "head", settings: [
       { path: "frontend.name", kind: "update", before: "web", after: "frontend", canRestore: true },
       { path: "frontend.replicas", kind: "update", before: 1, after: 3, canRestore: true },
     ] }],
@@ -62,7 +62,7 @@ it("reads one Service's pink trail from the Environment's diff, a rename under `
 
 it("reads a source change as a change to each field of it that differs", () => {
   const diff = asTestDouble<DiffView>()({
-    changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", comparison: "head", settings: [
+    changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", restarts: [], comparison: "head", settings: [
       { path: "web.source", kind: "update", before: { type: "git", repository: "acme/web", rootDir: "/" },
         after: { type: "image", image: "web:2", credentials: true }, canRestore: true },
     ] }],
@@ -79,7 +79,7 @@ it("reads a source change as a change to each field of it that differs", () => {
 it("marks the domains the next Deploy changes: the generated one by its list, a custom one by its route's hostname", () => {
   const route = (hostname: string, targetPort: number | null) => ({ id: `${hostname}-id`, hostname, targetPort });
   const diff = asTestDouble<DiffView>()({
-    changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", comparison: "head", settings: [
+    changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", restarts: [], comparison: "head", settings: [
       { path: "web.routes.old-id", kind: "delete", before: route("old.acme.com", null), after: null, canRestore: true },
       { path: "web.routes.api-id", kind: "update", before: route("api.acme.com", 3000), after: route("api.acme.com", 8080), canRestore: true },
     ] }],

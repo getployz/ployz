@@ -42,6 +42,7 @@ pub fn command() -> Command {
         )
         .subcommand(handlers::build::command())
         .subcommand(handlers::cloud::command())
+        .subcommand(handlers::config_item::command())
         .subcommand(handlers::context::command())
         .subcommand(handlers::deploy::deploy_command())
         .subcommand(handlers::deploy::deployment_command())

@@ -132,6 +132,11 @@ store_string!(
     VolumeId, "a Volume ID (a UUID)", is_uuid
 );
 store_string!(
+    /// A Config's durable identity, minted by the caller that creates it. It is also
+    /// the lineage of the Config it creates.
+    ConfigId, "a Config ID (a UUID)", is_uuid
+);
+store_string!(
     /// A Volume's name, unique in its Environment: a lowercase DNS label.
     VolumeName, "a Volume name: up to 63 lowercase letters, digits and -", is_name
 );
@@ -307,5 +312,126 @@ impl Revision {
 impl fmt::Display for Revision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+/// One Config by name, or by exact identity as `@UUID`.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(as = "String")]
+pub enum ConfigRef {
+    /// The Working Config with this name, or its deleted Head predecessor.
+    Name(ployz_core::ConfigName),
+    /// One exact Config identity, including a deleted Head Config.
+    Id(ConfigId),
+}
+
+impl ConfigRef {
+    /// Parse a Config name or `@UUID`.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for malformed selectors, never echoing them.
+    pub fn parse(value: &str) -> Result<Self, RpcError> {
+        match value.strip_prefix('@') {
+            Some(id) => ConfigId::parse(id).map(Self::Id),
+            None => crate::settings::config_name(value).map(Self::Name),
+        }
+    }
+
+    /// Resolve one identity across the states a restore addresses.
+    pub(crate) fn resolve<'a>(
+        &self,
+        intents: impl IntoIterator<Item = &'a ployz_core::config::SavedEnvironmentIntent>,
+    ) -> Result<&'a ployz_core::config::SavedConfigIntent, RpcError> {
+        let matching: Vec<_> = intents
+            .into_iter()
+            .flat_map(|intent| &intent.configs)
+            .filter(|config| self.matches(config))
+            .collect();
+        let first = matching.first().copied().ok_or_else(|| {
+            crate::error::not_found(
+                "No Config matches this selector.",
+                serde_json::json!({ "config": self }),
+            )
+        })?;
+        if matching
+            .iter()
+            .any(|config| config.resource_id != first.resource_id)
+        {
+            let valid: std::collections::BTreeSet<_> = matching
+                .iter()
+                .map(|config| format!("configs.@{}", config.resource_id))
+                .collect();
+            return Err(crate::error::ambiguous(
+                "More than one Config has this name.",
+                serde_json::json!({ "config": self, "valid_children": valid }),
+            ));
+        }
+        Ok(first)
+    }
+
+    pub(crate) fn matches(&self, config: &ployz_core::config::SavedConfigIntent) -> bool {
+        match self {
+            Self::Name(name) => config.name == *name,
+            Self::Id(id) => config.resource_id == id.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for ConfigRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(name) => name.fmt(formatter),
+            Self::Id(id) => write!(formatter, "@{id}"),
+        }
+    }
+}
+
+impl TryFrom<String> for ConfigRef {
+    type Error = RpcError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<ConfigRef> for String {
+    fn from(value: ConfigRef) -> Self {
+        value.to_string()
+    }
+}
+
+impl From<ployz_core::ConfigName> for ConfigRef {
+    fn from(name: ployz_core::ConfigName) -> Self {
+        Self::Name(name)
+    }
+}
+
+impl From<ConfigId> for ConfigRef {
+    fn from(id: ConfigId) -> Self {
+        Self::Id(id)
+    }
+}
+
+#[cfg(test)]
+mod config_ref_tests {
+    use super::{ConfigId, ConfigRef};
+    use ployz_core::ConfigName;
+
+    #[test]
+    fn exact_config_identity_cannot_be_confused_with_a_uuid_name() {
+        let uuid = "00000000-0000-4000-8000-000000000009";
+        assert_eq!(
+            ConfigRef::parse(uuid).unwrap(),
+            ConfigRef::Name(ConfigName::parse(uuid).unwrap())
+        );
+        let exact = ConfigRef::parse(&format!("@{uuid}")).unwrap();
+        assert_eq!(exact, ConfigRef::Id(ConfigId::parse(uuid).unwrap()));
+        assert_eq!(
+            serde_json::from_value::<ConfigRef>(serde_json::to_value(&exact).unwrap()).unwrap(),
+            exact
+        );
+        assert!(ConfigRef::parse("@sentry").is_err());
+        assert!(ConfigName::parse(format!("@{uuid}")).is_err());
     }
 }

@@ -54,7 +54,7 @@ export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[], n
     // A setting that arrived; a whole node can't be marked.
     neverSyncFor: (row: ChangeRow) => {
       const change = incoming(row.row);
-      return change && change.name !== null ? () => neverSync(`${change.node}.${change.name}`, change.row) : undefined;
+      return change && change.name !== null ? () => neverSync(row.path, change.row) : undefined;
     },
     after: rest.length ? (
       <ItemGroup role="group" aria-label="Not among these changes">

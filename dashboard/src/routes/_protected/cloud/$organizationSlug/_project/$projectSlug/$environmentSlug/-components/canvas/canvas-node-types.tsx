@@ -4,6 +4,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
 import { StoreServiceNode } from "./StoreServiceNode";
 import { StoreVolumeNode } from "./StoreVolumeNode";
+import { StoreConfigNode } from "./StoreConfigNode";
 import { StoreLiveNode } from "./StoreLiveNode";
 
 export const LOADING_NODE: Node<Record<string, never>, "loading"> = {
@@ -18,6 +19,7 @@ export const LOADING_NODE: Node<Record<string, never>, "loading"> = {
 export const canvasNodeTypes = {
   storeService: StoreServiceNode,
   storeVolume: StoreVolumeNode,
+  storeConfig: StoreConfigNode,
   storeLive: StoreLiveNode,
   loading: LoadingNode,
 };

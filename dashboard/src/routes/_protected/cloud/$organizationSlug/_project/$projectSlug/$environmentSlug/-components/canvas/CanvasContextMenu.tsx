@@ -15,6 +15,7 @@ function getActionForItem(
     onCreateFromPanel: (panel: CreatePanel) => void;
     onCreateBlank: () => void;
     onCreateVolume: () => void;
+    onCreateConfig: () => void;
   },
 ) {
   if (panel) {
@@ -26,6 +27,9 @@ function getActionForItem(
   if (id === "volume") {
     return actions.onCreateVolume;
   }
+  if (id === "config") {
+    return actions.onCreateConfig;
+  }
 
   return undefined;
 }
@@ -35,11 +39,13 @@ export function CanvasContextMenu({
   onCreateFromPanel,
   onCreateBlank,
   onCreateVolume,
+  onCreateConfig,
 }: {
   children: React.ReactNode;
   onCreateFromPanel: (panel: CreatePanel) => void;
   onCreateBlank: () => void;
   onCreateVolume: () => void;
+  onCreateConfig: () => void;
 }) {
   return (
     <ContextMenu>
@@ -55,6 +61,7 @@ export function CanvasContextMenu({
                 onCreateFromPanel,
                 onCreateBlank,
                 onCreateVolume,
+                onCreateConfig,
               })}
             >
               <item.icon />

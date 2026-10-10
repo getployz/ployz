@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
-  BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
+  BranchView, BuildOrderView, ConfigCommand, ConfigItemView, ConfigListing, ConfigsView, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
   EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
@@ -33,7 +33,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const listing = node ? null : listed(environment).find((one) => one.name === service);
       const changes: NodeChange[] | null = node
         ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== row.path), row] } : change)
-        : listing ? [...view.changes, { name: service, id: listing.id, row: listing.row, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }] : null;
+        : listing ? [...view.changes, { name: service, id: listing.id, row: listing.row, type: "service", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [row] }] : null;
       if (!changes) return view;
       // The count and whether it's published are the Store's to say: they come with the write's answer.
       return { ...view, changes };
@@ -44,6 +44,16 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     const data = query.state.data as StoreResult<ServicesView> | undefined;
     return data?.ok ? data.value.services : [];
   });
+
+  // Item drawers can be inactive and retain names from before a rename or deletion.
+  const workingConfigId = (environment: EnvironmentRef, name: string) => {
+    const ids = new Set(cached("configs", environment).flatMap((query) => {
+      // SAFETY: `cached` found only Configs views.
+      const data = query.state.data as StoreResult<ConfigsView> | undefined;
+      return data?.ok ? data.value.configs.filter((config) => config.name === name && config.change !== "delete").map((config) => config.id) : [];
+    }));
+    return ids.size === 1 ? ids.values().next().value : undefined;
+  };
 
   switch (command.command) {
     case "batch":
@@ -64,6 +74,53 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const volume: VolumeListing = { id: command.id, name: command.name, storage: command.storage,
         storage_locked: false, shared_writes: command.shared_writes ?? false, mounts: [], deployed: false, change: "create" };
       await views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: [...view.volumes, volume] }));
+      return;
+    }
+    case "create_config": {
+      const config: ConfigListing = { id: command.id, name: command.name, files: [], mounts: command.mounts, deployed: false, change: "create" };
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: [...view.configs, config] }));
+      return;
+    }
+    case "delete_config":
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.flatMap((config) =>
+        config.name !== command.config || config.change === "delete" ? [config] : config.change === "create" ? [] : [{ ...config, mounts: [], change: "delete" as const }]) }));
+      return;
+    case "attach_config":
+    case "detach_config": {
+      const id = workingConfigId(command.environment, command.config);
+      if (!id) return;
+      const mounts = (config: Pick<ConfigListing, "id" | "mounts">) => config.id !== id ? config.mounts : [
+        ...config.mounts.filter((mount) => mount.service !== command.service),
+        ...command.command === "attach_config" ? [{ service: command.service, dir: command.dir }] : [],
+      ];
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map((config) => ({ ...config, mounts: mounts(config) })) }));
+      await views<ConfigItemView>("config", command.environment, (view) => ({ ...view, mounts: mounts(view) }));
+      return;
+    }
+    case "put_config_file": {
+      const id = workingConfigId(command.environment, command.config);
+      if (!id) return;
+      const put = <V extends Pick<ConfigListing, "id" | "files">>(config: V): V => {
+        if (config.id !== id) return config;
+        const old = config.files.find((file) => file.name === command.file);
+        const file = { name: command.file, mode: "0444", uid: 0, gid: 0, references: [], ...old,
+          bytes: new TextEncoder().encode(command.content).length };
+        if (command.mode) file.mode = command.mode;
+        return { ...config, files: old ? config.files.map((one) => one === old ? file : one) : [...config.files, file] };
+      };
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(put) }));
+      await views<ConfigItemView>("config", command.environment, (view) => view.id !== id ? view
+        : { ...put(view), contents: { ...view.contents, [command.file]: command.content } });
+      return;
+    }
+    case "remove_config_file": {
+      const id = workingConfigId(command.environment, command.config);
+      if (!id) return;
+      const remove = <V extends Pick<ConfigListing, "id" | "files">>(config: V): V => config.id !== id ? config
+        : { ...config, files: config.files.filter((file) => file.name !== command.file) };
+      await views<ConfigsView>("configs", command.environment, (view) => ({ ...view, configs: view.configs.map(remove) }));
+      await views<ConfigItemView>("config", command.environment, (view) => view.id !== id ? view
+        : { ...remove(view), contents: Object.fromEntries(Object.entries(view.contents).filter(([file]) => file !== command.file)) });
       return;
     }
     case "remove_service":
@@ -110,14 +167,14 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       // Its rows leave the review at once; what the Store restores (values, nodes, the count) comes with its answer.
       const { path } = command;
       const [node, ...setting] = path?.split(".") ?? [];
-      // Every node, one node (a Volume as `volumes.NAME`), or one Setting of one node.
-      const volume = node === "volumes" && setting.length === 1 ? setting[0] : null;
+      const type = node === "volumes" ? "volume" : node === "configs" ? "config" : null;
+      const named = type !== null && setting.length === 1 ? setting[0] : null;
       const whole = (change: NodeChange) => path === null
-        || (volume !== null ? change.type === "volume" && change.name === volume : setting.length === 0 && change.name === node);
+        || (named !== null ? change.type === type && (type === "config" ? named === `@${change.id}` || change.name === named : change.name === named) : setting.length === 0 && change.name === node);
       await views<DiffView>("diff", command.environment, (view) => {
         const changes = view.changes.flatMap((change) => {
           if (whole(change)) return [];
-          const rows = change.settings.filter((row) => row.path !== path && !row.path.startsWith(`${path}.`));
+          const rows = change.settings.filter((row) => row.path !== path && (type === "config" || !row.path.startsWith(`${path}.`)));
           return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
         });
         // An empty review counts nothing.

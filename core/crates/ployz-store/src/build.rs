@@ -252,7 +252,8 @@ impl BuildRow {
                         Some(name.clone())
                     }
                     crate::deployment::TargetNode::Service { .. }
-                    | crate::deployment::TargetNode::Volume { .. } => None,
+                    | crate::deployment::TargetNode::Volume { .. }
+                    | crate::deployment::TargetNode::Config { .. } => None,
                 })
                 .unwrap_or_else(|| self.service.clone()),
             commit: self.commit.clone(),

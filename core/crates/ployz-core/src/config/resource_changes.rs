@@ -1,6 +1,10 @@
 //! Validate and compare resource-owned settings without exposing sealed values.
 
+use std::collections::BTreeSet;
+
 use serde_json::{Value, json};
+
+use crate::ConfigFileName;
 
 use super::service_changes::{at, change};
 use super::*;
@@ -20,6 +24,14 @@ pub fn parse_resource_config(
                 .map_err(|_| ConfigError::at("volume", "Invalid volume configuration"))?;
             if config.version != 2 {
                 return Err(ConfigError::at("volume.version", "Expected version 2"));
+            }
+            Ok(json!(config))
+        }
+        EnvironmentNodeType::Config => {
+            let config: ConfigNodeConfig = serde_json::from_value(value)
+                .map_err(|_| ConfigError::at("config", "Invalid Config configuration"))?;
+            if config.version != 1 {
+                return Err(ConfigError::at("config.version", "Expected version 1"));
             }
             Ok(json!(config))
         }
@@ -54,6 +66,30 @@ pub fn compare_resource_settings(
                     at(&current, path).clone(),
                     true,
                 ));
+            }
+        }
+        if node_type == EnvironmentNodeType::Config {
+            let files = |config: &Value| config.get("files").cloned().unwrap_or(Value::Null);
+            let (now, then) = (files(&current), files(baseline));
+            let names: BTreeSet<&String> = [&now, &then]
+                .into_iter()
+                .filter_map(Value::as_object)
+                .flat_map(serde_json::Map::keys)
+                .collect();
+            for name in names {
+                let entry =
+                    |files: &Value| files.get(name.as_str()).cloned().unwrap_or(Value::Null);
+                let (before, after) = (entry(&then), entry(&now));
+                if before != after {
+                    let file = ConfigFileName::parse(name.clone())
+                        .map_err(|_| ConfigError::at("config.files", "Invalid Config file name"))?;
+                    changes.push(change(
+                        (&format!("files.{name}"), Some(At::File(file))),
+                        before,
+                        after,
+                        true,
+                    ));
+                }
             }
         }
     } else {

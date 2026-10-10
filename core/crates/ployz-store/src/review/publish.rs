@@ -4,8 +4,8 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    At, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    ServiceConfig, Setting, VolumeAttachment, canonicalize_environment_intent,
+    At, ConfigAttachment, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableIntent, ServiceConfig, Setting, VolumeAttachment, canonicalize_environment_intent,
     compare_service_settings, parse_environment_intent, restore_environment_node,
 };
 use std::borrow::Cow;
@@ -18,7 +18,7 @@ use crate::error;
 use crate::id::{Revision, VolumeName};
 use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{NodeName, ServiceSetting, SettingPath, Target, VolumeField};
+use crate::settings::{NodeField, NodeName, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 use crate::{Actor, Trusted, deployment};
 
@@ -62,8 +62,9 @@ pub struct Discard {
     /// The Environment to discard in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// `SERVICE`, `volumes.VOLUME`, `SERVICE.SETTING`, `SERVICE.env.KEY` or
-    /// `SERVICE.mounts.VOLUME`; none discards everything.
+    /// `SERVICE`, `volumes.VOLUME`, `configs.CONFIG`, `SERVICE.SETTING`,
+    /// `SERVICE.env.KEY`, `SERVICE.mounts.VOLUME` or `SERVICE.configs.CONFIG`; none
+    /// discards everything.
     #[serde(default)]
     pub path: Option<SettingPath>,
     /// Refuse with `conflict` unless this is still the latest `diff` version.
@@ -205,6 +206,9 @@ fn restore(
                     .err()
                     .unwrap_or_else(|| error::corrupt("Volume"))
             }),
+        NodeName::Config(selector) => selector
+            .resolve([working, &head])
+            .map(|config| (EnvironmentNodeType::Config, config.resource_id.clone())),
     };
     let (node_type, id) = node?;
     // A part of the source discards with it: the source is one change row.
@@ -216,10 +220,11 @@ fn restore(
         }
     });
     let part = part.as_deref();
-    let field = path.volume_field();
+    let field = path.node_field();
     let holds = |intent: &SavedEnvironmentIntent| match node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|service| service.id == id),
         EnvironmentNodeType::Volume => intent.volumes.iter().any(|volume| volume.resource_id == id),
+        EnvironmentNodeType::Config => intent.configs.iter().any(|config| config.resource_id == id),
     };
     // A part of a node never deployed resets to its Introduction; Saved State follows
     // only where it holds the node already.
@@ -229,10 +234,15 @@ fn restore(
     } else {
         head
     };
+    let resource = part
+        .map(|part| mounted(working, &baseline, part))
+        .transpose()?
+        .flatten();
+    let resource = resource.as_deref();
     let restore = |current: &SavedEnvironmentIntent| {
         let restored = match field {
             Some(field) => restore_field(current, &baseline, &id, field),
-            None => restore_node(current, &baseline, (node_type, &id), part),
+            None => restore_node(current, &baseline, (node_type, &id), part, resource),
         };
         restored.map_err(|message| {
             error::conflict(
@@ -245,14 +255,7 @@ fn restore(
     let saved_follows = match (part, saved) {
         (_, Some(saved)) if introduction && !holds(saved) => false,
         (None, saved) => field.is_none_or(|field| {
-            let value = |intent: &SavedEnvironmentIntent| {
-                intent
-                    .volumes
-                    .iter()
-                    .find(|volume| volume.resource_id == id)
-                    .map(|volume| field.of(volume))
-            };
-            saved.is_some_and(|saved| value(saved) != value(&baseline))
+            saved.is_some_and(|saved| field.of(saved, &id) != field.of(&baseline, &id))
         }),
         (Some(part @ (Target::Setting(_) | Target::Source)), Some(saved)) => {
             let config = |intent: &SavedEnvironmentIntent| {
@@ -277,7 +280,9 @@ fn restore(
                         })
                 })
         }
-        (Some(part), Some(saved)) => part_of(saved, &id, part) != part_of(&baseline, &id, part),
+        (Some(part), Some(saved)) => {
+            part_of(saved, (&id, resource), part) != part_of(&baseline, (&id, resource), part)
+        }
         (Some(_), None) => false,
     };
     let saved = match saved {
@@ -287,26 +292,14 @@ fn restore(
     Ok((restore(working)?, saved))
 }
 
-/// `current` with Volume `id`'s `field` as `baseline` has it.
 fn restore_field(
     current: &SavedEnvironmentIntent,
     baseline: &SavedEnvironmentIntent,
     id: &str,
-    field: VolumeField,
+    field: NodeField<'_>,
 ) -> Result<SavedEnvironmentIntent, String> {
-    let gone = || "discard the whole Volume instead".to_owned();
     let mut restored = current.clone();
-    let from = baseline
-        .volumes
-        .iter()
-        .find(|volume| volume.resource_id == id)
-        .ok_or_else(gone)?;
-    let volume = restored
-        .volumes
-        .iter_mut()
-        .find(|volume| volume.resource_id == id)
-        .ok_or_else(gone)?;
-    field.restore(volume, from);
+    field.restore(&mut restored, baseline, id)?;
     parse_environment_intent(serde_json::to_value(restored).expect("Working State is JSON"))
         .map_err(|error| error.message)
 }
@@ -317,6 +310,7 @@ fn restore_node(
     baseline: &SavedEnvironmentIntent,
     (node_type, id): (EnvironmentNodeType, &str),
     part: Option<&Target>,
+    resource: Option<&str>,
 ) -> Result<SavedEnvironmentIntent, String> {
     let field = match part {
         None => None,
@@ -324,7 +318,6 @@ fn restore_node(
         Some(Target::Source) => Some("source"),
         Some(part) => {
             let mut restored = current.clone();
-            let volume = mounted(current, baseline, part);
             let Some(service) = restored
                 .services
                 .iter_mut()
@@ -332,7 +325,7 @@ fn restore_node(
             else {
                 return Err("its Service is gone".to_owned());
             };
-            restore_part(service, baseline, (id, volume.as_deref()), part)?;
+            restore_part(service, baseline, (id, resource), part)?;
             return parse_environment_intent(
                 serde_json::to_value(restored).expect("Working State is JSON"),
             )
@@ -343,20 +336,18 @@ fn restore_node(
         .map_err(|error| error.message)
 }
 
-/// Give `service` the variable, its export, or the mount `part` names as Service
-/// `id` in `baseline` has it: absent there, it goes. A mount names Volume `volume`.
 fn restore_part(
     service: &mut SavedServiceIntent,
     baseline: &SavedEnvironmentIntent,
-    (id, volume): (&str, Option<&str>),
+    (id, resource): (&str, Option<&str>),
     part: &Target,
 ) -> Result<(), String> {
-    let was = part_of(baseline, id, part);
+    let was = part_of(baseline, (id, resource), part);
     match part {
         Target::Variable(key) | Target::Exported(key) => {
             let was = match was {
                 Some(Part::Variable(was)) => Some(was),
-                Some(Part::Mount(_)) | None => None,
+                Some(Part::Mount(_) | Part::ConfigMount(_)) | None => None,
             };
             let variables = &mut service.variables;
             let at = variables.iter().position(|v| v.key == key.as_str());
@@ -376,7 +367,7 @@ fn restore_part(
             }
         }
         Target::Mount(_) => {
-            let Some(volume) = volume else {
+            let Some(volume) = resource else {
                 return Err("no such Volume".to_owned());
             };
             service
@@ -384,6 +375,17 @@ fn restore_part(
                 .retain(|mount| mount.volume_resource_id != volume);
             if let Some(Part::Mount(mount)) = was {
                 service.volume_attachments.push(mount.clone());
+            }
+        }
+        Target::ConfigMount(_) => {
+            let Some(config) = resource else {
+                return Err("no such Config".to_owned());
+            };
+            service
+                .config_attachments
+                .retain(|mount| mount.config_resource_id != config);
+            if let Some(Part::ConfigMount(mount)) = was {
+                service.config_attachments.push(mount.clone());
             }
         }
         Target::Setting(_) | Target::Source => {}
@@ -396,10 +398,15 @@ fn restore_part(
 enum Part<'a> {
     Variable(&'a SavedVariableIntent),
     Mount(&'a VolumeAttachment),
+    ConfigMount(&'a ConfigAttachment),
 }
 
 /// The variable or mount `part` names of Service `id` in `intent`, compared by value.
-fn part_of<'a>(intent: &'a SavedEnvironmentIntent, id: &str, part: &Target) -> Option<Part<'a>> {
+fn part_of<'a>(
+    intent: &'a SavedEnvironmentIntent,
+    (id, resource): (&str, Option<&str>),
+    part: &Target,
+) -> Option<Part<'a>> {
     let service = intent.services.iter().find(|service| service.id == id)?;
     match part {
         Target::Variable(key) | Target::Exported(key) => service
@@ -407,34 +414,40 @@ fn part_of<'a>(intent: &'a SavedEnvironmentIntent, id: &str, part: &Target) -> O
             .iter()
             .find(|variable| variable.key == key.as_str())
             .map(Part::Variable),
-        Target::Mount(volume) => {
-            let volume = intent
-                .volumes
-                .iter()
-                .find(|node| node.name == volume.as_str())?;
+        Target::Mount(_) => {
+            let volume = resource?;
             service
                 .volume_attachments
                 .iter()
-                .find(|mount| mount.volume_resource_id == volume.resource_id)
+                .find(|mount| mount.volume_resource_id == volume)
                 .map(Part::Mount)
+        }
+        Target::ConfigMount(_) => {
+            let config = resource?;
+            service
+                .config_attachments
+                .iter()
+                .find(|mount| mount.config_resource_id == config)
+                .map(Part::ConfigMount)
         }
         // A Setting compares through core's rows (see `setting_follows`).
         Target::Setting(_) | Target::Source => None,
     }
 }
 
-/// The Volume a mount path names, by ID, as `current` or `baseline` has it.
 fn mounted(
     current: &SavedEnvironmentIntent,
     baseline: &SavedEnvironmentIntent,
     part: &Target,
-) -> Option<String> {
-    let Target::Mount(volume) = part else {
-        return None;
-    };
-    [current, baseline]
-        .into_iter()
-        .flat_map(|intent| &intent.volumes)
-        .find(|node| node.name == volume.as_str())
-        .map(|node| node.resource_id.clone())
+) -> Result<Option<String>, RpcError> {
+    let intents = [current, baseline];
+    Ok(match part {
+        Target::Mount(volume) => intents
+            .into_iter()
+            .flat_map(|intent| &intent.volumes)
+            .find(|node| node.name == volume.as_str())
+            .map(|node| node.resource_id.clone()),
+        Target::ConfigMount(config) => Some(config.resolve(intents)?.resource_id.clone()),
+        Target::Setting(_) | Target::Source | Target::Variable(_) | Target::Exported(_) => None,
+    })
 }

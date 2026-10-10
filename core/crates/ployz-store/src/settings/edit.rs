@@ -221,6 +221,26 @@ pub(crate) fn edit(
                 crate::volume::detach(&mut environment, service, volume)?,
                 Apply::Staged,
             ),
+            (Some(Target::ConfigMount(config)), Some(value)) => {
+                let Some(dir) = value.as_str() else {
+                    return Err(error::invalid(
+                        format!("{path}: expected an absolute directory"),
+                        json!({ "example": "/etc/app" }),
+                    ));
+                };
+                let name = config.resolve([&environment.working])?.name.clone();
+                (
+                    crate::config_item::attach(&mut environment, service, &name, dir)?,
+                    Apply::Staged,
+                )
+            }
+            (Some(Target::ConfigMount(config)), None) => {
+                let name = config.resolve([&environment.working])?.name.clone();
+                (
+                    crate::config_item::detach(&mut environment, service, &name)?,
+                    Apply::Staged,
+                )
+            }
             (None, _) => return Err(crate::settings::name_a_setting(path.node())),
         };
         if !changed {
@@ -292,6 +312,20 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         for (volume, value) in mounts {
                             let volume = VolumeName::parse(volume.as_str())?;
                             let path = SettingPath::at(service, Target::Mount(volume));
+                            expanded.push((path, Some(value.clone())));
+                        }
+                        continue;
+                    }
+                    if name == "configs" {
+                        let Some(mounts) = value.as_object() else {
+                            return Err(error::invalid(
+                                "configs is a JSON object of directories by Config name",
+                                json!({ "example": { "configs": { "sentry": "/etc/sentry" } } }),
+                            ));
+                        };
+                        for (config, value) in mounts {
+                            let config = crate::settings::config_name(config)?;
+                            let path = SettingPath::at(service, Target::ConfigMount(config.into()));
                             expanded.push((path, Some(value.clone())));
                         }
                         continue;

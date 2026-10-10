@@ -11,6 +11,14 @@ describe("Rows over the Store", () => {
     expect(presentRow(row("cache", null, "cache"))).toEqual({ node: "cache", label: "New", after: "" });
     expect(presentRow(row("volumes.data", null, null))).toEqual({ node: "data", label: "New", after: "" });
   });
+
+  it("summarizes Config files by explicit row identity without revealing their text or metadata", () => {
+    const row = { row: "c:files/app.conf.bak" as RowId, node: "configs.app-settings", kind: "config" as const, name: "files.nested/app.conf.bak" };
+    const value = { content: "private", mode: "0440", uid: 1000, gid: 1000 };
+    expect(presentRow({ ...row, value })).toEqual({ node: "app-settings", label: "nested/app.conf.bak", after: "File" });
+    expect(presentRow({ ...row, value: null })).toEqual({ node: "app-settings", label: "nested/app.conf.bak", after: "" });
+    expect(presentRow({ ...row, node: "web", kind: "service", value }).after).toBe(JSON.stringify(value));
+  });
 });
 
 describe("Live Nodes over the Store", () => {

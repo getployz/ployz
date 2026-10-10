@@ -329,6 +329,7 @@ fn redacted_container(observation: &ContainerObservation) -> ContainerObservatio
     if let Some(hook) = &mut parts.resolved_spec.pre_deploy {
         hook.environment.clear();
     }
+    parts.resolved_spec.mount_graph.redact_config_content();
     ContainerObservation::try_from(parts)
         .expect("environment redaction preserves Container identity")
 }
@@ -449,6 +450,57 @@ mod tests {
                 .get("TOKEN")
                 .map(String::as_str),
             Some("service-secret")
+        );
+    }
+
+    #[test]
+    fn publication_redacts_config_content() {
+        let observation: ContainerObservation = serde_json::from_value(json!({
+            "container_id": "a".repeat(64),
+            "display_name": "api-test",
+            "machine_id": "b".repeat(32),
+            "namespace": "app",
+            "kind": "service_container",
+            "runtime": { "state": "created" },
+            "resolved_spec": {
+                "service_id": "c".repeat(32),
+                "name": "api",
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": {
+                    "image": "alpine:3.23.3",
+                    "pull_policy": "missing",
+                    "config_mounts": [{ "config_name": "settings", "target": "/etc/settings.conf" }]
+                },
+                "configs": [{ "name": "settings", "content": b"token=config-secret".to_vec() }]
+            }
+        }))
+        .unwrap();
+
+        let redacted = redacted_container(&observation);
+
+        assert_eq!(
+            redacted.resolved_spec.configs(),
+            [ployz_core::ConfigSpec {
+                name: "settings".into(),
+                content: Vec::new(),
+            }]
+        );
+        assert_eq!(
+            redacted.resolved_spec.config_mounts(),
+            observation.resolved_spec.config_mounts()
+        );
+        assert_eq!(
+            serde_json::to_value(&redacted)
+                .unwrap()
+                .pointer("/resolved_spec/configs"),
+            Some(&json!([{ "name": "settings", "content": [] }]))
+        );
+        assert_eq!(
+            observation.resolved_spec.configs(),
+            [ployz_core::ConfigSpec {
+                name: "settings".into(),
+                content: b"token=config-secret".to_vec(),
+            }]
         );
     }
 

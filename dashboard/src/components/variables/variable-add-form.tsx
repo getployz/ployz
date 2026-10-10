@@ -17,7 +17,6 @@ const VARIABLE_KEY = /^[A-Z_][A-Z0-9_]{0,127}$/u;
 import type { VariableAddInput } from "#/components/variables/variables-panel";
 
 type VariableAddFormDefaults = {
-  allowSealOnCreate: boolean;
   defaultExported: boolean;
 };
 
@@ -40,13 +39,12 @@ type VariableAddFormAction =
   | { type: "reset"; defaults: VariableAddFormDefaults };
 
 function createVariableAddFormState({
-  allowSealOnCreate,
   defaultExported,
 }: VariableAddFormDefaults, draft?: VariableAddInput): VariableAddFormState {
   return {
     key: draft?.key ?? "",
     value: draft?.value ?? "",
-    sealed: draft?.sealed ?? allowSealOnCreate,
+    sealed: draft?.sealed ?? false,
     exported: draft?.exported ?? defaultExported,
     confirmingOverwrite: false,
   };
@@ -105,7 +103,7 @@ export function VariableAddForm({
   /** Every Service of the Environment, which a value's `${{ service.KEY }}` may name; none: unchecked. */
   serviceNames?: readonly string[];
 }) {
-  const defaults = { allowSealOnCreate, defaultExported };
+  const defaults = { defaultExported };
   const [state, dispatch] = useReducer(
     variableAddFormReducer,
     defaults,

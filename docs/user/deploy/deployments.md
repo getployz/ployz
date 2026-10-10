@@ -9,7 +9,8 @@ deployment, with its own page and logs.
 
 ## Stage changes
 
-Every edit saves as you make it, and your services keep running as they were. A staged field
+Settings save as you change them. Config files save when you click **Save**. Your services keep
+running as they were. A staged field
 turns pink until you deploy it (hover it to see what's running now), and the bottom bar counts
 your changes, like **Apply 3 changes**.
 
