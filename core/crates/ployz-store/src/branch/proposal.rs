@@ -22,7 +22,8 @@ pub struct RemoveProposal {
     pub environment: EnvironmentRef,
     /// As [`Included::proposal`].
     pub proposal: ProposalId,
-    /// Refuse with `conflict` unless this is still the latest `diff` version.
+    /// Refuse with `conflict` unless this is still the latest `diff` version, ignoring a
+    /// pull request's readiness changing since.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub version: Option<String>,
@@ -491,9 +492,9 @@ pub(crate) fn remove(
         });
     }
     // Remove is what unblocks a draft waiting on a pull request: no version is
-    // needed for it, a stale one is still refused.
+    // needed for it, and a merge or close since the review doesn't stale one.
     if let Some(version) = request.version.as_deref() {
-        review::check(&review::review(tx, &into)?, Some(version))?;
+        review::check_content(&review::review(tx, &into)?, version)?;
     }
     take_out(tx, &mut into, &proposal)?;
     Ok(Removed {

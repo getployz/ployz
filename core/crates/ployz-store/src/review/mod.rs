@@ -548,6 +548,21 @@ pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcErr
     }
 }
 
+/// [`check`] for taking a pull request out of the draft: refuse a version whose
+/// content is stale, not one only a readiness change since the review moved.
+pub(crate) fn check_content(review: &Review, version: &str) -> Result<(), RpcError> {
+    fn content(version: &str) -> Vec<&str> {
+        version
+            .split(':')
+            .filter(|part| !part.starts_with('g'))
+            .collect()
+    }
+    if content(version) == content(&review.view.version) {
+        return Ok(());
+    }
+    check(review, Some(version))
+}
+
 /// Publish `intent` as the next Saved revision, or keep the latest when it already
 /// holds the same document. Returns the revision Saved State is now at, and whether
 /// this created it.

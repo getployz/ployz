@@ -2927,7 +2927,8 @@ environment: EnvironmentRef,
  */
 proposal: ProposalId,
 /**
- * Refuse with `conflict` unless this is still the latest `diff` version.
+ * Refuse with `conflict` unless this is still the latest `diff` version, ignoring a
+ * pull request's readiness changing since.
  */
 version?: string | null, };
 
