@@ -1,12 +1,12 @@
 //! `ployz github`: install the GitHub App so Services can build private
-//! repositories, see what it grants, and disconnect it. Acts in Cloud as this
-//! device's sign-in or `PLOYZ_TOKEN`; needs no Server.
+//! repositories, see what it grants, read a repository's files, and disconnect
+//! it. Acts in Cloud as this device's sign-in or `PLOYZ_TOKEN`; needs no Server.
 
 use super::catalog::{Approval::*, Runnable, cloud};
 use std::time::{Duration, Instant};
 
 use clap::{ArgMatches, Command};
-use ployz_core::RpcErrorCode;
+use ployz_core::{RpcError, RpcErrorCode};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,7 +15,7 @@ use super::account::in_cloud;
 use super::login::open_browser;
 use super::store::Next;
 use super::{Error, leaf_matches};
-use crate::cli::{positional, switch};
+use crate::cli::{positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
 use crate::ui::{Cell, Hint, Table, Tone};
@@ -39,6 +39,20 @@ pub(crate) fn command() -> Command {
                 .arg(positional("repository", false).help("OWNER/REPO: list its branches")),
         )
         .subcommand(
+            Command::new("tree")
+                .about("List a repository's files")
+                .arg(positional("repository", true).help("OWNER/REPO"))
+                .arg(positional("path", false).help("Only files under this directory"))
+                .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted")),
+        )
+        .subcommand(
+            Command::new("cat")
+                .about("Print one file of a repository")
+                .arg(positional("repository", true).help("OWNER/REPO"))
+                .arg(positional("path", true).help("The file, like Dockerfile or web/package.json"))
+                .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted")),
+        )
+        .subcommand(
             Command::new("disconnect")
                 .about("Forget one of your GitHub installations; uninstall the App on GitHub")
                 .arg(
@@ -53,6 +67,8 @@ pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
         "connect" => cloud(Never, connect),
         "ls" => cloud(Never, list),
+        "tree" => cloud(Never, tree),
+        "cat" => cloud(Never, cat),
         "disconnect" => cloud(Always, disconnect),
         _ => return None,
     })
@@ -92,6 +108,29 @@ struct Branches {
     access: String,
     default_branch: String,
     branches: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Tree {
+    repository: String,
+    #[serde(rename = "ref")]
+    git_ref: String,
+    paths: Vec<String>,
+    /// Whether GitHub or Cloud cut the listing short.
+    truncated: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct File {
+    repository: String,
+    #[serde(rename = "ref")]
+    git_ref: String,
+    path: String,
+    size: u64,
+    /// The text, or `None` for a binary or oversized file, which `note` explains.
+    content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -213,6 +252,89 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         branches.repository, branches.access
     ));
     crate::ui::list(&branches, &table)
+}
+
+fn tree(root: &ArgMatches) -> Result<(), Error> {
+    let tree: Tree = read_repository(root, "tree", "path")?;
+    crate::ui::finish(&tree, || {
+        if tree.paths.is_empty() {
+            crate::ui::note(format_args!(
+                "No files in {} at {}.",
+                tree.repository, tree.git_ref
+            ));
+        }
+        for path in &tree.paths {
+            crate::ui::stream(path);
+        }
+        if tree.truncated {
+            crate::ui::note("The listing is cut short: name a directory to see the rest.");
+        }
+    })?;
+    Ok(())
+}
+
+fn cat(root: &ArgMatches) -> Result<(), Error> {
+    let file: File = read_repository(root, "file", "path")?;
+    crate::ui::finish(&file, || match &file.content {
+        Some(content) => {
+            let _ = std::io::Write::write_all(&mut anstream::stdout(), content.as_bytes());
+        }
+        None => crate::ui::note(file.note.as_deref().unwrap_or("This file isn't text.")),
+    })?;
+    Ok(())
+}
+
+/// Cloud's `github/<route>` reading of a repository, at `--ref` and the `path` argument.
+fn read_repository<T: serde::de::DeserializeOwned>(
+    root: &ArgMatches,
+    route: &str,
+    path: &str,
+) -> Result<T, Error> {
+    let matches = leaf_matches(root);
+    let repository = matches
+        .get_one::<String>("repository")
+        .expect("repository is required");
+    if !valid_repository(repository) {
+        return Err(Error::usage(
+            "Expected a repository as OWNER/REPO, like acme/web",
+        ));
+    }
+    let mut query = reqwest::Url::parse("ployz:/").expect("a constant URL parses");
+    query
+        .query_pairs_mut()
+        .append_pair("repository", repository);
+    for (key, value) in [
+        (path, matches.get_one::<String>(path)),
+        ("ref", matches.get_one::<String>("ref")),
+    ] {
+        if let Some(value) = value {
+            query.query_pairs_mut().append_pair(key, value);
+        }
+    }
+    let path = format!("github/{route}?{}", query.query().unwrap_or_default());
+    in_cloud(root, async |_, credential| {
+        match cloud_account::call(credential, Method::GET, &path, None).await {
+            // A GET's 404 reads as "no CLI surface"; the surface answering means no such repository.
+            Err(LoginError::Unsupported(_)) if connection(credential).await.is_ok() => Ok(Err(
+                not_found("No repository by that name that this Organization can read"),
+            )),
+            Err(LoginError::Status { body, .. }) if let Some(refused) = refusal(&body) => {
+                Ok(Err(refused.into()))
+            }
+            reply => reply.map(Ok),
+        }
+    })?
+}
+
+/// Cloud's refusal of a call, as it sent it.
+fn refusal(body: &str) -> Option<RpcError> {
+    #[derive(Deserialize)]
+    struct Refusal {
+        error: RpcError,
+    }
+    serde_json::from_str::<Refusal>(body)
+        .ok()
+        .map(|refusal| refusal.error)
 }
 
 fn disconnect(root: &ArgMatches) -> Result<(), Error> {

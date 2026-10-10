@@ -1,6 +1,22 @@
-import type { JsonValue } from "@ployz/sdk";
+import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { AGENT_COMMANDS, BINDINGS, COMMANDS, UNBOUND, argKey, inputSchema, toolName } from "./agent-tools";
+import type { Caller } from "#/modules/identity/actor";
+import { AGENT_COMMANDS, type AgentBinding, BINDINGS, COMMANDS, UNBOUND, argKey, inputSchema, toolName } from "./agent-tools";
+
+const caller = { userId: "u", organization: { id: "o", slug: "acme" }, credential: { kind: "session", id: "s" } } as Caller;
+
+/** `command`'s staged write, for `input` in `turn`. */
+const staged = (command: string, input: JsonValue, turn = "run-1"): ConfigCommand => {
+  const binding = BINDINGS.get(command);
+  if (binding?.kind !== "write") throw new Error(`${command} stages`);
+  return binding.command(input, turn);
+};
+
+const parse = (binding: AgentBinding, input: JsonValue) => {
+  if (binding.kind === "read") return binding.query(input);
+  if (binding.kind === "cloud") return binding.run(input, caller, "run-1");
+  return binding.command(input, "run-1");
+};
 
 const cloud = COMMANDS.filter((command) => command.surface === "cloud").map((command) => command.command);
 
@@ -22,20 +38,22 @@ describe("agent tools", () => {
     expect(AGENT_COMMANDS.map(({ command }) => command.command)).not.toContain("server add");
   });
 
-  it("reads only arguments the command declares", () => {
+  it("reads only arguments the command declares, and the input it adds", () => {
     const undeclared = AGENT_COMMANDS.flatMap(({ command, binding }) =>
       binding.input
-        .filter((key) => !command.args.some((declared) => argKey(declared.name) === key))
+        .filter((key) => !command.args.some((declared) => argKey(declared.name) === key) && !(key in (binding.added ?? {})))
         .map((key) => `${command.command} ${key}`),
     );
     expect(undeclared).toEqual([]);
   });
 
   it("parses every input its tool schema advertises", () => {
-    const sample = { string: "1", boolean: true, array: ["x=y"] } satisfies Record<string, JsonValue>;
+    const sample = { string: "1", integer: 1, boolean: true, array: ["x=y"] } satisfies Record<string, JsonValue>;
     for (const { command, binding } of AGENT_COMMANDS) {
-      const input: JsonValue = Object.fromEntries(Object.entries(inputSchema(command, binding).properties).map(([key, { type }]) => [key, sample[type]]));
-      expect(() => (binding.kind === "read" ? binding.query(input) : binding.command(input, "run-1")), command.command).not.toThrow();
+      const properties = Object.entries(inputSchema(command, binding).properties)
+        .filter(([key]) => !(command.command === "service add" && key === "image"));
+      const input: JsonValue = Object.fromEntries(properties.map(([key, { type }]) => [key, key === "mount" ? ["web:/etc/web"] : sample[type]]));
+      expect(() => parse(binding, input), command.command).not.toThrow();
     }
   });
 
@@ -132,5 +150,73 @@ describe("agent tools", () => {
     expect(id({ name: "cache", image: "redis:7" }, "run-2")).not.toBe(first);
     expect(id({ name: "cache", image: "redis:8" }, "run-1")).not.toBe(first);
     expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it("adds a Git Service from a repository, at a branch after @, and never with an image too", () => {
+    expect(staged("service add", { name: "web", repo: "acme/web@dev" })).toMatchObject({
+      command: "create_git_service", environment: { project: null, environment: null }, name: "web", repository: "acme/web", branch: "dev",
+    });
+    expect(staged("service add", { name: "web", repo: "acme/web" })).toMatchObject({ repository: "acme/web", branch: null });
+    expect(() => staged("service add", { name: "web", repo: "acme/web", image: "nginx" })).toThrow("Give image or repo, not both");
+  });
+
+  it("keeps a new Project's and its Default Environment's IDs within one turn, and only there", () => {
+    const ids = (turn: string) => {
+      const command = staged("project new", { name: "shop" }, turn);
+      return command.command === "create_project" ? [command.id, command.default_environment] : expect.fail("project new creates a Project");
+    };
+    const [project, environment] = ids("run-1");
+    expect(project).not.toBe(environment);
+    expect(ids("run-1")).toEqual([project, environment]);
+    expect(ids("run-2")).not.toContain(project);
+  });
+
+  it("puts a Config file's text as the model gives it", () => {
+    expect(staged("config put", { env: "production", config: "nginx", file: "conf.d/site.conf", content: "server {}\n", executable: true, uid: 101 }))
+      .toEqual({
+        command: "put_config_file",
+        environment: { project: null, environment: "production" },
+        config: "nginx",
+        file: "conf.d/site.conf",
+        content: "server {}\n",
+        mode: "0555",
+        uid: 101,
+        gid: null,
+      });
+    const put = AGENT_COMMANDS.find(({ command }) => command.command === "config put");
+    if (put === undefined) throw new Error("config put is bound");
+    const schema = inputSchema(put.command, put.binding);
+    expect(schema.required).toEqual(expect.arrayContaining(["config", "file", "content"]));
+    expect(Object.keys(schema.properties)).not.toContain("from");
+    expect(schema.properties["uid"]).toMatchObject({ type: "integer" });
+  });
+
+  it("creates Configs, mounts, domains, Environments and setups as the CLI sends them", () => {
+    expect(staged("config add", { name: "sentry", mount: ["web:/etc/sentry"] })).toMatchObject({
+      command: "create_config", name: "sentry", mounts: [{ service: "web", dir: "/etc/sentry" }],
+    });
+    expect(staged("config mount", { service: "web", config: "nginx", dir: "/etc/nginx" })).toMatchObject({ command: "attach_config", dir: "/etc/nginx" });
+    expect(staged("domain add", { service: "web", host: " App.Example.com ", port: 8080 })).toMatchObject({
+      command: "add_domain", hostname: "app.example.com", port: 8080,
+    });
+    expect(staged("domain add", { service: "web" })).toMatchObject({ hostname: null, port: null });
+    expect(staged("env new", { name: "staging", project: "shop" })).toMatchObject({ command: "create_environment", project: "shop", name: "staging" });
+    expect(staged("env setup", { setup: ["web=pnpm db:seed"] })).toMatchObject({
+      command: "set_branch_setup", setup: [{ service: "web", command: "pnpm db:seed" }],
+    });
+    expect(staged("env setup", { clear: true })).toMatchObject({ setup: [] });
+    expect(() => staged("env setup", {})).toThrow("Give setup SERVICE=COMMAND, or clear");
+  });
+
+  it("binds GitHub reads and env pr as Cloud commands, and leaves disconnect to a human", () => {
+    const kinds = Object.fromEntries(["github ls", "github connect", "github tree", "github cat", "env pr", "deployment start"]
+      .map((command) => [command, BINDINGS.get(command)?.kind]));
+    expect(kinds).toEqual({
+      "github ls": "cloud", "github connect": "cloud", "github tree": "cloud", "github cat": "cloud", "env pr": "cloud", "deployment start": "cloud",
+    });
+    const connect = AGENT_COMMANDS.find(({ command }) => command.command === "github connect");
+    if (connect === undefined) throw new Error("github connect is bound");
+    expect(inputSchema(connect.command, connect.binding).properties).toEqual({});
+    expect(UNBOUND.get("github disconnect")).toBe("asks a human; bound with the other always-approval commands");
   });
 });

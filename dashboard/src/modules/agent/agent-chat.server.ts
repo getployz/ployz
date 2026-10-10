@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import type { ConfigCommand, ConfigWritten, DiffView } from "@ployz/sdk";
+import type { ConfigCommand, ConfigWritten, DiffView, JsonValue } from "@ployz/sdk";
 import {
   type AnyTextAdapter,
   chat,
@@ -19,7 +19,16 @@ import { type AnthropicTextProviderOptions, createAnthropicChat } from "@tanstac
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_COMMANDS, type AgentBinding, inputSchema, toolName, uuidFrom } from "#/modules/agent/agent-tools";
+import {
+  AGENT,
+  AGENT_COMMANDS,
+  type AgentBinding,
+  type CloudServices,
+  inputSchema,
+  type StoreBinding,
+  toolName,
+  uuidFrom,
+} from "#/modules/agent/agent-tools";
 import {
   type AgentScope,
   agentPersistence,
@@ -38,15 +47,15 @@ import type { StoreCall, StoreRefusal } from "#/modules/config-store/store.contr
 import type { Caller } from "#/modules/identity/actor";
 import { projectJsonValue } from "#/lib/json";
 
-const AGENT = { source: "agent" } as const;
 const GATED = new Map(AGENT_COMMANDS.flatMap(({ command, binding }) => binding.kind === "gated" ? [[toolName(command.command), binding]] : []));
 
 type Gated = { outcome: ToolOutcome } | { asking: { approvalId: string; message: string } };
 type Run = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Promise<A>;
 
-const invalid = (message: string): ToolOutcome => ({ ok: false, refusal: { code: "invalid_argument", message, details: null } });
+const refused = (code: string, message: string): ToolOutcome => ({ ok: false, refusal: { code, message, details: null } });
+const invalid = (message: string) => refused("invalid_argument", message);
 
-const storeCall = (binding: AgentBinding, input: ReturnType<typeof projectJsonValue>, turn: string): StoreCall => {
+const storeCall = (binding: StoreBinding, input: ReturnType<typeof projectJsonValue>, turn: string): StoreCall => {
   const raw = input ?? null;
   return binding.kind === "read" ? { operation: "read", query: binding.query(raw) } : { operation: "write", command: binding.command(raw, turn) };
 };
@@ -115,7 +124,8 @@ const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: C
 
 type AgentServices =
   | Effect.Services<ReturnType<typeof runGated>>
-  | Effect.Services<ReturnType<typeof agentPersistence>>;
+  | Effect.Services<ReturnType<typeof agentPersistence>>
+  | CloudServices;
 
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null));
@@ -135,7 +145,7 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
 const approvalGate = (caller: Caller, run: Run) => {
   const outcomes = new Map<string, ToolOutcome>();
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
-  const decide = (call: { id: string; function: { name: string; arguments: string } }, binding: AgentBinding, turn: string) =>
+  const decide = (call: { id: string; function: { name: string; arguments: string } }, binding: StoreBinding, turn: string) =>
     Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runGated>>, AgentServices> {
       const answer = answers.get(call.id);
       if (answer?.cancelled === true) {
@@ -189,12 +199,28 @@ const approvalGate = (caller: Caller, run: Run) => {
   });
 };
 
-/** Every bound Cloud command as a tool. Reads and staged writes go straight to the Store; the gate answers gated ones. */
+/** A `cloud` binding's answer as the model hears it: its value, or what refused it. */
+const cloudOutcome = (binding: Extract<AgentBinding, { kind: "cloud" }>, caller: Caller, input: JsonValue, turn: string) =>
+  binding.run(input, caller, turn).pipe(
+    Effect.map((value): ToolOutcome => ({ ok: true, value })),
+    Effect.catchTags({
+      NotFound: (error) => Effect.succeed(refused("not_found", error.message)),
+      Validation: (error) => Effect.succeed(invalid(error.message)),
+      StoreRefused: (error) => Effect.succeed<ToolOutcome>({ ok: false, refusal: error.refusal }),
+    }),
+  );
+
+/**
+ * Every bound Cloud command as a tool. Reads and staged writes go straight to the Store, `cloud` commands to what
+ * answers them, and the gate answers gated ones.
+ */
 const agentTools = (caller: Caller, run: Run, turn: string) => AGENT_COMMANDS.map(({ command, binding }) =>
   toolDefinition({ name: toolName(command.command), description: command.about, inputSchema: inputSchema(command, binding) })
     .server((args) => {
+      const input = projectJsonValue(args) ?? null;
       if (binding.kind === "gated") throw new Error(`${command.command} ran outside the approval gate.`);
-      return run(callStore(caller.organization.id, caller.userId, storeCall(binding, projectJsonValue(args), turn), AGENT));
+      if (binding.kind === "cloud") return run(cloudOutcome(binding, caller, input, turn));
+      return run(callStore(caller.organization.id, caller.userId, storeCall(binding, input, turn), AGENT));
     }));
 
 const systemPrompt = (caller: Caller) => `You are the Ployz agent in the sidebar of Ployz Cloud. You act in the Organization "${caller.organization.slug}" as the member who is talking to you, through the same Config Store the ployz CLI uses. Never act in another Organization.

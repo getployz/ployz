@@ -252,6 +252,18 @@ fn serve(
             200,
             json!({ "repository": "acme/web", "access": "installation", "default_branch": "main", "branches": ["dev", "main"] }),
         ),
+        (Some(_), "/api/cli/github/tree?repository=acme%2Fweb&path=src&ref=dev") => (
+            200,
+            json!({ "repository": "acme/web", "ref": "dev", "paths": ["src/main.rs"], "truncated": false }),
+        ),
+        (Some(_), "/api/cli/github/file?repository=acme%2Fweb&path=Dockerfile") => (
+            200,
+            json!({ "repository": "acme/web", "ref": "main", "path": "Dockerfile", "size": 12, "content": "FROM alpine\n" }),
+        ),
+        (Some(_), "/api/cli/github/file?repository=acme%2Fweb&path=src") => (
+            422,
+            json!({ "error": { "code": "invalid_argument", "message": "src is a directory: list it with github tree.", "details": null } }),
+        ),
         (Some(_), "/api/cli/github/7") => (
             200,
             json!({
@@ -2774,7 +2786,7 @@ fn a_repository_service_is_checked_by_cloud() {
 }
 
 #[test]
-fn github_lists_branches_and_disconnects_in_cloud() {
+fn github_lists_branches_reads_files_and_disconnects_in_cloud() {
     let [_, cloud] = targets();
     let listed = ok(&cloud, &["github", "ls"]);
     assert_eq!(listed["repositories"][0]["repository"], "acme/web");
@@ -2786,6 +2798,23 @@ fn github_lists_branches_and_disconnects_in_cloud() {
     assert_eq!(
         failed(&cloud, &["github", "ls", "not a repo"], 2)["code"],
         "invalid_argument"
+    );
+    let tree = ok(
+        &cloud,
+        &["github", "tree", "acme/web", "src", "--ref", "dev"],
+    );
+    assert_eq!(tree["paths"], json!(["src/main.rs"]));
+    let file = ok(&cloud, &["github", "cat", "acme/web", "Dockerfile"]);
+    assert_eq!(file["content"], "FROM alpine\n");
+    let directory = error(&cloud, &["github", "cat", "acme/web", "src"]);
+    assert_eq!(directory["code"], "invalid_argument", "{directory}");
+    assert_eq!(
+        directory["message"],
+        "src is a directory: list it with github tree."
+    );
+    assert_eq!(
+        error(&cloud, &["github", "cat", "acme/nope", "Dockerfile"])["code"],
+        "not_found"
     );
     let removed = ok(&cloud, &["github", "disconnect", "7"]);
     assert_eq!(removed["disconnected"]["account"], "acme");

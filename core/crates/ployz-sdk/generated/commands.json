@@ -2260,6 +2260,44 @@
     ]
   },
   {
+    "command": "github cat",
+    "about": "Print one file of a repository",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "REPOSITORY",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "OWNER/REPO"
+      },
+      {
+        "name": "PATH",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "The file, like Dockerfile or web/package.json"
+      },
+      {
+        "name": "--ref",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Branch, tag or commit; the default branch if omitted"
+      }
+    ]
+  },
+  {
     "command": "github connect",
     "about": "Print the GitHub App install link and wait until it is installed",
     "json": true,
@@ -2313,6 +2351,44 @@
         "index": 1,
         "trailing": false,
         "help": "OWNER/REPO: list its branches"
+      }
+    ]
+  },
+  {
+    "command": "github tree",
+    "about": "List a repository's files",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "REPOSITORY",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "OWNER/REPO"
+      },
+      {
+        "name": "PATH",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 2,
+        "trailing": false,
+        "help": "Only files under this directory"
+      },
+      {
+        "name": "--ref",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Branch, tag or commit; the default branch if omitted"
       }
     ]
   },
