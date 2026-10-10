@@ -678,6 +678,25 @@ pub(super) fn replica_observations(count: u16) -> Vec<ContainerObservation> {
         .collect()
 }
 
+/// Writes an executable `#!/bin/sh` script from a child process. A file this
+/// process held open for writing leaks into any child a concurrent test forks
+/// before that child execs, and exec'ing the script then fails with ETXTBSY.
+pub(super) fn write_script(path: &std::path::Path, body: &str) {
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"printf '#!/bin/sh\n%s\n' "$1" > "$2" && chmod 755 "$2""#)
+        .arg("sh")
+        .arg(body)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
+}
+
 fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {
     Projection::from_observations(
         observations,
