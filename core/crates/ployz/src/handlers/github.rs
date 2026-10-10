@@ -289,7 +289,6 @@ fn cat(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// Cloud's `github/<route>` reading of a repository, narrowed by the `options` given.
 fn read_repository<T: serde::de::DeserializeOwned>(
     root: &ArgMatches,
     route: &str,

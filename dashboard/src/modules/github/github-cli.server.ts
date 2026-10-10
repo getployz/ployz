@@ -70,14 +70,13 @@ export const githubBranches = Effect.fn("GithubCli.branches")(function* (caller:
   };
 });
 
-/** The most paths `github tree` lists; name a directory for the rest. */
+/** The most paths `github tree` lists; name a directory or a narrower glob for the rest. */
 export const TREE_PATHS = 500;
 /** The largest file `github cat` returns the text of. */
 export const FILE_BYTES = 64 * 1024;
 
 const directoryOf = (path: string | null) => (path ?? "").replace(/^(\.?\/)+|\/+$/g, "");
 
-/** What narrows a `github tree` listing; each is optional. */
 export type TreeQuery = {
   /** A directory: only files under it. */
   readonly path?: string | null;
@@ -141,7 +140,6 @@ function decode(bytes: Uint8Array) {
   }
 }
 
-/** `ployz github tree OWNER/REPO [PATH] [--match GLOB]`: a readable repository's files. */
 export const githubTree = Effect.fn("GithubCli.tree")(function* (caller: Caller, repository: string, query: TreeQuery) {
   return yield* repositoryTree(yield* readableBy(caller, repository), query);
 });
