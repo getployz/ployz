@@ -8,16 +8,19 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "#/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
+import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
-/**
- * Many programs log notices and progress to stderr; only a stderr line that says it failed reads red.
- * ponytail: a word match; a structured level when the runtime reports one.
- */
-const looksLikeError = (row: { channel: string; message: string }) =>
-  row.channel === "stderr" && /\b(error|err|fatal|panic|exception|failed|traceback)\b/iu.test(row.message);
+const LEVELS = ["error", "warn", "info", "debug"] as const;
+const levelTone = { error: "text-destructive", warn: "text-warning", info: null, debug: "text-muted-foreground" } as const;
+const gapReasons = {
+  not_captured: "Logs from this stretch weren’t captured.",
+  corrupt: "Some of this stretch’s log data was unreadable, so it was skipped.",
+} as const;
 
 export function ContainerLogs({ selection }: { selection: ContainerLogSelection }) {
   const scope = useCollectionScope();
@@ -30,15 +33,17 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const stream = getContainerLogStream(selection, scope);
   const { collection } = stream;
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
-  const { opened, offline, refused, errors, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const { opened, offline, refused, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
   const timestamp = logTimestamp(useTimeZone());
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
-  const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && row.message.toLowerCase().includes(search.toLowerCase())).sort((a, b) => {
-    const difference = BigInt(a.timestamp) - BigInt(b.timestamp);
-    return difference < 0n ? -1 : difference > 0n ? 1 : a.id.localeCompare(b.id);
-  });
+  const [levels, setLevels] = useState<readonly string[]>([]);
+  // A gap is about every line, so it hides only behind a filter on what lines say.
+  const matches = (row: ContainerLogRow) => row.kind === "gap" ? !search && !levels.length
+    : (!levels.length || levels.includes(row.level)) && row.message.toLowerCase().includes(search.toLowerCase());
+  const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && matches(row)).sort(compareLogRows);
+  const missingServers = [...missing.history, ...Object.entries(missing.live).filter(([id]) => !missing.history.some(server => server.machineId === id)).map(([machineId, server]) => ({ machineId, ...server }))];
   const touchY = useRef(0);
   const dragging = useRef(false);
   function loadAtTop(delta = 0) {
@@ -59,7 +64,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const empty = rows.length ? null
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
-    : !opened ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
+    : !opened || (historyPending && !loaded.length) ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
     : loaded.length ? <LogEmpty title="No logs match your filters">{stream.hasOlder ? "Scroll up or press Home to check older logs." : null}</LogEmpty>
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
   return <div className="flex min-h-0 grow flex-col gap-3">
@@ -67,10 +72,16 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
       <Input aria-label="Search loaded logs" placeholder="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
       {servicesVary ? <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} /> : null}
       {machinesVary ? <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} /> : null}
+      <ToggleGroup multiple variant="outline" size="sm" spacing={0} aria-label="Levels" value={[...levels]} onValueChange={setLevels}>
+        {LEVELS.map(level => <ToggleGroupItem key={level} value={level} className="capitalize">{level}</ToggleGroupItem>)}
+      </ToggleGroup>
     </div>
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
-    {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
+    {missingServers.length ? <Alert role="alert">
+      <AlertTitle>{missingServers.length === 1 ? "A server’s logs are missing" : `${missingServers.length} servers’ logs are missing`}</AlertTitle>
+      <AlertDescription><ul>{missingServers.map(server => <li key={server.machineId}><span className="font-medium">{server.machineName}</span>: {server.message}</li>)}</ul></AlertDescription>
+    </Alert> : null}
     <div className="flex min-h-0 flex-1 flex-col">
       <LogHeader time={LOG_TIME_COLUMN.container}>Message</LogHeader>
       {historyPending ? <LogSkeleton rows={1} label="Loading older logs" time={LOG_TIME_COLUMN.container} /> : null}
@@ -92,10 +103,16 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
             {virtual.getVirtualItems().map(item => {
               const row = rows[item.index];
               if (!row) return null;
+              if (row.kind === "gap") {
+                return <div key={item.key} ref={virtual.measureElement} data-index={item.index} role="note" className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6 text-muted-foreground italic max-sm:flex-col max-sm:gap-0" style={{ transform: `translateY(${item.start}px)` }}>
+                  <time className={cn("shrink-0 max-sm:w-auto", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
+                  <span className="min-w-0 flex-1">{servicesVary || machinesVary ? <span className="mr-3">{[servicesVary && row.serviceName, machinesVary && row.machineName].filter(Boolean).join(" · ")}</span> : null}{gapReasons[row.reason]}</span>
+                </div>;
+              }
               // A phone stacks the time over its line, which keeps the width.
               return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6 max-sm:flex-col max-sm:gap-0" style={{ transform: `translateY(${item.start}px)` }}>
                 <time className={cn("shrink-0 text-muted-foreground max-sm:w-auto", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
-                <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", looksLikeError(row) && "text-destructive")}>
+                <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", levelTone[row.level])}>
                   {servicesVary || machinesVary ? <span className="mr-3 text-muted-foreground">{[servicesVary && row.serviceName, machinesVary && row.machineName].filter(Boolean).join(" · ")}</span> : null}{row.message}
                 </span>
               </div>;

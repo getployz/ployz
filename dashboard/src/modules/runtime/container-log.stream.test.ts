@@ -19,16 +19,16 @@ it("delivers a log burst together without losing or duplicating replayed records
     const baseline = changes.mock.calls.length;
     for (let i = 0; i < 3_001; i++) {
       source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
-        id: String(i % 3_000), timestamp: String(i % 3_000), machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", message: `line ${i % 3_000}`,
+        kind: "line", id: String(i % 3_000), timestamp: String(i % 3_000), machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: `line ${i % 3_000}`,
       } }) }));
     }
     expect(stream.collection.size).toBe(0);
     await vi.advanceTimersByTimeAsync(260);
     expect(stream.collection.size).toBe(3_000);
     expect(changes.mock.calls.length - baseline).toBeLessThanOrEqual(2);
-    expect(stream.collection.get("2999")?.message).toBe("line 2999");
+    expect(stream.collection.get("2999")).toMatchObject({ message: "line 2999" });
     source?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
-      id: "pending", timestamp: "3000", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", message: "pending",
+      kind: "line", id: "pending", timestamp: "3000", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: "pending",
     } }) }));
   } finally {
     subscription.unsubscribe();
@@ -56,7 +56,7 @@ it("retains an inactive stream until DB garbage collection, then reopens it on d
   const subscription = stream.collection.subscribeChanges(() => {});
   try {
     expect(sources).toHaveLength(1);
-    stream.collection.insert({ id: "1", timestamp: "1", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", message: "hello" });
+    stream.collection.insert({ kind: "line", level: "info", id: "1", timestamp: "1", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", message: "hello" });
     expect(getContainerLogStream(selection, { ...scope, sessionId: "other" })).not.toBe(stream);
     expect(getContainerLogStream(selection, { ...scope, userId: "other" })).not.toBe(stream);
     expect(getContainerLogStream({ ...selection, organizationSlug: "other" }, scope)).not.toBe(stream);
