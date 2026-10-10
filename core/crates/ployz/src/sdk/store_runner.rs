@@ -729,8 +729,12 @@ fn one<T>(service: &ServiceName, value: Option<T>) -> BTreeMap<ServiceName, T> {
 }
 
 /// Lowering input `input` narrowed to Service `service`: what its own build takes.
+/// A build reads no Config, and Config files may hold secrets.
 pub(super) fn only(input: &Value, service: &ServiceName) -> Value {
     let mut input = input.clone();
+    if let Some(input) = input.as_object_mut() {
+        input.remove("configs");
+    }
     if let Some(snapshots) = input.get_mut("snapshots").and_then(Value::as_array_mut) {
         snapshots.retain(|snapshot| {
             snapshot

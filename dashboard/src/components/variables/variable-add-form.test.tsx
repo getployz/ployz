@@ -28,8 +28,17 @@ function renderForm(onCreateVariable = vi.fn()) {
 }
 
 describe("VariableAddForm", () => {
+  it("adds a plain variable unless Sealed is ticked", () => {
+    const onCreateVariable = renderForm();
+    fireEvent.change(screen.getByLabelText("Key"), { target: { value: "PORT" } });
+    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "8080" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(onCreateVariable).toHaveBeenCalledWith({ key: "PORT", value: "8080", sealed: false, exported: false });
+  });
+
   it("overwriting an existing key keeps the chosen Sealed state", () => {
     const onCreateVariable = renderForm();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sealed" }));
     fireEvent.change(screen.getByLabelText("Key"), { target: { value: "API_KEY" } });
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "new" } });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
@@ -39,6 +48,7 @@ describe("VariableAddForm", () => {
 
   it("refuses a reference in a sealed value", () => {
     renderForm();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sealed" }));
     fireEvent.change(screen.getByLabelText("Key"), { target: { value: "DB" } });
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "${{ web.URL }}" } });
     expect(screen.getByText("A sealed value is stored as-is. Untick Sealed to use a reference.")).toBeTruthy();

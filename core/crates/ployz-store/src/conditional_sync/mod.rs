@@ -604,6 +604,12 @@ pub(crate) fn land(
             .filter(|node| arriving.contains(node.resource_lineage_id.as_str()))
             .cloned(),
     );
+    working.configs.extend(
+        next.configs
+            .iter()
+            .filter(|node| arriving.contains(node.resource_lineage_id.as_str()))
+            .cloned(),
+    );
     let latest_cells = Cells::of(&latest.intent, &stored.hostnames.into);
     let staged = admit(&stored, &working, &marks, &held, |row| {
         !introduced.contains(row.id.lineage()) && row.into == *latest_cells.at(&row.id)

@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
+pub use crate::config_item::{
+    AttachConfig, ConfigFileSummary, ConfigMountAt, ConfigStaged, ConfigSummary, CreateConfig,
+    DeleteConfig, DetachConfig, PutConfigFile, RemoveConfigFile, RenameConfig,
+};
 pub use crate::deployment::admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
 pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
@@ -178,6 +182,27 @@ commands! {
     /// Rename a Volume; mounts follow it.
     RenameVolume(RenameVolume) -> VolumeRenamed(VolumeStaged)
         => crate::volume::rename_volume(tx, who, c);
+    /// Create a Config, optionally mounted into Services.
+    CreateConfig(CreateConfig) -> Config(ConfigStaged)
+        keyed [c.id.as_str()] => crate::config_item::create_config(tx, who, c);
+    /// Put a file into a Config, replacing one of that name.
+    PutConfigFile(PutConfigFile) -> Config(ConfigStaged)
+        => crate::config_item::put_file(tx, who, c);
+    /// Remove a file from a Config.
+    RemoveConfigFile(RemoveConfigFile) -> Config(ConfigStaged)
+        => crate::config_item::remove_file(tx, who, c);
+    /// Rename a Config; mounts follow it.
+    RenameConfig(RenameConfig) -> ConfigRenamed(ConfigStaged)
+        => crate::config_item::rename_config(tx, who, c);
+    /// Delete a Config from Working State, unmounting it everywhere.
+    DeleteConfig(DeleteConfig) -> ConfigRemoved(ConfigStaged)
+        => crate::config_item::delete_config(tx, who, c);
+    /// Mount a Config into a Service at a directory.
+    AttachConfig(AttachConfig) -> Config(ConfigStaged)
+        => crate::config_item::attach_config(tx, who, c);
+    /// Unmount a Config from a Service.
+    DetachConfig(DetachConfig) -> Config(ConfigStaged)
+        => crate::config_item::detach_config(tx, who, c);
     /// Set and unset Settings in one Environment.
     Edit(Edit) -> Edited(Edited) => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
@@ -286,6 +311,20 @@ pub enum BatchCommand {
     CreateService(CreateService),
     /// See [`Command::CreateVolume`].
     CreateVolume(CreateVolume),
+    /// See [`Command::CreateConfig`].
+    CreateConfig(CreateConfig),
+    /// See [`Command::PutConfigFile`].
+    PutConfigFile(PutConfigFile),
+    /// See [`Command::RemoveConfigFile`].
+    RemoveConfigFile(RemoveConfigFile),
+    /// See [`Command::RenameConfig`].
+    RenameConfig(RenameConfig),
+    /// See [`Command::DeleteConfig`].
+    DeleteConfig(DeleteConfig),
+    /// See [`Command::AttachConfig`].
+    AttachConfig(AttachConfig),
+    /// See [`Command::DetachConfig`].
+    DetachConfig(DetachConfig),
     /// See [`Command::Edit`].
     Edit(Edit),
     /// See [`Command::Discard`].
@@ -301,6 +340,13 @@ impl BatchCommand {
         let named = match self {
             Self::CreateService(create) => &create.environment,
             Self::CreateVolume(create) => &create.environment,
+            Self::CreateConfig(create) => &create.environment,
+            Self::PutConfigFile(put) => &put.environment,
+            Self::RemoveConfigFile(remove) => &remove.environment,
+            Self::RenameConfig(rename) => &rename.environment,
+            Self::DeleteConfig(delete) => &delete.environment,
+            Self::AttachConfig(mount) => &mount.environment,
+            Self::DetachConfig(unmount) => &unmount.environment,
             Self::Edit(edit) => &edit.environment,
             Self::Discard(discard) => &discard.environment,
             Self::NeverSync(mark) => &mark.environment,
@@ -324,6 +370,48 @@ impl BatchCommand {
             }
             .apply(at)
             .map(Written::Volume),
+            Self::CreateConfig(create) => CreateConfig {
+                environment: environment.clone(),
+                ..create.clone()
+            }
+            .apply(at)
+            .map(Written::Config),
+            Self::PutConfigFile(put) => PutConfigFile {
+                environment: environment.clone(),
+                ..put.clone()
+            }
+            .apply(at)
+            .map(Written::Config),
+            Self::RemoveConfigFile(remove) => RemoveConfigFile {
+                environment: environment.clone(),
+                ..remove.clone()
+            }
+            .apply(at)
+            .map(Written::Config),
+            Self::RenameConfig(rename) => RenameConfig {
+                environment: environment.clone(),
+                ..rename.clone()
+            }
+            .apply(at)
+            .map(Written::ConfigRenamed),
+            Self::DeleteConfig(delete) => DeleteConfig {
+                environment: environment.clone(),
+                ..delete.clone()
+            }
+            .apply(at)
+            .map(Written::ConfigRemoved),
+            Self::AttachConfig(mount) => AttachConfig {
+                environment: environment.clone(),
+                ..mount.clone()
+            }
+            .apply(at)
+            .map(Written::Config),
+            Self::DetachConfig(unmount) => DetachConfig {
+                environment: environment.clone(),
+                ..unmount.clone()
+            }
+            .apply(at)
+            .map(Written::Config),
             Self::Edit(edit) => Edit {
                 environment: environment.clone(),
                 ..edit.clone()
@@ -369,6 +457,9 @@ impl Written {
                 Some(&staged.environment.id)
             }
             Self::Volume(staged) | Self::VolumeRemoved(staged) | Self::VolumeRenamed(staged) => {
+                Some(&staged.environment.id)
+            }
+            Self::Config(staged) | Self::ConfigRemoved(staged) | Self::ConfigRenamed(staged) => {
                 Some(&staged.environment.id)
             }
             Self::Edited(edited) => Some(&edited.environment.id),
@@ -428,6 +519,12 @@ pub enum Written {
     VolumeRemoved(VolumeStaged),
     /// A Volume was renamed.
     VolumeRenamed(VolumeStaged),
+    /// A Config was created, a file put or removed, or a mount changed.
+    Config(ConfigStaged),
+    /// A Config was deleted from Working State.
+    ConfigRemoved(ConfigStaged),
+    /// A Config was renamed.
+    ConfigRenamed(ConfigStaged),
     /// Settings were edited.
     Edited(Edited),
     /// Working State was published.

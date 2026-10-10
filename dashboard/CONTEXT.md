@@ -41,7 +41,7 @@ An Environment resource whose files survive deployments and restarts on the Serv
 _Avoid_: Persistent storage as a resource name, network storage, replicated volume, Provisioned in product copy, ZFS in normal product copy except the Add Server opt-out
 
 **Volume Run**:
-One requested, bounded run over one Volume's copies: Mirror (make a read-only copy on another Server), Sync (refresh it) or Delete Mirror. Cloud runs it step by step, one at a time per Volume, and keeps its row as the user-facing record; the copies on the Servers decide what it does. A Mirror shows as `data-<server>`. Cloud also starts a Delete Mirror on its own for a mirror whose Volume no Environment still holds.
+One requested, bounded run over one Volume's copies: Mirror (make a read-only copy on another Server), Sync (refresh it) or Delete Mirror. Cloud runs it step by step, one at a time per Volume, and keeps its row as the user-facing record; each Server admits a step only against its own copy and lease record. A Mirror shows as `data-<server>`. Cloud also starts a Delete Mirror on its own for a mirror whose Volume no Environment still holds.
 _Avoid_: Replication, backup, job, sync job
 
 **Server Policy**:
@@ -222,4 +222,4 @@ _Avoid_: Database (as a resource kind), template, add-on
 
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Deployment and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 
-Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering.
+Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. A Config's references count as references of every Service that mounts it. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering.

@@ -102,6 +102,7 @@ function startsWithCi(value: string, prefix: string): boolean {
  * Filter and rank targets for the token under the caret. With a typed owner slug
  * (`${{ db.`) only that owner's keys match; otherwise both self keys and owner
  * slugs are matched against the partial query so a user can start with either.
+ * Ranked self, managed, then service; managed exports keep `targets` order.
  */
 export function filterReferenceTargets(
   targets: ReferenceTarget[],
@@ -129,6 +130,7 @@ export function filterReferenceTargets(
     if (left.kind !== right.kind) return kindOrder[left.kind] - kindOrder[right.kind];
     const ownerDelta = (left.ownerSlug ?? "").localeCompare(right.ownerSlug ?? "");
     if (ownerDelta !== 0) return ownerDelta;
+    if (left.kind === "managed") return 0;
     return left.key.localeCompare(right.key);
   });
 }

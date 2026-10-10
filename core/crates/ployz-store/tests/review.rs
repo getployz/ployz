@@ -135,11 +135,11 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
                     "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true,
                     "row": "00000000-0000-4000-8000-000000000003:replicas",
                 }],
-                "data": null,
+                "data": null, "restarts": [],
             },
             {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
-                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null,
+                "row": "00000000-0000-4000-8000-000000000004:node", "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null, "restarts": [],
             },
         ])
     );
@@ -401,6 +401,79 @@ fn discard_keeps_mounts_it_does_not_name() {
     // web was introduced before it mounted data: discarding the mount takes it out.
     discard(&store, &who, Some("web.mounts.data"), None).unwrap();
     assert_eq!(value(&store, &who, "web.mounts.data"), None);
+}
+
+#[test]
+fn discarding_a_renamed_config_mount_restores_working_and_saved_state() {
+    let (store, who) = shop();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/new".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let saved = publish(&store, &who, None).unwrap().saved.unwrap();
+    let rename = |from: &str, to: &str| {
+        store
+            .write(
+                &who,
+                &ployz_store::RenameConfig {
+                    environment: EnvironmentRef::default(),
+                    config: ployz_core::ConfigName::parse(from).unwrap(),
+                    name: ployz_core::ConfigName::parse(to).unwrap(),
+                },
+            )
+            .unwrap();
+    };
+    rename("sentry", "errors");
+
+    let discarded = discard(&store, &who, Some("web.configs.errors"), None).unwrap();
+    assert_eq!(discarded.saved, Some(Revision(saved.0 + 1)));
+    assert_eq!(value(&store, &who, "web.configs.errors"), None);
+    let configs = store
+        .read(&who, &ployz_store::ConfigsQuery::default())
+        .unwrap();
+    assert_eq!(
+        configs.configs.first().unwrap().config.name.as_str(),
+        "errors"
+    );
+    assert!(!diff(&store, &who).published);
+
+    rename("errors", "sentry");
+    assert!(diff(&store, &who).published);
+}
+
+#[test]
+fn discarding_a_variable_or_its_export_restores_working_and_saved_state() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.KEY", json!("old"));
+    backend::deploy(&store, &who, "production", 1);
+    set(&store, &who, "web.env.KEY", json!("new"));
+    set(&store, &who, "web.env.KEY.exported", json!(true));
+    publish(&store, &who, None).unwrap();
+
+    discard(&store, &who, Some("web.env.KEY.exported"), None).unwrap();
+    assert_eq!(
+        value(&store, &who, "web.env.KEY.exported"),
+        Some(json!(false))
+    );
+    assert_eq!(value(&store, &who, "web.env.KEY"), Some(json!("new")));
+    assert!(diff(&store, &who).published);
+
+    discard(&store, &who, Some("web.env.KEY"), None).unwrap();
+    assert_eq!(value(&store, &who, "web.env.KEY"), Some(json!("old")));
+    let view = diff(&store, &who);
+    assert!(view.changes.is_empty());
+    assert!(view.published);
 }
 
 /// A row of a compound Setting discards that Setting: a healthcheck's path edit

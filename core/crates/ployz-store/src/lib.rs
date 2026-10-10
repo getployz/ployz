@@ -11,6 +11,7 @@ mod builders;
 pub mod catalog;
 mod command;
 mod conditional_sync;
+mod config_item;
 mod deployment;
 mod domain;
 mod error;

@@ -44,11 +44,11 @@ describe("store volumes", () => {
       environment: { id: "e", project: "shop", name: "production", revision: 9 },
       version: "9:1:0.1", saved: 1, published: false, total_count: 2, hints: [], incoming: [], follow_hints: [],
       changes: [
-        { type: "service", id: "s", row: "s:node" as RowId, name: "postgres", lifecycle: "update", comparison: "head", data: "kept", settings: [
+        { type: "service", id: "s", row: "s:node" as RowId, name: "postgres", lifecycle: "update", comparison: "head", data: "kept", restarts: [], settings: [
           { path: "postgres.mounts.pg-data", before: "/var/lib/postgresql/data", after: null, kind: "remove", canRestore: false, row: null },
           { path: "postgres.replicas", before: 1, after: 2, kind: "update", canRestore: false, row: null },
         ] },
-        { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+        { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: "head", data: null, restarts: [], settings: [
           { path: "web.mounts.pg-data", before: null, after: "/srv", kind: "add", canRestore: false, row: null },
         ] },
       ],
@@ -56,4 +56,26 @@ describe("store volumes", () => {
     expect(detachedMounts(diff, "pg-data")).toEqual([{ service: "postgres", path: "/var/lib/postgresql/data" }]);
     expect(detachedMounts(diff, "other")).toEqual([]);
   });
+});
+
+it("projects pending mount moves, unsets and new mounts into the writer rules", async () => {
+  const { effectiveVolumes } = await import("./store-volumes");
+  const { replicaCap, mountRefusal, volumeWriters } = await import("./volume-sharing");
+  const { asTestDouble } = await import("#/lib/test-double");
+  const { withPendingChanges } = await import("./store-view.queries");
+  const volumes = [asTestDouble<import("@ployz/sdk").VolumeListing>()({ id: "v", name: "data", shared_writes: false, mounts: [{ service: "web", path: "/old" }] })];
+  const services = ["web", "worker", "removed"].map((name) => asTestDouble<import("@ployz/sdk").ServiceListing>()({ id: name, name, change: name === "removed" ? "delete" : null }));
+  const view = asTestDouble<import("@ployz/sdk").EnvironmentView>()({ settings: [{ path: "web.mounts.data", value: "/old", default: null, apply: "staged" }] });
+  const project = (changes: import("@ployz/sdk").Change[]) => effectiveVolumes(volumes, services, withPendingChanges(view, changes));
+  const moved = project([mountChange("web", "data", "/new")]);
+  expect(moved[0]?.mounts).toEqual([{ service: "web", path: "/new" }]);
+  expect(replicaCap("web", moved)?.id).toBe("v");
+  const detached = project([mountChange("web", "data", null)]);
+  expect(detached[0]?.mounts).toEqual([]);
+  expect(replicaCap("web", detached)).toBeNull();
+  const attached = project([mountChange("web", "data", null), mountChange("worker", "data", "/data"), mountChange("removed", "data", "/ignored")]);
+  expect(attached[0]?.mounts).toEqual([{ service: "worker", path: "/data" }]);
+  expect(attached[0] && mountRefusal(attached[0], "web", 1)).toBe("Already used by worker");
+  expect(attached[0] && volumeWriters(attached[0], () => 2)).toMatchObject({ total: 2, shared: true });
+  expect(effectiveVolumes(volumes, services, { ...view, settings: [] })[0]?.mounts).toEqual(volumes[0]?.mounts);
 });

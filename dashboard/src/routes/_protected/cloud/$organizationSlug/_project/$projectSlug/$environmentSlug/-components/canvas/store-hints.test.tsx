@@ -20,7 +20,7 @@ const id = (value: string) => value as RowId;
 const setting = (path: string, before: string, after: string, row: string | null = null) =>
   ({ path, kind: "update" as const, before, after, canRestore: true, row: row === null ? null : id(row) });
 const api = (settings: NodeChange["settings"]): NodeChange =>
-  ({ type: "service", id: "api", row: id("a:node"), name: "api", lifecycle: "update", settings }) as NodeChange;
+  ({ type: "service", id: "api", row: id("a:node"), name: "api", lifecycle: "update", comparison: null, data: null, restarts: [], settings });
 const diff = (extra: Partial<DiffView>): DiffView => ({
   environment: { id: "id-fix-api", project: "shop", name: "fix-api", revision: 4 }, version: "4:abc", saved: null,
   published: false, changes: [], total_count: 0, hints: [], incoming: [], follow_hints: [], ...extra,
@@ -87,7 +87,7 @@ it("groups what the Parent's deploy brought apart from the Branch's own, and Nev
 
 it("matches a Volume's setting by the row it falls in", async () => {
   const test = open(diff({
-    changes: [{ type: "volume", id: "data", row: id("d:node"), name: "data", lifecycle: "update", settings: [setting("volumes.data.name", "pg", "pg-2", "d:name")] } as NodeChange],
+    changes: [{ type: "volume", id: "data", row: id("d:node"), name: "data", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [setting("volumes.data.name", "pg", "pg-2", "d:name")] }],
     total_count: 1, incoming: [{ row: id("d:name"), node: "volumes.data", kind: "volume", name: "name", from: "production" }],
   }));
 
@@ -138,4 +138,70 @@ it("keeps hints no change shows after the changes, both kinds in one list, each 
     { command: "take", from: "production", into: fixApi, rows: ["a:variables.CACHE_TTL"], version: "4:abc" },
     { command: "take", from: "cs1", into: fixApi, rows: ["d:name"], version: "4:abc" },
   ]));
+});
+
+it("renders Config Follow and PR hints as files while Use retains the exact Store rows", async () => {
+  const privateFile = { content: "CONFIG_HINT_PRIVATE_SENTINEL", mode: "0440", uid: 1234, gid: 5678 };
+  const row = { row: id("c:files.nested/app.conf.bak"), node: "configs.app-settings", kind: "config" as const, name: "files.nested/app.conf.bak", value: privateFile };
+  const test = open(diff({
+    follow_hints: [{ ...row, from: "production" }],
+    hints: [{ ...row, row: id("c:files.app.conf"), name: "files.app.conf", conditional_sync: "cs-config", pull_request: 142, landed: "hint" }],
+  }));
+
+  const after = within(await screen.findByRole("group", { name: "Not among these changes" }));
+  expect(after.getByText("app-settings · nested/app.conf.bak")).toBeTruthy();
+  expect(after.getByText("app-settings · app.conf")).toBeTruthy();
+  for (const summary of after.getAllByText("File")) expect(summary.closest(".ph-no-capture")).toBeTruthy();
+  expect(after.queryByText(/CONFIG_HINT_PRIVATE_SENTINEL|0440|1234|5678/u)).toBeNull();
+  fireEvent.click(after.getByRole("button", { name: "Use theirs: production's app-settings nested/app.conf.bak" }));
+  fireEvent.click(after.getByRole("button", { name: "Use PR #142's app-settings app.conf" }));
+  await waitFor(() => expect(test.commands()).toEqual([
+    { command: "take", from: "production", into: fixApi, rows: ["c:files.nested/app.conf.bak"], version: "4:abc" },
+    { command: "take", from: "cs-config", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
+  ]));
+});
+
+it("keeps a staged Config PR hint summary outside capture", async () => {
+  open(diff({ hints: [{ conditional_sync: "cs-config", pull_request: 142, row: id("c:files.app.conf"), node: "configs.app-settings", kind: "config", name: "files.app.conf", value: { content: "STAGED_CONFIG_PRIVATE_SENTINEL", mode: "0444", uid: 0, gid: 0 }, landed: "staged" }] }));
+
+  const after = within(await screen.findByRole("group", { name: "Not among these changes" }));
+  expect(after.getByText("app-settings · app.conf")).toBeTruthy();
+  expect(after.getByText("File").closest(".ph-no-capture")).toBeTruthy();
+  expect(after.getByText("From PR #142")).toBeTruthy();
+  expect(after.queryByText(/STAGED_CONFIG_PRIVATE_SENTINEL/u)).toBeNull();
+});
+
+it("summarizes Follow and PR hints attached to a changed Config file", async () => {
+  const file = { mode: "0444", uid: 0, gid: 0 };
+  const row = { row: id("c:files.app.conf"), node: "configs.app-settings", kind: "config" as const, name: "files.app.conf" };
+  const test = open(diff({
+    changes: [{ type: "config", id: "c", row: id("c:node"), name: "app-settings", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
+      { path: "configs.@c.files.app.conf", kind: "update", before: { ...file, content: "original" }, after: { ...file, content: "own edit" }, canRestore: true, row: row.row },
+    ] }], total_count: 1,
+    follow_hints: [{ ...row, from: "production", value: { ...file, content: "ATTACHED_FOLLOW_PRIVATE_SENTINEL" } }],
+    hints: [{ ...row, conditional_sync: "cs-config", pull_request: 142, value: { ...file, content: "ATTACHED_PR_PRIVATE_SENTINEL" }, landed: "hint" }],
+  }));
+
+  const own = within(await rowOf("app.conf"));
+  expect(own.getByText("own edit")).toBeTruthy();
+  for (const summary of own.getAllByText("File")) expect(summary.closest(".ph-no-capture")).toBeTruthy();
+  expect(own.queryByText(/ATTACHED_(FOLLOW|PR)_PRIVATE_SENTINEL/u)).toBeNull();
+  fireEvent.click(own.getByRole("button", { name: "Use theirs: production's app-settings app.conf" }));
+  fireEvent.click(own.getByRole("button", { name: "Use PR #142's app-settings app.conf" }));
+  await waitFor(() => expect(test.commands()).toEqual([
+    { command: "take", from: "production", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
+    { command: "take", from: "cs-config", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
+  ]));
+});
+
+
+it("uses the changed Config's identity path for Never sync despite a same-name arrival", async () => {
+  const row = id("old:files.app.conf");
+  const file = { content: "text", mode: "0444", uid: 0, gid: 0 };
+  const test = open(diff({ changes: [{ type: "config", id: "old", row: id("old:node"), name: "sentry", lifecycle: "update",
+    comparison: null, data: null, restarts: [], settings: [
+      { path: "configs.@old.files.app.conf", kind: "update", before: file, after: file, canRestore: true, row },
+    ] }], total_count: 1, incoming: [{ row, node: "configs.sentry", kind: "config", name: "files.app.conf", from: "production" }] }));
+  fireEvent.click((await menuOf("sentry app.conf")).getByRole("menuitem", { name: "Never sync" }));
+  expect(test.neverSync).toHaveBeenCalledWith("configs.@old.files.app.conf", row);
 });

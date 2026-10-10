@@ -1,11 +1,11 @@
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { Suspense, useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow, VolumeListing } from "@ployz/sdk";
-import { volumeStorageText } from "#/modules/config-store/store-volumes";
-import { replicaCap, replicaCount, volumeWriters, writersText } from "#/modules/config-store/volume-sharing";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { effectiveVolumes } from "#/modules/config-store/store-volumes";
+import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
 import { InfoHint } from "#/components/info-hint";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
@@ -34,7 +34,7 @@ import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { HealthcheckField } from "./HealthcheckField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
-import { RowWarning, SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
@@ -107,7 +107,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const services = requireView(views[0]).services;
   const settings = requireView(views[1]);
   const diff = requireView(views[2]);
-  const volumes = requireView(views[3]).volumes;
+  const volumes = effectiveVolumes(requireView(views[3]).volumes, services, settings);
   const namespace = views[4].ok ? views[4].value.namespace : null;
   const writer = useStoreWriter(organizationSlug);
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
@@ -130,17 +130,13 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     edit,
     set: (name, value) => edit(value === null ? { op: "unset", path: path(name) } : { op: "set", path: path(name), value }),
   };
-  // A service made from a database template is reached privately and keeps its data in a volume: its panel leads with
-  // that, where a web service leads with its public domain.
   const database = service.template != null;
-  // Staged counts count: a shared volume warns before the Deploy that would share it.
   const replicasOf = (name: string) => replicaCount(serviceSettingRows(settings, name).get("replicas"));
   // A volume without shared writes holds this service to one replica. More than one already (from before the rule)
   // isn't capped: its volume's writers warning says so, with the fix.
   const cap = replicaCap(service.name, volumes);
   const capped = cap && replicasOf(service.name) <= 1 ? cap : null;
-  const mounts = volumes.flatMap((volume) => volume.mounts.filter((mount) => mount.service === service.name)
-    .map((mount) => ({ volume, path: mount.path })));
+  const hasVolume = volumes.some((volume) => volume.mounts.some((mount) => mount.service === service.name));
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
   const buildMethod = settingText(state.rows.get("buildMethod")?.value ?? state.rows.get("buildMethod")?.default);
@@ -155,7 +151,11 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>
     ),
-    storage: mounts.length || database ? <StoreServiceStorage state={state} params={params} mounts={mounts} replicasOf={replicasOf} /> : null,
+    storage: database && !hasVolume ? (
+      <FieldGroup>
+        <Field data-invalid><FieldContent><FieldLabel>No volume</FieldLabel><FieldDescription>Data is lost on redeploy.</FieldDescription></FieldContent></Field>
+      </FieldGroup>
+    ) : null,
     scale: <FieldGroup>{capped ? <StoreReplicasCapped params={params} volume={capped} /> : field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
     build: state.source === "git" ? (
       <FieldGroup>
@@ -542,57 +542,6 @@ function StoreDangerSection({ state }: { state: StoreService }) {
         </Button>
       )} />
   );
-}
-
-/**
- * The volumes this service mounts, each opening its own panel. A database without one is warned: its data lives in the
- * container and goes with the next replacement.
- */
-function StoreServiceStorage({ state, params, mounts, replicasOf }: {
-  state: StoreService;
-  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
-  mounts: { volume: VolumeListing; path: string }[];
-  replicasOf: (service: string) => number;
-}) {
-  if (mounts.length === 0) {
-    return (
-      <Field orientation="responsive" data-invalid>
-        <FieldContent>
-          <FieldLabel>No volume</FieldLabel>
-          <FieldDescription>Data is lost on redeploy.</FieldDescription>
-        </FieldContent>
-      </Field>
-    );
-  }
-  const self = state.service.name;
-  return mounts.map(({ volume, path }) => {
-    // One warning per volume, on its row, with the fix beside it: fewer replicas here, or the other service's volume.
-    const { shared, writers, total } = volumeWriters(volume, replicasOf);
-    const mine = replicasOf(self);
-    const alone = writers.every((writer) => writer.service === self);
-    const open = (
-      <Button variant="outline" size="xs" nativeButton={false}
-        render={<Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} />}>Open {volume.name}</Button>
-    );
-    return (
-      <Field key={volume.id} orientation="responsive">
-        <FieldContent>
-          <FieldLabel>
-            <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} className="hover:underline">{volume.name}</Link>
-          </FieldLabel>
-          <FieldDescription>{volumeStorageText(volume.storage)}</FieldDescription>
-          {shared ? (
-            <RowWarning why={SHARED_VOLUME_WHY} action={mine > 1
-              ? <Button type="button" variant="outline" size="xs" onClick={() => state.set("replicas", 1)}>Use 1 replica</Button>
-              : open}>
-              {alone ? `${mine} replicas share this volume.` : `${total} containers write here: ${writersText(writers)}.`} Can corrupt data.
-            </RowWarning>
-          ) : null}
-        </FieldContent>
-        <span className="truncate font-mono text-sm">{path}</span>
-      </Field>
-    );
-  });
 }
 
 /** Replicas while a volume without shared writes is attached: one, fixed, and the way to allow more. */

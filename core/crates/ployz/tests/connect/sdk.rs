@@ -335,12 +335,23 @@ async fn confirm_after_close_fails_closed() {
 async fn node_smoke_covers_connect_about_preview_run_and_close() {
     let description = advertised_description();
     let session = UnixSession::start().await;
-    let _machine = session
-        .spawn_machine(
-            description.machine_id,
-            DiscoveryService::new(description.clone()),
-        )
-        .await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.inspect_container_result = Some(ployz_core::ContainerDetails {
+        environment: None,
+        image_id: None,
+        last_check: None,
+        container: super::listing_container(
+            '1',
+            'a',
+            "web",
+            ployz_core::ContainerKind::ServiceContainer,
+            ployz_core::ContainerRuntimeObservation::Running {
+                health: ployz_core::HealthObservation::Healthy,
+            },
+        ),
+    });
+    let created = service.created_containers.clone();
+    let _machine = session.spawn_machine(description.machine_id, service).await;
     session
         .assert_sdk_script(
             "node_smoke.js",
@@ -348,6 +359,20 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
             &[("PLOYZ_UNKNOWN_MACHINE_ID", MachineId::random().as_str())],
         )
         .await;
+    let created = created.lock().unwrap();
+    assert_eq!(created.len(), 2);
+    for request in created.iter() {
+        assert_eq!(request.resolved_spec.configs().len(), 1);
+        let config = request.resolved_spec.configs().first().unwrap();
+        assert_eq!(config.content, b"C6_PRIVATE_CONFIG_SENTINEL\n");
+        assert_eq!(request.resolved_spec.config_mounts().len(), 1);
+        let config_mount = request.resolved_spec.config_mounts().first().unwrap();
+        assert_eq!(config.name, "sentry/app.conf");
+        assert_eq!(
+            config_mount.target.as_ref().unwrap().as_str(),
+            "/etc/sentry/app.conf"
+        );
+    }
 }
 
 #[tokio::test]
@@ -355,6 +380,14 @@ async fn node_store_seams_refuse_malformed_input() {
     UnixSession::start()
         .await
         .assert_sdk_script("node_store.js", MachineId::random(), &[])
+        .await;
+}
+
+#[tokio::test]
+async fn node_configs_round_trip_through_the_store() {
+    UnixSession::start()
+        .await
+        .assert_sdk_script("node_configs.js", MachineId::random(), &[])
         .await;
 }
 

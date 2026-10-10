@@ -37,7 +37,8 @@ the release source, the `/run/ployz/dns.json` spec a daemon hands its Internal
 DNS process, and `ployzd dns --probe` exiting 0 when a binary can serve it. The CLI surface is a client courtesy with ordinary
 deprecation, not a guarantee. Branch Sync broke it on purpose, with no users yet:
 `env save` and `env update` are gone, and the JSON field `save` is now
-`conditional_sync`.
+`conditional_sync`. Warm Move broke it on purpose too, with no users yet: switch
+requests no longer carry `not_after_unix_seconds`, and AdoptLease is gone.
 
 Frozen formats evolve **additively with tolerant readers**: rows and bodies only
 gain fields; every new field is optional with a default; nothing is renamed or
@@ -72,17 +73,18 @@ what that observer saw; different observers may legitimately disagree until thei
 observations converge. Weak semantics stated honestly beat strong semantics
 enforced badly.
 
-**Machine-local lease records.** A Volume switch is a Cloud-driven sequence of
-Machine RPCs, and Cloud's own late or retried requests can arrive after the
-Machine has moved on. Each Machine keeps one lease record per Volume on its Pool
-and fences such requests against it: a stale lease or an earlier step is refused,
-a repeat answers what it already did. That record is admission, not
-coordination. The Machines decide it, Cloud carries it, and no Machine's record
-claims to be the Cluster's view of the Volume.
+**Machine-local lease records.** A Volume switch is a sequence of Machine RPCs
+driven by one operator, and that operator's own late or retried requests can
+arrive after a Machine has moved on. Each Machine keeps one lease record per
+Volume on its Pool and fences such requests against it. A stale lease or an
+earlier step is refused, and a repeat answers what it already did. The operator
+numbers the lease. The Machine only compares it with its own record (bet 6). No
+Machine's record claims to be the Cluster's view of the Volume, and no Machine
+reads another's.
 
 **Red flags:** fencing tokens, leases, leader election, quorum reads, any API or
 message claiming a complete or canonical Cluster view. A Machine-local lease
-record that fences Cloud's own late requests is none of these.
+record that fences one operator's late requests is none of these.
 
 ## 2. AP over C — inside the Cluster
 
@@ -114,11 +116,12 @@ Declarative reconciliation decouples components but multiplies edge cases and
 hides failures behind "it will fix itself later." Docker restarts containers on a
 Machine; Ployz does not move them between Machines on its own.
 
-A Volume Run (Mirror, Sync, Delete Mirror) is the one durable workflow, and it is
-still a bounded attempt. Cloud runs it as a fixed list of steps a user requested;
-it ends done, failed, cancelled or lost, and never runs again on its own. A retry
-reads every copy live and continues from what the disks show. A Cluster without
-Cloud keeps its Volumes where they are.
+A Volume Run (Mirror, Sync, Move, Release, Delete Mirror) is the one durable
+workflow, and it is still a bounded attempt. An operator runs it as a fixed list
+of steps a user requested. It ends done, failed, cancelled or lost, and never
+runs again on its own. A retry reads every copy live and continues from what the
+disks show. A Cluster with no operator to drive it keeps its Volumes where they
+are.
 
 **Red flags:** controllers, persisted desired state, durable workflows other than a
 requested Volume Run, cluster-wide reconcilers, any behavior that continues after
@@ -168,26 +171,66 @@ assuming a name resolves to exactly one thing, using a name as an identity or an
 ID as a grouping key, treating an ID's absence from one view as proof of
 non-existence.
 
-## 6. Machine-local resources
+## 6. Machine-local authority
 
-**The bet.** Volumes, subnets, and addresses belong to one Machine; their names
-are meaningful only together with that Machine. Allocation is optimistic —
-concurrent changes may produce overlapping Machine Subnets — and conflicts are
-possible across independent operators, never prevented by a mandatory global
-allocation step. An operator serializes its own enrollment commands with durable
-allocation history, including assignments not yet visible in an observation.
-History is saved before publication and Join and retained after failures; it is
-not runtime truth and has no automatic expiry or reclamation.
+**The bet.** Each Machine is authoritative over what is on itself, and over
+nothing else. Volumes, subnets and addresses belong to one Machine, and their
+names mean something only together with that Machine. A Machine decides from its
+own Pool, its own Docker and its own records. It never decides by reading
+another Machine's. Work that spans Machines, such as moving a Volume, is a
+sequence driven by one operator. Cloud is that operator when the Cluster has it,
+with its database as the operator's store. The operator orders its own steps.
+Each Machine admits or refuses each step against its own facts. Ployz assumes
+one operator drives a given Cluster at a time. It does not enforce that, and two
+at once may collide.
 
-**Why.** A global allocator that must answer before a Machine can act is a
-consistency dependency in disguise; it turns every partition into an outage.
+**Why.** In an eventually consistent Cluster a Machine can know only itself for
+certain. Anything it reads about another Machine is an observation that may
+already be stale (bet 1). A global allocator, a Cluster-wide lease, or a barrier
+that waits for every Machine is a consistency dependency in disguise, and it
+turns every partition into an outage. A single writer inside the Cluster would
+need the consensus bet 2 refuses. A single operator outside it is free: Cloud
+already has Postgres, and a CLI has the person's own disk.
+
+Allocation is optimistic. An operator serializes its own enrollment commands
+with durable allocation history, including assignments not yet visible in an
+observation. History is saved before publication and Join and retained after
+failures. It is not runtime truth and has no automatic expiry or reclamation.
 Different computers, independent stores, and direct CLI and Cloud operators can
 still select overlapping subnets from incomplete observations. No cross-store
 synchronization or subnet repair system is provided.
 
-**Red flags:** a resource identity meaningful without its Machine, a required
-round trip to an allocator, refusing to operate because an allocator is
-unreachable.
+Volume Runs follow the same rule. The operator numbers each run's lease from its
+own store and keeps one run open per Volume. Each Machine admits a step only if
+it is not behind the Machine's own record (bet 1) and its own markers allow it.
+If the operator's store forgets numbers, or two operators drive the same Volume,
+a Machine refuses whichever request is behind its record. Neither side waits for
+the other.
+
+Cloud smooths what it can see, and promises nothing. A Machine that was removed
+without a reset, while its Volume was restored elsewhere, may come back still
+holding a writable copy and running its Container. That copy decides nothing on
+its own. When Cloud next sees both copies, it will name the one with the older
+lease as old and demote it. That demotion ships with Restore. Until then both
+copies can take writes, and the old one's writes are lost when it is demoted.
+That window is accepted and documented, not prevented.
+
+**Red flags:**
+
+- A Machine deciding by reading another Machine's records. A replicated
+  observation of other Machines may narrow what a Machine does, by refusing or
+  naming a better command. It never authorizes an effect.
+- A lease that must be above every Machine's record to be safe, so a run has to
+  reach, fan out to, or wait for Machines it does not touch.
+- A barrier across Machines, such as refusing to remove one Server while
+  another's state is pending.
+- A clock-based safety wait. That includes a deadline, a budget, or a grace
+  period whose expiry is what makes an effect safe. A driver bounding its own
+  patience is fine.
+- A resource identity meaningful without its Machine, or a required round trip
+  to an allocator.
+- A Cluster-side single writer, or machinery that prevents two operators instead
+  of documenting the risk.
 
 ## 7. Cloud drives, never owns
 
@@ -204,10 +247,14 @@ the current Cluster pairing. A saved candidate is neither membership nor presenc
 only a successful connection confirms reachability and the intended Machine.
 The Cluster remains independently operable without Cloud.
 
-Volume Runs need Cloud to start and to step. Each Machine fences them itself: it
-keeps a lease record per Volume and refuses a request from an older run or an
-earlier step. Without Cloud a Volume stays put. No Cluster operation's correctness
-depends on Cloud, only the availability of Volume Runs.
+Volume Runs need an operator to start and step them. With Cloud, that operator
+is Cloud: its `volume_run` rows number each run's lease and keep one run open
+per Volume. That is the operator's bookkeeping, like allocation history in bet
+6. It serializes Cloud's own runs, and it is not runtime truth. Each Machine
+fences every step itself. Cloud may read what Machines report to choose a lease
+or to notice an old copy, but no Machine waits for Cloud's view. Without an
+operator, a Volume stays put. No Cluster operation's correctness depends on
+Cloud, only the availability of Volume Runs.
 
 Removing Cloud access disables that pairing's connections immediately. Endpoint
 revocation is confirmed separately; an offline Machine remains unconfirmed.
@@ -218,9 +265,10 @@ Cloud forgets a Cluster it can no longer reach only when a user says its Servers
 were deleted, and only while none of them answers; a failed connection may gate
 that decision, never make it.
 
-**Red flags:** Cloud-held runtime truth, a connection catalog treated as membership,
-absence or transport failure used to reset a founder, Cluster operations whose
-correctness depends on Cloud reachability.
+**Red flags:** Cloud-held runtime truth, a connection catalog treated as
+membership, absence or transport failure used to reset a founder, Cluster
+operations whose correctness depends on Cloud reachability, a Volume Run step
+whose safety needs Cloud's rows to be the Cluster's truth.
 
 ## 8. Evidence over claims
 
@@ -332,6 +380,8 @@ Ployz deliberately does not provide:
 - a centralized scheduler or control-plane quorum;
 - Cluster-wide atomic operations or general rollback;
 - automatic correction of every difference between observations;
+- a single writer inside the Cluster. Sequences that need one take it from the
+  one operator driving them, and two operators at once may collide;
 - a generic abstraction over container runtimes — Docker is the runtime;
 - continuously replicated persistent storage. A point-in-time mirror of a
   Volume, one per Volume, refreshed on request, is in scope; continuous

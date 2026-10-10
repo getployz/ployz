@@ -202,6 +202,11 @@ to leave it down. **Always** restarts it whenever it stops. See
 Shown with **On failure**. 10 by default, from 0 to 100; after that many restarts, the replica
 stays stopped.
 
+## Storage
+
+Shown for a database without a volume. **No volume** warns that data is lost on redeploy.
+Manage mounts from the [config](configs.md) or [volume](volumes.md) panel.
+
 ## Danger
 
 ### Delete service

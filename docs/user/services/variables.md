@@ -11,7 +11,7 @@ your app always gets the database of the environment it runs in.
 
 1. Open your service and go to the **Variables** tab.
 2. Click **New Variable**, and enter a **Key** and a **Value**.
-3. Leave **Sealed** ticked for a secret: you can't read it back or unseal it. Untick it for a
+3. Tick **Sealed** for a secret: you can't read it back or unseal it. Leave it unticked for a
    value you want to see, or one that holds a [reference](#reference-another-services-variable).
    Click **Add**.
 4. Click **Deploy**.
@@ -37,7 +37,7 @@ Paste or edit them, then click **Update variables**.
 A sealed variable is encrypted when you save it, and the dashboard never shows its value again.
 Your service still gets the real value when it deploys.
 
-- New variables are sealed unless you untick **Sealed**.
+- New variables are plain unless you tick **Sealed**.
 - To seal a plain variable, choose **Seal** from its menu. You can't unseal it.
 - To change a sealed value, delete the variable and add it again.
 - A sealed value is stored exactly as typed, so it can't hold a
@@ -53,7 +53,7 @@ DATABASE_URL=${{ postgres.DATABASE_URL }}
 WEB_URL=http://${{ web.PLOYZ_PRIVATE_DOMAIN }}:${{ web.PORT }}
 ```
 
-Untick **Sealed**, then type `${{` in the value. The dashboard suggests this service's
+Leave **Sealed** unticked, then type `${{` in the value. The dashboard suggests this service's
 variables, the [variables Ployz provides](#variables-ployz-provides), and other services'
 exported variables. Tick **Exported** on a variable to add it to the suggestions; you can type a
 reference to any variable either way.

@@ -168,6 +168,109 @@ fn pinned(store: &ConfigStore, automated: &Automated, service: &str) -> Option<S
 }
 
 #[test]
+fn discarding_a_renamed_config_mount_restores_saved_state_for_the_next_push() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/old".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+                file: ployz_core::ConfigFileName::parse("config.yml").unwrap(),
+                content: "value: old".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::AttachConfig {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+                dir: "/new".into(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::RenameConfig {
+                environment: EnvironmentRef::default(),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+                name: ployz_core::ConfigName::parse("errors").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse("web.configs.errors").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    let working = store
+        .read(
+            &who,
+            &ployz_store::ServiceQuery {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        working.values.get("configs"),
+        Some(&json!({"errors": "/old"}))
+    );
+    let automated = system(&store, &push(None, Some(H1), None));
+    let claimed = store
+        .claim(
+            &automated.admitted[0].deployment.id,
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+        )
+        .unwrap();
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|service| service.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(
+        json!(web.config_mounts()),
+        json!([{
+            "config_name": "sentry/config.yml", "target": "/old/config.yml",
+            "mode": 0o444, "uid": 0, "gid": 0
+        }])
+    );
+    let configs = store
+        .read(&who, &ployz_store::ConfigsQuery::default())
+        .unwrap();
+    assert_eq!(configs.configs[0].config.name.as_str(), "errors");
+}
+
+#[test]
 fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
     let (store, who) = shop();
     // Nothing Saved yet: a push deploys nothing, yet the head counts.

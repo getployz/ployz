@@ -1,14 +1,14 @@
 import { StoreServiceCard } from "./StoreServiceNode";
 import { StoreVolumeCard } from "./StoreVolumeNode";
+import { StoreConfigCard } from "./StoreConfigNode";
 import { ServiceTrays } from "./VolumeTray";
 import type { StoreCanvas } from "./types";
 
-/** The canvas as a list, on phones: its Services as compact cards with their Volume trays, then the Volumes nothing mounts. */
 export function CanvasNodeList({
-  store: { services, unmountedVolumes },
+  store: { services, unmountedVolumes, unmountedConfigs },
   selectedNodeId,
 }: {
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes">;
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs">;
   selectedNodeId: string | null;
 }) {
   return (
@@ -19,11 +19,14 @@ export function CanvasNodeList({
         {services.map((service) => (
           <div key={service.service.id}>
             <StoreServiceCard {...service} selected={service.service.id === selectedNodeId} compact className="block" />
-            <ServiceTrays trays={service.trays} selectedNodeId={selectedNodeId} />
+            <ServiceTrays trays={service.trays} configTrays={service.configTrays} selectedNodeId={selectedNodeId} />
           </div>
         ))}
         {unmountedVolumes.map((volume) => (
           <StoreVolumeCard key={volume.id} volume={volume} selected={volume.id === selectedNodeId} className="block" />
+        ))}
+        {unmountedConfigs.map((config) => (
+          <StoreConfigCard key={config.id} config={config} selected={config.id === selectedNodeId} className="block" />
         ))}
       </div>
     </div>
