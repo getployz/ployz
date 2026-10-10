@@ -57,7 +57,9 @@ no service arguments, and `--follow` still use live container discovery.
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,
   so you can see why it stopped.
-- **Deleting an environment deletes its logs.** A removed service's logs stay until they age out.
+- **Deleted environments and removed services keep their logs until retention removes them.**
+  Recreating an environment with the same name can show its earlier logs. A deployment's
+  **Deploy** tab shows only that deployment's output.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't kept, until their next deploy.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
