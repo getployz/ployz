@@ -1386,7 +1386,7 @@ fn an_agent_reviews_publishes_and_discards() {
         );
         assert_eq!(
             diff.get("next"),
-            Some(&json!(format!("ployz deploy --expect-version {version}")))
+            Some(&json!(format!("ployz publish --version {version}")))
         );
 
         // A review taken before another edit is stale.
@@ -1413,11 +1413,51 @@ fn an_agent_reviews_publishes_and_discards() {
             "published is not yet deployed"
         );
 
-        // The Service is published but not deployed: discarding it unpublishes it too.
         let discarded = ok(store, &["discard", "web"]);
-        assert_eq!(discarded.get("saved"), Some(&json!(2)));
+        assert_eq!(discarded.get("saved"), Some(&json!(1)));
         assert_eq!(discarded.get("next"), Some(&json!("ployz diff")));
-        assert_eq!(ok(store, &["diff"]).get("changes"), Some(&json!([])));
+        let inverse = ok(store, &["diff"]);
+        assert_eq!(inverse.get("changes"), Some(&json!([])));
+        assert_eq!(inverse.get("draft_count"), Some(&json!(1)));
+        assert_eq!(inverse.get("published"), Some(&json!(false)));
+        assert_eq!(
+            inverse.pointer("/draft_changes/0/lifecycle"),
+            Some(&json!("delete"))
+        );
+        let version = inverse["version"].as_str().unwrap();
+        assert_eq!(
+            inverse.get("next"),
+            Some(&json!(format!("ployz publish --version {version}")))
+        );
+        assert_eq!(
+            ok(store, &["history"])["revisions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let saved = ok(store, &["publish", "--version", version]);
+        assert_eq!(saved.get("saved"), Some(&json!(2)));
+        assert_eq!(saved.get("created"), Some(&json!(true)));
+        let after = ok(store, &["diff"]);
+        assert_eq!(after.get("changes"), Some(&json!([])));
+        assert_eq!(after.get("draft_count"), Some(&json!(0)));
+        assert_eq!(after.get("published"), Some(&json!(true)));
+        assert_eq!(
+            ok(store, &["history"])["revisions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(ok(store, &["publish"]).get("created"), Some(&json!(false)));
+        assert_eq!(
+            ok(store, &["history"])["revisions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }
 
