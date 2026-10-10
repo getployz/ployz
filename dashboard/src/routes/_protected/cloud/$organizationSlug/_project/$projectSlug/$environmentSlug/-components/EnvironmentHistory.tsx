@@ -111,12 +111,12 @@ export function EnvironmentHistory() {
       </div>
       {review.kind === "preview" && review.preview.overwritten.length > 0 ? (
         <Dialog open onOpenChange={(open) => { if (!open && !review.saving) close(); }}>
-          <DialogContent>
+          <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Overwrite draft changes?</DialogTitle>
               <DialogDescription>{review.preview.action === "restore" ? "Restoring this version" : "Undoing this change"} will overwrite these draft changes:</DialogDescription>
             </DialogHeader>
-            <ul className="list-inside list-disc text-sm">{review.preview.overwritten.map((path) => <li key={path}>{path}</li>)}</ul>
+            <ul className="max-h-72 overflow-y-auto break-words list-inside list-disc text-sm">{review.preview.overwritten.map((path) => <li key={path}>{path}</li>)}</ul>
             {review.preview.version !== diff.version ? <p role="alert">The canvas changed. Cancel and review this version again.</p> : null}
             {review.error ? <p role="alert">{review.error}</p> : null}
             <DialogFooter>
