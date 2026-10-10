@@ -6,6 +6,7 @@ import {
   detachedCopies,
   failover,
   failoverWords,
+  nextPlacementStep,
   observePlacement,
   placementChanges,
   placementSteps,
@@ -116,6 +117,29 @@ describe("placementChanges", () => {
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
       { kind: "move", args: { to: "web-3" } },
     ]);
+  });
+});
+
+describe("nextPlacementStep", () => {
+  const next = (members: Member[], placement: PlacementRow) => nextPlacementStep(changes(members, placement), placement.mirrors ?? []);
+
+  it("drops the promoted mirror once the move ends, and leaves the old primary detached", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [] });
+  });
+
+  it("keeps the mirrors while a change still has runs after this one", () => {
+    const members = [member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")];
+    expect(next(members, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({
+      run: { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null } },
+      mirrors: [],
+    });
+    const deleted = [member("web-2", "writer"), pooled("web-1"), pooled("web-3")];
+    expect(next(deleted, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({ run: { kind: "mirror", args: { to: "web-3" } }, mirrors: [id("web-3")] });
+  });
+
+  it("is null once the Servers hold what was staged", () => {
+    expect(next([member("web-2", "writer"), member("web-3", "mirror")], row(["web-3"], { primary: "web-2", mirrors: ["web-3"] }))).toBeNull();
   });
 });
 

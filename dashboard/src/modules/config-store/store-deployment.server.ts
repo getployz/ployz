@@ -115,13 +115,24 @@ const released = (store: ConfigStore, organizationId: string, deploymentId: stri
  */
 const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string, runId: string, why: string,
+  failure = "Cloud's worker stopped before it started this Deployment. Deploy again.",
 ) {
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
   if (view.status !== "queued" || view.runner !== null) return { nothingToRun: why };
-  yield* storeTry(() => store.runDeployment(organizationId, deploymentId, storeDeploymentRunner(runId), [], {
-    failure: "Cloud's worker stopped before it started this Deployment. Deploy again.",
-  }));
+  yield* storeTry(() => store.runDeployment(organizationId, deploymentId, storeDeploymentRunner(runId), [], { failure }));
   return { failed: deploymentId };
+});
+
+/** Run `runId` could not move the Deployment's Volumes: the Store records it failed with `failure`, before it claims it. */
+export const failStoreDeploymentStorage = Effect.fn("StoreDeployment.failStorage")(function* (
+  organizationId: string, deploymentId: string, runId: string, failure: string,
+) {
+  const store = yield* cloudStore;
+  const failed = yield* failUnclaimed(store, organizationId, deploymentId, runId, failure, failure).pipe(
+    Effect.ensuring(released(store, organizationId, deploymentId)),
+  );
+  yield* forgetStoreDeploymentRun(runId);
+  return failed;
 });
 
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */

@@ -204,6 +204,17 @@ export function placementSteps(changes: readonly PlacementChange[]): VolumeRunIn
   return [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order).flatMap(runsOf);
 }
 
+/** The next run a Deploy makes, and the mirrors once it ends: a change's mirrors move only with its last run. */
+export type PlacementStep = { readonly run: VolumeRunInput; readonly mirrors: readonly MachineId[] };
+
+export function nextPlacementStep(changes: readonly PlacementChange[], mirrors: readonly MachineId[]): PlacementStep | null {
+  const [change] = [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order);
+  if (change === undefined) return null;
+  const [run, ...rest] = runsOf(change);
+  if (run === undefined) return null;
+  return { run, mirrors: rest.length === 0 ? mirrorsAfter(mirrors, change) : [...mirrors] };
+}
+
 /** The mirrors once `change` has run. A move consumes the mirror it promotes. */
 export function mirrorsAfter(mirrors: readonly MachineId[], change: PlacementChange): MachineId[] {
   switch (change.kind) {
