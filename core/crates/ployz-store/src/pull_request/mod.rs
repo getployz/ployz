@@ -316,6 +316,29 @@ pub(crate) fn of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<PullReque
     rows.first().map(pull_request_ref).transpose()
 }
 
+/// The pull request of PR Environment `from` when `into` is one of its Destinations.
+pub(crate) fn destined(
+    tx: &mut dyn Tx,
+    from: &EnvironmentId,
+    into: &EnvironmentId,
+) -> Result<Option<PullRequestRef>, RpcError> {
+    let rows = tx.query(
+        "SELECT e.repository_id, e.number, p.facts FROM config_pr_environment e \
+         JOIN config_pull_request p ON p.organization_id = e.organization_id \
+         AND p.repository_id = e.repository_id AND p.number = e.number \
+         WHERE e.environment_id = ?1",
+        &[from.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let pr = pull_request_ref(row)?;
+    let facts: PullRequest = row.json(2, "pull request")?;
+    let project = scope::project_of(tx, from)?.id;
+    let destinations = destinations_of(tx, &project, pr.repository_id, &facts.target_branch)?;
+    Ok(destinations.contains(into).then_some(pr))
+}
+
 /// A pull request's repository and number, the first two columns of `row`.
 fn pull_request_ref(row: &crate::storage::Row) -> Result<PullRequestRef, RpcError> {
     Ok(PullRequestRef {

@@ -832,13 +832,25 @@ fn include_pr(
     who: &Actor,
     n: u8,
 ) -> Result<ployz_store::ProposalId, (RpcErrorCode, String)> {
+    include_from_pr(store, who, "production", Some(now_when()), n)
+}
+
+/// Include what `pr-5` offers into `into` as Sync `n`, saying `when` as the Dashboard
+/// does; the proposal, or the refusal.
+fn include_from_pr(
+    store: &ConfigStore,
+    who: &Actor,
+    into: &str,
+    when: Option<ployz_store::When>,
+    n: u8,
+) -> Result<ployz_store::ProposalId, (RpcErrorCode, String)> {
     let view = store
         .read(
             who,
             &ployz_store::SyncQuery {
                 from: at("pr-5"),
-                into: Some(at("production")),
-                when: Some(now_when()),
+                into: Some(at(into)),
+                when,
             },
         )
         .unwrap();
@@ -847,8 +859,8 @@ fn include_pr(
             who,
             &ployz_store::SyncChanges {
                 from: at("pr-5"),
-                into: Some(at("production")),
-                when: Some(now_when()),
+                into: Some(at(into)),
+                when,
                 version: view.version,
                 picks: None,
                 skip: Vec::new(),
@@ -864,6 +876,62 @@ fn include_pr(
         panic!("an Include stages now")
     };
     Ok(proposal)
+}
+
+/// Included into one of its Destinations, a pull request's preview is the pull
+/// request's proposal; included anywhere else, it is that Environment's, as any
+/// other source is.
+#[test]
+fn a_preview_is_its_pull_requests_proposal_only_in_a_destination() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(6)).unwrap(),
+                from: EnvironmentRef::default(),
+                name: EnvironmentName::parse("staging").unwrap(),
+                copy: vec![node("web")],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: true,
+                fix: None,
+            },
+        )
+        .unwrap();
+    plan(&store, &who, on());
+    pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_from_pr(&store, &who, "staging", None, 1).unwrap();
+    include_pr(&store, &who, 2).unwrap();
+
+    let source = |environment: &str| {
+        let diff = store
+            .read(
+                &who,
+                &ployz_store::DiffQuery {
+                    environment: at(environment),
+                },
+            )
+            .unwrap();
+        let [included] = &diff.included[..] else {
+            panic!("one proposal: {:?}", diff.included)
+        };
+        included.source.clone()
+    };
+    assert!(
+        matches!(&source("staging"), ployz_store::ProposalSource::Environment { name, .. } if name == "pr-5"),
+        "{:?}",
+        source("staging")
+    );
+    assert!(
+        matches!(
+            source("production"),
+            ployz_store::ProposalSource::PullRequest { number, .. } if number.get() == 5
+        ),
+        "{:?}",
+        source("production")
+    );
 }
 
 /// A pull request's recreated preview finds the proposal its first one made, unless

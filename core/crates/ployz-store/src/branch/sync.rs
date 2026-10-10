@@ -235,7 +235,7 @@ pub(crate) fn sync(
         }
         Lands::Now { close_after } => close_after,
     };
-    let identity = proposal::identity(tx, &from)?;
+    let identity = proposal::identity(tx, &from, &into.summary.id)?;
     let mut found = proposal::find(tx, &into.summary.id, &identity)?;
     // A retry of the Sync that last included `from` is answered with what it did.
     if let Some(found) = &found

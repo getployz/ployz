@@ -109,9 +109,14 @@ pub(crate) struct Owners {
     pub(crate) owned: BTreeSet<RowId>,
 }
 
-/// Who `from` is to the drafts it is included in.
-pub(crate) fn identity(tx: &mut dyn Tx, from: &Environment) -> Result<Identity, RpcError> {
-    Ok(match crate::pull_request::of(tx, &from.summary.id)? {
+/// Who `from` is to the draft of `into`: its pull request when `into` is one of that
+/// pull request's Destinations, else itself.
+pub(crate) fn identity(
+    tx: &mut dyn Tx,
+    from: &Environment,
+    into: &EnvironmentId,
+) -> Result<Identity, RpcError> {
+    Ok(match crate::pull_request::destined(tx, &from.summary.id, into)? {
         Some(pr) => Identity::PullRequest(pr),
         None => Identity::Environment(from.summary.id.clone()),
     })
@@ -201,7 +206,7 @@ pub(crate) fn planned(
     from: &Environment,
     into: &Environment,
 ) -> Result<(Move, Option<Proposal>, Owners), RpcError> {
-    let who = identity(tx, from)?;
+    let who = identity(tx, from, &into.summary.id)?;
     let found = find(tx, &into.summary.id, &who)?;
     let owners = owners(tx, &into.summary.id, found.as_ref().map(|found| &found.id))?;
     let way = Move::include(tx, from, into, &owners)?;
