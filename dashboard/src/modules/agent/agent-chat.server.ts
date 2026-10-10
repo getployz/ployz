@@ -211,16 +211,33 @@ const cloudOutcome = (binding: Extract<AgentBinding, { kind: "cloud" }>, caller:
   );
 
 /**
+ * What a read, staged write or `cloud` binding answers the model for `input`, the model's own arguments. Input the
+ * binding can't parse is the model's mistake, so the model hears it as invalid_argument instead of the run failing.
+ */
+export const toolOutcome = (
+  caller: Caller,
+  binding: Exclude<AgentBinding, { kind: "gated" }>,
+  input: JsonValue,
+  turn: string,
+): Effect.Effect<ToolOutcome, Effect.Error<ReturnType<typeof cloudOutcome>> | Effect.Error<ReturnType<typeof callStore>>, AgentServices> => {
+  try {
+    return binding.kind === "cloud"
+      ? cloudOutcome(binding, caller, input, turn)
+      : callStore(caller.organization.id, caller.userId, storeCall(binding, input, turn), AGENT);
+  } catch (thrown) {
+    return Effect.succeed(invalid(thrown instanceof Error ? thrown.message : String(thrown)));
+  }
+};
+
+/**
  * Every bound Cloud command as a tool. Reads and staged writes go straight to the Store, `cloud` commands to what
  * answers them, and the gate answers gated ones.
  */
 const agentTools = (caller: Caller, run: Run, turn: string) => AGENT_COMMANDS.map(({ command, binding }) =>
   toolDefinition({ name: toolName(command.command), description: command.about, inputSchema: inputSchema(command, binding) })
     .server((args) => {
-      const input = projectJsonValue(args) ?? null;
       if (binding.kind === "gated") throw new Error(`${command.command} ran outside the approval gate.`);
-      if (binding.kind === "cloud") return run(cloudOutcome(binding, caller, input, turn));
-      return run(callStore(caller.organization.id, caller.userId, storeCall(binding, input, turn), AGENT));
+      return run(toolOutcome(caller, binding, projectJsonValue(args) ?? null, turn));
     }));
 
 const systemPrompt = (caller: Caller) => `You are the Ployz agent in the sidebar of Ployz Cloud. You act in the Organization "${caller.organization.slug}" as the member who is talking to you, through the same Config Store the ployz CLI uses. Never act in another Organization.
