@@ -49,6 +49,7 @@ export type GithubObservationOperation =
   | "list_branches"
   | "resolve_file_ref"
   | "list_files"
+  | "fetch_contents"
   | "installation_token"
   | "download_source"
   | "fetch_workflow"

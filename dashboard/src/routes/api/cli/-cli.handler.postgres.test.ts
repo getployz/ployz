@@ -40,9 +40,22 @@ import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
 
-/** GitHub: the private acme/web (through installation 7) has branches main and dev. */
+/** GitHub: the private acme/web (through installation 7) has branches main and dev, a Dockerfile and a src directory. */
 const github = fakeGithubApi({
   "https://api.github.com/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+  "https://api.github.com/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
+  [`https://api.github.com/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
+    truncated: false,
+    tree: [
+      { path: "Dockerfile", type: "blob", mode: "100644" },
+      { path: "src", type: "tree", mode: "040000" },
+      { path: "src/main.ts", type: "blob", mode: "100644" },
+    ],
+  },
+  "https://api.github.com/repos/acme/web/contents/Dockerfile?ref=main": {
+    type: "file", size: 12, encoding: "base64", content: Buffer.from("FROM alpine\n").toString("base64"),
+  },
+  "https://api.github.com/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
 });
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
@@ -139,6 +152,13 @@ type Reply = {
   readonly access?: string;
   readonly disconnected?: { readonly id: number; readonly account: string };
   readonly uninstall_url?: string;
+  readonly ref?: string;
+  readonly paths?: ReadonlyArray<string>;
+  readonly repository?: string;
+  readonly path?: string;
+  readonly size?: number;
+  readonly truncated?: boolean;
+  readonly content?: string | null;
   readonly organization?: string;
   readonly namespace?: string;
   readonly volumes?: ReadonlyArray<unknown>;
@@ -182,7 +202,8 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
     return { status: 200, json: JSON.parse(JSON.stringify(exit.value)) as Reply, text: JSON.stringify(exit.value) };
   }
   const empty: Reply = {};
-  return { status: statusForPublicError(encodePublicError(Cause.squash(exit.cause))), json: empty, text: "" };
+  const error = encodePublicError(Cause.squash(exit.cause));
+  return { status: statusForPublicError(error), json: empty, text: JSON.stringify(error) };
 });
 
 /** Signs a user up from the CLI, so its session counts as a signed-in device. */
@@ -500,6 +521,19 @@ it.live(
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
         assert.deepInclude(branches.json, { access: "installation", branches: ["dev", "main"] });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
+
+        const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
+        assert.deepInclude(tree.json, { repository: "acme/web", ref: "main", paths: ["src/main.ts"], truncated: false });
+        const file = yield* cli("GET", "github/file?repository=acme%2Fweb&path=Dockerfile", alice);
+        assert.deepInclude(file.json, { path: "Dockerfile", size: 12, content: "FROM alpine\n" });
+        const directory = yield* cli("GET", "github/file?repository=acme%2Fweb&path=src", alice);
+        assert.strictEqual(directory.status, 422);
+        assert.deepInclude(directory.json.error, { code: "invalid_argument", message: "src is a directory: list it with github tree." });
+        // A private repository the Organization can't read answers exactly as one that doesn't exist.
+        const hidden = yield* cli("GET", "github/file?repository=acme%2Fsecret&path=Dockerfile", alice);
+        const absent = yield* cli("GET", "github/tree?repository=nobody%2Fnothing", alice);
+        assert.strictEqual(hidden.status, 404);
+        assert.deepStrictEqual([absent.status, absent.text], [hidden.status, hidden.text]);
 
         const removed = yield* cli("DELETE", "github/7", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });

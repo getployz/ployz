@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideApproval, gateOperation } from "#/modules/approvals/approvals.server";
-import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
+import { disconnectGithub, githubBranches, githubConnection, githubFile, githubTree } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
 import {
@@ -236,9 +236,24 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "GET github":
       return yield* githubConnection(caller);
     case "GET github/:id": {
-      const repository = new URL(request.url).searchParams.get("repository");
-      if (id !== "branches" || repository === null) return yield* new NotFound({ message: "Not found." });
-      return yield* githubBranches(caller, repository);
+      const query = new URL(request.url).searchParams;
+      const repository = query.get("repository");
+      const path = query.get("path");
+      if (repository === null) return yield* new NotFound({ message: "Not found." });
+      switch (id) {
+        case "branches":
+          return yield* githubBranches(caller, repository);
+        case "tree":
+          return yield* githubTree(caller, repository, path, query.get("ref"));
+        case "file":
+          if (path === null) return yield* new NotFound({ message: "Not found." });
+          return yield* githubFile(caller, repository, path, query.get("ref")).pipe(
+            Effect.catchTag("Validation", (invalid) =>
+              Effect.succeed(refusal({ code: "invalid_argument", message: invalid.message, details: null }))),
+          );
+        default:
+          return yield* new NotFound({ message: "Not found." });
+      }
     }
     case "DELETE github/:id": {
       const installation = Number(id);
