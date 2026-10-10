@@ -664,9 +664,10 @@ pub(super) struct Arrived {
 }
 
 /// Record `arrived` in `receiver`, replacing what arrived at that row from that side
-/// before. A row still pending keeps the base's cell from before its first arrival,
-/// and one its proposal still owns keeps the receiver's own from before it too. A
-/// hint never replaces an owned row.
+/// before. A row still pending under the same owner keeps the base's cell from
+/// before its first arrival, and one its proposal still owns keeps the receiver's own
+/// from before it too; a new proposal starts from the base it found. A hint never
+/// replaces an owned row.
 fn arrive(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -709,6 +710,8 @@ fn arrive(
              AND config_sync_arrival.proposal_id = excluded.proposal_id \
              THEN config_sync_arrival.was ELSE excluded.was END, prior = CASE \
              WHEN config_sync_arrival.state = 'pending' AND excluded.state = 'pending' \
+             AND COALESCE(config_sync_arrival.proposal_id, '') \
+             = COALESCE(excluded.proposal_id, '') \
              THEN config_sync_arrival.prior ELSE excluded.prior END{hint}"
         ),
         &[

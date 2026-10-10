@@ -893,6 +893,29 @@ fn a_save_ends_proposals_and_keeps_what_arrived() {
 }
 
 #[test]
+fn a_proposal_over_a_saved_arrival_removes_back_to_what_was_saved() {
+    let db = Db::new();
+    db.set("dev", &[("api.env.X", "1")]);
+    db.include(("dev", "production"), &sync_id(1), None)
+        .unwrap();
+    db.save("production");
+    db.set("dev", &[("api.env.X", "2")]);
+    let b = proposal(
+        &db.include(("dev", "production"), &sync_id(2), None)
+            .unwrap(),
+    );
+    assert_eq!(db.remove("production", &b), Ok(true));
+    assert_eq!(db.env("production", "api")["X"], "1");
+    // The base is what production saved, so dev's 2 is an ordinary update again.
+    let view = db.offered("dev", "production");
+    let x = row(&view, "api.env.X");
+    assert_eq!(
+        (x.change, x.ticked),
+        (ployz_store::SyncChange::Changed, true)
+    );
+}
+
+#[test]
 fn a_manual_deploy_ends_proposals() {
     let db = Db::new();
     db.set("dev", &[("api.env.X", "1")]);
