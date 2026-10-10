@@ -22,7 +22,7 @@ use ts_rs::TS;
 
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
-use crate::id::{ConditionalSyncId, DeploymentId, EnvironmentId, Hostname, OrganizationId};
+use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
@@ -69,10 +69,6 @@ pub struct BranchHead {
     /// Service that follows the branch.
     #[serde(default)]
     pub changed: Option<Vec<String>>,
-    /// The merge commits of frozen Conditional Syncs ([`crate::PendingSyncs::merged`])
-    /// Cloud found `head` is or descends from: this push carries those.
-    #[serde(default)]
-    pub merged: Vec<CommitSha>,
 }
 
 /// A check suite of a commit, as Cloud read it just now.
@@ -290,8 +286,6 @@ fn branch_head(
         "SELECT id FROM config_environment WHERE organization_id = ?1 ORDER BY id",
         &[organization.into()],
     )?;
-    let mut carried =
-        crate::conditional_sync::carried(tx, who, event.repository_id, branch, &event.merged)?;
     let mut automated = Automated::default();
     for row in environments {
         let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
@@ -300,13 +294,12 @@ fn branch_head(
             branch,
             head,
         };
-        let syncs = carried.remove(&environment).unwrap_or_default();
         deploy(
             tx,
             who,
             &environment,
             &push,
-            (Select::Changed(changed), &syncs),
+            Select::Changed(changed),
             trusted,
             &mut automated,
         )?;
@@ -342,7 +335,7 @@ fn check_suite(
         ],
     )?;
     let waiting = tx.query(
-        "SELECT environment_id, branch, services, syncs FROM config_waiting_deploy \
+        "SELECT environment_id, branch, services FROM config_waiting_deploy \
          WHERE organization_id = ?1 AND repository_id = ?2 AND head = ?3 \
          ORDER BY environment_id, branch",
         &[
@@ -355,7 +348,6 @@ fn check_suite(
     for row in waiting {
         let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
         let services: Vec<String> = row.json(2, "waiting deploy")?;
-        let syncs: Vec<ConditionalSyncId> = row.json(3, "waiting deploy")?;
         let branch: BranchName = row.parse(1, "waiting deploy")?;
         let push = Push {
             repository_id: event.repository_id,
@@ -367,7 +359,7 @@ fn check_suite(
             who,
             &environment,
             &push,
-            (Select::Services(&services), &syncs),
+            Select::Services(&services),
             trusted,
             &mut automated,
         )?;
@@ -389,18 +381,17 @@ enum Select<'a> {
     Services(&'a [String]),
 }
 
-/// Deploy `environment`'s Services the push selects, wait for CI, or skip it; the
-/// frozen Conditional Syncs it carries there land first, wait with it, or land now.
+/// Deploy `environment`'s Services the push selects, wait for CI, or skip it.
 fn deploy(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
     push: &Push<'_>,
-    (select, syncs): (Select<'_>, &[ConditionalSyncId]),
+    select: Select<'_>,
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    match admit(tx, who, environment, push, (select, syncs), trusted) {
+    match admit(tx, who, environment, push, select, trusted) {
         Ok(Some(Deploy::Admitted(deployment))) => automated.admitted.push(AutoDeployed {
             environment: environment.clone(),
             deployment: *deployment,
@@ -447,16 +438,10 @@ fn admit(
     who: &Actor,
     id: &EnvironmentId,
     push: &Push<'_>,
-    (select, syncs): (Select<'_>, &[ConditionalSyncId]),
+    select: Select<'_>,
     trusted: &Trusted,
 ) -> Result<Option<Deploy>, RpcError> {
-    let mut environment = scope::lock_id(tx, who, id)?;
-    // Where nothing deploys, what the push carries lands now.
-    let land = |tx: &mut dyn Tx, environment: &mut scope::Environment| {
-        syncs
-            .iter()
-            .try_for_each(|sync| crate::conditional_sync::land(tx, who, sync, environment))
-    };
+    let environment = scope::lock_id(tx, who, id)?;
     // Closing, or being removed: a push leaves it be. A shut-down PR Environment
     // (its removal applied) comes back on: the push deploys all of it again.
     let removing = crate::teardown::removing(tx, id)?;
@@ -465,11 +450,9 @@ fn admit(
         .is_some_and(|removal| removal.status == DeploymentStatus::Applied)
         && crate::pull_request::of(tx, id)?.is_some();
     if crate::pull_request::closing(tx, id)? || (removing.is_some() && !shut_down) {
-        land(tx, &mut environment)?;
         return Ok(None);
     }
     let Some(saved) = review::latest_saved(tx, id)? else {
-        land(tx, &mut environment)?;
         return Ok(None);
     };
     let mut selected: Vec<&SavedServiceIntent> = Vec::new();
@@ -502,18 +485,16 @@ fn admit(
              WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
             &key,
         )?;
-        land(tx, &mut environment)?;
         return Ok((!selected.is_empty()).then_some(Deploy::NoServers));
     }
     if wait && !passed(tx, who, push)? {
         let services: Vec<&str> = selected.iter().map(|service| service.id.as_str()).collect();
         tx.execute(
             "INSERT INTO config_waiting_deploy \
-             (environment_id, repository_id, branch, organization_id, head, services, syncs) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             (environment_id, repository_id, branch, organization_id, head, services) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
              ON CONFLICT (environment_id, repository_id, branch) \
-             DO UPDATE SET head = excluded.head, services = excluded.services, \
-             syncs = excluded.syncs",
+             DO UPDATE SET head = excluded.head, services = excluded.services",
             &[
                 environment_param,
                 repository_param,
@@ -522,10 +503,6 @@ fn admit(
                 push.head.as_str().into(),
                 serde_json::to_string(&services)
                     .expect("Service IDs are JSON")
-                    .as_str()
-                    .into(),
-                serde_json::to_string(syncs)
-                    .expect("Conditional Sync IDs are JSON")
                     .as_str()
                     .into(),
             ],
@@ -537,25 +514,7 @@ fn admit(
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
         &key,
     )?;
-    // What the push carries lands in Saved State first, so it deploys too.
     let selected: Vec<SavedServiceIntent> = selected.into_iter().cloned().collect();
-    let (saved, selected) = match syncs.is_empty() {
-        true => (saved, selected),
-        false => {
-            let ids: Vec<String> = selected.iter().map(|service| service.id.clone()).collect();
-            land(tx, &mut environment)?;
-            let saved =
-                review::latest_saved(tx, id)?.ok_or_else(|| error::corrupt("Saved State"))?;
-            let selected = saved
-                .intent
-                .services
-                .iter()
-                .filter(|service| ids.contains(&service.id))
-                .cloned()
-                .collect();
-            (saved, selected)
-        }
-    };
     let names = match shut_down {
         true => Vec::new(),
         false => selected

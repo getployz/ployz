@@ -52,6 +52,14 @@ pub struct Included {
     pub changes: usize,
     /// The Sync that last included it.
     pub sync: SyncId,
+    /// Offered, not in the draft yet: include it with [`crate::IncludeProposal`].
+    #[serde(default)]
+    pub offered: bool,
+    /// For a pull request's: whether it merged into a branch this Environment deploys.
+    /// Save and Deploy wait for every included one to be `ready`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub readiness: Option<crate::pull_request::Readiness>,
 }
 
 /// Where an included proposal came from.
@@ -96,6 +104,8 @@ pub(crate) struct Proposal {
     name: String,
     first_sync: SyncId,
     pub(crate) last_sync: SyncId,
+    /// Offered, not in the draft yet: it owns nothing there.
+    pub(crate) offered: bool,
 }
 
 /// What the proposals of a draft own there, as a Sync from one source plans with it.
@@ -122,8 +132,8 @@ pub(crate) fn identity(
     })
 }
 
-const PROPOSAL: &str = "SELECT id, source_environment_id, source_name, first_sync, last_sync \
-     FROM config_proposal WHERE environment_id = ?1";
+const PROPOSAL: &str = "SELECT id, source_environment_id, source_name, first_sync, last_sync, \
+     CAST(CASE WHEN offered IS NULL THEN 0 ELSE 1 END AS BIGINT) FROM config_proposal WHERE environment_id = ?1";
 
 fn proposal(row: &storage::Row) -> Result<Proposal, RpcError> {
     Ok(Proposal {
@@ -132,6 +142,7 @@ fn proposal(row: &storage::Row) -> Result<Proposal, RpcError> {
         name: row.text(2)?.to_owned(),
         first_sync: row.parse(3, "proposal")?,
         last_sync: row.parse(4, "proposal")?,
+        offered: row.int(5)? != 0,
     })
 }
 
@@ -358,7 +369,7 @@ pub(crate) fn record(
 
 /// Sync `sync` ran from `from` into `into`, including `proposal`: kept for good, so
 /// the id is never another Sync's and Undo finds what it included.
-fn keep_receipt(
+pub(crate) fn keep_receipt(
     tx: &mut dyn Tx,
     who: &Actor,
     (into, from): (&EnvironmentId, &Environment),
@@ -471,7 +482,19 @@ pub(crate) fn remove(
             removed: false,
         });
     };
-    review::check(&review::review(tx, &into)?, request.version.as_deref())?;
+    // An offer isn't in the draft: removing it changes nothing there.
+    if proposal.offered {
+        drop_offer(tx, &proposal.id)?;
+        return Ok(Removed {
+            environment: into.summary,
+            removed: true,
+        });
+    }
+    // Remove is what unblocks a draft waiting on a pull request: no version is
+    // needed for it, a stale one is still refused.
+    if let Some(version) = request.version.as_deref() {
+        review::check(&review::review(tx, &into)?, Some(version))?;
+    }
     take_out(tx, &mut into, &proposal)?;
     Ok(Removed {
         environment: into.summary,
@@ -816,10 +839,16 @@ pub(crate) fn undo(
     let Some(proposal) = by_id(tx, &receiver, &id)? else {
         return Ok(None);
     };
+    if proposal.offered {
+        // An offer's Sync wrote nothing to the draft: undoing it forgets the offer,
+        // whichever Sync of it is undone.
+        drop_offer(tx, &proposal.id)?;
+        return Ok(Some(Undone { into: into.summary }));
+    }
     if proposal.first_sync != *sync || proposal.last_sync != *sync {
         return Err(error::conflict(
             format!(
-                "{} was refreshed since: Remove it from Details in Ployz Cloud",
+                "{} was refreshed since: Remove it in Changes",
                 proposal.name
             ),
             json!({ "proposal": proposal.id }),
@@ -842,19 +871,13 @@ pub(crate) fn undo(
     Ok(Some(Undone { into: into.summary }))
 }
 
-/// The draft of `environment` is saved or deployed, or discarded whole: its
-/// proposals end, and the rows they owned are ordinary arrivals. True when it had any.
-pub(crate) fn consume(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<bool, RpcError> {
+/// Forget offer `id`: it owns nothing, so nothing in the draft changes.
+pub(crate) fn drop_offer(tx: &mut dyn Tx, id: &ProposalId) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_sync_arrival SET proposal_id = NULL, source = NULL \
-         WHERE environment_id = ?1 AND proposal_id IS NOT NULL",
-        &[environment.as_str().into()],
+        "DELETE FROM config_proposal WHERE id = ?1 AND offered IS NOT NULL",
+        &[id.as_str().into()],
     )?;
-    let ended = tx.execute(
-        "DELETE FROM config_proposal WHERE environment_id = ?1",
-        &[environment.as_str().into()],
-    )?;
-    Ok(ended > 0)
+    Ok(())
 }
 
 /// Release each row `environment`'s Working State now holds other than its proposal
@@ -900,7 +923,7 @@ pub(crate) fn included(
          (SELECT COUNT(*) FROM config_sync_arrival a \
           WHERE a.environment_id = p.environment_id AND a.proposal_id = p.id), \
          COALESCE(r.name, e.name), COALESCE(r.working_revision, e.working_revision), \
-         r.id \
+         r.id, p.offered \
          FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
          LEFT JOIN config_environment e ON e.id = p.source_environment_id \
          LEFT JOIN (SELECT q.environment_id AS id, q.repository_id, q.number, \
@@ -913,8 +936,9 @@ pub(crate) fn included(
          WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
         &[environment.as_str().into()],
     )?;
-    rows.iter()
-        .map(|row| {
+    let mut included = Vec::with_capacity(rows.len());
+    for row in &rows {
+        included.push({
             let revision = Revision(row.number::<u64>(3, "proposal")?);
             let included_at = row.int(3)?;
             let now = row.optional_int(9)?;
@@ -935,14 +959,41 @@ pub(crate) fn included(
                 },
                 _ => ProposalSource::Environment { id, name, live },
             };
-            Ok(Included {
-                proposal: row.parse(0, "proposal")?,
+            let proposal: ProposalId = row.parse(0, "proposal")?;
+            let offer = row
+                .optional_text(11)?
+                .map(|text| crate::conditional_sync::Offer::decode(&proposal, text))
+                .transpose()?;
+            let changes = match &offer {
+                Some(offer) => offer.stored.picks.len(),
+                None => usize::try_from(row.int(7)?).map_err(|_| error::corrupt("proposal"))?,
+            };
+            let readiness = match &source {
+                ProposalSource::PullRequest {
+                    repository_id,
+                    number,
+                    ..
+                } => Some(crate::pull_request::readiness(
+                    tx,
+                    environment,
+                    &PullRequestRef {
+                        repository_id: *repository_id,
+                        number: *number,
+                    },
+                )?),
+                ProposalSource::Environment { .. } => None,
+            };
+            Included {
+                proposal,
                 source,
                 revision,
                 newer: reopened_preview.is_some() || now.is_some_and(|now| now > included_at),
-                changes: usize::try_from(row.int(7)?).map_err(|_| error::corrupt("proposal"))?,
+                changes,
                 sync: row.parse(4, "proposal")?,
-            })
-        })
-        .collect()
+                offered: offer.is_some(),
+                readiness,
+            }
+        });
+    }
+    Ok(included)
 }

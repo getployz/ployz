@@ -105,7 +105,6 @@ fn push(base: Option<&str>, head: Option<&str>, changed: Option<&[&str]>) -> Sys
         base: base.map(backend::sha),
         head: head.map(backend::sha),
         changed: changed.map(|paths| paths.iter().map(|path| (*path).to_owned()).collect()),
-        merged: Vec::new(),
     })
 }
 

@@ -309,7 +309,7 @@ impl ConfigStore {
     }
 
     /// The Conditional Syncs a push to a GitHub branch may freeze or carry:
-    /// `{standing: [number], merged: [commit]}`. Only Cloud's GitHub workers call this.
+    /// `{standing: [number]}`. Only Cloud's GitHub workers call this.
     ///
     /// # Errors
     /// Returns a storage error.

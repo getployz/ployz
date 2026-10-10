@@ -239,17 +239,17 @@ commands! {
     /// Sync one Environment's changes into another of its Project: staged there,
     /// never deleting or deploying.
     Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, sealing, c);
-    /// Undo a Sync while what it staged is undeployed and unchanged, or withdraw the
-    /// Conditional Sync it made.
+    /// Undo a Sync while what it staged is undeployed and unchanged, or forget the
+    /// offer it made.
     UndoSync(crate::UndoSync) -> Undone(crate::Undone) => crate::branch::undo(tx, who, c);
     /// Remove a source included in a draft: what it still owns there goes back.
     RemoveProposal(crate::RemoveProposal) -> Removed(crate::Removed)
         => crate::branch::remove_proposal(tx, who, c);
-    /// Stage the hints a Conditional Sync or a Parent left in an Environment.
+    /// Stage the hints a Parent left in an Environment.
     Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
-    /// Hold a Destination's value for a secret a pull request brings it by name.
-    HoldSecret(crate::HoldSecret) -> SecretHeld(crate::SecretHeld)
-        => crate::conditional_sync::hold(tx, who, sealing, c);
+    /// Include an offer in its Destination's draft.
+    IncludeProposal(crate::IncludeProposal) -> ProposalIncluded(crate::ProposalIncluded)
+        => crate::conditional_sync::include(tx, who, sealing, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
     /// Mark rows of an Environment Never sync, or sync them again.
@@ -476,7 +476,7 @@ impl Written {
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
-            Self::SecretHeld(held) => Some(&held.environment.id),
+            Self::ProposalIncluded(included) => Some(&included.environment.id),
             Self::Synced(synced) => Some(&synced.into.id),
             Self::Undone(undone) => Some(&undone.into.id),
             Self::Removed(removed) => Some(&removed.environment.id),
@@ -554,14 +554,14 @@ pub enum Written {
     BuildOrder(crate::BuildOrderView),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
-    /// A Sync was undone, or its Conditional Sync withdrawn.
+    /// A Sync was undone, or its offer forgotten.
     Undone(crate::Undone),
     /// A proposal was removed from its draft, or was gone already.
     Removed(crate::Removed),
     /// Hints were staged.
     Taken(crate::Taken),
-    /// A secret's value was held for a pull request's merge.
-    SecretHeld(crate::SecretHeld),
+    /// An offer was included in its draft, or was already.
+    ProposalIncluded(crate::ProposalIncluded),
     /// An Environment's settings marked Never sync changed.
     NeverSynced(crate::NeverSynced),
     /// The Default Environment changed: the Project's Environments after it.

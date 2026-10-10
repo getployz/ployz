@@ -196,8 +196,8 @@ pub(crate) fn command() -> Command {
             )
             .arg(
                 value("take", None)
-                    .value_name("ID")
-                    .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them")
+                    .value_name("PARENT")
+                    .help("Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them")
                     .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo", "at-merge"]),
             ),
         )

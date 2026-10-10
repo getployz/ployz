@@ -51,10 +51,6 @@ pub struct DiffView {
     #[serde(default)]
     #[ts(as = "Option<usize>", optional)]
     pub draft_count: usize,
-    /// Merged pull requests' values landed beside this Environment's own changes,
-    /// until its next Saved revision.
-    #[serde(default)]
-    pub hints: Vec<crate::PullRequestHint>,
     /// Staged changes that arrived from the Parent's deploy by Follow, still at the
     /// value they arrived with, until they deploy.
     #[serde(default)]
@@ -157,6 +153,8 @@ pub(crate) struct Review {
     pub(crate) view: DiffView,
     pub(crate) saved: Option<Saved>,
     pub(crate) head: Head,
+    /// The pull requests the draft includes, and whether each merged here.
+    pub(crate) gated: Vec<crate::branch::Gated>,
 }
 
 pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Review, RpcError> {
@@ -172,7 +170,16 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
-    Ok(Review { view, saved, head })
+    let gated = crate::branch::gated(tx, id)?;
+    if let Some(gate) = crate::branch::version_gate(&gated) {
+        view.version = format!("{}:{gate}", view.version);
+    }
+    Ok(Review {
+        view,
+        saved,
+        head,
+        gated,
+    })
 }
 
 fn saved_comparison(
@@ -254,7 +261,6 @@ fn compare(
         total_count: changes.total_count,
         draft_changes: Vec::new(),
         draft_count: 0,
-        hints: Vec::new(),
         incoming: Vec::new(),
         follow_hints: Vec::new(),
         included: Vec::new(),
@@ -519,18 +525,23 @@ fn restarts(
 
 /// Refuse unless `version` still names this review; the refusal carries the fresh
 /// one. A version a destructive review handed back names this review, then what it
-/// deletes (see `crate::removal::review`).
+/// deletes (see `crate::removal::review`). No version is refused only while the
+/// draft includes a pull request: whether it merged must have been reviewed.
 pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcError> {
     let current = review.view.version.as_str();
     let names_it = |version: &str| {
         version == current
             || version
                 .strip_prefix(current)
-                .is_some_and(|rest| rest.starts_with(':'))
+                .is_some_and(|rest| rest.starts_with(':') && !rest.starts_with(":g"))
     };
     match version {
         Some(version) if !names_it(version) => Err(error::conflict(
             "The Environment changed after this review. Review the latest changes and try again",
+            json!({ "diff": review.view }),
+        )),
+        None if !review.gated.is_empty() => Err(error::conflict(
+            "This draft includes a pull request: review it and pass its version",
             json!({ "diff": review.view }),
         )),
         Some(_) | None => Ok(()),

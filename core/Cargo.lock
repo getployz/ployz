@@ -3557,6 +3557,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio-postgres-rustls",
+ "tracing",
  "ts-rs",
  "uuid",
  "webpki-roots",

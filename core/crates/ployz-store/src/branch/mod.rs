@@ -5,6 +5,7 @@
 //! deployed changes since. Core plans the picks and compares the rows
 //! (`plan_branch`, `plan`, `live_values`); this module stores and lands them.
 
+mod admission;
 mod create;
 mod follow;
 mod live;
@@ -13,6 +14,7 @@ mod pair;
 mod proposal;
 mod setup;
 mod sync;
+pub(crate) use admission::{Gated, consume, forget_included, gated, ready, version_gate};
 pub(crate) use create::*;
 pub use follow::{FollowHint, IncomingChange};
 pub(crate) use follow::{follow, hints, incoming};
@@ -20,16 +22,19 @@ pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use never_sync::{marked, marks, never_sync};
 pub(crate) use pair::*;
+pub(crate) use proposal::included;
 pub(crate) use proposal::remove as remove_proposal;
 pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};
-pub(crate) use proposal::{Owners, consume, included, release_changed};
+pub(crate) use proposal::{
+    Owners, credentials, keep_carried, keep_receipt, owners as proposal_owners, release_changed,
+};
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{
     Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
     SyncedWhen, UndoSync, Undone,
 };
-pub(crate) use sync::{picks, seal_secret, sealed, sync, sync_view, take, undo};
+pub(crate) use sync::{picks, sealed, sync, sync_view, take, undo};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,8 +55,8 @@ use ts_rs::TS;
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{
-    ConditionalSyncId, DeploymentId, EnvironmentId, EnvironmentName, ProposalId, PullRequestNumber,
-    Revision, SyncId, VolumeName,
+    DeploymentId, EnvironmentId, EnvironmentName, ProposalId, PullRequestNumber, Revision, SyncId,
+    VolumeName,
 };
 use crate::policy::{self, Policy};
 use crate::project::insert_environment;
@@ -104,17 +109,14 @@ pub struct SetupCommand {
     pub command: String,
 }
 
-/// Stage the hints left in an Environment: a merged pull request's values its
-/// landed Conditional Sync left, even once its PR Environment is gone; or a
-/// Parent's deployed values that followed into its Branch but aren't staged there.
-/// Each replaces the receiver's own edit.
+/// Stage the hints left in a Branch: a Parent's deployed values that followed into it
+/// but aren't staged there. Each replaces the Branch's own edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Take {
-    /// The retained Conditional Sync whose hints to take, or the Parent whose Follow
-    /// hints to take.
+    /// The Parent whose Follow hints to take.
     pub from: HintSource,
-    /// Its Destination, or the Branch following the Parent; refused unless it is.
+    /// The Branch following the Parent; refused unless it is.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
@@ -131,8 +133,6 @@ pub struct Take {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 pub enum HintSource {
-    /// A merged pull request's Conditional Sync: [`crate::PullRequestHint::conditional_sync`].
-    ConditionalSync(ConditionalSyncId),
     /// The Branch's Parent: [`FollowHint::from`].
     Parent(EnvironmentName),
 }
@@ -351,14 +351,12 @@ pub(crate) fn resolve_all<'asked>(
 /// What a take staged.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Taken {
-    /// Where the values came from: the Parent, or the pull request's PR Environment.
+    /// The Parent the values came from.
     pub from: EnvironmentSummary,
     /// Where they landed.
     pub into: EnvironmentSummary,
     /// Nodes staged in `into`'s Working State.
     pub staged: Vec<NodeName>,
-    /// The Conditional Sync taken from; none for a Parent's values.
-    pub conditional_sync: Option<crate::ConditionalSync>,
 }
 
 /// Turn a Live Node into an Own Copy, from the Environment that runs it; a Volume

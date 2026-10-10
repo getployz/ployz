@@ -66,6 +66,39 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
     )
 }
 
+/// The schema as it was before `0008_proposal_offer`, with no Conditional Syncs.
+const BEFORE_OFFERS: &str = "
+    ALTER TABLE config_proposal DROP COLUMN offered;
+    ALTER TABLE config_pull_request DROP COLUMN merged;
+    CREATE TABLE config_conditional_sync (
+        id TEXT PRIMARY KEY,
+        organization_id TEXT NOT NULL,
+        environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+        state TEXT NOT NULL,
+        pr_environment_id TEXT REFERENCES config_environment (id) ON DELETE CASCADE,
+        repository_id BIGINT NOT NULL,
+        number BIGINT NOT NULL,
+        target_branch TEXT NOT NULL,
+        working_revision BIGINT NOT NULL,
+        merge_commit TEXT,
+        synced_at BIGINT NOT NULL,
+        stored TEXT NOT NULL
+    );
+    CREATE TABLE config_held_secret (
+        environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
+        repository_id BIGINT NOT NULL,
+        number BIGINT NOT NULL,
+        lineage TEXT NOT NULL,
+        at TEXT NOT NULL,
+        organization_id TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (environment_id, repository_id, number, lineage, at)
+    );
+    ALTER TABLE config_waiting_deploy ADD COLUMN syncs TEXT NOT NULL DEFAULT '[]';
+    DELETE FROM config_migration WHERE name IN
+    ('0008_proposal_offer', '0009_offer_conditional_syncs', '0010_drop_conditional_sync');
+";
+
 /// The schema as it was before `0002_sync`: one base per Branch.
 const BEFORE_SYNC: &str = "
     UPDATE config_environment_branch SET made_with = (
@@ -185,7 +218,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
     };
     assert_eq!(before.0.rows.len(), 2);
 
-    run(&url, BEFORE_SYNC);
+    run(&url, &format!("{BEFORE_OFFERS}{BEFORE_SYNC}"));
     let store = ConfigStore::open(&url, backend::key()).unwrap();
     // A database from before Sync has no proposals: what arrived is unowned.
     let mut before = before;
@@ -402,7 +435,7 @@ fn legacy_arrivals_migrate_unowned_with_their_syncs_receipted() {
             )
             .unwrap();
     }
-    run(&url, BEFORE_PROPOSAL);
+    run(&url, &format!("{BEFORE_OFFERS}{BEFORE_PROPOSAL}"));
     let legacy = "SELECT environment_id, other_id, lineage, at, organization_id, how, state, \
                   value, prior, was, sync_id FROM config_sync_arrival ORDER BY at";
     let before = select(&url, legacy);
