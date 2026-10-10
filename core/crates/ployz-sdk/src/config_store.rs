@@ -88,7 +88,8 @@ impl ConfigStore {
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
-        let query: ployz_store::Query = decode(query, "Expected a Config Store query")?;
+        let query = ployz_store::Query::decode(whole(query))
+            .map_err(|error| refused("Expected a Config Store query", &error))?;
         let trusted = evidence(trusted)?;
         self.run(move |store| store.read_trusted(&who, &query, &trusted))
             .await
@@ -109,7 +110,8 @@ impl ConfigStore {
         principal: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, principal)?;
-        let command: ployz_store::Command = decode(command, "Expected a Config Store command")?;
+        let command = ployz_store::Command::decode(whole(command))
+            .map_err(|error| refused("Expected a Config Store command", &error))?;
         let trusted = evidence(trusted)?;
         self.run(move |store| store.commit(&who, &command, &trusted))
             .await
@@ -465,7 +467,8 @@ fn claims_of(claims: serde_json::Value) -> Result<ployz_store::GithubClaims> {
 }
 
 fn connections_of(connections: serde_json::Value) -> Result<Vec<ployz::context::Connection>> {
-    decode(connections, "invalid management connections")
+    serde_json::from_value(connections)
+        .map_err(|_| invalid_argument("invalid management connections"))
 }
 
 fn repository(repository_id: i64) -> Result<u64> {
@@ -475,7 +478,12 @@ fn repository(repository_id: i64) -> Result<u64> {
 /// Decode what JavaScript sent, its whole numbers as integers first; `refusal` names
 /// what was expected.
 fn decode<T: DeserializeOwned>(value: serde_json::Value, refusal: &str) -> Result<T> {
-    serde_json::from_value(whole(value)).map_err(|_| invalid_argument(refusal))
+    ployz_core::decode::decode(&whole(value)).map_err(|error| refused(refusal, &error))
+}
+
+/// `refusal`, then where and why the input did not fit, never a value it holds.
+fn refused(refusal: &str, error: &ployz_core::decode::DecodeError) -> Error {
+    invalid_argument(format!("{refusal}: {error}."))
 }
 
 fn to_json<T: serde::Serialize>(
