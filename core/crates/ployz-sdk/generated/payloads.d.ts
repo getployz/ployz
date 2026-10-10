@@ -438,14 +438,14 @@ export type ConditionalSyncState = "standing" | "frozen" | "landed";
 
 export type ConfigAttachment = { configResourceId: string, mountDir: ContainerPath, };
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "create_config" } & CreateConfig | { "command": "put_config_file" } & PutConfigFile | { "command": "remove_config_file" } & RemoveConfigFile | { "command": "rename_config" } & RenameConfig | { "command": "delete_config" } & DeleteConfig | { "command": "attach_config" } & AttachConfig | { "command": "detach_config" } & DetachConfig | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "stage_history" } & StageHistory | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "sync" } & SyncChanges | { "command": "undo_sync" } & UndoSync | { "command": "take" } & Take | { "command": "hold_secret" } & HoldSecret | { "command": "copy_node" } & CopyNode | { "command": "never_sync" } & NeverSync | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "rename_project" } & RenameProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "set_volume_storage" } & SetVolumeStorage | { "command": "set_volume_shared_writes" } & SetVolumeSharedWrites | { "command": "remove_volume" } & RemoveVolume | { "command": "rename_volume" } & RenameVolume | { "command": "create_config" } & CreateConfig | { "command": "put_config_file" } & PutConfigFile | { "command": "remove_config_file" } & RemoveConfigFile | { "command": "rename_config" } & RenameConfig | { "command": "delete_config" } & DeleteConfig | { "command": "attach_config" } & AttachConfig | { "command": "detach_config" } & DetachConfig | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "stage_history" } & StageHistory | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "set_generated_domain" } & SetGeneratedDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "sync" } & SyncChanges | { "command": "undo_sync" } & UndoSync | { "command": "remove_proposal" } & RemoveProposal | { "command": "take" } & Take | { "command": "hold_secret" } & HoldSecret | { "command": "copy_node" } & CopyNode | { "command": "never_sync" } & NeverSync | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "set_branch_setup" } & SetBranchSetup | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan | { "command": "batch" } & Batch;
 
 export type ConfigCommitted = {
 /**
  * The open PR Environments' pull requests in the Project of the Environment it
  * wrote; none when it wrote none.
  */
-checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "history_staged" } & HistoryStaged | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
+checks: Array<PullRequestRef>, } & ({ "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "history_staged" } & HistoryStaged | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "removed" } & Removed | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched);
 
 export type ConfigDomainEvidence = {
 /**
@@ -652,7 +652,7 @@ servers?: number, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "history" } & HistoryView | { "view": "history_preview" } & HistoryPreview | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "configs" } & ConfigsView | { "view": "config" } & ConfigItemView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "history_staged" } & HistoryStaged | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "history_staged" } & HistoryStaged | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "removed" } & Removed | { "written": "taken" } & Taken | { "written": "secret_held" } & SecretHeld | { "written": "never_synced" } & NeverSynced | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "environment_removed" } & Teardown<EnvironmentRemoved> | { "written": "project_removed" } & Teardown<ProjectRemoved> | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
 
 export type ConfigsQuery = {
 /**
@@ -1311,7 +1311,12 @@ incoming: Array<IncomingChange>,
  * The Parent's deployed values that followed into this Branch beside its own
  * changes, or that it discarded: take one to stage it.
  */
-follow_hints: Array<FollowHint>, };
+follow_hints: Array<FollowHint>,
+/**
+ * The sources included in this draft: Remove one to put back what it still
+ * brings. Save or Deploy ends them.
+ */
+included: Array<Included>, };
 
 export type Discard = {
 /**
@@ -1837,6 +1842,32 @@ export type ImageDigest = string;
 export type ImageRemoval = { reference: string, outcome: ImageRemovalOutcome, };
 
 export type ImageRemovalOutcome = { "status": "removed" } | { "status": "in_use" } | { "status": "not_found" } | { "status": "failed", message: string, } | { "status": "unrecognized" };
+
+export type Included = {
+/**
+ * Pass to [`RemoveProposal::proposal`] to remove it.
+ */
+proposal: ProposalId,
+/**
+ * Where it came from.
+ */
+source: ProposalSource,
+/**
+ * The source's Working State revision it was last included at.
+ */
+revision: Revision,
+/**
+ * The source changed since: review the Sync again to include its changes.
+ */
+newer: boolean,
+/**
+ * How many rows of the draft it still owns.
+ */
+changes: number,
+/**
+ * The Sync that last included it.
+ */
+sync: SyncId, };
 
 export type IncomingChange = {
 /**
@@ -2580,6 +2611,38 @@ export type ProjectsQuery = Record<symbol, never>;
 
 export type ProjectsView = { projects: Array<ProjectListing>, };
 
+export type ProposalId = string;
+
+export type ProposalSource = { "kind": "environment",
+/**
+ * Its ID.
+ */
+id: EnvironmentId,
+/**
+ * Its name, or the one it had when it was last included.
+ */
+name: string,
+/**
+ * False once it is gone.
+ */
+live: boolean, } | { "kind": "pull_request",
+/**
+ * The repository.
+ */
+repository_id: RepositoryId,
+/**
+ * The pull request.
+ */
+number: PullRequestNumber,
+/**
+ * Its preview's name, or the one it had when it was last included.
+ */
+name: string,
+/**
+ * Its preview now; none once it is gone.
+ */
+environment: EnvironmentId | null, };
+
 export type ProvisionedVolumeMaximumBytes = number;
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services";
@@ -2869,6 +2932,20 @@ export type RemoveEnvironment = { environment: EnvironmentRef, };
 
 export type RemoveProject = { project: ProjectName, };
 
+export type RemoveProposal = {
+/**
+ * The draft's Environment.
+ */
+environment: EnvironmentRef,
+/**
+ * As [`Included::proposal`].
+ */
+proposal: ProposalId,
+/**
+ * Refuse with `conflict` unless this is still the latest `diff` version.
+ */
+version?: string | null, };
+
 export type RemoveService = {
 /**
  * The Environment it is in.
@@ -2894,6 +2971,16 @@ export type RemoveVolumesRequest = { volumes: Array<DockerVolumeId>,
  * Force-remove an in-use Docker Volume. Defaults to false.
  */
 force: boolean, };
+
+export type Removed = {
+/**
+ * The Environment now.
+ */
+environment: EnvironmentSummary,
+/**
+ * False when the draft held no such proposal, as when a Remove is retried.
+ */
+removed: boolean, };
 
 export type RemovedVolume = { id: VolumeId, name: VolumeName,
 /**
@@ -3704,7 +3791,12 @@ skip?: Array<RowRef>,
  * A value for each picked secret the receiver lacks: sealed at once, never
  * shown back. At the merge it is held until then.
  */
-values?: { [key in RowRef]: string }, };
+values?: { [key in RowRef]: string },
+/**
+ * The Sync's ID, so a retry is answered with what it did; omitted, a new one.
+ * Only a Sync now takes one.
+ */
+id?: SyncId | null, };
 
 export type SyncId = string;
 
@@ -3749,6 +3841,11 @@ requires: RowId | null,
  */
 secret: SecretRow | null,
 /**
+ * The source whose included change the receiver holds at this row: it can't
+ * be synced until that is removed.
+ */
+held_by: string | null,
+/**
  * What commands name it by; stable across renames.
  */
 row: RowId,
@@ -3791,7 +3888,11 @@ rows: Array<SyncRow>,
 /**
  * The rows it would carry but that either side marked Never sync.
  */
-never_synced: Array<NeverSyncedRow>, };
+never_synced: Array<NeverSyncedRow>,
+/**
+ * `from` as it is included in `into`'s draft already; none when it isn't.
+ */
+proposal: Included | null, };
 
 export type Synced = {
 /**
@@ -3819,7 +3920,11 @@ staged: Array<NodeName>,
 /**
  * The Branch is closing, as [`When::Now`] asked.
  */
-closing: boolean, } | { "kind": "at_merge",
+closing: boolean,
+/**
+ * The proposal that includes `from` in `into`'s draft.
+ */
+proposal: ProposalId, } | { "kind": "at_merge",
 /**
  * The Conditional Sync standing now.
  */

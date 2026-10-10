@@ -117,6 +117,8 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         picks: Some(refs("only")).filter(|only| !only.is_empty()),
         skip: refs("skip"),
         values,
+        // One receipt for this run: a retry of the same request replays, not repeats.
+        id: Some(SyncId::parse(uuid::Uuid::new_v4().to_string())?),
     };
     let synced = store.try_write(&request).map_err(|error| {
         // Stale, nothing to sync, or no such row: the plan shows what there is now.
@@ -343,7 +345,7 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
                 ));
                 crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
             }
-            SyncedWhen::Now { staged, closing } => {
+            SyncedWhen::Now { staged, closing, .. } => {
                 crate::ui::stream(format_args!("Synced {from} → {into}."));
                 if !staged.is_empty() {
                     crate::ui::stream(format_args!("Staged: {}", crate::handlers::joined(staged)));
