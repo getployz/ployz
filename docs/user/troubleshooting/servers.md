@@ -196,8 +196,9 @@ reached`.
 
 ## A server shows Offline
 
-The server's page says **Can't reach web-2**. Services that run only there are down. Stopping
-`ployz` alone doesn't cause this: the server keeps its place in the cluster while Ployz is stopped.
+The server's page says **Can't reach web-2**. Services that run only there are down. Stopping Ployz
+with `sudo systemctl stop ployz.socket ployz` doesn't cause this: the server keeps its place in the
+cluster until it reboots or you remove it.
 
 1. Check at your provider that the server is running, then run `sudo systemctl status ployz` on
    it.
