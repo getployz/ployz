@@ -29,7 +29,7 @@ import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-deployments";
-import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
+import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
@@ -216,6 +216,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
+  const storage = useStorageSteps(params.organizationSlug);
   const storeGroups = changeGroups(diff, store.services.map(({ service }) => service));
   const groups = [...storeGroups, ...placements.groups];
   const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath);
@@ -235,6 +236,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardNode={discardNode}
         onDiscardRow={(group, path) => group.owner === "placement" ? discardNode(group) : actions.discard(path)}
         active={inFlight}
+        storage={storage}
         notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
         waiting={waiting}
         noServers={noServers}

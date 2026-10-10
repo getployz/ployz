@@ -22,6 +22,7 @@ import {
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { formatDuration } from "#/utils/relative-time";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorNotFound } from "./CanvasInspectorRouteStates";
@@ -44,8 +45,10 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const result = useStoreView(params.organizationSlug, deploymentQuery(deploymentId));
   // With no Server, nothing can run it: the way on is adding one.
   const { noServers } = useRuntimeLens(params.organizationSlug);
+  const storageSteps = useStorageSteps(params.organizationSlug);
   if (!result.ok) return <CanvasInspectorNotFound noun="Deployment" />;
   const deployment = result.value;
+  const storage = storageSteps(deployment.id);
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const focused = focusedService(deployment, search.service);
@@ -72,7 +75,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <CanvasInspectorHeader params={params} actions={<StoreDeploymentActions deployment={deployment} noServers={noServers} />}>
+      <CanvasInspectorHeader params={params} actions={<StoreDeploymentActions deployment={deployment} storage={storage} noServers={noServers} />}>
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <span className="truncate font-medium">
@@ -114,6 +117,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
             ) : null}
           </div>
         ) : null}
+        {storage ? <p role="status" className="text-sm">{storage}</p> : null}
 
         {!focused ? <>
           {volumes.length ? <NodeRow>{volumeMarks}</NodeRow> : null}
@@ -226,7 +230,7 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
  * The action a Deployment's status allows, one at a time so the header fits a phone: a queued one's Cancel waits in ⋮.
  * Whoever admitted it, CLI or dashboard: they share one queue per Environment.
  */
-function StoreDeploymentActions({ deployment, noServers }: { deployment: DeploymentView; noServers: boolean }) {
+function StoreDeploymentActions({ deployment, storage, noServers }: { deployment: DeploymentView; storage: string | null; noServers: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const writer = useStoreWriter(params.organizationSlug);
@@ -279,7 +283,8 @@ function StoreDeploymentActions({ deployment, noServers }: { deployment: Deploym
           <AlertDialogHeader>
             <AlertDialogTitle>Cancel deployment?</AlertDialogTitle>
             <AlertDialogDescription>
-              {deployment.status === "queued"
+              {storage ? "The step under way finishes first. The rest stays staged."
+                : deployment.status === "queued"
                 ? "It leaves the queue and never runs."
                 : "It stops at its next step. What it already changed stays until the next Deploy."}
             </AlertDialogDescription>

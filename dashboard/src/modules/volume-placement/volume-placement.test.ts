@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
-import type { Member } from "#/modules/volume-run/volume-run";
+import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
   detachedCopies,
@@ -12,6 +12,7 @@ import {
   placementSteps,
   placementTargets,
   placementWords,
+  storageStep,
   targetPlacement,
   type PlacementRow,
 } from "./volume-placement";
@@ -208,5 +209,23 @@ describe("placementTargets", () => {
   it("offers nothing on a Server that does not accept Services", () => {
     const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
     expect(placementTargets(volume, members, row([]), [id("web-2")]).move.map((server) => server.name)).toEqual(["web-2"]);
+  });
+});
+
+describe("storageStep", () => {
+  const run = (volumeId: string, message: string | null): VolumeRunView => ({
+    id: "r1", volume_id: volumeId, volume_name: "pg-data", kind: "move", args: { to: "web-2" }, orphan: false, state: "running",
+    lease: null, message, created_at: "", updated_at: "", finished_at: null,
+  });
+  const taken = { ...row([]), deploymentId: "dep-1" };
+
+  it("words the run on a Volume the Deploy took, with its message", () => {
+    expect(storageStep("dep-1", [taken], [run("v1", null)])).toBe("pg-data · Moving to web-2");
+    expect(storageStep("dep-1", [taken], [run("v1", "web-2 did not answer")])).toBe("pg-data · Moving to web-2 · web-2 did not answer");
+  });
+
+  it("ignores runs on Volumes another Deploy, or no Deploy, took", () => {
+    expect(storageStep("dep-2", [taken], [run("v1", null)])).toBeNull();
+    expect(storageStep("dep-1", [taken], [run("v9", null)])).toBeNull();
   });
 });

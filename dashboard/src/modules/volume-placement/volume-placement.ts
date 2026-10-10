@@ -1,7 +1,8 @@
 import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { planFromCopies } from "#/modules/volume-run/plan";
-import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { runWords } from "#/modules/volume-run/volume-copies";
+import { type AnsweredMember, copyName, type Member, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 
 export type MachineRef = { readonly id: MachineId; readonly name: MachineName };
 export type PlacementVolume = { readonly id: string; readonly name: string };
@@ -323,4 +324,11 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
       };
     }),
   };
+}
+
+/** What Deploy `deploymentId` is doing to storage, from the run under way on a Volume it took: "pg-data · Moving to web-2". */
+export function storageStep(deploymentId: string, rows: readonly PlacementRow[], runs: readonly VolumeRunView[]): string | null {
+  const taken = new Set(rows.filter((row) => row.deploymentId === deploymentId).map((row) => row.volumeId));
+  const run = runs.find((candidate) => taken.has(candidate.volume_id));
+  return run === undefined ? null : [run.volume_name, runWords(run), run.message].filter((part) => part !== null).join(" · ");
 }

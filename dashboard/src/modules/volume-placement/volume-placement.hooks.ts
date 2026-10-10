@@ -4,8 +4,8 @@ import { toast } from "sonner";
 import type { EnvironmentRef, MachineId } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import { volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
-import { type Placement, placementChanges, placementGroup, type PlacementVolume } from "./volume-placement";
+import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
+import { type Placement, placementChanges, placementGroup, type PlacementVolume, storageStep } from "./volume-placement";
 import { discardPlacementServerFn, stagePlacementServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
@@ -43,13 +43,13 @@ export type StagedPlacements = {
 
 /**
  * The Environment's staged Volume placements as Details groups, worded from what the Servers answer for each Volume.
- * A Volume whose staged placement already holds counts nothing.
+ * A Volume whose staged placement already holds counts nothing, and one a running Deploy took counts as that Deploy's.
  */
 export function useStagedPlacements(
   organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly PlacementVolume[],
 ): StagedPlacements {
   const rows = (useVolumePlacements(organizationSlug).data ?? [])
-    .filter((row) => row.environmentId === environmentId && row.staged !== null);
+    .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
   const members = useQueries({ queries: rows.map((row) => volumeMembersQueryOptions(organizationSlug, environment, row.volumeId)) });
   const { settle } = useSettle("Could not discard the Volume changes");
   const groups = rows.flatMap((row, index) => {
@@ -66,4 +66,11 @@ export function useStagedPlacements(
     discard: (volumeId) => settle([discardOf(volumeId)]),
     discardAll: () => settle(groups.map((group) => discardOf(group.nodeId))),
   };
+}
+
+/** Each running Deploy's storage step, for the bottom bar and the Deployment page. */
+export function useStorageSteps(organizationSlug: string) {
+  const rows = useVolumePlacements(organizationSlug).data ?? [];
+  const runs = useActiveVolumeRuns(organizationSlug).data ?? [];
+  return (deploymentId: string) => storageStep(deploymentId, rows, runs);
 }
