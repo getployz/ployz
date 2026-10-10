@@ -41,7 +41,7 @@ pub struct SyncChanges {
     #[ts(as = "Option<Vec<RowRef>>", optional)]
     pub skip: Vec<RowRef>,
     /// A value for each picked secret the receiver lacks: sealed at once, never
-    /// shown back. At the merge it is held until then.
+    /// shown back. An offer keeps it until it is included.
     #[serde(default)]
     #[ts(as = "Option<BTreeMap<RowRef, String>>", optional)]
     pub values: BTreeMap<RowRef, String>,
@@ -150,10 +150,7 @@ pub enum SyncChange {
 /// A secret a Sync carries without its value: give [`SyncChanges::values`] one, or
 /// it arrives without one and the receiver's Deploy refuses until it has one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct SecretRow {
-    /// A value is held for it to land with at the merge.
-    pub held: bool,
-}
+pub struct SecretRow {}
 
 /// What a Sync staged.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -181,16 +178,15 @@ pub enum SyncedWhen {
         /// The proposal that includes `from` in `into`'s draft.
         proposal: ProposalId,
     },
-    /// Held for the pull request's merge.
+    /// Offered to the receiver, to include once the pull request merges.
     AtMerge {
-        /// The Conditional Sync standing now.
+        /// The offer standing now.
         conditional_sync: crate::ConditionalSync,
     },
 }
 
 /// Undo a Sync: what it staged goes back to what the receiver held, refused once
-/// any of it deployed or changed since. A Conditional Sync still standing is
-/// withdrawn.
+/// any of it deployed or changed since. An offer still standing is forgotten.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct UndoSync {
@@ -213,7 +209,6 @@ pub(crate) struct Target {
 }
 
 /// When a Sync lands.
-#[expect(clippy::large_enum_variant, reason = "one per command, never stored")]
 enum Lands {
     Now { close_after: bool },
     AtMerge(PullRequest),
@@ -229,14 +224,22 @@ pub(crate) fn sync(
     let target = target(tx, who, side, request.when)?;
     scope::lock_project(tx, &target.from)?;
     let (from, mut into) = scope::load_pair(tx, who, (&target.from, &target.into), true)?;
-    let close_after = match target.lands {
-        Lands::AtMerge(pr) => {
-            return crate::conditional_sync::sync(tx, who, sealing, request, (from, into, pr));
-        }
-        Lands::Now { close_after } => close_after,
-    };
     let identity = proposal::identity(tx, &from, &into.summary.id)?;
     let mut found = proposal::find(tx, &into.summary.id, &identity)?;
+    let included = found.as_ref().is_some_and(|found| !found.offered);
+    // A pull request already included in the draft refreshes there now; otherwise
+    // the Sync is offered, replacing its offer.
+    let close_after = match target.lands {
+        Lands::AtMerge(pr) if !included => {
+            return crate::conditional_sync::sync(tx, who, sealing, request, (from, into, pr));
+        }
+        Lands::AtMerge(_) => false,
+        Lands::Now { close_after } => close_after,
+    };
+    // A Sync now replaces the offer of the same source.
+    if let Some(offer) = found.take_if(|found| found.offered) {
+        proposal::drop_offer(tx, &offer.id)?;
+    }
     // A retry of the Sync that last included `from` is answered with what it did.
     if let Some(found) = &found
         && request.id.as_ref() == Some(&found.last_sync)
@@ -315,11 +318,13 @@ pub(crate) fn sync_view(
     let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into), false)?;
     let pr = match target.lands {
         Lands::Now { .. } => None,
-        Lands::AtMerge(pr) => Some(pr),
-    };
-    let held = match &pr {
-        Some(pr) => crate::conditional_sync::held(tx, &into.summary.id, &pr.reference())?,
-        None => BTreeMap::new(),
+        Lands::AtMerge(pr) => {
+            // A pull request already included in the draft refreshes there now.
+            let identity = proposal::identity(tx, &from, &into.summary.id)?;
+            let included = proposal::find(tx, &into.summary.id, &identity)?
+                .is_some_and(|found| !found.offered);
+            (!included).then_some(pr)
+        }
     };
     let (sync, found, owners) = match &pr {
         Some(_) => (Move::sync(tx, &from, &into)?, None, Owners::default()),
@@ -345,9 +350,7 @@ pub(crate) fn sync_view(
                 into: shown(&into.working, &into_names, &row.id, &row.into),
                 ticked,
                 requires: row.requires.clone(),
-                secret: (row.from.is_secret() || row.into.is_secret()).then(|| SecretRow {
-                    held: held.contains_key(&row.id),
-                }),
+                secret: (row.from.is_secret() || row.into.is_secret()).then_some(SecretRow {}),
                 held_by: None,
                 at,
             }),
@@ -363,9 +366,7 @@ pub(crate) fn sync_view(
                 into: shown(&into.working, &into_names, &row.id, &row.into),
                 ticked: false,
                 requires: row.requires.clone(),
-                secret: (row.from.is_secret() || row.into.is_secret()).then(|| SecretRow {
-                    held: held.contains_key(&row.id),
-                }),
+                secret: (row.from.is_secret() || row.into.is_secret()).then_some(SecretRow {}),
                 held_by: owners.held.get(&row.id).cloned(),
                 at,
             }),
@@ -616,7 +617,7 @@ pub(crate) fn sealed(
 }
 
 /// `value`, sealed for secret `row` (labelled `label`), once it is one the row takes.
-pub(crate) fn seal_secret(
+fn seal_secret(
     sealing: &SealingKey,
     row: &RowId,
     label: &str,
@@ -653,9 +654,9 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
     crate::teardown::guard(tx, branch)
 }
 
-/// Undo Sync `request.sync` in its receiver, or withdraw the Conditional Sync it made.
-/// A Sync that included a proposal is undone by removing it, while it is that
-/// proposal's only Sync.
+/// Undo Sync `request.sync` in its receiver. A Sync that included a proposal is
+/// undone by removing it, while it is that proposal's only Sync; one that offered
+/// it forgets the offer.
 pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<Undone, RpcError> {
     let id = &request.sync;
     if let Some(undone) = proposal::undo(tx, who, id)? {
@@ -668,8 +669,7 @@ pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<U
     )?;
     let missing = || error::not_found(format!("No Sync {id} to undo"), json!({}));
     let Some(receiver) = landed.first() else {
-        let into = crate::conditional_sync::withdraw_one(tx, who, id)?.ok_or_else(missing)?;
-        return Ok(Undone { into });
+        return Err(missing());
     };
     let receiver = receiver.parse::<EnvironmentId>(0, "Sync")?;
     scope::lock_project(tx, &receiver)?;
@@ -682,10 +682,8 @@ pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<U
     })
 }
 
-/// Stage the hints `take` names, from a landed Conditional Sync or the Parent.
+/// Stage the hints `take` names, from the Parent.
 pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Taken, RpcError> {
-    match &take.from {
-        HintSource::ConditionalSync(id) => crate::conditional_sync::take(tx, who, id, take),
-        HintSource::Parent(parent) => follow::take(tx, who, parent, take),
-    }
+    let HintSource::Parent(parent) = &take.from;
+    follow::take(tx, who, parent, take)
 }

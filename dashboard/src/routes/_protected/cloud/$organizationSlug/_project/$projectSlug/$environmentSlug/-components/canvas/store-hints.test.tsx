@@ -23,7 +23,7 @@ const api = (settings: NodeChange["settings"]): NodeChange =>
   ({ type: "service", id: "api", row: id("a:node"), name: "api", lifecycle: "update", comparison: null, data: null, restarts: [], settings });
 const diff = (extra: Partial<DiffView>): DiffView => ({
   environment: { id: "id-fix-api", project: "shop", name: "fix-api", revision: 4 }, version: "4:abc", saved: null,
-  published: false, changes: [], total_count: 0, hints: [], incoming: [], follow_hints: [], included: [], ...extra,
+  published: false, changes: [], total_count: 0, incoming: [], follow_hints: [], included: [], ...extra,
 });
 
 /** fix-api's Details over `view`, as the bottom bar opens it. */
@@ -122,56 +122,38 @@ it("offers the Parent's value beside the Branch's own change, and Use stages it"
   ]));
 });
 
-it("keeps hints no change shows after the changes, both kinds in one list, each Use taking the version the user saw", async () => {
+it("keeps hints no change shows after the changes, Use taking the version the user saw", async () => {
   const test = open(diff({
     changes: [api([setting("api.replicas", "1", "2")])], total_count: 1,
     follow_hints: [{ from: "production", row: id("a:variables.CACHE_TTL"), node: "api", kind: "service", name: "env.CACHE_TTL", value: "300" }],
-    hints: [{ conditional_sync: "cs1", pull_request: 142, row: id("d:name"), node: "volumes.data", kind: "volume", name: "name", value: "pg-2", landed: "hint" }],
   }));
 
   const after = within(await screen.findByRole("group", { name: "Not among these changes" }));
   expect(after.getByText("api · CACHE_TTL")).toBeTruthy();
-  expect(after.getByText("data · Name")).toBeTruthy();
   fireEvent.click(after.getByRole("button", { name: "Use theirs: production's api CACHE_TTL" }));
-  fireEvent.click(after.getByRole("button", { name: "Use PR #142's data Name" }));
   await waitFor(() => expect(test.commands()).toEqual([
     { command: "take", from: "production", into: fixApi, rows: ["a:variables.CACHE_TTL"], version: "4:abc" },
-    { command: "take", from: "cs1", into: fixApi, rows: ["d:name"], version: "4:abc" },
   ]));
 });
 
-it("renders Config Follow and PR hints as files while Use retains the exact Store rows", async () => {
+it("renders a Config Follow hint as a file while Use retains the exact Store row", async () => {
   const privateFile = { content: "CONFIG_HINT_PRIVATE_SENTINEL", mode: "0440", uid: 1234, gid: 5678 };
   const row = { row: id("c:files.nested/app.conf.bak"), node: "configs.app-settings", kind: "config" as const, name: "files.nested/app.conf.bak", value: privateFile };
   const test = open(diff({
     follow_hints: [{ ...row, from: "production" }],
-    hints: [{ ...row, row: id("c:files.app.conf"), name: "files.app.conf", conditional_sync: "cs-config", pull_request: 142, landed: "hint" }],
   }));
 
   const after = within(await screen.findByRole("group", { name: "Not among these changes" }));
   expect(after.getByText("app-settings · nested/app.conf.bak")).toBeTruthy();
-  expect(after.getByText("app-settings · app.conf")).toBeTruthy();
   for (const summary of after.getAllByText("File")) expect(summary.closest(".ph-no-capture")).toBeTruthy();
   expect(after.queryByText(/CONFIG_HINT_PRIVATE_SENTINEL|0440|1234|5678/u)).toBeNull();
   fireEvent.click(after.getByRole("button", { name: "Use theirs: production's app-settings nested/app.conf.bak" }));
-  fireEvent.click(after.getByRole("button", { name: "Use PR #142's app-settings app.conf" }));
   await waitFor(() => expect(test.commands()).toEqual([
     { command: "take", from: "production", into: fixApi, rows: ["c:files.nested/app.conf.bak"], version: "4:abc" },
-    { command: "take", from: "cs-config", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
   ]));
 });
 
-it("keeps a staged Config PR hint summary outside capture", async () => {
-  open(diff({ hints: [{ conditional_sync: "cs-config", pull_request: 142, row: id("c:files.app.conf"), node: "configs.app-settings", kind: "config", name: "files.app.conf", value: { content: "STAGED_CONFIG_PRIVATE_SENTINEL", mode: "0444", uid: 0, gid: 0 }, landed: "staged" }] }));
-
-  const after = within(await screen.findByRole("group", { name: "Not among these changes" }));
-  expect(after.getByText("app-settings · app.conf")).toBeTruthy();
-  expect(after.getByText("File").closest(".ph-no-capture")).toBeTruthy();
-  expect(after.getByText("From PR #142")).toBeTruthy();
-  expect(after.queryByText(/STAGED_CONFIG_PRIVATE_SENTINEL/u)).toBeNull();
-});
-
-it("summarizes Follow and PR hints attached to a changed Config file", async () => {
+it("summarizes a Follow hint attached to a changed Config file", async () => {
   const file = { mode: "0444", uid: 0, gid: 0 };
   const row = { row: id("c:files.app.conf"), node: "configs.app-settings", kind: "config" as const, name: "files.app.conf" };
   const test = open(diff({
@@ -179,18 +161,15 @@ it("summarizes Follow and PR hints attached to a changed Config file", async () 
       { path: "configs.@c.files.app.conf", kind: "update", before: { ...file, content: "original" }, after: { ...file, content: "own edit" }, canRestore: true, row: row.row },
     ] }], total_count: 1,
     follow_hints: [{ ...row, from: "production", value: { ...file, content: "ATTACHED_FOLLOW_PRIVATE_SENTINEL" } }],
-    hints: [{ ...row, conditional_sync: "cs-config", pull_request: 142, value: { ...file, content: "ATTACHED_PR_PRIVATE_SENTINEL" }, landed: "hint" }],
   }));
 
   const own = within(await rowOf("app.conf"));
   expect(own.getByText("own edit")).toBeTruthy();
   for (const summary of own.getAllByText("File")) expect(summary.closest(".ph-no-capture")).toBeTruthy();
-  expect(own.queryByText(/ATTACHED_(FOLLOW|PR)_PRIVATE_SENTINEL/u)).toBeNull();
+  expect(own.queryByText(/ATTACHED_FOLLOW_PRIVATE_SENTINEL/u)).toBeNull();
   fireEvent.click(own.getByRole("button", { name: "Use theirs: production's app-settings app.conf" }));
-  fireEvent.click(own.getByRole("button", { name: "Use PR #142's app-settings app.conf" }));
   await waitFor(() => expect(test.commands()).toEqual([
     { command: "take", from: "production", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
-    { command: "take", from: "cs-config", into: fixApi, rows: ["c:files.app.conf"], version: "4:abc" },
   ]));
 });
 

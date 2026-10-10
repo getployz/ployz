@@ -113,33 +113,6 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
         }
-        for hint in &view.hints {
-            match hint.landed {
-                ployz_store::Landed::Hint => crate::ui::stream(format_args!(
-                    "PR #{} merged {} = {} beside your edit; use it: {}",
-                    hint.pull_request,
-                    hint.at,
-                    hint.value,
-                    next(
-                        matches,
-                        &[
-                            "env",
-                            "sync",
-                            "--take",
-                            hint.conditional_sync.as_str(),
-                            "--only",
-                            &hint.at.to_string()
-                        ]
-                    )
-                )),
-                ployz_store::Landed::Staged => {
-                    crate::ui::stream(format_args!(
-                        "PR #{} staged {} = {}",
-                        hint.pull_request, hint.at, hint.value
-                    ));
-                }
-            }
-        }
         for hint in &view.follow_hints {
             crate::ui::stream(format_args!(
                 "{} deployed {} = {}, not staged here; use it: {}",

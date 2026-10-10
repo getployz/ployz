@@ -813,7 +813,7 @@ fn an_agent_branches_an_environment_without_servers() {
         assert_eq!(unkept["branch"]["kept"], json!(false));
         assert!(unkept.get("next").is_none());
 
-        // Conditional Syncs are a PR Environment's; a take names a retained one.
+        // Syncs at a merge are a PR Environment's; a take names the Parent, not an id.
         let at_merge = error(
             store,
             &["env", "sync", "--to", "--env", "fix-web", "--at-merge"],
@@ -835,7 +835,7 @@ fn an_agent_branches_an_environment_without_servers() {
                 "fix-web",
             ],
         );
-        assert_eq!(take["code"], json!("not_found"));
+        assert_eq!(take["code"], json!("invalid_argument"));
     }
 }
 
@@ -2625,7 +2625,7 @@ fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
             (
                 "web.env.API_KEY".to_owned(),
                 &json!({ "secret": true }),
-                &json!({ "held": false })
+                &json!({})
             )
         );
         ok(store, &["env", "sync", "--to", "--env", "fix-web"]);
@@ -2947,7 +2947,6 @@ fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
         commits: 1,
         open: true,
         merge_commit: None,
-        merge_reached: None,
         updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:00:01Z").unwrap(),
     };
     local
@@ -3001,21 +3000,6 @@ fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
         ["web.env.MODE", "web.env.TOKEN"]
     );
     assert!(synced.get("next").is_none());
-
-    // Production holds its own value for the secret, named as the plan names it.
-    let (code, held) = piped(
-        &store,
-        &["set", "web.env.TOKEN", "--secret", "--at-merge", "5"],
-        "prod-token\n",
-    );
-    assert_eq!(code, Some(0), "{held}");
-    assert!(!held.contains("-token"), "{held}");
-    let (code, unheld) = piped(
-        &store,
-        &["set", "web.env.MODE", "--secret", "--at-merge", "5"],
-        "prod-token\n",
-    );
-    assert_eq!(code, Some(1), "{unheld}");
 
     let sync = synced["sync"].as_str().unwrap();
     let undone = ok(&store, &["env", "sync", "--undo", sync]);

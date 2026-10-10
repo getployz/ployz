@@ -216,7 +216,6 @@ pub(crate) fn take(
         from: from.summary,
         into: branch.summary,
         staged,
-        conditional_sync: None,
     })
 }
 

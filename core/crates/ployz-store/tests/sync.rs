@@ -667,6 +667,21 @@ fn undoing_a_sync_puts_back_only_what_it_changed_and_offers_it_again() {
         undo(&store, &who, &never).unwrap_err().0,
         RpcErrorCode::NotFound
     );
+    // A Sync no other refreshed keeps its Undo, refused once what it landed deployed.
+    set(&store, &who, "fix-web", &[("web.env.LATER", json!("1"))]);
+    let later = sync_into(
+        &store,
+        &who,
+        ("fix-web", "production"),
+        Some(&["web.env.LATER"]),
+    );
+    deploy(&store, &who, "production", 2);
+    let refused = undo(&store, &who, &later).unwrap_err();
+    assert_eq!(refused.0, RpcErrorCode::Conflict);
+    assert!(
+        refused.1.contains("is deployed: change it back instead"),
+        "{refused:?}"
+    );
 }
 
 /// Edit `environment` with Cloud's evidence for the repositories `acme/web` and
@@ -801,12 +816,10 @@ fn a_sync_is_not_undone_once_a_row_it_landed_changed_or_deployed() {
 
     let image = sync_into(&store, &who, ("fix-web", "production"), None);
     deploy(&store, &who, "production", 1);
+    // That Sync refreshed the one before it, so once deployed neither is undone.
     assert_eq!(
-        undo(&store, &who, &image),
-        Err((
-            RpcErrorCode::Conflict,
-            "web.source is deployed: change it back instead".into()
-        ))
+        undo(&store, &who, &image).unwrap_err().0,
+        RpcErrorCode::NotFound
     );
     assert_eq!(
         values(&store, &who, "production", "web")["image"],
@@ -1126,7 +1139,7 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
     // production has TOKEN: it is never offered. The secrets it lacks are, flagged.
     let review = view(&store, &who);
     assert_eq!(labels(&review), ["api", "api.env.KEY", "web.env.API_KEY"]);
-    let lacking = Some(SecretRow { held: false });
+    let lacking = Some(SecretRow {});
     for label in ["api.env.KEY", "web.env.API_KEY"] {
         let secret = row(&review, label);
         assert_eq!(
@@ -1277,7 +1290,7 @@ fn a_new_service_is_reviewed_and_undone_whole() {
         undo(&store, &who, &synced),
         Err((
             RpcErrorCode::Conflict,
-            "fix-web was refreshed since: Remove it from Details in Ployz Cloud".into()
+            "fix-web was refreshed since: Remove it in Changes".into()
         ))
     );
     assert!(remove(&store, &who, "production", &synced));

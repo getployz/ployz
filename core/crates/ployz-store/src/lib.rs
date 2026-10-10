@@ -58,8 +58,7 @@ pub use build::{
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
 pub use conditional_sync::{
-    ConditionalSync, ConditionalSyncState, HoldSecret, Landed, PendingSyncs, PullRequestHint,
-    SecretHeld,
+    ConditionalSync, ConditionalSyncState, IncludeProposal, PendingSyncs, ProposalIncluded,
 };
 pub use deployment::{
     Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, Failure, LOG_TAIL,
@@ -77,7 +76,8 @@ pub use id::*;
 pub use ployz_core::config::RowId;
 pub use pull_request::{
     Destination, DestinationSync, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery,
-    PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
+    PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, Readiness,
+    SetPrPlan, Sweep,
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss, docker_volume};

@@ -1,7 +1,7 @@
 import type {
   NamedRow, PrPlan, PrPlansQuery, PullRequestQuery, PullRequestRef, RowId,
 } from "@ployz/sdk";
-import { listNames, plural } from "#/lib/plural";
+import { listNames } from "#/lib/plural";
 
 /** A Project's PR plans: one per repository its Services deploy from through the GitHub App. */
 export function prPlansQuery(project: string): { query: "pr_plans" } & PrPlansQuery {
@@ -23,11 +23,8 @@ export function planSummary(plan: PrPlan) {
   return parts.join(" · ");
 }
 
-/** "2 changes go live when #142 merges". */
-export const goLiveWhen = (changes: number, number: number) => `${plural(changes, "change")} · go live when #${number} merges`;
-
 /**
- * Hints, a merged pull request's or a Parent's values, split by where Details shows them: beside the change to deploy
+ * A Parent's values as hints, split by where Details shows them: beside the change to deploy
  * in the same row, else after the changes (a hint whose row nothing stages, like a variable edited here since).
  */
 export function hintNotes<Hint extends NamedRow>(hints: readonly Hint[], rows: ReadonlySet<RowId>) {

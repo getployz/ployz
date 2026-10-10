@@ -36,6 +36,9 @@ pub(crate) struct Move {
     pub(crate) base: SavedEnvironmentIntent,
     pub(crate) hostnames: Hostnames,
     pub(super) rules: Rules,
+    /// What arriving Services carry, as snapshotted when the source may be gone;
+    /// none reads it from the source.
+    carried: Option<Carried>,
 }
 
 /// Who owns what a [`Checked::apply`] lands.
@@ -112,6 +115,7 @@ impl Move {
                 held: BTreeSet::new(),
                 accepted: BTreeMap::new(),
             },
+            carried: None,
         })
     }
 
@@ -170,7 +174,29 @@ impl Move {
                 held: BTreeSet::new(),
                 accepted: BTreeMap::new(),
             },
+            carried: None,
         })
+    }
+
+    /// An offer's Sync, from what it stored when it was offered: the source may be
+    /// gone, so nothing of it is read again.
+    pub(crate) fn offered(
+        source: EnvironmentId,
+        into: &EnvironmentName,
+        (from, base, hostnames): (SavedEnvironmentIntent, SavedEnvironmentIntent, Hostnames),
+        rules: Rules,
+        carried: Carried,
+    ) -> Self {
+        Self {
+            other: source.clone(),
+            source,
+            nothing: format!("Nothing to include in {into}"),
+            from,
+            base,
+            hostnames,
+            rules,
+            carried: Some(carried),
+        }
     }
 
     /// A Sync now of `from` into `into` that includes it: the rows other proposals
@@ -279,7 +305,10 @@ impl Checked<'_> {
             ));
         }
         let applied = self.plan.apply(picks, values).map_err(config)?;
-        let carried = Carried::of(tx, &of.source, &of.from)?;
+        let carried = match &of.carried {
+            Some(carried) => carried.clone(),
+            None => Carried::of(tx, &of.source, &of.from)?,
+        };
         let how = match of.rules.way {
             Way::Follow => How::Follow,
             Way::Sync | Way::Copy => How::Sync,
@@ -509,6 +538,7 @@ pub(super) fn share(
     tx.execute(
         "INSERT INTO config_sync_base (environment_id, other_id, organization_id, base) \
          SELECT id, ?2, organization_id, ?3 FROM config_environment WHERE id = ?1 \
+         AND EXISTS (SELECT 1 FROM config_environment WHERE id = ?2) \
          ON CONFLICT (environment_id, other_id) DO UPDATE SET base = excluded.base",
         &[a.into(), b.into(), document(base).as_str().into()],
     )?;

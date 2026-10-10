@@ -7,13 +7,21 @@
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 //   staging     a kept Branch of production (api, worker) that includes search's changes, then sets one itself
 //   search      a Branch of staging, synced into it and changed again since: Details offers Include newer changes
+// and project `blog`, one Service from acme/blog with pull request previews, whose production Details list:
+//   #140        an offer, with a secret production lacks: Include asks to Set value
+//   #141        included, still open: Awaits #141, so Save and Deploy wait with Needs #141
+//   #142        included, merged into main: Ready
+//   #143        included, closed: Closed
+//   #144        included, retargeted to dev and merged there: Elsewhere
 // A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
-// real Servers that enroll next, so the queued Deploy is skipped: the Store admits none before a Server joins.
+// real Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and
+// opens no PR Environment, before a Server joins.
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
-import type { Change, ConfigCommand } from "@ployz/sdk";
-import { callStore } from "#/modules/config-store/config-store.server";
+import type { Change, ConfigCommand, PullRequest } from "@ployz/sdk";
+import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { session, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
@@ -151,6 +159,69 @@ const seed = Effect.gen(function* () {
   }
   yield* edit("staging overrides search", "staging", [{ op: "set", path: "worker.env.MODE", value: "index-slow" }]);
   yield* edit("search moves on", "search", [{ op: "set", path: "api.env.SEARCH_URL", value: "http://search:7701" }]);
+
+  // blog: pull requests offered to production and included there, one per readiness.
+  const blog = (environment: string | null) => ({ project: "blog", environment });
+  yield* write("project blog", { command: "create_project", id: randomUUID(), name: "blog", default_environment: randomUUID() });
+  // GitHub isn't asked: the repository's evidence is handed to the Store as Cloud would observe it.
+  const store = yield* cloudStore;
+  const repository = { repository: "acme/blog", repository_id: 4242, access: { type: "github-installation" as const, installationId: 7 }, default_branch: "main", branches: ["dev"] };
+  yield* storeTry(() => store.write(organizationId, {
+    command: "create_git_service", id: randomUUID(), environment: blog(null), name: "web", repository: "acme/blog", branch: null,
+  }, { repositories: [repository], domains: { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] } })).pipe(
+    Effect.as("ok"), Effect.catchTag("StoreRefused", (refused) => Effect.succeed(`refused: ${refused.code} ${refused.message}`)),
+    Effect.tap((outcome) => Effect.sync(() => { writes["blog service web"] = outcome; })),
+  );
+  yield* write("blog publish", { command: "publish", environment: blog("production"), version: null });
+  yield* write("blog previews", {
+    command: "set_pr_plan", project: "blog", repository: "acme/blog", enabled: true, start_from: "production",
+    copy: null, setup: null, remove_on_close: null, include_bots: null,
+  });
+  const pullRequest = (number: number, second: number, facts: Partial<PullRequest> = {}): PullRequest => ({
+    repository_id: 4242, number, title: `Change ${number}`, author: "ada", bot: false, head_branch: `change-${number}`,
+    head: String(number).repeat(14).slice(0, 40), target_branch: "main", commits: 1, open: true,
+    merge_commit: null, updated: `2026-10-01T10:00:${String(second).padStart(2, "0")}Z`, ...facts,
+  });
+  const observe = (label: string, facts: PullRequest) => storeSystem(organizationId, { event: "pull_request", ...facts }).pipe(
+    Effect.as("ok"), Effect.catchTag("StoreRefused", (refused) => Effect.succeed(`refused: ${refused.code} ${refused.message}`)),
+    Effect.tap((outcome) => Effect.sync(() => { writes[label] = outcome; })),
+  );
+  // The Store opens a PR Environment only when a Server could run it.
+  if (process.env["VERIFY_REAL_SERVERS"] === "1") {
+    skipped.push("blog pull requests: no Server has enrolled yet, so no PR Environment opens");
+  } else {
+    const numbers = [140, 141, 142, 143, 144] as const;
+    for (const number of numbers) {
+      yield* observe(`blog #${number} opens`, pullRequest(number, 0));
+      const changes: Change[] = [{ op: "set", path: `web.env.CHANGE_${number}`, value: "on" }];
+      if (number === 140) changes.push({ op: "set", path: "web.env.TOKEN", value: { secret: "preview-token" } });
+      yield* write(`blog pr-${number} edits`, { command: "edit", environment: blog(`pr-${number}`), expect: null, changes });
+      // A Merge-menu Sync: from a PR Environment into its Destination, it's offered there.
+      const review = yield* callStore(organizationId, ada.id, { operation: "read", query: { query: "sync", from: blog(`pr-${number}`), into: null } });
+      if (review.ok && review.value.view === "sync") {
+        yield* write(`blog #${number} offered`, { command: "sync", from: blog(`pr-${number}`), version: review.value.version, id: randomUUID() });
+      } else {
+        writes[`blog #${number} offered`] = review.ok ? `unexpected view ${review.value.view}` : `refused: ${review.refusal.code} ${review.refusal.message}`;
+      }
+    }
+    for (const number of numbers.filter((number) => number !== 140)) {
+      const diff = yield* callStore(organizationId, ada.id, { operation: "read", query: { query: "diff", environment: blog("production") } });
+      const offer = diff.ok && diff.value.view === "diff"
+        ? diff.value.included.find(({ source }) => source.kind === "pull_request" && source.number === number) : undefined;
+      if (!diff.ok || diff.value.view !== "diff" || offer === undefined) {
+        writes[`blog #${number} included`] = diff.ok ? `no offer for #${number}` : `refused: ${diff.refusal.code} ${diff.refusal.message}`;
+        continue;
+      }
+      yield* write(`blog #${number} included`, {
+        command: "include_proposal", environment: blog("production"), proposal: offer.proposal, version: diff.value.version,
+      });
+    }
+    yield* observe("blog #142 merges", pullRequest(142, 1, { open: false, merge_commit: "4".repeat(40) }));
+    yield* observe("blog #143 closes", pullRequest(143, 1, { open: false }));
+    yield* observe("blog #144 retargets", pullRequest(144, 1, { target_branch: "dev" }));
+    yield* observe("blog #144 merges into dev", pullRequest(144, 2, { open: false, target_branch: "dev", merge_commit: "5".repeat(40) }));
+
+  }
 
   return { organizationSlug, cookie, cliToken, writes, skipped };
 });

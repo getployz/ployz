@@ -4,9 +4,9 @@
 use clap::ArgMatches;
 use ployz_core::ServiceName;
 use ployz_store::{
-    Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId,
-    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, RowRef, SetupCommand, SyncChanges,
-    SyncId, SyncQuery, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
+    Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
+    EnvironmentRef, HintSource, KeepBranch, RowRef, SetupCommand, SyncChanges, SyncId, SyncQuery,
+    SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
 };
 
 use super::super::config::expected;
@@ -157,7 +157,7 @@ fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
-/// `env sync --undo SYNC`: undo a Sync, or withdraw its Conditional Sync.
+/// `env sync --undo SYNC`: undo a Sync, or withdraw its offer.
 fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let request = UndoSync {
@@ -176,16 +176,13 @@ fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     })
 }
 
-/// `env sync --take ID`: stage the hints (or those `--only` names) that the Parent
-/// named `ID`, or Conditional Sync `ID`, left in `into`.
+/// `env sync --take PARENT`: stage the hints (or those `--only` names) that the
+/// Parent named `PARENT` left in `into`.
 fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let from = ConditionalSyncId::parse(source)
-        .map(HintSource::ConditionalSync)
-        .or_else(|_| EnvironmentName::parse(source).map(HintSource::Parent))
-        .map_err(|_| {
-            Error::usage("Expected --take ID to be the Parent's name or a Conditional Sync ID")
-        })?;
+    let from = EnvironmentName::parse(source)
+        .map(HintSource::Parent)
+        .map_err(|_| Error::usage("Expected --take PARENT to be the Parent's name"))?;
     let rows: Vec<RowRef> = super::super::string_values(matches, "only")
         .iter()
         .map(|asked| asked.as_str().into())
@@ -221,16 +218,10 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
     crate::ui::finish(&Next::new(taken, next.clone()), || {
         let into = format!("{}/{}", into.project, into.name);
-        match &taken.conditional_sync {
-            Some(sync) => crate::ui::stream(format_args!(
-                "Took PR #{}'s value into {into}.",
-                sync.pull_request
-            )),
-            None => crate::ui::stream(format_args!(
-                "Took {}'s value into {into}.",
-                taken.from.name
-            )),
-        }
+        crate::ui::stream(format_args!(
+            "Took {}'s value into {into}.",
+            taken.from.name
+        ));
         if !taken.staged.is_empty() {
             crate::ui::stream(format_args!(
                 "Staged: {}",
@@ -341,15 +332,8 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
         match &synced.when {
             SyncedWhen::AtMerge { conditional_sync } => {
                 crate::ui::stream(format_args!(
-                    "Goes live in {into} with PR #{}'s merge: {}.",
+                    "Offered to {into}: include it in Changes after PR #{} merges.",
                     conditional_sync.pull_request,
-                    crate::handlers::joined(
-                        &conditional_sync
-                            .rows
-                            .iter()
-                            .map(ployz_store::NamedRow::to_string)
-                            .collect::<Vec<_>>()
-                    )
                 ));
                 crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
             }

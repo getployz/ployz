@@ -157,15 +157,19 @@ An Environment made from another, its Parent; see the core glossary. In Cloud, a
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch (always "Git branch")
 
 **PR Environment**:
-A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes reach its Destination only through a Conditional Sync; into any other Environment they sync now.
+A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes reach its Destination only as an Offer; into any other Environment they sync now.
 _Avoid_: Preview, preview deployment, review app. Exception: the public site calls it a preview environment, the phrase its readers use.
 
-**Conditional Sync**:
-A PR Environment's changes synced for one Destination, which go live with the pull request's merge commit: they are saved there in the same step that admits the deployment of that commit, so code and settings go out together. A push whose commit doesn't contain the merge commit lands nothing; the changes wait for one that does. A setting the Destination left alone, or only edited without deploying, is saved; one it changed live becomes an ordinary change to deploy there instead; one it did both to keeps its own edit, and the pull request's value is only offered beside it. The author changing the PR Environment's settings, or the pull request's target Git branch changing, withdraws it; what the PR Environment follows from its Parent doesn't. A pull request closed without merging drops it.
-_Avoid_: Auto-promote, deferred deploy, merge queue, Conditional Save
+**Offer**:
+A PR Environment's changes synced for one Destination, waiting there until someone Includes them from Changes; see the core glossary. A merge never saves them: Save stays a person's act, and the merge only makes the pull request Ready. Syncing again replaces an offer, or updates the Destination's changes once included; Undo or Remove drops it. Closing the pull request or changing its target Git branch keeps it, and its row then reads Closed or Elsewhere.
+_Avoid_: Conditional Sync (the wire name, `ConditionalSync`/`at_merge`, stays), auto-promote, deferred deploy, merge queue, Conditional Save
+
+**Readiness**:
+The label each pull request row carries in Changes: Awaits #N, Ready, Closed or Elsewhere; see the core glossary. While an included pull request isn't Ready, Save and Deploy wait and say Needs #N.
+_Avoid_: Merge status, check status
 
 **Off**:
-An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch, its pull request and its standing Conditional Syncs stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. It is Off once its shutdown has removed them; a shutdown that fails leaves it on, and Shut down runs again. Only PR Environments shut down, from the Sync button's menu at any time; undoing a Conditional Sync leaves one Off, and one whose pull request closes is removed as a running one is.
+An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch, its pull request and its Offers stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. It is Off once its shutdown has removed them; a shutdown that fails leaves it on, and Shut down runs again. Only PR Environments shut down, from the Sync button's menu at any time; undoing an Offer leaves one Off, and one whose pull request closes is removed as a running one is.
 _Avoid_: Paused, stopped, sleeping, scaled to zero
 
 **Cloud Deployment Stage**:

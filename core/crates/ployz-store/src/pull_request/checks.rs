@@ -23,12 +23,7 @@ pub(crate) fn view(
             let into = scope::load_by_id(tx, &into)?;
             destinations.push(Destination {
                 changes: branch::changes_into(tx, &environment, &into)?,
-                conditional_sync: crate::conditional_sync::standing_in(
-                    tx,
-                    &environment,
-                    &into,
-                    target.as_ref(),
-                )?,
+                conditional_sync: crate::conditional_sync::standing_in(tx, &environment, &into)?,
                 name: into.summary.name,
             });
         }

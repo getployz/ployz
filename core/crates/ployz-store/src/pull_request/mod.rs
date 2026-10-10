@@ -66,23 +66,8 @@ pub struct PullRequest {
     /// Its merge commit, once merged.
     #[serde(default)]
     pub merge_commit: Option<CommitSha>,
-    /// Once merged: the target branch's head as the Store last saw it
-    /// ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
-    /// already. Its Conditional Syncs then land with what that push deployed.
-    #[serde(default)]
-    pub merge_reached: Option<CommitSha>,
     /// When GitHub last changed it.
     pub updated: crate::GithubTimestamp,
-}
-
-impl PullRequest {
-    /// Which pull request it is.
-    pub(crate) fn reference(&self) -> PullRequestRef {
-        PullRequestRef {
-            repository_id: self.repository_id,
-            number: self.number,
-        }
-    }
 }
 
 /// Close what is due: Branches idle for a week, and closing Branches whose removal
@@ -422,6 +407,26 @@ pub(crate) fn pull_request(
             event.updated.as_str().into(),
         ],
     )?;
+    // Merged is for good: whatever order the events come in, the first merge stays.
+    if let Some(commit) = &event.merge_commit {
+        tx.execute(
+            "UPDATE config_pull_request SET merged = ?1 \
+             WHERE organization_id = ?2 AND repository_id = ?3 AND number = ?4 \
+             AND merged IS NULL",
+            &[
+                serde_json::to_string(&Merged {
+                    commit: commit.clone(),
+                    into: event.target_branch.clone(),
+                })
+                .expect("a merge is JSON")
+                .as_str()
+                .into(),
+                organization.into(),
+                repository_id.into(),
+                number.into(),
+            ],
+        )?;
+    }
     let mut automated = Automated::default();
     if written == 0 {
         // Older than what the Store holds: never undo a newer fact.
@@ -429,9 +434,9 @@ pub(crate) fn pull_request(
     }
     let current = current(tx, who, event.repository_id, event.number)?;
     // Everything this event may touch, locked first and in ID order: its PR
-    // Environments, where their Conditional Syncs land, and where new ones start from.
+    // Environments and where new ones start from. No Destination: a pull request's
+    // event writes no draft.
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
-    touched.extend(crate::conditional_sync::involved(tx, who, event)?);
     touched.extend(start_froms(tx, who, event.repository_id)?);
     scope::lock_all(tx, touched)?;
     let renamed = before
@@ -442,16 +447,10 @@ pub(crate) fn pull_request(
             retrack(tx, who, environment, event)?;
         }
     }
-    // Conditional Syncs were made for the old target branch's Destinations: a new target
-    // withdraws them, so retargeting back never revives an old approval.
     let retargeted = before
         .as_ref()
         .is_some_and(|before| before.target_branch != event.target_branch);
-    if retargeted {
-        crate::conditional_sync::withdraw(tx, who, event)?;
-    }
     if !event.open {
-        crate::conditional_sync::settle(tx, who, event)?;
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close {
@@ -903,5 +902,79 @@ fn validate(event: &PullRequest) -> Result<(), RpcError> {
             json!({}),
         ));
     }
+    if event.open && event.merge_commit.is_some() {
+        return Err(error::invalid(
+            "An open pull request has no merge commit",
+            json!({}),
+        ));
+    }
     Ok(())
+}
+
+/// Where a pull request merged, kept for good once it did.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct Merged {
+    commit: CommitSha,
+    into: BranchName,
+}
+
+/// Whether a pull request's change may go live in a Destination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Readiness {
+    /// Not merged yet, or nothing is known of it.
+    Open,
+    /// Merged into a branch this Destination deploys.
+    Ready,
+    /// Merged into a branch this Destination doesn't deploy.
+    Elsewhere,
+    /// Closed without merging.
+    Closed,
+}
+
+impl Readiness {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Ready => "ready",
+            Self::Elsewhere => "elsewhere",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+/// How pull request `pr` stands for Destination `into`.
+pub(crate) fn readiness(
+    tx: &mut dyn Tx,
+    into: &EnvironmentId,
+    pr: &PullRequestRef,
+) -> Result<Readiness, RpcError> {
+    let rows = tx.query(
+        "SELECT p.facts, p.merged FROM config_pull_request p \
+         JOIN config_environment e ON e.organization_id = p.organization_id \
+         WHERE e.id = ?1 AND p.repository_id = ?2 AND p.number = ?3",
+        &[
+            into.as_str().into(),
+            pr.repository_id.into(),
+            pr.number.into(),
+        ],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(Readiness::Open);
+    };
+    if let Some(merged) = row.optional_text(1)? {
+        let merged: Merged =
+            serde_json::from_str(merged).map_err(|_| error::corrupt("pull request"))?;
+        let project = scope::project_of(tx, into)?.id;
+        let destinations = destinations_of(tx, &project, pr.repository_id, &merged.into)?;
+        return Ok(match destinations.contains(into) {
+            true => Readiness::Ready,
+            false => Readiness::Elsewhere,
+        });
+    }
+    let facts: PullRequest = row.json(0, "pull request")?;
+    Ok(match facts.open {
+        true => Readiness::Open,
+        false => Readiness::Closed,
+    })
 }
