@@ -6,12 +6,15 @@ use ployz_core::{
     op,
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use super::{Session, invalid_argument};
 use crate::connect::ConnectError;
+
+const ROW_DEADLINE: Duration = Duration::from_secs(10);
 
 /// One running Container's Docker output on one Machine.
 #[derive(Clone, Debug, Deserialize)]
@@ -187,13 +190,21 @@ pub struct LogHistoryStream {
 impl LogHistoryStream {
     /// The next row, skipping heartbeats. `None` after `end`.
     /// # Errors
-    /// Returns the store's error row, malformed frames, and transport failures.
+    /// Returns the store's error row, malformed frames, transport failures,
+    /// and a timeout when the store sends no frame for ten seconds.
     pub async fn next(&self) -> Result<Option<LogHistoryRecord>, RpcError> {
         let mut stream = self.stream.lock().await;
         loop {
             let payload = tokio::select! {
                 () = self.cancel.cancelled() => return Ok(None),
-                payload = stream.message() => payload.map_err(|error| RpcError::from(ConnectError::from(error)))?,
+                payload = tokio::time::timeout(ROW_DEADLINE, stream.message()) => payload
+                    .map_err(|_| RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message: "the Server's Log Store stopped answering".into(),
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    })?
+                    .map_err(|error| RpcError::from(ConnectError::from(error)))?,
             };
             let Some(payload) = payload else {
                 return Ok(None);
@@ -335,7 +346,6 @@ mod tests {
     use crate::connect::test_support::rpc_stream_client;
     use crate::sdk::SessionInner;
     use std::sync::Arc;
-    use std::time::Duration;
     use tokio::sync::mpsc;
     use tokio_stream::wrappers::ReceiverStream;
 
