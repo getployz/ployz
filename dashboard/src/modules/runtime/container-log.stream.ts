@@ -58,7 +58,11 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           clearTimeout(flush);
           flush = undefined;
           if (!following) {
-            if (pending.length > LIVE_LOG_LIMIT) { pending = pending.slice(-LIVE_LOG_LIMIT); overflowed = true; }
+            // Servers' lines interleave out of order, so the ones kept are the newest by time, not the last to arrive.
+            if (pending.length > LIVE_LOG_LIMIT) {
+              pending = [...pending].sort((a, b) => (BigInt(a.timestamp) < BigInt(b.timestamp) ? -1 : BigInt(a.timestamp) > BigInt(b.timestamp) ? 1 : 0)).slice(-LIVE_LOG_LIMIT);
+              overflowed = true;
+            }
             return;
           }
           // The Store's lines that outlive the restart still dedupe the waiting ones; only then does history start over.

@@ -103,7 +103,8 @@ export function trimContainerLogs(collection: ContainerLogs, limit = LIVE_LOG_LI
  */
 export function restartContainerLogs(collection: ContainerLogs, waiting: readonly ContainerLogRow[]) {
   const from = waiting.reduce<bigint | null>((min, row) => (min === null || BigInt(row.timestamp) < min ? BigInt(row.timestamp) : min), null);
-  collection.delete([...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id));
+  const older = [...collection.values()].filter(row => from === null || BigInt(row.timestamp) < from).map(row => row.id);
+  if (older.length) collection.delete(older);
 }
 
 /**

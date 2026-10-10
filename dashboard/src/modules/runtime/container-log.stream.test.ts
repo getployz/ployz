@@ -126,6 +126,36 @@ it("holds live lines while the viewer reads older ones, and past the limit start
   }
 });
 
+it("keeps the newest waiting lines by time when a slower Server's older lines arrive last", async () => {
+  vi.useFakeTimers();
+  const sources: EventTarget[] = [];
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); sources.push(this); }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "skewed" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  const send = (id: string, at: number, machineId: string) => sources.at(-1)?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: {
+    kind: "line", id, timestamp: String(at), machineId, machineName: machineId, containerId: machineId, serviceName: "api", channel: "stdout", level: "info", message: id,
+  } }) }));
+  try {
+    stream.follow(false);
+    send("fast", LIVE_LOG_LIMIT * 2, "fast");
+    for (let at = 1; at <= LIVE_LOG_LIMIT; at++) send(`slow-${at}`, at, "slow");
+    await vi.advanceTimersByTimeAsync(260);
+    stream.follow(true);
+    expect(stream.collection.size).toBe(LIVE_LOG_LIMIT);
+    expect(stream.collection.has("fast")).toBe(true);
+    expect(stream.collection.has("slow-1")).toBe(false);
+  } finally {
+    subscription.unsubscribe();
+    await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});
+
 it("reads the newest page first for the exits the live tail lacks, then follows its cursor past the tail", async () => {
   vi.useFakeTimers();
   const sources: EventTarget[] = [];
