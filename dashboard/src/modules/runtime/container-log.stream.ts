@@ -145,7 +145,6 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         const from = cursor;
         const page: typeof containerLogPageSchema.Type = await scope.queryClient.fetchQuery({
           queryKey: [id, "history", from ?? null],
-          // Successful cursor pages stay fresh; failed Servers need another read after recovery.
           staleTime: query => from !== undefined && query.state.data?.failures.length === 0 ? Infinity : 0,
           queryFn: async ({ signal }) => {
             const response = await fetch("/api/runtime/logs", {
