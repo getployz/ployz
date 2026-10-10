@@ -551,6 +551,15 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
             json!({ "service": service, "proposal": proposal.id }),
         ));
     }
+    if let Some(service) = overwritten(tx, into, &proposal.id)? {
+        return Err(error::conflict(
+            format!(
+                "{service}'s registry credential came from {source} and would stay: \
+                 set {service}'s own again, or keep {source}"
+            ),
+            json!({ "service": service, "proposal": proposal.id }),
+        ));
+    }
     let unapplied = match released {
         Some(row) => Err(Unapplied::Changed(row)),
         None => unapply(&into.working, &suffix(tx, into)?, &landed),
@@ -601,21 +610,52 @@ struct CarriedIn {
 
 impl CarriedIn {
     fn of(tx: &mut dyn Tx, environment: &EnvironmentId, service: &str) -> Result<Self, RpcError> {
-        let credential = registry::sealed(tx, environment, service)?.map(|sealed| {
-            let text = serde_json::to_string(&sealed).expect("a sealed credential is JSON");
-            hex::encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()))
-        });
         Ok(Self {
-            credential,
+            credential: credential(tx, environment, service)?,
             policy: policy::stored(tx, environment, service)?,
         })
     }
 }
 
-fn carried(
+/// What a proposal's Syncs put outside Working State, by Service ID: what each Service
+/// it introduced carried in, and the credential digest it wrote over a Service there.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Kept {
+    introduced: BTreeMap<String, CarriedIn>,
+    overwrote: BTreeMap<String, String>,
+}
+
+/// A digest of the sealed registry credential `service` has in `environment`.
+fn credential(
     tx: &mut dyn Tx,
-    proposal: &ProposalId,
-) -> Result<BTreeMap<String, CarriedIn>, RpcError> {
+    environment: &EnvironmentId,
+    service: &str,
+) -> Result<Option<String>, RpcError> {
+    Ok(registry::sealed(tx, environment, service)?.map(|sealed| {
+        let text = serde_json::to_string(&sealed).expect("a sealed credential is JSON");
+        hex::encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()))
+    }))
+}
+
+/// The credential digest of each Service in `into`, taken before a Sync lands.
+pub(crate) fn credentials(
+    tx: &mut dyn Tx,
+    into: &Environment,
+) -> Result<BTreeMap<String, Option<String>>, RpcError> {
+    into.working
+        .services
+        .iter()
+        .map(|service| {
+            Ok((
+                service.id.clone(),
+                credential(tx, &into.summary.id, &service.id)?,
+            ))
+        })
+        .collect()
+}
+
+fn carried(tx: &mut dyn Tx, proposal: &ProposalId) -> Result<Kept, RpcError> {
     tx.query(
         "SELECT carried FROM config_proposal WHERE id = ?1",
         &[proposal.as_str().into()],
@@ -627,10 +667,12 @@ fn carried(
 
 /// Keep what each Service `proposal` introduced into `into` carried in, as it first
 /// arrived: a later Sync brings no credential or policy to a Service already there.
+/// Keep too the credential it wrote over a Service there `before` it landed.
 pub(crate) fn keep_carried(
     tx: &mut dyn Tx,
     into: &Environment,
     proposal: &ProposalId,
+    before: &BTreeMap<String, Option<String>>,
 ) -> Result<(), RpcError> {
     let id = &into.summary.id;
     let mut kept = carried(tx, proposal)?;
@@ -640,8 +682,16 @@ pub(crate) fn keep_carried(
         .map(|arrived| arrived.row.lineage().to_owned())
         .collect();
     for service in &into.working.services {
-        if nodes.contains(&service.lineage_id) && !kept.contains_key(&service.id) {
-            kept.insert(service.id.clone(), CarriedIn::of(tx, id, &service.id)?);
+        if let Some(was) = before.get(&service.id) {
+            if let Some(now) = credential(tx, id, &service.id)?
+                && Some(&now) != was.as_ref()
+            {
+                kept.overwrote.insert(service.id.clone(), now);
+            }
+        } else if nodes.contains(&service.lineage_id) && !kept.introduced.contains_key(&service.id)
+        {
+            kept.introduced
+                .insert(service.id.clone(), CarriedIn::of(tx, id, &service.id)?);
         }
     }
     tx.execute(
@@ -666,7 +716,7 @@ fn set_here(
     proposal: &ProposalId,
     nodes: &BTreeSet<&str>,
 ) -> Result<Option<(String, &'static str)>, RpcError> {
-    let mut kept = carried(tx, proposal)?;
+    let mut kept = carried(tx, proposal)?.introduced;
     for service in &into.working.services {
         if !nodes.contains(service.lineage_id.as_str()) {
             continue;
@@ -685,6 +735,25 @@ fn set_here(
             .find(|setting| setting.value(&now) != setting.value(&was))
         {
             return Ok(Some((service.slug.to_string(), setting.label())));
+        }
+    }
+    Ok(None)
+}
+
+/// A Service in `into` whose registry credential is still the one `proposal` wrote
+/// over its own: Remove can't put the one it had back, as nothing keeps it.
+fn overwritten(
+    tx: &mut dyn Tx,
+    into: &Environment,
+    proposal: &ProposalId,
+) -> Result<Option<String>, RpcError> {
+    let overwrote = carried(tx, proposal)?.overwrote;
+    for service in &into.working.services {
+        let Some(wrote) = overwrote.get(&service.id) else {
+            continue;
+        };
+        if credential(tx, &into.summary.id, &service.id)?.as_ref() == Some(wrote) {
+            return Ok(Some(service.slug.to_string()));
         }
     }
     Ok(None)

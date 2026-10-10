@@ -105,6 +105,9 @@ Remove is refused, and says why, when taking staging out would lose your work:
 - A service staging brought got its own registry credential or deployment setting (such as
   auto-deploy) in production since. Those take effect at once, outside the draft. Discard that
   service, or keep staging.
+- Staging turned on a registry credential for a service in production, replacing the one
+  production kept for it. Removing staging wouldn't bring production's back. Set that service's
+  credential again, or keep staging.
 - Another service in production uses one staging brought. Change that service first, or Remove
   what brought it.
 

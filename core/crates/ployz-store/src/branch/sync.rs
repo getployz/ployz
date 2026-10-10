@@ -287,8 +287,9 @@ pub(crate) fn sync(
         id: &proposal,
         sync: &id,
     };
+    let before = proposal::credentials(tx, &into)?;
     let staged = checked.apply(tx, who, &mut into, &picks, &values, owner)?;
-    proposal::keep_carried(tx, &into, &proposal)?;
+    proposal::keep_carried(tx, &into, &proposal, &before)?;
     if close_after {
         crate::pull_request::close(tx, who, &from.summary.id, &mut Default::default())?;
     }

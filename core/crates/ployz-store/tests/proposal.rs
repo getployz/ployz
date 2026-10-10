@@ -262,6 +262,22 @@ impl Db {
             .unwrap();
     }
 
+    /// Unset `path` in `environment`'s Working State.
+    fn unset(&self, environment: &str, path: &str) {
+        self.store
+            .write(
+                &self.who,
+                &Edit {
+                    environment: at(environment),
+                    expect: None,
+                    changes: vec![ployz_store::Change::Unset {
+                        path: SettingPath::parse(path).unwrap(),
+                    }],
+                },
+            )
+            .unwrap();
+    }
+
     /// Save `environment`'s draft; its revision after.
     fn save(&self, environment: &str) -> u64 {
         let published = self
@@ -904,6 +920,41 @@ fn a_policy_set_here_to_the_source_newer_value_refuses_remove() {
     let (code, message) = db.remove("production", &a).unwrap_err();
     assert_eq!(code, RpcErrorCode::Conflict, "{message}");
     assert!(message.contains("Auto-deploy"), "{message}");
+}
+
+#[test]
+fn a_credential_the_include_overwrote_refuses_remove() {
+    let db = Db::new();
+    let credential = |secret: &str| json!({"username": "u", "secret": secret});
+    let stored = || {
+        db.rows(&format!(
+            "SELECT credential FROM config_registry_credential WHERE environment_id = '{}'",
+            uuid(2)
+        ))
+    };
+    // Off in production, its own credential kept; dev turns one on.
+    db.put(
+        "production",
+        &[("api.registryCredential", credential("prod"))],
+    );
+    db.unset("production", "api.registryCredential");
+    let kept = stored();
+    db.put("dev", &[("api.registryCredential", credential("dev"))]);
+    let a = proposal(
+        &db.include(("dev", "production"), &sync_id(1), None)
+            .unwrap(),
+    );
+    assert_ne!(stored(), kept);
+    let (code, message) = db.remove("production", &a).unwrap_err();
+    assert_eq!(code, RpcErrorCode::Conflict, "{message}");
+    assert!(message.contains("api's registry credential"), "{message}");
+    // Set again here, it is production's own.
+    db.put(
+        "production",
+        &[("api.registryCredential", credential("prod"))],
+    );
+    db.discard("production", Some("api"));
+    assert_eq!(db.remove("production", &a), Ok(true));
 }
 
 #[test]
