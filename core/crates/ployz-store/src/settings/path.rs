@@ -221,6 +221,7 @@ impl ConfigField {
 pub(crate) enum VolumeField {
     Name,
     Storage,
+    SharedWrites,
 }
 
 impl VolumeField {
@@ -228,6 +229,7 @@ impl VolumeField {
         match self {
             Self::Name => "name",
             Self::Storage => "storage",
+            Self::SharedWrites => "sharedWrites",
         }
     }
 
@@ -236,6 +238,7 @@ impl VolumeField {
         match self {
             Self::Name => json!(volume.name),
             Self::Storage => json!(volume.storage),
+            Self::SharedWrites => json!(volume.shared_writes),
         }
     }
 
@@ -244,6 +247,7 @@ impl VolumeField {
         match self {
             Self::Name => volume.name.clone_from(&from.name),
             Self::Storage => volume.storage = from.storage,
+            Self::SharedWrites => volume.shared_writes = from.shared_writes,
         }
     }
 }
@@ -259,6 +263,8 @@ pub(crate) enum Target {
     Variable(VariableKey),
     /// Whether a variable is exported.
     Exported(VariableKey),
+    /// Template/import metadata; only reads and Discard address it.
+    Description(VariableKey),
     /// Where the Service mounts a Volume.
     Mount(VolumeName),
     /// The directory the Service mounts a Config at.
@@ -310,6 +316,7 @@ impl SettingPath {
                 None => (volume, None),
                 Some((volume, "name")) => (volume, Some(VolumeField::Name)),
                 Some((volume, "storage")) => (volume, Some(VolumeField::Storage)),
+                Some((volume, "sharedWrites")) => (volume, Some(VolumeField::SharedWrites)),
                 Some(_) => {
                     return Err(error::invalid(
                         "A Volume has no Settings: address it as volumes.VOLUME",
@@ -362,10 +369,11 @@ impl SettingPath {
                 Some(variable) => match variable.split_once('.') {
                     None => Target::Variable(VariableKey::parse(variable)?),
                     Some((key, "exported")) => Target::Exported(VariableKey::parse(key)?),
+                    Some((key, "description")) => Target::Description(VariableKey::parse(key)?),
                     Some(_) => {
                         return Err(error::invalid(
                             "Unknown variable field",
-                            json!({ "valid_children": ["exported"] }),
+                            json!({ "valid_children": ["exported", "description"] }),
                         ));
                     }
                 },
@@ -494,6 +502,7 @@ impl fmt::Display for SettingPath {
             Some(Target::Source) => write!(formatter, "{service}.source"),
             Some(Target::Variable(key)) => write!(formatter, "{service}.env.{key}"),
             Some(Target::Exported(key)) => write!(formatter, "{service}.env.{key}.exported"),
+            Some(Target::Description(key)) => write!(formatter, "{service}.env.{key}.description"),
             Some(Target::Mount(volume)) => write!(formatter, "{service}.mounts.{volume}"),
             Some(Target::ConfigMount(config)) => {
                 write!(formatter, "{service}.configs.{config}")

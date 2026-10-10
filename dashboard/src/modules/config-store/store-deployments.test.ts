@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs, outcomeReason,
-  nodeLight, nodeOutcomeLabel, shownValue, uploadLabel,
+  nodeLight, nodeOutcomeLabel, reviewGroups, shownValue, uploadLabel,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -234,4 +234,45 @@ it("gives same-name Configs separate whole and file discard targets", () => {
     ["configs.@old", "configs.@old.files.app.conf", "app.conf"],
     ["configs.@new", "configs.@new.files.app.conf", "app.conf"],
   ]);
+});
+
+
+it("retains inverse draft fields, with their Saved discard target, in one runtime review", () => {
+  const runtime = asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {});
+  const groups = reviewGroups({ ...diff, changes: [runtime], draft_changes: [{ ...runtime, comparison: "saved", settings: [
+    ...runtime.settings.slice(0, 1),
+    { path: "web.startCommand", kind: "update", before: "new", after: null, canRestore: true, row: "s1:startCommand" as RowId },
+  ] }] }, services);
+  expect(groups).toHaveLength(1);
+  expect(groups[0]?.changeCount).toBe(4);
+  expect(groups[0]?.rows.map((row) => [row.path, row.discardTarget])).toEqual([
+    ["web.replicas", undefined], ["web.env.TOKEN", undefined], ["web.mounts.pg-data", undefined], ["web.startCommand", "saved"],
+  ]);
+});
+
+it("keeps separate value, export and route identities when their Sync row is shared", () => {
+  const runtime = { ...asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {}), settings: [
+    { path: "web.env.KEY", kind: "update" as const, before: "old", after: "new", canRestore: true, row: "s1:variables.KEY" as RowId },
+    { path: "web.routes.first", kind: "add" as const, before: null, after: { id: "first", hostname: "first.example.com" }, canRestore: false, row: "s1:routes" as RowId },
+  ] };
+  const [group] = reviewGroups({ ...diff, changes: [runtime], draft_changes: [{ ...runtime, comparison: "saved", settings: [
+    ...runtime.settings.slice(0, 1),
+    { path: "web.env.KEY.exported", kind: "update", before: false, after: true, canRestore: true, row: "s1:variables.KEY" as RowId },
+    { path: "web.env.KEY.description", kind: "update", before: null, after: "For web", canRestore: true, row: "s1:variables.KEY" as RowId },
+    { path: "web.routes.second", kind: "add", before: null, after: { id: "second", hostname: "second.example.com" }, canRestore: false, row: "s1:routes" as RowId },
+  ] }] }, services);
+  expect(group?.rows.map((row) => row.path)).toEqual([
+    "web.env.KEY", "web.routes.first", "web.env.KEY.exported", "web.env.KEY.description", "web.routes.second",
+  ]);
+  expect(group?.changeCount).toBe(5);
+});
+
+it("lets a whole runtime lifecycle dominate draft children and counts its node marker", () => {
+  const runtime = { ...asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {}), lifecycle: "delete" as const };
+  const [group] = reviewGroups({ ...diff, changes: [runtime], draft_changes: [{ ...runtime, lifecycle: "update", comparison: "saved", settings: [
+    { path: "web.startCommand", kind: "update", before: null, after: "later", canRestore: true, row: null },
+  ] }] }, services);
+  expect(group?.changeCount).toBe(4);
+  expect(group?.rows).toHaveLength(3);
+  expect(group?.discardTarget).toBeUndefined();
 });

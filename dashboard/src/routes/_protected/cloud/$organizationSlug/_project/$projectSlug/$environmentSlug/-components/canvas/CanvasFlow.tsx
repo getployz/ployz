@@ -7,8 +7,8 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useLoaderData, useLocation, useNavigate, useParams } from "@tanstack/react-router";
-import { PlusIcon } from "lucide-react";
+import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
+import { HistoryIcon, PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "./store-hints";
@@ -28,7 +28,7 @@ import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
-import { changeGroups } from "#/modules/config-store/store-deployments";
+import { reviewGroups } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
@@ -38,6 +38,7 @@ import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import {
+  ENVIRONMENT_HISTORY_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "../environment-route-paths";
@@ -65,7 +66,6 @@ export function CanvasFlow({
   const [flowReady, setFlowReady] = useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
-  const locationKey = useLocation({ select: (location) => location.href });
   const { onNodeDrag } = useCanvasPositionMutation({
     ...params,
     organizationId,
@@ -152,6 +152,7 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <Button nativeButton={false} className="pointer-events-auto" variant="outline" render={<Link to={ENVIRONMENT_HISTORY_ROUTE_TO} params={params} />}><HistoryIcon />History</Button>
         <SyncButton />
         <CanvasFinder nodes={findableNodes} />
         <Button
@@ -164,7 +165,7 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <StoreBottomBar key={locationKey} store={store} />
+      <StoreBottomBar store={store} />
 
       <ServiceCreatorDialog
         open={creator.creatorOpen}
@@ -214,19 +215,20 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
   const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
-  const groups = changeGroups(diff, store.services.map(({ service }) => service));
+  const groups = reviewGroups(diff, store.services.map(({ service }) => service));
   return (
     <>
       <BottomBar
         groups={groups}
-        totalChanges={diff.total_count}
-        canPublish={diff.total_count > 0 && !diff.published}
+        totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
+        runtimeChanges={diff.total_count}
+        canPublish={(diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
         onPublish={actions.publish}
-        onDiscardAll={() => actions.discard(null)}
-        onDiscardNode={(group) => actions.discard(group.discardPath)}
-        onDiscardRow={(_, path) => actions.discard(path)}
+        onDiscardAll={() => actions.discard(null, "review")}
+        onDiscardNode={(group) => actions.discard(group.discardPath, group.discardTarget)}
+        onDiscardRow={(group, path) => actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
         active={inFlight}
         notes={storeHintNotes(diff, groups, actions.neverSync)}
         waiting={waiting}

@@ -56,17 +56,17 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
           <DialogTitle>Environment changes</DialogTitle>
           <DialogDescription>
             {!staged ? "Nothing staged here"
-              : `${plural(totalChanges, "change")} in ${environment}, ${canPublish ? "not yet published" : "published, not yet deployed"}.`}
+              : `${plural(totalChanges, "change")} in ${environment}, ${canPublish ? "not yet saved" : "saved, not yet deployed"}.`}
           </DialogDescription>
-          {staged && canDeploy ? (
+          {staged && (canPublish || canDeploy) ? (
             <InputGroup>
-              <InputGroupInput aria-label="Deploy message" placeholder="Deploy message (optional)" maxLength={500} value={message}
+              <InputGroupInput aria-label="Change message" placeholder="Message (optional)" maxLength={500} value={message}
                 onChange={(event) => onMessageChange(event.target.value)} />
             </InputGroup>
           ) : null}
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-          {staged ? <Groups {...props} /> : null}
+          {staged ? <ChangeGroups {...props} /> : null}
           {after ? <div className="flex flex-col gap-3">{after}</div> : null}
         </div>
         {staged ? <Footer {...props} /> : null}
@@ -96,7 +96,7 @@ function changeSections(groups: readonly ChangeGroup[], originFor: EnvironmentCh
   return [...sections.values()].filter((section) => section.lines.length);
 }
 
-function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, noteFor, neverSyncFor, originFor }: EnvironmentChangesReviewProps) {
+export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, neverSyncFor, originFor }: Pick<EnvironmentChangesReviewProps, "groups" | "noteFor" | "neverSyncFor" | "originFor"> & Partial<Pick<EnvironmentChangesReviewProps, "onDiscardNode" | "onDiscardRow">>) {
   const sections = changeSections(groups, originFor);
   const firstConfigLines = new Map<string, Line>();
   for (const { lines } of sections) {
@@ -104,12 +104,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
       if (line.group.nodeType === "config" && !firstConfigLines.has(line.group.nodeId)) firstConfigLines.set(line.group.nodeId, line);
     }
   }
-  // The last change gone, nothing is left to review.
-  const leaving = (last: boolean, leave: () => void) => () => {
-    if (last) onClose();
-    leave();
-  };
-  return sections.map(({ origin, lines }) => {
+  return <>{sections.map(({ origin, lines }) => {
     // Alone, this Environment's own edits need no heading.
     const title = origin?.title ?? (sections.length > 1 ? "Your changes" : undefined);
     return (
@@ -123,7 +118,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
             const restarts = firstConfig && group.restarts.length ? (
               <p className="text-muted-foreground">Deploying {group.nodeName} restarts {listNames(group.restarts)}.</p>
             ) : null;
-            const discardNode = group.canDiscard ? leaving(groups.length === 1, () => onDiscardNode(group)) : undefined;
+            const discardNode = group.canDiscard && onDiscardNode ? () => onDiscardNode(group) : undefined;
             if (!row) {
               const kind = nodeKinds[group.lifecycle];
               return (
@@ -140,9 +135,9 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
             return (
               <ChangeLine key={row.changeKey} kind={row.kind} label={`${group.nodeName} ${row.label}`}
                 value={row.configFile ? undefined : <Value kind={row.kind} before={row.currentValue} after={row.newValue} />}
-                onDiscard={row.canDiscard ? leaving(totalChanges === 1, () => onDiscardRow(group, row.path)) : undefined}
+                onDiscard={row.canDiscard && onDiscardRow ? () => onDiscardRow(group, row.path) : undefined}
                 discardNode={(!row.canDiscard || firstConfig) && discardNode ? { name: group.nodeName, run: discardNode } : undefined}
-                onNeverSync={neverSync && leaving(totalChanges === 1, neverSync)}>
+                onNeverSync={neverSync}>
                 <p className="flex min-w-0 items-baseline gap-2">
                   <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
@@ -156,7 +151,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
         </ul>
       </section>
     );
-  });
+  })}</>;
 }
 
 const nodeKinds = { create: "add", update: "update", delete: "remove" } as const;
@@ -240,7 +235,7 @@ function Footer({ groups, canDeploy, canPublish, onPublish, onDiscardAll, onDepl
       {groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={onDiscardAll}>Discard all</Button>
       ) : null}
-      <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Publish</Button>
+      <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Save</Button>
       {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}
     </DialogFooter>
   );

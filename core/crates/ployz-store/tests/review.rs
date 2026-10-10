@@ -255,7 +255,6 @@ fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets()
         Some(Value::Null)
     );
     assert!(changed(&store, &who, "web").is_empty());
-    // A saved edit is reversed only in Working State until the next Save.
     set(&store, &who, "web.replicas", json!(4));
     publish(&store, &who, None).unwrap();
     assert_eq!(changed(&store, &who, "web"), ["web.replicas"]);
@@ -477,7 +476,7 @@ fn discarding_a_variable_or_its_export_stages_a_reversal() {
     let view = diff(&store, &who);
     assert!(view.changes.is_empty());
     assert!(!view.published);
-    assert_eq!(view.draft_count, 1);
+    assert_eq!(view.draft_count, 2);
 }
 
 /// A row of a compound Setting discards that Setting: a healthcheck's path edit
@@ -784,4 +783,551 @@ fn discard_review_whole_runtime_node_dominates_draft_children() {
             .revisions,
         history.revisions
     );
+}
+
+fn stage_history(
+    store: &ConfigStore,
+    who: &Actor,
+    revision: u64,
+    action: ployz_store::HistoryAction,
+) {
+    let query = ployz_store::HistoryPreviewQuery {
+        environment: EnvironmentRef::default(),
+        revision: Revision(revision),
+        action,
+    };
+    let preview = store.read(who, &query).unwrap();
+    store
+        .write(
+            who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: query.revision,
+                action,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn history_restores_sealed_versions_and_never_downgrades_a_secret_to_plaintext() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.TOKEN", json!("plain"));
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "first-private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    set(
+        &store,
+        &who,
+        "web.env.TOKEN",
+        json!({ "secret": "second-private-value" }),
+    );
+    publish(&store, &who, None).unwrap();
+    let query = |revision| ployz_store::HistoryPreviewQuery {
+        environment: EnvironmentRef::default(),
+        revision: Revision(revision),
+        action: ployz_store::HistoryAction::Restore,
+    };
+    let preview = store.read(&who, &query(2)).unwrap();
+    let public = serde_json::to_string(&preview).unwrap();
+    assert!(!public.contains("private-value"));
+    assert!(!public.contains("sealed"));
+    let history = serde_json::to_string(
+        &store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!history.contains("private-value"));
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Restore);
+    assert_eq!(
+        value(&store, &who, "web.env.TOKEN"),
+        Some(json!({ "secret": true }))
+    );
+    assert_eq!(
+        store.read(&who, &query(1)).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    let deployed = backend::deploy(&store, &who, "production", 1);
+    assert!(deployed.to_string().contains("first-private-value"));
+    assert!(!deployed.to_string().contains("second-private-value"));
+}
+
+#[test]
+fn history_undo_validates_dependent_variables_after_the_complete_inverse() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.SOURCE", json!("old"));
+    set(&store, &who, "api.env.USE", json!("${{ web.SOURCE }}"));
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &Edit {
+                changes: vec![
+                    Change::Unset {
+                        path: SettingPath::parse("api.env.USE").unwrap(),
+                    },
+                    Change::Unset {
+                        path: SettingPath::parse("web.env.SOURCE").unwrap(),
+                    },
+                ],
+                environment: EnvironmentRef::default(),
+                expect: None,
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(value(&store, &who, "web.env.SOURCE"), Some(json!("old")));
+    assert_eq!(
+        value(&store, &who, "api.env.USE"),
+        Some(json!("${{ web.SOURCE }}"))
+    );
+}
+
+#[test]
+fn history_undo_restores_exact_config_files_and_preserves_later_mounts() {
+    let (store, who) = shop();
+    let config = ployz_core::ConfigName::parse("sentry").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                environment: EnvironmentRef::default(),
+                id: ployz_store::ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                name: config.clone(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let put = |mode, uid| {
+        store
+            .write(
+                &who,
+                &ployz_store::PutConfigFile {
+                    environment: EnvironmentRef::default(),
+                    config: config.clone(),
+                    file: ployz_core::ConfigFileName::parse("conf.d/site.conf").unwrap(),
+                    content: "same content".into(),
+                    mode: Some(mode),
+                    uid: Some(uid),
+                    gid: Some(20),
+                },
+            )
+            .unwrap()
+    };
+    put(ployz_core::config::FileMode::parse("0444").unwrap(), 0);
+    let query = ployz_store::ConfigItemQuery {
+        environment: EnvironmentRef::default(),
+        config: config.clone().into(),
+    };
+    let before = store.read(&who, &query).unwrap();
+    publish(&store, &who, None).unwrap();
+    put(ployz_core::config::FileMode::parse("0555").unwrap(), 1000);
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::AttachConfig {
+                environment: EnvironmentRef::default(),
+                config: config.clone(),
+                service: ServiceName::parse("api").unwrap(),
+                dir: "/later".into(),
+            },
+        )
+        .unwrap();
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    let restored = store.read(&who, &query).unwrap();
+    assert_eq!(restored.contents, before.contents);
+    assert_eq!(restored.config.config.files, before.config.config.files);
+    assert_eq!(restored.config.config.id, before.config.config.id);
+    assert_eq!(restored.config.mounts.len(), 2);
+    assert_eq!(
+        value(&store, &who, "api.configs.sentry"),
+        Some(json!("/later"))
+    );
+}
+
+#[test]
+fn export_only_draft_is_reviewable_and_undo_preserves_a_later_export() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.KEY", json!("old"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.KEY", json!("new"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.KEY.exported", json!(true));
+    assert_eq!(diff(&store, &who).draft_count, 1);
+    assert_eq!(
+        diff(&store, &who).draft_changes[0].settings[0].path,
+        "web.env.KEY.exported"
+    );
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+            },
+        )
+        .unwrap();
+    assert!(preview.overwritten.is_empty());
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(value(&store, &who, "web.env.KEY"), Some(json!("old")));
+    assert_eq!(
+        value(&store, &who, "web.env.KEY.exported"),
+        Some(json!(true))
+    );
+}
+
+#[test]
+fn saved_discard_cannot_downgrade_a_sealed_variable() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.KEY", json!("public"));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.KEY", json!({ "secret": "private" }));
+    let result = store.write(
+        &who,
+        &Discard {
+            target: ployz_store::DiscardTarget::Saved,
+            path: Some(SettingPath::parse("web.env.KEY").unwrap()),
+            ..Discard::default()
+        },
+    );
+    assert_eq!(result.unwrap_err().code, RpcErrorCode::Conflict);
+    assert_eq!(
+        value(&store, &who, "web.env.KEY"),
+        Some(json!({ "secret": true }))
+    );
+}
+
+#[test]
+fn history_undo_volume_mount_named_name_and_shared_writes() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("name").unwrap(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                shared_writes: false,
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/old".into(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.mounts.name", json!("/new"));
+    store
+        .write(
+            &who,
+            &ployz_store::SetVolumeSharedWrites {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("name").unwrap(),
+                shared_writes: true,
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(1),
+                action: ployz_store::HistoryAction::Restore,
+            },
+        )
+        .unwrap();
+    assert!(
+        preview
+            .changes
+            .iter()
+            .flat_map(|node| &node.settings)
+            .any(|row| row.path == "volumes.name.sharedWrites")
+    );
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(value(&store, &who, "web.mounts.name"), Some(json!("/old")));
+    assert!(
+        !store
+            .read(&who, &ployz_store::VolumesQuery::default())
+            .unwrap()
+            .volumes[0]
+            .volume
+            .shared_writes
+    );
+}
+
+#[test]
+fn history_undo_custom_and_generated_domains_uses_typed_settings() {
+    for hostname in [
+        None,
+        Some(ployz_store::Hostname::parse("history.example.com").unwrap()),
+    ] {
+        let (store, who) = shop();
+        publish(&store, &who, None).unwrap();
+        store
+            .write_trusted(
+                &who,
+                &ployz_store::AddDomain {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                    hostname,
+                    port: None,
+                },
+                &Trusted::default(),
+            )
+            .unwrap();
+        publish(&store, &who, None).unwrap();
+        stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+        assert!(
+            store
+                .read(&who, &ployz_store::DomainsQuery::default())
+                .unwrap()
+                .domains
+                .is_empty()
+        );
+        assert_eq!(diff(&store, &who).saved, Some(Revision(2)));
+    }
+}
+
+#[test]
+fn undo_export_only_revision_preserves_later_value_and_review_discards_both_fields() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.KEY", json!("old"));
+    backend::deploy(&store, &who, "production", 1);
+    set(&store, &who, "web.env.KEY.exported", json!(true));
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.env.KEY", json!("later"));
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+            },
+        )
+        .unwrap();
+    assert!(preview.overwritten.is_empty());
+    assert_eq!(preview.total_count, 1);
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(value(&store, &who, "web.env.KEY"), Some(json!("later")));
+    assert_eq!(
+        value(&store, &who, "web.env.KEY.exported"),
+        Some(json!(false))
+    );
+    store
+        .write(
+            &who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Review,
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.env.KEY"), Some(json!("old")));
+    assert_eq!(
+        value(&store, &who, "web.env.KEY.exported"),
+        Some(json!(true))
+    );
+    assert_eq!(diff(&store, &who).saved, Some(Revision(2)));
+}
+
+#[test]
+fn undo_domain_revision_preserves_later_unrelated_route_without_confirmation() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    let add = |hostname| {
+        store
+            .write_trusted(
+                &who,
+                &ployz_store::AddDomain {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                    hostname: Some(ployz_store::Hostname::parse(hostname).unwrap()),
+                    port: None,
+                },
+                &Trusted::default(),
+            )
+            .unwrap()
+    };
+    add("first.example.com");
+    publish(&store, &who, None).unwrap();
+    add("later.example.com");
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+            },
+        )
+        .unwrap();
+    assert!(preview.overwritten.is_empty());
+    assert_eq!(preview.total_count, 1);
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: preview.action,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    let domains = store
+        .read(&who, &ployz_store::DomainsQuery::default())
+        .unwrap();
+    assert_eq!(domains.domains.len(), 1);
+    assert_eq!(domains.domains[0].domain.shown(), "later.example.com");
+}
+
+#[test]
+fn review_discard_restores_custom_and_generated_domain_changes() {
+    for hostname in [
+        None,
+        Some(ployz_store::Hostname::parse("discard.example.com").unwrap()),
+    ] {
+        let (store, who) = shop();
+        backend::deploy(&store, &who, "production", 1);
+        store
+            .write_trusted(
+                &who,
+                &ployz_store::AddDomain {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("web").unwrap(),
+                    hostname,
+                    port: None,
+                },
+                &Trusted::default(),
+            )
+            .unwrap();
+        let before = diff(&store, &who);
+        assert_eq!(before.total_count, 1);
+        store
+            .write(
+                &who,
+                &Discard {
+                    target: ployz_store::DiscardTarget::Review,
+                    version: Some(before.version),
+                    ..Discard::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            store
+                .read(&who, &ployz_store::DomainsQuery::default())
+                .unwrap()
+                .domains
+                .is_empty()
+        );
+        assert_eq!(diff(&store, &who).saved, Some(Revision(1)));
+    }
+}
+
+#[test]
+fn template_metadata_is_reviewed_and_undone_without_deploying() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "web.template",
+        json!({ "id": "redis", "version": 1 }),
+    );
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.template").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(diff(&store, &who).draft_count, 1);
+    publish(&store, &who, None).unwrap();
+    stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
+    assert_eq!(
+        value(&store, &who, "web.template"),
+        Some(json!({ "id": "redis", "version": 1 }))
+    );
+    store
+        .write(
+            &who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Saved,
+                path: Some(SettingPath::parse("web.template").unwrap()),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.template"), Some(Value::Null));
+}
+
+#[test]
+fn restoring_a_deleted_draft_variable_requires_explicit_overwrite_consent() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.KEY", json!("saved"));
+    publish(&store, &who, None).unwrap();
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.env.KEY").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(1),
+                action: ployz_store::HistoryAction::Restore,
+            },
+        )
+        .unwrap();
+    assert_eq!(preview.overwritten, ["web.env.KEY"]);
+    assert_eq!(
+        store
+            .write(
+                &who,
+                &ployz_store::StageHistory {
+                    environment: EnvironmentRef::default(),
+                    revision: Revision(1),
+                    action: preview.action,
+                    version: preview.version,
+                    accept_overwrite: false,
+                }
+            )
+            .unwrap_err()
+            .code,
+        RpcErrorCode::ConfirmationRequired
+    );
+    assert_eq!(value(&store, &who, "web.env.KEY"), None);
 }

@@ -21,6 +21,7 @@ const replicas: ChangeGroup = asTestDouble<ChangeGroup>()({
 const cache = asTestDouble<ChangeGroup>()({ ...replicas, nodeId: "cache", nodeName: "cache" });
 const onDeploy = vi.fn();
 const onDiscardAll = vi.fn();
+const onPublish = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
 
@@ -28,9 +29,9 @@ beforeEach(() => {
   active = [];
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); onPublish.mockReset(); });
 
-function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0) {
+function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPublish = false) {
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
@@ -41,7 +42,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0) {
     return (
       <BottomBarSlot.Provider value={slot}>
         <div ref={setSlot} />
-        <BottomBar groups={groups} totalChanges={totalChanges} canPublish={false} onDeploy={onDeploy} onPublish={() => {}}
+        <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={active} notes={{}} />
         <Outlet />
       </BottomBarSlot.Provider>
@@ -63,7 +64,7 @@ const bar = async () => within(await screen.findByRole("group", { name: "Bottom 
 it("shows changes to deploy first, in one row like Railway's: the count, Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
   open(canvasUrl, [replicas], 1);
   const staged = await bar();
-  expect(staged.getByText("Apply 1 change")).toBeTruthy();
+  expect(staged.getAllByText("1 change")).toHaveLength(2);
   // What changed is Details' and the canvas's, so the bar stays small.
   expect(staged.queryByText("api")).toBeNull();
   expect(staged.queryByText(/Replicas/)).toBeNull();
@@ -85,20 +86,20 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
   expect(onDiscardAll).toHaveBeenCalledOnce();
 });
 
-it("closes the review as Discard all is clicked: the discard shows at once and saves in the background", async () => {
+it("keeps the review open through Discard all so its inverse draft stays reviewable", async () => {
   onDiscardAll.mockClear();
   open(canvasUrl, [replicas], 1);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Discard all" })); });
   expect(onDiscardAll).toHaveBeenCalledOnce();
-  expect(screen.queryByRole("dialog", { name: "Environment changes" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
 });
 
 it("keeps staged changes over a running Deployment, with Deploy next", async () => {
   active = [deployment(running, "running", 1)];
   open(canvasUrl, [replicas, cache], 2);
   const staged = await bar();
-  expect(staged.getByText("Apply 2 changes")).toBeTruthy();
+  expect(staged.getAllByText("2 changes")).toHaveLength(2);
   expect(staged.getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
   expect(staged.queryByRole("link", { name: "Logs" })).toBeNull();
 });
@@ -125,4 +126,15 @@ it("hides while nothing is staged or running, and while the only Deployment's pa
   open(canvasUrl);
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+
+it("preserves the Change message while a Save can still refuse or fail", async () => {
+  open(canvasUrl, [replicas], 1, true);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
+  expect(onPublish).toHaveBeenCalledWith("Explain this change");
+  expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "Explain this change");
+  expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
 });

@@ -37,22 +37,22 @@ function cached() {
   return { queryClient, read };
 }
 
-it("takes a discarded Setting out of the review at once; what the Store restores comes with its answer", async () => {
+it("keeps the current review until Discard answers with its authoritative inverse", async () => {
   const { queryClient, read } = cached();
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "web.replicas", version: null });
-  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["web.startCommand"]);
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["web.replicas", "web.startCommand"]);
   expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(3);
   expect(read<EnvironmentView>(environmentSettingsQuery(ref))?.settings.map((row) => row.value)).toEqual([3, "serve"]);
 });
 
-it("empties the review at once on a whole discard; the Services come with its answer", async () => {
+it("keeps review and Services while whole Discard is pending", async () => {
   const { queryClient, read } = cached();
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: null, version: null });
-  expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
+  expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(3);
   expect(read<ServicesView>(servicesQuery(ref))?.services.map((service) => service.change)).toEqual(["update", "create"]);
 });
 
-it("discards a Config file by exact identity, retaining its dotted sibling until whole Config discard", async () => {
+it("keeps exact Config files and affected Services visible until Discard answers", async () => {
   const { queryClient, read } = cached();
   const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
   queryClient.setQueryData<unknown>(key, { ok: true, value: {
@@ -64,10 +64,10 @@ it("discards a Config file by exact identity, retaining its dotted sibling until
     }],
   } });
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry.files.app.conf", version: null });
-  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["configs.sentry.files.app.conf.bak"]);
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["configs.sentry.files.app.conf", "configs.sentry.files.app.conf.bak"]);
   expect(read<DiffView>(diffQuery(ref))?.changes[0]?.restarts).toEqual(["web"]);
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry", version: null });
-  expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
+  expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(3);
 });
 
 it("renames a Service everywhere its name keys a view, and marks a removed one", async () => {
@@ -267,7 +267,7 @@ it("waits for the Store when no Config listing establishes an optimistic target 
   expect(queryClient.getQueryData(key)).toEqual({ ok: true, value: old });
 });
 
-it("discards one same-name Config by identity while retaining the replacement's changes", async () => {
+it("keeps both same-name Config identities visible while Discard is pending", async () => {
   const { queryClient, read } = cached();
   const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
   const node = (id: string): DiffView["changes"][number] => ({ type: "config", id, row: `${id}:node` as RowId,
@@ -276,5 +276,5 @@ it("discards one same-name Config by identity while retaining the replacement's 
     ] });
   queryClient.setQueryData<unknown>(key, { ok: true, value: { ...read<DiffView>(diffQuery(ref)), changes: [node("old"), node("new")] } });
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.@old", version: null });
-  expect(read<DiffView>(diffQuery(ref))?.changes).toEqual([node("new")]);
+  expect(read<DiffView>(diffQuery(ref))?.changes).toEqual([node("old"), node("new")]);
 });

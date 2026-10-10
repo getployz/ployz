@@ -1,5 +1,3 @@
-//! Immutable Saved revisions and guarded restoration into Working State.
-
 use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
@@ -14,6 +12,7 @@ use ts_rs::TS;
 use crate::id::{Principal, Revision};
 use crate::review::{self, NodeChange};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
+
 use crate::storage::Tx;
 use crate::{Actor, error};
 
@@ -241,7 +240,7 @@ fn candidate(
         working: target,
         live: environment.live.clone(),
     };
-    scope::validate_working_from(tx, &mut candidate, Some(&selected))?;
+    scope::validate_and_refresh_working_from(tx, &mut candidate, Some(&selected))?;
     crate::volume::check_storage(tx, &environment.summary.id, &candidate.working)?;
     Ok(canonicalize_environment_intent(candidate.working))
 }
@@ -264,7 +263,7 @@ fn undo(
     Ok(at.working)
 }
 
-fn prevent_plaintext(
+pub(crate) fn prevent_plaintext(
     current: &SavedEnvironmentIntent,
     target: &SavedEnvironmentIntent,
 ) -> Result<(), RpcError> {
@@ -325,21 +324,88 @@ fn preview_of(
         } else if change.lifecycle != ReviewLifecycleKind::Update {
             overwritten.extend(draft.settings.iter().map(|row| row.path.clone()));
         } else {
+            let renamed = format!("{}.name", draft.name);
             for row in &change.settings {
-                if let Some(draft) =
-                    draft
-                        .settings
-                        .iter()
-                        .find(|draft| match (&draft.row, &row.row) {
-                            (Some(left), Some(right)) => left == right,
-                            _ => {
-                                draft.path == row.path
-                                    || (draft.path.ends_with(".name")
-                                        && row.path.ends_with(".name"))
-                            }
-                        })
+                if row
+                    .row
+                    .as_ref()
+                    .is_some_and(|row| matches!(row.at(), ployz_core::config::At::Variable(_)))
                 {
+                    continue;
+                }
+                if let Some(draft) = draft.settings.iter().find(|draft| {
+                    review::same_setting(draft, row)
+                        || (draft.path == renamed && row.path == format!("{}.name", change.name))
+                }) {
                     overwritten.insert(draft.path.clone());
+                }
+            }
+        }
+    }
+    if let Some(saved) = &reviewed.saved {
+        for service in &environment.working.services {
+            let Some(baseline) = saved
+                .intent
+                .services
+                .iter()
+                .find(|baseline| baseline.id == service.id)
+            else {
+                continue;
+            };
+            let Some(restored) = target
+                .services
+                .iter()
+                .find(|restored| restored.id == service.id)
+            else {
+                continue;
+            };
+            let keys: BTreeSet<_> = baseline
+                .variables
+                .iter()
+                .chain(&service.variables)
+                .chain(&restored.variables)
+                .map(|variable| &variable.key)
+                .collect();
+            for key in keys {
+                let before = baseline
+                    .variables
+                    .iter()
+                    .find(|variable| variable.key == *key);
+                let current = service
+                    .variables
+                    .iter()
+                    .find(|variable| variable.key == *key);
+                let after = restored
+                    .variables
+                    .iter()
+                    .find(|variable| variable.key == *key);
+                let same_value =
+                    |left: Option<&ployz_core::config::SavedVariableIntent>,
+                     right: Option<&ployz_core::config::SavedVariableIntent>| {
+                        match (left, right) {
+                            (Some(left), Some(right)) => {
+                                left.id == right.id
+                                    && left.value == right.value
+                                    && left.value_fingerprint == right.value_fingerprint
+                            }
+                            (None, None) => true,
+                            _ => false,
+                        }
+                    };
+                if !same_value(before, current) && !same_value(after, current) {
+                    overwritten.insert(format!("{}.env.{key}", service.slug));
+                }
+                if let Some(current) = current {
+                    if before.is_some_and(|before| before.description != current.description)
+                        && after.is_some_and(|after| after.description != current.description)
+                    {
+                        overwritten.insert(format!("{}.env.{key}.description", service.slug));
+                    }
+                    if before.is_some_and(|before| before.exported != current.exported)
+                        && after.is_some_and(|after| after.exported != current.exported)
+                    {
+                        overwritten.insert(format!("{}.env.{key}.exported", service.slug));
+                    }
                 }
             }
         }

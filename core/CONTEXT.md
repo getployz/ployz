@@ -266,12 +266,12 @@ The mutable Environment configuration currently being edited, with a revision th
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Saved State**:
-An Environment's published configuration revisions. The latest is the only configuration a Deploy is admitted from; publishing Working State adds a revision without deploying.
+An Environment's immutable saved configuration revisions, with optional message, actor and time. Save adds a revision from Working State without deploying. Repeating an unchanged Save preserves the existing snapshot and metadata. The latest is the only configuration a Deploy is admitted from.
 _Avoid_: Working State, deployed configuration, draft
 
 **Publish**:
-Adding a revision to an Environment's Saved State from its Working State without deploying. A manual Deploy publishes first.
-_Avoid_: Save, commit, promote
+The Store and CLI command adding a revision to an Environment's Saved State from its Working State without deploying. The dashboard names this action Save. A manual Deploy saves first when needed and uses its message for that new revision.
+_Avoid_: commit, promote
 
 **Deployment**:
 The Config Store's record of one Deploy: its Attempt Target, who started it and from what source, its Node Outcomes and its events. It stays after the Deploy ends; its runner is recorded, so a Deployment whose runner is gone reads as outcome unknown, never as running.
@@ -290,7 +290,7 @@ The per-Environment-Node projection of the latest confirmed runtime outcomes. Su
 _Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" in user-facing copy
 
 **Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Deployment's Saved revision to Working State, falling back to per-node Applied State when none is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. A node never deployed compares against its Node Introduction, published or not, so every edit of it is a change; once it is in Applied State, never again. Lifecycle changes and setting changes are counted once; deployment progress is separate.
+One pure, serializable comparison from the latest queued or running Deployment's Saved revision to Working State, falling back to per-node Applied State when none is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. A node never deployed compares against its Node Introduction, published or not, so every edit of it is a change; once it is in Applied State, never again. Lifecycle changes and setting changes are counted once; deployment progress is separate. Changes also derives Working versus latest Saved so a draft reversal remains reviewable even with no runtime changes.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Environment Publication Review**:
@@ -298,12 +298,16 @@ Authority to publish the current Working State revision against one exact Saved 
 _Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
 
 **Saved State Command**:
-One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Discard publishes at most one replacement revision in the same transaction as its Working State reset.
+One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Save adds at most one immutable revision; Discard and History actions never mutate Saved State.
 _Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
 
 **Discard**:
-One command restoring a field, node, or the whole Environment to the Environment Change Set's comparison baseline in Working and Saved State. It guards the Working revision, Saved basis, and comparison baseline and writes both states atomically. A new-node field reset uses its Node Introduction without publishing that node. Discard never changes an accepted deployment's target.
+One command restoring a field, node, or the whole Environment into Working State without saving it. Head returns to the runtime comparison baseline, Saved abandons an inverse draft back to the latest Saved revision, and Review discards the server-derived visible list against each row's baseline. It guards the Working revision, Saved basis, and comparison baseline and writes one complete validated draft atomically. A new-node field reset uses its Node Introduction. Discard never changes History or an accepted deployment's target.
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
+
+**History**:
+The selected Environment's immutable Saved revisions, newest first. Restore stages a complete saved snapshot. Undo reverses only that revision's change relative to its recorded predecessor and preserves unrelated later edits. The first recorded revision has no Undo. A preview names the exact draft fields the final candidate overwrites; staging requires the exact current review version and explicit consent for those fields. Neither action saves or deploys. Variable secrets restore their sealed versioned values within the same Environment; preview values remain redacted. Registry credential material stays current outside snapshots.
+_Avoid_: deployment history, commit graph, second draft
 
 **Node Introduction**:
 The strictly versioned configuration an environment node had immediately after its creation transaction finalized. It is the comparison and reset source for edits made before the node has Applied State; it is not a second editable draft.

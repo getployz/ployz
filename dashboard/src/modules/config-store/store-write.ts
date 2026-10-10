@@ -25,7 +25,7 @@ const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["sync", "undo_sync
 /** The Environment revision a write produced; a Batch's is its last command's. */
 function writtenRevision(written: ConfigWritten): number | null {
   const last = written.written === "batch" ? written.results.at(-1) : written;
-  return last?.written === "service" || last?.written === "volume" || last?.written === "config" || last?.written === "edited"
+  return last?.written === "service" || last?.written === "volume" || last?.written === "config" || last?.written === "edited" || last?.written === "discarded" || last?.written === "history_staged"
     ? last.environment.revision : null;
 }
 

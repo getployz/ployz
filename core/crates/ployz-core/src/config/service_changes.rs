@@ -153,7 +153,10 @@ pub fn restore_service_setting(
         }
         return parse_service_config(json!(current));
     }
-    if path != "source" && path != "healthcheck" && !FIELDS.iter().any(|(field, _)| *field == path)
+    if path != "source"
+        && path != "healthcheck"
+        && path != "template"
+        && !FIELDS.iter().any(|(field, _)| *field == path)
     {
         return Err(ConfigError::at(
             "path",

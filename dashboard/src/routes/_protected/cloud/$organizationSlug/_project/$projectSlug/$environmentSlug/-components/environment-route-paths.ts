@@ -21,3 +21,6 @@ export const ENVIRONMENT_NEW_BRANCH_ROUTE_TO =
 
 export const ENVIRONMENT_PR_PLAN_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/pr-environments/$repositoryId";
+
+export const ENVIRONMENT_HISTORY_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/history";

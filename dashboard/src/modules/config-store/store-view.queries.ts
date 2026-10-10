@@ -19,6 +19,8 @@ import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 const refreshedBy = {
   environment: ["store_environment"],
   diff: ["store_environment", "store_deployment"],
+  history: ["store_environment"],
+  history_preview: ["store_environment", "store_deployment"],
   plan: ["store_environment", "store_deployment"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
   service: ["store_environment", "store_deployment"],

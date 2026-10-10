@@ -30,12 +30,13 @@ export const BottomBarSlot = createContext<HTMLElement | null>(null);
 type BottomBarProps = {
   groups: ChangeGroup[];
   totalChanges: number;
+  runtimeChanges?: number;
   canPublish: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
   /** A Deploy is being admitted: Deploy waits, so a double click admits one. */
   admitting?: boolean;
-  onPublish: () => void;
+  onPublish: (message: string) => void;
   onDiscardAll: () => void;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
@@ -60,6 +61,7 @@ type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
 export function BottomBar({
   groups,
   totalChanges,
+  runtimeChanges = totalChanges,
   canPublish,
   onDeploy,
   onPublish,
@@ -84,7 +86,7 @@ export function BottomBar({
   // Oldest first: the oldest holds, or is next for, the Environment's one run.
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canPublish;
-  const deployable = totalChanges > 0 && !noServers;
+  const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
 
   function deploy() {
@@ -97,9 +99,7 @@ export function BottomBar({
   // New Services and Volumes go for good with a Discard: name them and ask first.
   const created = groups.filter((group) => group.lifecycle === "create" && group.canDiscard).map((group) => group.nodeName);
 
-  // Discard shows at once and saves in the background, so the review closes with it.
   function discardAll() {
-    setOpen(false);
     if (created.length > 0 && !confirmingDiscard) {
       setConfirmingDiscard(true);
       return;
@@ -134,8 +134,8 @@ export function BottomBar({
   });
 
   const row = hasChanges ? (
-    <Row staged title={totalChanges > 0 ? `Apply ${plural(totalChanges, "change")}` : "Changes to publish"}
-      shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To publish"} detail={null}>
+    <Row staged title={totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save"}
+      shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
@@ -174,7 +174,7 @@ export function BottomBar({
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
-    onPublish: () => { setOpen(false); onPublish(); },
+    onPublish: () => onPublish(message),
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
@@ -184,7 +184,7 @@ export function BottomBar({
       {bar && slot ? createPortal(bar, slot) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
       <ConfirmDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard} title="Discard all changes?"
-        description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Everything else goes back to how it is deployed.`}
+        description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to their reviewed baseline.`}
         actionLabel="Discard all" variant="destructive" onConfirm={discardAll} />
     </>
   );

@@ -161,27 +161,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "publish":
-      await views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true }));
+      await views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true, draft_changes: [], draft_count: 0 }));
       return;
-    case "discard": {
-      // Its rows leave the review at once; what the Store restores (values, nodes, the count) comes with its answer.
-      const { path } = command;
-      const [node, ...setting] = path?.split(".") ?? [];
-      const type = node === "volumes" ? "volume" : node === "configs" ? "config" : null;
-      const named = type !== null && setting.length === 1 ? setting[0] : null;
-      const whole = (change: NodeChange) => path === null
-        || (named !== null ? change.type === type && (type === "config" ? named === `@${change.id}` || change.name === named : change.name === named) : setting.length === 0 && change.name === node);
-      await views<DiffView>("diff", command.environment, (view) => {
-        const changes = view.changes.flatMap((change) => {
-          if (whole(change)) return [];
-          const rows = change.settings.filter((row) => row.path !== path && (type === "config" || !row.path.startsWith(`${path}.`)));
-          return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
-        });
-        // An empty review counts nothing.
-        return changes.length === 0 ? { ...view, changes, total_count: 0 } : { ...view, changes };
-      });
+    case "discard":
+    case "stage_history":
       return;
-    }
     case "never_sync": {
       // At once: a mark changes what Sync offers, not Working State.
       const rows = new Set(command.rows);

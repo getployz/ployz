@@ -4,8 +4,8 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    ConfigAttachment, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVariableIntent, VolumeAttachment, canonicalize_environment_intent,
+    At, ConfigAttachment, EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableIntent, Setting, VolumeAttachment, canonicalize_environment_intent,
     restore_environment_node_into,
 };
 use std::borrow::Cow;
@@ -185,6 +185,7 @@ pub(crate) fn discard(
         }
         working
     };
+    review::history::prevent_plaintext(&environment.working, &working)?;
     let working =
         ployz_core::config::parse_environment_intent(json!(working)).map_err(|failure| {
             error::conflict(
@@ -216,8 +217,6 @@ pub(crate) fn discard(
     })
 }
 
-/// Restore one node, or one Setting, variable or mount of a Service, in Working
-/// State. Saved State stays immutable.
 fn restore_path_into(
     tx: &mut dyn Tx,
     environment: &scope::Environment,
@@ -265,7 +264,6 @@ fn restore_path_into(
         EnvironmentNodeType::Volume => intent.volumes.iter().any(|volume| volume.resource_id == id),
         EnvironmentNodeType::Config => intent.configs.iter().any(|config| config.resource_id == id),
     };
-    // A part of a node never deployed resets to its Introduction.
     let introduction = introductions && (part.is_some() || field.is_some()) && !holds(head);
     let baseline = if introduction {
         review::introductions(tx, environment)?
@@ -321,7 +319,7 @@ fn restore_part(
 ) -> Result<(), String> {
     let was = part_of(baseline, (id, resource), part);
     match part {
-        Target::Variable(key) | Target::Exported(key) => {
+        Target::Variable(key) | Target::Exported(key) | Target::Description(key) => {
             let was = match was {
                 Some(Part::Variable(was)) => Some(was),
                 Some(Part::Mount(_) | Part::ConfigMount(_)) | None => None,
@@ -330,13 +328,19 @@ fn restore_part(
             let at = variables.iter().position(|v| v.key == key.as_str());
             let exported = matches!(part, Target::Exported(_));
             match (at.and_then(|at| variables.get_mut(at)), was) {
+                (Some(variable), Some(was)) if matches!(part, Target::Description(_)) => {
+                    variable.description.clone_from(&was.description)
+                }
+                (Some(variable), None) if matches!(part, Target::Description(_)) => {
+                    variable.description = None
+                }
                 (Some(variable), Some(was)) if exported => variable.exported = was.exported,
                 (Some(variable), None) if exported => variable.exported = false,
                 (Some(variable), Some(was)) => {
-                    *variable = SavedVariableIntent {
-                        id: variable.id.clone(),
-                        ..was.clone()
-                    };
+                    variable.value.clone_from(&was.value);
+                    variable
+                        .value_fingerprint
+                        .clone_from(&was.value_fingerprint);
                 }
                 (Some(_), None) => variables.retain(|v| v.key != key.as_str()),
                 (None, Some(was)) if !exported => variables.push(was.clone()),
@@ -386,7 +390,7 @@ fn part_of<'a>(
 ) -> Option<Part<'a>> {
     let service = intent.services.iter().find(|service| service.id == id)?;
     match part {
-        Target::Variable(key) | Target::Exported(key) => service
+        Target::Variable(key) | Target::Exported(key) | Target::Description(key) => service
             .variables
             .iter()
             .find(|variable| variable.key == key.as_str())
@@ -425,7 +429,11 @@ pub(crate) fn mounted(
             .find(|node| node.name == volume.as_str())
             .map(|node| node.resource_id.clone()),
         Target::ConfigMount(config) => Some(config.resolve(intents)?.resource_id.clone()),
-        Target::Setting(_) | Target::Source | Target::Variable(_) | Target::Exported(_) => None,
+        Target::Setting(_)
+        | Target::Source
+        | Target::Variable(_)
+        | Target::Exported(_)
+        | Target::Description(_) => None,
     })
 }
 
@@ -483,10 +491,7 @@ fn discard_review(
                     !runtime
                         .settings
                         .iter()
-                        .any(|runtime| match (&runtime.row, &row.row) {
-                            (Some(left), Some(right)) => left == right,
-                            _ => runtime.path == row.path,
-                        })
+                        .any(|runtime| review::same_setting(runtime, row))
                 });
                 if only_draft.lifecycle == ployz_core::config::ReviewLifecycleKind::Update
                     && only_draft.settings.is_empty()
@@ -528,7 +533,9 @@ pub(crate) fn restore_change_into(
         .map_err(invalid);
     }
     for row in &change.settings {
-        if change.node.node_type == EnvironmentNodeType::Service && row.path.ends_with(".name") {
+        if change.node.node_type == EnvironmentNodeType::Service
+            && row.path == format!("{}.name", change.name)
+        {
             let name = baseline
                 .services
                 .iter()
@@ -546,6 +553,130 @@ pub(crate) fn restore_change_into(
                 })?;
             service.slug.clone_from(&name.slug);
             continue;
+        }
+        if change.node.node_type == EnvironmentNodeType::Service
+            && let Some(At::Setting(setting)) = row.row.as_ref().map(ployz_core::config::RowId::at)
+        {
+            let route;
+            let path = if *setting == Setting::Routes {
+                let id = row
+                    .before
+                    .get("id")
+                    .or_else(|| row.after.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| invalid("Route identity is unavailable".into()))?;
+                route = format!("routes.{id}");
+                route.as_str()
+            } else {
+                setting.path()
+            };
+            restore_environment_node_into(
+                current,
+                Some(baseline),
+                change.node.node_type,
+                &change.node.id,
+                Some(path),
+            )
+            .map_err(|failure| invalid(failure.message))?;
+            continue;
+        }
+        if change.node.node_type == EnvironmentNodeType::Service {
+            let service = current
+                .services
+                .iter_mut()
+                .find(|service| service.id == change.node.id)
+                .ok_or_else(|| invalid("Current Service is unavailable".into()))?;
+            let prior = baseline
+                .services
+                .iter()
+                .find(|service| service.id == change.node.id)
+                .ok_or_else(|| invalid("Authored Service baseline is unavailable".into()))?;
+            match row.row.as_ref().map(ployz_core::config::RowId::at) {
+                Some(At::Variable(key)) => {
+                    let was = prior.variables.iter().find(|variable| variable.key == *key);
+                    let now = service
+                        .variables
+                        .iter_mut()
+                        .find(|variable| variable.key == *key);
+                    match (now, was) {
+                        (Some(now), Some(was)) if row.path.ends_with(".exported") => {
+                            now.exported = was.exported
+                        }
+                        (Some(now), Some(was)) if row.path.ends_with(".description") => {
+                            now.description.clone_from(&was.description)
+                        }
+                        (Some(now), Some(was)) => {
+                            let changed = source
+                                .services
+                                .iter()
+                                .find(|service| service.id == change.node.id)
+                                .and_then(|service| {
+                                    service
+                                        .variables
+                                        .iter()
+                                        .find(|variable| variable.key == *key)
+                                });
+                            if changed.is_none_or(|changed| changed.id != was.id) {
+                                now.id.clone_from(&was.id);
+                            }
+                            if changed.is_none_or(|changed| {
+                                changed.value != was.value
+                                    || changed.value_fingerprint != was.value_fingerprint
+                            }) {
+                                now.value.clone_from(&was.value);
+                                now.value_fingerprint.clone_from(&was.value_fingerprint);
+                            }
+                        }
+                        (Some(_), None) => {
+                            service.variables.retain(|variable| variable.key != *key)
+                        }
+                        (None, Some(was)) => service.variables.push(was.clone()),
+                        (None, None) => {}
+                    }
+                    continue;
+                }
+                Some(At::Mount(lineage)) => {
+                    let resource = [baseline, source]
+                        .into_iter()
+                        .flat_map(|intent| &intent.volumes)
+                        .find(|volume| volume.resource_lineage_id == *lineage)
+                        .ok_or_else(|| invalid("Volume identity is unavailable".into()))?;
+                    service
+                        .volume_attachments
+                        .retain(|mount| mount.volume_resource_id != resource.resource_id);
+                    if let Some(mount) = prior
+                        .volume_attachments
+                        .iter()
+                        .find(|mount| mount.volume_resource_id == resource.resource_id)
+                    {
+                        service.volume_attachments.push(mount.clone());
+                    }
+                    continue;
+                }
+                Some(At::ConfigMount(lineage)) => {
+                    let resource = [baseline, source]
+                        .into_iter()
+                        .flat_map(|intent| &intent.configs)
+                        .find(|config| config.resource_lineage_id == *lineage)
+                        .ok_or_else(|| invalid("Config identity is unavailable".into()))?;
+                    service
+                        .config_attachments
+                        .retain(|mount| mount.config_resource_id != resource.resource_id);
+                    if let Some(mount) = prior
+                        .config_attachments
+                        .iter()
+                        .find(|mount| mount.config_resource_id == resource.resource_id)
+                    {
+                        service.config_attachments.push(mount.clone());
+                    }
+                    continue;
+                }
+                _ if row.path == format!("{}.template", change.name) => {
+                    service.config.template.clone_from(&prior.config.template);
+                    continue;
+                }
+                _ => {}
+            }
         }
         let path = SettingPath::parse(&row.path)?;
         if let Some(field) = path.node_field() {

@@ -524,7 +524,7 @@ pub(crate) fn save_working_from(
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
 ) -> Result<(), RpcError> {
-    validate_working_from(tx, environment, from)?;
+    validate_and_refresh_working_from(tx, environment, from)?;
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
         "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
@@ -540,9 +540,7 @@ pub(crate) fn save_working_from(
     Ok(())
 }
 
-/// Validate a complete authored candidate using the same rules as a Working write.
-/// Refreshes its live names without persisting a revision.
-pub(crate) fn validate_working_from(
+pub(crate) fn validate_and_refresh_working_from(
     tx: &mut dyn Tx,
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
