@@ -374,7 +374,7 @@ mod tests {
         session
             .log_history(LogHistoryInput {
                 machine_id: MachineId::random(),
-                namespace: None,
+                namespace: Some("app".into()),
                 service: None,
                 deployment: None,
                 container_id: None,
