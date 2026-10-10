@@ -701,3 +701,122 @@ fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
     let made = store.write(&who, &own).unwrap();
     assert_eq!(made.branch.setup, [setup("db", "seed")]);
 }
+
+#[test]
+fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
+    let (store, who) = shop();
+    let config = |name: &str| ployz_core::ConfigName::parse(name).unwrap();
+    let file = |name: &str| ployz_core::ConfigFileName::parse(name).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(10)).unwrap(),
+                environment: at("production"),
+                name: config("sentry"),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::PutConfigFile {
+                environment: at("production"),
+                config: config("sentry"),
+                file: file("conf.d/db.yml"),
+                content: "host: ${{ db.PLOYZ_PRIVATE_DOMAIN }}".into(),
+                mode: Some(ployz_core::config::FileMode::parse("0640").unwrap()),
+                uid: Some(1000),
+                gid: None,
+            },
+        )
+        .unwrap();
+
+    let made = store
+        .write(&who, &branch("fix-web", "production", &["web"]))
+        .unwrap();
+    assert!(
+        texts(&made.staged).contains(&"configs.sentry".to_owned()),
+        "{:?}",
+        made.staged
+    );
+    let item = |environment: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::ConfigItemQuery {
+                    environment: at(environment),
+                    config: config("sentry").into(),
+                },
+            )
+            .unwrap()
+    };
+    let (parent, copy) = (item("production"), item("fix-web"));
+    assert_eq!(copy.lineage.to_string(), uuid(10));
+    assert_ne!(copy.config.config.id, parent.config.config.id);
+    assert_eq!(copy.contents, parent.contents);
+    assert_eq!(copy.config.config.files, parent.config.config.files);
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["configs"],
+        json!({ "sentry": "/etc/sentry" })
+    );
+
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: at("fix-web"),
+                service: ServiceName::parse("db").unwrap(),
+                name: ServiceName::parse("pg").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        item("fix-web").contents[&file("conf.d/db.yml")],
+        "host: ${{ pg.PLOYZ_PRIVATE_DOMAIN }}"
+    );
+    assert_eq!(
+        item("production").contents[&file("conf.d/db.yml")],
+        "host: ${{ db.PLOYZ_PRIVATE_DOMAIN }}"
+    );
+
+    store
+        .write(
+            &who,
+            &ployz_store::RenameConfig {
+                environment: at("fix-web"),
+                config: config("sentry"),
+                name: config("sentinel"),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::AttachConfig {
+                environment: at("fix-web"),
+                service: ServiceName::parse("web").unwrap(),
+                config: config("sentinel"),
+                dir: "/etc/moved".into(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("fix-web"),
+                path: Some(ployz_store::SettingPath::parse("web.configs.sentinel").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["configs"],
+        json!({ "sentinel": "/etc/sentry" })
+    );
+}

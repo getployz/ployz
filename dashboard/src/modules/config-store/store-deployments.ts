@@ -8,6 +8,9 @@ import { healthcheckOf } from "./healthcheck";
 import { sourceText } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
+const reviewFile = Schema.Struct({ content: Schema.String, mode: Schema.String, uid: Schema.Number, gid: Schema.Number });
+const decodeFile = Schema.decodeUnknownOption(reviewFile);
+
 /** One changed Setting in Details. */
 export type ChangeRow = {
   changeKey: string;
@@ -22,6 +25,7 @@ export type ChangeRow = {
   row: RowId | null;
   currentValue: string;
   newValue: string;
+  configFile?: { before: typeof reviewFile.Type | null; after: typeof reviewFile.Type | null };
   canDiscard: boolean;
 };
 
@@ -37,6 +41,7 @@ export type ChangeGroup = {
   lifecycle: NodeChange["lifecycle"];
   rows: ChangeRow[];
   changeCount: number;
+  restarts: NodeChange["restarts"];
   canDiscard: boolean;
   serviceSourceType?: ServiceListing["source"];
 };
@@ -44,8 +49,10 @@ export type ChangeGroup = {
 /** A Setting the catalog doesn't title: a variable, a mount, a route, or a Volume's own. */
 function untitledLabel(nodeType: NodeChange["type"], setting: string) {
   if (nodeType === "volume") return setting === "node" ? "Volume" : setting === "name" ? "Name" : setting;
+  if (nodeType === "config") return setting === "name" ? "Name" : setting.startsWith("files.") ? setting.slice("files.".length) : setting;
   if (setting.startsWith("env.")) return `Environment variable ${setting.slice(4)}`;
   if (setting.startsWith("mounts.")) return `Volume mount ${setting.slice(7)}`;
+  if (setting.startsWith("configs.")) return `Config mount ${setting.slice(8)}`;
   if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Custom domain";
   if (setting === "managedHostnames") return "Generated domain";
   if (setting === "source") return "Source";
@@ -61,19 +68,25 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     nodeType: node.type,
     nodeId: node.id,
     nodeName: node.name,
-    discardPath: node.type === "volume" ? `volumes.${node.name}` : node.name,
+    discardPath: node.type === "volume" ? `volumes.${node.name}` : node.type === "config" ? `configs.@${node.id}` : node.name,
     row: node.row,
     lifecycle: node.lifecycle,
     changeCount: Math.max(node.settings.length, 1),
+    restarts: node.restarts,
     canDiscard: true,
     serviceSourceType: services.find((service) => service.id === node.id)?.source,
     rows: node.settings.map((row) => {
-      // `SERVICE.SETTING`, or `volumes.VOLUME.SETTING`.
-      const setting = node.type === "volume" ? row.path.split(".").slice(2).join(".") : row.path.slice(row.path.indexOf(".") + 1);
+      const prefix = node.type === "volume" ? `volumes.${node.name}.` : node.type === "config" ? `configs.@${node.id}.` : `${node.name}.`;
+      const setting = row.path.slice(prefix.length);
       const title = settingTitle(setting);
-      const label = setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
+      const label = row.configName ? `Config mount ${row.configName}`
+        : setting.startsWith("configs.@") ? "Config mount"
+        : setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting);
       const variable = node.type === "service" && setting.startsWith("env.");
       const shown = setting === "source" ? sourceText : shownValue;
+      const file = (value: JsonValue) => value === null ? null : Option.getOrThrowWith(decodeFile(value),
+        () => new Error(`Could not read Config file comparison for ${row.path}.`));
+      const configFile = node.type === "config" && setting.startsWith("files.") ? { before: file(row.before), after: file(row.after) } : undefined;
       return {
         changeKey: `${node.id}:${row.path}`,
         path: row.path,
@@ -82,8 +95,9 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label,
         name: variable ? setting.slice("env.".length) : label,
         variable,
-        currentValue: shown(row.before),
-        newValue: shown(row.after),
+        currentValue: configFile ? configFile.before === null ? "" : "File" : shown(row.before),
+        newValue: configFile ? configFile.after === null ? "" : "File" : shown(row.after),
+        configFile,
         // Whether Discard takes this path alone is the Store's to say.
         canDiscard: row.canRestore,
       };

@@ -107,7 +107,7 @@ describe("plan_from_copies_table", () => {
     ["delete while the writer's lease cycle is open", remove("b"), [member("a", "writer", { cycle: "open" }), member("b", "mirror")], "refuse volume_switching"],
     ["delete after a closed cycle", remove("b"), [member("a", "writer", { cycle: "closed" }), member("b", "mirror")], "delete b forget a lease b"],
     ["delete with a Server unanswered", remove("b"), [member("a", "writer"), member("b", "mirror"), member("c", "unanswered")], "refuse unanswered"],
-    ["orphan delete destroys every slot and forgets every lease record", orphan, [member("b", "mirror"), member("c", "stale"), member("d", "empty", { pool: true }), member("e", "empty")], "delete b,c forget none lease b,c,d"],
+    ["orphan delete destroys every slot and forgets every lease record", orphan, [member("b", "mirror"), member("c", "stale"), member("d", "empty", { pool: true, cycle: "closed" }), member("e", "empty"), member("f", "empty", { pool: true })], "delete b,c forget none lease b,c,d"],
     ["orphan delete ignores an unanswered Server", orphan, [member("b", "mirror"), member("c", "unanswered")], "delete b forget none lease b"],
     ["orphan delete of a name with a writer", orphan, [member("a", "writer"), member("b", "mirror")], "refuse invalid"],
     ["orphan delete with no slot left", orphan, [member("b", "empty")], "refuse no_mirror"],

@@ -38,6 +38,39 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly source: AnsweredMember; readonly mirror: AnsweredMember | null; readonly thaw: boolean } }
   | { readonly ok: false; readonly refusal: Refusal };
 
+type Phase = Extract<Planned, { ok: true }>["phase"];
+type MovePhase = Extract<Phase, { kind: "move" }>;
+
+/** Undo clears the target's final only when the target holds a slot that this or an earlier attempt filled. */
+export const undoClearsTarget = (phase: MovePhase) => phase.start === "rounds" || phase.target.view.copy?.kind === "slot";
+
+/** The Machines the planned phase sends a verb to; only their records may raise the next lease. */
+export function participantsOf(phase: Phase): readonly AnsweredMember[] {
+  switch (phase.kind) {
+    case "mirror":
+      return [phase.writer, phase.target];
+    case "move":
+      switch (phase.start) {
+        case "close":
+          return [phase.writer];
+        case "undo":
+          return undoClearsTarget(phase) ? [phase.writer, phase.target] : [phase.writer];
+        case "rounds":
+        case "handover":
+        case "accept":
+        case "promote":
+        case "start":
+          return [phase.writer, phase.target];
+      }
+    case "sync":
+      return [phase.writer, phase.mirror];
+    case "release":
+      return [...(phase.thaw ? [phase.source] : []), ...(phase.mirror === null ? [] : [phase.mirror])];
+    case "delete_mirror":
+      return [...phase.destroy, ...(phase.forget === null ? [] : [phase.forget]), ...phase.forgetLease];
+  }
+}
+
 export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
 
 export function roleOf(member: Member): Role {
@@ -111,7 +144,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     if (input.orphan) {
       if (roots.length > 0) return refuse("invalid", `${name} still has a writer on ${roots.map(named).join(", ")}`);
       if (slots.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null, forgetLease: answered.filter((member) => member.pool) } };
+      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null, forgetLease: answered.filter((member) => slots.includes(member) || member.view.lease !== null) } };
     }
     if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
     if (switching.length > 0 || writer?.view.lease?.cycle === "open") return midRun();

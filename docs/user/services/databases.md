@@ -38,8 +38,8 @@ PostgreSQL and MySQL start with a database named `ployz`.
 ## Connect your app
 
 1. Open your app's service, go to **Variables** and click **New Variable**.
-2. Enter `DATABASE_URL` as the **Key**, and untick **Sealed**: a sealed value can't hold a
-   reference. The password inside stays hidden anyway.
+2. Enter `DATABASE_URL` as the **Key**, and leave **Sealed** unticked: a sealed value can't
+   hold a reference. The password inside stays hidden anyway.
 3. Enter `${{ postgres.DATABASE_URL }}` as the **Value** and click **Add**.
 4. Click **Deploy**.
 

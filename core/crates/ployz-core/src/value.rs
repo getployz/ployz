@@ -42,6 +42,16 @@ pub fn is_lower_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn is_config_file_name(value: &str) -> bool {
+    let segments = value.split('/').count();
+    (1..=4).contains(&segments)
+        && value.split('/').all(|segment| {
+            !matches!(segment, "" | "." | "..")
+                && segment.len() <= 255
+                && !segment.chars().any(char::is_control)
+        })
+}
+
 pub(crate) fn is_dns_label(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
@@ -570,6 +580,22 @@ validated_string_newtype!(
     |value| is_dns_label(value)
 );
 validated_string_newtype!(
+    /// A Config's name, unique in its Environment: a lowercase DNS label.
+    ConfigName,
+    "Config name",
+    "a 1-63 character lowercase DNS label",
+    |value| is_dns_label(value)
+);
+validated_string_newtype!(
+    /// A file's path inside its Config, relative to the mount directory: up to four
+    /// `/`-separated segments, none empty, `.` or `..`, such as `config.d/override.xml`
+    /// or `.htpasswd`.
+    ConfigFileName,
+    "Config file name",
+    "a relative path of 1 to 4 segments, none empty, `.` or `..`",
+    |value| is_config_file_name(value)
+);
+validated_string_newtype!(
     /// A DNS-label Namespace: an observer-derived ownership group, not a persisted identity.
     Namespace,
     "Namespace",
@@ -982,6 +1008,31 @@ mod tests {
         let json = serde_json::json!(invalid);
         assert!(serde_json::from_value::<super::MachinePath>(json.clone()).is_err());
         assert!(serde_json::from_value::<super::ContainerPath>(json).is_err());
+    }
+
+    #[test]
+    fn a_config_file_name_is_a_short_relative_path() {
+        for valid in [
+            "config.yml",
+            ".htpasswd",
+            "config.d/override.xml",
+            "a/b/c/d.conf",
+        ] {
+            assert!(super::ConfigFileName::parse(valid).is_ok(), "{valid}");
+        }
+        for refused in [
+            "",
+            "/etc/config.yml",
+            "a//b",
+            "a/",
+            "./a",
+            "a/../b",
+            "..",
+            "a/b/c/d/e",
+            "bad\u{0}name",
+        ] {
+            assert!(super::ConfigFileName::parse(refused).is_err(), "{refused}");
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
+import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
@@ -18,11 +18,11 @@ function cached() {
     queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   put(diffQuery(ref), {
     environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], total_count: 3, changes: [
-      { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: null, data: null, settings: [
+      { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
         { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true, row: null },
         { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true, row: null },
       ] },
-      { type: "service", id: "c", row: "c:node" as RowId, name: "cache", lifecycle: "create", comparison: null, data: null, settings: [] },
+      { type: "service", id: "c", row: "c:node" as RowId, name: "cache", lifecycle: "create", comparison: null, data: null, restarts: [], settings: [] },
     ],
   } satisfies DiffView);
   put(environmentSettingsQuery(ref), { environment, settings: [
@@ -50,6 +50,24 @@ it("empties the review at once on a whole discard; the Services come with its an
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: null, version: null });
   expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
   expect(read<ServicesView>(servicesQuery(ref))?.services.map((service) => service.change)).toEqual(["update", "create"]);
+});
+
+it("discards a Config file by exact identity, retaining its dotted sibling until whole Config discard", async () => {
+  const { queryClient, read } = cached();
+  const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
+  queryClient.setQueryData<unknown>(key, { ok: true, value: {
+    ...read<DiffView>(diffQuery(ref)), changes: [{
+      type: "config", id: "s", row: "s:node" as RowId, name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: ["web"],
+      settings: ["app.conf", "app.conf.bak"].map((name) => ({
+        path: `configs.sentry.files.${name}`, kind: "update", before: null, after: null, canRestore: true, row: null,
+      })),
+    }],
+  } });
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry.files.app.conf", version: null });
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["configs.sentry.files.app.conf.bak"]);
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.restarts).toEqual(["web"]);
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry", version: null });
+  expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
 });
 
 it("renames a Service everywhere its name keys a view, and marks a removed one", async () => {
@@ -175,4 +193,88 @@ it("takes an unmarked row's mark out of a Sync at once, dropping a row left with
   } satisfies SyncView });
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [marked("A", []).row, marked("B", []).row], off: true });
   expect(read<SyncView>(query)?.never_synced).toEqual([marked("B", ["production"]), marked("C", ["fix-api"])]);
+});
+
+
+it("removes only the named Config file from both the listing and open item", async () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  const config = (name: string): ConfigItemView => ({
+    environment, id: name, lineage: name, name, mounts: [], deployed: false, change: "create",
+    files: ["config.yml", "conf.d/site.yml"].map((file) => ({ name: file, bytes: 1, mode: "0444", uid: 0, gid: 0, references: [] })),
+    contents: { "config.yml": "a", "conf.d/site.yml": "b" },
+  });
+  const configs = { query: "configs", environment: ref } as const;
+  const item = { query: "config", environment: ref, config: "sentry" } as const;
+  const other = { query: "config", environment: ref, config: "other" } as const;
+  const key = (query: Parameters<typeof storeViewOptions>[2]) => storeViewOptions("acme", scope, query).queryKey;
+  queryClient.setQueryData<unknown>(key(configs), { ok: true, value: { environment, configs: [config("sentry"), config("other")] } });
+  queryClient.setQueryData<unknown>(key(item), { ok: true, value: config("sentry") });
+  queryClient.setQueryData<unknown>(key(other), { ok: true, value: config("other") });
+  await applyOptimistic(queryClient, "acme", { command: "remove_config_file", environment: ref, config: "sentry", file: "conf.d/site.yml" });
+  expect(queryClient.getQueryData<{ value: ConfigsView }>(key(configs))?.value.configs.map((one) => one.files.map((file) => file.name)))
+    .toEqual([["config.yml"], ["config.yml", "conf.d/site.yml"]]);
+  const shown = queryClient.getQueryData<{ value: ConfigItemView }>(key(item))?.value;
+  expect(shown?.files.map((file) => file.name)).toEqual(["config.yml"]);
+  expect(shown?.contents).toEqual({ "config.yml": "a" });
+  expect(queryClient.getQueryData<{ value: ConfigItemView }>(key(other))?.value).toEqual(config("other"));
+});
+
+
+it.each(["delete", "rename"])("keeps an inactive Config cache isolated after %s and same-name replacement", async (action) => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  const key = (query: Parameters<typeof storeViewOptions>[2]) => storeViewOptions("acme", scope, query).queryKey;
+  const old: ConfigItemView = { environment, id: "old", lineage: "old", name: "sentry", deployed: true, change: null, mounts: [],
+    files: [{ name: "app.conf", bytes: 3, mode: "0444", uid: 0, gid: 0, references: [] }], contents: { "app.conf": "old" } };
+  const replacement: ConfigItemView = { ...old, id: "new", lineage: "new", deployed: false, change: "create", contents: { "app.conf": "new" } };
+  const listing = { query: "configs", environment: ref } as const;
+  const oldQuery = { query: "config", environment: ref, config: "@old" } as const;
+  const newQuery = { query: "config", environment: ref, config: "@new" } as const;
+  for (const [query, value] of [[listing, { environment, configs: [old] }], [oldQuery, old], [newQuery, replacement]] as const) {
+    queryClient.setQueryData<unknown>(key(query), { ok: true, value });
+  }
+  if (action === "delete") {
+    await applyOptimistic(queryClient, "acme", { command: "delete_config", environment: ref, config: "sentry" });
+  } else {
+    await applyOptimistic(queryClient, "acme", { command: "rename_config", environment: ref, config: "sentry", name: "renamed" });
+    // The committed listing refreshes; the inactive exact item remains cached.
+    queryClient.setQueryData<unknown>(key(listing), { ok: true, value: { environment, configs: [{ ...old, name: "renamed" }] } });
+  }
+  await applyOptimistic(queryClient, "acme", { command: "create_config", environment: ref, id: "new", name: "sentry", mounts: [] });
+  const read = (query: typeof oldQuery | typeof newQuery) => queryClient.getQueryData<{ value: ConfigItemView }>(key(query))?.value;
+  await applyOptimistic(queryClient, "acme", { command: "put_config_file", environment: ref, config: "sentry", file: "app.conf", content: "replacement" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.contents).toEqual({ "app.conf": "replacement" });
+  await applyOptimistic(queryClient, "acme", { command: "attach_config", environment: ref, config: "sentry", service: "web", dir: "/etc/app" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.mounts).toEqual([{ service: "web", dir: "/etc/app" }]);
+  await applyOptimistic(queryClient, "acme", { command: "detach_config", environment: ref, config: "sentry", service: "web" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.mounts).toEqual([]);
+  await applyOptimistic(queryClient, "acme", { command: "remove_config_file", environment: ref, config: "sentry", file: "app.conf" });
+  expect(read(oldQuery)).toEqual(old);
+  expect(read(newQuery)?.contents).toEqual({});
+  expect(queryClient.getQueryData<{ value: ConfigsView }>(key(listing))?.value.configs[0]).toMatchObject({ id: "old", contents: old.contents });
+});
+
+it("waits for the Store when no Config listing establishes an optimistic target identity", async () => {
+  const queryClient = new QueryClient();
+  const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, { query: "config", environment: ref, config: "@old" }).queryKey;
+  const old: ConfigItemView = { environment, id: "old", lineage: "old", name: "sentry", deployed: true, change: null, mounts: [], files: [], contents: {} };
+  queryClient.setQueryData<unknown>(key, { ok: true, value: old });
+  await applyOptimistic(queryClient, "acme", { command: "put_config_file", environment: ref, config: "sentry", file: "app.conf", content: "replacement" });
+  expect(queryClient.getQueryData(key)).toEqual({ ok: true, value: old });
+});
+
+it("discards one same-name Config by identity while retaining the replacement's changes", async () => {
+  const { queryClient, read } = cached();
+  const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
+  const node = (id: string): DiffView["changes"][number] => ({ type: "config", id, row: `${id}:node` as RowId,
+    name: "sentry", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
+      { path: `configs.@${id}.files.app.conf`, kind: "update", before: null, after: null, canRestore: true, row: null },
+    ] });
+  queryClient.setQueryData<unknown>(key, { ok: true, value: { ...read<DiffView>(diffQuery(ref)), changes: [node("old"), node("new")] } });
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.@old", version: null });
+  expect(read<DiffView>(diffQuery(ref))?.changes).toEqual([node("new")]);
 });

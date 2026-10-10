@@ -3,7 +3,7 @@ title: Volumes
 description: Keep files across deploys and restarts.
 ---
 
-Every deploy starts your service in fresh containers. A volume is a folder that survives:
+A deploy can replace your service's containers. A volume is a folder that survives:
 whatever your service writes there is still there after deploys and restarts. Use one for
 uploads, a SQLite file or a database's data. [Databases](databases.md) come with one.
 
@@ -17,14 +17,16 @@ runs on that server.
 2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. It's
    [fixed once you deploy](#choose-the-storage-limit), so leave room to grow. Click
    **Create volume**.
-3. Click the new volume. Under **Mount on a service**, pick the service, enter a path inside
+3. Click the new volume, then **Mount on a service**. Pick the service, enter a **Directory** inside
    its containers, like `/app/uploads`, and click **Mount**.
 4. Click **Deploy**.
 
 ![A volume's panel: its storage limit, Advanced, and where it is mounted](../images/volume-panel.png)
 
 The volume shows as a tray under the service's card, and your app reads and writes files at
-that path. To change the path, click the pencil next to the mount.
+that directory. Open the menu at the end of the mount's row and choose **Edit directory** to move it.
+Manage mounts from the volume's panel. Mount forms appear when you choose an action, and keep
+your entered directory if a write fails.
 
 ## Choose the storage limit
 
@@ -47,7 +49,7 @@ ployz exec web -- df -h /app/uploads
 
 By default, only one container writes to a volume. A service with a volume runs one replica, and no
 other service can mount it. To run more replicas, or to mount it in several services, turn on
-shared writes. This is CLI-only for now:
+shared writes in the volume's **Storage** → **Advanced** → **Allow shared writes**, or use the CLI:
 
 ```sh
 ployz volume set uploads --shared-writes
@@ -101,8 +103,9 @@ storage limit, so it can fill the server's disk.
 
 ## Detach a volume
 
-In the volume's panel, click the trash icon next to a mount (**Remove mount (keeps the
-data)**), then deploy. The volume and its data stay.
+In the volume's panel, open the menu at the end of a mount's row
+and choose **Unmount**, then deploy. The detached row shows what the next deploy removes.
+The volume and its data stay.
 
 ## Delete a volume
 

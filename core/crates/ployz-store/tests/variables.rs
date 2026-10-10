@@ -6,12 +6,12 @@
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{ConfigFileName, ConfigName, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
-    DeploymentsQuery, DiffQuery, Edit, Edited, EnvironmentId, EnvironmentQuery, EnvironmentRef,
-    OrganizationId, PlanQuery, ProjectId, ProjectName, RunnerId, SealingKey, ServiceLineageId,
-    SettingPath,
+    Actor, Admit, Change, ConfigId, ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig,
+    CreateProject, CreateService, Deploy, DeploymentId, DeploymentsQuery, DiffQuery, Edit, Edited,
+    EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, PlanQuery, ProjectId,
+    ProjectName, PutConfigFile, RunnerId, SealingKey, ServiceLineageId, SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -560,4 +560,98 @@ fn ployz_built_ins_cannot_be_set_but_port_can() {
     }
     set(&store, &[("web.env.PORT", json!("8080"))]).unwrap();
     assert_eq!(value(&store, "web.env.PORT"), json!("8080"));
+}
+
+#[test]
+fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.PASSWORD", json!({ "secret": SECRET })),
+            ("web.env.HOSTS", json!("a\nb")),
+        ],
+    )
+    .unwrap();
+    store
+        .write(
+            &who(),
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("api").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who(),
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                file: ConfigFileName::parse("config.yml").unwrap(),
+                content: "password: \"${{ web.PASSWORD }}\"\nhosts: ${{ web.HOSTS }}\nraw: $${{ web.PASSWORD }}\n".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    let id = admit(&store, 1).unwrap();
+    let configs = store
+        .read(
+            &who(),
+            &ConfigsQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
+    for read in [
+        json!(configs),
+        json!(
+            store
+                .read(&who(), &ployz_store::DeploymentQuery { id: id.clone() })
+                .unwrap()
+        ),
+    ] {
+        assert!(!read.to_string().contains("s3cr3t"), "{read}");
+    }
+
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let api = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "api")
+        .unwrap();
+    let config = api.configs().first().unwrap();
+    assert_eq!(config.name, "sentry/config.yml");
+    assert_eq!(
+        String::from_utf8(config.content.clone()).unwrap(),
+        format!("password: \"{SECRET}\"\nhosts: a\nb\nraw: ${{{{ web.PASSWORD }}}}\n")
+    );
+    let api_name = ServiceName::parse("api").unwrap();
+    assert_eq!(
+        claimed.intent.dependencies()[&api_name][0].service.as_str(),
+        "web"
+    );
+    let warnings = json!(claimed.deployment.warnings);
+    assert_eq!(
+        warnings,
+        json!([{ "config": "sentry", "file": "config.yml", "variable": "web.HOSTS" }])
+    );
+    let read = store
+        .read(&who(), &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    assert_eq!(json!(read.deployment.warnings), warnings);
+    assert!(!json!(read).to_string().contains("s3cr3t"));
 }

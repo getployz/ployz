@@ -10,6 +10,7 @@ import type {
   CanvasResourceType,
   CanvasStoreServiceNode,
   CanvasStoreVolumeNode,
+  CanvasStoreConfigNode,
   MountedVolume,
   StoreCanvas,
   StoreLiveNode,
@@ -63,16 +64,16 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
 }
 
 /**
- * Config Store Services and Volumes where the canvas last put them; positions stay Cloud's, keyed by the node's id.
+ * Config Store Services, Volumes and Configs where the canvas last put them; positions stay Cloud's, keyed by the node's id.
  * One made elsewhere (the CLI) has no place yet: the first free one near the origin, until someone drags it. A Volume
- * a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
+ * or Config a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes"> & { live?: StoreLiveNode[] },
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & { live?: StoreLiveNode[] },
   canvasPositions: CanvasPosition[],
   environmentId: string,
-): (CanvasStoreServiceNode | CanvasStoreVolumeNode | CanvasStoreLiveNode)[] {
-  const trayCount = new Map(store.services.map(({ service, trays }) => [service.id, trays.length]));
+): CanvasResourceNode[] {
+  const trayCount = new Map(store.services.map(({ service, trays, configTrays }) => [service.id, trays.length + configTrays.length]));
   // A Service's node grows by its trays; placing one keeps clear of each node's whole height.
   const sizeOf = (id: string) => ({ ...SERVICE_NODE_SIZE, height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT });
   const positionByResource = getPositionByCanvasResource(canvasPositions);
@@ -106,6 +107,13 @@ export function buildStoreNodes(
       position: place("volume", volume.id),
       data: { volume, resourceType: "volume", resourceId: volume.id, environmentId },
     } satisfies CanvasStoreVolumeNode)),
+    ...store.unmountedConfigs.map((config) => ({
+      ...node,
+      id: config.id,
+      type: "storeConfig",
+      position: place("config", config.id),
+      data: { config, resourceType: "config", resourceId: config.id, environmentId },
+    } satisfies CanvasStoreConfigNode)),
     // A Branch's Live Nodes take free spots; they are their owner's to move.
     ...(store.live ?? []).map((live) => ({
       ...node,
@@ -131,7 +139,8 @@ export function buildStoreEdges(store: { live?: StoreLiveNode[] }): Edge[] {
 /** The node that shows `id` on the canvas: the node itself, else the first Service with it as a tray; null when none does. */
 export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string) {
   const shown = nodes.find((node) => node.id === id)
-    ?? nodes.find((node) => node.type === "storeService" && node.data.trays.some((tray) => tray.volume.id === id));
+    ?? nodes.find((node) => node.type === "storeService"
+      && (node.data.trays.some((tray) => tray.volume.id === id) || node.data.configTrays.some((tray) => tray.config.id === id)));
   return shown?.id ?? null;
 }
 

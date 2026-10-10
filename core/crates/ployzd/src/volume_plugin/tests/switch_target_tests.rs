@@ -213,25 +213,19 @@ async fn the_promote_task_stops_when_the_record_names_a_later_lease() {
     server.abort();
 }
 
-#[tokio::test]
-async fn the_promote_task_stops_past_its_budget() {
-    let (test, socket, server) = mirror("handed_in:900", 900);
-    set_property(&test, FS, "ployz:task", &format!("1:{}", now() - 601));
-    set_property(&test, RECORD.0, RECORD.1, "1:10.0.0:open");
-    let response = post(&socket, "/Volume.FinishPromote", at(1, 10, 0, 0, json!({}))).await;
-    assert_eq!(reason(&response), Some(&json!("expired")), "{response}");
-    assert!(test.0.join("mirror-fs").exists());
-    assert_eq!(property(&test, FS, "readonly").as_deref(), Some("on"));
-    server.abort();
-}
+/// Where departure leaves the record: the same lease, closed past every step.
+const DEPARTED: &str = "1:65535.4294967295.255:closed";
 
 #[tokio::test]
-async fn promote_admission_refuses_a_task_past_its_budget() {
+async fn the_promote_task_stops_once_departure_closes_the_record() {
     let (test, socket, server) = mirror("handed_in:900", 900);
-    set_property(&test, FS, "ployz:task", &format!("1:{}", now() - 601));
-    let response = post(&socket, "/Volume.Promote", at(1, 10, 0, 0, json!({}))).await;
-    assert_eq!(reason(&response), Some(&json!("expired")), "{response}");
+    set_property(&test, FS, "ployz:task", &format!("1:{}", now()));
+    set_property(&test, RECORD.0, RECORD.1, DEPARTED);
+    let response = post(&socket, "/Volume.FinishPromote", at(1, 10, 0, 0, json!({}))).await;
+    assert_eq!(reason(&response), Some(&json!("stale_step")), "{response}");
     assert!(test.0.join("mirror-fs").exists());
+    assert_eq!(property(&test, FS, "readonly").as_deref(), Some("on"));
+    assert!(!commands(&test).contains("zfs rename"));
     server.abort();
 }
 
@@ -379,7 +373,7 @@ async fn start_stops_before_docker_start_when_the_record_names_a_later_lease() {
 }
 
 #[tokio::test]
-async fn start_stops_before_docker_start_past_its_budget() {
+async fn start_stops_before_docker_start_once_departure_closes_the_record() {
     let (test, socket, server) = promoted();
     let admitted = post(
         &socket,
@@ -388,14 +382,14 @@ async fn start_stops_before_docker_start_past_its_budget() {
     )
     .await;
     assert!(admitted.get("Ok").is_some(), "{admitted}");
-    set_property(&test, ROOT, "ployz:task", &format!("1:{}", now() - 601));
+    set_property(&test, RECORD.0, RECORD.1, DEPARTED);
     let response = post(
         &socket,
         "/Volume.StartHandedContainer",
         at(1, 11, 0, 0, json!({"container_id": CONTAINER})),
     )
     .await;
-    assert_eq!(reason(&response), Some(&json!("expired")), "{response}");
+    assert_eq!(reason(&response), Some(&json!("stale_step")), "{response}");
     assert!(!commands(&test).contains("docker start"));
     server.abort();
 }

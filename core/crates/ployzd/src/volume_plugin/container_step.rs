@@ -66,9 +66,8 @@ fn busy(name: &str, working: &str) -> RpcError {
 /// Refuses `switch` while a step of `name` runs: a step it fences out is refused as the
 /// fence decides, and any other waits for Docker.
 fn while_running(running: &Running, name: &str, switch: &Switch, working: &str) -> RpcError {
-    let now = chrono::Utc::now().timestamp();
-    let decision = fence(Some(running.at), switch, now);
-    refusal(decision, switch, Some(running.at), now).unwrap_or_else(|| busy(name, working))
+    let decision = fence(Some(running.at), switch);
+    refusal(decision, switch, Some(running.at)).unwrap_or_else(|| busy(name, working))
 }
 
 impl VolumeStorage {
@@ -86,9 +85,7 @@ impl VolumeStorage {
             let entry = steps.entry(name.to_owned()).or_default();
             match entry.running.as_ref().filter(|running| running.working()) {
                 Some(running) => {
-                    if fence(Some(running.at), switch, chrono::Utc::now().timestamp())
-                        != FenceDecision::Replay
-                    {
+                    if fence(Some(running.at), switch) != FenceDecision::Replay {
                         return Err(while_running(running, name, switch, working));
                     }
                     running.answer.clone()
