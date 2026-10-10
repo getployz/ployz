@@ -9,26 +9,36 @@ Without Cloud, volumes stay on the server that has them.
 
 ## In Ployz Cloud
 
-Open a managed volume after its first deploy. **Copies** shows where it is: the volume on the
-server that writes it, and its mirror as `data-web-2`. Copies asks each server for its copy, and
-Mirror, Sync, Move, Release and Restore appear only when Ployz Cloud would run them on what the
-servers answered. A server that doesn't answer is named, and no run is offered until it answers or
-you remove it. **Activity** lists the last runs and how they ended. The volume's tray on the canvas
-shows its mirror too, and "Moving to web-2" during a move.
+Open a managed volume after its first deploy. **Placement** shows its primary, the server your
+service writes it on, and its mirror as `data-web-2`. Every change here is staged. It shows in the
+bottom bar count and in Details, and the next deploy runs it before your services. Nothing runs on
+click.
 
-Choose **Create mirror** or **Move volume**, select a destination server, and confirm.
-**Sync** is beside the mirror. **Restore** asks you to confirm that writes after the last sync
-will be lost. A returning old writer offers **Make old copy read-only** first. Once that
-finishes, Copies refreshes and shows the operations available from the new server reports.
+- **Add mirror** offers only servers that run services. A volume has one mirror for now.
+- **Move to web-2** changes the primary and leaves the mirror alone. A move to the mirror's server
+  promotes it. A move anywhere else copies the volume first, then stops your service briefly.
+- After a move the old copy stays as `data-old`, detached. Choose **Delete** on it to stage its
+  deletion.
+- A volume with no mirror after a move shows a quiet **No mirror** warning with **Add mirror**.
+- When the primary's server stops answering, the volume reads "web-1 is not answering · Use mirror
+  on web-2 · Changes after 10:36 lost". **Use mirror on web-2** stages the mirror as primary.
+- **Drain** on a server page also stages each primary there to move off, to its mirror or else to
+  the first other server that runs services. The page says "2 volumes staged to move". Each
+  environment's next deploy moves them.
 
-![A volume's Copies: the writer on web-1, its mirror data-web-2, Sync and Move](../images/volume-copies.png)
+Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, the bottom
+bar and the deployment page say what it is doing, for example "data · Moving to web-2". Cancel
+lets the step under way finish, and the rest stays staged.
 
-The commands below do the same from the CLI. Deleting a mirror is CLI-only.
+Backups are not part of Placement. See [Back up a database](databases.md#back-up-a-database).
+
+The commands below do the same from the CLI, one run at a time. Deleting a mirror is CLI-only.
 
 ## Mirror a volume
 
-A mirror holds the volume's data as of its last sync. It refreshes only when you sync it, and a
-volume has at most one.
+A mirror holds the volume's data as of its last sync. From the CLI it refreshes only when you sync
+it. With Ployz Cloud it also refreshes on every deploy and every 15 minutes. A volume has at most
+one.
 
 ```
 ployz volume mirror data --to web-2     # copy data to web-2; it shows as data-web-2
