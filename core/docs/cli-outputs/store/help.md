@@ -18,10 +18,12 @@ Usage: ployz [OPTIONS] [COMMAND]
 Commands:
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
+  config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
   deploy      Publish staged changes if needed, then deploy them and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
+  history     Show immutable saved versions
   discard     Undo staged Service, Volume, Config or Setting changes
   domain      Manage public domains
   env         Manage Environments and Branches
@@ -95,10 +97,12 @@ Usage: ployz [OPTIONS] [COMMAND]
 Commands:
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
+  config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
   deploy      Publish staged changes if needed, then deploy them and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
+  history     Show immutable saved versions
   discard     Undo staged Service, Volume, Config or Setting changes
   domain      Manage public domains
   env         Manage Environments and Branches
@@ -154,10 +158,12 @@ Usage: ployz [OPTIONS] [COMMAND]
 Commands:
   build       Build one Git Service and push it into a Machine with a Build Grant
   cloud       Manage Cloud
+  config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
   deploy      Publish staged changes if needed, then deploy them and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
+  history     Show immutable saved versions
   discard     Undo staged Service, Volume, Config or Setting changes
   domain      Manage public domains
   env         Manage Environments and Branches
@@ -255,8 +261,8 @@ Options:
       --from-env-file <FILE>
           Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret
 
-      --at-merge <PR>
-          With --secret: hold the --env Destination's value for a secret pull request PR syncs there by name only; it lands with the merge
+      --expect <REVISION>
+          Refuse unless Working State is still at this revision
 
       --json
           Print the result as one JSON object on stdout
@@ -266,9 +272,6 @@ Options:
           
           [default: auto]
           [possible values: auto, always, never]
-
-      --expect <REVISION>
-          Refuse unless Working State is still at this revision
 
   -h, --help
           Print help (see a summary with '-h')
@@ -352,9 +355,9 @@ Options:
       --version <version>      Refuse unless this is still the version --plan showed
       --plan                   List the changes and the version; sync nothing
       --close                  Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to
-      --at-merge               Go live in --to with the pull request's merge; the default from a PR Environment into a Destination
-      --undo <SYNC>            Undo the Sync a sync printed, or withdraw its Conditional Sync
-      --take <ID>              Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them
+      --at-merge               Offer the changes to --to, to include in its Changes after the pull request merges; the default from a PR Environment into a Destination
+      --undo <SYNC>            Undo the Sync a sync printed, or withdraw its offer
+      --take <PARENT>          Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them
   -h, --help                   Print help (see more with '--help')
 ```
 
