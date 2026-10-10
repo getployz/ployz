@@ -327,7 +327,15 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
     let next = matches!(&synced.when, SyncedWhen::Now { staged, .. } if !staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    crate::ui::finish(&Next::new(synced, next.clone()), || {
+    // The proposal is the Dashboard's to Remove; here a Sync is undone by its id.
+    let mut json = serde_json::to_value(synced).expect("a Sync serializes");
+    if let Some(when) = json
+        .get_mut("when")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        when.remove("proposal");
+    }
+    crate::ui::finish(&Next::new(&json, next.clone()), || {
         let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
         match &synced.when {
