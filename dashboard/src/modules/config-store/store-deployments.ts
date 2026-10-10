@@ -1,5 +1,5 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
+  ChangeKind, DiscardTarget, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
   ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
@@ -27,6 +27,7 @@ export type ChangeRow = {
   newValue: string;
   configFile?: { before: typeof reviewFile.Type | null; after: typeof reviewFile.Type | null };
   canDiscard: boolean;
+  discardTarget?: DiscardTarget;
 };
 
 /** One changed node in Details, with its changed Settings. */
@@ -43,6 +44,7 @@ export type ChangeGroup = {
   changeCount: number;
   restarts: NodeChange["restarts"];
   canDiscard: boolean;
+  discardTarget?: DiscardTarget;
   serviceSourceType?: ServiceListing["source"];
 };
 
@@ -71,7 +73,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     discardPath: node.type === "volume" ? `volumes.${node.name}` : node.type === "config" ? `configs.@${node.id}` : node.name,
     row: node.row,
     lifecycle: node.lifecycle,
-    changeCount: Math.max(node.settings.length, 1),
+    changeCount: node.settings.length + (node.lifecycle === "update" ? 0 : 1),
     restarts: node.restarts,
     canDiscard: true,
     serviceSourceType: services.find((service) => service.id === node.id)?.source,
@@ -103,6 +105,41 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       };
     }),
   }));
+}
+
+/** Runtime changes and draft reversals in one review, with each row's Discard baseline. */
+export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
+  const groups = changeGroups(diff, services).map((group) => ({ ...group, rows: [...group.rows] }));
+  const drafts = changeGroups({ ...diff, changes: diff.draft_changes ?? [] }, services);
+  for (const draft of drafts) {
+    draft.discardTarget = "saved";
+    draft.rows = draft.rows.map((row) => ({ ...row, discardTarget: "saved" }));
+    const runtime = groups.find((group) => group.nodeType === draft.nodeType && group.nodeId === draft.nodeId);
+    if (!runtime) {
+      groups.push(draft);
+      continue;
+    }
+    if (runtime.lifecycle !== "update") continue;
+    runtime.rows.push(...draft.rows.filter((row) => !runtime.rows.some((other) => sameReviewRow(other, row))));
+    if (draft.lifecycle !== "update") {
+      runtime.lifecycle = draft.lifecycle;
+      runtime.discardTarget = "saved";
+    }
+    runtime.changeCount = runtime.rows.length + (runtime.lifecycle === "update" ? 0 : 1);
+  }
+  return groups;
+}
+
+function sameReviewRow(left: ChangeRow, right: ChangeRow): boolean {
+  if (!left.row || !right.row) return left.path === right.path;
+  if (left.row !== right.row) return false;
+  if (left.variable) {
+    const field = (row: ChangeRow) => row.path.endsWith(".exported") ? "exported"
+      : row.path.endsWith(".description") ? "description" : "value";
+    return field(left) === field(right);
+  }
+  if (left.row.endsWith(":routes")) return left.path.slice(left.path.indexOf(".")) === right.path.slice(right.path.indexOf("."));
+  return true;
 }
 
 /** The diff values a cell words: text, a sealed value (the Store never sends its plaintext), a route. */

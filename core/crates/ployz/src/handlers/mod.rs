@@ -391,6 +391,7 @@ fn handler_for(path: &str) -> Option<Handler> {
         ("deployment", rest) => deploy::deployment_handler(rest),
         ("diff", "") => Some(review::diff),
         ("discard", "") => Some(review::discard),
+        ("history", "" | "restore" | "undo") => Some(review::history),
         ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
         ("exec", "") => Some(operator::exec),

@@ -81,6 +81,7 @@ pub use pull_request::{
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss, docker_volume};
+pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{DataEffect, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;

@@ -5,7 +5,9 @@
 //! (what the Change Set compares against). Publish and Discard recompute the review
 //! under the Environment's lock and refuse a version that no longer matches.
 
+mod authored;
 pub(crate) mod diff;
+pub(crate) mod history;
 pub(crate) mod publish;
 
 use ployz_core::RpcError;
@@ -41,6 +43,14 @@ pub struct DiffView {
     pub changes: Vec<NodeChange>,
     /// How many changes there are, counting each node and each Setting.
     pub total_count: usize,
+    /// Working State compared with the latest Saved revision, without Introduction fallback.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<NodeChange>>", optional)]
+    pub draft_changes: Vec<NodeChange>,
+    /// Changes that an explicit Save records, independent of the deployment comparison.
+    #[serde(default)]
+    #[ts(as = "Option<usize>", optional)]
+    pub draft_count: usize,
     /// Merged pull requests' values landed beside this Environment's own changes,
     /// until its next Saved revision.
     #[serde(default)]
@@ -53,6 +63,40 @@ pub struct DiffView {
     /// changes, or that it discarded: take one to stage it.
     #[serde(default)]
     pub follow_hints: Vec<crate::FollowHint>,
+}
+
+impl DiffView {
+    /// One review list with runtime rows and otherwise hidden draft reversals.
+    #[must_use]
+    pub fn review_changes(&self) -> Vec<NodeChange> {
+        let mut changes = self.changes.clone();
+        for draft in &self.draft_changes {
+            let Some(current) = changes
+                .iter_mut()
+                .find(|current| current.node == draft.node)
+            else {
+                changes.push(draft.clone());
+                continue;
+            };
+            if current.lifecycle != ReviewLifecycleKind::Update {
+                continue;
+            }
+            for row in &draft.settings {
+                if !current
+                    .settings
+                    .iter()
+                    .any(|runtime| runtime.path == row.path)
+                {
+                    current.settings.push(row.clone());
+                }
+            }
+            if draft.lifecycle != ReviewLifecycleKind::Update {
+                current.lifecycle = draft.lifecycle;
+                current.comparison = Some(ReviewComparisonRole::Saved);
+            }
+        }
+        changes
+    }
 }
 
 /// What happens to one node, and its changed Settings.
@@ -116,13 +160,38 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
     let introductions = introductions(tx, environment)?;
+    let mut view = compare(environment, saved.as_ref(), &head, &introductions)?;
+    let baseline = saved.as_ref().map_or_else(
+        || crate::scope::empty(environment.summary.name.as_str()),
+        |saved| saved.intent.clone(),
+    );
+    let draft = saved_comparison(environment, &baseline)?;
+    view.draft_changes = draft.changes;
+    view.draft_count = draft.total_count;
+    Ok(Review { view, saved, head })
+}
+
+fn saved_comparison(
+    environment: &Environment,
+    baseline: &SavedEnvironmentIntent,
+) -> Result<authored::Summary, RpcError> {
+    authored::compare(baseline, &environment.working)
+}
+
+fn compare(
+    environment: &Environment,
+    saved: Option<&Saved>,
+    head: &Head,
+    introductions: &SavedEnvironmentIntent,
+) -> Result<DiffView, RpcError> {
+    let id = &environment.summary.id;
     let project = |token: &str, intent: &SavedEnvironmentIntent| projection(id, token, intent);
     let changes = project_environment_changes(ChangeSetInput {
         working: project("working", &environment.working),
         applied: project("applied", &head.applied),
         saved: saved.as_ref().map(|saved| project("saved", &saved.intent)),
         submitted: (head.intent != head.applied).then(|| project(&head.token, &head.intent)),
-        node_introductions: project("introductions", &introductions),
+        node_introductions: project("introductions", introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;
     let intents = [&environment.working, &head.intent];
@@ -179,6 +248,8 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             saved.intent == canonicalize_environment_intent(environment.working.clone())
         }),
         total_count: changes.total_count,
+        draft_changes: Vec::new(),
+        draft_count: 0,
         hints: Vec::new(),
         incoming: Vec::new(),
         follow_hints: Vec::new(),
@@ -272,7 +343,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Result<_, RpcError>>()?,
     };
     renames(&mut view, &environment.working, &head.intent);
-    Ok(Review { view, saved, head })
+    Ok(view)
 }
 
 /// What the destructive review gates.
@@ -470,6 +541,7 @@ pub(crate) fn publish(
     environment: &EnvironmentId,
     intent: SavedEnvironmentIntent,
     latest: Option<&Saved>,
+    message: Option<&str>,
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
     crate::volume::check_storage(tx, environment, &intent)?;
@@ -480,8 +552,8 @@ pub(crate) fn publish(
     }
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     tx.execute(
-        "INSERT INTO config_saved (environment_id, revision, organization_id, intent) \
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         &[
             environment.as_str().into(),
             revision_param(revision)?.into(),
@@ -490,6 +562,9 @@ pub(crate) fn publish(
                 .expect("Saved State is JSON")
                 .as_str()
                 .into(),
+            message.map(str::trim).filter(|message| !message.is_empty()).into(),
+            who.principal.as_ref().map(crate::Principal::as_str).into(),
+            crate::deployment::now().into(),
         ],
     )?;
     Ok((revision, true))

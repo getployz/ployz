@@ -152,7 +152,7 @@ export function EnvironmentCanvasScene() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, prPlan } = useCanvasInspectorSelection();
+  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, history, newBranch, prPlan } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
 
@@ -165,6 +165,7 @@ export function EnvironmentCanvasScene() {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
       } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true, returnTo: deploymentReturnTo }
+        : history ? { key: `${canvasKey}/history`, nodeId: "history" }
         : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
         : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
         : prPlan ? { key: `${canvasKey}/pr-plan`, nodeId: "pr-plan", picking: true } : null}

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { EnvironmentRef, RowId } from "@ployz/sdk";
+import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck } from "#/components/deletion-dialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -35,7 +35,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     try {
       await writer.commit(action === "deploy"
         ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
-        : { command: "publish", environment, version, accept_volume_loss: [...accept] }, ["confirmation_required"]).isPersisted.promise;
+        : { command: "publish", environment, version, accept_volume_loss: [...accept], message: words }, ["confirmation_required"]).isPersisted.promise;
       if (action === "deploy") onAdmitted(id);
       return null;
     } catch (error) {
@@ -55,9 +55,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     });
   }
 
-  /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything): gone at once, a refusal brings it back. */
-  function discard(path: string | null) {
-    writer.commit({ command: "discard", environment, path, version });
+  function discard(path: string | null, target: DiscardTarget = "head") {
+    writer.commit({ command: "discard", environment, path, version, target });
   }
 
   /** Marks `row` Never sync here and discards `path`, all or none: what arrived goes, and nothing follows into it again. */
@@ -71,16 +70,16 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   return {
     deploy,
     admitting,
-    publish: () => void run("publish", { accept: [], version }).then(setLoss),
+    publish: (message: Message) => void run("publish", { accept: [], version }, message).then(setLoss),
     discard,
     neverSync,
     dialog: (
       <DeletionDialog
         open={loss !== null}
         onOpenChange={(open) => { if (!open) setLoss(null); }}
-        title={loss?.action === "publish" ? "Publishing deletes data on the next deploy" : "Deploy deletes data"}
+        title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : "Deploy deletes data"}
         place={place}
-        confirmLabel={loss?.action === "publish" ? "Publish" : "Deploy"}
+        confirmLabel={loss?.action === "publish" ? "Save" : "Deploy"}
         items={loss?.check.items}
         callbacks={{
           load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" } }),

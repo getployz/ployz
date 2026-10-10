@@ -617,7 +617,7 @@ pub(crate) fn land(
     let cells = staged_cells(&staged.applied);
     let next = with_variable_ids_of(next, &working, staged.applied.next);
 
-    let (revision, _) = review::publish(tx, who, &into, saved.applied.next, Some(&latest))?;
+    let (revision, _) = review::publish(tx, who, &into, saved.applied.next, Some(&latest), None)?;
     if next != destination.working {
         branch::land(
             tx,

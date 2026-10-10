@@ -104,6 +104,7 @@ pub(crate) fn environment(
                     Target::Setting(_)
                     | Target::Source
                     | Target::Exported(_)
+                    | Target::Description(_)
                     | Target::Mount(_)
                     | Target::ConfigMount(_) => None,
                 };
@@ -135,7 +136,8 @@ pub(crate) fn environment(
                 setting.apply(),
             )?;
         }
-        if let Some(Target::Variable(key) | Target::Exported(key)) = only {
+        if let Some(Target::Variable(key) | Target::Exported(key) | Target::Description(key)) = only
+        {
             variables::find(service, key)?;
         }
         for variable in variables::sorted(service) {
@@ -147,6 +149,14 @@ pub(crate) fn environment(
                 Value::Null,
                 Apply::Staged,
             )?;
+            if matches!(only, Some(Target::Description(_))) {
+                row(
+                    Target::Description(key.clone()),
+                    json!(variable.description),
+                    Value::Null,
+                    Apply::Staged,
+                )?;
+            }
             row(
                 Target::Exported(key),
                 Value::Bool(variable.exported),

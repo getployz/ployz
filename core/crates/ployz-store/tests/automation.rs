@@ -75,6 +75,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
             &Command::Publish(Publish {
                 environment: EnvironmentRef::default(),
                 version: None,
+                message: None,
                 accept_volume_loss: Vec::new(),
             }),
         )
@@ -168,7 +169,7 @@ fn pinned(store: &ConfigStore, automated: &Automated, service: &str) -> Option<S
 }
 
 #[test]
-fn discarding_a_renamed_config_mount_restores_saved_state_for_the_next_push() {
+fn discarded_mount_reversal_affects_automatic_deploy_only_after_save() {
     let (store, who) = shop();
     store
         .write(
@@ -211,6 +212,10 @@ fn discarding_a_renamed_config_mount_restores_saved_state_for_the_next_push() {
         )
         .unwrap();
     publish(&store, &who);
+    let history = store
+        .read(&who, &ployz_store::HistoryQuery::default())
+        .unwrap()
+        .revisions;
     store
         .write(
             &who,
@@ -226,6 +231,7 @@ fn discarding_a_renamed_config_mount_restores_saved_state_for_the_next_push() {
             &who,
             &ployz_store::Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse("web.configs.errors").unwrap()),
                 version: None,
             },
@@ -260,7 +266,7 @@ fn discarding_a_renamed_config_mount_restores_saved_state_for_the_next_push() {
     assert_eq!(
         json!(web.config_mounts()),
         json!([{
-            "config_name": "sentry/config.yml", "target": "/old/config.yml",
+            "config_name": "sentry/config.yml", "target": "/new/config.yml",
             "mode": 0o444, "uid": 0, "gid": 0
         }])
     );
@@ -268,6 +274,44 @@ fn discarding_a_renamed_config_mount_restores_saved_state_for_the_next_push() {
         .read(&who, &ployz_store::ConfigsQuery::default())
         .unwrap();
     assert_eq!(configs.configs[0].config.name.as_str(), "errors");
+    assert_eq!(
+        store
+            .read(&who, &ployz_store::HistoryQuery::default())
+            .unwrap()
+            .revisions,
+        history
+    );
+    let after_push = store
+        .read(
+            &who,
+            &ployz_store::ServiceQuery {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(after_push.values, working.values);
+    publish(&store, &who);
+    let automated = system(&store, &push(Some(H1), Some(H2), None));
+    let claimed = store
+        .claim(
+            &automated.admitted.first().unwrap().deployment.id,
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+        )
+        .unwrap();
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|service| service.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(
+        json!(web.config_mounts()),
+        json!([{
+            "config_name": "errors/config.yml", "target": "/old/config.yml",
+            "mode": 0o444, "uid": 0, "gid": 0,
+        }])
+    );
 }
 
 #[test]

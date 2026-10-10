@@ -645,7 +645,14 @@ fn create(
     // It deploys what it saves first: all of it, the repository's Services at the head
     // Cloud read.
     let latest = review::latest_saved(tx, &id)?;
-    review::publish(tx, who, &id, environment.working.clone(), latest.as_ref())?;
+    review::publish(
+        tx,
+        who,
+        &id,
+        environment.working.clone(),
+        latest.as_ref(),
+        None,
+    )?;
     let saved = review::latest_saved(tx, &id)?.ok_or_else(|| error::corrupt("Saved State"))?;
     let pins = environment
         .working
@@ -730,7 +737,7 @@ fn retrack(
     let mut environment = scope::lock_id(tx, who, id)?;
     if let Some(latest) = review::latest_saved(tx, id)? {
         let tracked = track(latest.intent.clone(), event);
-        review::publish(tx, who, id, tracked, Some(&latest))?;
+        review::publish(tx, who, id, tracked, Some(&latest), None)?;
     }
     let tracked = track(environment.working.clone(), event);
     if tracked != environment.working {

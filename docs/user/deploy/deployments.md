@@ -12,7 +12,7 @@ deployment, with its own page and logs.
 Settings save as you change them. Config files save when you click **Save**. Your services keep
 running as they were. A staged field
 turns pink until you deploy it (hover it to see what's running now), and the bottom bar counts
-your changes, like **Apply 3 changes**.
+your changes, like **3 changes**.
 
 ![The bottom bar with one change to deploy](../images/bottom-bar-changes.png)
 
@@ -25,10 +25,10 @@ private image.
 ## Deploy your changes
 
 1. In the bottom bar, click **Details** to review each change. Add a
-   **Deploy message (optional)** if you like.
+   **Message (optional)** if you like.
 2. Click **Deploy changes**. **Deploy** in the bottom bar skips the review.
 
-![Details: each change, a deploy message, and Discard all changes, Publish and Deploy changes](../images/review-changes.png)
+![Details: each change, a deploy message, and Discard all changes, Save and Deploy changes](../images/review-changes.png)
 
 Ployz opens the new deployment's page. A deploy covers the whole environment, not only what you
 changed: every GitHub service moves to the newest commit on its Git branch, and if you've added
@@ -36,11 +36,15 @@ or lost a server, replicas spread over the servers you have now (if a service's 
 lost server, see [When a server goes down](../services/scaling.md#when-a-server-goes-down)).
 Everything else keeps running as it is.
 
-**Publish** in **Details** saves your changes without deploying them. Your next deploy takes them
-along, including one started by a push to GitHub; changes you haven't published stay behind.
+**Save** in **Details** records your changes and optional message without deploying them. Your
+next deploy takes them along, including one started by a push to GitHub; unsaved changes stay
+behind. Repeating Save with no changes creates no new version. The CLI calls this `ployz publish`,
+and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
-Discarding a service or volume you never deployed deletes it.
+Discarding a service or volume you never deployed deletes it. Discard does not save a version.
+If you discard saved changes back to what is deployed, Details still shows the draft reversal.
+Save records that reversal; Discard on its row returns it to the latest saved value.
 
 The dashboard's **Deploy** needs a staged change. Deploying again with nothing staged is
 CLI-only for now:
@@ -48,6 +52,27 @@ CLI-only for now:
 ```sh
 ployz deploy
 ```
+
+## Saved history
+
+Open **History** at the top of the canvas to see this environment's saved versions. Expand a
+version to review its changes, then use its **⋮** menu:
+
+- **Undo this change** reverses that version's changed fields and preserves unrelated later edits.
+  The first recorded version has no earlier version to undo.
+- **Restore this version** stages its complete configuration in the current draft.
+
+If an action would overwrite draft changes, the confirmation lists exactly which fields.
+Cancel changes nothing. If someone edits the environment after your review, reopen the action
+to review the new draft. Save or Deploy makes the staged result a saved version.
+
+History restores configuration references and sealed variable values, with secrets masked in
+review. It does not recover deleted Volume data or undo private-image credential rotations.
+An accepted deployment and its retries keep their original snapshot while you edit the draft.
+
+From the CLI, `ployz history` lists versions. `ployz history restore 2 --preview` reviews a
+Restore without writing. `ployz history undo 2` stages an Undo; use `--accept-overwrite` only
+after reviewing the named draft fields.
 
 ## When another deployment is running
 

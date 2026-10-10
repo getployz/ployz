@@ -7,7 +7,7 @@ use ployz_store::{DiffQuery, Discard, Publish, SettingPath};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
-use crate::cli::{positional, value};
+use crate::cli::{positional, switch, value};
 
 pub(crate) fn diff_command() -> Command {
     scoped(Command::new("diff").about("Show staged Service, Volume and Config changes"))
@@ -16,6 +16,34 @@ pub(crate) fn diff_command() -> Command {
 pub(crate) fn publish_command() -> Command {
     scoped(Command::new("publish").about("Put staged changes in Saved State without deploying"))
         .arg(version())
+        .arg(value("message", None).help("Message saved with the new revision"))
+}
+
+pub(crate) fn history_command() -> Command {
+    scoped(Command::new("history").about("Show immutable saved versions"))
+        .subcommand_required(false)
+        .subcommand(history_action(
+            "restore",
+            "Stage a saved version in the draft",
+        ))
+        .subcommand(history_action(
+            "undo",
+            "Stage the inverse of one saved change",
+        ))
+}
+
+fn history_action(name: &'static str, about: &'static str) -> Command {
+    scoped(Command::new(name).about(about))
+        .arg(positional("revision", true).value_parser(clap::value_parser!(u64)))
+        .arg(version())
+        .arg(
+            switch("preview", None)
+                .help("Show changes and overwritten draft fields without writing"),
+        )
+        .arg(
+            switch("accept-overwrite", None)
+                .help("Accept the reviewed draft fields being overwritten"),
+        )
 }
 
 pub(crate) fn discard_command() -> Command {
@@ -25,6 +53,8 @@ pub(crate) fn discard_command() -> Command {
                 .help("SERVICE, SERVICE.SETTING, volumes.VOLUME, configs.CONFIG or a `ployz diff` row [default: everything]"),
         )
         .arg(version())
+        .arg(value("target", None).value_parser(["head", "saved", "review"]).default_value("head")
+            .help("Head resets deploy changes; saved abandons draft reversals; review discards the displayed combined list"))
 }
 
 fn version() -> clap::Arg {
@@ -37,11 +67,16 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         environment: environment(matches)?,
     };
     let view = store(root)?.read(&query)?;
-    let hint = (!view.changes.is_empty())
-        .then(|| next(matches, &["deploy", "--expect-version", &view.version]));
+    let changes = view.review_changes();
+    let hint = (view.draft_count > 0)
+        .then(|| next(matches, &["publish", "--version", &view.version]))
+        .or_else(|| {
+            (!view.changes.is_empty())
+                .then(|| next(matches, &["deploy", "--expect-version", &view.version]))
+        });
     crate::ui::finish(&Next::new(&view, hint.clone()), || {
         let where_ = format!("{}/{}", view.environment.project, view.environment.name);
-        if view.changes.is_empty() {
+        if changes.is_empty() {
             crate::ui::note(format_args!("No staged changes in {where_}."));
         }
         // Where a staged change came from, when another Environment sent it.
@@ -51,7 +86,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 .find(|incoming| Some(incoming.at.row()) == row)
                 .map_or_else(String::new, |incoming| format!(" (from {})", incoming.from))
         };
-        for change in &view.changes {
+        for change in &changes {
             crate::ui::stream(format_args!(
                 "{} ({}){}",
                 change.name,
@@ -149,6 +184,7 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
     let publish = Publish {
         environment: environment(matches)?,
         version: matches.get_one::<String>("version").cloned(),
+        message: matches.get_one::<String>("message").cloned(),
         accept_volume_loss: Vec::new(),
     };
     let store = store(root)?;
@@ -188,6 +224,11 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let discard = Discard {
         environment: environment(matches)?,
+        target: match matches.get_one::<String>("target").map(String::as_str) {
+            Some("saved") => ployz_store::DiscardTarget::Saved,
+            Some("review") => ployz_store::DiscardTarget::Review,
+            _ => ployz_store::DiscardTarget::Head,
+        },
         path: path.clone(),
         version: matches.get_one::<String>("version").cloned(),
     };
@@ -217,4 +258,90 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         ));
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));
     })
+}
+
+pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let store = store(root)?;
+    let environment = environment(matches)?;
+    let action = root
+        .subcommand()
+        .and_then(|(_, history)| history.subcommand_name());
+    let Some(action) = action else {
+        let view = store.read(&ployz_store::HistoryQuery { environment })?;
+        return crate::ui::finish(&view, || {
+            if view.revisions.is_empty() {
+                crate::ui::note("No saved versions.");
+            }
+            for revision in &view.revisions {
+                crate::ui::stream(format_args!(
+                    "#{}  {}",
+                    revision.revision,
+                    revision.message.as_deref().unwrap_or("Saved version")
+                ));
+            }
+        });
+    };
+    let action = match action {
+        "restore" => ployz_store::HistoryAction::Restore,
+        "undo" => ployz_store::HistoryAction::Undo,
+        _ => unreachable!("history command admits only Restore and Undo"),
+    };
+    let revision = ployz_store::Revision(
+        *matches
+            .get_one::<u64>("revision")
+            .expect("revision is required"),
+    );
+    let preview = store.read(&ployz_store::HistoryPreviewQuery {
+        environment: environment.clone(),
+        revision,
+        action,
+    })?;
+    if matches.get_flag("preview") {
+        return crate::ui::finish(&preview, || {
+            for change in &preview.changes {
+                crate::ui::stream(format_args!(
+                    "{} ({})",
+                    change.name,
+                    super::store::word(&change.lifecycle)
+                ));
+                for row in &change.settings {
+                    crate::ui::stream(format_args!(
+                        "  {}: {} → {}",
+                        row.path,
+                        super::store::shown(&row.before),
+                        super::store::shown(&row.after)
+                    ));
+                }
+            }
+            for path in &preview.overwritten {
+                crate::ui::stream(format_args!("  overwrites draft {path}"));
+            }
+            crate::ui::stream(format_args!("Review version: {}", preview.version));
+        });
+    }
+    let staged = store
+        .try_write(&ployz_store::StageHistory {
+            environment,
+            revision,
+            action,
+            version: matches
+                .get_one::<String>("version")
+                .cloned()
+                .unwrap_or(preview.version),
+            accept_overwrite: matches.get_flag("accept-overwrite"),
+        })
+        .map_err(|error| store.fail(with_refresh_hint(error, matches, "history")))?;
+    crate::ui::done(
+        &staged,
+        format_args!(
+            "{} Saved revision {} in the draft. Review before saving or deploying.",
+            if action == ployz_store::HistoryAction::Restore {
+                "Restored"
+            } else {
+                "Undid"
+            },
+            revision
+        ),
+    )
 }

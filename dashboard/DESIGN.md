@@ -314,7 +314,9 @@ Guard what can't come back, never the verb.
 
 ### Apply Changes
 
-The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Publish puts configuration in Saved State without deploying; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save puts configuration in Saved State without deploying; Deploy saves when needed and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+
+History opens over the canvas and lists immutable Saved versions with available message, actor and time. The version menu offers Undo this change and Restore this version. Undo preserves unrelated later draft edits and requires a recorded predecessor. Restore stages the whole snapshot. If either action overwrites draft fields, the dialog names those fields and requires consent against the exact current review. A stale confirmation cannot overwrite a newer draft. History actions and Discard change only the draft; Save records them explicitly. Changes remains reachable for a Saved-only inverse even when no runtime changes remain. Config and Volume inspectors continue to own mounts.
 
 ### Deployments
 
@@ -327,7 +329,7 @@ Deployments are a place, not a mode of the canvas. Each Deployment has its own D
 
 One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It holds this Environment's own changes and nothing else, in one row, the first that applies: its words, then its actions, at full control size, like Railway's. It sizes to its content up to 36rem; its lines truncate, and values live in Details.
 
-1. **Changes to deploy.** The row takes the staged-intent surface: "Apply N changes", then **Details · Deploy · ⋮** (⋮ holds Discard). Deploy is solid pink, and its tooltip says ⇧+Enter. What changed shows on the canvas and in Details, never in the bar. Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes. An Environment that has never deployed shows all its nodes here.
+1. **Changes to deploy.** The row takes the staged-intent surface: "N changes", then **Details · Deploy · ⋮** (⋮ holds Discard). Deploy is solid pink, and its tooltip says ⇧+Enter. What changed shows on the canvas and in Details, never in the bar. Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes. An Environment that has never deployed shows all its nodes here.
 2. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
 3. **Changes that go live here with a pull request:** the quiet "3 changes go live with PR #142", the services they touch, and **Details**. They aren't changes to deploy.
 
@@ -335,12 +337,12 @@ Nothing about a Branch sits in the bar: a Sync, a shutdown and closing are the S
 
 **Details** reviews the changes to deploy in the Sync dialog's anatomy: calm and flat, with colour only for the kind of change, Intent Pink for changed, success green for added and red for removed.
 
-- **Header:** "Environment changes" and one line, "6 changes in fix-api, not yet published." With a Server to deploy to, a Deploy message field follows.
+- **Header:** "Environment changes" and one line, "6 changes in fix-api, not yet saved." An optional message field follows whenever Save or Deploy is available.
 - **Groups** say once, in words, where changes came from: **Your changes**, the edits made here, then **From production's deploy**, what Follow brought, under one line, "fix-api is a Branch of production, so what production deploys arrives here too." Changes another Environment synced here group under "From staging". A group shows only with rows, and Your changes alone has no heading, as on a root Environment.
 - **Rows:** one line per change: its kind's marker (pink pencil, green plus, red minus), the node's name muted, the setting (a variable's key in monospace, a Setting by its title), and the value right-aligned in small monospace, `old → new` with the new value in the kind's colour, or a removed value struck through. A node added or removed as a whole is one line in its colour, "web · will be added". No cards in cards, no table headers.
 - **⋯** holds a row's actions: Discard, plus Never sync on a change that arrived from another Environment. A setting that can't be discarded alone offers "Discard all of api".
 - **A Use hint** is a quiet second line under its row: "production has since set `info` · Use theirs". A pull request's hint keeps its own words: "PR #142: {value} · Use", or "From PR #142" once staged.
-- **Footer:** a quiet **Discard all** on the left; **Publish**, and **Deploy changes** when a Server can run them, on the right.
+- **Footer:** a quiet **Discard all** on the left; **Save**, and **Deploy changes** when a Server can run them, on the right.
 
 The **Sync dialog** is the one review of a Sync, whichever way it goes. It is calm, flat and monochrome: ink for the primary button and the ticks, amber only for "Changed in X", and no Intent Pink, which stays for staged intent and Deploy.
 

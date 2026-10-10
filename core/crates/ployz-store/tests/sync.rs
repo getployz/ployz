@@ -250,6 +250,7 @@ fn discard(store: &ConfigStore, who: &Actor, path: &str) {
             who,
             &Discard {
                 environment: at("production"),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },

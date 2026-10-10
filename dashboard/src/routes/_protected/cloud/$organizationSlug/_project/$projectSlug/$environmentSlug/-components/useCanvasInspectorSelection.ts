@@ -29,6 +29,7 @@ export type CanvasInspectorSelection = {
   deploymentReturnTo: string | null;
   /** The Environment's deployment list is open over the canvas. */
   deploymentList: boolean;
+  history: boolean;
   /** The New branch panel is open over the Parent's canvas, opened on `focus` (a lineage) if anything. */
   newBranch: { focus: string | null } | null;
   /** A repository's PR Environments plan page is open over its start-from Environment's canvas. */
@@ -60,6 +61,10 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     from: DEPLOYMENT_LIST_ROUTE_ID,
     shouldThrow: false,
   });
+  const historyMatch = useMatch({
+    from: "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/history",
+    shouldThrow: false,
+  });
   const newBranchMatch = useMatch({
     from: NEW_BRANCH_ROUTE_ID,
     shouldThrow: false,
@@ -85,6 +90,7 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     deploymentId: deploymentMatch?.params.deploymentId ?? null,
     deploymentReturnTo: deploymentMatch?.search.returnTo ?? null,
     deploymentList: deploymentListMatch != null,
+    history: historyMatch != null,
     newBranch: newBranchMatch ? { focus: newBranchMatch.search.focus ?? null } : null,
     prPlan: prPlanMatch ? { repositoryId: Number(prPlanMatch.params.repositoryId) } : null,
     isInspectorOpen: selectedNodeId != null,

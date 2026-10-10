@@ -173,6 +173,7 @@ fn discard(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {
             who,
             &Discard {
                 environment: at(environment),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -538,6 +539,7 @@ fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
             }),
             BatchCommand::Discard(Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: Some(version),
             }),
@@ -546,10 +548,8 @@ fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
     }
 }
 
-/// Never sync on a published healthcheck path that arrived discards it from Saved
-/// State too: the path is a part of the `healthcheck` Setting Discard takes.
 #[test]
-fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
+fn never_sync_stages_a_published_arrival_reversal_until_save() {
     let (store, who) = shop();
     set(
         &store,
@@ -570,11 +570,21 @@ fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
     let publish = Publish {
         environment: at("fix-web"),
         version: Some(diff(&store, &who, "fix-web").version),
+        message: None,
         accept_volume_loss: Vec::new(),
     };
     store
         .write_trusted(&who, &publish, &Trusted::default())
         .unwrap();
+    let history = store
+        .read(
+            &who,
+            &ployz_store::HistoryQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap()
+        .revisions;
     let version = diff(&store, &who, "fix-web").version;
     store
         .write(
@@ -583,9 +593,59 @@ fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
         )
         .unwrap();
     assert_eq!(web(&store, &who, "fix-web")["healthcheck"], old);
-    assert!(
-        diff(&store, &who, "fix-web").published,
-        "Saved State follows the discard"
+    assert_eq!(
+        store
+            .read(
+                &who,
+                &ployz_store::HistoryQuery {
+                    environment: at("fix-web")
+                }
+            )
+            .unwrap()
+            .revisions,
+        history
+    );
+    let inverse = diff(&store, &who, "fix-web");
+    assert!(!inverse.published);
+    assert!(inverse.draft_count > 0);
+    let excluded = store
+        .read(
+            &who,
+            &EnvironmentQuery {
+                environment: at("fix-web"),
+                path: None,
+                all: false,
+            },
+        )
+        .unwrap()
+        .never_synced;
+    assert_eq!(excluded.len(), 1);
+    store
+        .write_trusted(
+            &who,
+            &Publish {
+                environment: at("fix-web"),
+                version: Some(inverse.version),
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert!(diff(&store, &who, "fix-web").published);
+    assert_eq!(
+        store
+            .read(
+                &who,
+                &EnvironmentQuery {
+                    environment: at("fix-web"),
+                    path: None,
+                    all: false
+                }
+            )
+            .unwrap()
+            .never_synced,
+        excluded
     );
 }
 
