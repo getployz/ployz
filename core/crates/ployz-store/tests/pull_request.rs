@@ -959,3 +959,42 @@ fn a_recreated_preview_is_listed_as_its_proposals_source() {
         .id;
     assert_eq!(source(), (Some(preview), true));
 }
+
+/// Reopened while its deployed preview is still closing, the new preview is listed.
+#[test]
+fn a_preview_reopened_while_the_old_one_closes_is_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    include_pr(&store, &who, 1).unwrap();
+    let source = || {
+        let diff = store
+            .read(
+                &who,
+                &ployz_store::DiffQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap();
+        let [included] = &diff.included[..] else {
+            panic!("one proposal: {:?}", diff.included)
+        };
+        let ployz_store::ProposalSource::PullRequest { environment, .. } = &included.source else {
+            panic!("a pull request's proposal")
+        };
+        (environment.clone(), included.newer)
+    };
+    let (old, _) = source();
+    let closing = pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
+    assert_eq!(closing.closing.len(), 1, "{closing:?}");
+
+    let reopened = pull(&store, &who, facts(true, "2026-09-29T12:00:00Z"));
+    assert_eq!(reopened.admitted.len(), 1, "{reopened:?}");
+    let (now, newer) = source();
+    assert!(now.is_some() && now != old, "{now:?}");
+    assert!(newer);
+}

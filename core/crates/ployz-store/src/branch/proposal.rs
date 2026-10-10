@@ -867,15 +867,17 @@ pub(crate) fn included(
          p.repository_id, p.number, \
          (SELECT COUNT(*) FROM config_sync_arrival a \
           WHERE a.environment_id = p.environment_id AND a.proposal_id = p.id), \
-         COALESCE(e.name, r.name), COALESCE(e.working_revision, r.working_revision), \
+         COALESCE(r.name, e.name), COALESCE(r.working_revision, e.working_revision), \
          r.id \
          FROM config_proposal p JOIN config_environment d ON d.id = p.environment_id \
          LEFT JOIN config_environment e ON e.id = p.source_environment_id \
          LEFT JOIN (SELECT q.environment_id AS id, q.repository_id, q.number, \
           v.project_id, v.name, v.working_revision \
-          FROM config_pr_environment q JOIN config_environment v ON v.id = q.environment_id) r \
-         ON e.id IS NULL AND r.repository_id = p.repository_id AND r.number = p.number \
-         AND r.project_id = d.project_id \
+          FROM config_pr_environment q JOIN config_environment v ON v.id = q.environment_id \
+          JOIN config_environment_branch b ON b.environment_id = q.environment_id \
+          WHERE b.closing = 0) r \
+         ON r.id <> p.source_environment_id AND r.repository_id = p.repository_id \
+         AND r.number = p.number AND r.project_id = d.project_id \
          WHERE p.environment_id = ?1 ORDER BY p.source_name, p.id",
         &[environment.as_str().into()],
     )?;
