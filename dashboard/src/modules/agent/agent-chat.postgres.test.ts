@@ -144,6 +144,23 @@ it.live("a read tool answers straight from the Store", () =>
     expect(answered.said).toBe("Services: web.");
   }));
 
+it.live("a cloud tool's refusal reaches the model in the same envelope as the Store's", () =>
+  Effect.gen(function* () {
+    const { say } = yield* sidebar({ removeWeb: false });
+    const answered = yield* say("tree acme/nope");
+    expect(answered.interrupts).toEqual([]);
+    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
+    expect(answered.said).toMatch(/^The Store refused: /);
+  }));
+
+it.live("a store tool the agent mints ids for creates a Project", () =>
+  Effect.gen(function* () {
+    const { say } = yield* sidebar({ removeWeb: false });
+    const answered = yield* say("new project api");
+    expect(answered.results).toMatchObject([{ ok: true }]);
+    expect(answered.said).toBe("Done.");
+  }));
+
 const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };
 const ARCHITECTURE = '<dashboard-page page="architecture" project="shop" environment="production" service="web"/>';
 const SERVERS = '<dashboard-page page="servers"/>';

@@ -125,7 +125,8 @@ const whereAbouts = (messages: ReadonlyArray<ModelMessage>): string => {
  * `PLOYZ_AGENT_STUB=1`'s model. It reads the member's latest message and the tool results since: "list services" lists
  * them by name, "list services and deploy" calls both at once, "set <path>=<value>" stages that Setting, "remove <service>"
  * and "drop <volume>" stage their removal, "publish" publishes (at `--version "<version>"` when named), and "deploy" deploys the
- * Environment, each in `--project` and `--env` when named. After a Publish or Deploy refuses Volume loss, an explicit request to accept it
+ * Environment, each in `--project` and `--env` when named. "tree <owner/repo>" lists a repository's files and "new project
+ * <name>" creates a Project. After a Publish or Deploy refuses Volume loss, an explicit request to accept it
  * retries that action in its original scope, accepting exactly what the Store named. A denial is quoted, never retried.
  * "Where am I" answers from the thread's latest page block.
  */
@@ -145,6 +146,10 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
   }
 
   if (said.includes("where am i")) return { text: whereAbouts(messages) };
+  const repository = /\btree ([a-z0-9._-]+\/[a-z0-9._-]+)/.exec(said)?.[1];
+  if (repository !== undefined) return { calls: [{ tool: "github_tree", input: { repository } }] };
+  const project = /\bnew project ([a-z0-9-]+)/.exec(said)?.[1];
+  if (project !== undefined) return { calls: [{ tool: "project_new", input: { name: project } }] };
   const assigned = /\bset ([a-z0-9._-]+=\S+)/.exec(said)?.[1];
   if (assigned !== undefined) return { calls: [{ tool: "set", input: { assignment: [assigned] } }] };
   const removed = /remove ([a-z0-9-]+)/.exec(said)?.[1];
