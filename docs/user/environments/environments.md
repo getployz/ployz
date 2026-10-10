@@ -99,6 +99,9 @@ from. In production's bottom bar, click **Details**: **Included** lists `staging
 - **Undo:** the toast's **Undo** removes staging, as long as you haven't synced staging again
   since. After that, Undo is refused: Remove it in Details instead.
 
+`ployz env sync` groups what it stages the same way, but its `--json` output leaves out what was
+included: check **Details** in Ployz Cloud.
+
 Remove is refused, and says why, when taking staging out would lose your work:
 
 - A service staging brought was edited in production since. Discard that service, or keep staging.
@@ -108,6 +111,8 @@ Remove is refused, and says why, when taking staging out would lose your work:
 - Staging turned on a registry credential for a service in production, replacing the one
   production kept for it. Removing staging wouldn't bring production's back. Set that service's
   credential again, or keep staging.
+- Another included environment changed a service staging brought. Remove that one first, or keep
+  staging.
 - Another service in production uses one staging brought. Change that service first, or Remove
   what brought it.
 

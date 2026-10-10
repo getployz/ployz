@@ -812,7 +812,7 @@ pub(crate) fn undo(
     if proposal.first_sync != *sync || proposal.last_sync != *sync {
         return Err(error::conflict(
             format!(
-                "{} was refreshed since: Remove it from Changes in Ployz Cloud",
+                "{} was refreshed since: Remove it from Details in Ployz Cloud",
                 proposal.name
             ),
             json!({ "proposal": proposal.id }),
