@@ -548,8 +548,6 @@ fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
     }
 }
 
-/// Never sync records the exclusion immediately and stages the published arrival
-/// reversal until an explicit Save.
 #[test]
 fn never_sync_stages_a_published_arrival_reversal_until_save() {
     let (store, who) = shop();

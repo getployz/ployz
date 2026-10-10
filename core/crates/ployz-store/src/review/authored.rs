@@ -1,5 +1,3 @@
-//! Native authored transitions, their redacted selections, and validated Working writes.
-
 use super::publish::DiscardTarget;
 use super::{NodeChange, Review};
 use crate::scope::{Environment, EnvironmentSummary};
@@ -8,12 +6,13 @@ use crate::storage::Tx;
 use crate::{error, scope};
 use ployz_core::config::{
     At, AuthoredServiceConfig, BuildMethod, ChangeKind, CompiledNodeConfig, ConfigAttachment,
-    ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity, RowId, SavedConfigFile,
-    SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, SavedVolumeIntent, ServiceBuildConfig, ServiceGitAccess, ServiceGitBranch,
-    ServiceHealthcheck, ServiceManagedHostname, ServiceRestartPolicy, ServiceRoute,
-    ServiceSettingChange, ServiceSource, ServiceTemplate, Setting, ValuePart, VolumeAttachment,
-    compare_service_settings, compile_environment_intent, render_variable_parts,
+    EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity, RowId,
+    SavedConfigFile, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableIntent, SavedVariableValue, SavedVolumeIntent, ServiceBuildConfig,
+    ServiceGitAccess, ServiceGitBranch, ServiceHealthcheck, ServiceManagedHostname,
+    ServiceRestartPolicy, ServiceRoute, ServiceSettingChange, ServiceSource, ServiceTemplate,
+    Setting, ValuePart, VolumeAttachment, VolumeKind, compare_service_settings,
+    compile_environment_intent, render_variable_parts,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde_json::{Value, json};
