@@ -23,51 +23,57 @@ describe("VolumeCopiesPanel", () => {
 
   it("offers Mirror and Move for a writer alone, and starts a Move to the only other Server", () => {
     const request = panel([member("web-1", "writer"), pooled("web-2")]);
-    expect(copiesShown()).toEqual(["dataWriteron web-1"]);
-    expect(buttons()).toEqual(["Mirror", "Move"]);
-    fireEvent.click(screen.getByRole("button", { name: "Move" }));
+    expect(copiesShown()).toEqual(["dataWriterweb-1 · Receives service writes"]);
+    expect(buttons()).toEqual(["Create mirror", "Move volume"]);
+    fireEvent.click(screen.getByRole("button", { name: "Move volume" }));
+    expect(request).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Move volume" }));
     expect(request).toHaveBeenCalledWith({ kind: "move", args: { to: "web-2" } });
   });
 
   it("shows the mirror as data-<server> and offers Sync", () => {
     const request = panel([member("web-1", "writer"), member("web-2", "mirror")]);
-    expect(copiesShown()).toEqual(["dataWriteron web-1", "data-web-2Mirroron web-2"]);
-    expect(buttons()).toEqual(["Sync", "Move"]);
+    expect(copiesShown()).toEqual(["dataWriterweb-1 · Receives service writes", "data-web-2Mirrorweb-2 · Updates on requestSync"]);
+    expect(buttons()).toEqual(["Sync", "Move volume"]);
     fireEvent.click(screen.getByRole("button", { name: "Sync" }));
     expect(request).toHaveBeenCalledWith({ kind: "sync", args: { full: false } });
   });
 
   it("shows a Move in progress and offers nothing", () => {
     panel([member("web-1", "switching"), member("web-2", "final")], [run("move", { to: "web-2" }, "running")]);
-    expect(copiesShown()).toEqual(["data-web-1Movingon web-1", "data-web-2Mirroron web-2"]);
-    expect(screen.getByText(/Move to web-2 · running since/)).toBeTruthy();
+    expect(copiesShown()).toEqual(["data-web-1Movingweb-1", "data-web-2Mirrorweb-2 · Updates on request"]);
+    expect(screen.getByRole("status")).toBeTruthy();
     expect(buttons()).toEqual([]);
     expect(screen.getByText("Activity").parentElement?.textContent).toContain("Move to web-2Running");
   });
 
   it("offers Restore from the mirror once the writer's Server is removed", () => {
     const request = panel([member("web-2", "mirror")]);
-    expect(copiesShown()).toEqual(["data-web-2Mirroron web-2"]);
+    expect(copiesShown()).toEqual(["data-web-2Mirrorweb-2 · Updates on requestRestore"]);
     expect(buttons()).toEqual(["Restore"]);
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(request).not.toHaveBeenCalled();
+    expect(screen.getByText("Recent writes will be lost")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Restore volume" }));
     expect(request).toHaveBeenCalledWith({ kind: "restore", args: { from: "web-2" } });
   });
 
   it("says a Server that does not answer holds runs back", () => {
     panel([member("web-1", "unanswered"), member("web-2", "mirror")]);
-    expect(screen.getByRole("note").textContent).toContain("web-1 did not answer, so its copy is unknown");
+    expect(screen.getByRole("note").textContent).toContain("web-1 did not answer. Their copies are unknown");
     expect(buttons()).toEqual([]);
   });
 
   it("marks the root with the lower record as old, and says the next run seals it", () => {
-    panel([member("web-1", "writer", { lease: 7 }), member("web-2", "writer", { lease: 8 })]);
-    expect(copiesShown()).toEqual(["dataWriteron web-2", "data-web-1Oldon web-1"]);
-    expect(screen.getByRole("note").textContent).toContain("data-web-1 came back after another server took over");
+    const request = panel([member("web-1", "writer", { lease: 7 }), member("web-2", "writer", { lease: 8 })]);
+    expect(copiesShown()).toEqual(["dataWriterweb-2 · Receives service writes", "data-web-1Oldweb-1"]);
+    fireEvent.click(screen.getByRole("button", { name: "Make old copy read-only" }));
+    expect(request).toHaveBeenCalledWith({ kind: "sync", args: { full: false } });
   });
 
   it("warns, and offers nothing, for two writers whose records tie", () => {
     panel([member("web-1", "writer", { lease: 8 }), member("web-2", "writer", { lease: 8 })]);
-    expect(screen.getByRole("note").textContent).toContain("Two servers each hold this volume");
+    expect(screen.getByRole("note").textContent).toContain("Two servers report a writer");
     expect(buttons()).toEqual([]);
   });
 });

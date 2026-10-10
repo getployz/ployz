@@ -60,12 +60,18 @@ describe("volumeCopies", () => {
     expect(Object.values(shown.offers).every((offer) => offer === null)).toBe(true);
   });
 
-  it("names the root with the lower record old without any run history, and offers what the run after its demote plans", () => {
+  it("offers only sealing the old writer before planning another operation", () => {
     const shown = view([member("a", "writer", { lease: 7 }), member("b", "writer", { lease: 8 }), pooled("c")]);
     expect(shown.copies.map((entry) => [entry.server, entry.label, entry.role])).toEqual([["b", "data", "writer"], ["a", "data-a", "old"]]);
     expect(shown.twoWriters).toBe(false);
     expect(shown.sealing).toBe("data-a");
-    expect(shown.offers).toMatchObject({ mirror: { servers: ["c"] }, move: { servers: ["c"] } });
+    expect(shown.offers).toEqual({ mirror: null, move: null, sync: { servers: [] }, release: null, restore: null });
+  });
+
+  it("offers recovery when only the old and new writers exist", () => {
+    const shown = view([member("a", "writer", { lease: 7 }), member("b", "writer", { lease: 8 })]);
+    expect(shown.offers.sync).toEqual({ servers: [] });
+    expect(shown.offers.move).toBeNull();
   });
 
   it("keeps a copy an interrupted demote left read-only old, even with the higher record", () => {

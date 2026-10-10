@@ -1,3 +1,4 @@
+import { useWarmMovePreview, WarmMovePreviewControls } from "#/modules/volume-run/WarmMovePreview";
 import { StoreVolumeMounts } from "#/modules/config-store/StoreVolumeMounts";
 import { useState } from "react";
 import { Schema } from "effect";
@@ -37,6 +38,7 @@ type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volu
 type VolumeResourceRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
 
 export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParams }) {
+  const preview = useWarmMovePreview();
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
   const views = useStoreViews(organizationSlug, [volumesQuery(store), servicesQuery(store), diffQuery(store), environmentSettingsQuery(store)] as const);
@@ -77,6 +79,13 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
       </CanvasInspectorHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+          <WarmMovePreviewControls />
+          {/* Copies exist once a Deploy made the managed Volume on a Server. */}
+          {(preview || (volume.deployed && volume.storage.kind === "provisioned")) && !removing ? (
+            <SettingsSection id="copies" title="Copies">
+              <StoreVolumeCopies organizationSlug={organizationSlug} environment={store} volume={volume} />
+            </SettingsSection>
+          ) : null}
           {removing ? <SettingsSection id="mounts" title="Mounts">
               <Empty variant="placeholder">
                 <EmptyDescription>Removed on next deploy.</EmptyDescription>
@@ -86,12 +95,6 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
           <SettingsSection id="storage" title="Storage">
             <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
           </SettingsSection>
-          {/* Copies exist once a Deploy made the managed Volume on a Server. */}
-          {volume.deployed && volume.storage.kind === "provisioned" && !removing ? (
-            <SettingsSection id="copies" title="Copies">
-              <StoreVolumeCopies organizationSlug={organizationSlug} environment={store} volume={volume} />
-            </SettingsSection>
-          ) : null}
           <SettingsSection id="danger" title="Danger">
             <StoreVolumeDanger state={state} params={params} version={diff.version} />
           </SettingsSection>

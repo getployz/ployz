@@ -33,7 +33,7 @@ export type VolumeCopies = {
   readonly active: VolumeRunView | null;
   /** Two writers whose records leave no way to tell which is newer. */
   readonly twoWriters: boolean;
-  /** An old copy whose Server still serves it as the writer: the next run makes it read-only first, then stops. */
+  /** An old copy that must become read-only before another operation. */
   readonly sealing: string | null;
   readonly offers: {
     readonly mirror: Offer;
@@ -91,8 +91,8 @@ export function volumeCopies(input: {
   const none: VolumeCopies["offers"] = { mirror: null, sync: null, move: null, release: null, restore: null };
   if (active !== null || twoWriters) return { copies, unanswered, active, twoWriters, sealing, offers: none };
 
-  // A run that finds an old copy only makes it read-only, then asks to run again; offer what that second run plans.
-  const basis = demote === null ? input.members : input.members.filter((member) => member !== demote.old);
+  if (demote !== null) return { copies, unanswered, active, twoWriters, sealing, offers: { ...none, sync: { servers: [] } } };
+  const basis = input.members;
   const takesServices = new Set(input.machines.filter((machine) => machine.acceptsServices).map((machine) => machine.id));
   const servers = (accept: (member: AnsweredMember) => boolean) => answered.filter(accept).map((member) => member.machine.name).sort(byName);
   const offer = (names: readonly string[]): Offer => (names.length > 0 ? { servers: names } : null);

@@ -16,6 +16,11 @@ servers answered. A server that doesn't answer is named, and no run is offered u
 you remove it. **Activity** lists the last runs and how they ended. The volume's tray on the canvas
 shows its mirror too, and "Moving to web-2" during a move.
 
+Choose **Create mirror** or **Move volume**, select a destination server, and confirm.
+**Sync** is beside the mirror. **Restore** asks you to confirm that writes after the last sync
+will be lost. A returning old writer offers **Make old copy read-only** first. Once that
+finishes, Copies refreshes and shows the operations available from the new server reports.
+
 ![A volume's Copies: the writer on web-1, its mirror data-web-2, Sync and Move](../images/volume-copies.png)
 
 The commands below do the same from the CLI. Deleting a mirror is CLI-only.

@@ -1,3 +1,4 @@
+import { WarmMovePreviewProvider } from "#/modules/volume-run/WarmMovePreview";
 import { Suspense } from "react";
 import { createFileRoute, type ErrorComponentProps } from "@tanstack/react-router";
 import { RouteErrorAlert } from "#/components/route-error-alert";
@@ -17,7 +18,7 @@ function CanvasLayout() {
   return (
     <div className="h-full overflow-hidden">
       <Suspense fallback={<PendingCanvas />}>
-        <EnvironmentCanvasScene />
+        <WarmMovePreviewProvider><EnvironmentCanvasScene /></WarmMovePreviewProvider>
       </Suspense>
     </div>
   );
