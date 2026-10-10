@@ -17,7 +17,8 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 
 /**
  * The one review of a Sync: each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
- * a change stays out this time and can be marked Never sync; the footer lists what is never synced, with undo.
+ * a change stays out this time and can be marked Never sync; one `into` holds from another source's included change
+ * stays unticked until that is removed; the footer lists what is never synced, with undo.
  * Nothing deploys: the changes become `into`'s changes to deploy, or, from a PR Environment into its Destination, go
  * live there when the pull request merges. A secret `into` lacks arrives by name only: its row takes `into`'s own
  * value, set now or held for the merge. Monochrome: pink stays for staged intent and Deploy.
@@ -39,6 +40,8 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   const [closeAfter, setCloseAfter] = useState(true);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
+  // One Sync however often it's sent: a retry after a lost answer is answered with what the first did.
+  const [id] = useState(() => crypto.randomUUID());
   // The never-synced list, opened from the footer.
   const [listing, setListing] = useState(false);
   const name = from.environment ?? "";
@@ -72,7 +75,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
       // The Store decides when it lands, as the review read it; only closing after says now.
       written = await writer.commit({
         command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
+        values: typed, version: view.value.version, id, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.
@@ -157,15 +160,16 @@ function SyncRowItem({ row, into, ticked, left, onFlip, onNeverSync, value, onVa
 }) {
   const line = syncLine(row, into);
   const id = `sync-${row.row}`;
+  const held = row.held_by !== null;
   return (
     <li className={cn("grid min-h-10 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 border-b last:border-b-0",
       row.requires !== null && "pl-6")}>
-      <Checkbox id={id} checked={ticked} disabled={left} onCheckedChange={onFlip} className={cn(!ticked && "opacity-40")} />
+      <Checkbox id={id} checked={ticked} disabled={left || held} onCheckedChange={onFlip} className={cn(!ticked && "opacity-40")} />
       <label htmlFor={id} className={cn("flex min-w-0 items-center gap-2", !ticked && "opacity-40")}>
         <span className={cn("truncate", line.variable && "font-mono")}>{line.name}</span>
         {line.badge ? <Badge variant={row.change === "conflict" && !row.secret ? "warning" : "secondary"}>{line.badge}</Badge> : null}
       </label>
-      {!ticked && row.name !== null && !left ? (
+      {!ticked && row.name !== null && !left && !held ? (
         <Button variant="outline" size="sm" onClick={onNeverSync}><PinIcon data-icon="inline-start" />Never sync</Button>
       ) : row.secret ? (
         <Input type="password" autoComplete="off" aria-label={`Set ${into}'s value of ${line.name}`}

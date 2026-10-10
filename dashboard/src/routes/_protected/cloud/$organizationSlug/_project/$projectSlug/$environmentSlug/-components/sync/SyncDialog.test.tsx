@@ -100,3 +100,30 @@ it("says a Conditional Sync goes live at the merge, offers no Close, and shows a
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Value held");
 });
+
+it("holds a row another source's included change holds: unticked, Included with that source, no Never sync", async () => {
+  open({ view: syncView({ rows: [
+    row("a:variables.LOG_LEVEL", "api", "env.LOG_LEVEL", { from: "debug", into: "warn", change: "conflict", ticked: false, held_by: "staging" }),
+    row("a:variables.MODE", "api", "env.MODE", { from: "fast" }),
+  ] }) });
+  const sync = await dialog();
+  expect(section(sync, "api")[0]).toContain("Included with staging");
+  const held = sync.getByRole("checkbox", { name: /^LOG_LEVEL/u });
+  expect(held.getAttribute("aria-checked")).toBe("false");
+  expect(held.hasAttribute("data-disabled")).toBe(true);
+  expect(sync.queryByRole("button", { name: "Never sync" })).toBeNull();
+  expect(sync.getByRole("button", { name: "Sync 1 change" })).toBeTruthy();
+});
+
+it("sends one Sync id however often the Sync is sent", async () => {
+  const { write } = open();
+  write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
+  const sync = await dialog();
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await sync.findByText("These changed since you opened them. Here they are now.");
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  const ids = write.mock.calls.map(([{ data }]) => (data.command as { id?: string }).id);
+  expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/u);
+  expect(ids[1]).toBe(ids[0]);
+});

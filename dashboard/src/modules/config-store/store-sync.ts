@@ -18,7 +18,7 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
     // A whole node is named by its kind; its section names it.
     ...row.name === null ? { name: row.kind === "volume" ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
-    badge: row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
+    badge: row.held_by !== null ? `Included with ${row.held_by}` : row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
     before: whole || row.secret ? "" : rowText(row.into, row.name),
     after: whole || row.secret ? "" : rowText(row.from, row.name),
   };
@@ -42,7 +42,8 @@ export function syncSections(rows: readonly SyncRow[]) {
 export function syncPicks(rows: readonly SyncRow[], flipped: ReadonlySet<RowId>) {
   const ticked = (row: SyncRow) => row.ticked !== flipped.has(row.row);
   const left = new Set(rows.filter((row) => !ticked(row)).map((row) => row.row));
-  return rows.filter((row) => ticked(row) && !(row.requires !== null && left.has(row.requires)));
+  // A row another source's included change holds can't sync until that is removed.
+  return rows.filter((row) => row.held_by === null && ticked(row) && !(row.requires !== null && left.has(row.requires)));
 }
 
 /**

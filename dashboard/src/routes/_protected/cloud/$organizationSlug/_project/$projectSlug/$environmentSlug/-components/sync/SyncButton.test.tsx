@@ -205,6 +205,7 @@ it("syncs what's ticked, closes the Branch after, lands on the receiver, and Und
   expect(app.commands()).toEqual([{
     command: "sync", from: fixApi, into: { project: "shop", environment: "production" }, version: "4:abc",
     when: { kind: "now", close_after: true }, picks: ["a:source", "a:env.LOG_LEVEL", "a:env.STRIPE_WEBHOOK_SECRET"], values: {},
+    id: expect.any(String),
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 3 changes from fix-api");
   // SAFETY: the Sync button's toast action is a label and a click, never a node.
@@ -271,7 +272,7 @@ it("syncs a PR Environment into another Environment now, from the menu", async (
   expect(app.commands()).toEqual([{
     command: "sync", from: fixApi, into: staging, when: null, version: "4:abc",
     picks: ["a:source", "a:env.LOG_LEVEL", "a:env.APP_ENV", "a:env.STRIPE_WEBHOOK_SECRET"],
-    values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
+    values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" }, id: expect.any(String),
   }]);
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });
