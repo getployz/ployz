@@ -53,6 +53,14 @@ describe("placementChanges", () => {
     ]);
   });
 
+  it("keeps a move to the mirror as the same move after the hand-over, never as removing that mirror", () => {
+    const members = [member("web-1", "handed", { lease: 3 }), member("web-2", "promoted", { lease: 4 })];
+    expect(changes(members, row(["web-2"], { primary: "web-2" })).map((change) => change.kind)).toEqual(["move"]);
+    expect(words(members, row(["web-2"], { primary: "web-2" }))).toEqual([
+      { title: "Move pg-data to web-2", detail: "Uses the mirror on web-2, then a short stop. web-1 keeps pg-data-old." },
+    ]);
+  });
+
   it("copies first when the target holds nothing, and leaves the mirror list alone", () => {
     const members = [member("web-1", "writer"), pooled("web-3")];
     expect(words(members, row([], { primary: "web-3" }))).toEqual([

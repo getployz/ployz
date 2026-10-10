@@ -131,14 +131,19 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   const changes: PlacementChange[] = staged.deletes
     .filter((id) => copyOn(id) !== undefined && !applied.includes(id))
     .map((id) => ({ kind: "delete_copy", volume, server: machine(id) }));
-  const moving = observed.primary?.id !== staged.primary;
+  // A move to a mirror is unfinished while that mirror is still listed: after the hand-over the target holds the root,
+  // yet the next Deploy must finish the same move, not take the mirror away.
+  const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
+  const moving = observed.primary?.id !== staged.primary || handing;
   for (const id of applied) {
     if (!staged.mirrors.includes(id) && !(moving && id === staged.primary)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
   }
   if (moving) {
     const target = copyOn(staged.primary);
     const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : applied.includes(staged.primary) ? "promote" : "copy";
-    const from = observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
+    const from = handing
+      ? observed.copies.find((copy) => copy.kind === "root")?.server ?? null
+      : observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
     changes.push({
       kind: "move",
       volume,
