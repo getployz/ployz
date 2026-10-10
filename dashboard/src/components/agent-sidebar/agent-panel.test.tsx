@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { UIMessage } from "@tanstack/ai-react";
 import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import AgentPanel, { Message } from "./agent-panel";
+import AgentPanel, { Turn } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
@@ -25,7 +25,7 @@ it("says a denied call was denied once, on its approval card", () => {
       output: { ok: false, refusal: { code: "approval_denied", message: "A human denied this deploy: keep the data", details: { approval: { reason: "keep the data" } } } },
     }],
   });
-  render(<QueryClientProvider client={client}><Message organizationSlug="acme" scope={scope} message={message} asked={{ c1: "a1" }} bound={[]} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><Turn organizationSlug="acme" scope={scope} message={message} asked={{ c1: "a1" }} bound={[]} /></QueryClientProvider>);
   expect(screen.getAllByText(/denied/i).map((line) => line.textContent)).toEqual(["Denied: keep the data"]);
 });
 

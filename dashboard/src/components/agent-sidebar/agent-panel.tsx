@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Fragment, useEffect, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
 import { Option, Schema } from "effect";
@@ -6,7 +6,9 @@ import { ArrowUpIcon, SquarePenIcon, XIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader } from "#/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "#/components/ui/input-group";
+import { Message, MessageContent } from "#/components/ui/message";
 import {
   MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport,
 } from "#/components/ui/message-scroller";
@@ -83,19 +85,33 @@ function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
               </MessageScrollerItem>
             )}
             {chat.messages.length === 0 && waiting.length === 0 && !chat.isHydrating && !chat.error && (
-              <p className="text-sm text-muted-foreground">Ask about your Projects, Deployments and Servers, or have the agent deploy for you. It stops to ask before anything is destroyed.</p>
+              <MessageScrollerItem>
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyDescription>Ask about your Projects, Deployments and Servers, or have the agent deploy for you. It stops to ask before anything is destroyed.</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              </MessageScrollerItem>
             )}
             {chat.messages.map((message) => (
-              <MessageScrollerItem key={message.id} scrollAnchor={message.role === "user"}>
-                <Message organizationSlug={organizationSlug} scope={scope} message={message} asked={asked} bound={bound} />
+              <MessageScrollerItem key={message.id} messageId={message.id} scrollAnchor={message.role === "user"}>
+                <Turn organizationSlug={organizationSlug} scope={scope} message={message} asked={asked} bound={bound} />
               </MessageScrollerItem>
             ))}
-            {refused(chat.error) ? (
-              <div role="alert" className="flex items-center gap-2 text-sm text-muted-foreground">
-                This chat isn't yours.
-                <Button size="sm" variant="outline" onClick={onNewChat}>New chat</Button>
-              </div>
-            ) : chat.error && <p role="alert" className="text-sm text-destructive">{chat.error.message}</p>}
+            {chat.error && (
+              <MessageScrollerItem>
+                {refused(chat.error) ? (
+                  <div role="alert" className="flex items-center gap-2 text-sm text-muted-foreground">
+                    This chat isn't yours.
+                    <Button size="sm" variant="outline" onClick={onNewChat}>New chat</Button>
+                  </div>
+                ) : (
+                  <Message>
+                    <Bubble variant="destructive"><BubbleContent role="alert">{chat.error.message}</BubbleContent></Bubble>
+                  </Message>
+                )}
+              </MessageScrollerItem>
+            )}
           </MessageScrollerContent>
         </MessageScrollerViewport>
         <MessageScrollerButton />
@@ -108,7 +124,7 @@ function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
 type Bound = { key: string; approvalId: string; interrupt: { canResolve: boolean; status: string; resolveInterrupt: (response: Record<string, never>) => void } };
 
 /** One turn of the conversation. A call a human denied says so once, on its approval card. */
-export function Message({ organizationSlug, scope, message, asked, bound }: {
+export function Turn({ organizationSlug, scope, message, asked, bound }: {
   organizationSlug: string;
   scope: CollectionScope;
   message: UIMessage;
@@ -117,34 +133,52 @@ export function Message({ organizationSlug, scope, message, asked, bound }: {
 }) {
   if (message.role === "user") {
     const text = message.parts.flatMap((part) => part.type === "text" ? [part.content] : []).join("\n");
-    return <Bubble align="end" variant="secondary"><BubbleContent className="whitespace-pre-wrap">{text}</BubbleContent></Bubble>;
+    return (
+      <Message align="end">
+        <MessageContent>
+          <Bubble variant="muted"><BubbleContent className="whitespace-pre-wrap">{text}</BubbleContent></Bubble>
+        </MessageContent>
+      </Message>
+    );
   }
   const results = new Map(message.parts.flatMap((part) =>
     part.type === "tool-result" ? [[part.toolCallId, part] as const] : []));
   return (
-    <div className="flex flex-col gap-2 text-sm">
-      {message.parts.map((part, index) => {
-        if (part.type === "text") return <p key={index} className="whitespace-pre-wrap">{part.content}</p>;
-        if (part.type !== "tool-call") return null;
-        const waitingOn = bound.find(({ key }) => key === part.id);
-        const approvalId = waitingOn?.approvalId ?? asked[part.id];
-        const outcome = toolOutcome(part, results.get(part.id));
-        const deniedOnCard = approvalId !== undefined
-          && Option.exists(outcome, (answer) => "refusal" in answer && answer.refusal.code === "approval_denied");
-        const settle = waitingOn && (() => {
-          if (waitingOn.interrupt.canResolve && waitingOn.interrupt.status === "pending") waitingOn.interrupt.resolveInterrupt({});
-        });
-        return (
-          <div key={part.id} className="flex flex-col gap-2">
-            {approvalId && <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />}
-            {(!approvalId || Option.isSome(outcome)) && !deniedOnCard && (
-              <ToolRow organizationSlug={organizationSlug} scope={scope} name={part.name} outcome={outcome}
-                done={part.state === "complete" || results.has(part.id)} />
-            )}
-          </div>
-        );
-      })}
-    </div>
+    <Message>
+      <MessageContent>
+        {message.parts.map((part, index) => {
+          if (part.type === "text") {
+            const paragraphs = part.content.split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean);
+            if (paragraphs.length === 0) return null;
+            return (
+              <Bubble key={index} variant="ghost">
+                <BubbleContent className="flex flex-col gap-2">
+                  {paragraphs.map((paragraph, at) => <p key={at} className="whitespace-pre-wrap">{paragraph}</p>)}
+                </BubbleContent>
+              </Bubble>
+            );
+          }
+          if (part.type !== "tool-call") return null;
+          const waitingOn = bound.find(({ key }) => key === part.id);
+          const approvalId = waitingOn?.approvalId ?? asked[part.id];
+          const outcome = toolOutcome(part, results.get(part.id));
+          const deniedOnCard = approvalId !== undefined
+            && Option.exists(outcome, (answer) => "refusal" in answer && answer.refusal.code === "approval_denied");
+          const settle = waitingOn && (() => {
+            if (waitingOn.interrupt.canResolve && waitingOn.interrupt.status === "pending") waitingOn.interrupt.resolveInterrupt({});
+          });
+          return (
+            <Fragment key={part.id}>
+              {approvalId && <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />}
+              {(!approvalId || Option.isSome(outcome)) && !deniedOnCard && (
+                <ToolRow organizationSlug={organizationSlug} scope={scope} name={part.name} outcome={outcome}
+                  done={part.state === "complete" || results.has(part.id)} />
+              )}
+            </Fragment>
+          );
+        })}
+      </MessageContent>
+    </Message>
   );
 }
 
