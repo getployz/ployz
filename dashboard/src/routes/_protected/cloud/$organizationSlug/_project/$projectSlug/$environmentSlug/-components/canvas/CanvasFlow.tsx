@@ -218,8 +218,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
   const groups = reviewGroups(diff, store.services.map(({ service }) => service));
+  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
-  // A source with newer changes, reviewed again in the Sync dialog.
   const [including, setIncluding] = useState<string | null>(null);
   return (
     <>
@@ -227,8 +227,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         groups={groups}
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
         runtimeChanges={diff.total_count}
-        // Saving ends what Syncs included, even with no change left to save.
-        canPublish={(diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0}
+        canPublish={hasSomethingToSave}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
         onPublish={actions.publish}

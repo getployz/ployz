@@ -17,8 +17,7 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 
 /**
  * The one review of a Sync: each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
- * a change stays out this time and can be marked Never sync; one `into` holds from another source's included change
- * stays unticked until that is removed; the footer lists what is never synced, with undo.
+ * a change stays out this time and can be marked Never sync; the footer lists what is never synced, with undo.
  * Nothing deploys: the changes become `into`'s changes to deploy, or, from a PR Environment into its Destination, go
  * live there when the pull request merges. A secret `into` lacks arrives by name only: its row takes `into`'s own
  * value, set now or held for the merge. Monochrome: pink stays for staged intent and Deploy.
@@ -40,8 +39,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   const [closeAfter, setCloseAfter] = useState(true);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
-  // One Sync however often it's sent: a retry after a lost answer is answered with what the first did.
-  const [id] = useState(() => crypto.randomUUID());
+  const [syncId] = useState(() => crypto.randomUUID());
   // The never-synced list, opened from the footer.
   const [listing, setListing] = useState(false);
   const name = from.environment ?? "";
@@ -75,7 +73,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
       // The Store decides when it lands, as the review read it; only closing after says now.
       written = await writer.commit({
         command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, id, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
+        values: typed, version: view.value.version, id: syncId, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.

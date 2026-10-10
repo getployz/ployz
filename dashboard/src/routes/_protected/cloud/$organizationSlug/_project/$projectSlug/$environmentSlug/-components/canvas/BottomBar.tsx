@@ -174,6 +174,7 @@ export function BottomBar({
   ) : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 
+  const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
@@ -182,10 +183,9 @@ export function BottomBar({
     onDiscardNode, onDiscardRow,
     ...notes,
     ...proposals,
-    // The Sync's review takes Details' place.
-    onIncludeNewer: proposals?.onIncludeNewer && ((included: Included) => {
+    onIncludeNewer: includeNewer && ((included: Included) => {
       setOpen(false);
-      proposals.onIncludeNewer?.(included);
+      includeNewer(included);
     }),
   };
   return (

@@ -42,7 +42,6 @@ export function syncSections(rows: readonly SyncRow[]) {
 export function syncPicks(rows: readonly SyncRow[], flipped: ReadonlySet<RowId>) {
   const ticked = (row: SyncRow) => row.ticked !== flipped.has(row.row);
   const left = new Set(rows.filter((row) => !ticked(row)).map((row) => row.row));
-  // A row another source's included change holds can't sync until that is removed.
   return rows.filter((row) => row.held_by === null && ticked(row) && !(row.requires !== null && left.has(row.requires)));
 }
 
