@@ -824,6 +824,54 @@ it.live("an approved Publish publishes the reviewed version once, and a replay a
     expect(yield* pending).toEqual([]);
   }), 15_000);
 
+for (const { named, replayed } of [
+  { named: (version: string) => version, replayed: { ok: true, value: expect.objectContaining({ written: "published", created: false }) } },
+  { named: (version: string) => `${version}:accepted-loss`, replayed: { ok: false, refusal: expect.objectContaining({ code: "conflict" }) } },
+]) {
+  it.live(`an approved Publish sends ${named("V")} as the agent named it, and a replay after it landed reports ${replayed.ok ? "that Publish" : "the Store's conflict"}`, () =>
+    Effect.gen(function* () {
+      const { provided, caller, store, persistence, say, waiting, answer, watchWrites, pending, rewind } = yield* sidebar({ removeWeb: true });
+      const { version } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "diff", environment: here }));
+      const sent = named(version);
+      const approval = yield* waitingApproval(yield* say(`publish --version "${sent}"`), pending);
+      if (!("diff" in approval.review)) return expect.fail("a Publish is reviewed as a diff");
+      expect(approval.review.diff.version).toBe(version);
+      yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+      const interruptId = yield* waiting;
+      const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+      const writes = watchWrites();
+
+      const published = yield* answer(interruptId, "resolved");
+      expect(published.results).toEqual([{ ok: true, value: expect.objectContaining({ written: "published", created: true }) }]);
+      expect(writes.mock.calls.map(([, command]) => command)).toEqual([expect.objectContaining({ command: "publish", version: sent })]);
+
+      yield* rewind(interruptId, beforeResume);
+      writes.mockClear();
+      const again = yield* answer(interruptId, "resolved");
+      expect(again.results).toEqual([replayed]);
+      expect(writes.mock.calls.map(([, command]) => command)).toEqual([expect.objectContaining({ command: "publish", version: sent })]);
+    }), 15_000);
+}
+
+it.live("a replay carrying a version the human never reviewed keeps the Store's conflict, even once the reviewed Publish landed", () =>
+  Effect.gen(function* () {
+    const { provided, caller, persistence, say, waiting, answer, watchWrites, pending, rewind } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("publish"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const interruptId = yield* waiting;
+    const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+    expect((yield* answer(interruptId, "resolved")).results).toMatchObject([{ ok: true, value: { written: "published", created: true } }]);
+
+    const unreviewed = beforeResume.map((message) => message.role === "assistant" && message.toolCalls !== undefined
+      ? { ...message, toolCalls: message.toolCalls.map((call) => call.function.name === "publish" ? { ...call, function: { ...call.function, arguments: '{"version":""}' } } : call) }
+      : message);
+    yield* rewind(interruptId, unreviewed);
+    const writes = watchWrites();
+    const replayed = yield* answer(interruptId, "resolved");
+    expect(replayed.results).toMatchObject([{ ok: false, refusal: { code: "conflict" } }]);
+    expect(writes.mock.calls.map(([, command]) => command)).toEqual([expect.objectContaining({ command: "publish", version: "" })]);
+  }), 15_000);
+
 it.live("an approved Publish resumed after someone else published is reported as a conflict, not as done", () =>
   Effect.gen(function* () {
     const { provided, caller, write, store, say, resume, pending } = yield* sidebar({ removeWeb: true });

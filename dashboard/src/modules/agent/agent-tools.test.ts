@@ -65,6 +65,18 @@ describe("agent tools", () => {
     });
   });
 
+  it("maps Publish arguments onto the publish the CLI sends, accepting named Volume loss at a version", () => {
+    const publish = BINDINGS.get("publish");
+    if (publish?.kind !== "gated") throw new Error("publish is gated");
+    expect(publish.command({ env: "production", accept_volume_loss: ["pg-data"], version: "9:1:0.1:abc" }, "run-1")).toEqual({
+      command: "publish",
+      environment: { project: null, environment: "production" },
+      version: "9:1:0.1:abc",
+      accept_volume_loss: ["pg-data"],
+    });
+    expect(publish.command({}, "run-1")).toMatchObject({ version: null, accept_volume_loss: [] });
+  });
+
   it("maps set assignments onto the edit the CLI sends, each value kept as text", () => {
     const set = BINDINGS.get("set");
     if (set?.kind !== "write") throw new Error("set stages");

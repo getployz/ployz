@@ -10,7 +10,7 @@ import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from ".
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
 const { observeVolumes } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeVolumes">;
 
-/** The part of a command that decides whether a Deploy can delete Volume data; the Store validates the whole command. */
+/** The fields used to gather evidence; native Store decoding still validates the original command. */
 const AdmitCommand = Schema.Struct({
   command: Schema.Literal("admit"),
   // A retry needs no evidence: it ships the Volume identities its source accepted.
@@ -19,10 +19,15 @@ const AdmitCommand = Schema.Struct({
   services: Schema.optional(Schema.Array(Schema.String)),
 });
 
+const EvidenceCommand = Schema.Union([AdmitCommand, Schema.Struct({
+  command: Schema.Literal("publish"),
+  environment: Schema.optional(EnvironmentRef),
+})]);
+
 /**
- * For a full Deploy, or a removal, that removes deployed Volumes: which Servers hold their data, as Cloud itself observes them.
+ * For a Publish, full Deploy, or removal, that removes deployed Volumes: which Servers hold their data, as Cloud itself observes them.
  * Nothing here comes from the caller. When the Servers can't be reached the evidence is left out, and the Store refuses
- * the Deploy rather than delete data it could not see.
+ * the write rather than act on data it could not see.
  */
 export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence")(function* (
   organizationId: string,
@@ -30,10 +35,10 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
   read: StoreRead,
 ) {
   if (call.operation !== "write") return undefined;
-  const command = Option.getOrUndefined(Schema.decodeUnknownOption(AdmitCommand)(call.command));
-  if (command === undefined || (command.services ?? []).length > 0) return undefined;
+  const command = Option.getOrUndefined(Schema.decodeUnknownOption(EvidenceCommand)(call.command));
+  if (command === undefined || (command.command === "admit" && (command.services ?? []).length > 0)) return undefined;
   const environment = environmentOf(command.environment);
-  const view = yield* storeTry(() => read({ query: "removals", environment, remove: command.admit === "remove" })).pipe(Effect.option);
+  const view = yield* storeTry(() => read({ query: "removals", environment, remove: command.command === "admit" && command.admit === "remove" })).pipe(Effect.option);
   const removals = Option.getOrUndefined(view);
   if (removals === undefined || removals.volumes.length === 0) return undefined;
   const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);

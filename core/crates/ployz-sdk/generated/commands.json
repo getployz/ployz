@@ -2805,6 +2805,15 @@
         "help": "Refuse unless this is still the latest `ployz diff` version"
       },
       {
+        "name": "--accept-volume-loss",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": true,
+        "trailing": false,
+        "help": "Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this"
+      },
+      {
         "name": "--approval",
         "required": false,
         "value": true,

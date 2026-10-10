@@ -362,3 +362,100 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         assert_eq!(hint, &expected, "{stderr}");
     }
 }
+
+#[tokio::test]
+async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepted() {
+    let store = tempfile::tempdir().unwrap();
+    let db = store.path().join("store.db");
+    let service = DeployService::new(machine('a', "one"));
+    let held = std::sync::Arc::clone(&service.volumes);
+    let (address, server) = listening(service).await;
+    let address = address.to_string();
+    let cli = |args: &[&str]| {
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        let (db, address) = (db.clone(), address.clone());
+        async move {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            ployz(Some(&db), &address, &args).await
+        }
+    };
+    for args in [
+        &["project", "new", "shop"][..],
+        &["service", "add", "web", "--image", "web:1"],
+    ] {
+        let (code, result) = cli(args).await;
+        assert_eq!(code, 0, "{args:?}: {result}");
+    }
+    let (code, added) = cli(&["volume", "add", "data", "--mount", "web:/data", "--docker"]).await;
+    assert_eq!(code, 0, "{added}");
+    let (code, deployed) = cli(&["deploy"]).await;
+    assert_eq!(code, 0, "{deployed}");
+    held.lock().unwrap().push(ployz_core::DockerVolume {
+        id: ployz_core::DockerVolumeId {
+            machine_id: machine('a', "one").machine.id,
+            name: ployz_core::DockerVolumeName::parse(format!(
+                "shop-production_vol-{}",
+                added["volume"]["id"].as_str().unwrap()
+            ))
+            .unwrap(),
+        },
+        options: Default::default(),
+        labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    });
+    let (code, removed) = cli(&["volume", "rm", "data"]).await;
+    assert_eq!(code, 0, "{removed}");
+
+    let (code, refused) = cli(&["publish"]).await;
+    assert_ne!(code, 0, "{refused}");
+    let refused = &refused["error"];
+    assert_eq!(refused["code"], "confirmation_required", "{refused}");
+    assert_eq!(refused["details"]["accept"], serde_json::json!(["data"]));
+    let version = refused["details"]["version"].as_str().unwrap();
+    let retry = shell_words::split(refused["details"]["retry"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        retry,
+        [
+            "ployz",
+            "publish",
+            "--accept-volume-loss",
+            "data",
+            "--version",
+            version
+        ],
+        "{refused}"
+    );
+
+    let (code, wrong) = cli(&[
+        "publish",
+        "--version",
+        version,
+        "--accept-volume-loss",
+        "cache",
+    ])
+    .await;
+    assert_ne!(code, 0, "{wrong}");
+    assert_eq!(wrong["error"]["code"], "invalid_argument", "{wrong}");
+
+    let (code, published) = cli(&[
+        "publish",
+        "--version",
+        version,
+        "--accept-volume-loss",
+        "data",
+    ])
+    .await;
+    assert_eq!(code, 0, "{published}");
+    assert_eq!(published["created"], true, "{published}");
+    assert_eq!(held.lock().unwrap().len(), 1, "publishing deletes nothing");
+    let (code, listed) = cli(&["deployment", "ls"]).await;
+    assert_eq!(code, 0, "{listed}");
+    assert_eq!(
+        listed["deployments"].as_array().unwrap().len(),
+        1,
+        "{listed}"
+    );
+    server.abort();
+}

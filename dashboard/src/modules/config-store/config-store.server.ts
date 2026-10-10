@@ -145,7 +145,7 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
 
 /**
  * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
- * of domains, for a Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
+ * of domains, for a Publish or Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
  * Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
  * can't answer.
  */

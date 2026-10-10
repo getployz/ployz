@@ -70,7 +70,7 @@ const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${appr
  */
 const onceFor = (command: ConfigCommand, approvalId: string, reviewed: DiffView | null): ConfigCommand => {
   if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
-  if (command.command === "publish" && reviewed !== null) return { ...command, version: reviewed.version };
+  if (command.command === "publish" && command.version == null && reviewed !== null) return { ...command, version: reviewed.version };
   return command;
 };
 
@@ -83,11 +83,11 @@ const StaleReview = Schema.Struct({
 });
 
 /**
- * The Publish `reviewed` approved, when the Store refuses a replay of it as stale because it already landed: Saved State
- * holds the very Working State the human reviewed.
+ * The Publish `reviewed` approved, when the Store refuses a replay of exactly its version as stale because it already
+ * landed: Saved State holds the very Working State the human reviewed. Any other version keeps the Store's conflict.
  */
-const landedPublish = (reviewed: DiffView, refusal: StoreRefusal): ConfigWritten | null => {
-  if (refusal.code !== "conflict") return null;
+const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRefusal): ConfigWritten | null => {
+  if (sent.command !== "publish" || sent.version !== reviewed.version || refusal.code !== "conflict") return null;
   const stale = Schema.decodeUnknownOption(StaleReview)(refusal.details);
   if (Option.isNone(stale)) return null;
   const { environment, saved, published } = stale.value.diff;
@@ -101,7 +101,7 @@ const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: C
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
   const result = yield* callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT, trusted.approval);
-  const landed = result.ok || reviewed === null ? null : landedPublish(reviewed, result.refusal);
+  const landed = result.ok || reviewed === null ? null : landedPublish(command, reviewed, result.refusal);
   if (landed !== null) return { outcome: { ok: true, value: landed } } satisfies Gated;
   if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
   if (result.ok || result.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
@@ -202,7 +202,7 @@ Read before you write: list or inspect what a command touches before you change 
 
 Every tool answers { ok: true, value } or { ok: false, refusal: { code, message, details } }. When the Store refuses, tell the member its message verbatim before anything else.
 
-A Deploy that permanently deletes a Volume's data refuses with confirmation_required, naming the Version and the Volumes in details. Retry it only when the member asked for exactly that loss, passing accept_volume_loss with those Volumes and expect_version with that Version.
+A Publish or Deploy that removes a Volume whose data a Server holds refuses with confirmation_required, naming the Version and the Volumes in details. Retry only when the member explicitly asked for exactly that loss. Preserve the original action, Project and Environment. Pass accept_volume_loss with those Volumes and the complete Version using version for Publish or expect_version for Deploy. Human Approval alone never accepts data loss. Publish saves the removal for a later Deploy and does not delete live data or start a Deployment.
 
 Publish and deploy may wait for a human to approve the plan. Call either one alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing was published or deployed.`;
 

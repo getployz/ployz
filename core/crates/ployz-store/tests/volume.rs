@@ -11,12 +11,12 @@ use ployz_core::{
     RpcErrorCode, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
 };
 use ployz_store::{
-    Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
-    Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
-    EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
-    Publish, RemovalsQuery, RemoveVolume, RenameVolume, Retry, RunEvidence, RunnerId,
-    ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted, VolumeId,
-    VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    Actor, Admit, Approval, ApprovalDigest, Change, ConfigStore, CreateProject, CreateService,
+    CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard,
+    Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId,
+    ProjectId, ProjectName, Publish, RemovalsQuery, RemoveVolume, RenameVolume, Retry, RunEvidence,
+    RunnerId, ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted,
+    VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -703,31 +703,164 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
             },
         )
         .unwrap();
-    let publish =
-        |accept: &[&str], observed: Option<VolumeObservation>, version: Option<String>| {
-            store.write_trusted(
-                &who,
-                &Publish {
-                    environment: EnvironmentRef::default(),
-                    version,
-                    accept_volume_loss: accept
-                        .iter()
-                        .map(|name| VolumeName::parse(*name).unwrap())
-                        .collect(),
-                },
-                &Trusted {
-                    volumes: observed,
-                    ..Trusted::default()
-                },
-            )
-        };
-    assert_eq!(code(publish(&[], None, None)), RpcErrorCode::Unavailable);
-    let refused = publish(&[], Some(observed(&['a'])), None).unwrap_err();
+    let publish = |accept: &[&str],
+                   observed: Option<VolumeObservation>,
+                   version: Option<&str>,
+                   approval: Approval| {
+        store.write_trusted(
+            &who,
+            &Publish {
+                environment: EnvironmentRef::default(),
+                version: version.map(Into::into),
+                accept_volume_loss: accept
+                    .iter()
+                    .map(|name| VolumeName::parse(*name).unwrap())
+                    .collect(),
+            },
+            &Trusted {
+                volumes: observed,
+                approval,
+                ..Trusted::default()
+            },
+        )
+    };
+    let free = Approval::NotRequired;
+    assert_eq!(
+        code(publish(&[], None, None, free.clone())),
+        RpcErrorCode::Unavailable
+    );
+    let partial = VolumeObservation {
+        unanswered: vec![machine('b')],
+        ..observed(&['a'])
+    };
+    assert_eq!(
+        code(publish(&["data"], Some(partial), None, free.clone())),
+        RpcErrorCode::Unavailable
+    );
+    let refused = publish(&[], Some(observed(&['a'])), None, free.clone()).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(refused.details["accept"], json!(["data"]));
     let bound = refused.details["version"].as_str().unwrap().to_owned();
-    let published = publish(&["data"], Some(observed(&['a'])), Some(bound)).unwrap();
+    let bound = Some(bound.as_str());
+
+    let wrong = publish(&["cache"], Some(observed(&['a'])), bound, free.clone()).unwrap_err();
+    assert_eq!(wrong.code, RpcErrorCode::InvalidArgument);
+    let unbound = publish(&["data"], Some(observed(&['a'])), None, free.clone()).unwrap_err();
+    assert_eq!(unbound.code, RpcErrorCode::ConfirmationRequired);
+    // A Server found holding more data changes what the acceptance names.
+    let grown = publish(&["data"], Some(observed(&['a', 'b'])), bound, free.clone()).unwrap_err();
+    assert_eq!(grown.code, RpcErrorCode::ConfirmationRequired);
+    assert_ne!(grown.details["version"].as_str(), bound);
+
+    let asked = publish(&["data"], Some(observed(&['a'])), bound, Approval::Required).unwrap_err();
+    assert_eq!(asked.code.as_str(), "approval_required");
+    let approved = Approval::Approved(
+        ApprovalDigest::parse(asked.details["approval"].as_str().unwrap()).unwrap(),
+    );
+    let unaccepted = publish(&[], Some(observed(&['a'])), None, approved.clone()).unwrap_err();
+    assert_eq!(unaccepted.code, RpcErrorCode::ConfirmationRequired);
+
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.replicas").unwrap(),
+                    value: json!(2),
+                }],
+            },
+        )
+        .unwrap();
+    let stale = publish(&["data"], Some(observed(&['a'])), bound, free.clone()).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::Conflict);
+    let fresh = publish(&[], Some(observed(&['a'])), None, free.clone()).unwrap_err();
+    let fresh = fresh.details["version"].as_str().unwrap().to_owned();
+    let published = publish(&["data"], Some(observed(&['a'])), Some(&fresh), free).unwrap();
     assert!(published.created);
+}
+
+#[test]
+fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
+    const LOGS: &str = "00000000-0000-4000-8000-000000000006";
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse(LOGS).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("logs").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/logs".into(),
+                }],
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    for volume in ["data", "logs"] {
+        store
+            .write(
+                &who,
+                &RemoveVolume {
+                    environment: EnvironmentRef::default(),
+                    volume: VolumeName::parse(volume).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    let logs = DockerVolumeName::parse(format!("shop-production_vol-{LOGS}")).unwrap();
+    let both = VolumeObservation {
+        sought: vec![
+            DockerVolumeName::parse(DOCKER_VOLUME).unwrap(),
+            logs.clone(),
+        ],
+        held: vec![
+            held('a'),
+            DockerVolumeId {
+                machine_id: machine('a'),
+                name: logs,
+            },
+        ],
+        unanswered: Vec::new(),
+    };
+    let publish = |accept: &[&str], observed: VolumeObservation, version: Option<&str>| {
+        store.write_trusted(
+            &who,
+            &Publish {
+                environment: EnvironmentRef::default(),
+                version: version.map(Into::into),
+                accept_volume_loss: accept
+                    .iter()
+                    .map(|name| VolumeName::parse(*name).unwrap())
+                    .collect(),
+            },
+            &Trusted {
+                volumes: Some(observed),
+                approval: Approval::NotRequired,
+                ..Trusted::default()
+            },
+        )
+    };
+    assert_eq!(
+        code(publish(&["data", "logs"], observed(&['a']), None)),
+        RpcErrorCode::Unavailable
+    );
+    let refused = publish(&[], both.clone(), None).unwrap_err();
+    assert_eq!(refused.details["accept"], json!(["data", "logs"]));
+    let bound = refused.details["version"].as_str().unwrap().to_owned();
+    let one = publish(&["data"], both.clone(), Some(&bound)).unwrap_err();
+    assert_eq!(one.code, RpcErrorCode::ConfirmationRequired);
+    assert!(
+        publish(&["data", "logs"], both, Some(&bound))
+            .unwrap()
+            .created
+    );
 }
 
 #[test]

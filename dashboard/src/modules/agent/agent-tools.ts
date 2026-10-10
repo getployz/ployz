@@ -164,7 +164,9 @@ export const BINDINGS = new Map<string, AgentBinding>([
       version: input.version ?? null,
     })),
   ],
-  ["publish", gate(Schema.Struct({ ...Env, version: Text }), (input) => ({ command: "publish", environment: environment(input), version: input.version ?? null }))],
+  ["publish", gate(Schema.Struct({ ...Env, version: Text, accept_volume_loss: Names }), (input) => ({
+    command: "publish", environment: environment(input), version: input.version ?? null, accept_volume_loss: [...(input.accept_volume_loss ?? [])],
+  }))],
   [
     "deploy",
     gate(Schema.Struct({ ...Env, service: Names, expect_version: Text, message: Text, accept_volume_loss: Names }), (input) => ({
