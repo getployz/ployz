@@ -12,6 +12,7 @@ import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
 import { Message, MessageContent } from "#/components/ui/message";
 import {
   MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport,
+  useMessageScroller,
 } from "#/components/ui/message-scroller";
 import { Spinner } from "#/components/ui/spinner";
 import { approvalInterrupt } from "#/modules/agent/agent";
@@ -74,7 +75,9 @@ function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
   const waiting = (pending ?? []).filter((approval) => !ours.has(approval.id));
 
   return (
-    <MessageScrollerProvider>
+    // Follows the reply as it streams. Anchoring each question to the top made the scroller jump back to an older one
+    // whenever the Thinking marker gave way to the reply, because the message count stayed the same.
+    <MessageScrollerProvider autoScroll>
       <MessageScroller className="flex-1">
         <MessageScrollerViewport>
           <MessageScrollerContent aria-busy={chat.isLoading} className="gap-3 p-3">
@@ -96,7 +99,7 @@ function Conversation({ organizationSlug, scope, threadId, onNewChat }: {
               </MessageScrollerItem>
             )}
             {chat.messages.map((message) => (
-              <MessageScrollerItem key={message.id} messageId={message.id} scrollAnchor={message.role === "user"}>
+              <MessageScrollerItem key={message.id} messageId={message.id}>
                 <Turn organizationSlug={organizationSlug} scope={scope} message={message} asked={asked} bound={bound} />
               </MessageScrollerItem>
             ))}
@@ -196,12 +199,15 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
 
 function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string) => void }) {
   const [draft, setDraft] = useState("");
+  const { scrollToEnd } = useMessageScroller();
   const send = (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
     if (!text || busy) return;
     onSend(text);
     setDraft("");
+    // Sending from further up the chat brings the new turn into view, and following resumes from there.
+    scrollToEnd();
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) send(event);
