@@ -23,6 +23,8 @@
     "db:studio": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs studio",
     "pr:check": "bash scripts/pr-check.sh",
     "test": "vitest run",
+    "eval:live": "PLOYZ_EVAL_LIVE=1 vitest run --project eval evals/agent/live.eval.ts",
+    "eval:replay": "vitest run --project eval evals/agent/replay.eval.ts",
     "typecheck": "tsc --noEmit",
     "doctor": "pnpm dlx react-doctor@latest --verbose --blocking warning --yes",
     "lint": "oxlint --type-aware .",

@@ -1,13 +1,14 @@
 import { describe, it } from "@effect/vitest";
 import type { ConfigCommand } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { expect } from "vitest";
 import type { JsonObject, JsonValue } from "#/db/tables";
 import { ScriptedAdapter } from "#/modules/agent/scripted-adapter.server";
 import { Database } from "#/server/database.server";
 import { environmentRef, evalFixture, ORGANIZATION } from "./fixture";
 import { snapshot } from "./snapshot";
+import { Golden, Recorder, Replayer, recording, replaying } from "./tape";
 import { TASKS } from "./tasks";
 import { type Call, grade, runTrial, type Turn } from "./trial";
 
@@ -157,4 +158,12 @@ describe("a trial", () => {
     runTrial(T2, setsMemory("1.073741824"), member).pipe(Effect.map(({ failures }) => expect(failures).toEqual([]))));
   it.live("fails T2 for an agent that caps web at a GB", () =>
     runTrial(T2, setsMemory("1"), member).pipe(Effect.map(({ failures }) => expect(failures).toEqual(["web.memLimit lowers to 1000000000 bytes, not 1073741824"]))));
+  it.live("replays a recorded passing T2 to the same pass", () => Effect.gen(function* () {
+    const recorder = new Recorder(setsMemory("1.073741824"));
+    const recorded = recording(member);
+    expect((yield* runTrial(T2, recorder, recorded.member)).failures).toEqual([]);
+    const golden = Schema.decodeUnknownSync(Schema.fromJsonString(Golden))(
+      JSON.stringify({ task: "T2", model: "scripted", member: recorded.said, calls: recorder.calls }));
+    expect((yield* runTrial(T2, new Replayer(golden), replaying(golden.member))).failures).toEqual([]);
+  }));
 });
