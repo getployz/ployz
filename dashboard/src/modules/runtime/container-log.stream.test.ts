@@ -200,6 +200,7 @@ const span = (container: string, from: number, to: number, step = 1) =>
   Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, i) => ({ container, at: from + i * step }));
 
 it.each([
+  { name: "identical lines split across store pages", stored: Array.from({ length: 501 }, () => ({ container: "same", at: 100 })), live: Array.from({ length: 20 }, () => ({ container: "same", at: 100 })) },
   // A new container's only line sits inside the busy one's newest page.
   { name: "a new container's tail starts late", stored: [...span("busy", 1, 600), { container: "fresh", at: 599 }, { container: "quiet", at: 1 }], live: [...span("busy", 401, 600), { container: "fresh", at: 599 }, { container: "quiet", at: 1 }] },
   // After a deploy: the old container is only in the Store, the new one's 50 lines are live, beside a quiet Service.
@@ -389,6 +390,46 @@ it("clears an aborted history read so the reconnected stream can load again", as
     sources.at(-1)?.dispatchEvent(new Event("open"));
     await stream.loadOlder();
     expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(stream.hasOlder).toBe(false);
+  } finally {
+    subscription.unsubscribe(); await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+});
+
+
+it("a late aborted read cannot clear a new connection's pending history", async () => {
+  vi.useFakeTimers();
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    static CLOSED = 2;
+    readyState = FakeEventSource.CLOSED;
+    constructor() { super(); sources.push(this); }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const reads: { resolve: (value: Response) => void; reject: (reason: Error) => void }[] = [];
+  vi.stubGlobal("fetch", () => new Promise<Response>((resolve, reject) => reads.push({ resolve, reject })));
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "late-abort-history" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  try {
+    const oldRead = stream.loadOlder();
+    sources.at(-1)?.dispatchEvent(new Event("error"));
+    expect(stream.getSnapshot().historyPending).toBe(false);
+    await stream.loadOlder();
+    expect(reads).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    sources.at(-1)?.dispatchEvent(new Event("open"));
+    const newRead = stream.loadOlder();
+    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    reads[0]?.reject(new Error("aborted old connection"));
+    await oldRead;
+    expect(stream.getSnapshot().historyPending).toBe(true);
+    expect(stream.getSnapshot().historyError).toBe(false);
+    reads[1]?.resolve(Response.json({ rows: [], failures: [], cursor: null }));
+    await newRead;
+    expect(stream.getSnapshot().historyPending).toBe(false);
     expect(stream.hasOlder).toBe(false);
   } finally {
     subscription.unsubscribe(); await stream.collection.cleanup();

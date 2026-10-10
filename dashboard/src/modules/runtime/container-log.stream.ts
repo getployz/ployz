@@ -79,7 +79,10 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           // Any loss says so, so a first connection that fails never sits on the loading skeleton; only a refused one
           // also ends its history reads.
           onLost: (why) => {
-            if (why === "refused") controller.abort();
+            if (why === "refused") {
+              controller.abort();
+              publish({ ...snapshot, historyPending: false });
+            }
             if (!snapshot.offline && !snapshot.refused) publish({ ...snapshot, refused: true });
           },
           on: {
@@ -128,8 +131,10 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     },
   });
   async function loadOlder() {
-    if (snapshot.historyPending || cursor === null || collection.size >= SCROLLBACK_LIMIT) return;
+    if (controller.signal.aborted || snapshot.historyPending || cursor === null || collection.size >= SCROLLBACK_LIMIT) return;
     const streamSignal = controller.signal;
+    const cancelHistory = () => { void scope.queryClient.cancelQueries({ queryKey: [id, "history"] }); };
+    streamSignal.addEventListener("abort", cancelHistory, { once: true });
     publish({ ...snapshot, historyPending: true, historyError: false });
     try {
       const oldest = () => earliest(collection.values());
@@ -140,8 +145,8 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         const from = cursor;
         const page: typeof containerLogPageSchema.Type = await scope.queryClient.fetchQuery({
           queryKey: [id, "history", from ?? null],
-          // A page behind a cursor never changes; the newest page is read fresh each time.
-          staleTime: from === undefined ? 0 : Infinity,
+          // Successful cursor pages stay fresh; failed Servers need another read after recovery.
+          staleTime: query => from !== undefined && query.state.data?.failures.length === 0 ? Infinity : 0,
           queryFn: async ({ signal }) => {
             const response = await fetch("/api/runtime/logs", {
               method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from }), signal: AbortSignal.any([signal, streamSignal]),
@@ -155,11 +160,13 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         cursor = page.cursor;
         failures = page.failures;
         const now = oldest();
-        if (reached === null || (now !== null && now < reached)) break;
+        if (failures.length || reached === null || (now !== null && now < reached)) break;
       }
       publish({ ...snapshot, missing: { ...snapshot.missing, history: failures }, historyPending: false });
     } catch {
       if (!streamSignal.aborted) publish({ ...snapshot, historyPending: false, historyError: true });
+    } finally {
+      streamSignal.removeEventListener("abort", cancelHistory);
     }
   }
   return {
