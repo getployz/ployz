@@ -130,6 +130,10 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_store::GitSource>();
     declarations.add::<ployz_store::SystemEvent>();
     declarations.add::<ployz_store::GithubBuild>();
+    declarations.add::<ployz_store::GithubTreeQuery>();
+    declarations.add::<ployz_store::GithubTreeView>();
+    declarations.add::<ployz_store::GithubFileQuery>();
+    declarations.add::<ployz_store::GithubFileView>();
     declarations.add::<ployz_store::GithubClaims>();
     declarations.add::<ployz_store::Unclaimed>();
     declarations.add::<ployz_store::OrganizationRemoved>();
