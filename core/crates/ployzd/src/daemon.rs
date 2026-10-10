@@ -98,6 +98,29 @@ pub enum Error {
     RecordOwner(#[from] RecordOwnerStopped),
 }
 
+impl Error {
+    /// Startup refused a conflict only the operator can resolve, so starting
+    /// again fails the same way until they act.
+    #[must_use]
+    pub fn needs_operator(&self) -> bool {
+        matches!(
+            self,
+            Self::Network(
+                NetworkError::DockerNetworkConflict { .. } | NetworkError::WireGuardConflict { .. }
+            )
+        )
+    }
+}
+
+/// Closes every connection queued on the nonblocking `listener` when startup
+/// refused a conflict. Left queued, each would have `ployz.socket` start the
+/// daemon again at once, only for it to refuse again until systemd's start limit.
+fn close_queued_if_refused(listener: &std::os::unix::net::UnixListener, error: &Error) {
+    if error.needs_operator() {
+        while listener.accept().is_ok() {}
+    }
+}
+
 impl Daemon {
     /// Start serving Machine RPC on the configured unix socket.
     ///
@@ -124,6 +147,20 @@ impl Daemon {
     }
 
     async fn start_with_build_policy(
+        config: DaemonConfig,
+        socket: MachineApiSocket,
+        build_policy: ployz_build::HostPolicy,
+        run_dir: PathBuf,
+    ) -> Result<Self, Error> {
+        let queued = socket.listener.try_clone()?;
+        let started = Self::start_planes(config, socket, build_policy, run_dir).await;
+        if let Err(error) = &started {
+            close_queued_if_refused(&queued, error);
+        }
+        started
+    }
+
+    async fn start_planes(
         config: DaemonConfig,
         socket: MachineApiSocket,
         build_policy: ployz_build::HostPolicy,
@@ -768,7 +805,8 @@ mod tests {
     use super::{
         ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
         LocalMachineStore, MachineApiSocket, ManagementConfig, NetworkError, Opened, StoreError,
-        finish_interrupted_reset, finish_reset, wait_for_participation, wait_until_socket_accepts,
+        close_queued_if_refused, finish_interrupted_reset, finish_reset, wait_for_participation,
+        wait_until_socket_accepts,
     };
     use crate::test_dir::TestDir;
     use tokio_util::sync::CancellationToken;
@@ -881,6 +919,47 @@ mod tests {
         );
         daemon.request_stop();
         daemon.wait().await.unwrap();
+    }
+
+    #[test]
+    fn a_refused_start_closes_queued_connections_and_a_failed_one_keeps_them() {
+        use std::{io::Read as _, os::unix::net::UnixStream, time::Duration};
+
+        let root = TestDir::new("ployzd-daemon-refused");
+        let (config, socket) = test_config(&root.0, ContainerMode::Absent);
+        let claimed = MachineApiSocket::claim(&config.socket).unwrap();
+        let queue = || {
+            let client = UnixStream::connect(&socket).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .unwrap();
+            client
+        };
+        let refusals = [
+            NetworkError::WireGuardConflict {
+                reason: "unrelated identity",
+                recovery: "recovery",
+            },
+            NetworkError::DockerNetworkConflict {
+                expected: String::new(),
+                observed: String::new(),
+                reason: "containers are attached".to_owned(),
+                recovery: "recovery",
+            },
+        ];
+
+        let mut kept = queue();
+        close_queued_if_refused(&claimed.listener, &Error::Io(io::Error::other("transient")));
+        assert!(
+            kept.read(&mut [0; 1]).is_err(),
+            "a transient failure leaves the connection for the next start"
+        );
+        for refusal in refusals {
+            let mut refused = queue();
+            close_queued_if_refused(&claimed.listener, &Error::Network(refusal));
+            assert_eq!(refused.read(&mut [0; 1]).unwrap(), 0);
+        }
+        assert_eq!(kept.read(&mut [0; 1]).unwrap(), 0);
     }
 
     #[tokio::test]

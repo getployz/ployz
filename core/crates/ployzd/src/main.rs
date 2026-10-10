@@ -22,7 +22,6 @@ use ployzd::{
     installer::{DEFAULT_SOCKET_PATH, InstallMode, InstallRequest, Readiness},
     machine::DEFAULT_DATA_DIR,
     management::ManagementConfig,
-    network::NetworkError,
 };
 use tokio::io::{AsyncWriteExt, copy, stdin, stdout};
 
@@ -119,12 +118,7 @@ fn main() -> ExitCode {
 }
 
 fn daemon_error_exit_code(error: &Error) -> ExitCode {
-    if matches!(
-        error,
-        Error::Network(
-            NetworkError::DockerNetworkConflict { .. } | NetworkError::WireGuardConflict { .. }
-        )
-    ) {
+    if error.needs_operator() {
         ExitCode::from(NETWORK_CONFLICT_EXIT_STATUS)
     } else {
         ExitCode::FAILURE
@@ -272,6 +266,8 @@ async fn dial_stdio(path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use ployzd::network::NetworkError;
+
     use super::*;
 
     fn release(value: &str) -> MachineRelease {

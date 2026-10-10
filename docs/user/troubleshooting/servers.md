@@ -166,6 +166,28 @@ your first server.
    front of them.
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`.
 
+## Ployz stops over a leftover network
+
+`sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say
+`refusing to change the retained WireGuard interface` or `refusing to replace the existing Docker
+network`. Something else, or an earlier install, left a network Ployz can't prove is its own, so
+Ployz stops rather than take it over. It won't start again until you clear it. The log line ends
+with the safe recovery for your case.
+
+For a leftover `ployz-wg` interface:
+
+```sh
+sudo systemctl stop ployz.socket ployz
+sudo ip link delete ployz-wg
+sudo systemctl reset-failed ployz.socket ployz
+sudo systemctl start ployz
+```
+
+For a Docker network named `ployz`, stop Ployz the same way. Run `docker network inspect ployz`
+and find its owner from its labels and attached containers. Move or remove those containers through
+whatever deployed them. Once the network is empty and nothing needs it, run
+`docker network rm ployz`, then the last two commands above.
+
 ## My first server never finished joining
 
 You'll see `This Organization's Servers can't be reached` when you add another server, and an

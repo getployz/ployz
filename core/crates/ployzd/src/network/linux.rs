@@ -524,8 +524,7 @@ fn wireguard_device_exists() -> io::Result<bool> {
         .try_exists()
 }
 
-const RETAINED_DEVICE_RECOVERY: &str =
-    "run `systemctl stop ployz`; run `ip link delete ployz-wg`; run `systemctl start ployz`";
+const RETAINED_DEVICE_RECOVERY: &str = "run `systemctl stop ployz.socket ployz`; run `ip link delete ployz-wg`; run `systemctl reset-failed ployz.socket ployz`; run `systemctl start ployz`";
 
 fn validate_machine_identity(
     private_key: &WireGuardPrivateKey,
