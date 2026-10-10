@@ -25,7 +25,7 @@ use crate::{
     dns::{
         listeners::{Keeper, Listeners, MemoryKeeper},
         spec::{CorrosionEndpoint, DnsSpec, SpecFile},
-        tests::replica_observations,
+        tests::{replica_observations, write_script},
     },
 };
 
@@ -500,8 +500,7 @@ async fn wait_for_status(keeper: &MemoryKeeper, status: &str) {
 
 fn install(path: &std::path::Path, body: &str) {
     let staged = path.with_extension("new");
-    fs::write(&staged, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&staged, body);
     fs::rename(staged, path).unwrap();
 }
 
