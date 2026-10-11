@@ -91,7 +91,7 @@ pub enum Write {
 
 /// A question Cloud answers from GitHub or from its Servers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "query", rename_all = "snake_case")]
+#[serde(tag = "query", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudQuery {
     GithubTree(GithubTreeQuery),
     GithubFile(GithubFileQuery),
@@ -116,6 +116,7 @@ pub enum CloudQuery {
 
 /// Log lines of one Service's containers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct LogsQuery {
     pub environment: EnvironmentId,
     pub namespace: Namespace,
@@ -129,6 +130,7 @@ pub struct LogsQuery {
 
 /// Recent operations on one subject.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct OperationsQuery {
     pub subject: Subject,
     pub attempt: Option<AttemptId>,
@@ -137,7 +139,7 @@ pub struct OperationsQuery {
 
 /// What an operation ran on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Subject {
     Server {
         machine: MachineId,
@@ -156,6 +158,7 @@ pub enum Subject {
 
 /// A Server by ID, with the name it had when the call read it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct ServerRef {
     pub machine: MachineId,
     pub name: ServerName,
@@ -163,6 +166,7 @@ pub struct ServerRef {
 
 /// An operation Cloud runs once per attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct Act {
     pub attempt: AttemptId,
     pub digest: BodyDigest,
@@ -171,7 +175,7 @@ pub struct Act {
 
 /// What an [`Act`] does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "action", rename_all = "snake_case")]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     Service {
         environment: EnvironmentId,
@@ -208,7 +212,7 @@ pub enum ServiceVerb {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "run", rename_all = "snake_case")]
+#[serde(tag = "run", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeRun {
     Mirror { to: ServerRef, full: bool },
     Sync { full: bool },
@@ -219,6 +223,7 @@ pub enum VolumeRun {
 
 /// Volumes whose data a caller accepted losing, bound to the version it read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct AcceptedLoss {
     pub volumes: Vec<String>,
     pub version: String,

@@ -111,3 +111,29 @@ fn an_attempt_is_derived_from_tool_and_key() {
         AttemptId::derive("publish", &key)
     );
 }
+
+#[test]
+fn a_cloud_call_refuses_unknown_fields_at_any_depth() {
+    let key = RequestKey::parse("drain-0001").unwrap();
+    let act = serde_json::json!({
+        "attempt": AttemptId::derive("server_drain", &key).to_string(),
+        "digest": "00".repeat(32),
+        "action": { "action": "drain", "server": { "machine": "a".repeat(32), "name": "alpha" } },
+    });
+    assert!(serde_json::from_value::<Act>(act.clone()).is_ok());
+    for path in ["", "/action", "/action/server"] {
+        let mut extra = act.clone();
+        extra
+            .pointer_mut(path)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("dry_run".into(), true.into());
+        assert!(
+            serde_json::from_value::<Act>(extra).is_err(),
+            "unknown field at `{path}`"
+        );
+    }
+    let query = serde_json::json!({ "query": "servers", "only": null, "dry_run": true });
+    assert!(serde_json::from_value::<CloudQuery>(query).is_err());
+}

@@ -46,6 +46,9 @@ deployment's status, like **Deploying** and then **Deployed**, and a link to the
 When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
 went to see where it got to.
+A restart goes one server at a time and starts each container again, even when stopping it
+failed. If a server's containers don't come back, the restart stops there and leaves the other
+servers alone.
 
 ## Approve or deny a removal
 

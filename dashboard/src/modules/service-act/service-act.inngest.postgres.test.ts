@@ -103,7 +103,7 @@ describe("act-service", () => {
     expect(busy).toMatchObject({ ok: false, refusal: { code: "conflict", details: { run: { attempt: first.id, run: "stop web", state: "accepted" } } } });
   });
 
-  it("records a stop the Server never answered as unknown and never starts that Container", async () => {
+  it("still starts a Container whose stop the Server never answered, and ends unknown", async () => {
     answer = (call) => call === "stop web-b"
       ? Effect.fail(new PloyzProviderError({ operation: "stop container", cause: { code: "unavailable", message: "gone" } }))
       : Effect.void;
@@ -111,11 +111,42 @@ describe("act-service", () => {
     if (!admitted.ok) throw new Error("refused");
 
     expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "unknown" });
-    expect(calls).toEqual(["stop web-a", "start web-a", "stop web-b"]);
+    expect(calls).toEqual(["stop web-a", "start web-a", "stop web-b", "start web-b"]);
     expect((await operation(admitted.id))?.servers).toEqual([
       { server: "alpha", stopped: "yes", started: "yes", reason: null },
-      { server: "beta", stopped: "unknown", started: null, reason: "beta didn't answer." },
+      { server: "beta", stopped: "unknown", started: "yes", reason: "beta didn't answer." },
     ]);
+  });
+
+  it("still starts a Container whose stop failed", async () => {
+    answer = (call) => call === "stop web-a"
+      ? Effect.fail(new PloyzProviderError({ operation: "stop container", cause: { code: "internal", message: "no" } }))
+      : Effect.void;
+    const admitted = await request("restart");
+    if (!admitted.ok) throw new Error("refused");
+
+    expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "failed" });
+    expect(calls).toEqual(["stop web-a", "start web-a", "stop web-b", "start web-b"]);
+    expect(await operation(admitted.id)).toMatchObject({ reason: "alpha couldn't stop it.", servers: [{ server: "alpha", stopped: "no", started: "yes" }, {}] });
+  });
+
+  it("stops rolling when a Server's Container doesn't come back, leaving later Servers untouched", async () => {
+    answer = (call) => call === "start web-a"
+      ? Effect.fail(new PloyzProviderError({ operation: "start container", cause: { code: "unavailable", message: "gone" } }))
+      : Effect.void;
+    const admitted = await request("restart");
+    if (!admitted.ok) throw new Error("refused");
+
+    expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "unknown" });
+    expect(calls).toEqual(["stop web-a", "start web-a"]);
+    expect(await operation(admitted.id)).toMatchObject({
+      state: "unknown",
+      reason: "alpha didn't come back, so Cloud left beta alone.",
+      servers: [
+        { server: "alpha", stopped: "yes", started: "unknown", reason: "alpha didn't answer." },
+        { server: "beta", stopped: null, started: null, reason: null },
+      ],
+    });
   });
 
   it("never asks again for a stop a crashed step already sent", async () => {

@@ -2,7 +2,7 @@ import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { serviceActRequestedEventType } from "#/modules/inngest/events";
-import { serversOf, stepsOf } from "#/modules/service-act/service-act";
+import { cameBack, serversOf, stepsOf } from "#/modules/service-act/service-act";
 import {
   actOnServer,
   claimServiceAct,
@@ -34,7 +34,9 @@ export async function executeServiceAct(
   const { stop, start } = stepsOf(claimed.verb);
   for (const server of serversOf(claimed.legs)) {
     if (stop) await step.run(`stop:${server}`, () => runEffect(actOnServer(request, runId, server, "stop")));
-    if (start) await step.run(`start:${server}`, () => runEffect(actOnServer(request, runId, server, "start")));
+    if (!start) continue;
+    const legs = await step.run(`start:${server}`, () => runEffect(actOnServer(request, runId, server, "start")));
+    if (stop && !cameBack(legs, server)) break;
   }
   return step.run("record", () => runEffect(recordServiceAct(request, runId)));
 }
