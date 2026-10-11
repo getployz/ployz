@@ -20,6 +20,9 @@ use ployz_core::{
 };
 
 const TARGET_BUCKETS: i64 = 300;
+/// The sampler's tick. A default bucket narrower than this would be empty
+/// between samples.
+const SAMPLE_NANOS: i64 = 10_000_000_000;
 /// Bounds the bucket table whatever step a caller asks for.
 const MAX_BUCKETS: i64 = 4_000;
 const NANOS_PER_SEC: f64 = 1e9;
@@ -36,13 +39,13 @@ pub(crate) struct Buckets {
 
 impl Buckets {
     /// Uses `step_nanos` when given, else the width that yields about 300
-    /// buckets. Either way the step widens until the grid fits `MAX_BUCKETS`.
+    /// buckets, but no less than one sample. Either way the step widens until the grid fits `MAX_BUCKETS`.
     pub(crate) fn new(range: MetricRange, step_nanos: Option<i64>) -> Self {
         let since = range.since_nanos;
         let width = range.until_nanos.saturating_sub(since).max(1);
         let floor = div_ceil(width, MAX_BUCKETS);
         let step = step_nanos
-            .unwrap_or_else(|| div_ceil(width, TARGET_BUCKETS))
+            .unwrap_or_else(|| div_ceil(width, TARGET_BUCKETS).max(SAMPLE_NANOS))
             .clamp(floor.max(1), width);
         Self {
             since,
@@ -538,6 +541,16 @@ mod tests {
 
     fn rates(point: &ServicePoint) -> [Option<f64>; COUNTERS] {
         [point.cpu_usec, point.rx, point.tx, point.io_r, point.io_w]
+    }
+
+    #[test]
+    fn a_default_step_is_never_finer_than_one_sample() {
+        let range = MetricRange {
+            since_nanos: 0,
+            until_nanos: 600 * SEC,
+        };
+        assert_eq!(Buckets::new(range, None).step(), 10 * SEC);
+        assert_eq!(Buckets::new(range, Some(SEC)).step(), SEC);
     }
 
     #[test]
