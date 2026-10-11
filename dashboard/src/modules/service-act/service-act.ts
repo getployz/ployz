@@ -33,22 +33,33 @@ export const legsOf = (before: ServiceActBefore, only: ServerRef | null): Servic
 export const alreadyThere = (verb: ServiceVerb, side: "stop" | "start", state: ContainerState | undefined) =>
   side === "stop" ? state !== undefined && STOPPED.has(state) : verb === "start" && state === "running";
 
-export const mayStart = (verb: ServiceVerb, leg: ServiceActLeg) =>
-  verb === "start" || leg.stop === "done" || leg.stop === "already_there";
-
 export const serversOf = (legs: readonly ServiceActLeg[]) => [...new Set(legs.map(({ server }) => server))];
 
 export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActState>; reason: string | null };
 
-/** A Service-wide act never ends done while a Server didn't answer: its copies there may not have moved. */
+const confirmed = (step: LegStep | null) => step === "done" || step === "already_there";
+
+/** A restart rolls on only once every copy on `server` is confirmed started again. */
+export const cameBack = (legs: readonly ServiceActLeg[], server: string) =>
+  legs.every((leg) => leg.server !== server || confirmed(leg.start));
+
+/**
+ * A Service-wide act never ends done while a Server didn't answer: its copies there may not have moved.
+ * A restart that stopped rolling leaves later Servers' legs untouched, and those never read as moved.
+ */
 export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[], only: ServerRef | null): ServiceActEnd {
-  const silent = before.unanswered.length > 0 ? `${before.unanswered.join(", ")} didn't answer.` : null;
+  const unanswered = only === null ? before.unanswered : before.unanswered.filter((name) => name === only.name);
+  const silent = unanswered.length > 0 ? `${unanswered.join(", ")} didn't answer.` : null;
   if (legs.length === 0) return silent !== null ? { state: "unknown", reason: silent } : { state: "failed", reason: "No containers to move." };
+  const untouched = serversOf(legs.filter((leg) => leg.stop === null && leg.start === null));
+  const halted = untouched.length > 0 ? legs.find((leg) => leg.stop !== null && !confirmed(leg.start))?.server : undefined;
   const steps = legs.flatMap((leg) => [leg.stop, leg.start]);
-  const reason = legs.find((leg) => leg.reason !== null)?.reason ?? null;
+  const reason = halted !== undefined
+    ? `${halted} didn't come back, so Cloud left ${untouched.join(", ")} alone.`
+    : legs.find((leg) => leg.reason !== null)?.reason ?? null;
   if (steps.some((step) => step === "unknown" || step === "sent")) return { state: "unknown", reason };
-  if (steps.some((step) => step === "failed")) return { state: "failed", reason };
-  return only === null && silent !== null ? { state: "unknown", reason: silent } : { state: "done", reason: null };
+  if (steps.some((step) => step === "failed") || untouched.length > 0) return { state: "failed", reason };
+  return silent !== null ? { state: "unknown", reason: silent } : { state: "done", reason: null };
 }
 
 const RECEIPTS = { sent: "unknown", unknown: "unknown", done: "yes", already_there: "yes", failed: "no" } as const satisfies Record<LegStep, Receipt>;
