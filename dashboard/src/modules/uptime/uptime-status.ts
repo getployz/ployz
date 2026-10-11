@@ -10,7 +10,7 @@ const Int = Schema.Finite.check(Schema.isInt());
  */
 export const IncidentObservation = Schema.Struct({
   region: Schema.String,
-  kind: Schema.Literals(["routine", "confirm", "recheck"]),
+  kind: Schema.Literals(["routine", "confirm", "recheck", "triggered"]),
   verdict: Schema.Literals(["pass", "fail", "inconclusive"]),
   status: Int,
   failedPhase: Schema.NullOr(Schema.Literals(["dns", "connect", "tls", "request"])),
@@ -76,8 +76,8 @@ export const PHASES = ["dns", "connect", "tls", "ttfb"] as const;
 export type Phase = (typeof PHASES)[number];
 
 /**
- * One region's probes over one stretch of the latency chart, as `pointSource` picks for the range: one routine probe
- * for a range up to a day within raw retention, an hour up to 7 days, 6 hours longer.
+ * One region's probes over one stretch of the latency chart, as `pointSource` picks for the range: one routine or
+ * triggered probe for a range up to a day within raw retention, an hour up to 7 days, 6 hours longer.
  * `probes` is pass plus fail, never inconclusive. `medianMs`, `maxMs` and `phaseMsSum` are over passing probes only,
  * and the first two are null when none passed. `lastError` is the newest failure. `mergePoints` folds two into one.
  */
@@ -117,7 +117,7 @@ export type UptimeIncidentEntry = {
 export type ServiceUptime = {
   readonly check: { readonly id: string; readonly url: string; readonly intervalSeconds: number };
   readonly status: UptimeStatus;
-  /** Passing over pass plus fail routine probes, 0 to 1. Null when no probe counted. */
+  /** Passing over pass plus fail routine and triggered probes, 0 to 1. Null when no probe counted. */
   readonly uptime: number | null;
   readonly points: readonly UptimePoint[];
   /**

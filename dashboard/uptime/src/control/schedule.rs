@@ -86,6 +86,23 @@ pub(crate) struct ConfirmBudget {
     credit: f64,
     waiting: HashMap<OrgId, VecDeque<Job>>,
     order: VecDeque<OrgId>,
+    /// Jobs waiting per check, so [`ConfirmBudget::holds`] needn't scan every queue.
+    held: HashMap<CheckId, Held>,
+}
+
+struct Held {
+    jobs: usize,
+    /// One of the round's jobs has left, so its times are fixed.
+    started: bool,
+}
+
+/// What one budget tick hands out.
+#[derive(Debug, Default)]
+pub(crate) struct Released {
+    pub(crate) jobs: Vec<Job>,
+    /// Rounds whose probe times moved later by how long the budget held them, so a self-hosted
+    /// pair still runs `spacing` apart instead of both at once.
+    pub(crate) delayed: Vec<(CheckId, Duration)>,
 }
 
 impl ConfirmBudget {
@@ -99,6 +116,7 @@ impl ConfirmBudget {
             credit: 0.0,
             waiting: HashMap::new(),
             order: VecDeque::new(),
+            held: HashMap::new(),
         }
     }
 
@@ -114,6 +132,15 @@ impl ConfirmBudget {
         if jobs.is_empty() {
             return;
         }
+        for job in &jobs {
+            self.held
+                .entry(job.key.check)
+                .or_insert(Held {
+                    jobs: 0,
+                    started: false,
+                })
+                .jobs += 1;
+        }
         let queue = self.waiting.entry(org).or_default();
         if queue.is_empty() {
             self.order.push_back(org);
@@ -125,16 +152,24 @@ impl ConfirmBudget {
         for queue in self.waiting.values_mut() {
             queue.retain(|job| job.key.check != check);
         }
+        self.held.remove(&check);
     }
 
     pub(crate) fn clear(&mut self) {
         self.waiting.clear();
         self.order.clear();
+        self.held.clear();
     }
 
-    pub(crate) fn tick(&mut self) -> Vec<Job> {
+    pub(crate) fn holds(&self, check: CheckId) -> bool {
+        self.held.contains_key(&check)
+    }
+
+    /// A round's first job to leave shifts the round's held jobs by however late it is, keeping
+    /// their spacing.
+    pub(crate) fn tick(&mut self, now: UnixMs) -> Released {
         self.credit = (self.credit + self.per_tick).min(self.burst());
-        let mut out = Vec::new();
+        let mut out = Released::default();
         let mut spins = self.order.len();
         while self.credit >= 1.0 && spins > 0 {
             let Some(org) = self.order.pop_front() else {
@@ -144,8 +179,32 @@ impl ConfirmBudget {
             let Some(queue) = self.waiting.get_mut(&org) else {
                 continue;
             };
-            if let Some(job) = queue.pop_front() {
-                out.push(job);
+            if let Some(mut job) = queue.pop_front() {
+                let check = job.key.check;
+                if let Entry::Occupied(mut held) = self.held.entry(check) {
+                    let held_jobs = held.get_mut();
+                    if !held_jobs.started {
+                        held_jobs.started = true;
+                        let earliest = queue
+                            .iter()
+                            .filter(|j| j.key.check == check)
+                            .map(|j| j.key.scheduled_at)
+                            .fold(job.key.scheduled_at, UnixMs::min);
+                        let by = now.since(earliest);
+                        if !by.is_zero() {
+                            job.key.scheduled_at = job.key.scheduled_at.plus(by);
+                            for waiting in queue.iter_mut().filter(|j| j.key.check == check) {
+                                waiting.key.scheduled_at = waiting.key.scheduled_at.plus(by);
+                            }
+                            out.delayed.push((check, by));
+                        }
+                    }
+                    held_jobs.jobs -= 1;
+                    if held_jobs.jobs == 0 {
+                        held.remove();
+                    }
+                }
+                out.jobs.push(job);
                 self.credit -= 1.0;
             }
             if queue.is_empty() {
