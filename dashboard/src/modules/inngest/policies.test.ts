@@ -25,6 +25,7 @@ import {
 import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleServerUpgrades } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
+import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 
 describe("Inngest function policies", () => {
   it("pins the SDK-default retry count and domain-owned concurrency", () => {
@@ -49,6 +50,7 @@ describe("Inngest function policies", () => {
     createRollOutServerUpgrade(inngest),
     createCancelServerUpgrade(inngest),
     createScheduleServerUpgrades(inngest),
+    ...createUptimeMaintenanceFunctions(inngest),
     ];
 
     expect(
@@ -77,7 +79,15 @@ describe("Inngest function policies", () => {
       { id: "roll-out-server-upgrade", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "cancel-server-upgrade", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "schedule-server-upgrades", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "uptime-rollup", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "uptime-prune", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "uptime-backfill", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
+  });
+
+  it("rolls uptime up at :05, once the previous hour has closed", () => {
+    const [rollup] = createUptimeMaintenanceFunctions(new Inngest({ id: "uptime-contract" }));
+    expect(rollup?.opts).toMatchObject({ id: "uptime-rollup", triggers: [{ cron: "5 * * * *" }] });
   });
 
   it("keys Drain and Server Policy changes with one expression, which Inngest needs to share a slot across functions", () => {
