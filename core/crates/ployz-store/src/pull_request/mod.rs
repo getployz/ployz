@@ -360,6 +360,7 @@ pub(crate) fn facts(
         let merged: Merged =
             serde_json::from_str(merged).map_err(|_| error::corrupt("pull request merge"))?;
         facts.merge_commit = Some(merged.commit);
+        facts.target_branch = merged.into;
         facts.open = false;
     }
     Ok(Some(facts))

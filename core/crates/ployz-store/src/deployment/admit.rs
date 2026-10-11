@@ -254,14 +254,29 @@ fn deploy(
         uploader: who.principal.clone(),
         ..upload
     });
-    deployment::admit(
+    let summary = deployment::admit(
         tx,
         who,
         (&admit.id, &admit.services, upload, admit.message.clone()),
         id,
         saved,
         &frozen,
-    )
+    )?;
+    // What merges landed and this Deploy ships no longer waits for a push.
+    let shipped = saved_intent
+        .services
+        .iter()
+        .filter(|service| {
+            admit.services.is_empty()
+                || admit
+                    .services
+                    .iter()
+                    .any(|name| name.as_str() == service.slug)
+        })
+        .map(|service| service.id.as_str())
+        .collect();
+    crate::automation::shipped_landed(tx, id, &shipped)?;
+    Ok(summary)
 }
 
 /// Queue the Deployment that removes an Environment from the Servers: the empty

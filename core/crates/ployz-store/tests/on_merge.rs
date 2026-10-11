@@ -1586,3 +1586,71 @@ fn the_check_reads_a_config_file_row_as_a_changed_file() {
     let check = check(&store, &who).unwrap();
     assert_eq!(check.summary, "- `configs.sentry · config.yml`: changed");
 }
+
+#[test]
+fn a_merge_reported_after_a_retarget_lands_in_the_branch_it_merged_into() {
+    let (store, who) = shop();
+    // Newer facts point the pull request at release, which no Environment follows.
+    system(
+        &store,
+        &who,
+        &event(5, "search", "release", None, true, "2026-09-29T11:00:01Z"),
+    );
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    // The older merge into main still lands in production, main's Environment.
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("2"))
+    );
+    let view = store
+        .read(
+            &who,
+            &PullRequestQuery {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        view.pull_request.map(|facts| facts.target_branch),
+        Some(backend::git_branch("main"))
+    );
+}
+
+#[test]
+fn a_full_manual_deploy_takes_what_landed_from_the_next_push() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.autoDeploy", json!("false"))],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    // Someone deploys production by hand: web ships with what landed.
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: ployz_store::DeploymentId::parse(::uuid::Uuid::new_v4().to_string()).unwrap(),
+                environment: at("production"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    // A later saved edit waits for a Deploy: auto-deploy is off.
+    set(&store, &who, "production", &[("web.env.C", json!("2"))]);
+    save(&store, &who, "production");
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(deployed(&pushed).is_empty(), "{pushed:?}");
+}

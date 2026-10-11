@@ -718,6 +718,54 @@ fn admit(
     Ok(Some(Deploy::Admitted(Box::new(summary))))
 }
 
+/// Forget the landed Services of `environment` a Deployment just took: `shipped`
+/// holds their Service IDs.
+pub(crate) fn shipped_landed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    shipped: &BTreeSet<&str>,
+) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT repository_id, branch, services FROM config_merge_deploy \
+         WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    for row in &rows {
+        let repository_id: RepositoryId = row.number(0, "merge deploy")?;
+        let branch = row.text(1)?.to_owned();
+        let mut pending: Vec<String> = row.json(2, "merge deploy")?;
+        let before = pending.len();
+        pending.retain(|service| !shipped.contains(service.as_str()));
+        if pending.len() == before {
+            continue;
+        }
+        let key = [
+            environment.as_str().into(),
+            repository_id.into(),
+            branch.as_str().into(),
+        ];
+        if pending.is_empty() {
+            forget_landed(tx, &key)?;
+        } else {
+            let [environment_param, repository_param, branch_param] = key;
+            tx.execute(
+                "UPDATE config_merge_deploy SET services = ?4 \
+                 WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
+                &[
+                    environment_param,
+                    repository_param,
+                    branch_param,
+                    serde_json::to_string(&pending)
+                        .expect("Service IDs are JSON")
+                        .as_str()
+                        .into(),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Forget what merges landed in the Environment for the branch of `key`
 /// (Environment, repository, branch): a Deployment took it, or nothing is left of it.
 fn forget_landed(tx: &mut dyn Tx, key: &[crate::storage::Param<'_>; 3]) -> Result<(), RpcError> {
