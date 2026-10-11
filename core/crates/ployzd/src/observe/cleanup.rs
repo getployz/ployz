@@ -9,6 +9,9 @@
 //! A file Docker still links costs no disk the store adds, and unlinking the
 //! store's link would free nothing, so only files the store alone holds
 //! (`nlink == 1`) count toward the cap and are deleted.
+//!
+//! Raw metric segments go by age alone: a segment is deleted once its whole
+//! hour is more than a day old.
 
 use std::{
     ffi::CString,
@@ -28,10 +31,12 @@ use ployz_core::ContainerId;
 
 use super::layout::{
     CONTAINERS_DIR, FIRST_SET_FILE, FIRST_SET_TEMP_FILE, GAPS_FILE, LINKING_FILE, LogFileName,
-    META_FILE, META_TEMP_FILE, SCANNED_FILE, SCANNED_TEMP_FILE, StoreRoot, VERSION_DIR,
+    META_FILE, META_TEMP_FILE, METRICS_DIR, RAW_DIR, SCANNED_FILE, SCANNED_TEMP_FILE, SegmentName,
+    StoreRoot, VERSION_DIR,
 };
 
 const GIB: u64 = 1 << 30;
+const RAW_METRICS_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
@@ -84,6 +89,7 @@ pub struct Report {
     pub bytes_freed: u64,
     pub symlinks_removed: usize,
     pub containers_removed: usize,
+    pub segments_deleted: usize,
 }
 
 struct Candidate {
@@ -110,7 +116,7 @@ const DIR_FLAGS: OFlag = OFlag::O_RDONLY
 
 /// Runs one cleanup pass. `container_exists` says whether Docker still has a
 /// container; a store dir is removed once its container is gone and it holds
-/// no log files.
+/// no log files. Raw metric segments past a day old are deleted too.
 ///
 /// # Errors
 ///
@@ -191,7 +197,65 @@ pub fn run(
             }
         }
     }
+
+    match prune_raw_metrics(store, now) {
+        Ok(deleted) => report.segments_deleted = deleted,
+        Err(error) => tracing::warn!(%error, "could not prune raw metric segments"),
+    }
     Ok(report)
+}
+
+/// Deletes every raw segment whose hour ended more than a day before `now`,
+/// opening the segment dir as `open_containers` opens its dir.
+fn prune_raw_metrics(store: &StoreRoot, now: SystemTime) -> nix::Result<usize> {
+    let Some(cutoff) = now
+        .checked_sub(RAW_METRICS_AGE)
+        .and_then(|cutoff| cutoff.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|cutoff| cutoff.as_secs())
+    else {
+        return Ok(0);
+    };
+    let base = Dir::open(store.base(), DIR_FLAGS, Mode::empty())?;
+    let version = Dir::openat(
+        Some(base.as_raw_fd()),
+        VERSION_DIR,
+        DIR_FLAGS,
+        Mode::empty(),
+    )?;
+    let metrics = match Dir::openat(
+        Some(version.as_raw_fd()),
+        METRICS_DIR,
+        DIR_FLAGS,
+        Mode::empty(),
+    ) {
+        Ok(metrics) => metrics,
+        Err(Errno::ENOENT) => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut raw = match Dir::openat(Some(metrics.as_raw_fd()), RAW_DIR, DIR_FLAGS, Mode::empty()) {
+        Ok(raw) => raw,
+        Err(Errno::ENOENT) => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let raw_fd = raw.as_raw_fd();
+    let expired: Vec<CString> = raw
+        .iter()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            SegmentName::parse(entry.file_name().to_bytes())
+                .is_some_and(|name| name.end_secs() <= cutoff)
+        })
+        .map(|entry| entry.file_name().to_owned())
+        .collect();
+    let mut deleted = 0;
+    for name in expired {
+        match unlinkat(Some(raw_fd), name.as_c_str(), UnlinkatFlags::NoRemoveDir) {
+            Ok(()) => deleted += 1,
+            Err(Errno::EISDIR | Errno::ENOENT) => {}
+            Err(error) => tracing::warn!(?name, %error, "could not delete a raw metric segment"),
+        }
+    }
+    Ok(deleted)
 }
 
 /// Removes one container's store dir, log files included: the harvester held
@@ -628,6 +692,36 @@ mod tests {
         discard(&store.root, &cid(2)).unwrap();
         assert_eq!(store.names(&cid(2)), ["notes.txt"]);
         discard(&store.root, &cid(3)).unwrap();
+    }
+
+    #[test]
+    fn raw_segments_go_once_their_hour_is_a_day_old_and_other_entries_stay() {
+        let store = store();
+        let raw = store.root.raw_metrics();
+        fs::create_dir_all(&raw).unwrap();
+        let hour = T0 - T0 % 3_600;
+        let segment = |hours_back: u64| format!("{}.jsonl", hour - hours_back * 3_600);
+        let expired = segment(25);
+        let kept = segment(24);
+        let current = segment(0);
+        for name in [&expired, &kept, &current] {
+            fs::write(raw.join(name), b"{}\n").unwrap();
+        }
+        let old_dir = segment(72);
+        fs::create_dir(raw.join(&old_dir)).unwrap();
+        fs::write(raw.join("notes.txt"), b"keep").unwrap();
+
+        let report = store.clean(u64::MAX, u64::MAX, &[]);
+        assert_eq!(report.segments_deleted, 1);
+        let mut names: Vec<String> = fs::read_dir(&raw)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        let mut want = vec![kept, current, old_dir, "notes.txt".to_owned()];
+        want.sort();
+        assert_eq!(names, want);
+        assert_eq!(store.clean(u64::MAX, u64::MAX, &[]).segments_deleted, 0);
     }
 
     #[test]

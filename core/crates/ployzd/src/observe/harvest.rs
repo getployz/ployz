@@ -573,13 +573,15 @@ impl Harvester {
             Ok(report)
                 if report.files_deleted > 0
                     || report.symlinks_removed > 0
-                    || report.containers_removed > 0 =>
+                    || report.containers_removed > 0
+                    || report.segments_deleted > 0 =>
             {
                 tracing::info!(
                     files = report.files_deleted,
                     bytes = report.bytes_freed,
                     symlinks = report.symlinks_removed,
                     containers = report.containers_removed,
+                    segments = report.segments_deleted,
                     "cleaned the Log Store"
                 )
             }
