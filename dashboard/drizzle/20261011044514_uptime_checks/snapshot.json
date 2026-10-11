@@ -3605,7 +3605,7 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
-      "default": "'user'",
+      "default": "'service'",
       "generated": null,
       "identity": null,
       "name": "source",
@@ -3616,12 +3616,25 @@
     {
       "type": "text",
       "typeSchema": null,
-      "notNull": false,
+      "notNull": true,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "route_key",
+      "name": "environment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "service_id",
       "entityType": "columns",
       "schema": "public",
       "table": "uptime_check"
@@ -5032,14 +5045,14 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "organization_id",
+          "value": "environment_id",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
           "opclass": null
         },
         {
-          "value": "route_key",
+          "value": "service_id",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
@@ -5047,11 +5060,11 @@
         }
       ],
       "isUnique": true,
-      "where": "\"route_key\" is not null",
+      "where": null,
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "uptime_check_route_idx",
+      "name": "uptime_check_service_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "uptime_check"
@@ -6563,15 +6576,8 @@
       "table": "uptime_check"
     },
     {
-      "value": "\"source\" in ('user', 'route')",
+      "value": "\"source\" in ('service')",
       "name": "uptime_check_source_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "uptime_check"
-    },
-    {
-      "value": "(\"source\" = 'route') = (\"route_key\" is not null)",
-      "name": "uptime_check_route_check",
       "entityType": "checks",
       "schema": "public",
       "table": "uptime_check"

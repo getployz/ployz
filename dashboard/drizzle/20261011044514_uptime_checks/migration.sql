@@ -24,8 +24,9 @@ CREATE TABLE "uptime_check" (
 	"expect" text DEFAULT 'below_400' NOT NULL,
 	"enabled" boolean DEFAULT true NOT NULL,
 	"revision" integer DEFAULT 1 NOT NULL,
-	"source" text DEFAULT 'user' NOT NULL,
-	"route_key" text,
+	"source" text DEFAULT 'service' NOT NULL,
+	"environment_id" text NOT NULL,
+	"service_id" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "uptime_check_name_check" CHECK (length("name") between 1 and 128),
@@ -34,8 +35,7 @@ CREATE TABLE "uptime_check" (
 	CONSTRAINT "uptime_check_timeout_check" CHECK ("timeout_ms" between 1000 and 30000 and "timeout_ms" < "interval_seconds" * 1000),
 	CONSTRAINT "uptime_check_expect_check" CHECK ("expect" in ('below_400')),
 	CONSTRAINT "uptime_check_revision_check" CHECK ("revision" >= 1),
-	CONSTRAINT "uptime_check_source_check" CHECK ("source" in ('user', 'route')),
-	CONSTRAINT "uptime_check_route_check" CHECK (("source" = 'route') = ("route_key" is not null))
+	CONSTRAINT "uptime_check_source_check" CHECK ("source" in ('service'))
 );
 --> statement-breakpoint
 CREATE TABLE "uptime_incident" (
@@ -96,7 +96,7 @@ CREATE UNIQUE INDEX "uptime_alert_transition_idx" ON "uptime_alert" ("incident_i
 CREATE INDEX "uptime_alert_pending_idx" ON "uptime_alert" ("created_at") WHERE "state" in ('pending', 'sending');--> statement-breakpoint
 CREATE INDEX "uptime_check_organization_idx" ON "uptime_check" ("organization_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uptime_check_id_organization_idx" ON "uptime_check" ("id","organization_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "uptime_check_route_idx" ON "uptime_check" ("organization_id","route_key") WHERE "route_key" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "uptime_check_service_idx" ON "uptime_check" ("environment_id","service_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "uptime_incident_one_open_idx" ON "uptime_incident" ("check_id") WHERE "closed_at" is null;--> statement-breakpoint
 CREATE INDEX "uptime_incident_history_idx" ON "uptime_incident" ("check_id","opened_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "uptime_incident_closed_idx" ON "uptime_incident" ("closed_at") WHERE "closed_at" is not null;--> statement-breakpoint
@@ -109,4 +109,14 @@ ALTER TABLE "uptime_incident" ADD CONSTRAINT "uptime_incident_check_fk" FOREIGN 
 ALTER TABLE "uptime_result" ADD CONSTRAINT "uptime_result_check_fk" FOREIGN KEY ("check_id","organization_id") REFERENCES "uptime_check"("id","organization_id") ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE "uptime_result_hourly" ADD CONSTRAINT "uptime_result_hourly_check_fk" FOREIGN KEY ("check_id","organization_id") REFERENCES "uptime_check"("id","organization_id") ON DELETE CASCADE;--> statement-breakpoint
 SELECT organization_change_attach('uptime_check', 'organization_id', 'id');--> statement-breakpoint
-SELECT organization_change_attach('uptime_incident', 'organization_id', 'check_id');
+SELECT organization_change_attach('uptime_incident', 'organization_id', 'check_id');--> statement-breakpoint
+-- The Config Store creates config_applied when it opens, after these migrations, and attaches this then.
+CREATE FUNCTION uptime_check_forget_services() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM uptime_check USING old_rows
+  WHERE old_rows.node_type = 'service'
+    AND uptime_check.environment_id = old_rows.environment_id
+    AND uptime_check.service_id = old_rows.node_id;
+  RETURN NULL;
+END
+$$;

@@ -36,8 +36,11 @@ export const uptimeCheck = pgTable(
     enabled: boolean("enabled").default(true).notNull(),
     // The config fence: incident open and close apply only at the revision the detector judged.
     revision: integer("revision").default(1).notNull(),
-    source: text("source").default("user").notNull().$type<"user" | "route">(),
-    routeKey: text("route_key"),
+    source: text("source").default("service").notNull().$type<"service">(),
+    // The Config Store's ids are text. The check lives while config_applied holds this Service (environment_id,
+    // node_id): a trigger the Store open attaches deletes it with that row, environment deletes included.
+    environmentId: text("environment_id").notNull(),
+    serviceId: text("service_id").notNull(),
     createdAt,
     updatedAt,
   },
@@ -45,9 +48,7 @@ export const uptimeCheck = pgTable(
     index("uptime_check_organization_idx").on(table.organizationId),
     // The target of the children's composite foreign keys: a child row can't name another organization's check.
     uniqueIndex("uptime_check_id_organization_idx").on(table.id, table.organizationId),
-    uniqueIndex("uptime_check_route_idx")
-      .on(table.organizationId, table.routeKey)
-      .where(sql`${table.routeKey} is not null`),
+    uniqueIndex("uptime_check_service_idx").on(table.environmentId, table.serviceId),
     check("uptime_check_name_check", sql`length(${table.name}) between 1 and 128`),
     // A backstop only; the URL parser in the write path is the real gate.
     check("uptime_check_url_check", sql`${table.url} ~ '^https?://[^/?#@[:space:]]+([/?]|$)' and length(${table.url}) <= 2048`),
@@ -56,8 +57,7 @@ export const uptimeCheck = pgTable(
       sql`${table.timeoutMs} between 1000 and 30000 and ${table.timeoutMs} < ${table.intervalSeconds} * 1000`),
     check("uptime_check_expect_check", sql`${table.expect} in ('below_400')`),
     check("uptime_check_revision_check", sql`${table.revision} >= 1`),
-    check("uptime_check_source_check", sql`${table.source} in ('user', 'route')`),
-    check("uptime_check_route_check", sql`(${table.source} = 'route') = (${table.routeKey} is not null)`),
+    check("uptime_check_source_check", sql`${table.source} in ('service')`),
   ],
 );
 

@@ -29,7 +29,8 @@ afterAll(async () => {
 
 async function createCheck(owner = organizationId) {
   const { rows } = await harness.pool.query<{ id: string }>(
-    "insert into uptime_check (organization_id, name, url) values ($1, 'web', 'https://example.com/') returning id",
+    `insert into uptime_check (organization_id, name, url, environment_id, service_id)
+     values ($1, 'web', 'https://example.com/', gen_random_uuid()::text, gen_random_uuid()::text) returning id`,
     [owner],
   );
   return one(rows).id;

@@ -174,8 +174,8 @@ pub(crate) async fn org(admin: &Client) -> Uuid {
 pub(crate) async fn check(admin: &Client, org: Uuid, url: &str) -> Uuid {
     admin
         .query_one(
-            "INSERT INTO uptime_check (organization_id, name, url) VALUES ($1, 'Check', $2) \
-             RETURNING id",
+            "INSERT INTO uptime_check (organization_id, name, url, environment_id, service_id) \
+             VALUES ($1, 'Check', $2, gen_random_uuid()::text, gen_random_uuid()::text) RETURNING id",
             &[&org, &url],
         )
         .await

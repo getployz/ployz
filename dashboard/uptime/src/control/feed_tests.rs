@@ -40,8 +40,8 @@ async fn the_load_returns_every_enabled_check_across_pages() {
     let org = org(&admin).await;
     admin
         .execute(
-            "INSERT INTO uptime_check (organization_id, name, url, enabled) \
-             SELECT $1, 'c' || g, 'https://example.com/' || g, g % 4000 <> 0 \
+            "INSERT INTO uptime_check (organization_id, name, url, enabled, environment_id, service_id) \
+             SELECT $1, 'c' || g, 'https://example.com/' || g, g % 4000 <> 0, gen_random_uuid()::text, 'svc-' || g \
              FROM generate_series(1, 20012) g",
             &[&org],
         )
@@ -249,8 +249,9 @@ async fn a_bulk_statement_replaces_its_org_and_no_other() {
 
     admin
         .execute(
-            "INSERT INTO uptime_check (organization_id, name, url) \
-             SELECT $1, 'c' || g, 'https://example.com/' || g FROM generate_series(1, 150) g",
+            "INSERT INTO uptime_check (organization_id, name, url, environment_id, service_id) \
+             SELECT $1, 'c' || g, 'https://example.com/' || g, gen_random_uuid()::text, 'svc-' || g \
+             FROM generate_series(1, 150) g",
             &[&bulk],
         )
         .await
