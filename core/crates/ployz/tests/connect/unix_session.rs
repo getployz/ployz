@@ -235,14 +235,14 @@ fn native_addon() -> PathBuf {
         "release"
     };
     let names = ["libployz_sdk.so", "libployz_sdk.dylib", "ployz_sdk.dll"];
-    for name in names {
-        let path = target.join(profile).join(name);
-        if path.is_file() {
-            return path;
-        }
+    // Always build: these scripts dial unix sockets, which only the `eval` addon accepts,
+    // and a stale default build would refuse them. Fresh, this is a no-op.
+    let mut build = Command::new("cargo");
+    build.args(["build", "-p", "ployz-sdk", "--locked", "--features", "eval"]);
+    if profile == "release" {
+        build.arg("--release");
     }
-    let status = Command::new("cargo")
-        .args(["build", "-p", "ployz-sdk", "--locked"])
+    let status = build
         .current_dir(&workspace)
         .status()
         .expect("cargo build -p ployz-sdk");
