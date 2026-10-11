@@ -682,12 +682,9 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             ));
             for row in &change.settings {
-                crate::ui::stream(format_args!(
-                    "  {}: {} → {}",
-                    row.path,
-                    super::store::shown(&row.before),
-                    super::store::shown(&row.after)
-                ));
+                for line in super::store::changed(row) {
+                    crate::ui::stream(format_args!("  {line}"));
+                }
             }
             super::review::restarts(change);
         }

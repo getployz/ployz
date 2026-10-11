@@ -621,6 +621,24 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
     format!("{start}… ({length} chars)")
 }
 
+/// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
+/// one line per domain, `web.domains: added shop`, never as the field storing it.
+pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
+    let Some(domains) = ployz_store::DomainChange::of(row) else {
+        return vec![format!(
+            "{}: {} → {}",
+            row.path,
+            shown(&row.before),
+            shown(&row.after)
+        )];
+    };
+    let service = row.path.split('.').next().unwrap_or_default();
+    domains
+        .iter()
+        .map(|domain| format!("{service}.domains: {domain}"))
+        .collect()
+}
+
 /// Argument `arg`, a Service name. Core's name error quotes the value; a rejected
 /// value is never echoed.
 pub(crate) fn service_name(
@@ -692,6 +710,25 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_staged_domain_change_reads_as_a_domain() {
+        let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(serde_json::json!({
+            "path": "web.managedHostnames", "kind": "update", "canRestore": false,
+            "before": [{ "prefix": "web", "targetPort": null }],
+            "after": [{ "prefix": "web", "targetPort": null }, { "prefix": "shop", "targetPort": null }],
+        }))
+        .unwrap();
+        assert_eq!(changed(&row), ["web.domains: added shop"]);
+        let route: ployz_core::config::ServiceSettingChange =
+            serde_json::from_value(serde_json::json!({
+                "path": "web.routes.r1", "kind": "remove", "canRestore": false,
+                "before": { "id": "r1", "hostname": "app.example.com", "targetPort": null },
+                "after": null,
+            }))
+            .unwrap();
+        assert_eq!(changed(&route), ["web.domains: removed app.example.com"]);
+    }
 
     #[test]
     fn a_long_value_shows_its_start_and_length() {
