@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FollowHint, OnMergeCheck, PrPlan, PullRequestView, RowId } from "@ployz/sdk";
-import { hintNotes, planSummary, storePrCheckRun } from "./store-pull-requests";
+import { CHECK_SUMMARY_LIMIT, hintNotes, planSummary, storePrCheckRun } from "./store-pull-requests";
 
 const plan: PrPlan = {
   repository: "acme/web", repository_id: 11, installation_id: 7, enabled: true, start_from: "production",
@@ -66,6 +66,16 @@ describe("storePrCheckRun", () => {
     const run = storePrCheckRun([{ slug: "acme", view: { ...view(stuck), environments: [] } }], "https://ployz.test/");
     expect(run?.detailsUrl).toBe("https://ployz.test/cloud/acme/shop/production/history");
     expect(run?.summary).toContain("[View in Ployz](https://ployz.test/cloud/acme/shop/production/history)");
+  });
+
+  it("keeps a long summary within GitHub's limit, whole lines then how many more, still linking Ployz", () => {
+    const line = "- `web · A`: 1 → 2";
+    const huge: OnMergeCheck = { ...lands, summary: Array.from({ length: 5000 }, () => line).join("\n") };
+    const summary = storePrCheckRun([{ slug: "acme", view: view(huge) }], "https://ployz.test/")?.summary ?? "";
+    expect(summary.length).toBeLessThanOrEqual(CHECK_SUMMARY_LIMIT);
+    const lines = summary.split("\n");
+    const kept = lines.indexOf(lines.find((each) => each !== line) ?? "");
+    expect(lines.slice(kept)).toEqual([`…and ${5000 - kept} more lines`, "", "[View in Ployz](https://ployz.test/cloud/acme/shop/pr-146?panel=on-merge)"]);
   });
 
   it("posts nothing when no Store has a word", () => {
