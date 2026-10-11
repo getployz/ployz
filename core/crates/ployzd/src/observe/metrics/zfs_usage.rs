@@ -26,6 +26,9 @@ pub(crate) struct DatasetUsage {
     /// Bytes the dataset references, excluding snapshots and children.
     pub(crate) referenced: u64,
     pub(crate) refquota: Option<NonZeroU64>,
+    /// Bytes the dataset can still take; on a Pool's root, the Pool's free
+    /// space.
+    pub(crate) available: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +75,7 @@ impl ZfsUsageReader {
     async fn list(&self) -> ZfsUsage {
         let mut command = Command::new(&self.program);
         command
-            .args(["list", "-Hp", "-o", "name,referenced,refquota"])
+            .args(["list", "-Hp", "-o", "name,referenced,refquota,available"])
             .kill_on_drop(true);
         match tokio::time::timeout(self.timeout, command.output()).await {
             Ok(Ok(output)) if output.status.success() => String::from_utf8(output.stdout)
@@ -94,9 +97,13 @@ fn parse(output: &str) -> Option<BTreeMap<String, DatasetUsage>> {
 
 fn parse_line(line: &str) -> Option<(String, DatasetUsage)> {
     let mut fields = line.split('\t');
-    let (Some(name), Some(referenced), Some(refquota), None) =
-        (fields.next(), fields.next(), fields.next(), fields.next())
-    else {
+    let (Some(name), Some(referenced), Some(refquota), Some(available), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
         return None;
     };
     let refquota = match refquota {
@@ -108,6 +115,7 @@ fn parse_line(line: &str) -> Option<(String, DatasetUsage)> {
         DatasetUsage {
             referenced: referenced.parse().ok()?,
             refquota,
+            available: available.parse().ok()?,
         },
     ))
 }
@@ -118,10 +126,11 @@ mod tests {
 
     use super::*;
 
-    fn usage(referenced: u64, refquota: u64) -> DatasetUsage {
+    fn usage(referenced: u64, refquota: u64, available: u64) -> DatasetUsage {
         DatasetUsage {
             referenced,
             refquota: NonZeroU64::new(refquota),
+            available,
         }
     }
 
@@ -133,41 +142,48 @@ mod tests {
     }
 
     #[test]
-    fn referenced_and_refquota_are_read_per_dataset() {
+    fn referenced_refquota_and_available_are_read_per_dataset() {
         let parsed = parse(
-            "ployz\t25600\t0\n\
-             ployz/volumes\t24576\t-\n\
-             ployz/volumes/db\t104882176\t1073741824\n",
+            "ployz\t25600\t0\t9000\n\
+             ployz/volumes\t24576\t-\t9000\n\
+             ployz/volumes/db\t104882176\t1073741824\t900\n",
         )
         .unwrap();
         assert_eq!(
             parsed,
             BTreeMap::from([
-                ("ployz".to_owned(), usage(25600, 0)),
-                ("ployz/volumes".to_owned(), usage(24576, 0)),
+                ("ployz".to_owned(), usage(25600, 0, 9000)),
+                ("ployz/volumes".to_owned(), usage(24576, 0, 9000)),
                 (
                     "ployz/volumes/db".to_owned(),
-                    usage(104_882_176, 1_073_741_824)
+                    usage(104_882_176, 1_073_741_824, 900)
                 ),
             ])
         );
     }
 
     #[test]
-    fn writing_100_mb_into_a_volume_grows_its_referenced_bytes_by_100_mb() {
+    fn writing_100_mb_into_a_volume_moves_100_mb_from_pool_free_to_the_volume() {
         // Captured on an Incus Machine before and after `dd` wrote 100 MiB into a
         // Managed volume.
         const VOLUME: &str =
-            "ployz/ployz/verify-production_vol-b611d842-26d8-42dd-9f04-f1e6bdd13df3";
+            "ployz/ployz/verify-production_vol-5f155ddf-f688-49c3-92b3-5c6e88f99707";
         let before = parse(include_str!("fixtures/zfs_list_before_write.txt")).unwrap();
         let after = parse(include_str!("fixtures/zfs_list_after_write.txt")).unwrap();
 
-        let (before, after) = (before.get(VOLUME).unwrap(), after.get(VOLUME).unwrap());
-        assert_eq!(after.refquota, NonZeroU64::new(1_000_000_000));
-        let grown = after.referenced - before.referenced;
+        let volume = (before.get(VOLUME).unwrap(), after.get(VOLUME).unwrap());
+        assert_eq!(volume.1.refquota, NonZeroU64::new(5_000_000_000));
+        let grown = volume.1.referenced - volume.0.referenced;
         assert!(
             (100 << 20..101 << 20).contains(&grown),
             "grew {grown} bytes"
+        );
+
+        let pool = (before.get("ployz").unwrap(), after.get("ployz").unwrap());
+        let taken = pool.0.available - pool.1.available;
+        assert!(
+            (100 << 20..101 << 20).contains(&taken),
+            "the Pool lost {taken} free bytes"
         );
     }
 
@@ -175,8 +191,8 @@ mod tests {
     fn dash_none_and_zero_refquota_mean_no_quota() {
         for refquota in ["-", "none", "0"] {
             assert_eq!(
-                parse(&format!("pool/a\t10\t{refquota}\n")),
-                Some(BTreeMap::from([("pool/a".to_owned(), usage(10, 0))])),
+                parse(&format!("pool/a\t10\t{refquota}\t5\n")),
+                Some(BTreeMap::from([("pool/a".to_owned(), usage(10, 0, 5))])),
                 "refquota {refquota}"
             );
         }
@@ -190,10 +206,11 @@ mod tests {
     #[test]
     fn a_malformed_line_rejects_the_whole_listing() {
         for output in [
-            "pool/a\t10\n",
-            "pool/a\t10\t-\textra\n",
-            "pool/a\t10K\t-\n",
-            "pool/a\t10\t1G\n",
+            "pool/a\t10\t-\n",
+            "pool/a\t10\t-\t5\textra\n",
+            "pool/a\t10K\t-\t5\n",
+            "pool/a\t10\t1G\t5\n",
+            "pool/a\t10\t-\t5G\n",
         ] {
             assert_eq!(parse(output), None, "{output:?}");
         }
@@ -202,11 +219,11 @@ mod tests {
     #[tokio::test]
     async fn a_listing_becomes_a_measurement() {
         let dir = tempfile::tempdir().unwrap();
-        let zfs = fake_zfs(dir.path(), r#"printf 'pool/a\t10\t-\n'"#);
+        let zfs = fake_zfs(dir.path(), r#"printf 'pool/a\t10\t-\t5\n'"#);
         let reader = ZfsUsageReader::new(zfs, ZFS_LIST_TIMEOUT);
         assert_eq!(
             *reader.read().await,
-            ZfsUsage::Measured(BTreeMap::from([("pool/a".to_owned(), usage(10, 0))]))
+            ZfsUsage::Measured(BTreeMap::from([("pool/a".to_owned(), usage(10, 0, 5))]))
         );
     }
 
@@ -245,7 +262,7 @@ mod tests {
         let zfs = fake_zfs(
             dir.path(),
             &format!(
-                r#"echo run >> {runs}; n=$(wc -l < {runs}); sleep 0.5; printf 'pool/a\t%s\t-\n' "$n""#,
+                r#"echo run >> {runs}; n=$(wc -l < {runs}); sleep 0.5; printf 'pool/a\t%s\t-\t5\n' "$n""#,
                 runs = runs.display()
             ),
         );
@@ -257,7 +274,7 @@ mod tests {
         assert!(Arc::ptr_eq(&concurrent, &first));
         assert_eq!(
             *running,
-            ZfsUsage::Measured(BTreeMap::from([("pool/a".to_owned(), usage(2, 0))]))
+            ZfsUsage::Measured(BTreeMap::from([("pool/a".to_owned(), usage(2, 0, 5))]))
         );
         assert_eq!(fs::read_to_string(&runs).unwrap().lines().count(), 2);
     }

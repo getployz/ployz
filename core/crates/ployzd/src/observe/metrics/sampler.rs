@@ -8,7 +8,7 @@
 //! procfs. A container that is gone yields no row rather than zeros.
 //!
 //! ZFS flushes a container's Volume writes from its own kernel threads,
-//! outside the container's cgroup, so on a ZFS Server Volume IO comes from
+//! outside the container's cgroup, so on a ZFS Machine Volume IO comes from
 //! the Pool's objset kstats. The Machine row's disk breakdown takes the last
 //! 60 s reading from [`disk`] and never waits for it.
 
@@ -34,7 +34,7 @@ use tokio::{
 
 use super::{
     cgroup::{self, MemoryLimit},
-    disk::{self, DatasetPlace, PoolPaths, SlowReading},
+    disk::{self, DatasetPlace, SlowReading},
     host::{self, HostCounters},
     net::{self, NetCounters},
     rollup,
@@ -45,6 +45,7 @@ use super::{
 use crate::{
     docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
     machine::LocalMachineRecord,
+    machine_pool,
     network::DOCKER_NETWORK_NAME,
     observe::{
         harvest,
@@ -113,7 +114,12 @@ pub(crate) async fn run(docker: Docker, store: StoreRoot, data_dir: PathBuf) {
     let (latest, slow) = watch::channel(SlowReading::default());
     let zfs = ZfsUsageReader::new(PathBuf::from("zfs"), ZFS_LIST_TIMEOUT);
     tokio::join!(
-        disk::run(store.clone(), zfs, PoolPaths::system(), latest),
+        disk::run(
+            store.clone(),
+            zfs,
+            PathBuf::from(machine_pool::BACKING_FILE),
+            latest,
+        ),
         sample_every_interval(docker, store, data_dir, slow),
     );
 }
@@ -948,7 +954,7 @@ Inter-|   Receive                                                |  Transmit
                     io_w,
                     ..
                 }) => Some((*container_id, *io_r, *io_w)),
-                Row::Host(_) => None,
+                Row::Host(_) | Row::Marker(_) => None,
             })
             .collect();
         io.sort();

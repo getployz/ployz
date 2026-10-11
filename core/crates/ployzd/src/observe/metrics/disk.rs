@@ -1,4 +1,4 @@
-//! Where the Server's disk went: Volumes, mirror slots, the Observe Store,
+//! Where the Machine's disk went: Volumes, mirror slots, the Observe Store,
 //! and everything else.
 //!
 //! `zfs list` can hang on a sick Pool and the Observe Store walk touches
@@ -22,7 +22,7 @@ use super::{
     host::FsBytes,
     zfs_usage::{ZfsUsage, ZfsUsageReader},
 };
-use crate::{machine_pool, observe::layout::StoreRoot};
+use crate::observe::layout::StoreRoot;
 
 const INTERVAL: Duration = Duration::from_secs(60);
 const BLOCK_BYTES: u64 = 512;
@@ -63,10 +63,10 @@ impl<'name> DatasetPlace<'name> {
 /// Observe Store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PoolBytes {
-    /// No Pool lives on this filesystem: a Docker-only Server, or a Pool on
+    /// No Pool lives on this filesystem: a Docker-only Machine, or a Pool on
     /// its own disks.
     Elsewhere,
-    /// A Pool lives here, but `zfs list` or its mount gave no answer.
+    /// A Pool lives here, but `zfs list` gave no answer.
     Unknown,
     Measured {
         volumes: u64,
@@ -77,29 +77,12 @@ pub(super) enum PoolBytes {
     },
 }
 
-/// Where a root-backed Pool would be found.
-#[derive(Clone, Debug)]
-pub(super) struct PoolPaths {
-    backing: PathBuf,
-    mount_root: PathBuf,
-}
-
-impl PoolPaths {
-    pub(super) fn system() -> Self {
-        Self {
-            backing: PathBuf::from(machine_pool::BACKING_FILE),
-            mount_root: PathBuf::from(machine_pool::MOUNT_ROOT),
-        }
-    }
-}
-
-/// Whether the Pool's backing file shares the Observe Store's filesystem, and
-/// what its mounted root says is free.
+/// Whether a root-backed Pool's file shares the Observe Store's filesystem.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Placement {
     Elsewhere,
-    Unmounted,
-    Mounted { free: u64 },
+    Here,
+    Unknown,
 }
 
 /// The last 60 s reading.
@@ -122,7 +105,7 @@ impl Default for SlowReading {
 pub(super) async fn run(
     store: StoreRoot,
     zfs: ZfsUsageReader,
-    paths: PoolPaths,
+    pool_file: PathBuf,
     latest: watch::Sender<SlowReading>,
 ) {
     let mut ticks = interval(INTERVAL);
@@ -130,9 +113,9 @@ pub(super) async fn run(
     loop {
         ticks.tick().await;
         let usage = zfs.read().await;
-        let (store, paths) = (store.clone(), paths.clone());
+        let (store, pool_file) = (store.clone(), pool_file.clone());
         let read = tokio::task::spawn_blocking(move || {
-            let placement = locate_pool(store.path(), &paths);
+            let placement = locate_pool(store.path(), &pool_file);
             SlowReading {
                 pool: pool_bytes(&usage, placement),
                 observe_store: store_bytes(store.path()),
@@ -149,47 +132,47 @@ pub(super) async fn run(
 
 /// A root-backed Pool sits in one file on the host root. When the Observe
 /// Store shares that filesystem, the Pool's bytes are part of its total.
-/// On a Docker-only Server the mount root is a plain directory on the same
-/// filesystem, so its `statvfs` would count the root's free bytes twice.
-fn locate_pool(store: &Path, paths: &PoolPaths) -> Placement {
+fn locate_pool(store: &Path, pool_file: &Path) -> Placement {
     let Ok(store_dev) = fs::metadata(store).map(|meta| meta.dev()) else {
-        return Placement::Unmounted;
+        return Placement::Unknown;
     };
-    match fs::metadata(&paths.backing) {
-        Ok(backing) if backing.dev() == store_dev => {}
-        Ok(_) => return Placement::Elsewhere,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Placement::Elsewhere,
-        Err(_) => return Placement::Unmounted,
-    }
-    match fs::metadata(&paths.mount_root) {
-        Ok(root) if root.dev() != store_dev => {}
-        _ => return Placement::Unmounted,
-    }
-    match nix::sys::statvfs::statvfs(&paths.mount_root) {
-        Ok(stat) => Placement::Mounted {
-            free: stat.blocks_available().saturating_mul(stat.fragment_size()),
-        },
-        Err(_) => Placement::Unmounted,
+    match fs::metadata(pool_file) {
+        Ok(file) if file.dev() == store_dev => Placement::Here,
+        Ok(_) => Placement::Elsewhere,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Placement::Elsewhere,
+        Err(_) => Placement::Unknown,
     }
 }
 
+/// The Pool's free bytes come from its root dataset, which never mounts, so
+/// `statvfs` cannot see them.
 fn pool_bytes(usage: &ZfsUsage, placement: Placement) -> PoolBytes {
-    let free = match placement {
+    match placement {
         Placement::Elsewhere => return PoolBytes::Elsewhere,
-        Placement::Unmounted => return PoolBytes::Unknown,
-        Placement::Mounted { free } => free,
-    };
+        Placement::Unknown => return PoolBytes::Unknown,
+        Placement::Here => {}
+    }
     let ZfsUsage::Measured(datasets) = usage else {
         return PoolBytes::Unknown;
     };
-    let (mut volumes, mut mirror_slots) = (0_u64, 0_u64);
+    let (mut volumes, mut mirror_slots, mut free) = (0_u64, 0_u64, None);
     for (name, usage) in datasets {
         match DatasetPlace::of(name) {
             DatasetPlace::Volume(_) => volumes = volumes.saturating_add(usage.referenced),
             DatasetPlace::Slot => mirror_slots = mirror_slots.saturating_add(usage.referenced),
             DatasetPlace::Other => {}
         }
+        if let Some(root) = name
+            .strip_suffix(DATASET_ROOT)
+            .and_then(|pool| pool.strip_suffix('/'))
+            .and_then(|pool| datasets.get(pool))
+        {
+            free = Some(free.unwrap_or(0_u64).saturating_add(root.available));
+        }
     }
+    let Some(free) = free else {
+        return PoolBytes::Unknown;
+    };
     PoolBytes::Measured {
         volumes,
         mirror_slots,
@@ -267,7 +250,8 @@ mod tests {
     use ployz_core::metrics::DiskBreakdown;
 
     use super::{
-        DatasetPlace, Placement, PoolBytes, SlowReading, breakdown, pool_bytes, store_bytes,
+        DatasetPlace, Placement, PoolBytes, SlowReading, breakdown, locate_pool, pool_bytes,
+        store_bytes,
     };
     use crate::{
         observe::metrics::{
@@ -295,16 +279,18 @@ mod tests {
             + disk.other.unwrap_or(0)
     }
 
-    fn listing(datasets: &[(&str, u64)]) -> ZfsUsage {
+    /// Datasets as `(name, referenced, available)`.
+    fn listing(datasets: &[(&str, u64, u64)]) -> ZfsUsage {
         ZfsUsage::Measured(
             datasets
                 .iter()
-                .map(|(name, referenced)| {
+                .map(|(name, referenced, available)| {
                     (
                         (*name).to_owned(),
                         DatasetUsage {
                             referenced: *referenced,
                             refquota: None,
+                            available: *available,
                         },
                     )
                 })
@@ -339,14 +325,14 @@ mod tests {
     #[test]
     fn a_root_backed_pool_splits_into_volumes_slots_store_and_other_that_sum_to_the_total() {
         let usage = listing(&[
-            ("ployz", 100),
-            ("ployz/ployz", 200),
-            ("ployz/ployz/prod_db", 3 * GIB),
-            ("ployz/ployz/prod_cache", GIB),
-            ("ployz/ployz-mirror/prod_web", 2 * GIB),
-            ("ployz/ployz-mirror/prod_web/fs", GIB),
+            ("ployz", 100, 10 * GIB),
+            ("ployz/ployz", 200, 10 * GIB),
+            ("ployz/ployz/prod_db", 3 * GIB, GIB),
+            ("ployz/ployz/prod_cache", GIB, GIB),
+            ("ployz/ployz-mirror/prod_web", 2 * GIB, 10 * GIB),
+            ("ployz/ployz-mirror/prod_web/fs", GIB, 10 * GIB),
         ]);
-        let pool = pool_bytes(&usage, Placement::Mounted { free: 10 * GIB });
+        let pool = pool_bytes(&usage, Placement::Here);
         assert_eq!(
             pool,
             PoolBytes::Measured {
@@ -373,7 +359,7 @@ mod tests {
     fn a_docker_only_server_leaves_volumes_unmeasured_and_still_sums() {
         for usage in [
             ZfsUsage::Gap(ZfsUsageGap::NotInstalled),
-            listing(&[("tank/ployz/db", 5 * GIB)]),
+            listing(&[("tank", 0, GIB), ("tank/ployz", 0, GIB)]),
         ] {
             let pool = pool_bytes(&usage, Placement::Elsewhere);
             assert_eq!(pool, PoolBytes::Elsewhere);
@@ -400,12 +386,11 @@ mod tests {
 
     #[test]
     fn an_unanswered_zfs_leaves_volumes_and_other_unmeasured() {
+        let measured = listing(&[("ployz", 0, GIB), ("ployz/ployz", 0, GIB)]);
         for (usage, placement) in [
-            (
-                ZfsUsage::Gap(ZfsUsageGap::TimedOut),
-                Placement::Mounted { free: GIB },
-            ),
-            (listing(&[("ployz/ployz/db", GIB)]), Placement::Unmounted),
+            (ZfsUsage::Gap(ZfsUsageGap::TimedOut), Placement::Here),
+            (measured, Placement::Unknown),
+            (listing(&[("ployz", 0, GIB)]), Placement::Here),
         ] {
             let disk = breakdown(
                 filesystem(100 * GIB, 30 * GIB),
@@ -418,6 +403,19 @@ mod tests {
             assert_eq!(disk.other, None, "Other would swallow the Volumes");
             assert_eq!(disk.free, 30 * GIB);
         }
+    }
+
+    #[test]
+    fn a_pool_file_beside_the_store_is_here_and_a_missing_one_is_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool_file = dir.path().join("machine-pool");
+        assert_eq!(locate_pool(dir.path(), &pool_file), Placement::Elsewhere);
+        fs::write(&pool_file, b"").unwrap();
+        assert_eq!(locate_pool(dir.path(), &pool_file), Placement::Here);
+        assert_eq!(
+            locate_pool(&dir.path().join("no-store"), &pool_file),
+            Placement::Unknown
+        );
     }
 
     #[test]

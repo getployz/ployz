@@ -18,7 +18,7 @@ use tokio::{
 use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage, transfer::RECEIVE_STALL};
 
 pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
-pub(super) use ployzd::machine_pool::MOUNT_ROOT;
+pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum Place<'name> {
