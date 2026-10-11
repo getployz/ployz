@@ -3,5 +3,12 @@
 //! probe.
 
 pub mod agent;
+pub mod config;
 pub mod control;
 pub mod domain;
+pub mod link;
+pub mod run;
+
+#[cfg(test)]
+#[path = "e2e_tests.rs"]
+mod e2e_tests;

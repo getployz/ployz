@@ -88,3 +88,28 @@ fn target_parse_accepts_what_crud_allows_and_refuses_the_rest() {
         assert!(Target::parse(url).is_err(), "{url} parsed");
     }
 }
+
+#[test]
+fn expect_below_400_judges_every_outcome_kind() {
+    let cases: [(Outcome, Verdict); 6] = [
+        (Outcome::Http { status: 200 }, Verdict::Pass),
+        (Outcome::Http { status: 399 }, Verdict::Pass),
+        (Outcome::Http { status: 400 }, Verdict::Fail),
+        (Outcome::Http { status: 503 }, Verdict::Fail),
+        (
+            Outcome::Unreachable {
+                phase: Phase::Connect,
+                error: HttpCheckError::ConnectionRefused,
+                detail: Detail::new("refused"),
+            },
+            Verdict::Fail,
+        ),
+        (
+            Outcome::NotProbed(NotProbed::Saturated),
+            Verdict::Inconclusive,
+        ),
+    ];
+    for (outcome, want) in cases {
+        assert_eq!(Expect::Below400.judge(&outcome), want, "{outcome:?}");
+    }
+}

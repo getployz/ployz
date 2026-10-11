@@ -247,9 +247,11 @@ async fn relay(
         if commit && armed.swap(false, Ordering::SeqCst) {
             replies.abort();
             server_write.write_all(chunk).await.unwrap();
+            // The writer's 200 ms backoff plus a replay can finish inside the pause, so the flag
+            // goes first.
+            fired.store(true, Ordering::SeqCst);
             // Long enough for the server to commit; the reply goes nowhere.
             sleep(Duration::from_millis(300)).await;
-            fired.store(true, Ordering::SeqCst);
             return;
         }
         if server_write.write_all(chunk).await.is_err() {

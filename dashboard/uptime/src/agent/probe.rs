@@ -87,7 +87,10 @@ pub struct Prober<R = SystemResolver> {
     /// Lets tests aim the HTTP path at local servers. The field and its check don't exist outside
     /// `cfg(test)`, so no production configuration can turn it on.
     #[cfg(test)]
-    pub(super) loopback_ok: bool,
+    pub(crate) loopback_ok: bool,
+    /// Lets tests redirect a loopback dial to an ephemeral port while the check URL keeps port 80.
+    #[cfg(test)]
+    pub(crate) loopback_port: Option<u16>,
 }
 
 impl Prober {
@@ -141,6 +144,8 @@ impl<R: Resolve> Prober<R> {
             agent,
             #[cfg(test)]
             loopback_ok: false,
+            #[cfg(test)]
+            loopback_port: None,
         }
     }
 
@@ -205,7 +210,7 @@ impl<R: Resolve> Prober<R> {
             .phase(
                 Phase::Connect,
                 Some(self.config.connect_timeout),
-                TcpStream::connect(SocketAddr::new(pinned, target.port)),
+                TcpStream::connect(SocketAddr::new(pinned, self.dial_port(pinned, target.port))),
             )
             .await?;
         match target.scheme {
@@ -247,6 +252,19 @@ impl<R: Resolve> Prober<R> {
             .get(index)
             .copied()
             .ok_or(Outcome::NotProbed(NotProbed::PrivateAddress))
+    }
+
+    #[cfg(not(test))]
+    fn dial_port(&self, _ip: IpAddr, port: u16) -> u16 {
+        port
+    }
+
+    #[cfg(test)]
+    fn dial_port(&self, ip: IpAddr, port: u16) -> u16 {
+        match self.loopback_port {
+            Some(local) if self.loopback_ok && ip.is_loopback() => local,
+            Some(_) | None => port,
+        }
     }
 
     fn vetted(&self, ip: IpAddr) -> bool {

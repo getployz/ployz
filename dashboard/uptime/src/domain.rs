@@ -32,6 +32,16 @@ pub struct UnixMs(pub i64);
 
 impl UnixMs {
     #[must_use]
+    pub fn now() -> UnixMs {
+        match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(since) => UnixMs(i64::try_from(since.as_millis()).unwrap_or(i64::MAX)),
+            Err(before) => {
+                UnixMs(-i64::try_from(before.duration().as_millis()).unwrap_or(i64::MAX))
+            }
+        }
+    }
+
+    #[must_use]
     pub fn plus(self, by: Duration) -> UnixMs {
         UnixMs(
             self.0
@@ -127,6 +137,12 @@ impl Interval {
     #[must_use]
     pub fn as_duration(self) -> Duration {
         Duration::from_secs(u64::from(self.0))
+    }
+
+    /// Lets the end-to-end test run a 30 s schedule in one second. Absent from release builds.
+    #[cfg(test)]
+    pub(crate) fn unchecked(secs: u32) -> Interval {
+        Interval(secs)
     }
 }
 
@@ -268,6 +284,15 @@ impl Expect {
             _ => Err(BadExpect(name.to_owned())),
         }
     }
+
+    #[must_use]
+    pub fn judge(self, outcome: &Outcome) -> Verdict {
+        match (self, outcome) {
+            (Expect::Below400, Outcome::Http { status }) if *status < 400 => Verdict::Pass,
+            (Expect::Below400, Outcome::Http { .. } | Outcome::Unreachable { .. }) => Verdict::Fail,
+            (Expect::Below400, Outcome::NotProbed(_)) => Verdict::Inconclusive,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -292,7 +317,7 @@ pub struct Check {
 }
 
 /// One unit of work for an agent.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Job {
     pub key: ProbeKey,
     pub target: Arc<Target>,
@@ -303,7 +328,7 @@ pub struct Job {
 }
 
 /// What an agent saw. Nothing here is interpreted: no verdict, no cause.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Observation {
     pub key: ProbeKey,
     /// When the probe actually started, in the control plane's clock.
