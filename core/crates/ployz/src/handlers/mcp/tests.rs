@@ -262,6 +262,10 @@ fn writes(seen: &[Seen]) -> Vec<&Seen> {
     seen.iter().filter(|seen| is_write(&seen.path)).collect()
 }
 
+fn fixed(place: Place) -> Locate {
+    Box::new(move || Ok(place.clone()))
+}
+
 fn on_cloud(fake: &Fake, place: Place) -> Server {
     Server {
         keys: |_, _, tool| format!("call-{tool}"),
@@ -272,7 +276,7 @@ fn on_cloud(fake: &Fake, place: Place) -> Server {
                 cloud: Some(fake.url.clone()),
             },
             Store::Cloud,
-            place,
+            fixed(place),
         )
     }
 }
@@ -307,7 +311,7 @@ fn on_local(place: Place) -> Server {
         ..Server::new(
             Account::default(),
             Store::Local(Arc::new(shop()), who()),
-            place,
+            fixed(place),
         )
     }
 }
@@ -1009,10 +1013,16 @@ async fn an_answered_call_keeps_the_deadline_of_the_call_that_asked() {
     let asking = ask_as_claude_code(&mut client, &deploy.input).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     let stopped = answer_on(&mut client, "deploy", &deploy.input, &asking, approve()).await;
+    let refusal = &stopped["result"]["structuredContent"];
     assert_eq!(
-        stopped["result"]["content"][0]["text"],
-        "ployz mcp stopped `deploy` after 3 seconds. What it started may still be running; \
-         check with `deployment_show`."
+        refusal["message"],
+        "Stopped waiting for `deploy` after 3 seconds; Ployz Cloud may still take what it sent",
+        "{stopped}"
+    );
+    assert_eq!(refusal["writes"], "unknown", "{stopped}");
+    assert_eq!(
+        refusal["retry"]["input"]["request_key"], deploy.input["request_key"],
+        "{stopped}"
     );
     assert_eq!(
         decisions(&fake.requests()),
@@ -1292,6 +1302,8 @@ async fn a_denial_after_someone_else_approved_says_so_and_claims_nothing() {
 enum Lost {
     Dropped,
     Garbled,
+    /// Held open with no reply, as a slow Cloud does.
+    Unanswered,
 }
 
 /// A Ployz Cloud that answers a request on a path in `answers` and loses the reply to
@@ -1301,6 +1313,7 @@ fn lossy_cloud(answers: HashMap<&'static str, Value>, lost: Lost) -> Fake {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (saw, seen) = channel();
     std::thread::spawn(move || {
+        let mut unanswered = Vec::new();
         for stream in listener.incoming() {
             let mut stream = stream.unwrap();
             let request = incoming(&stream);
@@ -1308,6 +1321,10 @@ fn lossy_cloud(answers: HashMap<&'static str, Value>, lost: Lost) -> Fake {
                 (Some(answer), _) => Some(answer.to_string()),
                 (None, Lost::Garbled) => Some("<html>bad gateway</html>".to_owned()),
                 (None, Lost::Dropped) => None,
+                (None, Lost::Unanswered) => {
+                    unanswered.push(stream.try_clone().unwrap());
+                    None
+                }
             };
             let _ = saw.send(request);
             if let Some(reply) = reply {
@@ -1397,6 +1414,40 @@ async fn a_lost_reply_to_a_write_says_it_may_have_landed_and_retries_under_the_s
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
+async fn a_write_unanswered_at_the_deadline_may_have_landed_and_retries_under_the_same_key() {
+    let place = transcript("deploy", StoreAt::Cloud).place;
+    let answers = HashMap::from([("/api/cli/agent/ask", servers_answer())]);
+    let cloud = lossy_cloud(answers, Lost::Unanswered);
+    let mut server = Server {
+        session: "s".to_owned(),
+        keys: call_key,
+        ..on_cloud(&cloud, place)
+    };
+    server.deadline = Duration::from_secs(1);
+    let mut client = Client::initialized(server, json!({})).await;
+    let done = client
+        .call(2, "server_drain", json!({ "server": "web-2" }))
+        .await;
+    assert!(
+        cloud
+            .requests()
+            .iter()
+            .any(|seen| seen.path == "/api/cli/agent/act"),
+        "Cloud took the write"
+    );
+    assert_eq!(done["result"]["isError"], true, "{done}");
+    let refusal = &done["result"]["structuredContent"];
+    assert_eq!(refusal["writes"], "unknown", "{done}");
+    assert_eq!(refusal["retry"]["tool"], "server_drain", "{done}");
+    assert_eq!(
+        refusal["retry"]["input"]["request_key"],
+        RequestKey::effective(None, "s:2").as_str(),
+        "{done}"
+    );
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
 async fn a_lost_reply_to_a_read_wrote_nothing() {
     let place = transcript("deploy", StoreAt::Cloud).place;
     let cloud = lossy_cloud(HashMap::new(), Lost::Dropped);
@@ -1405,5 +1456,167 @@ async fn a_lost_reply_to_a_read_wrote_nothing() {
     assert!(
         refusal["retry"]["input"].get("request_key").is_none(),
         "{refusal}"
+    );
+}
+
+/// [`shop`] whose `production`, deployed with `web`, was removed from the Servers but
+/// not yet from the Store, which only a sweep does.
+#[expect(clippy::indexing_slicing, reason = "Fixed test fixtures use indexing")]
+fn removed_but_unswept() -> ConfigStore {
+    use ployz_core::{DeployOutcome, DeployPreview, ExecutionError, ServiceName};
+    use ployz_store::{
+        Admit, CreateEnvironment, CreateService, Deploy, DeploymentId, EnvironmentName,
+        EnvironmentRef, Removal, Remove, RunEvidence, RunnerId, ServiceLineageId,
+        SetDefaultEnvironment, Trusted, VolumeObservation,
+    };
+
+    let store = shop();
+    let who = who();
+    let production = || EnvironmentRef {
+        project: None,
+        environment: Some(EnvironmentName::parse("production").unwrap()),
+    };
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let run = |id: &DeploymentId| {
+        let runner = RunnerId::parse("runner").unwrap();
+        let claimed = store.claim(id, &runner).unwrap();
+        let operation = json!({ "type": "remove_container", "machine_id": "a".repeat(32),
+                                "container_id": "0".repeat(64) });
+        let preview: DeployPreview = serde_json::from_value(json!({
+            "namespace": claimed.intent.namespace,
+            "operations": [{ "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+                             "operation": operation, "status": { "type": "pending" } }],
+            "warnings": [], "would_remove": [], "preserved_volumes": [],
+        }))
+        .unwrap();
+        store
+            .record(id, &runner, RunEvidence::Prepared(preview))
+            .unwrap();
+        let outcome: DeployOutcome<ExecutionError> =
+            serde_json::from_value(json!({ "type": "success", "completed": [operation] })).unwrap();
+        store
+            .record(
+                id,
+                &runner,
+                RunEvidence::Executed {
+                    progress: Vec::new(),
+                    outcome: Box::new(outcome),
+                    removed: Vec::new(),
+                },
+            )
+            .unwrap();
+    };
+    let deployed = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: deployed.clone(),
+                environment: production(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+        )
+        .unwrap();
+    run(&deployed);
+    store
+        .write(
+            &who,
+            &SetDefaultEnvironment {
+                environment: EnvironmentRef {
+                    project: None,
+                    environment: Some(EnvironmentName::parse("staging").unwrap()),
+                },
+            },
+        )
+        .unwrap();
+    let observed = Trusted {
+        volumes: Some(VolumeObservation {
+            sought: Vec::new(),
+            held: Vec::new(),
+            unanswered: Vec::new(),
+        }),
+        ..Trusted::default()
+    };
+    let remove = |version| Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: Some(EnvironmentName::parse("production").unwrap()),
+        version,
+        accept_volume_loss: std::collections::BTreeMap::new(),
+        every_copy: std::collections::BTreeMap::new(),
+    };
+    let removing = match store.write_trusted(&who, &remove(None), &observed) {
+        Err(refused) if refused.code == RpcErrorCode::ConfirmationRequired => {
+            let version = refused.details["version"].as_str().unwrap().to_owned();
+            store.write_trusted(&who, &remove(Some(version)), &observed)
+        }
+        sent => sent,
+    }
+    .unwrap();
+    let Removal::Removing { left, .. } = removing else {
+        panic!("a deployed Environment leaves the Servers first");
+    };
+    run(&left[0].deployment.as_ref().unwrap().id);
+    store
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn each_local_call_sweeps_the_store_first() {
+    let store = removed_but_unswept();
+    let listed = |store: &ConfigStore| {
+        store
+            .read(&who(), &ployz_store::EnvironmentsQuery::default())
+            .unwrap()
+            .environments
+            .into_iter()
+            .map(|listing| listing.name.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        listed(&store).contains(&"production".to_owned()),
+        "only a sweep deletes it"
+    );
+    let place = transcript("environment_show", StoreAt::Local).place;
+    let server = Server {
+        store: Store::Local(Arc::new(store), who()),
+        ..on_local(place)
+    };
+    let mut client = Client::initialized(server, json!({})).await;
+    let done = client
+        .call(
+            2,
+            "environment_show",
+            json!({ "environment": "production" }),
+        )
+        .await;
+    assert_eq!(done["result"]["isError"], true, "{done}");
+    assert_eq!(
+        done["result"]["structuredContent"]["code"], "not_found",
+        "{done}"
     );
 }

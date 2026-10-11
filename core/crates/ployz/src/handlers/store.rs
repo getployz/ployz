@@ -450,7 +450,7 @@ fn accepted_names(accept: Option<&serde_json::Value>) -> Vec<String> {
     }
 }
 
-fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::RpcError> {
+pub(crate) fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::RpcError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| {
