@@ -277,11 +277,12 @@ sudo docker system df
   change them. A container started before your server ran this release keeps its old settings
   until its next deploy.
 - **Plain Docker volumes** have no size limit, and `docker system df` above counts them.
-- **Kept container logs.** Ployz keeps the logs of containers it ran, even after they're
-  replaced, in `ployz-observe` under Docker's directory. `docker system df` doesn't count them;
-  `sudo du -sh /var/lib/docker/ployz-observe` does. They're capped at 5% of the disk, kept between
-  512 MB and 5 GB, and go after 30 days. When free space drops below 10% of the disk (at least 2 GB), the
-  oldest go first until it's back.
+- **Kept container logs and metrics.** Ployz keeps the logs of containers it ran, even after
+  they're replaced, and the server's metrics in `ployz-observe` under Docker's directory.
+  `docker system df` doesn't count them; `sudo du -sh /var/lib/docker/ployz-observe` does. Together
+  they're capped at 5% of the disk, kept between 512 MB and 5 GB. Logs go after 30 days. When free
+  space drops below 10% of the disk (at least 2 GB), the oldest logs and metrics go first until it's
+  back.
 
 ## A deploy says there isn't enough disk space
 
