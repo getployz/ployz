@@ -348,7 +348,7 @@ function ResponseTimeError({ reset }: ErrorComponentProps) {
   );
 }
 
-const KIND_WORDS = { routine: null, confirm: "Confirm", recheck: "Recheck" } as const;
+const KIND_WORDS = { routine: null, triggered: "Triggered", confirm: "Confirm", recheck: "Recheck" } as const;
 
 /** A result in a few words: "Amsterdam · 212 ms", "sin · 502 · Confirm". */
 function ResultText({ result, regions }: { result: UptimeCheckResult; regions: RegionNames }) {

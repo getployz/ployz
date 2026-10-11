@@ -1,11 +1,12 @@
 //! `ployz token` and `ployz org`: acting in Cloud as this device's
 //! sign-in or `PLOYZ_TOKEN`. None of them needs a Server.
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use serde::Serialize;
 
 use super::store::Next;
-use super::{Error, Handler, config_path, leaf_matches, runtime};
+use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{positional, value};
 use ployz_core::RpcErrorCode;
 
@@ -78,21 +79,21 @@ pub(crate) fn org_command() -> Command {
         )
 }
 
-pub(super) fn token_handler(path: &str) -> Option<Handler> {
+pub(super) fn token_handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "new" => token_new,
-        "ls" => token_list,
-        "rm" => token_remove,
+        "new" => cloud(Always, token_new),
+        "ls" => cloud(Never, token_list),
+        "rm" => cloud(Always, token_remove),
         _ => return None,
     })
 }
 
-pub(super) fn org_handler(path: &str) -> Option<Handler> {
+pub(super) fn org_handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "ls" => org_list,
-        "use" => org_use,
-        "build-order" => org_build_order,
-        "rm" => org_remove,
+        "ls" => cloud(Never, org_list),
+        "use" => cloud(Never, org_use),
+        "build-order" => cloud(Depends, org_build_order),
+        "rm" => cloud(Always, org_remove),
         _ => return None,
     })
 }

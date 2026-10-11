@@ -18,7 +18,7 @@ export function rollupHours(now: Date): readonly [Date, Date] {
 }
 
 /**
- * Recompute one hour of uptime_result_hourly from raw ROUTINE probes, per (check, region). It overwrites the bucket,
+ * Recompute one hour of uptime_result_hourly from raw routine and triggered probes, per (check, region). It overwrites the bucket,
  * so a rerun writes the same values. `probes` is pass plus fail. Inconclusive is counted apart and never fails. The
  * timings are over passing probes only, and the median is null when none passed. Each failure counts once, in its
  * class, and the newest is kept as `last_error`.
@@ -29,7 +29,7 @@ const rollupHourStatement = (hour: Date) => sql`
            status, detail, total_ms, dns_ms, connect_ms, tls_ms, ttfb_ms,
            CASE WHEN verdict = 'fail' THEN ${failureClassSql} END AS cls
     FROM uptime_result
-    WHERE kind = 'routine' AND scheduled_at >= ${hour.toISOString()}::timestamptz
+    WHERE kind IN ('routine', 'triggered') AND scheduled_at >= ${hour.toISOString()}::timestamptz
       AND scheduled_at < ${hour.toISOString()}::timestamptz + interval '1 hour'
     ORDER BY check_id, region, scheduled_at, kind),
   newest_failure AS (
