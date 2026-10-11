@@ -10,6 +10,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
 import type { CommittedViews, StoreResult, StoreViewOf } from "./store.contract";
+import { renameReferences } from "#/modules/variables/variable-template";
 import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 
 /**
@@ -168,6 +169,7 @@ export function cachedRevision(queryClient: QueryClient, organizationSlug: strin
 export const storeEditKey = (organizationSlug: string, key: string) => ["store-edit", organizationSlug, key] as const;
 
 const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
+const isText = Schema.is(Schema.String);
 
 /**
  * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
@@ -188,6 +190,10 @@ export function withPendingChanges(view: EnvironmentView, changes: readonly Chan
       const moved = (path: string) => path === change.path || path.startsWith(`${change.path}.`);
       settings = settings.flatMap((row) => moved(row.path) ? [{ ...row, path: `${to}${row.path.slice(change.path.length)}` }]
         : row.path === to || row.path.startsWith(`${to}.`) ? [] : [row]);
+      const [, service, key] = SERVICE_VARIABLE.exec(change.path) ?? [];
+      if (change.update_references && service && key) {
+        settings = settings.map((row) => switchReferences(row, service, key, change.to.toUpperCase()));
+      }
       continue;
     }
     let row = settings.find((candidate) => candidate.path === change.path);
@@ -198,6 +204,15 @@ export function withPendingChanges(view: EnvironmentView, changes: readonly Chan
     row.value = !isSecret(value) ? value : value.secret === true && isSecret(row.value) ? row.value : { secret: true };
   }
   return { ...view, settings };
+}
+
+const SERVICE_VARIABLE = /^([^.]+)\.env\.([^.]+)$/u;
+
+/** `row`, a variable as the Store shows it, with its references to variable `key` of `service` switched to `to`. */
+function switchReferences(row: EnvironmentView["settings"][number], service: string, key: string, to: string) {
+  const owner = SERVICE_VARIABLE.exec(row.path)?.[1];
+  if (owner === undefined || !isText(row.value)) return row;
+  return { ...row, value: renameReferences(row.value, owner, service, key, to) ?? row.value };
 }
 
 /** An Environment's Settings (every one, defaults included): the view Service editors read and edit. */

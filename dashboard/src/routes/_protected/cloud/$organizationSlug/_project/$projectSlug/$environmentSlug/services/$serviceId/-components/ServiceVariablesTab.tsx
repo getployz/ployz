@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { Persistable } from "#/collections/query-collection";
 import type { EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
-import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
+import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter, variableReferrers } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
@@ -53,14 +53,15 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       onUpdateMetadata={(variable, patch) => writer.export(variable.key, patch.exported ?? variable.exported)}
       onApplyRaw={({ creates, updates, deletes }) => writer.replace([...creates, ...updates], deletes)}
       onNeverSync={(variable, marked) => writer.neverSync(variable.key, marked)}
-      onRename={(variable, to) => writer.rename(variable.key, to)}
+      onRename={(variable, to, updateReferences) => writer.rename(variable.key, to, updateReferences)}
+      referrersOf={(variable) => variableReferrers(settings, service.name, variable.key)}
     />
   );
 }
 
 /** A Service's variables tab: its variables, the raw editor and the variables Ployz adds. */
 function ServiceVariablesView({
-  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, onRename, allowSealOnCreate = false,
+  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, onRename, referrersOf, allowSealOnCreate = false,
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
@@ -73,7 +74,8 @@ function ServiceVariablesView({
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   onApplyRaw: (diff: RawEditorDiff) => Persistable;
   onNeverSync: (variable: VariableRecord, marked: boolean) => void;
-  onRename: (variable: VariableRecord, to: string) => void;
+  onRename: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
+  referrersOf: (variable: VariableRecord) => readonly string[];
   allowSealOnCreate?: boolean;
 }) {
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
@@ -89,6 +91,7 @@ function ServiceVariablesView({
         onUpdateMetadata={onUpdateMetadata}
         onNeverSync={onNeverSync}
         onRename={onRename}
+        referrersOf={referrersOf}
         valueTargets={valueTargets}
         serviceNames={serviceNames}
         headerActions={

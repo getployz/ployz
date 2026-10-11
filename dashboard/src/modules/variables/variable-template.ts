@@ -197,3 +197,19 @@ export function buildRefToken(input: {
     ? `\${{ ${input.ownerSlug}.${input.key} }}`
     : `\${{ ${input.key} }}`;
 }
+
+/**
+ * `text`, a variable of Service `owner` as the Store shows it (references by Service name), with each reference to
+ * variable `key` of Service `service` switched to `to`; null when it has none.
+ */
+export function renameReferences(text: string, owner: string, service: string, key: string, to: string): string | null {
+  const { parts } = parseDisplayToParts(text, (slug) => ({ lineageId: slug, scope: "service" }));
+  let renamed = false;
+  const switched = parts.map((part): ValuePart => {
+    if (part.kind !== "ref" || part.key !== key) return part;
+    if ((part.owner.scope === "self" ? owner : part.owner.lineageId) !== service) return part;
+    renamed = true;
+    return { ...part, key: to };
+  });
+  return renamed ? partsToDisplay(switched, (name) => name) : null;
+}

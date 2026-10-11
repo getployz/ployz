@@ -2,12 +2,14 @@ import { Schema } from "effect";
 import type { Change, EnvironmentRef, EnvironmentView, RowId, ServiceListing, SettingRow } from "@ployz/sdk";
 import { getManagedServiceExports } from "#/modules/variables/managed-service-exports";
 import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete";
+import { renameReferences } from "#/modules/variables/variable-template";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
 import { serviceSettingRows } from "./store-services";
 import type { useStoreWriter } from "./store-write";
 
 const VARIABLE = /^env\.([^.]+)$/u;
+const SERVICE_VARIABLE = /^([^.]+)\.env\.([^.]+)$/u;
 const isText = Schema.is(Schema.String);
 const isValueless = Schema.is(Schema.Struct({ secret: Schema.Literal(false) }));
 
@@ -67,8 +69,16 @@ export function storeVariableWriter(
       { op: "set", path: path(key), value: sealed ? { secret: value } : value },
       { op: "set", path: `${path(key)}.exported`, value: exported },
     ),
-    /** Renames it, value, seal and export alike; the Store refuses a name in use or a referenced variable. */
-    rename: (key: string, to: string) => edit({ op: "rename", path: path(key), to }),
+    /**
+     * Renames it, value, seal and export alike; the Store refuses a name in use. With `updateReferences`, the variables
+     * that reference it switch to the new name; without, the Store refuses a referenced variable.
+     */
+    rename: (key: string, to: string, updateReferences = false) => {
+      const change: Change = { op: "rename", path: path(key), to };
+      // An older Store refuses the field, so it goes only with references to update.
+      if (updateReferences) change.update_references = true;
+      return edit(change);
+    },
     seal: (key: string, value: string) => edit({ op: "set", path: path(key), value: { secret: value } }),
     export: (key: string, exported: boolean) => edit({ op: "set", path: `${path(key)}.exported`, value: exported }),
     /** Marks the variable Never sync, or with `marked` false syncs it again: at once, nothing to deploy. */
@@ -83,6 +93,15 @@ export function storeVariableWriter(
       ...removed.map((key): Change => ({ op: "unset", path: path(key) })),
     ),
   };
+}
+
+/** The variables of `view` that reference variable `key` of Service `service`, as `SERVICE.KEY`: what a rename switches. */
+export function variableReferrers(view: EnvironmentView, service: string, key: string): string[] {
+  return view.settings.flatMap(({ path, value }) => {
+    const [, owner, own] = SERVICE_VARIABLE.exec(path) ?? [];
+    if (owner === undefined || own === undefined || !isText(value)) return [];
+    return renameReferences(value, owner, service, key, key) === null ? [] : [`${owner}.${own}`];
+  });
 }
 
 /** Default built-in reference values; authored variables take precedence. */

@@ -24,6 +24,7 @@ export function VariableRow({
   onUpdateMetadata,
   onNeverSync,
   onRename,
+  referrers,
 }: {
   variable: VariableRecord;
   collection: VariableWriter;
@@ -37,8 +38,10 @@ export function VariableRow({
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** When provided, the menu marks the variable Never sync, or syncs it again. */
   onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
-  /** When provided, the menu renames the variable. */
-  onRename?: (variable: VariableRecord, to: string) => void;
+  /** When provided, the menu renames the variable; with `updateReferences`, the variables using it switch too. */
+  onRename?: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
+  /** The variables that reference this one, as `SERVICE.KEY`, which a rename switches to the new name. */
+  referrers?: readonly string[];
 }) {
   const [state, dispatch] = useReducer(
     variableRowReducer,
@@ -138,9 +141,10 @@ export function VariableRow({
       {onRename ? (
         <VariableRenameDialog
           variableKey={variable.key}
+          referrers={referrers}
           open={state.renameOpen}
           onOpenChange={(open) => dispatch({ type: "renameDialogChanged", open })}
-          onRename={(to) => onRename(variable, to)}
+          onRename={(to, updateReferences) => onRename(variable, to, updateReferences)}
         />
       ) : null}
     </div>

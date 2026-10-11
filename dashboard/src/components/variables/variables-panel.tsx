@@ -41,6 +41,7 @@ export function VariablesPanel({
   onUpdateMetadata,
   onNeverSync,
   onRename,
+  referrersOf,
   allowSealOnCreate = false,
   defaultExported = false,
   headerActions,
@@ -62,8 +63,10 @@ export function VariablesPanel({
   onSealVariable: (variable: PlainVariableRecord) => void;
   /** When provided, each row's menu marks it Never sync, or syncs it again. */
   onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
-  /** When provided, each row's menu renames it. */
-  onRename?: (variable: VariableRecord, to: string) => void;
+  /** When provided, each row's menu renames it; with `updateReferences`, the variables using it switch too. */
+  onRename?: (variable: VariableRecord, to: string, updateReferences: boolean) => void;
+  /** The variables that reference one, as `SERVICE.KEY`, which its rename switches to the new name. */
+  referrersOf?: (variable: VariableRecord) => readonly string[];
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
   allowSealOnCreate?: boolean;
@@ -139,6 +142,7 @@ export function VariablesPanel({
                 onUpdateMetadata={onUpdateMetadata}
                 onNeverSync={onNeverSync}
                 onRename={onRename}
+                referrers={referrersOf?.(variable)}
               />
             ))}
           </div>

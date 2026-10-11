@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { EnvironmentRef, EnvironmentView, RowId } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
-import { serviceVariables, storeVariableWriter } from "./store-variables";
+import { serviceVariables, storeVariableWriter, variableReferrers } from "./store-variables";
 import { withPendingChanges } from "./store-view.queries";
 
 const view: EnvironmentView = {
@@ -95,4 +95,44 @@ it("sends a rename as one Store edit on the variable's path", async () => {
   const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map());
   await writer.rename("API_KEY", "STRIPE_KEY");
   expect(edit).toHaveBeenCalledExactlyOnceWith({ environment, changes: [{ op: "rename", path: "web.env.API_KEY", to: "STRIPE_KEY" }] });
+});
+
+const referenced: EnvironmentView = {
+  ...view,
+  settings: [
+    ...view.settings,
+    { path: "web.env.UPSTREAM", value: "${{ LOG_LEVEL }}/v1", default: null, apply: "staged" },
+    { path: "worker.env.BACKEND", value: "${{ web.LOG_LEVEL }} ${{ api.LOG_LEVEL }}", default: null, apply: "staged" },
+    { path: "worker.env.LITERAL", value: "$${{ web.LOG_LEVEL }} LOG_LEVEL", default: null, apply: "staged" },
+    { path: "api.env.LOG_LEVEL", value: "debug", default: null, apply: "staged" },
+    { path: "api.env.SELF", value: "${{ LOG_LEVEL }}", default: null, apply: "staged" },
+  ],
+};
+const shownValue = (shown: EnvironmentView, path: string) => shown.settings.find((row) => row.path === path)?.value;
+
+it("finds the variables that reference a variable, in either form, and nothing that only looks like one", () => {
+  expect(variableReferrers(referenced, "web", "LOG_LEVEL")).toEqual(["web.UPSTREAM", "worker.BACKEND"]);
+  expect(variableReferrers(referenced, "api", "LOG_LEVEL")).toEqual(["worker.BACKEND", "api.SELF"]);
+  expect(variableReferrers(referenced, "web", "API_KEY")).toEqual([]);
+});
+
+it("shows a pending rename's references under the new name only when it updates them", () => {
+  const switched = withPendingChanges(referenced, [{ op: "rename", path: "web.env.LOG_LEVEL", to: "level", update_references: true }]);
+  expect(shownValue(switched, "web.env.UPSTREAM")).toBe("${{ LEVEL }}/v1");
+  expect(shownValue(switched, "worker.env.BACKEND")).toBe("${{ web.LEVEL }} ${{ api.LOG_LEVEL }}");
+  expect(shownValue(switched, "worker.env.LITERAL")).toBe("$${{ web.LOG_LEVEL }} LOG_LEVEL");
+  expect(shownValue(switched, "api.env.SELF")).toBe("${{ LOG_LEVEL }}");
+
+  const kept = withPendingChanges(referenced, [{ op: "rename", path: "web.env.LOG_LEVEL", to: "LEVEL" }]);
+  expect(shownValue(kept, "web.env.UPSTREAM")).toBe("${{ LOG_LEVEL }}/v1");
+});
+
+it("sends update_references only when asked", async () => {
+  const edit = vi.fn().mockResolvedValue(undefined);
+  const environment: EnvironmentRef = { project: "shop", environment: "production" };
+  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map());
+  await writer.rename("LOG_LEVEL", "LEVEL", true);
+  expect(edit).toHaveBeenCalledExactlyOnceWith({
+    environment, changes: [{ op: "rename", path: "web.env.LOG_LEVEL", to: "LEVEL", update_references: true }],
+  });
 });
