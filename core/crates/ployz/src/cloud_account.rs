@@ -366,10 +366,25 @@ pub(crate) async fn start_run(
     struct Queued {
         id: String,
     }
+    let queued: Queued = approved_answer(credential, method, path, body, approval).await?;
+    Ok(queued.id)
+}
+
+/// Cloud's answer to `/api/cli/<path>`, carrying `approval` when Cloud asked for one.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, `approval_required` among them, or a Cloud failure.
+pub(crate) async fn approved_answer<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: &serde_json::Value,
+    approval: Option<&str>,
+) -> Result<T, StoreCallError> {
     let url = format!("{}/api/cli/{path}", credential.cloud());
     let response = send_approved(credential, method, &url, body, approval).await?;
-    let queued: Queued = store_answer(credential, response).await?;
-    Ok(queued.id)
+    store_answer(credential, response).await
 }
 
 /// Read the Cloud run at `/api/cli/<path>` every second until its `state` is neither

@@ -245,7 +245,9 @@ async fn each_kind_posts_only_its_own_fields() {
             assert_eq!(sent, expected);
             (200, json!({ "run": reply.clone() }))
         });
-        let started = start(&token(&cloud), &volume(), &request).await.unwrap();
+        let started = start(&token(&cloud), &volume(), &request, None)
+            .await
+            .unwrap();
         assert_eq!(started.id.as_str(), RUN);
         assert_eq!(started.state, VolumeRunState::Requested);
         assert_eq!(serde_json::to_value(started.kind).unwrap(), json!(kind));
@@ -268,7 +270,7 @@ async fn a_refused_run_keeps_cloud_s_refusal() {
         slot: None,
         confirm: None,
     };
-    let error = start(&token(&cloud), &volume(), &request)
+    let error = start(&token(&cloud), &volume(), &request, None)
         .await
         .unwrap_err();
     assert!(

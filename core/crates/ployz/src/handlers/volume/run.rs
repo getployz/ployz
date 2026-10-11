@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use super::super::store::{self, Backend, Next};
 use super::super::{Error, leaf_matches};
-use crate::cli::{positional, switch, value};
+use crate::approval::{self, Asked, Verb};
+use crate::cli::{approval as approval_arg, positional, switch, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
@@ -153,19 +154,21 @@ pub(crate) struct Runs {
     pub(crate) runs: Vec<VolumeRun>,
 }
 
-/// Have Cloud start `request` on Volume `volume`.
+/// Have Cloud start `request` on Volume `volume`, carrying `approval` when Cloud asked for one.
 pub(crate) async fn start(
     credential: &Credential,
     volume: &VolumeId,
     request: &RunRequest,
+    approval: Option<&str>,
 ) -> Result<VolumeRun, StoreCallError> {
     let body = serde_json::to_value(request)
         .map_err(|error| crate::cloud_login::LoginError::Reply(error.to_string()))?;
-    let started: OneRun = cloud_account::refusable(
+    let started: OneRun = cloud_account::approved_answer(
         credential,
         Method::POST,
         &format!("volumes/{volume}/runs"),
-        Some(&body),
+        &body,
+        approval,
     )
     .await?;
     Ok(started.run)
@@ -251,6 +254,7 @@ pub(super) fn mirror_command() -> Command {
                     .value_name("VOLUME")
                     .help("The Volume's name, to delete a Mirror that is its only copy left"),
             )
+            .arg(approval_arg())
             .arg(wait_flag()),
     )
 }
@@ -286,6 +290,7 @@ pub(super) fn release_command() -> Command {
             .about("Start a Volume's Service again where it was, ending a Move that stopped before the handover (Ployz Cloud)"),
     )
     .arg(positional("volume", true))
+    .arg(approval_arg())
     .arg(wait_flag())
 }
 
@@ -442,8 +447,7 @@ fn request(
         environment: environment.name,
     });
     let confirming = asked.kind == VolumeRunKind::DeleteMirror && asked.confirm.is_none();
-    let run = runtime
-        .block_on(start(credential, &volume_id, &asked))
+    let run = approved(runtime, credential, matches, volume, &volume_id, &asked)?
         .map_err(|error| refused(&store, matches, error, confirming, volume))?;
     let follow = store::next(
         matches,
@@ -466,6 +470,61 @@ fn request(
         .block_on(settle(credential, run))
         .map_err(|error| store.fail(error))?;
     ended(&run, &started, follow)
+}
+
+/// Start `asked`, settling an approval Cloud asks for first. Only `approval_required` leaves
+/// the outer result; every other refusal comes back inner, for this command's own hints.
+fn approved(
+    runtime: &tokio::runtime::Runtime,
+    credential: &Credential,
+    matches: &ArgMatches,
+    volume: &VolumeName,
+    volume_id: &VolumeId,
+    asked: &RunRequest,
+) -> Result<Result<VolumeRun, StoreCallError>, Error> {
+    let (verb, mut words) = match (asked.kind, &asked.slot) {
+        (VolumeRunKind::Release, _) => (
+            Verb::Release,
+            vec![
+                "volume".to_owned(),
+                "release".to_owned(),
+                volume.to_string(),
+            ],
+        ),
+        (VolumeRunKind::DeleteMirror, slot) => {
+            let mirror = slot
+                .as_ref()
+                .map_or_else(|| volume.to_string(), |slot| format!("{volume}-{slot}"));
+            let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
+            words.push(mirror);
+            if let Some(confirm) = &asked.confirm {
+                words.extend(["--confirm".to_owned(), confirm.clone()]);
+            }
+            (Verb::RemoveMirror, words)
+        }
+        (VolumeRunKind::Mirror | VolumeRunKind::Sync | VolumeRunKind::Move, _) => {
+            return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
+        }
+    };
+    words.push("--approval".to_owned());
+    let retry = |id: &str| {
+        let mut args: Vec<&str> = words.iter().map(String::as_str).collect();
+        args.push(id);
+        store::next(matches, &args)
+    };
+    approval::approved(
+        runtime,
+        credential,
+        verb,
+        matches.get_one::<String>("approval").cloned(),
+        retry,
+        async |approval| match start(credential, volume_id, asked, approval).await {
+            Err(StoreCallError::Refused(refusal)) if Asked::of(&refusal).is_some() => {
+                Err(StoreCallError::Refused(refusal))
+            }
+            other => Ok(other),
+        },
+    )
 }
 
 fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
