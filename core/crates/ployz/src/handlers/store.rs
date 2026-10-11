@@ -639,6 +639,49 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
         .collect()
 }
 
+/// A Setting's value as `get` and `inspect` show it, marked when it is the default
+/// and followed by the default when it is not: `3 (default 1)`.
+pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
+    let value = plain(&row.value);
+    if row.value == row.default {
+        format!("{value} (default)")
+    } else if row.default.is_null() {
+        value
+    } else {
+        format!("{value} (default {})", plain(&row.default))
+    }
+}
+
+/// A value on one line: text unquoted, nothing as `-`.
+pub(crate) fn plain(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.escape_debug().to_string(),
+        serde_json::Value::Null => "-".to_owned(),
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Array(_)
+        | serde_json::Value::Object(_) => value.to_string(),
+    }
+}
+
+/// A Service's domains on one line, `shop.acme.ployz.app, app.example.com (port 3000)`,
+/// or `-` when it has none.
+pub(crate) fn domain_list(domains: &[ployz_store::DomainRow], service: &str) -> String {
+    let listed: Vec<String> = domains
+        .iter()
+        .filter(|row| row.domain.service.as_str() == service)
+        .map(|row| match row.domain.port {
+            Some(port) => format!("{} (port {port})", row.domain.shown()),
+            None => row.domain.shown().to_owned(),
+        })
+        .collect();
+    if listed.is_empty() {
+        "-".to_owned()
+    } else {
+        listed.join(", ")
+    }
+}
+
 /// Argument `arg`, a Service name. Core's name error quotes the value; a rejected
 /// value is never echoed.
 pub(crate) fn service_name(
