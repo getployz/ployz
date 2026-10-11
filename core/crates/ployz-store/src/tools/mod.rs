@@ -13,6 +13,7 @@ pub mod logs;
 mod machine;
 mod refusal;
 mod release;
+mod removal;
 mod runtime;
 mod schema;
 mod server;
@@ -74,6 +75,8 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<copies::VolumeMirrorRemove>(),
     entry::<copies::VolumeMove>(),
     entry::<copies::VolumeRelease>(),
+    entry::<removal::EnvironmentRemove>(),
+    entry::<removal::ProjectRemove>(),
     entry::<server::ServerRemove>(),
 ];
 
