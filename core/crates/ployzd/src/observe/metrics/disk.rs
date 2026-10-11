@@ -165,6 +165,7 @@ fn pool_bytes(usage: &ZfsUsage, placement: Placement) -> PoolBytes {
         if let Some(root) = name
             .strip_suffix(DATASET_ROOT)
             .and_then(|pool| pool.strip_suffix('/'))
+            .filter(|pool| !pool.contains('/'))
             .and_then(|pool| datasets.get(pool))
         {
             free = Some(free.unwrap_or(0_u64).saturating_add(root.available));
@@ -353,6 +354,25 @@ mod tests {
         assert_eq!(disk.free, 40 * GIB, "the Pool's free bytes are free");
         assert_eq!(disk.other, Some(52 * GIB));
         assert_eq!(parts_sum(&disk), disk.total);
+    }
+
+    #[test]
+    fn a_nested_dataset_named_ployz_lends_its_parent_no_free_bytes() {
+        let usage = listing(&[
+            ("ployz", 100, 10 * GIB),
+            ("ployz/ployz", 200, 10 * GIB),
+            ("tank", 100, 50 * GIB),
+            ("tank/apps", 100, 50 * GIB),
+            ("tank/apps/ployz", 100, 50 * GIB),
+        ]);
+        assert_eq!(
+            pool_bytes(&usage, Placement::Here),
+            PoolBytes::Measured {
+                volumes: 0,
+                mirror_slots: 0,
+                free: 10 * GIB,
+            }
+        );
     }
 
     #[test]
