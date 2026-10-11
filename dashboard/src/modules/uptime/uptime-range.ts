@@ -1,3 +1,6 @@
+import { TZDate, tzOffset } from "@date-fns/tz";
+import * as chrono from "chrono-node";
+import type { Component } from "chrono-node";
 import { Schema } from "effect";
 import { retentionCutoff } from "./retention";
 
@@ -72,71 +75,43 @@ export function pointSource(window: RangeWindow, now: number): PointSource {
   return length <= 7 * DAY_MS ? "hourly" : "sixHourly";
 }
 
-const UNIT_WORDS = [
-  ["s", ["s", "sec", "secs", "second", "seconds"]],
-  ["m", ["m", "min", "mins", "minute", "minutes"]],
-  ["h", ["h", "hr", "hrs", "hour", "hours"]],
-  ["d", ["d", "day", "days"]],
-  ["w", ["w", "wk", "wks", "week", "weeks"]],
-] satisfies readonly (readonly [Unit, readonly string[]])[];
-
-/** How far `timeZone` is ahead of UTC at `at`. */
-function zoneOffset(at: number, timeZone: string) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
-  }).formatToParts(at);
-  const field = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
-  const wall = Date.UTC(field("year"), field("month") - 1, field("day"), field("hour"), field("minute"), field("second"));
-  return wall - Math.floor(at / SECOND_MS) * SECOND_MS;
+/** The coarsest whole unit an offset back from now fits, as an edge, or null when none does in six digits. */
+function agoEdge(ms: number) {
+  const unit = (["w", "d", "h", "m", "s"] satisfies Unit[]).find((candidate) => ms % UNIT_MS[candidate] === 0);
+  return unit && ms / UNIT_MS[unit] < 1_000_000 ? `${ms / UNIT_MS[unit]}${unit}` : null;
 }
+
+const casual = chrono.en.configuration.createCasualConfiguration();
+/** chrono's casual English, but "2026-13-01" is no date rather than January 13: the first parser is the year-month-day one. */
+const parser = new chrono.Chrono({
+  ...casual,
+  parsers: [...chrono.en.configuration.createConfiguration(true).parsers.slice(0, 1), ...casual.parsers.slice(1)],
+});
 
 /**
- * The instant a wall-clock time in `timeZone` names, given as UTC fields. A time the clocks fall back over names its
- * first instant; a time they spring forward over lands as far past the jump as it was past the last valid time.
- */
-function zonedInstant(wall: number, timeZone: string) {
-  const offsets = [zoneOffset(wall - DAY_MS / 2, timeZone), zoneOffset(wall + DAY_MS / 2, timeZone)];
-  const exact = offsets.map((offset) => wall - offset).filter((at) => at + zoneOffset(at, timeZone) === wall);
-  return exact.length > 0 ? Math.min(...exact) : wall - (offsets[0] ?? 0);
-}
-
-/** Midnight of the day `at` falls on in `timeZone`, as a wall time in UTC fields. */
-function wallDay(at: number, timeZone: string) {
-  const wall = at + zoneOffset(at, timeZone);
-  return wall - (wall % DAY_MS);
-}
-
-/**
- * What a person typed into From or Until, as an edge, or null when it names no time. Accepts "now", "15m", "15m ago",
- * "2 hours ago", "today", "yesterday", "2023-12-25", "2023-12-25 14:30" in `timeZone`, and ISO instants with a zone.
+ * What a person typed into From or Until, as an edge, or null when it names no time. chrono-node reads the text: "now",
+ * "15m ago", "2 hours ago", "yesterday", "2023-12-25 14:30", ISO instants. "15m" reads as "15m ago". An offset back
+ * from now stays relative; a day without a time is its midnight; wall clock times are in `timeZone`.
  */
 export function parseEdge(input: string, timeZone: string, now: number): string | null {
-  const text = input.trim().toLowerCase();
-  if (text === "now") return "now";
-  if (text === "today" || text === "yesterday") {
-    const day = wallDay(now, timeZone) - (text === "yesterday" ? DAY_MS : 0);
-    return instantEdge(zonedInstant(day, timeZone));
+  const trimmed = input.trim().toLowerCase();
+  const text = /^\d+\s*[a-z]+$/u.test(trimmed) ? `${trimmed} ago` : trimmed;
+  const reference = { instant: new Date(now), timezone: tzOffset(timeZone, new Date(now)) };
+  const [result, ...rest] = parser.parse(text, reference, { forwardDate: false });
+  if (!result || rest.length > 0 || result.end || result.index !== 0 || result.text.length !== text.length) return null;
+  const tags = result.tags();
+  if (tags.has("casualReference/now")) return "now";
+  if (tags.has("result/relativeDate")) {
+    const back = now - result.start.date().getTime();
+    if (back === 0) return "now";
+    if (back > 0) return agoEdge(back) ?? instantEdge(now - back);
   }
-  const ago = /^(\d{1,6})\s*([a-z]+)(?:\s+ago)?$/u.exec(text);
-  if (ago) {
-    const unit = UNIT_WORDS.find(([, words]) => words.includes(ago[2] ?? ""))?.[0];
-    if (unit === undefined) return null;
-    return Number(ago[1]) === 0 ? "now" : `${Number(ago[1])}${unit}`;
-  }
-  const wall = /^(\d{4})-(\d{2})-(\d{2})(?:[ t](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/u.exec(text);
-  if (wall) {
-    const [year, month, day, hour, minute, second] = wall.slice(1).map((field) => Number(field ?? 0));
-    const ms = Date.UTC(year ?? 0, (month ?? 1) - 1, day ?? 1, hour ?? 0, minute ?? 0, second ?? 0);
-    const back = new Date(ms);
-    const valid = back.getUTCFullYear() === year && back.getUTCMonth() + 1 === month && back.getUTCDate() === day
-      && (hour ?? 0) < 24 && (minute ?? 0) < 60 && (second ?? 0) < 60;
-    return valid ? instantEdge(zonedInstant(ms, timeZone)) : null;
-  }
-  if (/^\d{4}-\d{2}-\d{2}t\d{2}:\d{2}(:\d{2}(\.\d+)?)?(z|[+-]\d{2}:?\d{2})$/u.test(text)) {
-    const ms = Date.parse(text.toUpperCase());
-    return Number.isNaN(ms) ? null : instantEdge(ms);
-  }
-  return null;
+  if (result.start.isCertain("timezoneOffset")) return instantEdge(result.start.date().getTime());
+  const field = (component: Component) => result.start.get(component) ?? 0;
+  const timed = result.start.isCertain("hour");
+  const wall = new TZDate(field("year"), field("month") - 1, field("day"),
+    timed ? field("hour") : 0, timed ? field("minute") : 0, timed ? field("second") : 0, timeZone);
+  return instantEdge(wall.getTime());
 }
 
 /** An edge as From and Until show it, in a form `parseEdge` reads back: "now", "15m ago", "2026-10-11 14:00". */

@@ -13,6 +13,8 @@ describe("parseEdge", () => {
     expect(parseEdge(" 15 min ago ", NY, NOW)).toBe("15m");
     expect(parseEdge("2 hours ago", NY, NOW)).toBe("2h");
     expect(parseEdge("1 Week", NY, NOW)).toBe("1w");
+    expect(parseEdge("-5m", NY, NOW)).toBe("5m");
+    expect(parseEdge("90 minutes ago", NY, NOW)).toBe("90m");
     expect(parseEdge("0m", NY, NOW)).toBe("now");
     expect(parseEdge("Now", NY, NOW)).toBe("now");
     expect(parseEdge("3 fortnights", NY, NOW)).toBeNull();
@@ -45,7 +47,7 @@ describe("parseEdge", () => {
   });
 
   it("names nothing for dates that do not exist or text that is not a time", () => {
-    for (const input of ["2026-02-30", "2026-13-01", "2026-10-11 24:00", "2026-10-11 12:60", "soon", "", "-5m", "15"]) {
+    for (const input of ["2026-02-30", "2026-13-01", "2026-10-11 24:00", "2026-10-11 12:60", "soon", "", "15", "in a bit"]) {
       expect(parseEdge(input, NY, NOW)).toBeNull();
     }
   });
