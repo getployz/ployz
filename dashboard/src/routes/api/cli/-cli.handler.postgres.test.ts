@@ -996,6 +996,58 @@ for (const operation of operations) {
 }
 
 it.live(
+  "a CLI drain that loses the last copy of a Global asks, and an approved retry starts one drain",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-drain-global-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const plan: FraRunsGlobal = { destroys: true, namespace: "left-behind" };
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        plan.namespace = yield* ownNamespace(alice.organization.id, yield* ownerOf(alice.organization.id));
+        const drain = operations[2];
+
+        const asked = yield* cli(drain.method, drain.path, alice);
+        assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"], asked.text);
+        const details = asked.json.error?.details ?? assert.fail("no details");
+        assert.deepStrictEqual(details.operation, { verb: "drain", name: "fra-1" });
+        assert.isNotEmpty(details.effects ?? []);
+        assert.lengthOf(sent.mock.calls, 0);
+
+        const approvalId = details.approval_id ?? assert.fail("no approval id");
+        const approved = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: details.approval ?? "" } });
+        assert.strictEqual(approved.json.approval?.status, "approved");
+        const started = yield* cli(drain.method, drain.path, { ...alice, approval: approvalId });
+        assert.strictEqual(started.status, 202, started.text);
+        assert.lengthOf(sent.mock.calls, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a CLI drain that loses no Global's last copy goes ahead without asking",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-drain-quiet-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const plan: FraRunsGlobal = { destroys: false, namespace: "left-behind" };
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        plan.namespace = yield* ownNamespace(alice.organization.id, yield* ownerOf(alice.organization.id));
+        const drained = yield* cli("POST", `servers/${fra1}/drain`, alice);
+        assert.strictEqual(drained.status, 202, drained.text);
+        assert.lengthOf(sent.mock.calls, 1);
+        assert.lengthOf(yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a request key admits one operation: a replay answers its attempt, another request under it conflicts, a malformed one refuses",
   () =>
     Effect.gen(function* () {
