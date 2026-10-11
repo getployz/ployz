@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::agent::probe::ProbeConfig;
 use crate::agent::run::AgentRun;
-use crate::domain::{AgentName, Region};
+use crate::domain::{AgentName, Region, RegionName};
 
 /// A value that must never appear in logs, errors or debug output. Only [`Secret::expose`] reads
 /// it, at the one place it is used.
@@ -62,9 +62,24 @@ pub enum Mode {
 #[derive(Debug)]
 pub struct ControlConfig {
     pub database_url: Secret,
-    pub regions: Vec<Region>,
+    /// In `UPTIME_REGIONS` order, each code once.
+    pub regions: Vec<RegionConfig>,
     pub agent_token: Option<Secret>,
     pub listen: SocketAddr,
+}
+
+/// One `UPTIME_REGIONS` entry: `code` or `code=Name`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionConfig {
+    pub region: Region,
+    pub name: Option<RegionName>,
+}
+
+impl ControlConfig {
+    #[must_use]
+    pub fn region_codes(&self) -> Vec<Region> {
+        self.regions.iter().map(|r| r.region.clone()).collect()
+    }
 }
 
 #[derive(Debug)]
@@ -104,7 +119,7 @@ impl Mode {
             Some("agent") => Ok(Mode::Agent(AgentConfig::from(env)?)),
             Some("all") => {
                 let control = ControlConfig::from(env, false)?;
-                let Some(region) = control.regions.first().cloned() else {
+                let Some(region) = control.regions.first().map(|r| r.region.clone()) else {
                     return Err(invalid("UPTIME_REGIONS", "names no region"));
                 };
                 let probe = probe_config(env);
@@ -214,15 +229,28 @@ fn port(env: &dyn Fn(&str) -> Option<String>) -> Result<u16, ConfigError> {
     }
 }
 
-/// A comma list, trimmed, deduplicated, first occurrence wins the order.
-fn regions(list: &str) -> Result<Vec<Region>, ConfigError> {
-    let mut out: Vec<Region> = Vec::new();
-    for name in list.split(',').map(str::trim).filter(|n| !n.is_empty()) {
-        let region = Region::parse(name)
+/// A comma list of `code` or `code=Name`, trimmed. A code listed twice is refused, since its two
+/// entries could name it differently.
+fn regions(list: &str) -> Result<Vec<RegionConfig>, ConfigError> {
+    let mut out: Vec<RegionConfig> = Vec::new();
+    for entry in list.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let (code, name) = match entry.split_once('=') {
+            Some((code, name)) => (code.trim(), Some(name)),
+            None => (entry, None),
+        };
+        let region = Region::parse(code)
             .map_err(|e| invalid("UPTIME_REGIONS", &format!("holds a bad region name: {e}")))?;
-        if !out.contains(&region) {
-            out.push(region);
+        let name = name
+            .map(RegionName::parse)
+            .transpose()
+            .map_err(|e| invalid("UPTIME_REGIONS", &format!("holds a bad display name: {e}")))?;
+        if out.iter().any(|r| r.region == region) {
+            return Err(invalid(
+                "UPTIME_REGIONS",
+                &format!("lists {} twice", region.as_str()),
+            ));
         }
+        out.push(RegionConfig { region, name });
     }
     if out.is_empty() {
         return Err(invalid("UPTIME_REGIONS", "names no region"));
