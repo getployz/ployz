@@ -162,6 +162,17 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it("sends a pinned mirror or move to its Machine when another Server took the name", () => {
+    const renamed = { ...member("fsn-3", "empty", { pool: true }), machine: { id: "fsn-2".padEnd(32, "0") as MachineId, name: "fsn-3" } };
+    const reused = { ...member("fsn-2", "empty", { pool: true }), machine: { id: "fsn-9".padEnd(32, "0") as MachineId, name: "fsn-2" } };
+    const pinned = { to: "fsn-2", machine: "fsn-2".padEnd(32, "0") as MachineId };
+    const members = [member("fsn-1", "writer"), reused, renamed];
+    expect(outcome({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }, members)).toBe("mirror fsn-1->fsn-3 declare");
+    expect(outcome({ kind: "move", args: pinned, volumeName: "data", orphan: false }, members)).toBe("move fsn-1->fsn-3 at rounds declare");
+    expect(outcome({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }, [member("fsn-1", "writer"), reused]))
+      .toBe("refuse invalid");
+  });
+
   it("names the Server without managed storage", () => {
     expect(planFromCopies(mirror("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "empty", { pool: false })])).toEqual({
       ok: false,

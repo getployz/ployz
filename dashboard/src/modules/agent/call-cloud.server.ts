@@ -141,11 +141,11 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
 const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
   switch (run.run) {
     case "mirror":
-      return { kind: "mirror", args: { to: run.to.name } };
+      return { kind: "mirror", args: { to: run.to.name, machine: run.to.machine } };
     case "sync":
       return { kind: "sync", args: { full: run.full } };
     case "move":
-      return { kind: "move", args: { to: run.to.name } };
+      return { kind: "move", args: { to: run.to.name, machine: run.to.machine } };
     case "release":
       return { kind: "release", args: {} };
     case "remove_mirror":
