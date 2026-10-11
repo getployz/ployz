@@ -1,6 +1,6 @@
 ---
 title: My app isn't reachable
-description: Fix 502 errors, wrong ports, custom domains, certificates and services that can't reach each other.
+description: Fix "This app didn't respond", "Nothing is deployed here", wrong ports, custom domains, certificates and services that can't reach each other.
 ---
 
 A visit to your app is a short trip: the browser looks up your domain, reaches one of your
@@ -16,6 +16,10 @@ flowchart LR
 Start with your domain's status in the service's **Settings → Networking**: it names most of
 the problems below. Your app's own errors are in the service's **Logs**.
 
+When Ployz can't hand a request to your app, your server answers with its own page. Its title is
+a heading below, and its code (like `502 · NO_RESPONSE`) is on the page and in the `ployz-error`
+response header.
+
 ## My service has no address
 
 Services you add in the dashboard don't get a public address until you ask for one. In
@@ -24,9 +28,11 @@ deploy.
 
 ![The Generate Service Domain dialog](../images/generate-domain-dialog.png)
 
-## My app shows 502 Bad Gateway
+## This app didn't respond
 
-Your server got the request, but your app didn't answer.
+You'll see `502 · NO_RESPONSE`, then `503 · NO_RESPONSE` for the next 30 seconds while your
+server stops sending requests to a replica that didn't answer. Your server got the request, but
+your app didn't answer.
 
 1. **Listen on `0.0.0.0` and `PORT`.** An app listening on `localhost` or `127.0.0.1` turns
    away requests from outside its container:
@@ -47,6 +53,20 @@ Your server got the request, but your app didn't answer.
 2. **Check the port matches.** See the next section.
 3. **Check your app is running** in its **Logs**. A replica that crashes or fails its health
    check gets no traffic; see [Troubleshooting deployments](deployments.md).
+4. **Check the server running it is up.** A replica on a server that's down or out of reach
+   doesn't answer either. See [Troubleshooting servers](servers.md).
+
+## This app isn't running
+
+You'll see `503 · NOT_RUNNING`. The service has no healthy replica, so there's nothing to send
+the request to. The page reloads itself every 10 seconds.
+
+- **A deploy is in progress.** The page goes away once the first replica passes its health
+  check.
+- **The service is stopped.** Deploy it, or run `ployz service start <name>`. See
+  [Restart, stop or open a shell](../services/services.md#restart-stop-or-open-a-shell).
+- **Every replica fails its health check.** See
+  [Troubleshooting deployments](deployments.md).
 
 ## My app listens on a different port
 
@@ -56,10 +76,16 @@ The domain's row says where traffic goes. **→ Uses PORT** means the `PORT` var
 - add a `PORT` variable set to your app's port, then deploy (the health check uses it too), or
 - click the pencil on the domain and set **Target port** to the port your app listens on.
 
-## My domain shows Not Found
+## Nothing is deployed here
 
-- **On `http://`?** Ployz serves https only and doesn't redirect yet. Use `https://`. Behind
-  Cloudflare, see [below](#my-domain-is-behind-cloudflare).
+You'll see `404 · DOMAIN_NOT_FOUND`. The domain leads to one of your servers, but no service
+answers for it there.
+
+- **Check the exact name.** `www.example.com` and `example.com` are different domains. Add each
+  one you use to the service.
+- **On `http://`?** Ployz redirects http to https only once the domain has its certificate.
+  Until then, wait for it to be issued. Behind Cloudflare, see
+  [below](#my-domain-is-behind-cloudflare).
 - **On `https://`?** The domain isn't live yet. If its row says
   **Live after your next deploy**, click **Deploy**.
 
@@ -82,8 +108,8 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
 
 ## My domain is behind Cloudflare
 
-- Set **SSL/TLS** to **Full (strict)**. **Flexible** reaches your servers over plain http and
-  always gets Not Found.
+- Set **SSL/TLS** to **Full (strict)**. **Flexible** reaches your servers over plain http, which
+  redirects back to https, so the browser says "too many redirects".
 - If the domain shows **Your proxy redirects to HTTPS: exempt /.well-known/acme-challenge/* from
   it**, Cloudflare's redirect is blocking your certificate. Set the DNS record to **DNS only**,
   or turn off **Always Use HTTPS** and add a redirect rule that sends http to https for every
@@ -98,6 +124,16 @@ Open TCP port 80 and TCP and UDP port 443 to the internet on every server that t
 traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or an AWS security
 group) as well as the server's own. Then click **Check again** under **Domain** in
 **Organization → General**.
+
+If port 80 answers from your own computer, something else on that server holds it, often Caddy
+or nginx in front of a [self-hosted Ployz Cloud](../self-hosting.md#choose-where-it-runs). See
+what does:
+
+```sh
+sudo ss -ltnp '( sport = :80 or sport = :443 )'
+```
+
+Move that proxy to another server, or publish Ployz Cloud through a Cloudflare Tunnel instead.
 
 ## None of my servers takes web traffic
 
@@ -131,6 +167,10 @@ See [Private networking](../services/private-networking.md).
 
 ## Good to know
 
+- **Scripts get JSON.** A request with `Accept: application/json` gets the same code as JSON,
+  like `{"error":{"status":503,"code":"NOT_RUNNING",…}}`, and other clients get plain text.
+  Every error page carries a request id, also in the `ployz-request-id` header. Include it when
+  you report a problem.
 - **A redirect fails the health check.** Point **Healthcheck path** at a page your app serves
   directly. See [Deployments](../deploy/deployments.md).
 - **Private names stay inside one environment.** In a branch, reference

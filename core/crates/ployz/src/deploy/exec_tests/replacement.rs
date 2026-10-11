@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn start_first_health_failure_records_stop_success_or_failure_and_never_touches_old() {
+async fn start_first_health_failure_stops_then_removes_the_replacement_and_never_touches_old() {
     for stop_succeeds in [true, false] {
         let machine = machine('1');
         let old = container('a');
@@ -12,11 +12,17 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
             ok(Call::Start(machine, new)),
             observed(Call::Inspect(machine, new), unhealthy()),
         ];
-        steps.push(if stop_succeeds {
-            ok(Call::StopWithGrace(machine, new, 0))
+        if stop_succeeds {
+            steps.extend([
+                ok(Call::StopWithGrace(machine, new, 0)),
+                ok(Call::Remove(machine, new)),
+            ]);
         } else {
-            failed(Call::StopWithGrace(machine, new, 0), "stop new failed")
-        });
+            steps.push(failed(
+                Call::StopWithGrace(machine, new, 0),
+                "stop new failed",
+            ));
+        }
         let client = Scripted::new(steps);
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -112,11 +118,17 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
             ok(Call::Start(machine, new)),
             observed(Call::Inspect(machine, new), unhealthy()),
         ];
-        steps.push(if stop_succeeds {
-            ok(Call::StopWithGrace(machine, new, 0))
+        if stop_succeeds {
+            steps.extend([
+                ok(Call::StopWithGrace(machine, new, 0)),
+                ok(Call::Remove(machine, new)),
+            ]);
         } else {
-            failed(Call::StopWithGrace(machine, new, 0), "stop new failed")
-        });
+            steps.push(failed(
+                Call::StopWithGrace(machine, new, 0),
+                "stop new failed",
+            ));
+        }
         if restart_succeeds {
             steps.extend([ok(Call::Start(machine, old)), serving(old)]);
         } else {
@@ -154,6 +166,7 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
         ok(Call::Start(machine, new)),
         observed(Call::Inspect(machine, new), unhealthy()),
         ok(Call::StopWithGrace(machine, new, 0)),
+        ok(Call::Remove(machine, new)),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -190,6 +203,7 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
             ok(Call::Start(machine, new)),
             observed(Call::Inspect(machine, new), unhealthy()),
             ok(Call::StopWithGrace(machine, new, 0)),
+            ok(Call::Remove(machine, new)),
             ok(Call::Start(machine, old)),
             serving(old),
         ]);
@@ -380,6 +394,7 @@ async fn stop_first_serving_failure_stops_the_new_container_and_reports_an_old_o
             "never served",
         ),
         ok(Call::StopWithGrace(machine, new, 0)),
+        ok(Call::Remove(machine, new)),
         ok(Call::Start(machine, old)),
         failed(
             Call::Wait(vec![old], ContainerObservationCondition::Serving),

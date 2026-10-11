@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use ployz_core::{
-    ContainerId, ContainerLogsRequest, ExecConfig, ExecOptions, ExecRequestFrame,
-    ExecResponseFrame, LogBody, LogEntry, LogsOptions, MachineName, MachineRpcClient,
-    OpaquePayload, op,
+    ContainerId, ExecConfig, ExecOptions, ExecRequestFrame, ExecResponseFrame, LiveLogTarget,
+    LogBody, LogEntry, LogsOptions, MachineName, MachineRpcClient, OpaquePayload, TailLogsRequest,
+    op,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
@@ -284,12 +284,12 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         tonic::Code::InvalidArgument
     );
 
-    let logs = op::ContainerLogs::into_request(ContainerLogsRequest {
-        container_id: created.container_id,
+    let logs = op::TailLogs::into_request(TailLogsRequest {
+        target: LiveLogTarget::Container(created.container_id),
         options: LogsOptions {
             follow: false,
             tail: -1,
-            since_unix_seconds: None,
+            since_nanos: None,
             until_unix_seconds: None,
         },
     })
@@ -297,7 +297,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     .unwrap();
     let request = Request::new(logs);
     let entries = client
-        .container_logs(request)
+        .tail_logs(request)
         .await
         .unwrap()
         .into_inner()
@@ -315,34 +315,6 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
             LogBody::Stderr(b"container-err\n".to_vec()),
         ]
     );
-
-    let history = op::ContainerLogHistory::into_request(ployz_core::ContainerLogHistoryRequest {
-        container_id: created.container_id,
-        before_nanos: (entries
-            .iter()
-            .map(|entry| entry.timestamp_unix_nanos)
-            .max()
-            .unwrap()
-            + 1)
-        .to_string(),
-        limit: 1,
-    })
-    .encode()
-    .unwrap();
-    let request = Request::new(history);
-    let older = client
-        .container_log_history(request)
-        .await
-        .unwrap()
-        .into_inner()
-        .map(|entry| LogEntry::decode(&entry.unwrap()).unwrap())
-        .collect::<Vec<_>>()
-        .await;
-    assert_eq!(
-        older.last().unwrap().body,
-        LogBody::Stderr(b"container-err\n".to_vec())
-    );
-    assert!(older.len() <= entries.len());
 
     runtime
         .remove(&created.container_id, true, true)
