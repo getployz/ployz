@@ -2,8 +2,8 @@ import type { MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { endOf, type ServiceActBefore, type ServiceActLeg } from "./service-act";
 
-const before: ServiceActBefore = { copies: [{ server: "a", machine: "m-a", container: "web-1", state: "running" }], unanswered: ["b"] };
-const moved: ServiceActLeg[] = [{ server: "a", machine: "m-a", container: "web-1", stop: "done", start: "done", reason: null }];
+const before: ServiceActBefore = { copies: [{ server: "a", machine: "m-a", container: "web-1", state: "running", hook: false }], unanswered: ["b"] };
+const moved: ServiceActLeg[] = [{ server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null }];
 
 describe("endOf", () => {
   it("leaves a Service-wide act unknown when a Server didn't answer, though every copy it saw moved", () => {
@@ -25,8 +25,8 @@ describe("endOf", () => {
   it("never reads a restart that stopped rolling as done, and names the Server that didn't come back", () => {
     const answered: ServiceActBefore = { ...before, unanswered: [] };
     const halted: ServiceActLeg[] = [
-      { server: "a", machine: "m-a", container: "web-1", stop: "done", start: "failed", reason: "a couldn't start it." },
-      { server: "b", machine: "m-b", container: "web-2", stop: null, start: null, reason: null },
+      { server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "failed", reason: "a couldn't start it." },
+      { server: "b", machine: "m-b", container: "web-2", hook: false, stop: null, start: null, reason: null },
     ];
     expect(endOf(answered, halted, null)).toEqual({ state: "failed", reason: "a didn't come back, so Cloud left b alone." });
     expect(endOf(answered, halted.map((leg) => leg.server === "a" ? { ...leg, start: "unknown" as const } : leg), null))
