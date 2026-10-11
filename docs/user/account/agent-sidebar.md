@@ -3,13 +3,14 @@ title: The Ployz agent
 description: Ask the agent in the dashboard about your app, have it deploy for you, and approve what it would remove.
 ---
 
-The Ployz agent lives on the right edge of every organization page. Ask it about your projects,
-deployments and servers, or ask it to change something and deploy. Before a deploy removes
+The Ployz agent lives on the right edge of every organization page. Ask it about your projects
+and deployments, or ask it to change something and deploy. Before a deploy removes
 anything, it stops and asks you.
 
-The agent can create projects, environments, services from a GitHub repository,
-[configs](../services/configs.md) and domains, and set variables. Ask it to deploy a repository, like "deploy acme/web", and it reads the repository's
-files to work out how to build and start your app, then sets it up and deploys it.
+The agent works in the project and environment you're looking at, unless you name another. It
+can add and change services, [configs](../services/configs.md), volumes and domains, review
+what's staged, publish and deploy. It doesn't create projects or environments, and it can't read
+GitHub repositories or reach your servers yet.
 
 ## Talk to the agent
 
@@ -23,9 +24,9 @@ The panel's header names your organization and, on an environment's pages, the e
 (like `production`). Your conversation is kept for this organization, so it's still there
 after you reload or come back later. Closing the panel keeps the conversation.
 
-Each thing the agent runs shows as a short line under its reply, named like the CLI command it
-matches. When it deploys or publishes, that line becomes a card with the deployment's status,
-like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
+Each thing the agent runs shows as a short line under its reply, named for what it does, like
+**environment show**. When it deploys or publishes, that line becomes a card with the
+deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
 
 ## Approve or deny a removal
 
