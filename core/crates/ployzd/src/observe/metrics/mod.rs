@@ -2,3 +2,5 @@
 
 #[cfg_attr(not(test), expect(dead_code, reason = "wired by the sampler in M6"))]
 mod cgroup;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired by the sampler in M6"))]
+mod net;
