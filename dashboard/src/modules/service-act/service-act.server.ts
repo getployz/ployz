@@ -43,7 +43,7 @@ export const operationOf = (row: ActRow): Operation => ({
   reason: row.reason,
   servers: row.legs.map(legOf),
   kept: [],
-  unanswered: row.before?.unanswered ?? [],
+  unanswered: row.before?.unanswered.map(({ name }) => name) ?? [],
 });
 
 export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (

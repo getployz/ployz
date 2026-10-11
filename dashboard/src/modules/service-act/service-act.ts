@@ -9,7 +9,7 @@ export type LegStep = "sent" | "done" | "already_there" | "failed" | "unknown";
 
 /** A hook copy is stopped with its Service but never started. */
 export type ServiceCopy = { server: string; machine: string; container: string; state: ContainerState; hook: boolean };
-export type ServiceActBefore = { copies: ServiceCopy[]; unanswered: string[] };
+export type ServiceActBefore = { copies: ServiceCopy[]; unanswered: ServerRef[] };
 export type ServiceActLeg = {
   server: string;
   machine: string;
@@ -53,8 +53,8 @@ export const cameBack = (legs: readonly ServiceActLeg[], server: string) =>
  * A restart that stopped rolling leaves later Servers' legs untouched, and those never read as moved.
  */
 export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[], only: ServerRef | null): ServiceActEnd {
-  const unanswered = only === null ? before.unanswered : before.unanswered.filter((name) => name === only.name);
-  const silent = unanswered.length > 0 ? `${unanswered.join(", ")} didn't answer.` : null;
+  const unanswered = only === null ? before.unanswered : before.unanswered.filter(({ machine }) => machine === only.machine);
+  const silent = unanswered.length > 0 ? `${unanswered.map(({ name }) => name).join(", ")} didn't answer.` : null;
   if (legs.length === 0) return silent !== null ? { state: "unknown", reason: silent } : { state: "failed", reason: "No containers to move." };
   const untouched = serversOf(legs.filter((leg) => leg.stop === null && leg.start === null));
   const halted = untouched.length > 0 ? legs.find((leg) => leg.stop !== null && takes(leg, "start") && !confirmed(leg.start))?.server : undefined;

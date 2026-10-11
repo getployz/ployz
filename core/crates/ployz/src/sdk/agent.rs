@@ -12,7 +12,7 @@ use ployz_store::tools::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Disk, Health, ServerReport, ServerState,
     ServersAnswer,
 };
-use ployz_store::tools::{CloudQuery, Freshness, ServerName, Source, Timestamp};
+use ployz_store::tools::{CloudQuery, Freshness, ServerName, ServerRef, Source, Timestamp};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -190,11 +190,11 @@ pub struct ServiceCopy {
     pub hook: bool,
 }
 
-/// Every Container of one Service, and the Servers that did not say.
+/// Every Container of one Service, and the Servers that did not say, by ID so a rename can't hide one.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ServiceCopies {
     pub copies: Vec<ServiceCopy>,
-    pub unanswered: Vec<ServerName>,
+    pub unanswered: Vec<ServerRef>,
 }
 
 /// The Containers of `service` in `namespace` on every Server that answers.
@@ -237,7 +237,14 @@ pub async fn observe_service(
             );
             Ok(ServiceCopies {
                 copies,
-                unanswered: seen(&machines, &unanswered).unanswered,
+                unanswered: machines
+                    .iter()
+                    .filter(|machine| unanswered.contains(&machine.machine.id))
+                    .map(|machine| ServerRef {
+                        machine: machine.machine.id,
+                        name: machine.machine.name.clone(),
+                    })
+                    .collect(),
             })
         })
         .await

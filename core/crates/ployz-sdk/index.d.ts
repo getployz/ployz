@@ -324,7 +324,7 @@ export declare class Client {
   /** Every Container of `service` in `namespace`, hooks included, and the Servers that did not answer. */
   observeService(namespace: string, service: string): Promise<{
     copies: { server: string; machine: string; container: string; state: import("./generated/payloads").ContainerState; hook: boolean }[];
-    unanswered: string[];
+    unanswered: import("./generated/payloads").ServerRef[];
   }>;
   /** Stop one Container. A rejection with `unavailable` means the stop may have happened. */
   stopContainer(machine: string, container: string): Promise<void>;
