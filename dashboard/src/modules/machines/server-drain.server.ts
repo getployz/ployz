@@ -3,7 +3,8 @@ import type { DrainReport, DrainScope, QualifiedService } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schedule, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
-import type { Actor } from "#/modules/identity/actor";
+import { gateOperation } from "#/modules/approvals/approvals.server";
+import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -15,8 +16,10 @@ import {
   type DrainEndCodeWithoutMessage,
   type DrainState,
   type LatestDrain,
+  type RequestedServerDrain,
   type RequestServerDrainInput,
 } from "#/modules/machines/server-drain";
+import { planDrain } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -88,38 +91,73 @@ const enqueueDrain = (row: DrainAttemptRow) =>
   enqueueEvent(createServerDrainRequestedEvent({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
 
 /**
- * Drain on a Server page: any member may. Writes the Drain's row under the id the tab minted with its run's event.
- * The same request again returns the same row. A click while another Drain is active on the Server returns that one.
+/**
+ * A Drain of the Server as it stands now, gated like every destructive operation: it runs once a human approved
+ * exactly this plan, or when it destroys nothing. Null when Cloud sees no such Server.
  */
-export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (actor: Actor, input: RequestServerDrainInput) {
-  const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+const gateDrain = Effect.fn("ServerDrain.gate")(function* (caller: Caller, machineId: string, approvalId: string | null) {
+  const plan = yield* planDrain(caller.organization.id, machineId);
+  if (plan === null) return null;
+  const gated = yield* gateOperation(caller, approvalId, plan);
+  return gated.ok ? { ok: true, targets: plan.targets, approvalId: gated.approvalId } as const : gated;
+});
+
+const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
+
+/**
+ * Drain on a Server page: any member may. A Drain that would destroy something waits on an approval in the sidebar,
+ * and the tab sends the same request again with it once approved. The admitted Drain's row takes the id the tab
+ * minted and is written with its run's event, so the same request again returns it without asking again. A click
+ * while another Drain is active on the Server returns that one.
+ */
+export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (caller: Caller, input: RequestServerDrainInput) {
+  const organizationId = caller.organization.id;
   const database = yield* Database;
+  const sameOrActive = Effect.fn(function* () {
+    const { drizzle } = yield* Database;
+    const [same] = yield* drizzle.select().from(serverDrainAttempt).where(eq(serverDrainAttempt.id, input.requestId));
+    if (same !== undefined) {
+      if (same.organizationId !== organizationId || same.machineId !== input.machineId) {
+        return yield* new Conflict({ message: "The drain request names another server." });
+      }
+      return { drain: yield* latestDrainOf(same) } satisfies RequestedServerDrain;
+    }
+    const [active] = yield* drizzle.select().from(serverDrainAttempt).where(and(
+      eq(serverDrainAttempt.organizationId, organizationId),
+      eq(serverDrainAttempt.machineId, input.machineId),
+      inArray(serverDrainAttempt.state, ACTIVE_STATES),
+    )).orderBy(desc(serverDrainAttempt.requestedAt)).limit(1);
+    return active === undefined ? null : { drain: yield* latestDrainOf(active) } satisfies RequestedServerDrain;
+  });
+  // Neither asks a human: the request already has its Drain, or another one would refuse it.
+  const existing = yield* sameOrActive();
+  if (existing !== null) return existing;
+  const gated = yield* gateDrain(caller, input.machineId, input.approvalId ?? null);
+  if (gated === null) return yield* new NotFound({ message: "The server was not found." });
+  if (!gated.ok) {
+    const asked = Schema.decodeUnknownOption(ApprovalAsked)(gated.refusal.details);
+    if (gated.refusal.code === "approval_required" && Option.isSome(asked)) {
+      return { asking: { approvalId: asked.value.approval_id, message: gated.refusal.message } } satisfies RequestedServerDrain;
+    }
+    return yield* new Conflict({ userFacing: true, message: gated.refusal.message });
+  }
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [inserted] = yield* drizzle.insert(serverDrainAttempt).values({
       id: input.requestId,
-      organizationId: organization.id,
+      organizationId,
       machineId: input.machineId,
-      requestedByUserId: actor.userId,
+      requestedByUserId: caller.userId,
+      targets: [...gated.targets],
+      approvalId: gated.approvalId,
     }).onConflictDoNothing().returning();
-    if (inserted === undefined) {
-      const [same] = yield* drizzle.select().from(serverDrainAttempt).where(eq(serverDrainAttempt.id, input.requestId));
-      if (same !== undefined) {
-        if (same.organizationId !== organization.id || same.machineId !== input.machineId) {
-          return yield* new Conflict({ message: "The drain request names another server." });
-        }
-        return yield* latestDrainOf(same);
-      }
-      const [active] = yield* drizzle.select().from(serverDrainAttempt).where(and(
-        eq(serverDrainAttempt.organizationId, organization.id),
-        eq(serverDrainAttempt.machineId, input.machineId),
-        inArray(serverDrainAttempt.state, ACTIVE_STATES),
-      )).orderBy(desc(serverDrainAttempt.requestedAt)).limit(1);
-      if (active !== undefined) return yield* latestDrainOf(active);
-      return yield* new Conflict({ userFacing: true, message: "A drain on this server just ended. Try again." });
+    if (inserted !== undefined) {
+      yield* enqueueDrain(inserted);
+      return { drain: yield* latestDrainOf(inserted) } satisfies RequestedServerDrain;
     }
-    yield* enqueueDrain(inserted);
-    return yield* latestDrainOf(inserted);
+    const raced = yield* sameOrActive();
+    if (raced !== null) return raced;
+    return yield* new Conflict({ userFacing: true, message: "A drain on this server just ended. Try again." });
   }));
 });
 

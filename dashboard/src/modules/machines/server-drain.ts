@@ -37,6 +37,8 @@ export const RequestServerDrainInput = Schema.Struct({
   machineId: machineIdStringSchema,
   /** Minted by the confirming tab: the row's id, so sending the same request again returns the same Drain. */
   requestId: Schema.String.check(Schema.isUUID()),
+  /** The approval a human gave this Drain in the sidebar, sent with the same request once it is approved. */
+  approvalId: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isUUID()))),
 });
 export type RequestServerDrainInput = typeof RequestServerDrainInput.Type;
 
@@ -56,6 +58,11 @@ export type LatestDrain =
   | { readonly attemptId: string; readonly state: "running"; readonly startedAt: string }
   | { readonly attemptId: string; readonly state: "finished"; readonly endedAt: string; readonly report: DrainReport }
   | EndedDrain;
+
+/** The Drain a request admitted, or the approval it waits on because it would destroy something. */
+export type RequestedServerDrain =
+  | { readonly drain: LatestDrain }
+  | { readonly asking: { readonly approvalId: string; readonly message: string } };
 
 /** Every Server's latest Drain, by Machine ID; a Server never drained has none. */
 export type LatestDrains = Readonly<Record<string, LatestDrain>>;
