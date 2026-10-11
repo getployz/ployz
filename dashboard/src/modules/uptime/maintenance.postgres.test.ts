@@ -89,6 +89,22 @@ describe("uptime-rollup", () => {
     ]);
   });
 
+  it("rolls up the hours before the run's scheduled time, however late the run starts", async () => {
+    const a = await createCheck();
+    await result(a, "eu", "2026-10-01T01:30:00Z", "pass", 100);
+    await result(a, "eu", "2026-10-01T02:30:00Z", "pass", 200);
+    const [rollupFn] = createUptimeMaintenanceFunctions(new Inngest({ id: "uptime-rollup-test" }), harness.runEffect);
+    if (rollupFn === undefined) throw new Error("no rollup function");
+
+    const scheduled = Date.parse("2026-10-01T03:05:00Z");
+    await new InngestTestEngine({
+      function: rollupFn,
+      events: [{ name: "inngest/scheduled.timer", data: { cron: "5 * * * *" }, ts: scheduled }],
+    }).execute();
+
+    expect((await hourly(a)).map((bucket) => bucket.hour)).toEqual(["2026-10-01T01:00", "2026-10-01T02:00"]);
+  });
+
   it("leaves the open hour alone", async () => {
     const a = await createCheck();
     await result(a, "eu", "2026-10-11T10:00:00Z", "pass", 100);

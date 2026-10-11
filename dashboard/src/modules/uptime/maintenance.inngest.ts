@@ -10,7 +10,10 @@ type UptimeEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, Data
 /** 4 kinds at most 200 batches each stays under Inngest's 1,000 steps per run. The rest waits for the next hour. */
 const MAX_PRUNE_BATCHES = 200;
 
-/** Hourly at :05, recompute the two closed hours of uptime_result_hourly from raw. */
+/**
+ * Hourly at :05, recompute the two closed hours of uptime_result_hourly from raw. The hours follow the run's
+ * scheduled time, not the clock, so a run that starts late still covers its own hours.
+ */
 const createRollupUptime = (inngest: PloyzInngest, runEffect: UptimeEffectRunner) =>
   inngest.createFunction(
     {
@@ -19,7 +22,8 @@ const createRollupUptime = (inngest: PloyzInngest, runEffect: UptimeEffectRunner
       triggers: [{ cron: "5 * * * *" }],
       concurrency: [{ limit: 1 }],
     },
-    async ({ step }) => step.run("rollup-closed-hours", () => runEffect(rollupUptime(new Date()))),
+    async ({ event, step }) =>
+      step.run("rollup-closed-hours", () => runEffect(rollupUptime(new Date(event.ts ?? Date.now())))),
   );
 
 /** Hourly, delete uptime history past its retention, one batch per step. */
