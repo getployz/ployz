@@ -5,13 +5,14 @@
 //   api       Unreachable: an open 502 incident from 18 minutes ago
 //   worker    Checking: a check with no results yet
 //   postgres  Not checked: no check
+// ams and iad get display names and sin keeps its code, so the tooltip shows both a name and the fallback.
 // Each run replaces these checks wholesale (results and incidents cascade), so running it again converges.
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { rollupUptime } from "#/modules/uptime/maintenance.server";
 import type { IncidentObservation } from "#/modules/uptime/uptime-status";
-import { uptimeCheck, uptimeIncident, uptimeResult } from "#/modules/uptime/tables";
+import { uptimeCheck, uptimeIncident, uptimeRegion, uptimeResult } from "#/modules/uptime/tables";
 import { Database } from "#/server/database.server";
 import { AppRuntime } from "#/server/runtime.server";
 
@@ -20,6 +21,7 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const INTERVAL = 5 * MINUTE;
 const REGIONS = ["ams", "iad", "sin"] as const;
+const REGION_NAMES = { ams: "Amsterdam", iad: "Virginia", sin: null } satisfies Record<(typeof REGIONS)[number], string | null>;
 /** Each region's DNS, connect and TLS time: further from the origin, slower handshakes. */
 const HANDSHAKES = [[4, 18, 31], [6, 40, 62], [9, 118, 170]] as const;
 
@@ -57,6 +59,8 @@ const seed = Effect.gen(function* () {
   };
   const slugs = ["web", "api", "worker", "postgres"] as const;
 
+  yield* drizzle.insert(uptimeRegion).values(REGIONS.map((region) => ({ region, name: REGION_NAMES[region] })))
+    .onConflictDoUpdate({ target: uptimeRegion.region, set: { name: sql`excluded.name` } });
   yield* drizzle.delete(uptimeCheck).where(and(
     eq(uptimeCheck.organizationId, organizationId),
     eq(uptimeCheck.environmentId, environmentId),

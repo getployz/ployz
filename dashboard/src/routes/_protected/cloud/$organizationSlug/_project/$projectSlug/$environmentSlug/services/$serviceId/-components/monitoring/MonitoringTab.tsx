@@ -29,6 +29,7 @@ import {
   openIncident,
   rangeCovering,
   rangeWindow,
+  regionLabel,
   steps,
   uptimePercent,
   wrongPathIncident,
@@ -36,7 +37,7 @@ import {
   type HistoryBar,
   type TimeWindow,
 } from "#/modules/uptime/uptime";
-import { UPTIME_RANGES, type UptimeIncidentEntry, type UptimeRange } from "#/modules/uptime/uptime-status";
+import { type RegionNames, UPTIME_RANGES, type UptimeIncidentEntry, type UptimeRange } from "#/modules/uptime/uptime-status";
 import { type UptimeScope, usePrefetchServiceUptime, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
 import { MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
@@ -271,7 +272,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
         {picked ? (
           <PopoverContent side="bottom" align="start"
             anchor={{ getBoundingClientRect: () => DOMRect.fromRect({ x: picked.x, y: picked.y, width: 0, height: 0 }) }}>
-            <Evidence incident={picked.incident} now={now} onZoom={zoom?.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
+            <Evidence incident={picked.incident} regions={uptime?.regions ?? {}} now={now} onZoom={zoom?.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
               fixPath={picked.incident.id === wrongPath?.id ? fixPath : null} />
           </PopoverContent>
         ) : null}
@@ -305,7 +306,8 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }:
   chart: ChartFrame;
 }) {
   const shown = useDeferredValue(range);
-  const checked = checkSteps(useServiceUptime(scope, serviceId, shown).data?.points ?? [], window);
+  const uptime = useServiceUptime(scope, serviceId, shown).data;
+  const checked = checkSteps(uptime?.points ?? [], window);
   const check = checked.map((step) => step.medianMs);
   const checkMs = average(check);
   const byAt = new Map(checked.map((step, index) => [step.at, index]));
@@ -320,7 +322,8 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }:
       renderTooltip={(at) => {
         const index = byAt.get(at);
         const step = index === undefined ? undefined : checked[index];
-        return step ? <ResponseTooltip step={step} stepMs={window.stepMs} edgeMs={edge?.[index ?? -1] ?? null} /> : null;
+        return step ? <ResponseTooltip step={step} stepMs={window.stepMs} edgeMs={edge?.[index ?? -1] ?? null}
+          regions={uptime?.regions ?? {}} /> : null;
       }} />
   );
 }
@@ -378,8 +381,9 @@ function HistoryStrip({ range, bars, zoomed, onZoom }: {
 }
 
 /** What opened an incident: when, how long, and what each region got back. */
-function Evidence({ incident, now, onZoom, fixPath }: {
+function Evidence({ incident, regions, now, onZoom, fixPath }: {
   incident: UptimeIncidentEntry;
+  regions: RegionNames;
   now: number;
   onZoom: (() => void) | null;
   fixPath: ReactNode;
@@ -394,14 +398,17 @@ function Evidence({ incident, now, onZoom, fixPath }: {
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
         <dt className="text-muted-foreground">Since</dt>
         <dd>{AT_FORMAT.format(span.from)}</dd>
-        <dt className="text-muted-foreground">Regions</dt>
-        <dd className="flex flex-col font-mono">
-          {incident.observations.map((observation) => (
-            <span key={`${observation.region}-${observation.at}`} className="flex gap-2">
-              <span>{observation.region}</span>
-              <span className={observation.verdict === "fail" ? "text-destructive" : "text-muted-foreground"}>{observationText(observation)}</span>
-            </span>
-          ))}
+        <dt className="text-muted-foreground">{Object.keys(regions).length > 1 ? "Regions" : "Checks"}</dt>
+        <dd className="flex flex-col">
+          {incident.observations.map((observation) => {
+            const label = regionLabel(regions, observation.region);
+            return (
+              <span key={`${observation.region}-${observation.at}`} className="flex gap-2">
+                {label ? <span className={label.named ? undefined : "font-mono"}>{label.text}</span> : null}
+                <span className={observation.verdict === "fail" ? "text-destructive" : "text-muted-foreground"}>{observationText(observation)}</span>
+              </span>
+            );
+          })}
         </dd>
       </dl>
       {onZoom || fixPath ? (

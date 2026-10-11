@@ -115,4 +115,8 @@ export type ServiceUptime = {
   readonly points: readonly UptimePoint[];
   /** Open and closed incidents that overlap the range, newest first. */
   readonly incidents: readonly UptimeIncidentEntry[];
+  /** Every region the points and incidents name, with its display name, or null when it has none. */
+  readonly regions: RegionNames;
 };
+
+export type RegionNames = Readonly<Record<string, string | null>>;

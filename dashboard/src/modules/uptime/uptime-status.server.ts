@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
@@ -7,7 +7,7 @@ import { requireInfrastructureOrganization } from "#/modules/runtime/organizatio
 import { Database } from "#/server/database.server";
 import { failureClassSql, failureColumn, failureTextSql, phaseColumn } from "./failure-sql.server";
 import { clampSince, type UptimeSeries } from "./retention";
-import { uptimeCheck, uptimeIncident, uptimeResult, uptimeResultHourly } from "./tables";
+import { uptimeCheck, uptimeIncident, uptimeRegion, uptimeResult, uptimeResultHourly } from "./tables";
 import {
   type EnvironmentUptimeCheck,
   IncidentEvidence,
@@ -144,7 +144,17 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     ));
 
   const points = yield* readPoints(of, input.range, since("raw"), since("hourly"), tailFrom);
-  return { check, status, uptime, points, incidents } satisfies ServiceUptime;
+  const codes = [...new Set([
+    ...points.map((point) => point.region),
+    ...incidents.flatMap((incident) => incident.observations.map((observation) => observation.region)),
+  ])];
+  const named = codes.length === 0 ? [] : yield* drizzle
+    .select({ region: uptimeRegion.region, name: uptimeRegion.name })
+    .from(uptimeRegion)
+    .where(inArray(uptimeRegion.region, codes));
+  const names = new Map(named.map((row) => [row.region, row.name]));
+  const regions = Object.fromEntries(codes.map((code) => [code, names.get(code) ?? null]));
+  return { check, status, uptime, points, incidents, regions } satisfies ServiceUptime;
 });
 
 /** Every routine probe since `from`, each as its own point. */
