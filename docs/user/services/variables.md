@@ -42,8 +42,27 @@ Ployz refuses the new name, the dashboard shows why.
 
 - Ployz refuses a new name another variable of the service already has, and leaves both as
   they are. Rename or remove that one first.
-- Ployz refuses to rename a variable something references, such as `${{ web.API_URL }}`,
-  because references aren't updated. Change those references first.
+
+### Rename a variable other variables use
+
+When other variables reference the one you rename, such as `${{ API_URL }}` in the same service
+or `${{ web.API_URL }}` in another, they switch to the new name in the same change.
+
+In Ployz Cloud, the Rename dialog lists the variables that use it, under a note such as "2
+variables use it. They switch to the new name." Choose Rename to rename it and switch them.
+
+From the CLI, add `--update-references`:
+
+```sh
+ployz set web.env.API_URL --rename PUBLIC_API_URL --update-references
+```
+
+Without it, Ployz refuses to rename a referenced variable, lists the variables that use it, and
+prints the command to run with `--update-references`. Nothing changes until you run it.
+
+Only references in this environment's variables switch. Text that only looks like a reference,
+such as an escaped `$${{ web.API_URL }}` or a sealed value, stays as it is. A Config file that
+references the variable still blocks the rename: change that file first.
 
 ## Seal a secret
 

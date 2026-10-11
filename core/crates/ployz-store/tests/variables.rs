@@ -907,3 +907,39 @@ fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it()
     assert_eq!(json!(read.deployment.warnings), warnings);
     assert!(!json!(read).to_string().contains("s3cr3t"));
 }
+
+#[test]
+fn a_config_file_reference_still_blocks_a_rename() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.HOSTS", json!("a"))]).unwrap();
+    store
+        .write(
+            &who(),
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who(),
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                file: ConfigFileName::parse("config.yml").unwrap(),
+                content: "hosts: ${{ web.HOSTS }}\n".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    let refused = rename_with(&store, &[], "web.env.HOSTS", "ALL_HOSTS", true).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert!(refused.message.contains("sentry"), "{}", refused.message);
+    assert_eq!(value(&store, "web.env.HOSTS"), json!("a"));
+}
