@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<MetricSample>(&json).unwrap(), sample);
 
         let host = HostSample {
-            machine_id: sample.machine_id.clone(),
+            machine_id: sample.machine_id,
             ts: sample.ts,
             cpu: Some(CpuJiffies { busy: 7, idle: 8 }),
             memory: Some(HostMemory {
@@ -302,7 +302,7 @@ mod tests {
 
         let request = MetricHistoryRequest {
             scope: MetricScope::Service {
-                service_id: sample.service_id.clone().unwrap(),
+                service_id: sample.service_id.unwrap(),
             },
             range: MetricRange {
                 since_nanos: 0,
@@ -311,7 +311,7 @@ mod tests {
             step_nanos: Some(1),
         };
         let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["scope"]["kind"], "service");
+        assert_eq!(json.pointer("/scope/kind"), Some(&"service".into()));
         assert_eq!(
             serde_json::from_value::<MetricHistoryRequest>(json).unwrap(),
             request
@@ -335,7 +335,7 @@ mod tests {
             }],
         };
         let json = serde_json::to_value(&reply).unwrap();
-        assert_eq!(json["gaps"][0]["reason"], "not_sampled");
+        assert_eq!(json.pointer("/gaps/0/reason"), Some(&"not_sampled".into()));
         assert_eq!(
             serde_json::from_value::<MetricHistoryReply>(json).unwrap(),
             reply
@@ -354,7 +354,7 @@ mod tests {
         for field in ["service_id", "cpu_usec", "io_w"] {
             assert!(json.get(field).is_none(), "{field} must be absent: {json}");
         }
-        assert_eq!(json["io_r"], 5);
+        assert_eq!(json.get("io_r"), Some(&5.into()));
         assert_eq!(
             serde_json::from_value::<MetricSample>(json).unwrap(),
             sample
