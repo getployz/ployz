@@ -89,15 +89,14 @@ export function incidentRange(incident: UptimeIncidentEntry, now: number): Range
   return { from: to - length, to };
 }
 
-const firstStep = (window: TimeWindow) => Math.ceil(window.from / window.stepMs) * window.stepMs;
+/** The step a time falls in; the first step starts at `from`, so a range's partial first step is not lost. */
+const stepAt = (window: TimeWindow, at: number) => Math.max(window.from, Math.floor(at / window.stepMs) * window.stepMs);
 
-/** The step a time falls in; one before the first step joins it, so a range's partial first step is not lost. */
-const stepAt = (window: TimeWindow, at: number) => Math.max(firstStep(window), Math.floor(at / window.stepMs) * window.stepMs);
-
-/** The start of each step in a window. */
+/** The start of each step in a window: `from`, then each round step after it. */
 export function steps(window: TimeWindow): number[] {
-  const first = firstStep(window);
-  return Array.from({ length: Math.max(0, Math.ceil((window.to - first) / window.stepMs)) }, (_, index) => first + index * window.stepMs);
+  const first = Math.ceil(window.from / window.stepMs) * window.stepMs;
+  const round = Array.from({ length: Math.max(0, Math.ceil((window.to - first) / window.stepMs)) }, (_, index) => first + index * window.stepMs);
+  return first > window.from && window.from < window.to ? [window.from, ...round] : round;
 }
 
 /** Response time at each step: the mean of every region's points in it. Null where none passed, so the line breaks. */
@@ -148,9 +147,10 @@ export function historyBars(window: RangeWindow, uptime: Pick<ServiceUptime, "po
   }
   const spanned = { ...window, stepMs: barMs(window) };
   const probed = new Set(uptime?.points.map((point) => stepAt(spanned, Date.parse(point.at))));
-  return steps(spanned).map((start, index) => {
-    const end = Math.min(start + spanned.stepMs, window.to);
-    const touched = touching((span) => span.from < end && span.to > (index === 0 ? window.from : start));
+  const starts = steps(spanned);
+  return starts.map((start, index) => {
+    const end = starts[index + 1] ?? window.to;
+    const touched = touching((span) => span.from < end && span.to > start);
     const tone = touched.length > 0 ? "down" : probed.has(start) ? "up" : "none";
     return { start, end, tone, result: null, incidents: touched };
   });

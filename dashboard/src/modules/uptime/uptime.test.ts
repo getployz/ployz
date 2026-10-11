@@ -139,7 +139,14 @@ describe("checkSeries", () => {
   it("counts a point before the first step in that step", () => {
     const minute = 60_000;
     const window = { from: 2 * minute, to: 7 * minute, stepMs: 5 * minute };
-    expect(checkSeries([{ at: new Date(3 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([100]);
+    expect(checkSeries([{ at: new Date(3 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([100, null]);
+    expect(steps(window)).toEqual([2 * minute, 5 * minute]);
+  });
+
+  it("draws one step for a range shorter than a step between round steps", () => {
+    const minute = 60_000;
+    const window = { from: minute, to: 4 * minute, stepMs: 5 * minute };
+    expect(checkSeries([{ at: new Date(2 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([100]);
   });
 });
 

@@ -164,6 +164,8 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
   const state = checkState(uptime);
   const incidents = uptime?.incidents ?? [];
   const checked = checkWindow(resolveRange(range, now));
+  // Capped per-result bars begin at the oldest result shown, not at the range.
+  const bars = historyBars(checked, uptime);
   const charted = zoom?.range ?? range;
   const window = chartWindow(resolveRange(charted, now), now, (uptime?.check.intervalSeconds ?? 60) * 1000);
   const times = steps(window);
@@ -223,8 +225,8 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
           ) : toggle}
         </div>
       </div>
-      <HistoryStrip bars={historyBars(checked, uptime)} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
-        from={at.format(checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
+      <HistoryStrip bars={bars} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
+        from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
       <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}
         onPointerDownCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}>
         <div className="sm:col-span-2">

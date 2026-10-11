@@ -37,12 +37,17 @@ export function RangePicker({ range, onRange, onHover }: RangePickerProps) {
 
 /** Mounts with each opening, so From and Until start at the range shown. */
 function RangeForm({ range, timeZone, onRange, onHover }: RangePickerProps & { timeZone: string }) {
-  const [from, setFrom] = useState(() => edgeText(range.from, timeZone));
-  const [to, setTo] = useState(() => edgeText(range.to, timeZone));
+  const shown = { from: edgeText(range.from, timeZone), to: edgeText(range.to, timeZone) };
+  const [from, setFrom] = useState(shown.from);
+  const [to, setTo] = useState(shown.to);
   const [error, setError] = useState<string | null>(null);
   const apply = () => {
     const now = Date.now();
-    const edges = { from: parseEdge(from, timeZone, now), to: parseEdge(to, timeZone, now) };
+    // An untouched field keeps its edge, which the text may round to the minute.
+    const edges = {
+      from: from === shown.from ? range.from : parseEdge(from, timeZone, now),
+      to: to === shown.to ? range.to : parseEdge(to, timeZone, now),
+    };
     if (edges.from === null) return setError(`Can’t read “${from}”`);
     if (edges.to === null) return setError(`Can’t read “${to}”`);
     const window = resolveRange({ from: edges.from, to: edges.to }, now);
