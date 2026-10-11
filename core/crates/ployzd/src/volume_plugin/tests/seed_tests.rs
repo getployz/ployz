@@ -123,6 +123,54 @@ async fn seed_copies_the_point_into_a_new_root_on_the_next_call() {
 }
 
 #[tokio::test]
+async fn seed_replay_finishes_an_interrupted_landing() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    post(&socket, "/Volume.Seed", seed(77)).await;
+    assert_eq!(
+        settled(&socket).await.pointer("/Ok/status/state").unwrap(),
+        "done"
+    );
+    set_property(
+        &test,
+        "tank/ployz-mirror/seed/fs",
+        "mountpoint",
+        "/var/lib/ployz-mirror/seed/fs",
+    );
+    fs::write(test.0.join("inherit-fails"), "").unwrap();
+
+    let interrupted = post(&socket, "/Volume.Seed", seed(77)).await;
+    assert!(interrupted.get("Err").is_some(), "{interrupted}");
+    assert!(
+        test.0.join("seed-volume").exists(),
+        "the landing stopped after the rename"
+    );
+
+    fs::remove_file(test.0.join("inherit-fails")).unwrap();
+    let replayed = post(&socket, "/Volume.Seed", seed(77)).await;
+    assert_eq!(
+        replayed.pointer("/Ok/decision").unwrap(),
+        "replay",
+        "{replayed}"
+    );
+    assert!(
+        !test.0.join("seed-slot").exists(),
+        "the mirror parent is gone"
+    );
+    assert_eq!(
+        property(&test, "tank/ployz/seed", "readonly").as_deref(),
+        Some("off")
+    );
+    assert!(property(&test, "tank/ployz/seed", "mountpoint").is_none());
+    assert_eq!(
+        snapshot_names(&test, "tank/ployz/seed"),
+        Vec::<String>::new(),
+        "the received snapshot goes"
+    );
+}
+
+#[tokio::test]
 async fn seed_refuses_a_point_the_writer_no_longer_holds() {
     let test = TestDir::new();
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);

@@ -33,6 +33,15 @@ impl VolumeStorage {
                 .await
                 .map_err(internal)?;
             if seed == Some(guid.to_string()) {
+                let snapshots = self.snapshots(&seeded.name).await.map_err(internal)?;
+                if let Some(received) = snapshots.iter().find(|snapshot| snapshot.guid == guid) {
+                    let parent = scope
+                        .slot(&into)
+                        .is_some()
+                        .then(|| slot_parent(&scope.pool, &into));
+                    self.finish_landing(&root, parent.as_deref(), &received.name.to_string())
+                        .await?;
+                }
                 return self.reply(&scope.pool, &name, scope.admitted).await;
             }
             return Err(SwitchError::Precondition
@@ -120,8 +129,7 @@ impl VolumeStorage {
     }
 
     /// Makes the complete copy the root of `into`, marked with its point and unregistered
-    /// until Docker's Create adopts it. The received snapshot goes: its name belongs to the
-    /// source's lease, and the new Volume's own runs name theirs from one.
+    /// until Docker's Create adopts it.
     async fn land(
         &self,
         fs: &str,
@@ -135,14 +143,28 @@ impl VolumeStorage {
             .map_err(internal)?;
         self.rename_unregistered(fs, root, request.switch.lease)
             .await?;
-        self.zfs(&["destroy", parent]).await.map_err(internal)?;
-        self.zfs(&["destroy", &format!("{root}@{snapshot}")])
-            .await
-            .map_err(internal)?;
+        self.finish_landing(root, Some(parent), snapshot).await
+    }
+
+    /// The landing after the rename, repeatable. The received snapshot goes last, so a root
+    /// still holding it has not finished landing. Its name belongs to the source's lease,
+    /// and the new Volume's own runs name theirs from one.
+    async fn finish_landing(
+        &self,
+        root: &str,
+        parent: Option<&str>,
+        snapshot: &str,
+    ) -> Result<(), RpcError> {
         self.zfs(&["inherit", "mountpoint", root])
             .await
             .map_err(internal)?;
         self.zfs(&["set", "readonly=off", root])
+            .await
+            .map_err(internal)?;
+        if let Some(parent) = parent {
+            self.zfs(&["destroy", parent]).await.map_err(internal)?;
+        }
+        self.zfs(&["destroy", &format!("{root}@{snapshot}")])
             .await
             .map_err(internal)?;
         Ok(())
