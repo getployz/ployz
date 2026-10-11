@@ -22,8 +22,8 @@ use crate::run::{self, Shutdown};
 
 const STEP: Duration = Duration::from_secs(30);
 
-/// Answers every request with the current status and nothing else.
-async fn responder(status: Arc<AtomicU16>) -> u16 {
+/// Answers every request with the current status and nothing else, `hold` after reading it.
+async fn responder(status: Arc<AtomicU16>, hold: Duration, requests: Arc<AtomicU16>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
@@ -32,6 +32,7 @@ async fn responder(status: Arc<AtomicU16>) -> u16 {
                 return;
             };
             let status = status.clone();
+            let requests = requests.clone();
             tokio::spawn(async move {
                 let mut head = Vec::new();
                 let mut byte = [0u8; 1];
@@ -41,6 +42,8 @@ async fn responder(status: Arc<AtomicU16>) -> u16 {
                         Ok(_) | Err(_) => return,
                     }
                 }
+                requests.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(hold).await;
                 let code = status.load(Ordering::SeqCst);
                 let reply =
                     format!("HTTP/1.1 {code} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -118,10 +121,11 @@ async fn an_outage_opens_one_incident_recovers_and_survives_a_config_edit() {
         .await
         .unwrap();
     let status = Arc::new(AtomicU16::new(200));
-    let port = responder(status.clone()).await;
+    let port = responder(status.clone(), Duration::ZERO, Arc::default()).await;
 
     let crypto = Arc::new(rustls::crypto::ring::default_provider());
     let (trigger, shutdown) = Shutdown::new();
+    let (plane_stop, plane_shutdown) = Shutdown::new();
     let region = Region::parse("local").unwrap();
     let control_url = pg
         .role(
@@ -139,7 +143,7 @@ async fn an_outage_opens_one_incident_recovers_and_survives_a_config_edit() {
     let plane = ControlPlane::start_with(
         config,
         crypto.clone(),
-        shutdown.clone(),
+        plane_shutdown,
         Tempo { divisor: 30 },
     )
     .await
@@ -157,6 +161,7 @@ async fn an_outage_opens_one_incident_recovers_and_survives_a_config_edit() {
     let listen: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let all = tokio::spawn(run::all(
         plane,
+        plane_stop,
         Arc::new(prober),
         agent_run,
         listen,
@@ -252,5 +257,84 @@ async fn an_outage_opens_one_incident_recovers_and_survives_a_config_edit() {
         .expect("all mode did not stop within 35 s")
         .unwrap()
         .unwrap();
+    drop(pg);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_probe_still_in_flight_at_shutdown_is_written_before_all_mode_exits() {
+    let (pg, admin) = test_pg::postgres().await;
+    let org = test_pg::org(&admin).await;
+    let check = test_pg::check(&admin, org, "http://127.0.0.1/").await;
+    admin
+        .execute(
+            "UPDATE uptime_check SET interval_seconds = 30, timeout_ms = 15000 WHERE id = $1",
+            &[&check],
+        )
+        .await
+        .unwrap();
+    let requests = Arc::new(AtomicU16::new(0));
+    let hold = Duration::from_secs(8);
+    let port = responder(Arc::new(AtomicU16::new(200)), hold, requests.clone()).await;
+
+    let crypto = Arc::new(rustls::crypto::ring::default_provider());
+    let (trigger, shutdown) = Shutdown::new();
+    let (plane_stop, plane_shutdown) = Shutdown::new();
+    let region = Region::parse("local").unwrap();
+    let control_url = pg
+        .role(
+            &admin,
+            "uptime_control",
+            include_str!("../control-role.sql"),
+        )
+        .await;
+    let config = ControlConfig {
+        database_url: Secret::new(&control_url),
+        regions: vec![region.clone()],
+        agent_token: None,
+        listen: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+    };
+    let plane = ControlPlane::start_with(
+        config,
+        crypto.clone(),
+        plane_shutdown,
+        Tempo { divisor: 30 },
+    )
+    .await
+    .unwrap();
+    let mut prober =
+        Prober::new(ProbeConfig::default(), crypto, AgentName("local".into())).unwrap();
+    prober.loopback_ok = true;
+    prober.loopback_port = Some(port);
+    let agent_run = AgentRun {
+        max_inflight: 64,
+        flush_every: Duration::from_millis(100),
+        flush_at: 50,
+        max_unacked: 1_000,
+    };
+    let listen: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let all = tokio::spawn(run::all(
+        plane,
+        plane_stop,
+        Arc::new(prober),
+        agent_run,
+        listen,
+        shutdown,
+    ));
+
+    until("a probe reaching the target", async || {
+        requests.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert_eq!(count(&admin, RESULTS, check).await, 0);
+    trigger.fire();
+    tokio::time::timeout(Duration::from_secs(60), all)
+        .await
+        .expect("all mode did not stop within 60 s")
+        .unwrap()
+        .unwrap();
+    assert!(
+        count(&admin, RESULTS, check).await >= 1,
+        "the in-flight probe's result was lost at shutdown"
+    );
     drop(pg);
 }

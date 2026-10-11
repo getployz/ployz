@@ -70,9 +70,10 @@ pub async fn main(
         Mode::Agent(config) => agent(config, crypto, shutdown).await,
         Mode::All(control, agent) => {
             let listen = control.listen;
-            let plane = ControlPlane::start(control, crypto.clone(), shutdown.clone()).await?;
+            let (plane_stop, plane_shutdown) = Shutdown::new();
+            let plane = ControlPlane::start(control, crypto.clone(), plane_shutdown).await?;
             let prober = Arc::new(prober(&agent, crypto)?);
-            all(plane, prober, agent.run, listen, shutdown).await
+            all(plane, plane_stop, prober, agent.run, listen, shutdown).await
         }
     }
 }
@@ -116,12 +117,14 @@ pub async fn agent(
 }
 
 /// One process that is both control plane and its only agent, linked by a function call. The
-/// HTTP listener still answers `/ready` for the platform.
+/// HTTP listener still answers `/ready` for the platform. The plane watches `plane_stop`, not
+/// `shutdown`, so it keeps taking reports until the agent has finished its in-flight probes.
 ///
 /// # Errors
 /// As [`main`].
 pub async fn all(
     plane: ControlPlane,
+    plane_stop: Trigger,
     prober: Arc<Prober>,
     agent_run: AgentRun,
     listen: SocketAddr,
@@ -135,6 +138,7 @@ pub async fn all(
     let server = tokio::spawn(serve(listener, plane.clone(), None, shutdown.clone()));
     let link = Arc::new(LocalLink::new(plane.clone(), region));
     let agent = crate::agent::run::run(link, prober, agent_run, shutdown).await;
+    plane_stop.fire();
     server
         .await
         .map_err(|e| Fatal(format!("The HTTP server task panicked: {e}.")))?;
