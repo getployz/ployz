@@ -1960,3 +1960,91 @@ fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
         [("site", Some(backend::sha(HEAD)))]
     );
 }
+
+#[test]
+fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_build() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.autoDeploy", json!("false"))],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    // web builds HEAD by hand.
+    let built = ployz_store::DeploymentId::parse(::uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: built.clone(),
+                environment: at("production"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    store
+        .pin(
+            &built,
+            &std::collections::BTreeMap::from([(web.clone(), backend::sha(HEAD))]),
+        )
+        .unwrap();
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store.claim(&built, &runner).unwrap();
+    store
+        .record(
+            &built,
+            &runner,
+            ployz_store::RunEvidence::Build(ployz_store::BuildReport {
+                service: web,
+                status: ployz_store::BuildStatus::Built,
+                message: None,
+                log: String::new(),
+            }),
+        )
+        .unwrap();
+
+    // The preview moves web to another repository; trusted, as a Cloud edit is.
+    let mut api = vouched();
+    api.repositories.push(AuthorizedRepository {
+        repository: backend::repo_name("acme/api"),
+        repository_id: backend::repo_id(12),
+        access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+        default_branch: backend::git_branch("main"),
+        branches: Vec::new(),
+    });
+    store
+        .write_trusted(
+            &who,
+            &Edit {
+                environment: at("pr-5"),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.repository").unwrap(),
+                    value: json!("acme/api"),
+                }],
+            },
+            &api,
+        )
+        .unwrap();
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let [admitted] = pushed.admitted.as_slice() else {
+        panic!("one Deployment: {pushed:?}")
+    };
+    // web's last build came from acme/web: on acme/api it resolves its branch's head.
+    let sources = store.sources(&admitted.deployment.id).unwrap();
+    assert_eq!(
+        sources
+            .iter()
+            .map(|source| (source.service.as_str(), source.commit.clone()))
+            .collect::<Vec<_>>(),
+        [("web", None)]
+    );
+}

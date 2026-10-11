@@ -14,7 +14,7 @@
 use crate::id::{BranchName, CommitSha, RepositoryId};
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::config::SavedServiceIntent;
+use ployz_core::config::{SavedServiceIntent, ServiceSource};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -708,7 +708,7 @@ fn admit(
         let pin = if *follows {
             Some(push.head.clone())
         } else if crate::git::is_git(service) {
-            last_built(tx, id, &service.id)?
+            last_built(tx, id, service)?
         } else {
             None
         };
@@ -827,16 +827,16 @@ fn forget_landed(
 fn last_built(
     tx: &mut dyn Tx,
     id: &EnvironmentId,
-    service: &str,
+    service: &SavedServiceIntent,
 ) -> Result<Option<CommitSha>, RpcError> {
     let rows = tx.query(
-        "SELECT b.commit_sha, b.service, d.nodes FROM config_build b \
+        "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
          JOIN config_deployment d ON d.id = b.deployment_id \
          WHERE d.environment_id = ?1 AND d.nodes LIKE ?2 AND b.commit_sha IS NOT NULL \
          AND b.status IN ('built', 'reused') ORDER BY d.admitted DESC",
         &[
             id.as_str().into(),
-            format!("%\"{service}\"%").as_str().into(),
+            format!("%\"{}\"%", service.id).as_str().into(),
         ],
     )?;
     for row in &rows {
@@ -844,15 +844,38 @@ fn last_built(
         let built = row.text(1)?;
         let ours = nodes.iter().any(|node| match node {
             deployment::TargetNode::Service { id, runtime, .. } => {
-                id.as_str() == service && runtime.as_str() == built
+                id.as_str() == service.id && runtime.as_str() == built
             }
             deployment::TargetNode::Volume { .. } | deployment::TargetNode::Config { .. } => false,
         });
-        if ours {
-            return row.parse(0, "commit").map(Some);
+        if !ours {
+            continue;
         }
+        // A build of another repository or branch is no commit of this source.
+        let saved = deployment::saved_at(tx, id, row.number(3, "revision")?)?;
+        let same = saved
+            .services
+            .iter()
+            .find(|then| then.id == service.id)
+            .is_some_and(|then| same_source(&then.config.source, &service.config.source));
+        return if same {
+            row.parse(0, "commit").map(Some)
+        } else {
+            Ok(None)
+        };
     }
     Ok(None)
+}
+
+/// Whether `a` and `b` build the same branch of the same repository.
+fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
+    matches!(
+        (a, b),
+        (
+            ServiceSource::Git { repository_id, branch, .. },
+            ServiceSource::Git { repository_id: then, branch: then_branch, .. },
+        ) if repository_id == then && branch == then_branch
+    )
 }
 
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:
