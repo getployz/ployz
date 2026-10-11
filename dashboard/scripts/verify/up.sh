@@ -100,6 +100,7 @@ cd "$dash"
 node node_modules/drizzle-kit/bin.cjs migrate > "$run/migrate.log" 2>&1 || { cat "$run/migrate.log" >&2; exit 1; }
 seed_out=$(node scripts/verify/runner.mjs /scripts/verify/seed.ts 2>&1) || { echo "$seed_out" >&2; exit 1; }
 seed=$(printf '%s\n' "$seed_out" | sed -n 's/^VERIFY_SEED //p')
+node scripts/verify/runner.mjs /scripts/verify/seed-uptime.ts > "$run/seed-uptime.log" 2>&1 || { cat "$run/seed-uptime.log" >&2; exit 1; }
 printf '%s\n' "$seed" > "$run/seed.json"; echo "$name" > "$run/session"
 json() { node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]])' "$seed" "$1"; }
 org=$(json organizationSlug); cookie=$(json cookie)
