@@ -29,7 +29,7 @@ use super::{
     segment::{self, Row},
 };
 use crate::{
-    docker::{LABEL_MANAGED, LABEL_SERVICE_ID},
+    docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
     machine::LocalMachineRecord,
     observe::{harvest, layout::StoreRoot},
 };
@@ -123,11 +123,7 @@ async fn refresh(docker: &Docker, roots: &Roots, tracked: &mut HashMap<Container
     };
     let running: HashSet<ContainerId> = summaries
         .into_iter()
-        .filter(|summary| {
-            summary.labels.as_ref().is_some_and(|labels| {
-                labels.contains_key(LABEL_MANAGED) || labels.contains_key(LABEL_SYSTEM_MANAGED)
-            })
-        })
+        .filter(|summary| summary.labels.as_ref().is_some_and(sampled))
         .filter_map(|summary| ContainerId::parse(summary.id?).ok())
         .collect();
     tracked.retain(|id, _| running.contains(id));
@@ -151,6 +147,14 @@ async fn refresh(docker: &Docker, roots: &Roots, tracked: &mut HashMap<Container
             tracked.insert(id, container);
         }
     }
+}
+
+/// Ployz's Service and system containers. A pre-deploy Hook carries its
+/// Service's labels but is not one of its replicas, so it stays out of the
+/// Service's numbers.
+fn sampled(labels: &HashMap<String, String>) -> bool {
+    (labels.contains_key(LABEL_MANAGED) || labels.contains_key(LABEL_SYSTEM_MANAGED))
+        && !labels.contains_key(LABEL_HOOK)
 }
 
 fn track(
@@ -467,6 +471,23 @@ Inter-|   Receive                                                |  Transmit
 
     fn container(n: u32) -> ContainerId {
         ContainerId::parse(format!("{n:08x}").repeat(8)).unwrap()
+    }
+
+    #[test]
+    fn ployz_containers_are_sampled_and_hooks_are_not() {
+        use crate::docker::{LABEL_HOOK, LABEL_MANAGED};
+        let labels = |keys: &[&str]| -> std::collections::HashMap<String, String> {
+            keys.iter()
+                .map(|key| ((*key).to_owned(), String::new()))
+                .collect()
+        };
+        assert!(super::sampled(&labels(&[LABEL_MANAGED])));
+        assert!(super::sampled(&labels(&[super::LABEL_SYSTEM_MANAGED])));
+        assert!(
+            !super::sampled(&labels(&[LABEL_MANAGED, LABEL_HOOK])),
+            "a pre-deploy Hook is not a replica"
+        );
+        assert!(!super::sampled(&labels(&["com.example.other"])));
     }
 
     #[test]
