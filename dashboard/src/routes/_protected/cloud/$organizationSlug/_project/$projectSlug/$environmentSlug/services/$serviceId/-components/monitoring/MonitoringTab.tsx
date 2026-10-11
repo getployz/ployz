@@ -1,4 +1,4 @@
-import { Suspense, useDeferredValue, useRef, useState, type ReactNode } from "react";
+import { Suspense, useDeferredValue, useEffect, useState, type ReactNode } from "react";
 import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { CatchBoundary, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
 import { createChartCursor, type ChartCursorController } from "@tanstack/charts/cursor";
@@ -159,7 +159,21 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
   const [zoom, setZoom] = useState<Zoom | null>(null);
   const [picked, setPicked] = useState<Picked | null>(null);
   const [cursor] = useState(() => createChartCursor<Date, number>());
-  const pointer = useRef({ x: 0, y: 0 });
+  // The library leaves a pinned shared cursor up on outside clicks, so a tap elsewhere or Escape lets it go here.
+  useEffect(() => {
+    const release = (event: PointerEvent | KeyboardEvent) => {
+      if (!cursor.getState()?.pinned) return;
+      if (event instanceof KeyboardEvent ? event.key !== "Escape"
+        : event.target instanceof Element && event.target.closest("[data-metric-chart], .metric-tooltip")) return;
+      cursor.setState(null);
+    };
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("keydown", release);
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("keydown", release);
+    };
+  }, [cursor]);
   // When Cloud answered, so the page renders the same on server and client and moves on with each poll.
   const now = dataUpdatedAt;
   const at = atFormat(useTimeZone());
@@ -192,12 +206,12 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
       const span = incidentSpan(incident, now);
       return span.to > window.from && span.from < window.to ? [{ id: incident.id, ...span }] : [];
     }),
-    onPick: (at) => {
+    incidentAt: (at) => {
       const incident = shownIncidents.find((candidate) => {
         const span = incidentSpan(candidate, now);
         return at >= span.from - window.stepMs && at <= span.to;
       });
-      setPicked(incident ? { incident, ...pointer.current } : null);
+      return incident ? (x, y) => setPicked({ incident, x, y }) : null;
     },
   });
   const chart = frame(incidents);
@@ -233,8 +247,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
       </div>
       <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
         from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
-      <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}
-        onPointerDownCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}>
+      <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}>
         <div className="sm:col-span-2">
           {uptime === null ? (
             <MetricChart id="response" title="Response time" format={formatMs} {...chart} value="–" series={[]} />
@@ -285,7 +298,7 @@ type ChartFrame = {
   from: number;
   to: number;
   cursor: ChartCursorController<Date, number>;
-  onPick: (at: number) => void;
+  incidentAt: (at: number) => ((x: number, y: number) => void) | null;
 };
 
 /**
