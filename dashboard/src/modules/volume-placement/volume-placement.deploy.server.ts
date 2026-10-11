@@ -87,9 +87,9 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
-  // A Server that joined on an older daemon since these were staged can't take part in a run.
+  // A Server that joined on an older daemon since these were staged, or one that isn't answering, can't take part in a run.
   const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId, read);
-  if (refusal?.code === "upgrade_required") {
+  if (refusal !== null) {
     yield* release(organizationId, deploymentId);
     return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
   }
