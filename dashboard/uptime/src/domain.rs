@@ -168,6 +168,104 @@ pub enum Host {
     Ip(IpAddr),
 }
 
+impl Target {
+    /// The rules CRUD enforces in TS, re-asserted where the checker reads `uptime_check.url`: http
+    /// or https, port 80 or 443 (explicit or default), no userinfo, no fragment, at most 2048
+    /// bytes. The host is lowercased, and an IP literal becomes [`Host::Ip`].
+    ///
+    /// # Errors
+    /// The URL breaks one of those rules.
+    pub fn parse(url: &str) -> Result<Target, BadTarget> {
+        let bad = |why: &'static str| BadTarget { why };
+        if url.len() > 2048 {
+            return Err(bad("is longer than 2048 bytes"));
+        }
+        // http::Uri drops a fragment silently instead of refusing it.
+        if url.contains('#') {
+            return Err(bad("has a fragment"));
+        }
+        let uri: http::Uri = url.parse().map_err(|_| bad("is not a valid URL"))?;
+        let scheme = match uri.scheme_str() {
+            Some("http") => Scheme::Http,
+            Some("https") => Scheme::Https,
+            _ => return Err(bad("is not http or https")),
+        };
+        let authority = uri.authority().ok_or(bad("has no host"))?;
+        if authority.as_str().contains('@') {
+            return Err(bad("has userinfo"));
+        }
+        let port = match (authority.port_u16(), scheme) {
+            (Some(port @ (80 | 443)), _) => port,
+            (Some(_), _) => return Err(bad("uses a port other than 80 or 443")),
+            (None, Scheme::Http) => 80,
+            (None, Scheme::Https) => 443,
+        };
+        let host = authority.host();
+        let literal = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+        let host = match literal.unwrap_or(host).parse::<IpAddr>() {
+            Ok(ip) => Host::Ip(ip),
+            Err(_) if literal.is_some() => return Err(bad("has a malformed IPv6 literal")),
+            Err(_) if host.is_empty() => return Err(bad("has no host")),
+            Err(_) => Host::Name(host.to_ascii_lowercase()),
+        };
+        let path_and_query = uri
+            .path_and_query()
+            .map_or_else(|| "/".to_owned(), |p| p.as_str().to_owned());
+        Ok(Target {
+            scheme,
+            host,
+            port,
+            path_and_query,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("The URL {why}.")]
+pub struct BadTarget {
+    why: &'static str,
+}
+
+/// The pass rule. One today, and the verdict is computed in the control plane, so a new rule never
+/// redeploys agents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Expect {
+    /// Any HTTP response below 400 passes, 3xx included.
+    Below400,
+}
+
+impl Expect {
+    /// # Errors
+    /// `name` is not a rule this build knows.
+    pub fn parse(name: &str) -> Result<Expect, BadExpect> {
+        match name {
+            "below_400" => Ok(Expect::Below400),
+            _ => Err(BadExpect(name.to_owned())),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Expect rule {0:?} is unknown to this build.")]
+pub struct BadExpect(String);
+
+/// An enabled check as the control plane holds it. Disabled checks are not held at all.
+#[derive(Clone, Debug)]
+pub struct Check {
+    pub id: CheckId,
+    pub org: OrgId,
+    pub revision: Revision,
+    /// Snapshot for the alert payload only.
+    pub name: Arc<str>,
+    /// As stored, for the alert payload and incident evidence.
+    pub url: Arc<str>,
+    pub target: Arc<Target>,
+    pub interval: Interval,
+    /// Shorter than the interval.
+    pub timeout: Duration,
+    pub expect: Expect,
+}
+
 /// One unit of work for an agent.
 #[derive(Clone, Debug)]
 pub struct Job {
@@ -270,3 +368,7 @@ pub struct Judged {
     pub verdict: Verdict,
     pub observation: Observation,
 }
+
+#[cfg(test)]
+#[path = "domain_tests.rs"]
+mod tests;
