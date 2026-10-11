@@ -68,7 +68,7 @@ export function MirrorDrawerView({ params, panel, disabled, stage }: {
   const name = copyName(volume.name, server.name);
   const chip = mirrorChip(change);
   const volumeLink = (children: ReactNode) => (
-    <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} className="text-foreground underline-offset-4 hover:underline">
+    <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} className="text-foreground underline underline-offset-4">
       {children}
     </Link>
   );
