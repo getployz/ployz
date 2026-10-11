@@ -20,7 +20,10 @@ pub(crate) fn publish_command() -> Command {
 }
 
 pub(crate) fn history_command() -> Command {
+    // Global, so `--project`/`--env` reach the action before or after its name.
     scoped(Command::new("history").about("Show immutable saved versions"))
+        .mut_arg("project", |arg| arg.global(true))
+        .mut_arg("env", |arg| arg.global(true))
         .subcommand_required(false)
         .subcommand(history_action(
             "restore",
@@ -33,7 +36,8 @@ pub(crate) fn history_command() -> Command {
 }
 
 fn history_action(name: &'static str, about: &'static str) -> Command {
-    scoped(Command::new(name).about(about))
+    Command::new(name)
+        .about(about)
         .arg(positional("revision", true).value_parser(clap::value_parser!(u64)))
         .arg(version())
         .arg(
