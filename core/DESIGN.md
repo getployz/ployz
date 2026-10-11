@@ -56,9 +56,9 @@ a request mode that selects verification, may refuse fields it does not
 recognize and fail closed. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
 
-The Log Store is outside the promise. It is disposable Machine-local state. A
-daemon that finds a format version it does not know deletes it and starts
-again, so the Log Store needs no migrations.
+The Observe Store is outside the promise. It holds the Log Store, Metric
+Samples, and Rollups, all of it disposable Machine-local state. A daemon that finds a format version it does not know
+deletes it and starts again, so the Observe Store needs no migrations.
 
 A breaking release protects older Clusters from its own side. Daemons follow
 their own line's channel pointer (`ployz.sh/v0/stable`), so a new line never
@@ -132,9 +132,11 @@ runs again on its own. A retry reads every copy live and continues from what the
 disks show. A Cluster with no operator to drive it keeps its Volumes where they
 are.
 
-The Log Store runs continuously, and it only observes the Machine it runs on.
-It never places, moves, restarts, or removes a container, and no Deploy waits
-on it.
+The Observe Store runs continuously, and it only observes the Machine it runs
+on. It never places, moves, restarts, or removes a container, and no Deploy
+waits on it. Its 10 second metric loop does file reads only. A source that can
+block, such as `zfs list`, runs on its own 60 second tick with a timeout, so a
+slow source drops a metric and never stalls the loop.
 
 **Red flags:** controllers, persisted desired state, durable workflows other than a
 requested Volume Run, cluster-wide reconcilers, any behavior that continues after
@@ -235,6 +237,28 @@ Deleting an Environment does not delete its retained logs. Reusing its Namespace
 and Service names can show the earlier Environment's output until retention removes
 it. Deployment and Container selectors distinguish that output by their identities.
 
+Metrics follow the same rule. Each Machine samples only its own Containers and
+itself, every 10 seconds, and keeps raw Metric Samples for 24 hours and 5 minute
+Rollups per Service and Deployment for 90 days. Logs and metrics share one disk
+budget, so both go sooner, oldest hour first, when the Observe Store passes its
+size cap or the disk its free floor. A removed Container's history stays under
+its Service until its Rollups expire. Cloud reads metrics through the daemon on
+demand and never copies them (bet 7). A value a Machine could not read is a
+named gap, never zero. A Cloud copy of metrics, such as a paid
+long-term store, breaks this rule and needs its own amendment here first.
+
+```mermaid
+flowchart LR
+  subgraph Machine
+    S[Sampler, every 10 s] --> R[Raw hours, 24 h]
+    R -- fold each closed hour --> U[5 minute Rollups, 90 days]
+    H[Harvester events] --> M[Markers]
+    M --> U
+    R & U --> Q[History query on observe.sock]
+  end
+  C[Cloud or CLI] -- on demand, via the daemon --> Q
+```
+
 **Red flags:**
 
 - A Machine deciding by reading another Machine's records. A replicated
@@ -288,7 +312,8 @@ that decision, never make it.
 **Red flags:** Cloud-held runtime truth, a connection catalog treated as
 membership, absence or transport failure used to reset a founder, Cluster
 operations whose correctness depends on Cloud reachability, a Volume Run step
-whose safety needs Cloud's rows to be the Cluster's truth.
+whose safety needs Cloud's rows to be the Cluster's truth, a Cloud copy of the
+Observe Store's logs or metrics.
 
 ## 8. Evidence over claims
 
