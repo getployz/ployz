@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import readline from "node:readline";
@@ -37,6 +37,24 @@ type Cli<Event> = {
 const TIMEOUT_MS = 180_000;
 const QUIET_MS = 400;
 const SERVER = fileURLToPath(new URL("./mcp-tools.mjs", import.meta.url));
+/** Free memory a CLI needs before it starts: each one holds about 300 MB, and a wide eval must not push the machine into OOM. */
+const MIN_AVAILABLE_GIB = Number(process.env["PLOYZ_EVAL_MIN_AVAILABLE_GIB"] ?? 1.5);
+const SPAWN_SPACING_MS = 1_000;
+
+const availableGiB = async () => {
+  const line = (await readFile("/proc/meminfo", "utf8")).split("\n").find((entry) => entry.startsWith("MemAvailable:"));
+  return Number(line?.split(/\s+/)[1] ?? Number.POSITIVE_INFINITY) / 1024 / 1024;
+};
+
+/** Spawns pass one at a time, spaced so each sees the memory the last one took. */
+let admitted: Promise<void> = Promise.resolve();
+const admit = () => {
+  admitted = admitted.then(async () => {
+    while ((await availableGiB()) < MIN_AVAILABLE_GIB) await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await new Promise((resolve) => setTimeout(resolve, SPAWN_SPACING_MS));
+  });
+  return admitted;
+};
 
 /** `name` without the `mcp__<server>__` prefix a CLI puts on MCP tools. */
 export const stripServer = (name: string) => name.replace(/^mcp__.+?__/, "");
@@ -280,6 +298,7 @@ const ask = async <Event>(cli: Cli<Event>, model: string, options: Options): Pro
     await writeFile(files.system, normalizeSystemPrompts(options.systemPrompts).map(({ content }) => content).join("\n\n"));
     await writeFile(files.tools, JSON.stringify(tools));
     await writeFile(files.mcp, JSON.stringify({ mcpServers: { ployz: { command: "node", args: [SERVER, files.tools] } } }));
+    await admit();
     const lines = await run(cli, cli.args(model, files), files.cwd, render(options.messages, tools.length > 0 ? "tools" : "chat"), options.request?.signal ?? undefined);
     return Result.flatMap(lines, cli.parse);
   } finally {
