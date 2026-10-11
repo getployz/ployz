@@ -4686,6 +4686,15 @@
         "help": "The Volume's name, to delete a Mirror that is its only copy left"
       },
       {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
+      },
+      {
         "name": "--wait",
         "required": false,
         "value": false,
@@ -4785,6 +4794,15 @@
         "multiple": false,
         "index": 1,
         "trailing": false
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       },
       {
         "name": "--wait",
