@@ -239,10 +239,12 @@ it. Deployment and Container selectors distinguish that output by their identiti
 
 Metrics follow the same rule. Each Machine samples only its own Containers and
 itself, every 10 seconds, and keeps raw Metric Samples for 24 hours and 5 minute
-Rollups per Service and Deployment for 90 days. A removed Container's history
-stays under its Service until its Rollups expire. Cloud reads metrics through
-the daemon on demand and never copies them (bet 7). A value a Machine could not
-read is a named gap, never zero. A Cloud copy of metrics, such as a paid
+Rollups per Service and Deployment for 90 days. Logs and metrics share one disk
+budget, so both go sooner, oldest hour first, when the Observe Store passes its
+size cap or the disk its free floor. A removed Container's history stays under
+its Service until its Rollups expire. Cloud reads metrics through the daemon on
+demand and never copies them (bet 7). A value a Machine could not read is a
+named gap, never zero. A Cloud copy of metrics, such as a paid
 long-term store, breaks this rule and needs its own amendment here first.
 
 **Red flags:**
