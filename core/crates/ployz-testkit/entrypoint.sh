@@ -46,6 +46,14 @@ if [ "${PLOYZ_TESTKIT_PRIME:-}" = 1 ]; then
   tar -C /var/lib/docker -cf /opt/ployz/docker-graph.tar .
   exit 0
 fi
+(
+  while :; do
+    ployzd "$@" dns &
+    echo "$!" >/run/ployz-dns.pid
+    wait "$!" || true
+    sleep 1
+  done
+) &
 while :; do
   ployzd --machine-api-address '[::]:7569' "$@" &
   ployzd_pid=$!

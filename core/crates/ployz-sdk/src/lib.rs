@@ -15,7 +15,7 @@ use napi_derive::napi;
 use ployz::sdk;
 use ployz_core::{
     DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
-    RpcErrorCode,
+    RpcErrorCode, log_level,
 };
 
 /// One cancellable connection attempt.
@@ -260,6 +260,17 @@ impl Client {
                 .container_logs(input)
                 .await
                 .map_err(rpc_to_napi)?,
+        })
+    }
+
+    /// Read one page of one Machine's Log Store.
+    /// # Errors
+    /// Returns malformed input and Machine transport failures.
+    #[napi]
+    pub async fn log_history(&self, input: serde_json::Value) -> Result<LogHistoryStream> {
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        Ok(LogHistoryStream {
+            inner: self.inner.log_history(input).await.map_err(rpc_to_napi)?,
         })
     }
 
@@ -878,9 +889,38 @@ pub struct ContainerLogStream {
 }
 #[napi]
 impl ContainerLogStream {
-    /// Next output, or null at EOF/cancellation.
+    /// Next output with its level, or null at EOF/cancellation.
     /// # Errors
     /// Returns Machine transport or encoding failures.
+    #[napi]
+    pub async fn next(&self) -> Result<Option<serde_json::Value>> {
+        let Some(row) = self.inner.next().await.map_err(rpc_to_napi)? else {
+            return Ok(None);
+        };
+        let level = log_level(row.message.as_bytes());
+        let mut value = to_json(&row)?;
+        if let serde_json::Value::Object(fields) = &mut value {
+            fields.insert("level".into(), level.as_str().into());
+        }
+        Ok(Some(value))
+    }
+    /// Stop this reader without closing its session.
+    #[napi]
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+}
+
+/// Cancellable reader of one Log Store page.
+#[napi]
+pub struct LogHistoryStream {
+    inner: sdk::LogHistoryStream,
+}
+#[napi]
+impl LogHistoryStream {
+    /// Next row of the page, or null after its `end`.
+    /// # Errors
+    /// Returns the store's error and Machine transport failures.
     #[napi]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         self.inner
@@ -890,7 +930,7 @@ impl ContainerLogStream {
             .map(|row| to_json(&row))
             .transpose()
     }
-    /// Stop this reader without closing its session.
+    /// Stop this read without closing its session.
     #[napi]
     pub fn cancel(&self) {
         self.inner.cancel();

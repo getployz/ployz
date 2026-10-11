@@ -33,11 +33,17 @@ From 0.2.0: a daemon keeps working, and can be upgraded, across every later
 new major line (1.0 first) may break the promise, and it says so. The promise covers what a
 daemon carries or speaks — the replicated store and its bodies, the local
 Machine record, Machine RPC within `PROTOCOL_MAJOR`, the enrollment protocol,
-and the release source. The CLI surface is a client courtesy with ordinary
+the release source, the `/run/ployz/dns.json` spec a daemon hands its Internal
+DNS process, and `ployzd dns --probe` exiting 0 when a binary can serve it. The CLI surface is a client courtesy with ordinary
 deprecation, not a guarantee. Branch Sync broke it on purpose, with no users yet:
 `env save` and `env update` are gone, and the JSON field `save` is now
 `conditional_sync`. Warm Move broke it on purpose too, with no users yet: switch
 requests no longer carry `not_after_unix_seconds`, and AdoptLease is gone.
+The Log Store release makes one approved exception while the user base is small:
+`TailLogs` replaces `ContainerLogs` and `MachineLogs`, and `LogHistory` replaces
+`ContainerLogHistory`. Clients and daemons need the matching log RPCs. The release
+also removes `ForgetLogs`; deleting an Environment leaves its logs under the
+normal retention limits. These two read RPCs are the log contract going forward.
 
 Frozen formats evolve **additively with tolerant readers**: rows and bodies only
 gain fields; every new field is optional with a default; nothing is renamed or
@@ -49,6 +55,10 @@ exception, and never on replicated bodies: a section holding secret or key mater
 a request mode that selects verification, may refuse fields it does not
 recognize and fail closed. There are no version gates and no store migrations;
 a change that cannot be expressed additively waits for `PROTOCOL_MAJOR` 2.
+
+The Log Store is outside the promise. It is disposable Machine-local state. A
+daemon that finds a format version it does not know deletes it and starts
+again, so the Log Store needs no migrations.
 
 A breaking release protects older Clusters from its own side. Daemons follow
 their own line's channel pointer (`ployz.sh/v0/stable`), so a new line never
@@ -121,6 +131,10 @@ of steps a user requested. It ends done, failed, cancelled or lost, and never
 runs again on its own. A retry reads every copy live and continues from what the
 disks show. A Cluster with no operator to drive it keeps its Volumes where they
 are.
+
+The Log Store runs continuously, and it only observes the Machine it runs on.
+It never places, moves, restarts, or removes a container, and no Deploy waits
+on it.
 
 **Red flags:** controllers, persisted desired state, durable workflows other than a
 requested Volume Run, cluster-wide reconcilers, any behavior that continues after
@@ -214,6 +228,13 @@ lease as old and demote it. That demotion ships with Restore. Until then both
 copies can take writes, and the old one's writes are lost when it is demoted.
 That window is accepted and documented, not prevented.
 
+A container's output is Machine-local too. It lives on the Machine that ran the
+container and outlives it. That Machine deletes it once it passes the size or
+age cap. Cloud reads it through the daemon and never copies it (bet 7).
+Deleting an Environment does not delete its retained logs. Reusing its Namespace
+and Service names can show the earlier Environment's output until retention removes
+it. Deployment and Container selectors distinguish that output by their identities.
+
 **Red flags:**
 
 - A Machine deciding by reading another Machine's records. A replicated
@@ -297,6 +318,11 @@ proxy retries to cover traffic sent to a Container that is already gone.
 forever. The maintenance budget belongs to the coordination semantics above, which
 nobody else will build.
 
+The Log Store reads the files Docker's `local` log driver writes, a format
+Docker does not document. The installer does not pin a Docker release, so CI runs
+the reader's test against the latest one. The reader skips a frame it cannot
+parse, records the skipped bytes as corrupt, and keeps reading.
+
 **Red flags:** hand-rolled consensus, custom overlay networking, bespoke TLS,
 reimplementing behavior a shipped, proven component already provides.
 
@@ -350,8 +376,26 @@ command returns, which bet 3 flags. It is bounded: the task ends when Docker
 answers, it never retries or starts other work, and the Volume Run that asked
 keeps asking until it does.
 
+**Serving outlives the daemon.** Corrosion and Internal DNS are daemon-owned but
+not daemon-hosted: a daemon stop, restart, crash or upgrade never stops them. The
+daemon derives what they run from the Machine record and converges them on every
+start. Corrosion is a Docker container carrying a digest of everything it was
+created from, replaced only when that digest changes. Internal DNS is `ployzd
+dns` under a runtime unit the daemon writes to `/run/systemd/system`, serving the
+spec the daemon publishes in `/run/ployz/dns.json` and parking its port-53
+sockets in systemd's fd store, so its own restarts queue queries rather than
+refuse them. The daemon restarts it onto new software only after its own
+Corrosion is ready. Reset and uninstall are the only paths that stop either one.
+If the installed binary cannot serve DNS (`ployzd dns --probe` fails), the
+running DNS process hands port 53 back and stops. This is a process that
+continues after the command that started it returns, which bet 3 flags. It is
+serving, not reconciling: it reads one spec, answers queries, and does no work
+on other Machines or on its own schedule.
+
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
-a client could compute from the observations it already gathers.
+a client could compute from the observations it already gathers, a daemon stop
+path that stops serving infrastructure, a second writer of `dns.json` or the DNS
+unit, DNS answering before its first load.
 
 ## Boundaries
 

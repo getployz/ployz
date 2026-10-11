@@ -38,6 +38,7 @@ pub use ployz_core::{
 };
 
 pub(crate) use progress::pending_rows;
+pub(crate) use report::log_tail;
 
 fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(

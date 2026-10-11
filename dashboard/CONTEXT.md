@@ -189,7 +189,7 @@ The set of target platforms a service image must cover for one Deployment, deriv
 _Avoid_: Organization Cluster architecture, global build platform, builder architecture
 
 **Deployment Logs**:
-The user-facing output for a Deployment: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Availability of container output is distinct from retention of the attempt’s lifecycle history.
+The user-facing output for a Deployment: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Container output comes from each Server's Log Store, so it outlives the containers until it ages out; a Server that doesn't answer is named rather than silently left out. Availability of container output is distinct from retention of the attempt’s lifecycle history.
 _Avoid_: Deploy Progress alone, Build Logs
 
 **Image Build**:

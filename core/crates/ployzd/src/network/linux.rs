@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     io,
     net::{IpAddr, SocketAddr},
+    path::Path,
     process::Command,
     time::{Duration, SystemTime},
 };
@@ -11,7 +12,9 @@ use bollard::{
     models::{Ipam, IpamConfig, NetworkCreateRequest, NetworkInspect},
 };
 use defguard_wireguard_rs::{
-    InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key,
+    InterfaceConfiguration, Kernel, WGApi, WireguardInterfaceApi,
+    host::{Host, Peer},
+    key::Key,
     net::IpAddrMask,
 };
 use ipnet::IpNet;
@@ -19,6 +22,7 @@ use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, LocalMachinePhase, Machine, MachineId, SelectedEndpoint,
     WireGuardDevice, WireGuardPeer, WireGuardPublicKey,
 };
+use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::docker_image::is_not_found;
@@ -36,8 +40,14 @@ use crate::{
 const NETWORK_MTU: u32 = 1420;
 const DOCKER_NETWORK_MANAGED_LABEL: &str = "ployzd.managed";
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PeerSet {
+    Bootstrap,
+    Snapshot,
+}
+
 pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
-    let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
+    let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME)?;
     let host = wireguard.read_interface_data()?;
     let public_key = host
         .private_key
@@ -51,7 +61,7 @@ pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
             let allowed_ips = peer
                 .allowed_ips
                 .into_iter()
-                .map(|address| IpNet::new(address.ip, address.cidr))
+                .map(|address| IpNet::new(address.address, address.cidr))
                 .collect::<Result<_, _>>()
                 .map_err(|error| NetworkError::Io(io::Error::other(error)))?;
             Ok(WireGuardPeer {
@@ -80,13 +90,12 @@ pub fn inspect_wireguard_device() -> Result<WireGuardDevice, NetworkError> {
 
 pub struct NetworkPlane {
     machine: Machine,
-    private_key: WireGuardPrivateKey,
     docker: Docker,
     wireguard: WGApi<Kernel>,
     mtu: u32,
     routes: BTreeSet<IpNet>,
     bootstrap_peers: Vec<MeshPeer>,
-    peers: Vec<MeshPeer>,
+    endpoint_peers: Vec<MeshPeer>,
 }
 
 impl NetworkPlane {
@@ -102,8 +111,19 @@ impl NetworkPlane {
         let private_key = record.private_key().clone();
 
         let docker = Docker::connect_with_socket_defaults()?;
-        let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME.into())?;
-        wireguard.create_interface()?;
+        let mut wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME)?;
+        let retained = read_retained_device(&wireguard, &private_key, &machine)?;
+        let routes = match &retained {
+            Some(host) => peer_routes(host.peers.values())?,
+            None => BTreeSet::new(),
+        };
+        let wireguard_created = retained.is_none();
+        let initialize = retained
+            .as_ref()
+            .is_none_or(|host| host.private_key.is_none());
+        if wireguard_created {
+            wireguard.create_interface()?;
+        }
         let now = SystemTime::now();
         let (peers, _) = attach_peer_selections(
             peers_for(&machine.id, bootstrap),
@@ -113,29 +133,41 @@ impl NetworkPlane {
         );
         let mut plane = Self {
             machine,
-            private_key,
             docker,
             wireguard,
             mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
-            routes: BTreeSet::new(),
+            routes,
             bootstrap_peers: peers.clone(),
-            peers: peers.clone(),
+            endpoint_peers: if wireguard_created {
+                peers.clone()
+            } else {
+                Vec::new()
+            },
         };
         let docker_created = match plane.ensure_docker_network().await {
             Ok(created) => created,
             Err(error) => {
-                let _ = plane.wireguard.remove_interface();
+                if wireguard_created {
+                    let _ = plane.wireguard.remove_interface();
+                }
                 return Err(error);
             }
         };
-        if let Err(error) = plane.apply_peers(&peers) {
-            plane.rollback_start(docker_created).await;
+        if let Err(error) = plane
+            .configure_device(&private_key, initialize)
+            .and_then(|()| plane.apply_peers(&peers, PeerSet::Bootstrap))
+        {
+            plane
+                .rollback_start(docker_created, wireguard_created)
+                .await;
             return Err(error);
         }
         if let Err(error) =
             super::apply_firewall_rules(plane.machine.subnet, plane.machine.management_address())
         {
-            plane.rollback_start(docker_created).await;
+            plane
+                .rollback_start(docker_created, wireguard_created)
+                .await;
             return Err(error);
         }
         Ok(Some(plane))
@@ -188,6 +220,24 @@ impl NetworkPlane {
         Ok(())
     }
 
+    pub(crate) async fn cleanup_retained(record: &LocalMachineRecord) -> Result<(), NetworkError> {
+        let Some(machine) = record.machine() else {
+            return Ok(());
+        };
+        let wireguard = WGApi::<Kernel>::new(WIREGUARD_INTERFACE_NAME)?;
+        Self {
+            machine: machine.clone(),
+            docker: Docker::connect_with_socket_defaults()?,
+            wireguard,
+            mtu: record.wireguard_mtu.unwrap_or(NETWORK_MTU),
+            routes: BTreeSet::new(),
+            bootstrap_peers: Vec::new(),
+            endpoint_peers: Vec::new(),
+        }
+        .cleanup()
+        .await
+    }
+
     pub async fn cleanup(&mut self) -> Result<(), NetworkError> {
         let mut failures = Vec::new();
         if let Err(error) = remove_firewall_rules(self.machine.subnet) {
@@ -196,7 +246,9 @@ impl NetworkPlane {
         if let Err(error) = self.remove_docker_network().await {
             failures.push(ployz_core::error_chain::inline(&error));
         }
-        if let Err(error) = self.wireguard.remove_interface() {
+        if wireguard_device_exists()?
+            && let Err(error) = self.wireguard.remove_interface()
+        {
             failures.push(ployz_core::error_chain::inline(&error));
         }
         if failures.is_empty() {
@@ -207,7 +259,16 @@ impl NetworkPlane {
     }
 
     async fn remove_docker_network(&self) -> Result<(), NetworkError> {
-        match self.docker.remove_network(DOCKER_NETWORK_NAME).await {
+        let network = match self.docker.inspect_network(DOCKER_NETWORK_NAME, None).await {
+            Ok(network) => network,
+            Err(error) if is_not_found(&error) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        let subnet = self.machine.subnet.to_string();
+        let gateway = self.machine.subnet.gateway().0.to_string();
+        let options = required_docker_network_options(self.mtu);
+        let id = reset_network_id(&network, &subnet, &gateway, &options)?;
+        match self.docker.remove_network(id).await {
             Ok(()) => Ok(()),
             Err(error) if is_not_found(&error) => Ok(()),
             Err(error) => Err(error.into()),
@@ -230,64 +291,87 @@ impl NetworkPlane {
         local: &RecordOwner,
     ) -> Result<(), NetworkError> {
         let record = local.record();
+        let Some(planned) = snapshot_peers(
+            &self.machine.id,
+            snapshot,
+            &self.bootstrap_peers,
+            record.phase() == LocalMachinePhase::Joining,
+        ) else {
+            return Ok(());
+        };
         let selected = &record.selected_endpoints;
-        let joining = record.phase() == LocalMachinePhase::Joining;
         let now = SystemTime::now();
-        let mut planned = peers_for(&self.machine.id, &snapshot.observations);
-        if joining {
-            let known = planned
-                .iter()
-                .map(|peer| peer.machine_id)
-                .collect::<BTreeSet<_>>();
-            planned.extend(
-                self.bootstrap_peers
-                    .iter()
-                    .filter(|peer| !known.contains(&peer.machine_id))
-                    .cloned(),
-            );
-        }
-        let previous = std::mem::take(&mut self.peers);
-        let (planned, newly_selected) = attach_peer_selections(planned, previous, selected, now);
-        self.apply_peers(&planned)?;
-        self.peers = planned;
+        let mut previous = std::mem::take(&mut self.endpoint_peers);
+        let host = self.wireguard.read_interface_data()?;
+        seed_retained_selections(&planned, &mut previous, &host.peers, now);
+        let (planned, _) = attach_peer_selections(planned, previous, selected, now);
+        self.apply_peers(&planned, PeerSet::Snapshot)?;
+        self.endpoint_peers = planned;
         // Only an installed selection is worth remembering across a restart.
-        for (machine_id, endpoint) in newly_selected {
-            persist_selection(local, machine_id, endpoint).await;
+        for peer in &self.endpoint_peers {
+            if let Some(endpoint) = peer.selected()
+                && selected.get(&peer.machine_id).copied() != Some(endpoint)
+            {
+                persist_selection(local, peer.machine_id, endpoint).await;
+            }
         }
         Ok(())
     }
 
-    fn apply_peers(&mut self, peers: &[MeshPeer]) -> Result<(), NetworkError> {
+    fn configure_device(
+        &self,
+        private_key: &WireGuardPrivateKey,
+        initialize: bool,
+    ) -> Result<(), NetworkError> {
+        let address = IpAddrMask::host(IpAddr::V6(self.machine.management_address().0));
+        if initialize {
+            self.wireguard
+                .configure_interface(&InterfaceConfiguration {
+                    name: WIREGUARD_INTERFACE_NAME.into(),
+                    prvkey: private_key.encoded(),
+                    addresses: vec![address],
+                    port: WIREGUARD_PORT,
+                    peers: Vec::new(),
+                    mtu: Some(self.mtu),
+                })?;
+        } else {
+            self.wireguard.assign_address(&address)?;
+            checked_command(
+                "ip",
+                &[
+                    "link",
+                    "set",
+                    "dev",
+                    WIREGUARD_INTERFACE_NAME,
+                    "mtu",
+                    &self.mtu.to_string(),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn apply_peers(&mut self, peers: &[MeshPeer], set: PeerSet) -> Result<(), NetworkError> {
         let wg_peers = peers
             .iter()
             .map(|peer| wireguard_peer(peer, peer.selected()))
             .collect::<Vec<_>>();
-        let desired_routes = peers
-            .iter()
-            .flat_map(|peer| peer.allowed_ips)
-            .collect::<BTreeSet<_>>();
-        self.wireguard
-            .configure_interface(&InterfaceConfiguration {
-                name: WIREGUARD_INTERFACE_NAME.into(),
-                prvkey: self.private_key.encoded(),
-                addresses: vec![IpAddrMask::host(IpAddr::V6(
-                    self.machine.management_address().0,
-                ))],
-                port: u32::from(WIREGUARD_PORT),
-                peers: wg_peers.clone(),
-                mtu: Some(self.mtu),
-            })?;
-        self.wireguard.configure_peer_routing(&wg_peers)?;
-        let gateway = self.machine.subnet.gateway().0.to_string();
-        for peer in peers {
-            for route in &peer.allowed_ips {
-                replace_route(*route, route.addr().is_ipv4().then_some(&gateway))?;
-            }
+        let host = self.wireguard.read_interface_data()?;
+        let changes = peer_changes(&host.peers, &wg_peers, set)?;
+        for peer in changes.updates {
+            self.wireguard.configure_peer(peer)?;
         }
-        for route in self.routes.difference(&desired_routes) {
+        let gateway = self.machine.subnet.gateway().0.to_string();
+        for route in &changes.routes {
+            replace_route(*route, route.addr().is_ipv4().then_some(&gateway))?;
+        }
+        for key in changes.removals {
+            self.wireguard.remove_peer(key)?;
+        }
+        for route in self.routes.difference(&changes.routes) {
             delete_route(route);
         }
-        self.routes = desired_routes;
+        self.routes = changes.routes;
         Ok(())
     }
 
@@ -303,7 +387,7 @@ impl NetworkPlane {
             }
         };
         let now = SystemTime::now();
-        for peer in &mut self.peers {
+        for peer in &mut self.endpoint_peers {
             let key = Key::new(peer.public_key.0);
             let device = host.peers.get(&key);
             let Some(endpoint) = peer.poll(
@@ -327,12 +411,14 @@ impl NetworkPlane {
         }
     }
 
-    async fn rollback_start(&mut self, docker_created: bool) {
-        let _ = remove_firewall_rules(self.machine.subnet);
+    async fn rollback_start(&mut self, docker_created: bool, wireguard_created: bool) {
+        if wireguard_created {
+            let _ = remove_firewall_rules(self.machine.subnet);
+            let _ = self.wireguard.remove_interface();
+        }
         if docker_created {
             let _ = self.docker.remove_network(DOCKER_NETWORK_NAME).await;
         }
-        let _ = self.wireguard.remove_interface();
     }
 
     async fn ensure_docker_network(&self) -> Result<bool, NetworkError> {
@@ -413,6 +499,210 @@ impl NetworkPlane {
     }
 }
 
+fn read_retained_device(
+    wireguard: &WGApi<Kernel>,
+    private_key: &WireGuardPrivateKey,
+    machine: &Machine,
+) -> Result<Option<Host>, NetworkError> {
+    validate_machine_identity(private_key, machine.public_key)?;
+    if !wireguard_device_exists()? {
+        return Ok(None);
+    }
+    let host = wireguard.read_interface_data()?;
+    let addresses = if host.private_key.is_none() {
+        wireguard_addresses()?
+    } else {
+        Vec::new()
+    };
+    validate_retained_device(&host, private_key, machine, &addresses)?;
+    Ok(Some(host))
+}
+
+fn wireguard_device_exists() -> io::Result<bool> {
+    Path::new("/sys/class/net")
+        .join(WIREGUARD_INTERFACE_NAME)
+        .try_exists()
+}
+
+const RETAINED_DEVICE_RECOVERY: &str = "run `systemctl stop ployz.socket ployz`; run `ip link delete ployz-wg`; run `systemctl reset-failed ployz.socket ployz`; run `systemctl start ployz`";
+
+fn validate_machine_identity(
+    private_key: &WireGuardPrivateKey,
+    machine_key: WireGuardPublicKey,
+) -> Result<(), NetworkError> {
+    if private_key.public_key() != machine_key {
+        return Err(NetworkError::WireGuardConflict {
+            reason: "the private key identity differs from the Machine record",
+            recovery: "rerun the Ployz install command with `--reset` at the end; this removes every container Ployz runs on the server",
+        });
+    }
+    Ok(())
+}
+
+fn validate_retained_device(
+    host: &Host,
+    private_key: &WireGuardPrivateKey,
+    machine: &Machine,
+    addresses: &[IpAddrMask],
+) -> Result<(), NetworkError> {
+    validate_machine_identity(private_key, machine.public_key)?;
+    let Some(key) = &host.private_key else {
+        let management = IpAddrMask::host(IpAddr::V6(machine.management_address().0));
+        return if host.peers.is_empty() && addresses.iter().all(|address| *address == management) {
+            Ok(())
+        } else {
+            Err(NetworkError::WireGuardConflict {
+                reason: "the keyless device has peers or unrelated addresses",
+                recovery: RETAINED_DEVICE_RECOVERY,
+            })
+        };
+    };
+    if WireGuardPublicKey(key.public_key().as_array()) != machine.public_key {
+        return Err(NetworkError::WireGuardConflict {
+            reason: "the existing device identity differs from the Machine record",
+            recovery: RETAINED_DEVICE_RECOVERY,
+        });
+    }
+    if host.listen_port != WIREGUARD_PORT {
+        return Err(NetworkError::WireGuardConflict {
+            reason: "the existing device listen port differs from the mesh port",
+            recovery: RETAINED_DEVICE_RECOVERY,
+        });
+    }
+    Ok(())
+}
+
+fn wireguard_addresses() -> Result<Vec<IpAddrMask>, NetworkError> {
+    #[derive(Deserialize)]
+    struct Interface {
+        addr_info: Vec<Address>,
+    }
+    #[derive(Deserialize)]
+    struct Address {
+        local: IpAddr,
+        prefixlen: u8,
+    }
+    let output = checked_command(
+        "ip",
+        &["-json", "address", "show", "dev", WIREGUARD_INTERFACE_NAME],
+    )?;
+    let interfaces: Vec<Interface> = serde_json::from_slice(&output.stdout)?;
+    Ok(interfaces
+        .into_iter()
+        .flat_map(|interface| interface.addr_info)
+        .map(|address| IpAddrMask::new(address.local, address.prefixlen))
+        .collect())
+}
+
+fn seed_retained_selections(
+    planned: &[MeshPeer],
+    previous: &mut Vec<MeshPeer>,
+    installed: &HashMap<Key, Peer>,
+    now: SystemTime,
+) {
+    for peer in planned {
+        if previous
+            .iter()
+            .any(|previous| previous.machine_id == peer.machine_id)
+        {
+            continue;
+        }
+        if let Some(endpoint) = installed
+            .get(&Key::new(peer.public_key.0))
+            .and_then(|peer| peer.endpoint)
+        {
+            let mut peer = peer.clone();
+            peer.selection.bind(Some(SelectedEndpoint(endpoint)), now);
+            previous.push(peer);
+        }
+    }
+}
+
+fn snapshot_peers(
+    machine_id: &MachineId,
+    snapshot: &ReplicatedObservations<Machine, MachineId>,
+    bootstrap: &[MeshPeer],
+    joining: bool,
+) -> Option<Vec<MeshPeer>> {
+    if !snapshot.incomplete_ids.is_empty() {
+        return None;
+    }
+    let mut peers = peers_for(machine_id, &snapshot.observations);
+    if joining {
+        let known = peers
+            .iter()
+            .map(|peer| peer.machine_id)
+            .collect::<BTreeSet<_>>();
+        peers.extend(
+            bootstrap
+                .iter()
+                .filter(|peer| !known.contains(&peer.machine_id))
+                .cloned(),
+        );
+    }
+    Some(peers)
+}
+
+struct PeerChanges<'peers> {
+    updates: Vec<&'peers Peer>,
+    removals: Vec<&'peers Key>,
+    routes: BTreeSet<IpNet>,
+}
+
+fn peer_changes<'peers>(
+    installed: &'peers HashMap<Key, Peer>,
+    planned: &'peers [Peer],
+    set: PeerSet,
+) -> Result<PeerChanges<'peers>, NetworkError> {
+    let updates = planned
+        .iter()
+        .filter(|peer| {
+            let Some(current) = installed.get(&peer.public_key) else {
+                return true;
+            };
+            set == PeerSet::Snapshot
+                && (current.allowed_ips.len() != peer.allowed_ips.len()
+                    || !peer
+                        .allowed_ips
+                        .iter()
+                        .all(|ip| current.allowed_ips.contains(ip))
+                    || peer
+                        .endpoint
+                        .is_some_and(|endpoint| current.endpoint != Some(endpoint))
+                    || current.persistent_keepalive_interval != peer.persistent_keepalive_interval)
+        })
+        .collect::<Vec<_>>();
+    let removals = if set == PeerSet::Snapshot {
+        installed
+            .keys()
+            .filter(|key| !planned.iter().any(|peer| &peer.public_key == *key))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let routes = match set {
+        PeerSet::Bootstrap => peer_routes(installed.values().chain(updates.iter().copied()))?,
+        PeerSet::Snapshot => peer_routes(planned.iter())?,
+    };
+    Ok(PeerChanges {
+        updates,
+        removals,
+        routes,
+    })
+}
+
+fn peer_routes<'peers>(
+    peers: impl Iterator<Item = &'peers Peer>,
+) -> Result<BTreeSet<IpNet>, NetworkError> {
+    peers
+        .flat_map(|peer| &peer.allowed_ips)
+        .map(|address| {
+            IpNet::new(address.address, address.cidr)
+                .map_err(|error| NetworkError::Io(io::Error::other(error)))
+        })
+        .collect()
+}
+
 fn required_docker_network_options(mtu: u32) -> HashMap<String, String> {
     HashMap::from([
         (
@@ -459,6 +749,26 @@ fn docker_network_owned(network: &NetworkInspect) -> bool {
             .as_ref()
             .and_then(|labels| labels.get(DOCKER_NETWORK_MANAGED_LABEL))
             .is_some_and(String::is_empty)
+}
+
+fn reset_network_id<'network>(
+    network: &'network NetworkInspect,
+    subnet: &str,
+    gateway: &str,
+    options: &HashMap<String, String>,
+) -> Result<&'network str, NetworkError> {
+    if docker_network_matches(network, subnet, gateway, options)
+        && let Some(id) = network.id.as_deref()
+    {
+        return Ok(id);
+    }
+    Err(docker_network_conflict(
+        network,
+        subnet,
+        gateway,
+        options,
+        "the network does not match the resetting Machine or has no stable Docker ID",
+    ))
 }
 
 fn stale_network_replacement_allowed(network: &NetworkInspect) -> Result<(), &'static str> {
@@ -617,167 +927,4 @@ fn delete_route(route: &IpNet) {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn network_conflict_names_observed_values_without_debug_wrappers() {
-        let mut network = stale_network("ployz", Some(""), true);
-        network.options = Some(required_docker_network_options(1400));
-        network
-            .labels
-            .as_mut()
-            .unwrap()
-            .insert("key\n".into(), "value\u{1b}[2J".into());
-        network
-            .options
-            .as_mut()
-            .unwrap()
-            .insert("option\n".into(), "setting\u{1b}[2J".into());
-        network.driver = Some("bridge\u{1b}[2J".into());
-
-        let message = docker_network_conflict(
-            &network,
-            "10.0.0.0/24",
-            "10.0.0.1",
-            &required_docker_network_options(1420),
-            "containers are attached",
-        )
-        .to_string();
-        assert!(!message.chars().any(char::is_control), "{message}");
-        for detail in [
-            "name=ployz",
-            "id=unknown",
-            "7074faa8a368",
-            r#"mtu"="1400""#,
-            r#"mtu"="1420""#,
-            r#""key\n"="value\u{1b}[2J""#,
-            r#""option\n"="setting\u{1b}[2J""#,
-            r#"driver="bridge\u{1b}[2J""#,
-        ] {
-            assert!(message.contains(detail), "{message}");
-        }
-        assert!(
-            !message.contains("Some(") && !message.contains("NetworkInspect"),
-            "{message}"
-        );
-    }
-
-    use super::*;
-
-    fn stale_network(name: &str, managed_label: Option<&str>, attached: bool) -> NetworkInspect {
-        NetworkInspect {
-            name: Some(name.into()),
-            labels: managed_label
-                .map(|value| HashMap::from([(DOCKER_NETWORK_MANAGED_LABEL.into(), value.into())])),
-            containers: attached
-                .then(|| HashMap::from([("7074faa8a368".into(), Default::default())])),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn network_diagnostics_preserve_field_and_collection_boundaries() {
-        let describe = |network: &NetworkInspect| {
-            docker_network_conflict(
-                network,
-                "10.0.0.0/24",
-                "10.0.0.1",
-                &HashMap::new(),
-                "conflict",
-            )
-            .to_string()
-        };
-        let mut one = stale_network("ployz", None, false);
-        let mut two = one.clone();
-        one.labels = Some(HashMap::from([("a".into(), "b, c=d".into())]));
-        two.labels = Some(HashMap::from([
-            ("a".into(), "b".into()),
-            ("c".into(), "d".into()),
-        ]));
-        assert_ne!(describe(&one), describe(&two));
-        one.options = one.labels.take();
-        two.options = two.labels.take();
-        assert_ne!(describe(&one), describe(&two));
-        one.options = None;
-        two.options = None;
-        one.containers = Some(HashMap::from([("a, b".into(), Default::default())]));
-        two.containers = Some(HashMap::from([
-            ("a".into(), Default::default()),
-            ("b".into(), Default::default()),
-        ]));
-        assert_ne!(describe(&one), describe(&two));
-        one.name = Some("ployz, driver=bridge".into());
-        assert!(describe(&one).contains(r#"name="ployz, driver=bridge""#));
-        one.ipam = Some(Ipam {
-            config: Some(vec![IpamConfig {
-                subnet: Some("net, gateway=elsewhere".into()),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        });
-        assert!(describe(&one).contains(r#"subnet="net, gateway=elsewhere""#));
-    }
-
-    #[test]
-    fn stale_network_deletion_requires_exact_name_label_and_no_attachments() {
-        assert_eq!(
-            stale_network_replacement_allowed(&stale_network("ployz", Some(""), false)),
-            Ok(())
-        );
-
-        for network in [
-            stale_network("ployz-old", Some(""), false),
-            stale_network("ployz", None, false),
-            stale_network("ployz", Some("other-owner"), false),
-            stale_network("ployz", Some(""), true),
-        ] {
-            assert!(stale_network_replacement_allowed(&network).is_err());
-        }
-    }
-
-    #[test]
-    fn matching_network_is_reused_with_attached_containers() {
-        let mut network = stale_network("ployz", Some(""), true);
-        network.driver = Some("bridge".into());
-        network.scope = Some("local".into());
-        network.ipam = Some(Ipam {
-            config: Some(vec![IpamConfig {
-                subnet: Some("10.210.1.0/24".into()),
-                gateway: Some("10.210.1.1".into()),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        });
-        let expected_options = required_docker_network_options(1420);
-        network.options = Some(expected_options.clone());
-
-        assert!(docker_network_matches(
-            &network,
-            "10.210.1.0/24",
-            "10.210.1.1",
-            &expected_options,
-        ));
-    }
-
-    #[test]
-    fn stale_network_refusal_is_actionable() {
-        let network = stale_network("ployz", Some(""), true);
-        let expected_options = required_docker_network_options(1420);
-        let error = docker_network_conflict(
-            &network,
-            "10.210.1.0/24",
-            "10.210.1.1",
-            &expected_options,
-            "containers are attached",
-        )
-        .to_string();
-
-        assert!(error.contains("expected: name=ployz"));
-        assert!(error.contains("subnet=10.210.1.0/24"));
-        assert!(error.contains(r#"observed: id=unknown, name="ployz""#));
-        assert!(error.contains("7074faa8a368"));
-        assert!(error.contains("systemctl stop ployz"));
-        assert!(error.contains("docker network inspect ployz"));
-        assert!(error.contains("docker network rm ployz"));
-        assert!(error.contains("systemctl start ployz"));
-    }
-}
+mod tests;
