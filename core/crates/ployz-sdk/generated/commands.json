@@ -2611,7 +2611,7 @@
   },
   {
     "command": "mcp",
-    "about": "Serve the Cloud commands to a coding agent as MCP tools over stdio",
+    "about": "Serve the agent tools to a coding agent as MCP tools over stdio",
     "json": false,
     "approval": "never",
     "surface": "local",
