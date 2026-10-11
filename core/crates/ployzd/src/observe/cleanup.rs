@@ -280,7 +280,10 @@ fn scan_raw_metrics(raw: &mut Dir, now_secs: u64, candidates: &mut Vec<Candidate
                 continue;
             }
         };
-        if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFREG {
+        // As with logs, a file linked elsewhere frees nothing when unlinked.
+        if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFREG
+            || stat.st_nlink != 1
+        {
             continue;
         }
         candidates.push(Candidate {
