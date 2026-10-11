@@ -259,6 +259,25 @@ impl Target {
             path_and_query,
         })
     }
+
+    /// `host` or `host:port`, the port only when it isn't the scheme's default.
+    #[must_use]
+    pub fn authority(&self) -> String {
+        let host = match &self.host {
+            Host::Name(name) => name.clone(),
+            Host::Ip(IpAddr::V6(ip)) => format!("[{ip}]"),
+            Host::Ip(IpAddr::V4(ip)) => ip.to_string(),
+        };
+        let default_port = match self.scheme {
+            Scheme::Http => 80,
+            Scheme::Https => 443,
+        };
+        if self.port == default_port {
+            host
+        } else {
+            format!("{host}:{}", self.port)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

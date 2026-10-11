@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    AgentName, CheckId, Detail, Host, HttpCheckError, Job, NotProbed, Observation, Outcome, Phase,
+    AgentName, CheckId, Detail, HttpCheckError, Job, NotProbed, Observation, Outcome, Phase,
     ProbeKey, ProbeKind, Region, Scheme, Target, Timings, UnixMs, http_error_str,
 };
 
@@ -254,16 +254,10 @@ fn not_probed_of(reason: &str) -> Result<NotProbed, Malformed> {
     }
 }
 
-/// The target as a URL again. Ports are the scheme defaults, which [`Target::parse`] enforces.
 fn url_of(target: &Target) -> String {
     let scheme = match target.scheme {
         Scheme::Http => "http",
         Scheme::Https => "https",
     };
-    let host = match &target.host {
-        Host::Name(name) => name.clone(),
-        Host::Ip(IpAddr::V4(ip)) => ip.to_string(),
-        Host::Ip(IpAddr::V6(ip)) => format!("[{ip}]"),
-    };
-    format!("{scheme}://{host}{}", target.path_and_query)
+    format!("{scheme}://{}{}", target.authority(), target.path_and_query)
 }

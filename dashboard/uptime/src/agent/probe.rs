@@ -280,7 +280,7 @@ impl<R: Resolve> Prober<R> {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let request = http::Request::get(target.path_and_query.as_str())
-            .header(HOST, host_header(target))
+            .header(HOST, target.authority())
             .header(USER_AGENT, USER_AGENT_VALUE)
             .header(ACCEPT, "*/*")
             .header(CONNECTION, "close")
@@ -422,23 +422,6 @@ fn server_name(host: &Host) -> Result<ServerName<'static>, Outcome> {
     match host {
         Host::Name(name) => ServerName::try_from(name.clone()).map_err(|e| failed(Phase::Tls, &e)),
         Host::Ip(ip) => Ok(ServerName::IpAddress((*ip).into())),
-    }
-}
-
-fn host_header(target: &Target) -> String {
-    let host = match &target.host {
-        Host::Name(name) => name.clone(),
-        Host::Ip(IpAddr::V6(ip)) => format!("[{ip}]"),
-        Host::Ip(IpAddr::V4(ip)) => ip.to_string(),
-    };
-    let default_port = match target.scheme {
-        Scheme::Http => 80,
-        Scheme::Https => 443,
-    };
-    if target.port == default_port {
-        host
-    } else {
-        format!("{host}:{}", target.port)
     }
 }
 

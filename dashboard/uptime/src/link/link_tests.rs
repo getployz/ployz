@@ -347,3 +347,18 @@ async fn a_body_that_stalls_after_the_head_times_out() {
         .unwrap_err();
     assert!(err.to_string().contains("timed out"), "{err}");
 }
+
+#[test]
+fn a_port_that_is_not_the_schemes_default_survives_the_wire() {
+    for url in [
+        "http://example.com:443/up",
+        "https://example.com:80/up?x=1",
+        "https://[2001:db8::1]:80/",
+        "http://10.0.0.1/",
+    ] {
+        let mut sent = job(1);
+        sent.target = Arc::new(Target::parse(url).unwrap());
+        let received = crate::link::wire::WireJob::of(&sent).into_job().unwrap();
+        assert_eq!(received.target, sent.target, "{url}");
+    }
+}
