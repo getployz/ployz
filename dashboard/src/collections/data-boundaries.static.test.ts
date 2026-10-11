@@ -71,6 +71,7 @@ const ON_DEMAND_READS = {
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
+  volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
 };
 

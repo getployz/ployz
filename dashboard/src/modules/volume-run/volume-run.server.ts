@@ -112,7 +112,7 @@ const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   return row;
 });
 
-const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
+export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   organizationId: string,
   environment: EnvironmentRef,
   volumeId: string,
@@ -167,6 +167,20 @@ export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizatio
     .where(and(eq(volumeRun.organizationId, organizationId), eq(volumeRun.volumeId, volumeId)))
     .orderBy(desc(volumeRun.createdAt), desc(volumeRun.id))
     .limit(50);
+  return rows.map(volumeRunView);
+});
+
+/** The Volume's copies as each managed Machine answers for them, for the panel to plan its offers from. */
+export const inspectVolumeCopies = Effect.fn("VolumeRun.inspectCopies")(function* (organizationId: string, environment: EnvironmentRef, volumeId: string) {
+  const volume = yield* resolveVolume(organizationId, environment, volumeId);
+  return yield* inspectMembers(organizationId, volume.dockerVolume);
+});
+
+/** Every run in progress across the organization's Volumes, for the canvas trays. */
+export const listActiveVolumeRuns = Effect.fn("VolumeRun.listActive")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(volumeRun)
+    .where(and(eq(volumeRun.organizationId, organizationId), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES)));
   return rows.map(volumeRunView);
 });
 
@@ -397,14 +411,14 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   } satisfies StartHanded, { onRefusal: "throw" });
 }, Effect.scoped);
 
-export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  const session = yield* openSession(ctx.organizationId);
+/** Each managed Machine's own answer for one Volume: the evidence a run plans from, and the panel offers from. */
+const inspectMembers = Effect.fn("VolumeRun.inspectMembers")(function* (organizationId: string, dockerVolume: string) {
+  const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   return yield* Effect.forEach(managed, ({ machine, storage }) =>
-    session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: ctx.dockerVolume } }).pipe(
+    session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.option,
       Effect.map((view): Member => {
@@ -421,6 +435,11 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
       }),
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
+
+export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* inspectMembers(ctx.organizationId, ctx.dockerVolume);
+});
 
 /** Above every lease this Volume's runs took and every record its participants hold, so a Cloud database reset can't reuse one. */
 export const takeLease = Effect.fn("VolumeRun.lease")(function* (
