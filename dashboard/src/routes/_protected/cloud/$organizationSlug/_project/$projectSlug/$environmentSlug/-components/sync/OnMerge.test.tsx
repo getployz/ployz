@@ -188,6 +188,21 @@ it("reads a Config file row as its path, changed", async () => {
   expect(item(list, "config.yml").textContent).toBe("configs.sentryconfig.ymlChanged");
 });
 
+it("includes a row excluded with its new Service by including the Service", async () => {
+  const worker = { node: "worker", kind: "service", requires: "w:worker" as RowId } as const;
+  const { commands } = open({
+    list: onMerge([
+      ...rows,
+      row("worker", { ...worker, name: null, requires: null, preview: {}, lands: {}, ride: "excluded" }),
+      row("env.QUEUE", { ...worker, preview: "jobs", lands: "jobs", ride: "excluded" }),
+    ]),
+  });
+  const list = await panel();
+  fireEvent.click(within(item(list, "QUEUE")).getByRole("button", { name: "Include" }));
+  await waitFor(() => expect(commands()).toHaveLength(1));
+  expect(commands()[0]).toEqual({ command: "never_sync", environment: pr146, rows: ["w:worker"], off: true });
+});
+
 it("excludes a row, greyed, and includes it again", async () => {
   const { store, commands } = open();
   const list = await panel();

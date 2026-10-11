@@ -55,7 +55,7 @@ function OnMergeOpen({ organizationSlug, project, store, pullRequest }: {
           <ul key={into.name} aria-label={`Into ${into.name}`} className="max-h-96 overflow-y-auto">
             {lists.length > 1 ? <li className="px-4 pt-2 text-xs text-muted-foreground">{into.name}</li> : null}
             {into.rows.map((row) => (
-              <OnMergeRow key={row.row} row={row} organizationSlug={organizationSlug} store={store} into={into.name} />
+              <OnMergeRow key={row.row} row={row} rows={into.rows} organizationSlug={organizationSlug} store={store} into={into.name} />
             ))}
           </ul>
         ))}
@@ -96,10 +96,11 @@ const text = (value: MergeRow["lands"]) => isText(value) ? value : JSON.stringif
 
 /**
  * One row: its Service, its key, and what the merge does there. Its ⋯ edits what it lands (a variable it doesn't
- * remove), resets an Edit, and excludes it (it stays in the PR Environment) or includes it again.
+ * remove), resets an Edit, and excludes it (it stays in the PR Environment) or includes it again. A row excluded with
+ * its new node includes again by including the node.
  */
-function OnMergeRow({ row, organizationSlug, store, into }: {
-  row: MergeRow; organizationSlug: string; store: EnvironmentRef; into: string;
+function OnMergeRow({ row, rows, organizationSlug, store, into }: {
+  row: MergeRow; rows: readonly MergeRow[]; organizationSlug: string; store: EnvironmentRef; into: string;
 }) {
   const writer = useStoreWriter(organizationSlug);
   const [editing, setEditing] = useState(false);
@@ -108,7 +109,9 @@ function OnMergeRow({ row, organizationSlug, store, into }: {
   const excluded = row.ride === "excluded";
   const edited = row.ride === "edited";
   const preview = store.environment ?? "";
-  const exclude = (off: boolean) => void writer.commit({ command: "never_sync", environment: store, rows: [row.row], off });
+  const node = rows.find((entry) => entry.row === row.requires && entry.ride === "excluded");
+  const exclude = (off: boolean) =>
+    void writer.commit({ command: "never_sync", environment: store, rows: [off && node ? node.row : row.row], off });
   const land = (value?: string) =>
     void writer.commit({ command: "set_merge_value", environment: store, into: { project: store.project, environment: into }, row: row.row, value });
   return (
