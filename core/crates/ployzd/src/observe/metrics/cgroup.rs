@@ -36,10 +36,9 @@ pub(crate) fn read_cgroup(dir: &Path) -> CgroupCounters {
             let inactive = file("memory.stat").and_then(|text| keyed(&text, "inactive_file"))?;
             Some(current.saturating_sub(inactive))
         });
-    let mem_limit = file("memory.max").and_then(|text| match complete_lines(&text)?.as_slice() {
-        ["max"] => Some(MemoryLimit::Unlimited),
-        [bytes] => bytes.parse().ok().map(MemoryLimit::Bytes),
-        _ => None,
+    let mem_limit = file("memory.max").and_then(|text| match only_line(&text)? {
+        "max" => Some(MemoryLimit::Unlimited),
+        bytes => bytes.parse().ok().map(MemoryLimit::Bytes),
     });
     let io = file("io.stat").and_then(|text| io_bytes(&text));
     CgroupCounters {
@@ -52,24 +51,26 @@ pub(crate) fn read_cgroup(dir: &Path) -> CgroupCounters {
 
 /// The kernel ends every line with a newline, so a file that does not end
 /// in one was cut short and none of it is trusted.
-fn complete_lines(text: &str) -> Option<Vec<&str>> {
+fn complete_lines(text: &str) -> Option<std::str::Lines<'_>> {
     if !text.is_empty() && !text.ends_with('\n') {
         return None;
     }
-    Some(text.lines().collect())
+    Some(text.lines())
+}
+
+fn only_line(text: &str) -> Option<&str> {
+    let mut lines = complete_lines(text)?;
+    let line = lines.next()?;
+    lines.next().is_none().then_some(line)
 }
 
 fn single(text: &str) -> Option<u64> {
-    match complete_lines(text)?.as_slice() {
-        [value] => value.parse().ok(),
-        _ => None,
-    }
+    only_line(text)?.parse().ok()
 }
 
 /// The value of `key` in a flat-keyed file such as `cpu.stat`.
 fn keyed(text: &str, key: &str) -> Option<u64> {
     complete_lines(text)?
-        .into_iter()
         .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))?
         .parse()
         .ok()
@@ -78,23 +79,21 @@ fn keyed(text: &str, key: &str) -> Option<u64> {
 /// Sums `rbytes` and `wbytes` over `io.stat`'s `MAJ:MIN key=value…` lines.
 /// An empty file is a cgroup that has done no I/O yet.
 fn io_bytes(text: &str) -> Option<IoBytes> {
-    complete_lines(text)?
-        .into_iter()
-        .try_fold(IoBytes { read: 0, write: 0 }, |total, line| {
-            let mut read = None;
-            let mut write = None;
-            for field in line.split_whitespace().skip(1) {
-                match field.split_once('=') {
-                    Some(("rbytes", value)) => read = value.parse::<u64>().ok(),
-                    Some(("wbytes", value)) => write = value.parse::<u64>().ok(),
-                    _ => {}
-                }
+    complete_lines(text)?.try_fold(IoBytes { read: 0, write: 0 }, |total, line| {
+        let mut read = None;
+        let mut write = None;
+        for field in line.split_whitespace().skip(1) {
+            match field.split_once('=') {
+                Some(("rbytes", value)) => read = value.parse::<u64>().ok(),
+                Some(("wbytes", value)) => write = value.parse::<u64>().ok(),
+                _ => {}
             }
-            Some(IoBytes {
-                read: total.read.checked_add(read?)?,
-                write: total.write.checked_add(write?)?,
-            })
+        }
+        Some(IoBytes {
+            read: total.read.checked_add(read?)?,
+            write: total.write.checked_add(write?)?,
         })
+    })
 }
 
 #[cfg(test)]
