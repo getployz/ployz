@@ -206,7 +206,7 @@ describe("VariableRow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
     fireEvent.click(await screen.findByText("Rename"));
-    const input = await screen.findByLabelText("Key");
+    const input = await screen.findByLabelText("Name");
     expect((input as HTMLInputElement).value).toBe("API_KEY");
     const save = screen.getByRole("button", { name: "Rename" });
     expect(save.hasAttribute("disabled")).toBe(true);
@@ -218,7 +218,7 @@ describe("VariableRow", () => {
     fireEvent.change(input, { target: { value: "stripe_key" } });
     fireEvent.click(save);
     expect(onRename).toHaveBeenCalledExactlyOnceWith(variable, "STRIPE_KEY", false);
-    await waitFor(() => expect(screen.queryByLabelText("Key")).toBeNull());
+    await waitFor(() => expect(screen.queryByLabelText("Name")).toBeNull());
   });
 
   it("renames a sealed variable without showing a value", async () => {
@@ -228,7 +228,7 @@ describe("VariableRow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
     fireEvent.click(await screen.findByText("Rename"));
-    fireEvent.change(await screen.findByLabelText("Key"), { target: { value: "STRIPE_KEY" } });
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "STRIPE_KEY" } });
     fireEvent.click(screen.getByRole("button", { name: "Rename" }));
     expect(onRename).toHaveBeenCalledExactlyOnceWith(variable, "STRIPE_KEY", false);
     expect(screen.queryByText("super-secret")).toBeNull();
@@ -242,12 +242,12 @@ describe("VariableRow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
     fireEvent.click(await screen.findByText("Rename"));
-    expect(await screen.findByText("2 variables use it. They switch to the new name.")).toBeTruthy();
-    const listed = screen.getByRole("list", { name: "Variables that use it" });
+    expect(await screen.findByText("Also updates 2 references")).toBeTruthy();
+    const listed = screen.getByRole("list", { name: "References" });
     expect([...listed.querySelectorAll("li")].map((item) => item.textContent)).toEqual(["web.UPSTREAM", "worker.BACKEND"]);
     expect(screen.queryByRole("checkbox")).toBeNull();
 
-    fireEvent.change(screen.getByLabelText("Key"), { target: { value: "STRIPE_KEY" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "STRIPE_KEY" } });
     fireEvent.click(screen.getByRole("button", { name: "Rename" }));
     expect(onRename).toHaveBeenCalledExactlyOnceWith(variable, "STRIPE_KEY", true);
   });
@@ -257,9 +257,9 @@ describe("VariableRow", () => {
     render(<VariableRow variable={plainVariable()} collection={collection} onSealVariable={vi.fn()} onRename={onRename} />);
     fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
     fireEvent.click(await screen.findByText("Rename"));
-    fireEvent.change(await screen.findByLabelText("Key"), { target: { value: "STRIPE_KEY" } });
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "STRIPE_KEY" } });
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByLabelText("Key")).toBeNull());
+    await waitFor(() => expect(screen.queryByLabelText("Name")).toBeNull());
     expect(onRename).not.toHaveBeenCalled();
   });
 

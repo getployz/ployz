@@ -48,8 +48,8 @@ Ployz refuses the new name, the dashboard shows why.
 When other variables reference the one you rename, such as `${{ API_URL }}` in the same service
 or `${{ web.API_URL }}` in another, they switch to the new name in the same change.
 
-In Ployz Cloud, the Rename dialog lists the variables that use it, under a note such as "2
-variables use it. They switch to the new name." Choose Rename to rename it and switch them.
+In Ployz Cloud, the Rename variable dialog lists them under **Also updates 2 references**.
+Choose Rename to rename the variable and update them.
 
 From the CLI, add `--update-references`:
 

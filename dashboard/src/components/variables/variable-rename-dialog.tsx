@@ -19,7 +19,7 @@ export function VariableRenameDialog({ variableKey, referrers = [], open, onOpen
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Rename</DialogTitle>
+          <DialogTitle>Rename variable</DialogTitle>
         </DialogHeader>
         <RenameForm variableKey={variableKey} referrers={referrers}
           onRename={(to) => { onRename(to, referrers.length > 0); onOpenChange(false); }} />
@@ -42,7 +42,7 @@ function RenameForm({ variableKey, referrers, onRename }: {
       if (to && !error && to !== variableKey) onRename(to);
     }}>
       <Field>
-        <FieldLabel htmlFor="variable-rename">Key</FieldLabel>
+        <FieldLabel htmlFor="variable-rename">Name</FieldLabel>
         <Input id="variable-rename" autoFocus value={typed} onChange={(event) => setTyped(event.target.value)}
           className="font-mono text-xs uppercase" aria-invalid={error ? true : undefined} />
         {error ? <FieldError>{error}</FieldError> : null}
@@ -50,9 +50,9 @@ function RenameForm({ variableKey, referrers, onRename }: {
       {referrers.length > 0 ? (
         <div className="flex flex-col gap-2">
           <FieldDescription>
-            {referrers.length === 1 ? "1 variable uses it. It switches" : `${referrers.length} variables use it. They switch`} to the new name.
+            Also updates {referrers.length === 1 ? "1 reference" : `${referrers.length} references`}
           </FieldDescription>
-          <ul aria-label="Variables that use it" className="flex flex-col gap-1">
+          <ul aria-label="References" className="flex flex-col gap-1">
             {referrers.map((referrer) => <li key={referrer} className="font-mono text-xs">{referrer}</li>)}
           </ul>
         </div>
