@@ -123,13 +123,13 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   return { kind: "done" } satisfies PlacementAdvance;
 });
 
-/** The names of the Servers with storage that hold placement back; none when no Cluster is connected. */
+/** The names of the Servers with storage that hold placement back. Fails when no Cluster answers: nothing says which run. */
 export type BlockerReader = (organizationId: string) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
 
 export const readPlacementBlockers: BlockerReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
-  Effect.map((frame) => frame === null ? [] : placementBlockers(frame.machines.map((entry) => ({
+  Effect.flatMap((frame) => frame === null ? Effect.fail("no Cluster answered") : Effect.succeed(placementBlockers(frame.machines.map((entry) => ({
     name: entry.machine.name, storage: entry.storage?.state ?? null, daemonVersion: entry.machine.runtime.daemon_version,
-  })))),
+  }))))),
 );
 
 const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };

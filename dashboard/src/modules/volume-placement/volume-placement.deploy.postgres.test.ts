@@ -154,6 +154,11 @@ describe("deploying a Volume placement", () => {
     expect(await rowOf("vol2")).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
   });
 
+  it("refuses to stage while no Cluster answers to say which daemons run", async () => {
+    const written = await run(unlessPlacementRefused(organizationId, Effect.succeed({ ok: true } as const)));
+    expect(written).toMatchObject({ ok: false, refusal: { code: "unanswered" } });
+  });
+
   it("fails with the upgrade message once a Server with storage runs an older daemon", async () => {
     members = [member("web-1", "writer"), member("web-2", "mirror")];
     await stageMove("web-2", ["web-2"]);
