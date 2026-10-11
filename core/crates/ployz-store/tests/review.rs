@@ -2031,3 +2031,34 @@ fn discarding_a_new_configs_child_never_deletes_its_owner() {
         );
     }
 }
+
+#[test]
+fn history_reads_only_the_newest_revisions_it_is_asked_for() {
+    let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    for replicas in 2..5 {
+        set(&store, &who, "web.replicas", json!(replicas));
+        publish(&store, &who, None).unwrap();
+    }
+    let read = |limit| {
+        store
+            .read(
+                &who,
+                &ployz_store::HistoryQuery {
+                    limit: Some(limit),
+                    ..ployz_store::HistoryQuery::default()
+                },
+            )
+            .unwrap()
+    };
+    let all = read(4);
+    assert_eq!(all.revisions.len(), 4);
+    assert!(!all.more);
+    let page = read(2);
+    assert!(page.more);
+    assert_eq!(page.revisions, all.revisions.get(..2).unwrap());
+    // The oldest shown revision still compares against its predecessor.
+    let oldest = page.revisions.last().unwrap();
+    assert!(oldest.predecessor.is_some());
+    assert_eq!(oldest.total_count, 1);
+}

@@ -162,6 +162,9 @@ pub(super) fn on_merge(root: &ArgMatches) -> Result<(), Error> {
                 Ride::Rides | Ride::Edited if row.lands.is_null() => {
                     ("removed".to_owned(), crate::ui::Tone::Bad)
                 }
+                Ride::Rides | Ride::Edited if !row.production.is_null() && is_file(&row.lands) => {
+                    ("changed".to_owned(), crate::ui::Tone::Good)
+                }
                 Ride::Rides | Ride::Edited => (shown(&row.lands), crate::ui::Tone::Good),
                 Ride::Excluded => ("excluded".to_owned(), crate::ui::Tone::Muted),
                 Ride::ProductionKeeps => ("keeps its own".to_owned(), crate::ui::Tone::Muted),
@@ -185,15 +188,42 @@ pub(super) fn on_merge(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&view, &table)
 }
 
-/// A value as the On merge list shows it.
+fn is_file(value: &Value) -> bool {
+    value.get("content").is_some()
+}
+
+/// A value as the On merge list shows it: a secret only as set or Not set, a
+/// Config file's contents as a file.
 fn shown(value: &Value) -> String {
+    if *value == json!({ "secret": true }) {
+        return "secret".to_owned();
+    }
+    if *value == json!({ "secret": false }) {
+        return "Not set".to_owned();
+    }
     match value {
         Value::Null => "not set".to_owned(),
         Value::String(text) => text.clone(),
-        Value::Object(secret) => match secret.get("secret") {
-            Some(Value::Bool(true)) => "secret".to_owned(),
-            _ => "Not set".to_owned(),
-        },
-        other @ (Value::Bool(_) | Value::Number(_) | Value::Array(_)) => other.to_string(),
+        Value::Object(file) if file.contains_key("content") => "file".to_owned(),
+        other @ (Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_)) => {
+            other.to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::shown;
+
+    #[test]
+    fn only_a_missing_secret_reads_not_set() {
+        assert_eq!(shown(&json!({ "secret": false })), "Not set");
+        assert_eq!(shown(&json!({ "secret": true })), "secret");
+        assert_eq!(
+            shown(&json!({ "type": "http", "path": "/up" })),
+            r#"{"path":"/up","type":"http"}"#
+        );
     }
 }

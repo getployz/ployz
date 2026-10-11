@@ -109,6 +109,7 @@ pub(super) fn check(
         },
         title,
         summary: summary.trim_end().to_owned(),
+        merged_into: None,
     })
 }
 
@@ -154,6 +155,10 @@ fn merged_check(
         conclusion: OnMergeConclusion::Neutral,
         title: title.join(" · "),
         summary: summary.trim_end().to_owned(),
+        merged_into: unlanded.first().map(|unlanded| EnvironmentRef {
+            project: Some(unlanded.project.clone()),
+            environment: Some(unlanded.into.clone()),
+        }),
     })
 }
 
@@ -174,8 +179,9 @@ fn section(summary: &mut String, preview: &EnvironmentName, into: &OnMergeInto) 
     let staying = || into.rows.iter().filter(|row| row.ride == Ride::Excluded);
     if staying().next().is_some() {
         let _ = writeln!(summary, "### Stays in {preview}\n");
-        list(summary, staying(), |row| {
-            format!("{} → {}", from(&row.production), to(&row.preview))
+        list(summary, staying(), |row| match is_file(row) {
+            true => file_move(&row.production, &row.preview),
+            false => format!("{} → {}", from(&row.production), to(&row.preview)),
         });
     }
 }
@@ -197,6 +203,9 @@ fn list<'a>(
 
 /// What a riding row lands, over the Destination's value.
 fn lands(row: &MergeRow) -> String {
+    if is_file(row) {
+        return file_move(&row.production, &row.lands);
+    }
     if is_secret(&row.lands) || is_secret(&row.production) {
         return shown(&row.lands);
     }
@@ -233,6 +242,22 @@ fn shown(value: &Value) -> String {
     }
 }
 
+/// A Config file's row: its contents read as a change, not a value.
+fn is_file(row: &MergeRow) -> bool {
+    row.at
+        .name
+        .as_deref()
+        .is_some_and(|name| name.starts_with("files."))
+}
+
+fn file_move(before: &Value, after: &Value) -> String {
+    match (before.is_null(), after.is_null()) {
+        (true, _) => "new file".to_owned(),
+        (_, true) => "removed".to_owned(),
+        (false, false) => "changed".to_owned(),
+    }
+}
+
 fn is_secret(value: &Value) -> bool {
     value.get("secret").is_some()
 }
@@ -241,7 +266,12 @@ fn is_secret(value: &Value) -> bool {
 fn key(row: &MergeRow) -> String {
     row.at.name.as_deref().map_or_else(
         || row.at.node.to_string(),
-        |name| name.strip_prefix("env.").unwrap_or(name).to_owned(),
+        |name| {
+            name.strip_prefix("env.")
+                .or_else(|| name.strip_prefix("files."))
+                .unwrap_or(name)
+                .to_owned()
+        },
     )
 }
 

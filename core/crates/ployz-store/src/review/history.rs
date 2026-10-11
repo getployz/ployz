@@ -17,13 +17,22 @@ use crate::{Actor, error};
 pub struct HistoryQuery {
     #[serde(default)]
     pub environment: EnvironmentRef,
+    /// How many of the newest revisions to read; defaults to `HISTORY_PAGE`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<u32>,
 }
+
+/// How many revisions one History read returns unless asked for more.
+pub const HISTORY_PAGE: u32 = 50;
 
 /// The immutable History of an Environment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct HistoryView {
     pub environment: EnvironmentSummary,
     pub revisions: Vec<SavedRevision>,
+    /// Whether older revisions exist beyond `limit`.
+    pub more: bool,
 }
 
 /// One immutable Saved snapshot's metadata and redacted change summary.
@@ -98,37 +107,49 @@ pub(crate) fn history(
     query: &HistoryQuery,
 ) -> Result<HistoryView, RpcError> {
     let mut environment = scope::environment(tx, who, &query.environment)?;
-    let rows = tx.query(
-        "SELECT revision, intent, message, saved_by, saved_at FROM config_saved WHERE environment_id = ?1 ORDER BY revision",
-        &[environment.summary.id.as_str().into()],
+    let limit = query.limit.unwrap_or(HISTORY_PAGE).max(1);
+    // One extra row is the oldest shown revision's predecessor, and says more exist.
+    let mut rows = tx.query(
+        "SELECT revision, intent, message, saved_by, saved_at FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC LIMIT ?2",
+        &[
+            environment.summary.id.as_str().into(),
+            (i64::from(limit) + 1).into(),
+        ],
     )?;
-    let mut revisions = Vec::with_capacity(rows.len());
+    rows.reverse();
+    let shown = usize::try_from(limit).unwrap_or(usize::MAX);
+    let first = rows.len().saturating_sub(shown);
+    let more = first > 0;
+    let mut revisions = Vec::with_capacity(rows.len().saturating_sub(first));
     let mut previous = None;
-    for row in rows {
+    for (index, row) in rows.iter().enumerate() {
         let revision = Revision(row.number(0, "revision")?);
         let intent = row.intent(1, "Saved State")?;
-        environment.working = intent.clone();
-        let changes = previous
-            .as_ref()
-            .map(|(_, baseline)| review::saved_comparison(&environment, baseline))
-            .transpose()?;
-        revisions.push(SavedRevision {
-            revision,
-            message: row.optional_text(2)?.map(str::to_owned),
-            saved_by: row.parse_optional(3, "saved actor")?,
-            saved_at: row.optional_int(4)?,
-            predecessor: previous.as_ref().map(|(revision, _)| *revision),
-            changes: changes
+        if index >= first {
+            environment.working = intent.clone();
+            let changes = previous
                 .as_ref()
-                .map_or_else(Vec::new, |changes| changes.changes.clone()),
-            total_count: changes.as_ref().map_or(0, |changes| changes.total_count),
-        });
+                .map(|(_, baseline)| review::saved_comparison(&environment, baseline))
+                .transpose()?;
+            revisions.push(SavedRevision {
+                revision,
+                message: row.optional_text(2)?.map(str::to_owned),
+                saved_by: row.parse_optional(3, "saved actor")?,
+                saved_at: row.optional_int(4)?,
+                predecessor: previous.as_ref().map(|(revision, _)| *revision),
+                changes: changes
+                    .as_ref()
+                    .map_or_else(Vec::new, |changes| changes.changes.clone()),
+                total_count: changes.as_ref().map_or(0, |changes| changes.total_count),
+            });
+        }
         previous = Some((revision, intent));
     }
     revisions.reverse();
     Ok(HistoryView {
         environment: environment.summary,
         revisions,
+        more,
     })
 }
 

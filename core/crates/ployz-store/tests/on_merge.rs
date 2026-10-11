@@ -536,6 +536,7 @@ fn history(store: &ConfigStore, who: &Actor) -> Vec<SavedRevision> {
             who,
             &HistoryQuery {
                 environment: at("production"),
+                limit: None,
             },
         )
         .unwrap()
@@ -554,6 +555,17 @@ fn production_diff(store: &ConfigStore, who: &Actor) -> DiffView {
 }
 
 /// Whether pr-5 is still listed.
+/// Whether the listing reads `pr-5` merged; none when it isn't listed.
+fn listed_merged(store: &ConfigStore, who: &Actor) -> Option<bool> {
+    store
+        .read(who, &EnvironmentsQuery::default())
+        .unwrap()
+        .environments
+        .iter()
+        .find(|listing| listing.name.as_str() == "pr-5")
+        .map(|listing| listing.merged)
+}
+
 fn preview_listed(store: &ConfigStore, who: &Actor) -> bool {
     store
         .read(who, &EnvironmentsQuery::default())
@@ -859,6 +871,7 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
     );
     exclude(&store, &who, "api", false);
     let before = history(&store, &who).len();
+    assert_eq!(listed_merged(&store, &who), Some(false));
 
     let automated = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
     assert_eq!(automated.skipped.len(), 1, "{automated:?}");
@@ -874,7 +887,8 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
         Some(json!("1"))
     );
     assert!(automated.closing.is_empty() && automated.removed.is_empty());
-    assert!(preview_listed(&store, &who));
+    // Listed while it exists, read merged.
+    assert_eq!(listed_merged(&store, &who), Some(true));
     let stuck = check(&store, &who).unwrap();
     assert_eq!(
         (stuck.conclusion, stuck.title.as_str()),
@@ -885,6 +899,14 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
             .summary
             .contains("web references a removed Service (A)"),
         "{stuck:?}"
+    );
+    // It links production's History: the PR Environment may be gone.
+    assert_eq!(
+        stuck.merged_into,
+        Some(EnvironmentRef {
+            project: Some(ProjectName::parse("shop").unwrap()),
+            environment: Some(EnvironmentName::parse("production").unwrap()),
+        })
     );
 }
 
@@ -957,6 +979,7 @@ fn the_check_says_what_lands_and_reads_neutral_over_a_conflict_or_a_missing_secr
             conclusion: OnMergeConclusion::Success,
             title: "No config changes".into(),
             summary: "No config changes.".into(),
+            merged_into: None,
         })
     );
 
@@ -973,6 +996,7 @@ fn the_check_says_what_lands_and_reads_neutral_over_a_conflict_or_a_missing_secr
             conclusion: OnMergeConclusion::Success,
             title: "3 config changes".into(),
             summary: "- `web · A`: 1 → 2\n- `web · B`: new → new\n- `web · C`: 1 → removed".into(),
+            merged_into: None,
         })
     );
 
@@ -1010,6 +1034,7 @@ fn the_check_names_a_missing_secret_without_its_value_and_what_stays_here() {
             conclusion: OnMergeConclusion::Neutral,
             title: "1 config change · TOKEN not set".into(),
             summary: "- `web · TOKEN`: not set\n\n### Stays in pr-5\n\n- `web · D`: 1 → 2".into(),
+            merged_into: None,
         }
     );
 
@@ -1458,4 +1483,106 @@ fn a_config_file_reading_a_secret_the_merge_left_not_set_warns() {
     let warnings = json!(claimed.deployment.warnings);
     let warned = json!({ "config": "sentry", "file": "config.yml", "secret": "web.TOKEN" });
     assert!(warnings.as_array().unwrap().contains(&warned), "{warnings}");
+}
+
+#[test]
+fn a_merge_reported_after_newer_facts_still_reads_merged_on_the_check() {
+    let (store, who) = shop();
+    keep(&store, &who);
+    // A rides naming api, which stays here: production can't take the merge.
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                environment: at("pr-5"),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("api:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.A", json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+    exclude(&store, &who, "api", false);
+    system(
+        &store,
+        &who,
+        &event(5, "search", "main", None, false, "2026-09-29T11:00:01Z"),
+    );
+    system(
+        &store,
+        &who,
+        &event(
+            5,
+            "search",
+            "main",
+            Some(MERGE),
+            false,
+            "2026-09-29T11:00:00Z",
+        ),
+    );
+
+    let view = store
+        .read(
+            &who,
+            &PullRequestQuery {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        view.pull_request.and_then(|facts| facts.merge_commit),
+        Some(backend::sha(MERGE))
+    );
+    let stuck = view.check.unwrap();
+    assert_eq!(
+        (stuck.conclusion, stuck.title.as_str()),
+        (OnMergeConclusion::Neutral, "Didn't land in production")
+    );
+}
+
+#[test]
+fn the_check_reads_a_config_file_row_as_a_changed_file() {
+    let config = || ployz_core::ConfigName::parse("sentry").unwrap();
+    let file = |environment: EnvironmentRef, content: &str| ployz_store::PutConfigFile {
+        environment,
+        config: config(),
+        file: ployz_core::ConfigFileName::parse("config.yml").unwrap(),
+        content: content.into(),
+        mode: None,
+        uid: None,
+        gid: None,
+    };
+    let (store, who) = shop_with(|store, who| {
+        store
+            .write(
+                who,
+                &ployz_store::CreateConfig {
+                    id: ployz_store::ConfigId::parse(uuid(9)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: config(),
+                    mounts: vec![ployz_store::ConfigMountAt {
+                        service: ServiceName::parse("web").unwrap(),
+                        dir: "/etc/sentry".into(),
+                    }],
+                },
+            )
+            .unwrap();
+        store
+            .write(who, &file(EnvironmentRef::default(), "level: info\n"))
+            .unwrap();
+        save(store, who, "production");
+    });
+    store
+        .write(&who, &file(at("pr-5"), "level: debug\n"))
+        .unwrap();
+
+    let check = check(&store, &who).unwrap();
+    assert_eq!(check.summary, "- `configs.sentry · config.yml`: changed");
 }

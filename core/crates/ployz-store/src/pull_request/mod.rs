@@ -205,6 +205,9 @@ pub struct OnMergeCheck {
     pub title: String,
     /// Markdown, one line per row.
     pub summary: String,
+    /// Once merged, the Destination whose History it links to: the PR Environment
+    /// may be gone.
+    pub merged_into: Option<EnvironmentRef>,
 }
 
 /// How the check reads on GitHub: neutral when a secret lands Not set, a row lands
@@ -330,25 +333,36 @@ fn pull_request_ref(row: &crate::storage::Row) -> Result<PullRequestRef, RpcErro
     })
 }
 
-/// The latest facts Cloud reported of a pull request.
+/// The latest facts Cloud reported of a pull request, merged once any event said so:
+/// a merge reported before newer facts still counts.
 pub(crate) fn facts(
     tx: &mut dyn Tx,
     who: &Actor,
     repository_id: RepositoryId,
     pr: PullRequestNumber,
 ) -> Result<Option<PullRequest>, RpcError> {
-    tx.query(
-        "SELECT facts FROM config_pull_request \
+    let rows = tx.query(
+        "SELECT facts, merged FROM config_pull_request \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
         &[
             who.organization.as_str().into(),
             repository_id.into(),
             pr.into(),
         ],
-    )?
-    .first()
-    .map(|row| row.json(0, "pull request"))
-    .transpose()
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let mut facts: PullRequest = row.json(0, "pull request")?;
+    if facts.merge_commit.is_none()
+        && let Some(merged) = row.optional_text(1)?
+    {
+        let merged: Merged =
+            serde_json::from_str(merged).map_err(|_| error::corrupt("pull request merge"))?;
+        facts.merge_commit = Some(merged.commit);
+        facts.open = false;
+    }
+    Ok(Some(facts))
 }
 
 /// The pull request of every PR Environment in `environment`'s Project not being

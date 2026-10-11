@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useTransition } from "react";
 import type { HistoryAction, HistoryPreview } from "@ployz/sdk";
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import { MoreVerticalIcon, RotateCcwIcon, Undo2Icon } from "lucide-react";
@@ -18,6 +18,9 @@ import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { ChangeGroups } from "./canvas/EnvironmentChangesReview";
 
+/** How many more revisions each Show older reads. */
+const HISTORY_PAGE = 50;
+
 type HistoryReview =
   | { kind: "closed" }
   | { kind: "loading" }
@@ -27,7 +30,10 @@ type HistoryReview =
 export function EnvironmentHistory() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const history = requireView(useStoreView(params.organizationSlug, { query: "history", environment: store }));
+  const [limit, setLimit] = useState<number | null>(null);
+  const [loadingOlder, startOlder] = useTransition();
+  const history = requireView(useStoreView(params.organizationSlug,
+    limit === null ? { query: "history", environment: store } : { query: "history", environment: store, limit }));
   const diff = requireView(useStoreView(params.organizationSlug, diffQuery(store)));
   const scope = useCollectionScope();
   const writer = useStoreWriter(params.organizationSlug);
@@ -109,6 +115,12 @@ export function EnvironmentHistory() {
             </li>
           ))}
         </ol>
+        {history.more ? (
+          <Button variant="outline" size="sm" className="self-center" disabled={loadingOlder}
+            onClick={() => startOlder(() => setLimit(history.revisions.length + HISTORY_PAGE))}>
+            {loadingOlder ? "Loading..." : "Show older"}
+          </Button>
+        ) : null}
       </div>
       {review.kind === "preview" && review.preview.overwritten.length > 0 ? (
         <Dialog open onOpenChange={(open) => { if (!open && !review.saving) close(); }}>

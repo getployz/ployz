@@ -1,5 +1,5 @@
 import type {
-  ChangeKind, DiscardTarget, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
+  ChangeKind, DiscardTarget, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
   ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
@@ -282,6 +282,13 @@ export function focusedService(deployment: DeploymentView, picked: string | unde
  */
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
+
+/** What a Deployment shipped despite, in words: "TOKEN not set", or where a Config file left one empty. */
+export function deploymentWarningText(warning: DeploymentWarning) {
+  if ("service" in warning) return `${warning.variable} not set in ${warning.service}`;
+  if ("secret" in warning) return `${warning.secret} not set in ${warning.config}/${warning.file}`;
+  return `${warning.variable} may break ${warning.config}/${warning.file}`;
+}
 
 /** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */
 export function outcomeReason(outcome: Outcome | null) {

@@ -46,7 +46,7 @@ const facts = (open: boolean): PullRequestView => ({
     target_branch: "main", commits: 1, open, merge_commit: null, updated: "2026-10-11T00:00:00Z",
   },
   environments: [],
-  check: { conclusion: "neutral", title: "5 config changes · TOKEN not set", summary: "" },
+  check: { conclusion: "neutral", title: "5 config changes · TOKEN not set", summary: "", merged_into: null },
 });
 
 const plans: PrPlansView = {
@@ -166,13 +166,26 @@ it("edits what lands, and resets it", async () => {
   });
 });
 
-it("edits a removed variable starting from production's value", async () => {
+it("offers only Exclude on a removed row", async () => {
   open();
   const list = await panel();
-  await choose(list, "OLD", "Edit");
-  const edit = within(await screen.findByRole("dialog", { name: /OLD/u }));
-  expect(edit.getByText("removed")).toBeTruthy();
-  expect(edit.getByLabelText<HTMLInputElement>("OLD in production").value).toBe("x");
+  fireEvent.click(list.getByRole("button", { name: "More for OLD" }));
+  expect((await screen.findAllByRole("menuitem")).map((entry) => entry.textContent)).toEqual(["Exclude"]);
+});
+
+it("reads a Config file row as its path, changed", async () => {
+  open({
+    list: onMerge([
+      ...rows,
+      row("files.config.yml", {
+        node: "configs.sentry", kind: "config", production: { content: "level: info\n" }, preview: { content: "level: debug\n" },
+        lands: { content: "level: debug\n" },
+      }),
+    ]),
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "On merge · 6" }));
+  const list = within(await screen.findByRole("dialog"));
+  expect(item(list, "config.yml").textContent).toBe("configs.sentryconfig.ymlChanged");
 });
 
 it("excludes a row, greyed, and includes it again", async () => {

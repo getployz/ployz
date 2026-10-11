@@ -66,8 +66,12 @@ export function storePrCheckRun(views: readonly { slug: string; view: PullReques
   const [first] = saying;
   if (!first) return null;
   const environment = first.view.environments[0]?.environment;
-  const details = new URL(`cloud/${first.slug}/${environment?.project ?? ""}/${environment?.name ?? ""}`, appUrl);
-  details.searchParams.set("panel", "on-merge");
+  const into = first.check.merged_into;
+  // Once merged, the PR Environment may be gone: link the Destination's History.
+  const details = into?.project && into.environment
+    ? new URL(`cloud/${first.slug}/${into.project}/${into.environment}/history`, appUrl)
+    : new URL(`cloud/${first.slug}/${environment?.project ?? ""}/${environment?.name ?? ""}`, appUrl);
+  if (!into) details.searchParams.set("panel", "on-merge");
   return {
     headSha: first.head,
     name: PR_CHECK_NAME,

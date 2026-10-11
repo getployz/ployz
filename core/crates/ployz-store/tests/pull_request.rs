@@ -545,6 +545,26 @@ fn a_kept_open_pull_request_stays_and_a_push_brings_a_shut_down_one_back() {
     assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
 }
 
+/// A shut-down PR Environment still syncs: its rows are all kept.
+#[test]
+fn a_shut_down_pull_request_still_syncs() {
+    let (store, who) = shop();
+    plan(
+        &store,
+        &who,
+        SetPrPlan {
+            remove_on_close: Some(false),
+            ..on()
+        },
+    );
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    set(&store, &who, "pr-5", "web.env.X", json!("1"));
+    let off = remove(&store, &who, "pr-5");
+    run(&store, &off, &[]);
+    include_pr(&store, &who, 1).unwrap();
+}
+
 #[test]
 fn idle_branches_close_after_a_week_unless_kept() {
     let (store, who) = shop();

@@ -2,7 +2,7 @@ import type { DeploymentView, DiffView, JsonValue, Outcome, RowId, ServiceListin
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs, outcomeReason,
+  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs, outcomeReason,
   nodeLight, nodeOutcomeLabel, reviewGroups, shownValue, uploadLabel,
 } from "./store-deployments";
 
@@ -280,4 +280,10 @@ it("lets a whole runtime lifecycle dominate draft children and counts its node m
   expect(group?.changeCount).toBe(4);
   expect(group?.rows).toHaveLength(3);
   expect(group?.discardTarget).toBeUndefined();
+});
+
+it("words what a Deployment shipped despite", () => {
+  expect(deploymentWarningText({ service: "web", variable: "TOKEN" })).toBe("TOKEN not set in web");
+  expect(deploymentWarningText({ config: "sentry", file: "config.yml", secret: "web.TOKEN" })).toBe("web.TOKEN not set in sentry/config.yml");
+  expect(deploymentWarningText({ config: "sentry", file: "config.yml", variable: "web.DSN" })).toBe("web.DSN may break sentry/config.yml");
 });

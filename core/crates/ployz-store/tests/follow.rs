@@ -581,6 +581,7 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
             &who,
             &ployz_store::HistoryQuery {
                 environment: at("fix-web"),
+                limit: None,
             },
         )
         .unwrap()
@@ -598,7 +599,8 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
             .read(
                 &who,
                 &ployz_store::HistoryQuery {
-                    environment: at("fix-web")
+                    environment: at("fix-web"),
+                    limit: None,
                 }
             )
             .unwrap()

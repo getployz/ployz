@@ -241,7 +241,10 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
         .subcommand()
         .and_then(|(_, history)| history.subcommand_name());
     let Some(action) = action else {
-        let view = store.read(&ployz_store::HistoryQuery { environment })?;
+        let view = store.read(&ployz_store::HistoryQuery {
+            environment,
+            limit: None,
+        })?;
         return crate::ui::finish(&view, || {
             if view.revisions.is_empty() {
                 crate::ui::note("No saved versions.");
@@ -252,6 +255,9 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
                     revision.revision,
                     revision.message.as_deref().unwrap_or("Saved version")
                 ));
+            }
+            if view.more {
+                crate::ui::note("Older versions not shown.");
             }
         });
     };

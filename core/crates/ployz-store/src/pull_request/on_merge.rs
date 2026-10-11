@@ -424,6 +424,8 @@ pub(crate) fn holds(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<
 /// What a Destination didn't take when the pull request merged.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Unlanded {
+    /// The Destination's Project.
+    pub(crate) project: ProjectName,
     /// The Destination.
     pub(crate) into: EnvironmentName,
     /// Whether it saved what landed, but didn't deploy it.
@@ -524,6 +526,7 @@ pub(crate) fn land(
                         .skip(skipped)
                         .filter(|skip| skip.environment == into.id)
                         .map(|skip| Unlanded {
+                            project: into.project.clone(),
                             into: into.name.clone(),
                             saved: true,
                             reason: skip.reason.clone(),
@@ -533,6 +536,7 @@ pub(crate) fn land(
             Err(error) if automation::skippable(&error) => {
                 all = false;
                 unlanded.push(Unlanded {
+                    project: into.project.clone(),
                     into: into.name.clone(),
                     saved: false,
                     reason: error.message.clone(),

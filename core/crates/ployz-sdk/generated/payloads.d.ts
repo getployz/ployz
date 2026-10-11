@@ -1522,6 +1522,10 @@ parent: EnvironmentName | null,
  */
 removal: DeploymentSummary | null,
 /**
+ * Whether it is a PR Environment whose pull request merged.
+ */
+merged: boolean,
+/**
  * What a new Branch of it runs when it names no Setup Commands.
  */
 branch_setup: Array<SetupCommand>, };
@@ -1759,11 +1763,19 @@ version: string, changes: Array<NodeChange>, total_count: number, overwritten: A
 
 export type HistoryPreviewQuery = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, };
 
-export type HistoryQuery = { environment: EnvironmentRef, };
+export type HistoryQuery = { environment: EnvironmentRef,
+/**
+ * How many of the newest revisions to read; defaults to `HISTORY_PAGE`.
+ */
+limit?: number, };
 
 export type HistoryStaged = { environment: EnvironmentSummary, saved: Revision | null, changed: boolean, };
 
-export type HistoryView = { environment: EnvironmentSummary, revisions: Array<SavedRevision>, };
+export type HistoryView = { environment: EnvironmentSummary, revisions: Array<SavedRevision>,
+/**
+ * Whether older revisions exist beyond `limit`.
+ */
+more: boolean, };
 
 export type HookContainer = ContainerObservation;
 
@@ -2396,7 +2408,12 @@ export type OnMergeCheck = { conclusion: OnMergeConclusion, title: string,
 /**
  * Markdown, one line per row.
  */
-summary: string, };
+summary: string,
+/**
+ * Once merged, the Destination whose History it links to: the PR Environment
+ * may be gone.
+ */
+merged_into: EnvironmentRef | null, };
 
 export type OnMergeConclusion = "success" | "neutral";
 

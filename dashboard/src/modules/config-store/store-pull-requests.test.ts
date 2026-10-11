@@ -37,8 +37,10 @@ describe("storePrCheckRun", () => {
     }],
     check,
   });
-  const lands: OnMergeCheck = { conclusion: "success", title: "1 config change", summary: "- `web · A`: 1 → 2" };
-  const missing: OnMergeCheck = { conclusion: "neutral", title: "1 config change · TOKEN not set", summary: "- `web · TOKEN`: not set" };
+  const lands: OnMergeCheck = { conclusion: "success", title: "1 config change", summary: "- `web · A`: 1 → 2", merged_into: null };
+  const missing: OnMergeCheck = {
+    conclusion: "neutral", title: "1 config change · TOKEN not set", summary: "- `web · TOKEN`: not set", merged_into: null,
+  };
 
   it("posts what the merge lands, linking the On merge panel", () => {
     expect(storePrCheckRun([{ slug: "acme", view: view(lands) }], "https://ployz.test/")).toEqual({
@@ -54,6 +56,16 @@ describe("storePrCheckRun", () => {
   it("reads neutral when any Organization's word is neutral, and joins their words", () => {
     const run = storePrCheckRun([{ slug: "acme", view: view(lands) }, { slug: "beta", view: view(missing) }], "https://ployz.test/");
     expect(run).toMatchObject({ conclusion: "neutral", title: "1 config change; 1 config change · TOKEN not set" });
+  });
+
+  it("links a merged pull request to its Destination's History once its PR Environment is gone", () => {
+    const stuck: OnMergeCheck = {
+      conclusion: "neutral", title: "Didn't land in production", summary: "- production: why",
+      merged_into: { project: "shop", environment: "production" },
+    };
+    const run = storePrCheckRun([{ slug: "acme", view: { ...view(stuck), environments: [] } }], "https://ployz.test/");
+    expect(run?.detailsUrl).toBe("https://ployz.test/cloud/acme/shop/production/history");
+    expect(run?.summary).toContain("[View in Ployz](https://ployz.test/cloud/acme/shop/production/history)");
   });
 
   it("posts nothing when no Store has a word", () => {

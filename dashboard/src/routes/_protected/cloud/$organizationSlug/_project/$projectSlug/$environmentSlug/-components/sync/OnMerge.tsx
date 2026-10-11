@@ -89,19 +89,22 @@ const isSecret = Schema.is(Schema.Struct({ secret: Schema.Boolean }));
 /** A secret the Destination has no value for: the merge lands it Not set. */
 const notSet = Schema.is(Schema.Struct({ secret: Schema.Literal(false) }));
 const isText = Schema.is(Schema.String);
+/** A Config file row: the file at its path, its text too long to list. */
+const isFile = (row: MergeRow) => row.name?.startsWith("files.") === true;
 /** A value as the list shows it; a secret's never comes back. */
 const text = (value: MergeRow["lands"]) => isText(value) ? value : JSON.stringify(value);
 
 /**
- * One row: its Service, its key, and what the merge does there. Its ⋯ edits what it lands (a variable), resets an Edit,
- * and excludes it (it stays in the PR Environment) or includes it again.
+ * One row: its Service, its key, and what the merge does there. Its ⋯ edits what it lands (a variable it doesn't
+ * remove), resets an Edit, and excludes it (it stays in the PR Environment) or includes it again.
  */
 function OnMergeRow({ row, organizationSlug, store, into }: {
   row: MergeRow; organizationSlug: string; store: EnvironmentRef; into: string;
 }) {
   const writer = useStoreWriter(organizationSlug);
   const [editing, setEditing] = useState(false);
-  const { name } = row.name === null ? { name: row.node } : settingName(row.name);
+  const { name } = row.name === null ? { name: row.node }
+    : isFile(row) ? { name: row.name.slice("files.".length) } : settingName(row.name);
   const excluded = row.ride === "excluded";
   const edited = row.ride === "edited";
   const preview = store.environment ?? "";
@@ -124,7 +127,7 @@ function OnMergeRow({ row, organizationSlug, store, into }: {
             <EllipsisIcon />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {!excluded && row.name?.startsWith("env.") ? <DropdownMenuItem onClick={() => setEditing(true)}>Edit</DropdownMenuItem> : null}
+            {!excluded && row.preview !== null && row.name?.startsWith("env.") ? <DropdownMenuItem onClick={() => setEditing(true)}>Edit</DropdownMenuItem> : null}
             {edited ? <DropdownMenuItem onClick={() => land()}>Reset</DropdownMenuItem> : null}
             <DropdownMenuItem onClick={() => exclude(excluded)}>{excluded ? "Include" : "Exclude"}</DropdownMenuItem>
           </DropdownMenuContent>
@@ -150,6 +153,11 @@ function RowValue({ row, preview }: { row: MergeRow; preview: string }) {
         </> : null}
     </>;
   }
+  if (isFile(row)) {
+    return row.production === null ? <span className="font-sans text-muted-foreground">New file</span>
+      : row.lands === null ? <Badge variant="secondary">Removed</Badge>
+      : <span className="font-sans text-muted-foreground">{row.conflict ? "Changed in production too" : "Changed"}</span>;
+  }
   return <>
     {row.conflict ? <span className="font-sans text-muted-foreground">production</span> : null}
     {row.production === null ? <span className="font-sans text-muted-foreground">New</span> : <span>{text(row.production)}</span>}
@@ -162,15 +170,12 @@ function RowValue({ row, preview }: { row: MergeRow; preview: string }) {
   </>;
 }
 
-/**
- * What the merge lands in a variable instead: a secret sealed and never shown back; any other value starts from what
- * lands now, or production's value where the PR Environment removed it.
- */
+/** What the merge lands in a variable instead: a secret sealed and never shown back; any other value starts from what lands now. */
 function EditValue({ row, name, into, preview, onClose, onSave }: {
   row: MergeRow; name: string; into: string; preview: string; onClose: () => void; onSave: (value: string) => void;
 }) {
   const secret = isSecret(row.preview) || isSecret(row.production);
-  const start = secret ? "" : row.lands === null && row.ride !== "edited" ? row.production : row.lands;
+  const start = secret ? "" : row.lands;
   const [value, setValue] = useState(isText(start) ? start : "");
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>

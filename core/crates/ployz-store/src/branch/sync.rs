@@ -202,7 +202,11 @@ pub(crate) fn sync(
     if let Some(id) = &request.id {
         proposal::refuse_reused_sync_id(tx, who, id)?;
     }
-    if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)? {
+    // A shut-down PR Environment (its removal applied) keeps every row: it syncs.
+    if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)?
+        && !(removal.status == DeploymentStatus::Applied
+            && crate::pull_request::of(tx, &from.summary.id)?.is_some())
+    {
         return Err(crate::teardown::being_removed(&from, &removal));
     }
     if close_after {
