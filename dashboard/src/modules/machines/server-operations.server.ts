@@ -11,7 +11,8 @@ import { firstRuntimeFrame, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { Conflict } from "#/server/public-error";
 
-const unreachable = () => new Conflict({ userFacing: true, message: "Your servers aren't answering. Try again once they are." });
+export const UNREACHABLE_MESSAGE = "Your servers aren't answering. Try again once they are.";
+const unreachable = () => new Conflict({ userFacing: true, message: UNREACHABLE_MESSAGE });
 
 const byName = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const volumeName = ({ id }: DataLossIdentity) => `${id.machine_id}/${id.name}`;

@@ -17,6 +17,9 @@ export const OPERATION_TOOLS = [
   "volume_move",
   "volume_release",
   "volume_mirror_remove",
+  "service_restart",
+  "service_start",
+  "service_stop",
 ] as const;
 export type OperationTool = (typeof OPERATION_TOOLS)[number];
 
