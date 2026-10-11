@@ -7,7 +7,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
-  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, stagedOffServer, storageStep, undoPlacement,
+  appliedMirrors, type CanvasMirror, canvasMirrors, mirroredVolumes, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
 import { discardPlacementServerFn, stagePlacementServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
@@ -100,4 +100,20 @@ export function useStorageSteps(organizationSlug: string) {
 export function useStagedOffServer(organizationSlug: string, server: string) {
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   return stagedOffServer(server, rows, useRuntimeLens(organizationSlug).volumeCopies);
+}
+
+/** Each Volume's mirrors for the canvas, by Volume id. Only Volumes with a placement row or a slot are asked about. */
+export function useCanvasMirrors(
+  organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly PlacementVolume[],
+): ReadonlyMap<string, readonly CanvasMirror[]> {
+  const rows = useVolumePlacements(organizationSlug).data ?? [];
+  const ids = mirroredVolumes(volumes.map((volume) => volume.id), rows, environmentId, useRuntimeLens(organizationSlug).volumeCopies);
+  const members = useQueries({ queries: ids.map((id) => volumeMembersQueryOptions(organizationSlug, environment, id)) });
+  return new Map(ids.flatMap((id, index) => {
+    const volume = volumes.find((entry) => entry.id === id);
+    const answered = members[index]?.data;
+    const mirrors = volume === undefined || answered === undefined ? []
+      : canvasMirrors(volume, answered, rows.find((row) => row.volumeId === id) ?? null);
+    return mirrors.length === 0 ? [] : [[id, mirrors] as const];
+  }));
 }
