@@ -255,6 +255,7 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
         )
     );
     assert_eq!(parse_log_time("2m30s", now).unwrap(), Some(1_799_999_850));
+    assert_eq!(parse_log_time("30d", now).unwrap(), Some(1_797_408_000));
     // A duration past the timestamp range is refused, not wrapped into the future.
     assert!(parse_log_time("10000000000000000000s", now).is_err());
     assert_eq!(
@@ -557,6 +558,121 @@ fn logs_ask_a_down_server_so_it_can_be_named_as_a_gap() {
         HashSet::from([down_id])
     );
     assert!(asked_machines(&machines, &[FanoutSelector::parse("missing").unwrap()]).is_err());
+    assert_eq!(
+        asked_machines(
+            &machines,
+            &[FanoutSelector::parse(down_id.to_string()).unwrap()]
+        )
+        .unwrap(),
+        HashSet::from([down_id])
+    );
+    let ambiguous = [
+        machine_observation(1, "edge"),
+        machine_observation(2, "edge"),
+    ];
+    assert!(matches!(
+        asked_machines(&ambiguous, &[FanoutSelector::parse("edge").unwrap()]),
+        Err(OperatorError::MachineSelector(_))
+    ));
+}
+
+#[test]
+fn exact_history_preserves_selectors_and_rejects_live_resolution() {
+    let args = ["app/api", "app/gone", "app/api"].map(|service| ServiceArg {
+        service: service_selector(service),
+        containers: Vec::new(),
+    });
+    let read = |service: &str| HistorySelector {
+        namespace: Some("app".into()),
+        service: Some(service.into()),
+        deployment: Some("dep_old".into()),
+        container_id: None,
+    };
+    assert_eq!(
+        qualified_history_selectors(&args, Some("dep_old")),
+        Some(vec![read("api"), read("gone"), read("api")])
+    );
+    assert_eq!(
+        qualified_history_selectors(&args, None)
+            .unwrap()
+            .first()
+            .unwrap()
+            .deployment,
+        None
+    );
+    for named in [
+        vec![],
+        strings(["api"]),
+        strings(["app/api", "gone"]),
+        strings(["11111111111111111111111111111111"]),
+        strings(["app/api:api-1"]),
+        strings(["app/gone", "app/api:aaaaaaaaaaaa"]),
+    ] {
+        assert!(
+            qualified_history_selectors(&parse_service_args(&named).unwrap(), None).is_none(),
+            "{named:?}"
+        );
+    }
+}
+
+#[test]
+fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
+    let up = machine_observation(1, "edge");
+    let down = machine_observation(3, "down");
+    let failure = ployz_core::MachineFailure {
+        machine_id: down.machine.id,
+        error: ployz_core::RpcError {
+            code: ployz_core::RpcErrorCode::Unavailable,
+            message: "down".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        },
+    };
+    let running = observed_service();
+    let scope = LogScope {
+        asked: HashSet::from([up.machine.id, down.machine.id]),
+        live: ployz_core::derive_live_services(ployz_core::PartialResult {
+            successes: vec![ployz_core::MachineSuccess {
+                machine_id: up.machine.id,
+                value: running
+                    .containers
+                    .iter()
+                    .map(|container| container.as_observation().clone())
+                    .collect(),
+            }],
+            failures: vec![failure.clone()],
+            omissions: Vec::new(),
+        }),
+        unanswered: Unanswered {
+            failures: vec![failure],
+            omissions: Vec::new(),
+            names: vec![
+                (up.machine.id, up.machine.name.clone()),
+                (down.machine.id, down.machine.name.clone()),
+            ],
+        },
+    };
+    assert_eq!(scope.answered(), vec![(up.machine.id, up.machine.name)]);
+
+    let arg = |service: &str| ServiceArg {
+        service: service_selector(service),
+        containers: Vec::new(),
+    };
+    let selectors = history_selectors(
+        &scope,
+        &[arg("app/api"), arg("app/gone")],
+        None,
+        Some("dep_old"),
+    )
+    .unwrap();
+    let read = |service: &str| HistorySelector {
+        namespace: Some("app".into()),
+        service: Some(service.into()),
+        deployment: Some("dep_old".into()),
+        container_id: None,
+    };
+    assert_eq!(selectors, vec![read("api"), read("gone")]);
+    assert!(history_selectors(&scope, &[arg("gone")], None, None).is_err());
 }
 
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
@@ -672,7 +788,6 @@ fn container(
                 open_stdin: false,
                 privileged: false,
                 pid_mode: None,
-                log_driver: None,
                 resources: Default::default(),
                 stop_timeout_secs: None,
                 sysctls: Default::default(),

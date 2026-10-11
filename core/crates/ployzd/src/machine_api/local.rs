@@ -10,9 +10,9 @@ use std::{
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContainerObservationMap, ContractDescription,
-    EnvironmentValues, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
-    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, op,
+    EnvironmentValues, IngressProxyConfig, LiveLogTarget, LocalMachinePhase, LogMetadata,
+    LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -88,10 +88,13 @@ fn volume_source(
         })
 }
 
+const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
+
 #[derive(Clone)]
 pub struct MachineService {
     local: LocalMachine,
     ingress_data_dir: Option<PathBuf>,
+    observe: crate::observe::ObserveClient,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
@@ -110,6 +113,7 @@ impl MachineService {
         Self {
             local: LocalMachine::new(owner).with_cluster(cluster),
             ingress_data_dir: None,
+            observe: crate::observe::ObserveClient::new(PathBuf::from(DEFAULT_OBSERVE_SOCKET)),
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
@@ -151,6 +155,13 @@ impl MachineService {
     /// Make exact Ingress Proxy configuration available through the Machine RPC.
     pub fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
         self.ingress_data_dir = Some(path);
+        self
+    }
+
+    /// Serve history from the Log Store whose ployz-observe listens on `socket`.
+    #[must_use]
+    pub fn with_observe_socket(mut self, socket: PathBuf) -> Self {
+        self.observe = crate::observe::ObserveClient::new(socket);
         self
     }
 
@@ -275,9 +286,8 @@ impl MachineService {
 impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type BuildStream = RpcStream;
-    type ContainerLogsStream = RpcStream;
-    type ContainerLogHistoryStream = RpcStream;
-    type MachineLogsStream = RpcStream;
+    type LogHistoryStream = RpcStream;
+    type TailLogsStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
 
     async fn describe_contract(
@@ -998,76 +1008,52 @@ impl MachineRpc for MachineService {
             .map(Response::new)
     }
 
-    async fn container_logs(
+    async fn log_history(
         &self,
         request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogsStream>, Status> {
-        let request = op::ContainerLogs::from_request_body(request_body(request)?)
-            .map_err(invalid_request)?;
-        let containers = self
-            .containers()
-            .map_err(|error| Status::unavailable(error.message))?;
-        let record = self.local_record();
-        let machine = record
-            .machine()
-            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
-        containers
-            .container_logs(&record.id(), &machine.name, request)
-            .await
-            .map(Response::new)
-    }
-
-    async fn container_log_history(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
-        let request = op::ContainerLogHistory::from_request_body(request_body(request)?)
-            .map_err(invalid_request)?;
-        let containers = self
-            .containers()
-            .map_err(|error| Status::unavailable(error.message))?;
-        let record = self.local_record();
-        let machine = record
-            .machine()
-            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
-        containers
-            .container_log_history(&record.id(), &machine.name, request)
-            .await
-            .map(Response::new)
-    }
-
-    async fn machine_logs(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::MachineLogsStream>, Status> {
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
         let request =
-            op::MachineLogs::from_request_body(request_body(request)?).map_err(invalid_request)?;
+            op::LogHistory::from_request_body(request_body(request)?).map_err(invalid_request)?;
+        request.validate().map_err(Status::invalid_argument)?;
+        self.observe.history(request).await.map(Response::new)
+    }
+
+    async fn tail_logs(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
+        let request =
+            op::TailLogs::from_request_body(request_body(request)?).map_err(invalid_request)?;
         let record = self.local_record();
         let machine = record
             .machine()
-            .cloned()
             .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
-        let metadata = LogMetadata {
-            origin: LogOrigin::Machine {
-                service: request.service,
-            },
-            machine_id: record.id(),
-            machine_name: machine.name,
-        };
-        let source = match request.service {
-            MachineLogService::Ployz | MachineLogService::Docker => {
-                open_journal_logs(request.service.as_str(), &request.options).await?
+        let stream = match request.target {
+            LiveLogTarget::Container(container_id) => {
+                self.containers()
+                    .map_err(|error| Status::unavailable(error.message))?
+                    .container_logs(&record.id(), &machine.name, container_id, &request.options)
+                    .await?
             }
-            MachineLogService::Corrosion => self
-                .containers()
-                .map_err(|error| Status::unavailable(error.message))?
-                .raw_logs(crate::corrosion::DEFAULT_CONTAINER_NAME, &request.options)?,
+            LiveLogTarget::Machine(service) => {
+                let source = match service {
+                    MachineLogService::Ployz | MachineLogService::Docker => {
+                        open_journal_logs(service.as_str(), &request.options).await?
+                    }
+                    MachineLogService::Corrosion => self
+                        .containers()
+                        .map_err(|error| Status::unavailable(error.message))?
+                        .raw_logs(crate::corrosion::DEFAULT_CONTAINER_NAME, &request.options)?,
+                };
+                let metadata = LogMetadata {
+                    origin: LogOrigin::Machine { service },
+                    machine_id: record.id(),
+                    machine_name: machine.name.clone(),
+                };
+                serve_logs(source, metadata, request.options.follow)
+            }
         };
-        Ok(Response::new(serve_logs(
-            source,
-            metadata,
-            request.options.follow,
-        )))
+        Ok(Response::new(stream))
     }
 
     async fn runtime_watch(

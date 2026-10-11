@@ -116,6 +116,28 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  fake-fleet:
+    name: Build the fake fleet
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The agent evals in `pnpm test` dial this binary; the eval SDK alone answers nothing.
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag }}
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: cloud-fake-fleet
+      - name: Build ployz-fake-fleet
+        working-directory: core
+        run: cargo build -p ployz-testkit --bin ployz-fake-fleet --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ployz-fake-fleet
+          path: core/target/debug/ployz-fake-fleet
+          retention-days: 1
+          if-no-files-found: error
+
   build:
     permissions:
       contents: read
@@ -159,7 +181,7 @@ jobs:
 
 
   test:
-    needs: sdk
+    needs: [sdk, fake-fleet]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The suite is CPU-bound on a 4-vCPU runner; shards keep each job's tests under a minute.
@@ -176,9 +198,16 @@ jobs:
         with:
           name: cloud-sdk-eval
           path: core/crates/ployz-sdk
+      - uses: actions/download-artifact@v4
+        with:
+          name: ployz-fake-fleet
+          path: ${{ runner.temp }}/fake-fleet
+      - name: Make the fake fleet executable
+        run: chmod +x "$RUNNER_TEMP/fake-fleet/ployz-fake-fleet"
       - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
+          PLOYZ_FAKE_FLEET: ${{ runner.temp }}/fake-fleet/ployz-fake-fleet
         run: pnpm test --shard=${{ matrix.shard }}/3 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
       - uses: actions/upload-artifact@v4
         if: always()
