@@ -14,8 +14,9 @@ import { runAppEffect } from "#/server/run.server";
  */
 
 const FORWARDED_REQUEST_HEADERS = ["accept", "accept-language", "user-agent", "x-forwarded-for"];
-// fetch decodes the body, so content-encoding and content-length would describe bytes we no longer send.
-const PASSED_RESPONSE_HEADERS = ["content-type", "cache-control", "etag", "last-modified", "vary"];
+// fetch decodes the body, so content-encoding and content-length would describe bytes we no longer send. Link points
+// agents at the Markdown copy and llms.txt; X-Robots-Tag keeps those copies out of search results.
+const PASSED_RESPONSE_HEADERS = ["content-type", "cache-control", "etag", "last-modified", "vary", "link", "x-robots-tag"];
 const TIMEOUT = "5 seconds";
 
 type Fetch = (input: string, init: RequestInit) => Promise<Response>;
