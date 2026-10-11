@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::agent::probe::{ProbeConfig, Prober};
 use crate::agent::run::AgentRun;
-use crate::config::{ControlConfig, Secret};
+use crate::config::{ControlConfig, RegionConfig, Secret};
 use crate::control::engine::Tempo;
 use crate::control::plane::ControlPlane;
 use crate::control::test_pg;
@@ -136,7 +136,10 @@ async fn an_outage_opens_one_incident_recovers_and_survives_a_config_edit() {
         .await;
     let config = ControlConfig {
         database_url: Secret::new(&control_url),
-        regions: vec![region.clone()],
+        regions: vec![RegionConfig {
+            region: region.clone(),
+            name: None,
+        }],
         agent_token: None,
         listen: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
     };
@@ -289,7 +292,10 @@ async fn a_probe_still_in_flight_at_shutdown_is_written_before_all_mode_exits() 
         .await;
     let config = ControlConfig {
         database_url: Secret::new(&control_url),
-        regions: vec![region.clone()],
+        regions: vec![RegionConfig {
+            region: region.clone(),
+            name: None,
+        }],
         agent_token: None,
         listen: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
     };

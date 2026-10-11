@@ -117,6 +117,15 @@ export const uptimeAlert = pgTable(
   ],
 );
 
+/**
+ * What the dashboard calls each probe region, written by the control plane at boot from UPTIME_REGIONS. Probe rows keep
+ * the code, so a rename relabels history. A region no longer configured keeps its row, and with it its label.
+ */
+export const uptimeRegion = pgTable("uptime_region", {
+  region: text("region").primaryKey(),
+  name: text("name"),
+});
+
 export const uptimeResult = pgTable(
   "uptime_result",
   {
