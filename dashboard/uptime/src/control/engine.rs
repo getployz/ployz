@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use uuid::Uuid;
 
-use super::detect::{Ctx, Health, Input, RoundId, Step, step};
+use super::detect::{Ctx, Health, Input, Outage, RoundId, Step, step};
 use super::feed::{CheckRow, FeedEvent, OpenIncident};
 use super::incidents::{IncidentOp, IncidentWriter, Submit, Written};
 use super::results::Results;
@@ -307,10 +307,17 @@ impl Engine {
         };
         self.next_round += 1;
         let before = recheck_at(&entry.health);
+        let round_before = round_out(&entry.health);
         let step = step(&mut entry.health, input, &ctx);
         let after = recheck_at(&entry.health);
+        let round_after = round_out(&entry.health);
         let check = entry.check.clone();
         let generation = entry.generation;
+        // A finished round's results are ignored, so its unsent jobs would only crowd out routine
+        // work. This runs before `act` so a round the step just opened keeps its jobs.
+        if round_before.is_some() && round_before != round_after {
+            self.drop_urgent(id);
+        }
         self.act(step, &check, now);
         if let Some(at) = after
             && before != after
@@ -607,6 +614,13 @@ impl Engine {
         self.unqueue(id);
     }
 
+    fn drop_urgent(&mut self, id: CheckId) {
+        self.budget.forget(id);
+        for queue in self.queues.values_mut() {
+            queue.urgent.retain(|job| job.key.check != id);
+        }
+    }
+
     fn unqueue(&mut self, id: CheckId) {
         for queue in self.queues.values_mut() {
             queue.urgent.retain(|job| job.key.check != id);
@@ -684,6 +698,16 @@ fn recheck_at(health: &Health) -> Option<UnixMs> {
     match health {
         Health::Unreachable(outage) if outage.round.is_none() => Some(outage.next_round_at),
         Health::Reachable | Health::Suspect(_) | Health::Unreachable(_) => None,
+    }
+}
+
+fn round_out(health: &Health) -> Option<RoundId> {
+    match health {
+        Health::Suspect(round)
+        | Health::Unreachable(Outage {
+            round: Some(round), ..
+        }) => Some(round.id),
+        Health::Reachable | Health::Unreachable(_) => None,
     }
 }
 
