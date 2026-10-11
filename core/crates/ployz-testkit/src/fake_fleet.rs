@@ -25,10 +25,11 @@ use ployz_core::{
     CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerId, ContainerKind,
     ContainerList, ContainerObservation, ContainerObservationParts, ContainerRuntimeObservation,
     ContractDescription, CopyRole, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, HealthObservation, LocalMachinePhase, LogBody, LogEntry,
-    LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
-    MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc, MachineRpcServer,
-    MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
+    DockerVolumeStorageObservation, HealthObservation, HistoryContainer, HistoryContainerKind,
+    HistoryRow, HistoryStream, LiveLogTarget, LocalMachinePhase, LogBody, LogDirection, LogEntry,
+    LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId,
+    MachineList, MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc,
+    MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
     MembershipObservation, MirrorMarker, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
     ProvisionedCopy, ProvisionedVolumeMaximumBytes, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
@@ -855,23 +856,20 @@ impl Fleet {
                     .into(),
                 })
             }
-            RpcRequestBody::ContainerLogs(request) => {
+            RpcRequestBody::TailLogs(request) => {
                 let machine = self.by_id(target)?;
-                let Some(container) = machine.container(&request.container_id) else {
-                    return Err(Status::not_found(format!(
-                        "no Container {}",
-                        request.container_id
-                    )));
+                let LiveLogTarget::Container(container_id) = request.target else {
+                    return Err(unimplemented("tail_logs of a Machine service"));
+                };
+                let Some(container) = machine.container(&container_id) else {
+                    return Err(Status::not_found(format!("no Container {container_id}")));
                 };
                 let options = request.options;
-                let since = options
-                    .since_unix_seconds
-                    .map(|seconds| seconds * 1_000_000_000);
                 let until = options
                     .until_unix_seconds
                     .map(|seconds| seconds * 1_000_000_000);
                 let mut lines: Vec<(i64, &String)> = timed(&container.spec.logs)
-                    .filter(|(nanos, _)| since.is_none_or(|since| *nanos >= since))
+                    .filter(|(nanos, _)| options.since_nanos.is_none_or(|since| *nanos >= since))
                     .filter(|(nanos, _)| until.is_none_or(|until| *nanos <= until))
                     .collect();
                 if let Ok(tail) = usize::try_from(options.tail) {
@@ -882,23 +880,11 @@ impl Fleet {
                     hold: options.follow,
                 })
             }
-            RpcRequestBody::ContainerLogHistory(request) => {
+            RpcRequestBody::LogHistory(request) => {
+                request.validate().map_err(Status::invalid_argument)?;
                 let machine = self.by_id(target)?;
-                let Some(container) = machine.container(&request.container_id) else {
-                    return Err(Status::not_found(format!(
-                        "no Container {}",
-                        request.container_id
-                    )));
-                };
-                let before = request.before_nanos.parse::<i64>().map_err(|_| {
-                    Status::invalid_argument("before_nanos must be an i64 timestamp")
-                })?;
-                let mut lines: Vec<(i64, &String)> = timed(&container.spec.logs)
-                    .filter(|(nanos, _)| *nanos < before)
-                    .collect();
-                lines = lines.split_off(lines.len().saturating_sub(usize::from(request.limit)));
                 Ok(Reply::Frames {
-                    frames: machine.log_frames(container, lines)?,
+                    frames: machine.history_frames(&request)?,
                     hold: false,
                 })
             }
@@ -1163,6 +1149,67 @@ impl MachineState {
             })
             .collect()
     }
+    fn history_frames(&self, request: &LogHistoryRequest) -> Result<Vec<OpaquePayload>, Status> {
+        let containers: Vec<&ContainerState> = self
+            .containers
+            .iter()
+            .filter(|container| {
+                request.container_id.is_none_or(|id| id == container.id)
+                    && request
+                        .namespace
+                        .as_deref()
+                        .is_none_or(|namespace| namespace == container.spec.namespace.as_str())
+                    && request
+                        .service
+                        .as_deref()
+                        .is_none_or(|service| service == container.spec.service.as_str())
+                    && request.deployment.as_deref().is_none_or(|deployment| {
+                        container.spec.deployment.map(|d| d.to_string()).as_deref()
+                            == Some(deployment)
+                    })
+            })
+            .collect();
+        let mut lines: Vec<(i64, &ContainerState, &String)> = containers
+            .iter()
+            .flat_map(|container| {
+                timed(&container.spec.logs).map(move |(nanos, line)| (nanos, *container, line))
+            })
+            .filter(|(nanos, _, _)| request.since_nanos.is_none_or(|since| *nanos >= since))
+            .filter(|(nanos, _, _)| request.until_nanos.is_none_or(|until| *nanos < until))
+            .collect();
+        lines.sort_by_key(|(nanos, _, _)| *nanos);
+        let limit = usize::from(request.limit);
+        if request.direction == LogDirection::Backward {
+            lines = lines.split_off(lines.len().saturating_sub(limit));
+        } else {
+            lines.truncate(limit);
+        }
+        let mut rows = Vec::new();
+        let mut announced = Vec::new();
+        for (nanos, container, line) in lines {
+            if !announced.contains(&container.id) {
+                announced.push(container.id);
+                rows.push(HistoryRow::Container(HistoryContainer {
+                    container_id: container.id,
+                    namespace: Some(container.spec.namespace.to_string()),
+                    service: Some(container.spec.service.to_string()),
+                    deployment: container.spec.deployment.map(|d| d.to_string()),
+                    replica: container.spec.name.clone(),
+                    kind: HistoryContainerKind::Service,
+                }));
+            }
+            rows.push(HistoryRow::Line {
+                container_id: container.id,
+                ts: nanos,
+                stream: HistoryStream::Stdout,
+                text: line.clone().into_bytes(),
+            });
+        }
+        rows.push(HistoryRow::End { next: None });
+        rows.iter()
+            .map(|row| row.encode().map_err(internal))
+            .collect()
+    }
 }
 
 /// Each fixture line with its timestamp, one second apart.
@@ -1290,9 +1337,8 @@ macro_rules! fleet_service {
         impl MachineRpc for FleetService {
             type ExecStream = FrameStream;
             type BuildStream = FrameStream;
-            type ContainerLogHistoryStream = FrameStream;
-            type ContainerLogsStream = FrameStream;
-            type MachineLogsStream = FrameStream;
+            type LogHistoryStream = FrameStream;
+            type TailLogsStream = FrameStream;
             type RuntimeWatchStream = FrameStream;
 
             $(

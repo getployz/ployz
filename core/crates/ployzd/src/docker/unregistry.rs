@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use bollard::models::{ContainerCreateBody, HostConfig, HostConfigLogConfig, Mount, MountType};
+use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use ployz_core::{
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, RpcError,
 };
@@ -205,10 +205,7 @@ fn unregistry_config(socket: &Path, management_address: Ipv6Addr) -> ContainerCr
                 ..Default::default()
             }]),
             network_mode: Some("host".into()),
-            log_config: Some(HostConfigLogConfig {
-                typ: Some("local".into()),
-                ..Default::default()
-            }),
+            log_config: Some(super::container_log_config()),
             ..Default::default()
         }),
         ..Default::default()
@@ -377,6 +374,7 @@ mod tests {
         assert_eq!(host.network_mode.as_deref(), Some("host"));
         assert_eq!(host.port_bindings, None);
         assert_eq!(host.restart_policy, None);
+        assert_eq!(host.log_config, Some(crate::docker::container_log_config()));
         assert_eq!(
             host.mounts,
             Some(vec![Mount {

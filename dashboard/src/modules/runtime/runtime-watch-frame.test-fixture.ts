@@ -136,7 +136,7 @@ export function resolvedServiceSpecFixture(): ResolvedServiceSpec {
       labels: {}, hostname: null, extra_hosts: [], cap_add: [], cap_drop: [],
       healthcheck: null, init: null, user: null, working_directory: null,
       tty: false, open_stdin: false, privileged: false, pid_mode: null,
-      log_driver: null, stop_timeout_secs: null, sysctls: {},
+      stop_timeout_secs: null, sysctls: {},
       restart: { name: "unless-stopped" },
       resources: {
         cpu_nanos: null, memory_bytes: null, memory_reservation_bytes: null,

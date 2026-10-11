@@ -270,7 +270,7 @@ async fn install_locked(
     } else {
         if restart_required {
             progress(MachineUpgradeStage::Restarting)?;
-            restart_daemon()?;
+            restart_units()?;
         }
         progress(MachineUpgradeStage::Readiness)?;
         verify_running_daemon(paths, &target).await?;
@@ -282,8 +282,7 @@ async fn install_locked(
     })
 }
 
-/// Restart the daemon on whichever release is installed, then the volume plugin it serves.
-fn restart_daemon() -> Result<(), Error> {
+fn restart_units() -> Result<(), Error> {
     // One transaction: a changed socket unit takes effect, and
     // After=ployz.socket starts the socket before the daemon.
     systemctl(
@@ -293,6 +292,10 @@ fn restart_daemon() -> Result<(), Error> {
     systemctl(
         "restart volume plugin",
         ["try-restart", "ployz-volume-plugin.service"],
+    )?;
+    systemctl(
+        "restart Log Store",
+        ["try-restart", "ployz-observe.service"],
     )?;
     Ok(())
 }
