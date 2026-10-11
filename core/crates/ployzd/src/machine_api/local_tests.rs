@@ -809,6 +809,106 @@ async fn marking_an_unknown_container_stopping_is_not_found() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+fn main_wire(command: &str, payload: serde_json::Value) -> Request<ployz_core::OpaquePayload> {
+    Request::new(ployz_core::OpaquePayload::new(
+        serde_json::to_vec(&serde_json::json!({
+            "protocol_major": ployz_core::PROTOCOL_MAJOR,
+            "command": command,
+            "payload": payload,
+        }))
+        .unwrap(),
+    ))
+}
+
+#[tokio::test]
+async fn main_tail_logs_and_the_split_command_both_read_the_named_container() {
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-tail-logs").await;
+    let container_id = "c".repeat(64);
+    let tail = service
+        .tail_logs(main_wire(
+            "tail_logs",
+            serde_json::json!({
+                "target": { "container": container_id },
+                "options": {
+                    "follow": true,
+                    "tail": -1,
+                    "since_nanos": 1_786_698_000_123_456_789_i64,
+                    "until_unix_seconds": null,
+                },
+            }),
+        ))
+        .await
+        .expect_err("an unknown Container has no logs");
+    let split = service
+        .container_logs(main_wire(
+            "container_logs",
+            serde_json::json!({
+                "container_id": container_id,
+                "options": { "follow": true, "tail": 200 },
+            }),
+        ))
+        .await
+        .expect_err("an unknown Container has no logs");
+    assert_eq!(
+        (tail.code(), split.code()),
+        (Code::NotFound, Code::NotFound)
+    );
+    let inspected = format!("/containers/{container_id}/json");
+    assert_eq!(
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.ends_with(&inspected))
+            .count(),
+        2
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn main_log_history_gets_one_empty_final_page() {
+    use ployz_core::HistoryRow;
+    use tokio_stream::StreamExt;
+
+    let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-log-history").await;
+    let rows: Vec<_> = service
+        .log_history(main_wire(
+            "log_history",
+            serde_json::json!({
+                "namespace": "prod",
+                "service": "web",
+                "deployment": null,
+                "container_id": null,
+                "until_nanos": null,
+                "direction": "backward",
+                "limit": 500,
+                "cursor": null,
+            }),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .map(|frame| HistoryRow::decode(&frame.unwrap()).unwrap())
+        .collect()
+        .await;
+    assert_eq!(rows, [HistoryRow::End { next: None }]);
+
+    for payload in [
+        serde_json::json!({ "direction": "backward", "limit": 500 }),
+        serde_json::json!({ "service": "web", "direction": "backward", "limit": 5_001 }),
+        serde_json::json!({ "service": "web", "direction": "sideways", "limit": 500 }),
+    ] {
+        let error = service
+            .log_history(main_wire("log_history", payload.clone()))
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{payload} is outside the contract"));
+        assert_eq!(error.code(), Code::InvalidArgument, "{payload}");
+    }
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
 /// A Machine service on an initialized store, backed by a fake Docker that keeps named Containers.
 async fn fake_docker_service(
     prefix: &str,

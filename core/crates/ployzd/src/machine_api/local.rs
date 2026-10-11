@@ -9,10 +9,11 @@ use std::{
 
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
-    ContainerList, ContainerObservation, ContainerObservationMap, ContractDescription,
-    EnvironmentValues, IngressProxyConfig, LocalMachinePhase, LogMetadata, LogOrigin,
-    MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, op,
+    ContainerList, ContainerLogsRequest, ContainerObservation, ContainerObservationMap,
+    ContractDescription, EnvironmentValues, HistoryRow, IngressProxyConfig, LiveLogTarget,
+    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineLogsRequest, MachineRpc,
+    OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    TailLogsRequest, op,
 };
 use serde_json::Value;
 use tokio::time::Instant;
@@ -131,6 +132,46 @@ impl MachineService {
             .containers()
             .ok_or_else(|| unavailable("Docker is not available"))
     }
+    async fn serve_container_logs(
+        &self,
+        request: ContainerLogsRequest,
+    ) -> Result<RpcStream, Status> {
+        let containers = self
+            .containers()
+            .map_err(|error| Status::unavailable(error.message))?;
+        let record = self.local_record();
+        let machine = record
+            .machine()
+            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
+        containers
+            .container_logs(&record.id(), &machine.name, request)
+            .await
+    }
+
+    async fn serve_machine_logs(&self, request: MachineLogsRequest) -> Result<RpcStream, Status> {
+        let record = self.local_record();
+        let machine = record
+            .machine()
+            .cloned()
+            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
+        let metadata = LogMetadata {
+            origin: LogOrigin::Machine {
+                service: request.service,
+            },
+            machine_id: record.id(),
+            machine_name: machine.name,
+        };
+        let source = match request.service {
+            MachineLogService::Ployz | MachineLogService::Docker => {
+                open_journal_logs(request.service.as_str(), &request.options).await?
+            }
+            MachineLogService::Corrosion => self
+                .containers()
+                .map_err(|error| Status::unavailable(error.message))?
+                .raw_logs(crate::corrosion::DEFAULT_CONTAINER_NAME, &request.options)?,
+        };
+        Ok(serve_logs(source, metadata, request.options.follow))
+    }
 }
 
 #[tonic::async_trait]
@@ -140,6 +181,8 @@ impl MachineRpc for MachineService {
     type ContainerLogsStream = RpcStream;
     type ContainerLogHistoryStream = RpcStream;
     type MachineLogsStream = RpcStream;
+    type TailLogsStream = RpcStream;
+    type LogHistoryStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
 
     async fn describe_contract(
@@ -470,17 +513,7 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<Self::ContainerLogsStream>, Status> {
         let request = op::ContainerLogs::from_request_body(request_body(request)?)
             .map_err(invalid_request)?;
-        let containers = self
-            .containers()
-            .map_err(|error| Status::unavailable(error.message))?;
-        let record = self.local_record();
-        let machine = record
-            .machine()
-            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
-        containers
-            .container_logs(&record.id(), &machine.name, request)
-            .await
-            .map(Response::new)
+        self.serve_container_logs(request).await.map(Response::new)
     }
 
     async fn container_log_history(
@@ -508,32 +541,47 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<Self::MachineLogsStream>, Status> {
         let request =
             op::MachineLogs::from_request_body(request_body(request)?).map_err(invalid_request)?;
-        let record = self.local_record();
-        let machine = record
-            .machine()
-            .cloned()
-            .ok_or_else(|| Status::unavailable("Machine is not participating"))?;
-        let metadata = LogMetadata {
-            origin: LogOrigin::Machine {
-                service: request.service,
-            },
-            machine_id: record.id(),
-            machine_name: machine.name,
-        };
-        let source = match request.service {
-            MachineLogService::Ployz | MachineLogService::Docker => {
-                open_journal_logs(request.service.as_str(), &request.options).await?
+        self.serve_machine_logs(request).await.map(Response::new)
+    }
+
+    async fn tail_logs(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
+        let TailLogsRequest { target, options } =
+            op::TailLogs::from_request_body(request_body(request)?).map_err(invalid_request)?;
+        let options = options.into();
+        match target {
+            LiveLogTarget::Container(container_id) => {
+                self.serve_container_logs(ContainerLogsRequest {
+                    container_id,
+                    options,
+                })
+                .await
             }
-            MachineLogService::Corrosion => self
-                .containers()
-                .map_err(|error| Status::unavailable(error.message))?
-                .raw_logs(crate::corrosion::DEFAULT_CONTAINER_NAME, &request.options)?,
-        };
-        Ok(Response::new(serve_logs(
-            source,
-            metadata,
-            request.options.follow,
-        )))
+            LiveLogTarget::Machine(service) => {
+                self.serve_machine_logs(MachineLogsRequest { service, options })
+                    .await
+            }
+        }
+        .map(Response::new)
+    }
+
+    async fn log_history(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        let request =
+            op::LogHistory::from_request_body(request_body(request)?).map_err(invalid_request)?;
+        request.validate().map_err(Status::invalid_argument)?;
+        let end = HistoryRow::End { next: None }
+            .encode()
+            .map_err(internal_response)?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        sender
+            .try_send(Ok(end))
+            .expect("a fresh channel holds one row");
+        Ok(Response::new(RpcStream::new(receiver)))
     }
 
     async fn runtime_watch(
