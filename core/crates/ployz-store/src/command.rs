@@ -252,6 +252,9 @@ commands! {
     /// Mark rows of an Environment Never sync, or sync them again.
     NeverSync(crate::NeverSync) -> NeverSynced(crate::NeverSynced)
         => crate::branch::never_sync(tx, who, c);
+    /// Give a row of a PR Environment's On merge list the value it lands with.
+    SetMergeValue(crate::SetMergeValue) -> OnMerge(crate::OnMerge)
+        => crate::pull_request::set_merge_value(tx, who, sealing, c);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
         => crate::branch::keep_branch(tx, who, c);
@@ -477,6 +480,7 @@ impl Written {
             Self::Undone(undone) => Some(&undone.into.id),
             Self::Removed(removed) => Some(&removed.environment.id),
             Self::NeverSynced(marked) => Some(&marked.environment.id),
+            Self::OnMerge(on_merge) => Some(&on_merge.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
             // A new Project or Branch has no pull request yet; the rest write no
             // Environment's config, or delete it.
@@ -558,6 +562,8 @@ pub enum Written {
     Taken(crate::Taken),
     /// An Environment's settings marked Never sync changed.
     NeverSynced(crate::NeverSynced),
+    /// A PR Environment's On merge list after an Edit.
+    OnMerge(crate::OnMerge),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.

@@ -437,7 +437,7 @@ pub(crate) fn sealed(
     sides: &[&SavedEnvironmentIntent; 2],
     picks: &BTreeSet<RowId>,
     values: &BTreeMap<RowId, String>,
-) -> Result<BTreeMap<RowId, SealedSecret>, RpcError> {
+) -> Result<BTreeMap<RowId, SealedCell>, RpcError> {
     values
         .iter()
         .map(|(row, value)| {
@@ -459,13 +459,14 @@ pub(crate) fn sealed(
                     json!({ "row": row }),
                 ));
             }
-            Ok((row.clone(), seal_secret(sealing, row, &label, value)?))
+            let sealed = seal_secret(sealing, row, &label, value)?;
+            Ok((row.clone(), SealedCell::Secret(sealed)))
         })
         .collect()
 }
 
 /// `value`, sealed for secret `row` (labelled `label`), once it is one the row takes.
-fn seal_secret(
+pub(crate) fn seal_secret(
     sealing: &SealingKey,
     row: &RowId,
     label: &str,

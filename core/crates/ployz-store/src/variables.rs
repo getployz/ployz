@@ -62,7 +62,12 @@ enum Input {
 /// A variable's value as reads show it: text with references by Service name,
 /// `{"secret": true}`, or `{"secret": false}` for a secret still without a value.
 pub(crate) fn shown(variable: &SavedVariableIntent, names: &BTreeMap<String, String>) -> Value {
-    match &variable.value {
+    shown_value(&variable.value, names)
+}
+
+/// `value` as [`shown`] shows a variable holding it.
+pub(crate) fn shown_value(value: &SavedVariableValue, names: &BTreeMap<String, String>) -> Value {
+    match value {
         SavedVariableValue::Secret { .. } => json!({ "secret": true }),
         SavedVariableValue::SecretWithoutValue => json!({ "secret": false }),
         SavedVariableValue::Literal { value } => json!(render_variable_parts(

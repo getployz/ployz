@@ -198,4 +198,6 @@ queries! {
     /// A pull request's PR Environments and GitHub check.
     PullRequest(crate::PullRequestQuery) -> crate::PullRequestView
         => crate::pull_request::view(tx, who, q);
+    /// What a PR Environment's pull request lands when it merges.
+    OnMerge(crate::OnMergeQuery) -> crate::OnMerge => crate::pull_request::on_merge(tx, who, q);
 }

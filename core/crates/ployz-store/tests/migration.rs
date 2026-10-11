@@ -68,6 +68,8 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
 /// The schema as it was before `0008_proposal_offer`, with no Conditional Syncs.
 const BEFORE_OFFERS: &str = "
     ALTER TABLE config_pull_request DROP COLUMN merged;
+    DROP TABLE config_merge_value;
+    DROP TABLE config_merge_deploy;
     CREATE TABLE config_conditional_sync (
         id TEXT PRIMARY KEY,
         organization_id TEXT NOT NULL,
@@ -95,7 +97,7 @@ const BEFORE_OFFERS: &str = "
     ALTER TABLE config_waiting_deploy ADD COLUMN syncs TEXT NOT NULL DEFAULT '[]';
     DELETE FROM config_migration WHERE name IN
     ('0008_proposal_offer', '0009_offer_conditional_syncs', '0010_drop_conditional_sync',
-    '0011_retire_offers');
+    '0011_retire_offers', '0012_on_merge');
 ";
 
 /// The schema as it was before `0002_sync`: one base per Branch.

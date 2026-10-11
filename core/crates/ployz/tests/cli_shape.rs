@@ -67,6 +67,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "env ls",
             "env never-sync",
             "env new",
+            "env on-merge",
             "env pr",
             "env rm",
             "env setup",

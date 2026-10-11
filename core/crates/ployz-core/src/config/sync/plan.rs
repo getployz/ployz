@@ -44,6 +44,9 @@ pub enum Way {
     /// A person's Sync: removals and the receiver's secrets stay, and a new secret
     /// arrives needing its value.
     Sync,
+    /// A pull request's merge: a Sync whose removals move too and whose rows land
+    /// even where the receiver changed them since.
+    Merge,
     /// A Parent's deploy reaching its Branch.
     Follow,
     /// Everything as it is: a new Branch, an Own Copy, an Environment's own changes.
@@ -192,7 +195,9 @@ impl Policy {
 
     fn marked(&self, row: &RowId) -> bool {
         match self.way {
-            Way::Sync => self.from_marks.contains(row) || self.into_marks.contains(row),
+            Way::Sync | Way::Merge => {
+                self.from_marks.contains(row) || self.into_marks.contains(row)
+            }
             Way::Follow => self.into_marks.contains(row),
             Way::Copy => false,
         }
@@ -203,6 +208,7 @@ impl Policy {
     /// | Way    | `from` Absent | secret, `into` has one                      | secret, `into` lacks it | Never sync marks |
     /// |--------|---------------|---------------------------------------------|-------------------------|------------------|
     /// | Sync   | no row        | no row                                      | `NeedsValue`            | both sides'      |
+    /// | Merge  | moves         | no row                                      | `NeedsValue`            | both sides'      |
     /// | Follow | moves         | if `into` = base or `SecretWithoutValue`    | carries                 | receiver's only  |
     /// | Copy   | moves         | carries                                     | carries                 | ignored          |
     ///
@@ -231,13 +237,15 @@ impl Policy {
         let held = secret && *into != Cell::Absent;
         let arrives = match self.way {
             Way::Sync if *from == Cell::Absent || held => return None,
-            Way::Sync if secret => Arrives::NeedsValue,
+            Way::Merge if *from == Cell::Absent => Arrives::AsIs,
+            Way::Merge if held => return None,
+            Way::Sync | Way::Merge if secret => Arrives::NeedsValue,
             Way::Follow if held && *into == Cell::SecretWithoutValue => {
                 conflict = false;
                 Arrives::AsIs
             }
             Way::Follow if held && conflict => return None,
-            Way::Sync | Way::Follow | Way::Copy => Arrives::AsIs,
+            Way::Sync | Way::Merge | Way::Follow | Way::Copy => Arrives::AsIs,
         };
         Some(if self.marked(row) {
             Verdict::Differs(Why::NeverSynced)
@@ -369,7 +377,7 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     let cell = cell.clone();
                     let judge = match policy.way {
                         Way::Copy => Policy::moved,
-                        Way::Sync | Way::Follow => Policy::verdict,
+                        Way::Sync | Way::Merge | Way::Follow => Policy::verdict,
                     };
                     if let Some(verdict) =
                         judge(policy, &child, &Cell::Absent, &cell, &Cell::Absent)
@@ -460,17 +468,18 @@ impl Plan {
         landable
     }
 
-    /// Land `picks` in `into`: [`put`] once per pick, a new node first. A `NeedsValue`
-    /// pick takes its secret from `values`, or lands without one and is `waiting`;
-    /// `values` for any other row are ignored.
+    /// Land `picks` in `into`: [`put`] once per pick, a new node first. A pick with a
+    /// cell in `values` lands that cell in place of the sender's; a `NeedsValue` pick
+    /// without one lands without its secret and is `waiting`. `values` for rows not
+    /// picked are ignored.
     ///
     /// # Errors
     /// Returns ConfigError for an unknown pick, a pick of a row that differs or whose new
-    /// node isn't picked, a name clash, or a `next` that isn't valid.
+    /// node isn't picked, a value for a node, a name clash, or a `next` that isn't valid.
     pub fn apply(
         &self,
         picks: &BTreeSet<RowId>,
-        values: &BTreeMap<RowId, SealedSecret>,
+        values: &BTreeMap<RowId, SealedCell>,
     ) -> Result<Applied, ConfigError> {
         let refuse = |message| ConfigError::at("picks", message);
         let mut landing = Vec::new();
@@ -501,15 +510,16 @@ impl Plan {
         let mut landed = Vec::new();
         for (row, arrives) in landing {
             let id = &row.id;
-            let value = match arrives {
-                Arrives::AsIs => sealed_cell(&self.from, &from_cells, id),
-                Arrives::NeedsValue => match values.get(id) {
-                    Some(secret) => SealedCell::Secret(secret.clone()),
-                    None => {
-                        waiting.push(id.clone());
-                        SealedCell::Cell(Cell::SecretWithoutValue)
-                    }
-                },
+            let value = match (values.get(id), arrives) {
+                (Some(_), _) if id.at == At::Node => {
+                    return Err(refuse("A new node takes no value"));
+                }
+                (Some(value), _) => value.clone(),
+                (None, Arrives::AsIs) => sealed_cell(&self.from, &from_cells, id),
+                (None, Arrives::NeedsValue) => {
+                    waiting.push(id.clone());
+                    SealedCell::Cell(Cell::SecretWithoutValue)
+                }
             };
             let mut was = sealed_cell(&self.into, &into_cells, id);
             // Undo puts the receiver's git branch back with its source; a Sync never moves one.

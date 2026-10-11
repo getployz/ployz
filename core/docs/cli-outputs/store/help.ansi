@@ -244,6 +244,7 @@ Commands:
   copy        Make a Live Node the Branch's own copy; a Volume it mounts comes empty
   keep        Keep the Branch after syncing into its Parent and when idle
   never-sync  Mark settings Never sync: Sync never carries them into or out of the Environment
+  on-merge    Show what a PR Environment's pull request lands when it merges
   shutdown    Take an Environment off the Servers, keeping its configuration
   pr          Show or change PR Environments for a repository
   help        Print this message or the help of the given subcommand(s)

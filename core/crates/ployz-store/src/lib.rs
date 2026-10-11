@@ -71,8 +71,9 @@ pub use id::*;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{
-    Destination, OpenPullRequest, PendingSyncs, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView,
-    PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
+    Destination, MergeRow, OnMerge, OnMergeInto, OnMergeQuery, OpenPullRequest, PendingSyncs,
+    PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery,
+    PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Sweep,
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss, docker_volume};

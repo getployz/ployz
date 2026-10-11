@@ -14,8 +14,12 @@
 //! the runtime evidence it gathers) and the sweep deletes it once that applied.
 
 mod checks;
+mod on_merge;
 mod plan;
 pub(crate) use checks::*;
+pub(crate) use on_merge::view as on_merge;
+pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
+pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
 
 use crate::id::{BranchName, CommitSha, PullRequestNumber, RepositoryId, RepositoryName};
@@ -443,6 +447,11 @@ pub(crate) fn pull_request(
     let retargeted = before
         .as_ref()
         .is_some_and(|before| before.target_branch != event.target_branch);
+    if retargeted {
+        for (environment, _) in &current {
+            forget_edits(tx, environment)?;
+        }
+    }
     if !event.open {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);

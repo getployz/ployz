@@ -4,7 +4,8 @@
 //! doesn't run) and uses the rest live; `sync` stages one Environment's changes in
 //! another, `copy` turns a Live Node into its own copy, and `keep` keeps it after
 //! syncing into its Parent.
-//! `never-sync` marks settings an Environment keeps as its own.
+//! `never-sync` marks settings an Environment keeps as its own; `on-merge` lists
+//! what a PR Environment's merge lands.
 
 mod branch;
 mod pr;
@@ -227,6 +228,17 @@ pub(crate) fn command() -> Command {
             )
             .arg(switch("off", None).help("Sync them again")),
         )
+        .subcommand(store::scoped(
+            Command::new("on-merge")
+                .about("Show what a PR Environment's pull request lands when it merges")
+                .long_about(
+                    "Show each change the PR Environment made and whether its pull \
+                     request's merge lands it in each Environment that deploys the target \
+                     branch, over whatever that Environment changed since. Exclude a row \
+                     with `ployz env never-sync`; --off includes it again. A secret the \
+                     Environment lacks lands Not set, and its Deployments skip it.",
+                ),
+        ))
         .subcommand(deploy::following(
             base(
                 "shutdown",
@@ -307,6 +319,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "never-sync" => never_sync,
         "shutdown" => pr::shutdown,
         "pr" => pr::pr,
+        "on-merge" => pr::on_merge,
         _ => return None,
     })
 }

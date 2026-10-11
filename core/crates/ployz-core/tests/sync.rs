@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
-    dependents, name_of, parse_environment_intent, plan, put, put_back, redact_environment_intent,
-    unapply,
+    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, Sides, Verdict,
+    Way, Why, dependents, name_of, parse_environment_intent, plan, put, put_back,
+    redact_environment_intent, unapply,
 };
 use serde_json::{Value, json};
 
@@ -482,6 +482,10 @@ fn the_policy_table_per_way() {
         verdicts(&own, Way::Sync),
         [start, "variables.NEW NeedsValue conflict=false"]
     );
+    // Merge: a Sync whose removals move too.
+    let merged = [start, "variables.NEW NeedsValue conflict=false", plain];
+    assert_eq!(verdicts(&parent(), Way::Merge), merged);
+    assert_eq!(verdicts(&own, Way::Merge), merged);
     // Follow: removals and secrets carry, except over a secret the receiver set itself.
     assert_eq!(verdicts(&parent(), Way::Follow), [start, new, plain, token]);
     assert_eq!(verdicts(&own, Way::Follow), [start, new, plain]);
@@ -514,6 +518,8 @@ fn marks_follow_the_way() {
     // A Sync honors both sides' marks; Follow only the receiver's; Copy none.
     assert!(marked(Way::Sync, &[&start], &[]));
     assert!(marked(Way::Sync, &[], &[&start]));
+    assert!(marked(Way::Merge, &[&start], &[]));
+    assert!(marked(Way::Merge, &[], &[&start]));
     assert!(!marked(Way::Follow, &[&start], &[]));
     assert!(marked(Way::Follow, &[], &[&start]));
     assert!(!marked(Way::Copy, &[&start], &[&start]));
@@ -686,11 +692,10 @@ fn a_needs_value_pick_lands_the_sealed_value_it_is_given() {
         format!("{API}:startCommand").parse().unwrap(),
     );
     let picks = BTreeSet::from([new_secret.clone(), start.clone()]);
-    // A value for a row that arrives as it is is ignored.
-    let values = BTreeMap::from([
-        (new_secret.clone(), sealed("given-cipher", "fp-given")),
-        (start.clone(), sealed("ignored", "fp-ignored")),
-    ]);
+    let values = BTreeMap::from([(
+        new_secret.clone(),
+        SealedCell::Secret(sealed("given-cipher", "fp-given")),
+    )]);
     let applied = plan.apply(&picks, &values).unwrap();
     assert!(applied.waiting.is_empty());
     let mut next = json_of(&applied.next);
@@ -709,6 +714,95 @@ fn a_needs_value_pick_lands_the_sealed_value_it_is_given() {
         },
         "what landed is redacted"
     );
+}
+
+#[test]
+fn a_merge_lands_over_the_receivers_change_and_takes_a_value_in_place_of_the_senders() {
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("from-start");
+    svc(&mut from, API)["config"]["preDeployCommand"] = json!("from-migrate");
+    svc(&mut from, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| v["key"] != "PLAIN");
+    svc(&mut from, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .push(variable(
+            0xc000_0000,
+            1,
+            "NEW_SECRET",
+            secret("branch-cipher"),
+            "fp-new",
+        ));
+    let mut into = parent();
+    svc(&mut into, API)["config"]["startCommand"] = json!("into-start");
+    let plan = compare(Some(&parent()), &from, &into, Way::Merge);
+    let (start, migrate, plain, new_secret): (RowId, RowId, RowId, RowId) = (
+        format!("{API}:startCommand").parse().unwrap(),
+        format!("{API}:preDeployCommand").parse().unwrap(),
+        format!("{API}:variables.PLAIN").parse().unwrap(),
+        format!("{API}:variables.NEW_SECRET").parse().unwrap(),
+    );
+    // The receiver changed startCommand too: a conflict, still ticked.
+    assert!(matches!(
+        row(&plan, &start.to_string()).verdict,
+        Verdict::Moves {
+            conflict: true,
+            ticked: true,
+            ..
+        }
+    ));
+    let picks = BTreeSet::from([
+        start.clone(),
+        migrate.clone(),
+        plain.clone(),
+        new_secret.clone(),
+    ]);
+    let values = BTreeMap::from([
+        (
+            migrate.clone(),
+            SealedCell::Cell(val(json!("edited-migrate"))),
+        ),
+        (
+            new_secret.clone(),
+            SealedCell::Secret(sealed("given-cipher", "fp-given")),
+        ),
+    ]);
+    let applied = plan.apply(&picks, &values).unwrap();
+    assert!(applied.waiting.is_empty());
+    let mut next = json_of(&applied.next);
+    assert_eq!(svc(&mut next, API)["config"]["startCommand"], "from-start");
+    assert_eq!(
+        svc(&mut next, API)["config"]["preDeployCommand"],
+        "edited-migrate"
+    );
+    assert!(
+        svc(&mut next, API)["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["key"] != "PLAIN"),
+        "the removal lands"
+    );
+    assert_eq!(
+        var(&mut next, API, "NEW_SECRET")["value"]["encryptedValue"]["ciphertext"],
+        "given-cipher"
+    );
+
+    // A new node takes no value.
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("from-start");
+    from["services"].as_array_mut().unwrap().push(jobs());
+    let plan = compare(Some(&parent()), &from, &parent(), Way::Merge);
+    let node: RowId = format!("{JOBS}:node").parse().unwrap();
+    let error = plan
+        .apply(
+            &BTreeSet::from([node.clone()]),
+            &BTreeMap::from([(node, SealedCell::Cell(Cell::Absent))]),
+        )
+        .unwrap_err();
+    assert_eq!(error.message, "A new node takes no value");
 }
 
 #[test]

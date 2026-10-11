@@ -35,7 +35,7 @@ pub(crate) struct Move {
     pub(crate) from: SavedEnvironmentIntent,
     pub(crate) base: SavedEnvironmentIntent,
     pub(crate) hostnames: Hostnames,
-    pub(super) rules: Rules,
+    pub(crate) rules: Rules,
 }
 
 /// Who owns what a [`Checked::apply`] lands.
@@ -173,6 +173,19 @@ impl Move {
         })
     }
 
+    /// What a pull request's merge lands from `from` into `into`: a Sync whose
+    /// removals move too and whose rows land even where `into` changed them since.
+    pub(crate) fn merge(
+        tx: &mut dyn Tx,
+        from: &Environment,
+        into: &Environment,
+    ) -> Result<Self, RpcError> {
+        let mut way = Self::sync(tx, from, into)?;
+        way.rules.way = Way::Merge;
+        way.nothing = format!("Nothing lands in {}", into.summary.name);
+        Ok(way)
+    }
+
     /// A Sync now of `from` into `into` that includes it: the rows other proposals
     /// own there are held, and the rows `from`'s own proposal owns compare against
     /// what it accepted and count as its own.
@@ -264,7 +277,7 @@ impl Checked<'_> {
         who: &Actor,
         into: &mut Environment,
         picks: &BTreeSet<RowId>,
-        values: &BTreeMap<RowId, SealedSecret>,
+        values: &BTreeMap<RowId, SealedCell>,
         owner: Owner<'_>,
     ) -> Result<Vec<NodeName>, RpcError> {
         let of = self.of;
@@ -278,7 +291,7 @@ impl Checked<'_> {
         let carried = Carried::of(tx, &of.source, &of.from)?;
         let how = match of.rules.way {
             Way::Follow => How::Follow,
-            Way::Sync | Way::Copy => How::Sync,
+            Way::Sync | Way::Merge | Way::Copy => How::Sync,
         };
         let (sync, proposal) = match owner {
             Owner::None => (None, None),

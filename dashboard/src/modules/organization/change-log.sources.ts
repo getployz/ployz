@@ -21,6 +21,9 @@ export const storeChangeSources = {
   // ponytail: logs the receiver only; another tab on the sender sees what it synced once the sender changes too.
   config_sync_arrival: { key: ["environment_id"] },
   config_proposal: { key: ["environment_id"] },
+  config_merge_value: { key: ["environment_id"] },
+  // No family: Cloud never reads a merge's deferred deploy; the next push to the branch does.
+  config_merge_deploy: { key: ["environment_id"] },
   // No family: a receipt outlives its Environments and no view reads it.
   config_sync_receipt: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"] },

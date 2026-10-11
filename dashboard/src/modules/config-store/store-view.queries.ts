@@ -57,6 +57,8 @@ const refreshedBy = {
   pr_plans: ["store_project", "store_environment"],
   // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
   pull_request: ["store_environment", "store_deployment", "store_pull_request"],
+  // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.
+  on_merge: ["store_environment", "store_pull_request"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
