@@ -238,6 +238,28 @@ pub fn scan<R: DeserializeOwned + Stamped>(
     Ok(())
 }
 
+/// Where the oldest raw segment starts, in Unix nanoseconds, or `None` when
+/// there is none.
+///
+/// # Errors
+///
+/// Returns an error when the raw dir exists but cannot be listed.
+pub fn oldest(store: &StoreRoot) -> io::Result<Option<i64>> {
+    let entries = match fs::read_dir(store.raw_metrics()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| SegmentName::parse(entry.file_name().as_encoded_bytes()))
+        .map(|name| name.start_secs())
+        .min()
+        .map(|secs| {
+            i64::try_from(secs).map_or(i64::MAX, |secs| secs.saturating_mul(1_000_000_000))
+        }))
+}
+
 fn overlaps(name: SegmentName, range: MetricRange) -> bool {
     let nanos =
         |secs: u64| i64::try_from(secs).map_or(i64::MAX, |secs| secs.saturating_mul(1_000_000_000));

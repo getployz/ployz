@@ -138,8 +138,8 @@ pub(crate) fn timed_out(request: &MetricHistoryRequest, now: i64) -> MetricHisto
 /// A Service's samples fold into the bucket table hour by hour, and each
 /// hour's are dropped before the next is read. Peak memory is one hour of
 /// samples plus the table, however wide the range. A Machine's host samples
-/// are one per tick, so its hours are kept and folded at the end. Hours past
-/// `now` hold no segments and are not scanned.
+/// are one per tick, so its hours are kept and folded at the end. Hours before the
+/// oldest segment or past `now` hold none and are not scanned.
 fn raw(
     store: &StoreRoot,
     range: MetricRange,
@@ -147,7 +147,8 @@ fn raw(
     buckets: Buckets,
     now: i64,
 ) -> io::Result<MetricHistoryReply> {
-    let since = range.since_nanos.saturating_sub(LEAD_IN);
+    let oldest = segment::oldest(store)?.unwrap_or(range.until_nanos);
+    let since = range.since_nanos.saturating_sub(LEAD_IN).max(oldest);
     let mut hosts = Vec::new();
     let mut fold = rate::ServiceFold::new(buckets);
     let mut markers = Vec::new();
@@ -597,6 +598,18 @@ pub(crate) mod tests {
             now,
         )
         .unwrap();
+        assert!(!host_points(&reply).is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_range_from_the_epoch_scans_only_from_the_oldest_segment() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + HOUR, |ts| vec![host(ts)]);
+        let now = T0 + HOUR;
+        let started = std::time::Instant::now();
+
+        let reply = history(&store, &request(MetricScope::Machine, 0, now, None), now).unwrap();
         assert!(!host_points(&reply).is_empty());
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
