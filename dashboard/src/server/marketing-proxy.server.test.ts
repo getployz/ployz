@@ -42,6 +42,8 @@ describe("fetchMarketing", () => {
             etag: '"v1"',
             "last-modified": "Thu, 01 Oct 2026 00:00:00 GMT",
             vary: "accept-encoding",
+            link: '</index.md>; rel="alternate"; type="text/markdown"',
+            "x-robots-tag": "noindex",
             "content-encoding": "gzip",
             "set-cookie": "tracker=1",
             "x-powered-by": "astro",
@@ -67,6 +69,8 @@ describe("fetchMarketing", () => {
         etag: '"v1"',
         "last-modified": "Thu, 01 Oct 2026 00:00:00 GMT",
         vary: "accept-encoding",
+        link: '</index.md>; rel="alternate"; type="text/markdown"',
+        "x-robots-tag": "noindex",
       });
       assert.strictEqual(yield* Effect.promise(() => response?.text() ?? Promise.resolve("")), "<h1>Ployz</h1>");
     }),
