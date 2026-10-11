@@ -34,10 +34,11 @@ fn the_catalog_matches_its_snapshot() {
 // The cap counts what a model reads every turn, so output schemas are left out.
 #[test]
 fn the_catalog_fits_the_cap() {
-    let mut sent = compact();
-    for tool in sent["tools"].as_array_mut().unwrap() {
+    let mut tools = serde_json::to_value(catalog()).unwrap();
+    for tool in tools.as_array_mut().unwrap() {
         tool.as_object_mut().unwrap().remove("output_schema");
     }
+    let sent = json!({ "instructions": INSTRUCTIONS, "tools": tools });
     let bytes = serde_json::to_vec(&sent).unwrap().len();
     println!("catalog bytes: {bytes}");
     assert!(
