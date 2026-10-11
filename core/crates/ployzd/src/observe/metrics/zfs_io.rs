@@ -80,10 +80,11 @@ mod tests {
     use crate::test_dir::TestDir;
 
     const CAPTURED: &str = include_str!("fixtures/objset-captured");
-    const CAPTURED_DATASET: &str = "ployz/placeholder";
+    const CAPTURED_DATASET: &str =
+        "ployz/ployz/verify-production_vol-503b7412-8873-43da-ab49-049c9c5d94cb";
     const CAPTURED_IO: DatasetIo = DatasetIo {
-        read_bytes: 4,
-        write_bytes: 2,
+        read_bytes: 0,
+        write_bytes: 104_857_600,
     };
 
     #[test]
