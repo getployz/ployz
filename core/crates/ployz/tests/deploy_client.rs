@@ -1250,9 +1250,9 @@ async fn cloud_runner_applies_an_environment_removal() {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
         DeploymentStatus, EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
-        Removal, RunnerId, SealingKey, ServiceLineageId, Trusted,
+        Removal, Remove, RunnerId, SealingKey, ServiceLineageId, Trusted,
     };
-    use std::sync::Arc;
+    use std::{collections::BTreeMap, sync::Arc};
 
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
@@ -1311,20 +1311,42 @@ async fn cloud_runner_applies_an_environment_removal() {
     let ran = run(deployed, "cloud-run-1").await.unwrap();
     assert_eq!(ran.status, DeploymentStatus::Applied);
 
-    let removal = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
-    store
+    let remove = Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: None,
+        version: None,
+        accept_volume_loss: BTreeMap::new(),
+        every_copy: BTreeMap::new(),
+    };
+    let version = store
+        .write_trusted(&who, &remove, &Trusted::default())
+        .unwrap_err()
+        .details
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    let Removal::Removing { left, .. } = store
         .write_trusted(
             &who,
-            &Admit::Remove(Removal {
-                id: removal.clone(),
-                environment: EnvironmentRef::default(),
-                version: None,
-                accept_volume_loss: Vec::new(),
-                close: false,
-            }),
+            &Remove {
+                version: Some(version),
+                ..remove
+            },
             &Trusted::default(),
         )
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("removed without the Servers");
+    };
+    let removal = left
+        .first()
+        .unwrap()
+        .deployment
+        .as_ref()
+        .unwrap()
+        .id
+        .clone();
     let ran = run(removal, "cloud-run-2").await.unwrap();
     assert_eq!(ran.status, DeploymentStatus::Applied);
     assert!(ran.remove);
