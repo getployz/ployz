@@ -217,6 +217,7 @@ describe("Inngest development server durable smoke", () => {
       },
     );
 
+    let cancelledFunctionId: unknown;
     const cancellation = inngest.createFunction(
       {
         id: "development-server-cancellation-observer",
@@ -224,6 +225,7 @@ describe("Inngest development server durable smoke", () => {
       },
       async ({ event, step }) => {
         const runId = String(event.data["run_id"]);
+        cancelledFunctionId = event.data["function_id"];
         await step.run("terminalize-cancelled-operation", () =>
           store.updateByRunId(runId, (row) => ({
             ...row,
@@ -295,6 +297,7 @@ describe("Inngest development server durable smoke", () => {
       claimCount: 1,
       interruptionCount: 0,
     });
+    expect(cancelledFunctionId).toBe("ployz-development-server-smoke-development-server-cancellation-smoke");
 
     await inngest.send({ name: "smoke/drain", data: {} });
     await startedPromise;
