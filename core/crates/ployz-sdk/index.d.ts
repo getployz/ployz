@@ -34,6 +34,8 @@ import type {
   MachineUpdate,
   MachineUpdated,
   MachineUpgradeAttempt,
+  MetricHistory,
+  MetricHistoryInput,
   RequestMachineUpgradeRequest,
   InspectMachineUpgradeRequest,
   ObservedDataLoss,
@@ -295,6 +297,8 @@ export declare class Client {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options?: LogOptions): AsyncIterable<LogEvent>;
     logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
+    /** Sums a Service across the Machines that answered; names each Machine that did not. */
+    metricHistory(input: MetricHistoryInput): Promise<MetricHistory>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewNamespaceRemoval(

@@ -3769,6 +3769,7 @@ dependencies = [
  "ipnet",
  "iroh",
  "listenfd",
+ "memchr",
  "netlink-packet-wireguard",
  "nix 0.29.0",
  "ployz",

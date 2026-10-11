@@ -1018,6 +1018,15 @@ impl MachineRpc for MachineService {
         self.observe.history(request).await.map(Response::new)
     }
 
+    async fn metric_history(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::MetricHistory>(request)?;
+        request.validate().map_err(Status::invalid_argument)?;
+        respond(self.observe.metrics(request).await?)
+    }
+
     async fn tail_logs(
         &self,
         request: Request<OpaquePayload>,
