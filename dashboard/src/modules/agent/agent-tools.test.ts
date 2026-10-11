@@ -1,7 +1,7 @@
-import { type Answer, type Ask, type ConfigCommand, agentStart } from "@ployz/sdk";
+import { type Answer, type Write, agentStart } from "@ployz/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { CATALOG, GATED, cloudAnswer, finish, untilWrite } from "./agent-tools";
+import { CATALOG, GATED, finish, untilWrite } from "./agent-tools";
 
 const place = { project: "shop", environment: "production", store: "cloud" } as const;
 const empty = { view: "services", services: [] };
@@ -14,14 +14,6 @@ describe("agent tools", () => {
     expect(GATED).not.toContain("environment_show");
   });
 
-  it("answers a Cloud question unavailable, which the tool refuses", async () => {
-    const read = (ask: Ask) => ask.at === "cloud" ? cloudAnswer(ask.ask) : Effect.die("no Store read");
-    const result = await Effect.runPromise(
-      finish(agentStart("github_ls", { repository: "acme/web" }, place, "k"), read, () => Effect.die("no write")),
-    );
-    expect(result).toMatchObject({ ok: false, refusal: { code: "unavailable" } });
-  });
-
   it("stops at a Publish's write, in the place it was given", async () => {
     const { step } = await Effect.runPromise(untilWrite(agentStart("publish", {}, place, "k"), () => Effect.succeed({ value: empty })));
     expect(step).toMatchObject({
@@ -31,8 +23,8 @@ describe("agent tools", () => {
   });
 
   it("hands a Store write to the writer and its refusal back to the model", async () => {
-    const written: ConfigCommand[] = [];
-    const write = (command: ConfigCommand) => Effect.sync((): Answer => {
+    const written: Write[] = [];
+    const write = (command: Write) => Effect.sync((): Answer => {
       written.push(command);
       return { error: { code: "conflict", message: "The Environment moved.", details: null } };
     });

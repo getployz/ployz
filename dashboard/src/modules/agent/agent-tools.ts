@@ -1,4 +1,4 @@
-import { type Act, type AgentTurn, type Answer, agentResume, agentTools, type Ask, type CloudQuery, type Step, type ToolResult, type Write } from "@ployz/sdk";
+import { type AgentTurn, type Answer, agentResume, agentTools, type Ask, type Step, type ToolResult, type Write } from "@ployz/sdk";
 import { Effect } from "effect";
 
 /** The Store source the sidebar's calls are recorded under. */
@@ -7,9 +7,6 @@ export const AGENT = { source: "agent" } as const;
 export const CATALOG = agentTools();
 
 export const GATED = new Set(CATALOG.tools.flatMap((tool) => tool.gate === "never" ? [] : [tool.name]));
-
-export const cloudAnswer = (_request: CloudQuery | Act): Effect.Effect<Answer> =>
-  Effect.succeed({ error: { code: "unavailable", message: "The sidebar can't reach GitHub or Servers yet.", details: null } });
 
 type Paused = { step: Extract<Step, { step: "write" | "done" }>; state: AgentTurn["state"] };
 
@@ -27,12 +24,12 @@ export const untilWrite = <E, R>(turn: AgentTurn, read: (ask: Ask) => Effect.Eff
 export const finish = <E, R>(
   turn: AgentTurn,
   read: (ask: Ask) => Effect.Effect<Answer, E, R>,
-  write: (command: Extract<Write, { at: "store" }>["write"]) => Effect.Effect<Answer, E, R>,
+  write: (write: Write) => Effect.Effect<Answer, E, R>,
 ) => Effect.gen(function* (): Effect.fn.Return<ToolResult, E, R> {
   let next = turn;
   for (;;) {
     const { step, state } = yield* untilWrite(next, read);
     if (step.step === "done") return step.result;
-    next = agentResume(state, [yield* (step.write.at === "store" ? write(step.write.write) : cloudAnswer(step.write.write))]);
+    next = agentResume(state, [yield* write(step.write)]);
   }
 });

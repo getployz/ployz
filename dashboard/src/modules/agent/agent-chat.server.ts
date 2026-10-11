@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { agentStart, type Answer, type Ask, type ConfigCommand, type ConfigWritten, type DiffView, type JsonValue, type Place } from "@ployz/sdk";
+import { type Act, agentResume, agentStart, type Answer, type Ask, type ConfigCommand, type ConfigWritten, type DiffView, type JsonValue, type Place, type Write } from "@ployz/sdk";
 import {
   type AnyTextAdapter,
   chat,
@@ -22,7 +22,8 @@ import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
 import { agentTracing, generationEvents } from "#/modules/agent/agent-telemetry.server";
-import { AGENT, CATALOG, cloudAnswer, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
+import { callCloud } from "#/modules/agent/call-cloud.server";
+import { AGENT, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
 import {
   type AgentScope,
   agentPersistence,
@@ -53,12 +54,20 @@ const ApprovalAsked = Schema.Struct({ approval_id: Schema.String });
 const DeniedApproval = Schema.Struct({ approval: Schema.Struct({ reason: Schema.NullOr(Schema.String) }) });
 
 /** A denial as the agent hears it: what was denied and the human's reason, without the approval's ID to echo. */
-const denialForAgent = (command: ConfigCommand, refusal: StoreRefusal): StoreRefusal => {
+const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
   if (refusal.code !== "approval_denied") return refusal;
   const reason = Option.match(Schema.decodeUnknownOption(DeniedApproval)(refusal.details), { onNone: () => null, onSome: ({ approval }) => approval.reason });
-  const verb = command.command === "publish" ? "publish" : "deploy";
-  return { code: refusal.code, message: `A human denied this ${verb}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
+  return { code: refusal.code, message: `A human denied this ${what}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
 };
+
+const ACTS = {
+  service: "Service act",
+  drain: "drain",
+  upgrade: "upgrade",
+  clean: "cleanup",
+  remove_server: "server removal",
+  volume: "Volume run",
+} as const satisfies Record<Act["action"]["action"], string>;
 
 /** A UUID that only `approvalId` produces, so a second Deploy under one approval replays the first instead of running. */
 const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${approvalId}`);
@@ -96,7 +105,7 @@ const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRe
 
 const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
-  if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(asked, trusted.refusal) } } satisfies Gated;
+  if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(asked.command === "publish" ? "publish" : "deploy", trusted.refusal) } } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
   const result = yield* callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT, trusted.approval);
@@ -105,13 +114,32 @@ const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: C
   if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
   if (result.ok || result.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
   const request: StoreRefusal = yield* requestApproval(caller, command, result.refusal);
-  const recorded = Schema.decodeUnknownOption(ApprovalAsked)(request.details);
-  return (Option.isNone(recorded)
-    ? { outcome: { ok: false, refusal: request } }
-    : { asking: { approvalId: recorded.value.approval_id, message: request.message } }) satisfies Gated;
+  return asking(request) ?? { outcome: { ok: false, refusal: request } } satisfies Gated;
 });
 
-type AgentServices = Effect.Services<ReturnType<typeof runGated>> | Effect.Services<ReturnType<typeof agentPersistence>>;
+const asking = (refusal: StoreRefusal): Extract<Gated, { asking: unknown }> | null => {
+  const recorded = Schema.decodeUnknownOption(ApprovalAsked)(refusal.details);
+  return Option.isNone(recorded) ? null : { asking: { approvalId: recorded.value.approval_id, message: refusal.message } };
+};
+
+/**
+ * An act whose plan destroys something: Cloud records the approval it asks for, so a refusal naming one waits on a
+ * human, a denial goes back to the agent with the human's reason, and anything else is the act's answer.
+ */
+const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: Caller, act: Act, approvalId: string | null) {
+  const result = yield* callCloud(caller, { act }, approvalId);
+  if (result.ok) return { result };
+  if (result.refusal.code === "approval_required") {
+    const asked = asking(result.refusal);
+    if (asked !== null) return asked;
+  }
+  return { result: { ok: false, refusal: denialForAgent(ACTS[act.action.action], result.refusal) } as const };
+});
+
+type AgentServices =
+  | Effect.Services<ReturnType<typeof runGated>>
+  | Effect.Services<ReturnType<typeof runGatedAct>>
+  | Effect.Services<ReturnType<typeof agentPersistence>>;
 
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null)) ?? null;
@@ -127,16 +155,18 @@ type Here = { place: Place };
 const answered = (result: StoreResult<unknown>): Answer =>
   result.ok ? { value: projectJsonValue(result.value) ?? null } : { error: result.refusal };
 
-const storeRead = (caller: Caller) => (ask: Ask) =>
+const agentRead = (caller: Caller) => (ask: Ask) =>
   ask.at === "store"
     ? callStore(caller.organization.id, caller.userId, { operation: "read", query: ask.ask }).pipe(Effect.map(answered))
-    : cloudAnswer(ask.ask);
+    : callCloud(caller, { ask: ask.ask }).pipe(Effect.map(answered));
 
-const storeWrite = (caller: Caller) => (command: ConfigCommand) =>
-  callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT).pipe(Effect.map(answered));
+const agentWrite = (caller: Caller) => (write: Write) =>
+  write.at === "store"
+    ? callStore(caller.organization.id, caller.userId, { operation: "write", command: write.write }, AGENT).pipe(Effect.map(answered))
+    : callCloud(caller, { act: write.write }).pipe(Effect.map(answered));
 
 export const runTool = (caller: Caller, tool: string, input: JsonValue, place: Place, callKey: string) =>
-  finish(agentStart(tool, input, place, callKey), storeRead(caller), storeWrite(caller));
+  finish(agentStart(tool, input, place, callKey), agentRead(caller), agentWrite(caller));
 
 /** The latest assistant turn's tool calls that have no result yet: what the tool phase is about to run. */
 const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
@@ -146,7 +176,7 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
 };
 
 /**
- * Decides every gated call before the tool phase runs it, so a Publish or Deploy reaches the Store once per human answer.
+ * Decides every gated call before the tool phase runs it, so a write that may destroy something runs once per human answer.
  * A plan that needs a human raises `ployz.approval` keyed by the tool call; the resumed run decides again with the
  * approval the human answered, and every other outcome replaces the call's execution.
  */
@@ -162,12 +192,16 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
         }
         return { outcome: { ok: false, cancelled: true } };
       }
-      const read = storeRead(caller);
+      const read = agentRead(caller);
       const started = agentStart(call.function.name, toolInput(call.function.arguments), here.place, `${turn}:${call.id}`);
       const paused = yield* untilWrite(started, read);
-      const { step } = paused;
-      if (step.step === "write" && step.write.at === "store") return yield* runGated(caller, step.write.write, answer?.approvalId ?? null);
-      return { outcome: yield* finish(paused, read, storeWrite(caller)) };
+      const { step, state } = paused;
+      if (step.step !== "write") return { outcome: yield* finish(paused, read, agentWrite(caller)) };
+      const { write } = step;
+      if (write.at === "store") return yield* runGated(caller, write.write, answer?.approvalId ?? null);
+      const acted = yield* runGatedAct(caller, write.write, answer?.approvalId ?? null);
+      if ("asking" in acted) return acted;
+      return { outcome: yield* finish(agentResume(state, [answered(acted.result)]), read, agentWrite(caller)) };
     });
 
   return defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({
@@ -220,7 +254,7 @@ You are ${model}, the Ployz agent in the sidebar of Ployz Cloud. You act in the 
 
 Your place is the Project and Environment named by the latest <dashboard-page …/> block, which opens a member message whenever they move. When they say "this service" or "here", use that block's. Never mention the block itself. With no block, the Organization's defaults apply.
 
-Publish and deploy may wait for a human to approve the plan. Call either one alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing was published or deployed.`;
+A Publish, a Deploy, a server drain, upgrade, cleanup or removal, and a Volume run may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service restart, start or stop never waits.`;
 
 /**
  * Opens the member's new message with where they are in the dashboard, when that differs from the thread's last block.

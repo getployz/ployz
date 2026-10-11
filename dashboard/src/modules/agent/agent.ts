@@ -15,7 +15,7 @@ const portable = <S extends Schema.ConstraintDecoder<object>>(schema: S, json: J
 };
 
 /**
- * A gated Publish or Deploy waiting on a human, keyed by its tool call id. The payload names the pending Approval;
+ * A gated write waiting on a human, keyed by its tool call id. The payload names the pending Approval;
  * the sidebar draws the card from that row, never from the payload, and the server re-reads the row on resume
  * rather than trusting the client's empty response.
  */
