@@ -26,15 +26,20 @@ pub(super) fn volume_label<'a>(labels: &'a VolumeLabels, loss: &'a DataLoss) -> 
 /// every lost Volume named by `--accept-volume-loss` accepts outright; without
 /// `--confirm` a terminal shows the loss and asks for the name, which accepts
 /// them all. Anywhere else, `refusal` gets the full retry.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a managed removal runs through Cloud while its retry keeps the client's connection"
+)]
 pub(super) fn confirm_removal(
     root: &ArgMatches,
     client: &Client,
+    removed_through: &ConnectionSource,
     observed: &ObservedDataLoss,
     server: &str,
     volume_effect: VolumeEffect,
     labels: &VolumeLabels,
     refusal: impl FnOnce(String) -> Error,
-) -> Result<DataLossConfirmation, Error> {
+) -> Result<(DataLossConfirmation, Vec<String>), Error> {
     let leaf = leaf_matches(root);
     let request = Request {
         observed,
@@ -51,14 +56,13 @@ pub(super) fn confirm_removal(
                 observed,
                 labels,
                 server,
-                client.connection_source(),
+                removed_through,
                 volume_effect,
             ));
-            ui::note("Based on what the connected Server can see; other Servers may hold more.");
         }
         ui::confirm_name(server, || refusal(retry), "Cancelled. Nothing was removed.")?;
     }
-    request.accept()
+    Ok((request.accept()?, request.accepting()))
 }
 
 pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
@@ -87,19 +91,18 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
     args
 }
 
-/// What removing `server` takes, as the tree shown before asking.
 fn loss(
     observed: &ObservedDataLoss,
     labels: &VolumeLabels,
     server: &str,
     source: &ConnectionSource,
     volume_effect: VolumeEffect,
-) -> Tree {
+) -> String {
     let context = match source {
         ConnectionSource::Context(name) => format!("context {name}"),
         ConnectionSource::Direct => "a direct connection".into(),
         ConnectionSource::LocalSocket => "the local socket".into(),
-        ConnectionSource::Cloud => "Cloud".into(),
+        ConnectionSource::Cloud => "Ployz Cloud".into(),
     };
     let volumes = match volume_effect {
         VolumeEffect::Preserve => Tree::leaf("Volumes are kept."),
@@ -111,22 +114,23 @@ fn loss(
             observed
                 .data_loss
                 .iter()
-                .map(|loss| {
-                    let DataLoss::DockerVolume { id } = loss;
-                    Tree::leaf(format!(
-                        "{} (machine ID: {})",
-                        volume_label(labels, loss),
-                        id.machine_id
-                    ))
-                })
+                .map(|loss| Tree::leaf(volume_label(labels, loss)))
                 .collect(),
         ),
     };
-    Tree::new(
+    let tree = Tree::new(
         format!("Removing Server {server} through {context}:"),
         vec![volumes],
-    )
+    );
+    match (volume_effect, source) {
+        (VolumeEffect::Preserve, _) | (VolumeEffect::LoseAccess, ConnectionSource::Cloud) => {
+            tree.to_string()
+        }
+        (VolumeEffect::LoseAccess, _) => format!("{tree}{CAVEAT}\n"),
+    }
 }
+
+const CAVEAT: &str = "Based on what the connected Server can see; other Servers may hold more.";
 
 /// What the flags of one `server rm` say.
 struct Request<'a> {
@@ -149,13 +153,17 @@ impl Request<'_> {
     }
 
     /// The command that accepts everything observed now.
-    fn retry(&self) -> String {
+    fn accepting(&self) -> Vec<String> {
         let mut command = self.retry.to_vec();
         command.extend(["--confirm".into(), self.server.to_owned()]);
         for name in self.names() {
             command.extend(["--accept-volume-loss".into(), name.to_owned()]);
         }
-        shell_words::join(command)
+        command
+    }
+
+    fn retry(&self) -> String {
+        shell_words::join(self.accepting())
     }
 
     /// Whether the flags accept on their own; `false` means the name must be
@@ -257,14 +265,17 @@ mod tests {
             lost.contains("only the Server's disk keeps their data"),
             "{lost}"
         );
-        assert!(
-            lost.contains(&format!("pgdata (machine ID: {})", "a".repeat(32))),
-            "{lost}"
-        );
+        assert!(lost.contains("└─ pgdata\n"), "{lost}");
+        assert!(!lost.contains(&"a".repeat(32)), "ids are machinery: {lost}");
         assert!(!lost.contains("not be erased"), "{lost}");
+        assert!(lost.ends_with(&format!("{CAVEAT}\n")), "{lost}");
         let kept = loss_text(&observed, &labels, VolumeEffect::Preserve);
         assert!(kept.contains("Volumes are kept."), "{kept}");
         assert!(!kept.contains("pgdata"), "{kept}");
+        assert!(
+            !kept.contains(CAVEAT),
+            "nothing lost, nothing to qualify: {kept}"
+        );
     }
 
     fn loss_text(
@@ -272,14 +283,43 @@ mod tests {
         labels: &VolumeLabels,
         effect: VolumeEffect,
     ) -> String {
-        let tree = super::loss(
+        loss_through(
             observed,
             labels,
-            "worker",
-            &ConnectionSource::Context("prod".into()),
             effect,
+            &ConnectionSource::Context("prod".into()),
+        )
+    }
+
+    fn loss_through(
+        observed: &ObservedDataLoss,
+        labels: &VolumeLabels,
+        effect: VolumeEffect,
+        through: &ConnectionSource,
+    ) -> String {
+        let shown = super::loss(observed, labels, "worker", through, effect);
+        anstream::adapter::strip_str(&shown).to_string()
+    }
+
+    #[test]
+    fn a_removal_cloud_runs_says_cloud_removes_it() {
+        let observed = ObservedDataLoss {
+            data_loss: Vec::new(),
+        };
+        let lost = loss_through(
+            &observed,
+            &VolumeLabels::new(),
+            VolumeEffect::LoseAccess,
+            &ConnectionSource::Cloud,
         );
-        anstream::adapter::strip_str(&tree.to_string()).to_string()
+        assert!(
+            lost.starts_with("Removing Server worker through Ployz Cloud:"),
+            "{lost}"
+        );
+        assert!(
+            !lost.contains(CAVEAT),
+            "Cloud reads the loss itself, not the connected Server: {lost}"
+        );
     }
 
     #[test]

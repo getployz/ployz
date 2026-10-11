@@ -1,7 +1,7 @@
-//! A human's approval of a Publication that destroys something. Cloud refuses it with
-//! `approval_required`; a person at a terminal types the Environment's name, anyone else
-//! waits for a human to approve it in Ployz Cloud. Either way the write runs again with
-//! the approval.
+//! A human's approval of a write or an operation that destroys something. Cloud refuses it
+//! with `approval_required`; a person at a terminal types the Environment's or the
+//! operation's name, anyone else waits for a human to approve it in Ployz Cloud. Either way
+//! the request runs again with the approval.
 
 use std::time::Duration;
 
@@ -22,7 +22,55 @@ pub(crate) struct Asked {
     #[serde(rename = "approval")]
     pub(crate) digest: String,
     pub(crate) effects: Vec<DestructiveEffect>,
-    pub(crate) diff: DiffView,
+    #[serde(flatten)]
+    pub(crate) subject: Subject,
+}
+
+/// What the approval covers: a Store write, which carries its diff, or an operation on one
+/// named thing.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Subject {
+    Diff(Box<DiffView>),
+    Operation(Operation),
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Operation {
+    pub(crate) verb: Verb,
+    name: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Verb {
+    Publish,
+    Deploy,
+    Drain,
+    Clean,
+    Remove,
+}
+
+impl Verb {
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            Self::Publish => "publish",
+            Self::Deploy => "deploy",
+            Self::Drain => "drain",
+            Self::Clean => "cleanup",
+            Self::Remove => "removal",
+        }
+    }
+
+    pub(crate) fn past(self) -> &'static str {
+        match self {
+            Self::Publish => "published",
+            Self::Deploy => "deployed",
+            Self::Drain => "drained",
+            Self::Clean => "cleaned",
+            Self::Remove => "removed",
+        }
+    }
 }
 
 impl Asked {
@@ -33,9 +81,27 @@ impl Asked {
         serde_json::from_value(error.details.clone()).ok()
     }
 
-    pub(crate) fn review(&self, verb: &str) -> Vec<String> {
+    /// The name a person types to approve: the Environment's, or the operation's.
+    pub(crate) fn name(&self) -> &str {
+        match &self.subject {
+            Subject::Diff(diff) => diff.environment.name.as_str(),
+            Subject::Operation(operation) => &operation.name,
+        }
+    }
+
+    /// `this deploy to production`, `this removal of web-1`.
+    pub(crate) fn what(&self, verb: Verb) -> String {
+        let noun = verb.noun();
+        match &self.subject {
+            Subject::Diff(diff) => format!("this {noun} to {}", diff.environment.name),
+            Subject::Operation(operation) => format!("this {noun} of {}", operation.name),
+        }
+    }
+
+    pub(crate) fn review(&self, verb: Verb) -> Vec<String> {
         let mut lines = vec![format!(
-            "This {verb} destroys {}:",
+            "This {} destroys {}:",
+            verb.noun(),
             things(self.effects.len())
         )];
         lines.extend(
@@ -43,7 +109,10 @@ impl Asked {
                 .iter()
                 .map(|effect| format!("  ✕ {}", line(effect))),
         );
-        let others = self.diff.total_count.saturating_sub(self.effects.len());
+        let others = match &self.subject {
+            Subject::Diff(diff) => diff.total_count.saturating_sub(self.effects.len()),
+            Subject::Operation(_) => 0,
+        };
         if others > 0 {
             lines.push(format!(
                 "  + {others} other change{}",
@@ -68,13 +137,14 @@ fn line(effect: &DestructiveEffect) -> String {
             None => format!("detaches Volume {name}"),
         },
         DestructiveKind::RemovesDomain => format!("removes domain {name}"),
+        DestructiveKind::RemovesServer => format!("removes Server {name}"),
     }
 }
 
 pub(crate) fn settle(
     runtime: &tokio::runtime::Runtime,
     credential: &Credential,
-    verb: &str,
+    verb: Verb,
     asked: &Asked,
     retry: String,
 ) -> Result<String, StoreCallError> {
@@ -82,11 +152,14 @@ pub(crate) fn settle(
         crate::ui::note(line);
     }
     if crate::ui::can_prompt() {
-        let environment = asked.diff.environment.name.as_str();
         crate::ui::confirm_name(
-            environment,
+            asked.name(),
             || Failure::usage("Approving needs a terminal"),
-            &format!("Nothing {verb}ed; approval {} stays pending.", asked.id),
+            &format!(
+                "Nothing {}; approval {} stays pending.",
+                verb.past(),
+                asked.id
+            ),
         )
         .map_err(StoreCallError::Stopped)?;
         let approve = serde_json::json!({ "approve": { "digest": asked.digest } });
@@ -102,8 +175,8 @@ pub(crate) fn settle(
     }
     let interrupted = crate::cancellation::interrupted()
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
-    crate::ui::note("Waiting for approval in Ployz Cloud…");
-    runtime.block_on(async {
+    crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
+    let settled = runtime.block_on(async {
         loop {
             tokio::select! {
                 () = interrupted.cancelled() => {
@@ -117,8 +190,9 @@ pub(crate) fn settle(
                     ));
                 }
                 read = status(credential, &asked.id) => {
-                    if read? != Status::Pending {
-                        return Ok(asked.id.clone());
+                    let status = read?;
+                    if status != Status::Pending {
+                        return Ok(status);
                     }
                 }
             }
@@ -127,7 +201,40 @@ pub(crate) fn settle(
                 () = tokio::time::sleep(POLL) => {}
             }
         }
-    })
+    });
+    crate::ui::note(match &settled {
+        Ok(Status::Approved) => "approved.",
+        Ok(Status::Denied) => "denied.",
+        Ok(Status::Superseded) => "superseded; asking again.",
+        Ok(Status::Pending) | Err(_) => "",
+    });
+    settled.map(|_| asked.id.clone())
+}
+
+/// Run `attempt` with `approval` until Cloud stops asking for one: each time it asks,
+/// [`settle`] gets a human's answer and `attempt` runs again carrying it. Under `--json`
+/// nothing asks; the refusal comes back naming `retry` of the approval's id.
+pub(crate) fn approved<T>(
+    runtime: &tokio::runtime::Runtime,
+    credential: &Credential,
+    verb: Verb,
+    mut approval: Option<String>,
+    retry: impl Fn(&str) -> String,
+    mut attempt: impl AsyncFnMut(Option<&str>) -> Result<T, StoreCallError>,
+) -> Result<T, Failure> {
+    loop {
+        let refused = match runtime.block_on(attempt(approval.as_deref())) {
+            Err(StoreCallError::Refused(refused)) => refused,
+            other => return other.map_err(Failure::from),
+        };
+        let Some(asked) = Asked::of(&refused) else {
+            return Err(refused.into());
+        };
+        if crate::ui::json() {
+            return Err(Failure::from(refused).hint(crate::ui::Hint::Retry(retry(&asked.id))));
+        }
+        approval = Some(settle(runtime, credential, verb, &asked, retry(&asked.id))?);
+    }
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]

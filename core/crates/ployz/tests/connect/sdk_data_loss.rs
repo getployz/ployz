@@ -75,7 +75,6 @@ async fn data_loss_if_machine_removed_is_observer_relative() {
 async fn failed_volume_listing_is_not_empty_data_loss() {
     let description = super::sdk::advertised_description();
     let failed = machine('b', "broken");
-    let machine_id = failed.machine.id;
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![failed];
@@ -93,10 +92,7 @@ async fn failed_volume_listing_is_not_empty_data_loss() {
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(
-        error.message,
-        format!("Machine {machine_id}: target unavailable")
-    );
+    assert_eq!(error.message, "Server broken: target unavailable");
 }
 
 #[tokio::test]
@@ -104,7 +100,6 @@ async fn omitted_volume_listing_is_not_empty_data_loss() {
     let description = super::sdk::advertised_description();
     let mut down = machine('c', "gone");
     down.membership = MembershipObservation::Down;
-    let machine_id = down.machine.id;
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![down];
@@ -122,10 +117,7 @@ async fn omitted_volume_listing_is_not_empty_data_loss() {
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(
-        error.message,
-        format!("Machine {machine_id} did not respond")
-    );
+    assert_eq!(error.message, "Server gone did not respond");
 }
 
 #[tokio::test]

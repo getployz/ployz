@@ -5,10 +5,12 @@ use ployz_core::{
 
 use super::super::runtime;
 use super::{ConnectionOptions, target};
+use crate::approval::{self, Verb};
 use crate::cloud_account::{self, Credential, Release};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::cluster::{CloudHold, refuse_last_managed};
 use crate::connect::Remover;
+use crate::context::ConnectionSource;
 use crate::drain::{replicated_services_on, services_on};
 use crate::handlers::{
     Error,
@@ -87,9 +89,13 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     }
     // The Store reads block on their own runtime, so they run between the two.
     let labels = volume_labels(root, &observed);
-    let confirmation = super::super::data_loss::confirm_removal(
+    let (confirmation, accepting) = super::super::data_loss::confirm_removal(
         root,
         &client,
+        match &cloud {
+            Some(_) => &ConnectionSource::Cloud,
+            None => client.connection_source(),
+        },
         &observed,
         selected.name.as_str(),
         if no_reset {
@@ -115,14 +121,33 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         },
     )?;
     let selected_target = MachineTarget::from(&selected.id);
+    let removal = match &cloud {
+        Some(credential) => {
+            let reset = (!no_reset).then_some(&confirmation);
+            Some(approval::approved(
+                &runtime,
+                credential,
+                Verb::Remove,
+                matches.get_one::<String>("approval").cloned(),
+                |id| {
+                    let mut command = accepting.clone();
+                    command.extend(["--approval".into(), id.to_owned()]);
+                    shell_words::join(command)
+                },
+                async |approval| {
+                    cloud_account::start_removal(credential, &selected.id, reset, approval).await
+                },
+            )?)
+        }
+        None => None,
+    };
     runtime.block_on(async {
         let mut reset_failure = None;
         let mut cloud_released = None;
 
         // TODO: do not reroute away from the current entry before removal.
-        if let Some(credential) = &cloud {
-            let reset = (!no_reset).then_some(&confirmation);
-            let removed = cloud_account::remove_server(credential, &selected.id, reset).await?;
+        if let (Some(credential), Some(id)) = (&cloud, &removal) {
+            let removed = cloud_account::follow_removal(credential, &selected.name, id).await?;
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 crate::ui::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
@@ -169,8 +194,6 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             "cloud_released": cloud_released,
             "next": (cloud_released == Some(true)).then_some("ployz server add"),
         }))?;
-        // Cleanup failure must not leave the removed Machine named in the
-        // context (#249); after the printed result it is partial, not a failed removal (#449).
         let mut config = options.load_or_empty_config().map_err(|error| Error::from(error).context("Server removed; local context cleanup failed."))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
@@ -396,7 +419,7 @@ mod tests {
     fn unreachable_removal_names_no_reset() {
         let error = RpcError {
             code: RpcErrorCode::Unavailable,
-            message: "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
+            message: "Server fra-1 did not respond".into(),
             details: Value::Null,
             cause: Vec::new(),
         };
@@ -405,10 +428,7 @@ mod tests {
             refusal.to_string(),
             "The Server could not be reset; use --no-reset to remove it from the Cluster without resetting."
         );
-        assert_eq!(
-            refusal.causes(),
-            ["Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond"]
-        );
+        assert_eq!(refusal.causes(), ["Server fra-1 did not respond"]);
         assert_eq!(refusal.report().code, RpcErrorCode::Unavailable);
     }
 

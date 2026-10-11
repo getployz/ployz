@@ -97,6 +97,7 @@ function statusFor(code: string) {
     case "ambiguous":
     case "confirmation_required":
     case "approval_required":
+    case "channel_mismatch":
       return 409;
     case "unauthenticated":
       return 401;

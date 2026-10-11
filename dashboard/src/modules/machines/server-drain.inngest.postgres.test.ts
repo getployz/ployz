@@ -9,7 +9,9 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { createCancelServerDrain, createCloseStaleServerDrains, createDrainServer } from "#/modules/machines/server-drain.inngest";
 import { DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
-import { executeDrainOnce, latestDrainOf, listLatestServerDrains, requestServerDrain } from "#/modules/machines/server-drain.server";
+import {
+  executeDrainOnce, latestDrainOf, listLatestServerDrains, requestCliServerDrain, requestServerDrain,
+} from "#/modules/machines/server-drain.server";
 import { applyServerPolicyChangeActivity, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
@@ -89,7 +91,7 @@ describe("drain-server", () => {
     transformCtx: (ctx) => ({ ...mockCtx(ctx), runId }),
   }).execute();
   /** The cancellation Inngest sends for `runId`, naming the event that started it. */
-  const cancel = (runId: string, functionId = "drain-server", attemptId = requestId) => new InngestTestEngine({
+  const cancel = (runId: string, functionId = "test-drain-server", attemptId = requestId) => new InngestTestEngine({
     function: createCancelServerDrain(new Inngest({ id: "test" }), runEffect),
     events: [{
       name: "inngest/function.cancelled",
@@ -191,6 +193,40 @@ describe("drain-server", () => {
     expect(drainCalls).toHaveLength(1);
   });
 
+  it("drains only the services a CLI request previewed, not every owned Namespace", async () => {
+    const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      machineId,
+      targets: ["shop-production/api", "shop-production/db"],
+      approvalId: null,
+    }));
+    await drain(attemptId);
+
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api", "shop-production/db"] }]]);
+  });
+
+  it("a dashboard Drain never asks: it records no approval and drains every owned Namespace", async () => {
+    await request();
+    await drain();
+
+    expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
+    expect((await harness.pool.query(`select targets, approval_id from server_drain_attempt`)).rows)
+      .toEqual([{ targets: null, approval_id: null }]);
+    expect(drainCalls).toEqual([[machineId, { scope: "owned", namespaces: ["shop-production"] }]]);
+  });
+
+  it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
+    const approvalId = "00000000-0000-4000-8000-0000000000b1";
+    const cli = () => runEffect(requestCliServerDrain({ organizationId, userId }, {
+      machineId, targets: ["shop-production/api"], approvalId,
+    }));
+    const attemptId = await cli();
+    await drain(attemptId);
+
+    expect(await cli()).toBe(attemptId);
+    expect((await rows()).map(({ id }) => id)).toEqual([attemptId]);
+    expect(drainCalls).toHaveLength(1);
+  });
+
   it("passes an empty Namespace list as owned, so the Engine selects nothing rather than everything", async () => {
     namespaces = [];
     drainAnswer = () => Effect.succeed({ ...partialReport, services: [], stopped: null });
@@ -257,14 +293,14 @@ describe("drain-server", () => {
     await request();
     await claim(requestId, "run-1");
 
-    expect((await cancel("run-1", "roll-out-server-upgrade")).result).toEqual({ skipped: true });
+    expect((await cancel("run-1", "test-roll-out-server-upgrade")).result).toEqual({ skipped: true });
     expect((await cancel("run-1")).result).toEqual({ closed: 1 });
     expect((await cancel("run-1")).result).toEqual({ closed: 0 });
     expect(await rows()).toMatchObject([{ state: "unknown", end_code: "interrupted", ended_at: expect.any(Date) }]);
 
     await request(secondTab, otherMachineId);
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-2' where id = $1`, [secondTab]);
-    expect((await cancel("run-2", "drain-server", secondTab)).result).toEqual({ closed: 1 });
+    expect((await cancel("run-2", "test-drain-server", secondTab)).result).toEqual({ closed: 1 });
     expect((await rows())[1]).toMatchObject({ state: "cancelled", end_code: "cancelled" });
   });
 
@@ -275,7 +311,7 @@ describe("drain-server", () => {
 
     await request(secondTab, otherMachineId);
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-2' where id = $1`, [secondTab]);
-    expect((await cancel("run-other", "drain-server", secondTab)).result).toEqual({ closed: 0 });
+    expect((await cancel("run-other", "test-drain-server", secondTab)).result).toEqual({ closed: 0 });
     expect((await rows())[1]).toMatchObject({ state: "pending", inngest_run_id: "run-2" });
   });
 

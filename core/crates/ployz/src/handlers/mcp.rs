@@ -35,7 +35,7 @@ use tokio::time::Instant;
 
 use super::catalog::{self, Approval, ArgEntry, ArgType, CommandEntry, Stdin, Surface};
 use super::{Error, leaf_matches};
-use crate::approval::{self, Asked};
+use crate::approval::{self, Asked, Subject, Verb};
 use crate::cloud_account::{self, StoreCallError};
 use crate::cloud_login::CredentialStore;
 use crate::failure::Failure;
@@ -48,7 +48,7 @@ const OUTPUT_LIMIT: usize = 1 << 20;
 
 /// Outlasts a Server install over SSH (up to 20 minutes) and matches the default build
 /// limit. A Deployment or Volume run goes on in Cloud after the call's child is killed.
-const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 /// Adding a Server installs Ployz over SSH or on this computer. A tool call cannot own that
 /// SSH session or answer its prompts, so it is run from a terminal.
@@ -271,7 +271,9 @@ impl ServerHandler for Server {
                 let answer = answer(request.input_responses)?;
                 let held = self.waiting.take(&state, &request.name, &argv)?;
                 if held.until <= Instant::now() {
-                    return Ok(refused(late(verb(entry), &held.asked, self.deadline)).into());
+                    return Ok(
+                        refused(late(verb(entry, &held.asked), &held.asked, self.deadline)).into(),
+                    );
                 }
                 (Some((held.asked, answer)), held.until)
             }
@@ -409,10 +411,11 @@ struct Call<'a> {
     until: Instant,
 }
 
-fn verb(entry: &CommandEntry) -> &'static str {
-    match entry.command.as_str() {
-        "publish" => "publish",
-        _ => "deploy",
+fn verb(entry: &CommandEntry, asked: &Asked) -> Verb {
+    match (&asked.subject, entry.command.as_str()) {
+        (Subject::Operation(operation), _) => operation.verb,
+        (Subject::Diff(_), "publish") => Verb::Publish,
+        (Subject::Diff(_), _) => Verb::Deploy,
     }
 }
 
@@ -423,10 +426,10 @@ impl Server {
         mut answered: Option<(Asked, ElicitResult)>,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let verb = verb(call.entry);
         let mut argv = call.argv.to_vec();
         loop {
             if let Some((asked, answer)) = answered.take() {
+                let verb = verb(call.entry, &asked);
                 if let Answer::Refused(refused) = self.decide(verb, &asked, answer).await? {
                     return Ok(refused.into());
                 }
@@ -436,6 +439,7 @@ impl Server {
             let Some(asked) = ran.asked else {
                 return Ok(ran.result.into());
             };
+            let verb = verb(call.entry, &asked);
             let form = form(verb, &asked);
             match asking(context) {
                 Asking::Unable => return Ok(cannot_ask(verb, &asked).into()),
@@ -510,7 +514,7 @@ impl Server {
 
     async fn decide(
         &self,
-        verb: &str,
+        verb: Verb,
         asked: &Asked,
         answer: ElicitResult,
     ) -> Result<Answer, McpError> {
@@ -535,8 +539,10 @@ impl Server {
             Err(StoreCallError::Refused(error)) if error.code == RpcErrorCode::Conflict => {
                 return Ok(Answer::Refused(refused(format!(
                     "Approval {} was already decided elsewhere, so this answer was not \
-                     recorded: {} Nothing was {verb}ed by this call.",
-                    asked.id, error.message
+                     recorded: {} Nothing was {} by this call.",
+                    asked.id,
+                    error.message,
+                    verb.past()
                 ))));
             }
             Err(error) => return Ok(Answer::Refused(refused(Error::from(error).to_string()))),
@@ -546,8 +552,10 @@ impl Server {
         }
         let because = reason.map_or_else(String::new, |reason| format!(": {reason}"));
         Ok(Answer::Refused(refused(format!(
-            "The human denied this {verb}{because}. Nothing was {verb}ed; do not retry it \
-             unless they ask."
+            "The human denied this {noun}{because}. Nothing was {past}; do not retry it \
+             unless they ask.",
+            noun = verb.noun(),
+            past = verb.past(),
         ))))
     }
 }
@@ -570,29 +578,31 @@ fn reason(content: &Value) -> Option<String> {
     (!reason.is_empty()).then_some(reason)
 }
 
-fn late(verb: &str, asked: &Asked, deadline: Duration) -> String {
+fn late(verb: Verb, asked: &Asked, deadline: Duration) -> String {
     format!(
-        "The human answered approval {id} more than {span} after this {verb} was called, so \
-         the answer was not recorded and nothing was {verb}ed. Approval {id} stays pending in \
+        "The human answered approval {id} more than {span} after this {noun} was called, so \
+         the answer was not recorded and nothing was {past}. Approval {id} stays pending in \
          Ployz Cloud; call the tool again to ask again.",
         id = asked.id,
+        noun = verb.noun(),
+        past = verb.past(),
         span = span(deadline),
     )
 }
 
-fn form(verb: &str, asked: &Asked) -> ElicitRequestParams {
+fn form(verb: Verb, asked: &Asked) -> ElicitRequestParams {
     ElicitRequestParams::FormElicitationParams {
         meta: None,
         message: format!(
-            "Approve this {verb} to {}?\n{}",
-            asked.diff.environment.name,
+            "Approve {}?\n{}",
+            asked.what(verb),
             asked.review(verb).join("\n")
         ),
         requested_schema: ElicitationSchema::builder()
             .required_bool_property("approve", |schema: BooleanSchema| {
                 schema
                     .title("Approve")
-                    .description(format!("Go ahead with this {verb}"))
+                    .description(format!("Go ahead with this {}", verb.noun()))
             })
             .string_property("reason", |schema: StringSchema| {
                 schema
@@ -604,13 +614,13 @@ fn form(verb: &str, asked: &Asked) -> ElicitRequestParams {
     }
 }
 
-fn cannot_ask(verb: &str, asked: &Asked) -> CallToolResult {
+fn cannot_ask(verb: Verb, asked: &Asked) -> CallToolResult {
     refused(format!(
-        "A human must approve this {verb} to {environment} first, and this agent cannot ask \
+        "A human must approve {what} first, and this agent cannot ask \
          them. Show them what it destroys, then ask them to approve approval {id} in the \
          Ployz Cloud sidebar, or to run the command themselves in a terminal. Once they \
          approve, call this tool again with `approval` set to `{id}`.\n{review}",
-        environment = asked.diff.environment.name,
+        what = asked.what(verb),
         id = asked.id,
         review = asked.review(verb).join("\n"),
     ))

@@ -27,7 +27,7 @@ use retirement::{Retirement, retire_globals};
 
 pub use crate::deploy::{DrainStop, MachineRef, Move, MoveFailure, StayReason};
 
-/// Which user Namespaces a Drain acts on. Reserved Namespaces never are.
+/// Which user Services a Drain acts on. Those of reserved Namespaces never are.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "scope", rename_all = "snake_case")]
 pub enum DrainScope {
@@ -36,14 +36,18 @@ pub enum DrainScope {
     /// Only these Namespaces, which some Project owns. Empty selects nothing. Containers of
     /// other Namespaces stay where they are and are not reported.
     Owned { namespaces: Vec<Namespace> },
+    /// Only these Services. Containers of every other Service stay where they are and are
+    /// not reported.
+    Services { services: Vec<QualifiedService> },
 }
 
 impl DrainScope {
-    fn includes(&self, namespace: &Namespace) -> bool {
-        !namespace.is_reserved()
+    fn includes(&self, service: &QualifiedService) -> bool {
+        !service.namespace.is_reserved()
             && match self {
                 Self::EveryNamespace => true,
-                Self::Owned { namespaces } => namespaces.contains(namespace),
+                Self::Owned { namespaces } => namespaces.contains(&service.namespace),
+                Self::Services { services } => services.contains(service),
             }
     }
 }
@@ -70,7 +74,7 @@ pub enum DrainStep<'a> {
 /// looked: Globals first, then replicated Services, in the order handled. When `stopped` is
 /// set, the Service it stopped at reads `interrupted` or `not_attempted`, and every one
 /// after it reads `not_attempted`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(into = "DrainReportWire")]
 #[ts(as = "DrainReportWire")]
 pub struct DrainReport {
@@ -209,7 +213,7 @@ pub enum Remaining {
         /// Every Service still with a Container there, reserved and unchosen Namespaces
         /// included.
         services: Vec<QualifiedService>,
-        /// Those of `services` in a user Namespace the Drain's scope left alone.
+        /// The user Services of `services` that the Drain's scope left alone.
         unchosen: Vec<QualifiedService>,
     },
     /// The Server could not be observed, and why.
@@ -326,7 +330,7 @@ async fn preflight(
     let replicated = replicated_services_on(&server.id, &live);
     let (replicated, globals) = services_on(&server.id, &live)
         .into_iter()
-        .filter(|service| scope.includes(&service.namespace))
+        .filter(|service| scope.includes(service))
         .partition(|service| replicated.contains(service));
     Ok(Ready {
         server,
@@ -498,9 +502,7 @@ async fn execute<C: DrainClient>(
         Ok(services) => Remaining::Observed {
             unchosen: services
                 .iter()
-                .filter(|service| {
-                    !service.namespace.is_reserved() && !scope.includes(&service.namespace)
-                })
+                .filter(|service| !service.namespace.is_reserved() && !scope.includes(service))
                 .cloned()
                 .collect(),
             services,

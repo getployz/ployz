@@ -65,7 +65,7 @@ app to check with you before every call, even when you've told it to skip permis
 `server rm`, `service stop`, and `token new` ask this way; `deploy` and `publish` don't. Claude
 Code honors this.
 
-When a `publish` or `deploy` needs your approval (see
+When a `publish`, `deploy` or server command needs your approval (see
 [Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Approve and
 the command runs. Leave Approve unticked and Ployz denies the approval; any reason you type goes
@@ -159,7 +159,7 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
-| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Nothing was removed. |
+| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. |
 
 `ployz exec` exits with your command's own exit code.
 

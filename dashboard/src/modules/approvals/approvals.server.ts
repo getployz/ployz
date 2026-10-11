@@ -1,12 +1,14 @@
 import "@tanstack/react-start/server-only";
-import type { Approval, ConfigCommand } from "@ployz/sdk";
-import { and, eq, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import type { Approval, ConfigCommand, DestructiveEffect, JsonValue } from "@ployz/sdk";
+import { and, eq, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
   type ApprovalReview,
   DEFAULT_ORGANIZATION_SETTINGS,
+  type OperationVerb,
   type SetOrganizationSettingsInput,
 } from "#/modules/approvals/approvals";
 import { operationApprovals, organizationSettings } from "#/modules/approvals/tables";
@@ -81,37 +83,76 @@ const versionById = Effect.fn("Approvals.versionById")(function* (organizationId
   return null;
 });
 
-const recordAndSweep = <A, E, R>(
+type Stale<R> = Effect.Effect<SQL | undefined | null, never, R>;
+
+const recordAndSweep = <A, E, R, R2>(
   organizationId: string,
-  environment: EnvironmentAsked,
+  subject: string,
   record: Effect.Effect<A, E, R>,
+  stale: Stale<R2>,
 ) => Effect.gen(function* () {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`approvals:${organizationId}:${environment.id}`}))`);
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`approvals:${organizationId}:${subject}`}))`);
     const recorded = yield* record;
-    const answered = yield* versionById(organizationId, environment).pipe(Effect.option);
-    if (Option.isSome(answered)) {
+    const condition = yield* stale;
+    if (condition !== null) {
       yield* drizzle.update(operationApprovals)
         .set({ status: "superseded", updatedAt: new Date() })
         .where(and(
           eq(operationApprovals.organizationId, organizationId),
-          eq(operationApprovals.environmentId, environment.id),
+          eq(operationApprovals.subject, subject),
           eq(operationApprovals.status, "pending"),
-          answered.value === null ? undefined : sql`not starts_with(${operationApprovals.digest}, ${`${answered.value}:`})`,
+          condition,
         ));
     }
     return recorded;
   }));
 });
 
-/** The row, superseded first if its Environment moved on. */
-const freshen = Effect.fn("Approvals.freshen")(function* (row: ApprovalRow) {
+const staleEnvironment = (organizationId: string, environment: EnvironmentAsked) =>
+  versionById(organizationId, environment).pipe(
+    Effect.map((version) => version === null ? undefined : sql`not starts_with(${operationApprovals.digest}, ${`${version}:`})`),
+    Effect.orElseSucceed(() => null),
+  );
+
+const staleOperation = (verb: OperationVerb, fresh: string | null) => Effect.succeed(and(
+  sql`starts_with(${operationApprovals.digest}, ${`${verb}:`})`,
+  fresh === null ? undefined : ne(operationApprovals.digest, fresh),
+));
+
+export type OperationDigest<R> = (
+  organizationId: string,
+  subject: string,
+  verb: OperationVerb,
+  stored: string,
+) => Effect.Effect<string | null, never, R>;
+
+const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => Effect.gen(function* () {
   if (row.status !== "pending") return row;
-  yield* recordAndSweep(row.organizationId, row.review.diff.environment, Effect.void);
+  const review = row.review;
+  if ("diff" in review) {
+    yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleEnvironment(row.organizationId, review.diff.environment));
+  } else if (operationDigest !== undefined) {
+    const fresh = yield* operationDigest(row.organizationId, row.subject, review.operation.verb, row.digest);
+    yield* recordAndSweep(row.organizationId, row.subject, Effect.void, staleOperation(review.operation.verb, fresh));
+  }
   return (yield* readRow(row.organizationId, row.id)) ?? row;
 });
+
+export function operationDigest({ verb, preview, effects }: Pick<OperationAsked, "verb" | "preview" | "effects">) {
+  return `${verb}:${createHash("sha256").update(canonicalJson({ preview, effects })).digest("hex")}`;
+}
+
+function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value instanceof Object) {
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 
 type Trusted = { ok: true; approval: Approval } | { ok: false; refusal: StoreRefusal };
 
@@ -172,13 +213,13 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   }
   const { approval: digest, diff } = decoded.value;
   // SAFETY: the Store words the refusal's `effects` and `diff` as `DestructiveEffect[]` and `DiffView`.
-  const { effects, diff: review } = refused.details as ApprovalReview;
+  const { effects, diff: review } = refused.details as Extract<ApprovalReview, { diff: unknown }>;
   const organizationId = caller.organization.id;
-  const recorded = yield* recordAndSweep(organizationId, diff.environment, Effect.gen(function* () {
+  const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(operationApprovals).values({
       organizationId,
-      environmentId: diff.environment.id,
+      subject: diff.environment.id,
       requestedByUserId: caller.userId,
       credentialKind: caller.credential.kind,
       credentialId: caller.credential.id,
@@ -191,16 +232,74 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       set: { updatedAt: new Date() },
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
-  }));
+  }), staleEnvironment(organizationId, diff.environment));
   return { ...refused, details: { effects, approval: digest, diff: review, approval_id: recorded.id } };
 });
 
-/** One approval in the caller's Organization, superseded first if its Environment moved on. */
-export const getApproval = Effect.fn("Approvals.get")(function* (organizationId: string, id: string) {
-  const row = yield* readRow(organizationId, id);
-  if (row === undefined) return yield* new NotFound({ message: "No such approval." });
-  return approvalView(yield* freshen(row));
+/** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
+export type OperationAsked = {
+  /** `server:<machine id>` or `namespace:<name>`. */
+  subject: string;
+  verb: OperationVerb;
+  name: string;
+  preview: JsonValue;
+  effects: DestructiveEffect[];
+};
+
+const requestOperationApproval = Effect.fn("Approvals.requestOperation")(function* (
+  caller: Caller,
+  asked: OperationAsked,
+  digest: string,
+) {
+  const organizationId = caller.organization.id;
+  const operation = { verb: asked.verb, name: asked.name };
+  const recorded = yield* recordAndSweep(organizationId, asked.subject, Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.insert(operationApprovals).values({
+      organizationId,
+      subject: asked.subject,
+      requestedByUserId: caller.userId,
+      credentialKind: caller.credential.kind,
+      credentialId: caller.credential.id,
+      command: asked.verb,
+      review: { effects: asked.effects, operation: { ...operation, preview: asked.preview } },
+      digest,
+    }).onConflictDoUpdate({
+      target: [operationApprovals.organizationId, operationApprovals.digest],
+      targetWhere: sql`${operationApprovals.status} = 'pending'`,
+      set: { updatedAt: new Date() },
+    }).returning({ id: operationApprovals.id });
+    return row ?? (yield* Effect.die("an upsert returned no row"));
+  }), staleOperation(asked.verb, digest));
+  return {
+    code: "approval_required",
+    message: `A human must approve this ${asked.verb} of ${asked.name} before it runs.`,
+    details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation },
+  } satisfies StoreRefusal;
 });
+
+type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
+
+export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
+  caller: Caller,
+  approvalId: string | null,
+  asked: OperationAsked,
+): Effect.fn.Return<Gated, never, Database> {
+  const trusted = yield* trustedApproval(caller.organization.id, approvalId);
+  if (!trusted.ok) return trusted;
+  if (asked.effects.length === 0 || trusted.approval === "not_required") return { ok: true, approvalId: null };
+  const digest = operationDigest(asked);
+  if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
+  return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };
+});
+
+/** One approval in the caller's Organization, superseded first if its Environment moved on or its preview changed. */
+export const getApproval = <R = never>(organizationId: string, id: string, operationDigest?: OperationDigest<R>) =>
+  Effect.gen(function* () {
+    const row = yield* readRow(organizationId, id);
+    if (row === undefined) return yield* new NotFound({ message: "No such approval." });
+    return approvalView(yield* freshen(row, operationDigest));
+  }).pipe(Effect.withSpan("Approvals.get"));
 
 type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: StoreRefusal };
 
@@ -208,7 +307,12 @@ type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: Stor
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
  * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row.
  */
-export const decideApproval = Effect.fn("Approvals.decide")(function* (caller: Caller, id: string, decision: ApprovalDecision) {
+export const decideApproval = <R = never>(
+  caller: Caller,
+  id: string,
+  decision: ApprovalDecision,
+  operationDigest?: OperationDigest<R>,
+) => Effect.gen(function* () {
   const found = yield* readRow(caller.organization.id, id);
   if (found === undefined) return yield* new NotFound({ message: "No such approval." });
   const conflict = (message: string, current: ApprovalRow): Decided =>
@@ -221,7 +325,7 @@ export const decideApproval = Effect.fn("Approvals.decide")(function* (caller: C
       ? conflict("The plan changed since this was asked; run the command again to review it.", current)
       : conflict(`This approval is already ${current.status}.`, current);
   };
-  const row = yield* freshen(found);
+  const row = yield* freshen(found, operationDigest);
   if (row.status !== "pending") return settled(row);
   if ("approve" in decision && decision.approve.digest !== row.digest) {
     return conflict("That digest isn't the one this approval asks about; review it again.", row);
@@ -238,4 +342,4 @@ export const decideApproval = Effect.fn("Approvals.decide")(function* (caller: C
   if (updated !== undefined) return { ok: true, approval: approvalView(updated) } satisfies Decided;
   const current = yield* readRow(caller.organization.id, id);
   return current === undefined ? yield* new NotFound({ message: "No such approval." }) : settled(current);
-});
+}).pipe(Effect.withSpan("Approvals.decide"));

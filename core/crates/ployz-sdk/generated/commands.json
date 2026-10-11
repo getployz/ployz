@@ -3116,6 +3116,15 @@
         "multiple": false,
         "trailing": false,
         "help": "The Namespace, typed to confirm its removal"
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },
@@ -3143,6 +3152,15 @@
         "multiple": false,
         "index": 1,
         "trailing": false
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },
@@ -3340,6 +3358,15 @@
         "multiple": false,
         "index": 1,
         "trailing": false
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       },
       {
         "name": "--accept-volume-loss",

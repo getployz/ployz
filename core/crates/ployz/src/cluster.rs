@@ -1349,13 +1349,14 @@ async fn data_loss_on_machine(
     observation: &MachineObservation,
 ) -> Result<ObservedDataLoss, RpcError> {
     let selected = observation.machine.id;
+    let name = &observation.machine.name;
     if !observation.invites_rpc() {
-        return Err(machine_did_not_respond(selected));
+        return Err(server_did_not_respond(name));
     }
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
         .map_err(|failure| RpcError {
-            message: format!("Machine {selected}: {}", crate::ui::row(&failure.error)),
+            message: format!("Server {name}: {}", crate::ui::row(&failure.error)),
             ..failure.error
         })?;
     Ok(ObservedDataLoss {
@@ -1375,10 +1376,10 @@ async fn data_loss_on_machine(
     })
 }
 
-fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
+fn server_did_not_respond(name: &MachineName) -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
-        message: format!("Machine {machine_id} did not respond"),
+        message: format!("Server {name} did not respond"),
         details: Value::Null,
         cause: Vec::new(),
     }

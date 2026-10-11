@@ -4,61 +4,123 @@
 use std::collections::BTreeMap;
 
 use clap::ArgMatches;
-use ployz_core::{MachineName, MachineTarget, RpcError};
+use ployz_core::{Machine, MachineName, MachineTarget, RpcError};
 use ployz_store::NamespacesQuery;
-use serde_json::Value;
+use reqwest::Method;
+use serde::Deserialize;
+use serde_json::{Value, json};
 
 use super::target;
+use crate::approval::{self, Verb};
+use crate::cloud_account::{self, Credential};
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Remaining, ServiceDrain,
     ServicesRole,
 };
-use crate::handlers::{Error, leaf_matches, store, with_client};
+use crate::handlers::{Error, leaf_matches, runtime, store, with_client};
 
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
 
 pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let target = MachineTarget::parse(target(matches, "server")?)?;
+    let selector = target(matches, "server")?;
+    let target = MachineTarget::parse(selector)?;
+    let runtime = runtime()?;
+    if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+        let machine = super::cloud_machine(&runtime, matches, selector)?;
+        let report = through_cloud(&runtime, matches, &credential, &machine, selector)?;
+        let server = &report.server;
+        show(DrainStep::ServicesOff {
+            server,
+            role: report.services_role,
+        });
+        for service in &report.services {
+            show(DrainStep::Service { server, service });
+        }
+        return render(&report);
+    }
+    drop(runtime);
     // Store reads block on their own runtime, so they run before the Cluster's.
     let scope = scope(root)?;
     with_client(root, |client| {
         Box::pin(async move {
             let cancellation = crate::cancellation::on_ctrl_c();
             let report = client
-                .drain(&target, &scope, &cancellation, &mut |step| {
-                    if went_wrong(step) {
-                        crate::ui::warn(step_line(step));
-                    } else {
-                        crate::ui::stream(format_args!("{}", step_line(step)));
-                    }
-                })
+                .drain(&target, &scope, &cancellation, &mut show)
                 .await
                 .map_err(refusal)?;
-            if let Some(stop) = &report.stopped {
-                crate::ui::warn(format!("Drain stopped: {stop}"));
-            }
-            let remaining = remaining(&report);
-            if let Err(warning) = &remaining {
-                crate::ui::warn(warning.clone());
-            }
-            let mut json = serde_json::to_value(&report).expect("a Drain report serializes");
-            if let Value::Object(fields) = &mut json {
-                fields.insert("server".into(), super::machine_json(&report.server));
-                fields.insert("note".into(), NOTHING_MOVES_BACK.into());
-            }
-            crate::ui::finish(&json, || {
-                if let Ok(line) = &remaining {
-                    crate::ui::stream(format_args!("{line}"));
-                }
-                crate::ui::note(NOTHING_MOVES_BACK);
-            })?;
-            if !report.complete() {
-                return Err(Error::partial());
-            }
-            Ok(())
+            render(&report)
         })
     })
+}
+
+fn through_cloud(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    credential: &Credential,
+    machine: &Machine,
+    selector: &str,
+) -> Result<DrainReport, Error> {
+    let id = approval::approved(
+        runtime,
+        credential,
+        Verb::Drain,
+        matches.get_one::<String>("approval").cloned(),
+        |id| super::approved_rerun(matches, &["server", "drain", selector], id),
+        async |approval| {
+            cloud_account::start_run(
+                credential,
+                Method::POST,
+                &format!("servers/{}/drain", machine.id),
+                &json!({}),
+                approval,
+            )
+            .await
+        },
+    )?;
+    #[derive(Deserialize)]
+    struct Finished {
+        report: DrainReport,
+    }
+    let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
+        credential,
+        &format!("server-drains/{id}"),
+        &format!("Draining Server {}", machine.name),
+    ))?;
+    Ok(settled.finished()?.report)
+}
+
+fn show(step: DrainStep<'_>) {
+    if went_wrong(step) {
+        crate::ui::warn(step_line(step));
+    } else {
+        crate::ui::stream(format_args!("{}", step_line(step)));
+    }
+}
+
+fn render(report: &DrainReport) -> Result<(), Error> {
+    if let Some(stop) = &report.stopped {
+        crate::ui::warn(format!("Drain stopped: {stop}"));
+    }
+    let remaining = remaining(report);
+    if let Err(warning) = &remaining {
+        crate::ui::warn(warning.clone());
+    }
+    let mut json = serde_json::to_value(report).expect("a Drain report serializes");
+    if let Value::Object(fields) = &mut json {
+        fields.insert("server".into(), super::machine_json(&report.server));
+        fields.insert("note".into(), NOTHING_MOVES_BACK.into());
+    }
+    crate::ui::finish(&json, || {
+        if let Ok(line) = &remaining {
+            crate::ui::stream(format_args!("{line}"));
+        }
+        crate::ui::note(NOTHING_MOVES_BACK);
+    })?;
+    if !report.complete() {
+        return Err(Error::partial());
+    }
+    Ok(())
 }
 
 /// Namespaces some Project owns, when a Config Store is reachable. Standalone Clusters
