@@ -20,6 +20,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "server/marketing-proxy.server.ts",
   "modules/inngest/client.ts",
   "modules/inngest/worker.server.ts",
+  "modules/operations/outbox.server.ts",
   "modules/organization/organization-state.server.ts",
   "routes/api/agent/$organizationSlug/-chat.handler.ts",
   "routes/api/cli/-cli.handler.ts",
