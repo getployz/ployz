@@ -8,12 +8,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::machine::{Cx, Stop, Tool, at, written};
-use super::refusal::{Call, Refusal, not_setting};
+use super::refusal::{Call, Refusal};
 use super::step::{AcceptedLoss, Gate, RequestKey};
 use crate::catalog::NODE_NAME;
 use crate::{
-    Admit, BatchCommand, Deploy, DestructiveKind, DiffQuery, Discard, EnvironmentName, NodeChange,
-    ProjectName, Publish, ServicesQuery, SettingPath, VolumeName, Written,
+    Admit, BatchCommand, Deploy, DestructiveKind, DiffQuery, Discard, DomainChange,
+    EnvironmentName, NodeChange, ProjectName, Publish, ServicesQuery, SettingPath, VolumeName,
+    Written,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
@@ -116,9 +117,18 @@ fn lines(change: &NodeChange) -> Vec<String> {
         head.push_str(&format!(", restarting {}", restarts.join(", ")));
     }
     let mut lines = vec![head];
-    lines.extend(change.settings.iter().map(|setting| {
-        let path = label(&setting.path);
-        match setting.kind {
+    for setting in &change.settings {
+        if let Some(domains) = DomainChange::of(setting) {
+            let service = setting.path.split('.').next().unwrap_or_default();
+            lines.extend(
+                domains
+                    .iter()
+                    .map(|domain| format!("  {service}.domains: {domain}")),
+            );
+            continue;
+        }
+        let path = &setting.path;
+        lines.push(match setting.kind {
             ChangeKind::Add => format!("  set {path} = {}", shown(&setting.after)),
             ChangeKind::Remove => format!("  unset {path}"),
             ChangeKind::Update => format!(
@@ -126,21 +136,9 @@ fn lines(change: &NodeChange) -> Vec<String> {
                 shown(&setting.before),
                 shown(&setting.after)
             ),
-        }
-    }));
+        });
+    }
     lines
-}
-
-/// A Setting path as an agent names it: domains as `domains`, never the field
-/// that stores them.
-fn label(path: &str) -> String {
-    path.split('.')
-        .map(|part| match not_setting(part) {
-            Some("domain_add") => "domains",
-            Some(_) | None => part,
-        })
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 /// A value on one line, cut long.

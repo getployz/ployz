@@ -342,6 +342,29 @@ fn a_bad_input_names_the_field_and_an_example() {
 }
 
 #[test]
+fn review_reads_domain_changes_as_domains() {
+    let store = shop();
+    let service = json!({ "name": "web", "image": "traefik/whoami" });
+    call(&store, "service_add", service, "add-1").ok();
+    let domain = json!({ "service": "web", "prefix": "shop" });
+    call(&store, "domain_add", domain, "domain-1").ok();
+
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    let lines = review["lines"].as_array().unwrap();
+    assert!(
+        lines.iter().any(|line| line == "  web.domains: added shop"),
+        "{review}"
+    );
+    assert!(
+        lines.iter().all(|line| {
+            let line = line.as_str().unwrap();
+            !line.contains("managedHostnames") && !line.contains("routes.")
+        }),
+        "{review}"
+    );
+}
+
+#[test]
 fn a_service_goes_from_staged_to_deployed() {
     let store = shop();
 
