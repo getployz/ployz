@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::cli::{base, positional, value};
@@ -566,17 +567,17 @@ fn stop_flags(command: Command) -> Command {
         .arg(value("timeout", Some('t')).default_value("10"))
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "add" => authored::add,
-        "inspect" => authored::inspect,
-        "ls" => authored::list,
-        "port-forward" => super::operator::port_forward,
-        "rename" => authored::rename,
-        "restart" => restart,
-        "rm" => authored::remove,
-        "start" => |root| lifecycle(root, &[ContainerAction::Start]),
-        "stop" => |root| lifecycle(root, &[ContainerAction::Stop]),
+        "add" => cloud(Never, authored::add),
+        "inspect" => cloud(Never, authored::inspect),
+        "ls" => cloud(Never, authored::list),
+        "port-forward" => cloud(Never, super::operator::port_forward),
+        "rename" => cloud(Never, authored::rename),
+        "restart" => cloud(Never, restart),
+        "rm" => cloud(Never, authored::remove),
+        "start" => cloud(Never, |root| lifecycle(root, &[ContainerAction::Start])),
+        "stop" => cloud(Always, |root| lifecycle(root, &[ContainerAction::Stop])),
         _ => return None,
     })
 }

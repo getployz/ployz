@@ -3,7 +3,7 @@
 //! waits for a reply where it needs one.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -62,6 +62,9 @@ const TICK: Duration = Duration::from_millis(250);
 const LOOKAHEAD: Duration = Duration::from_secs(2);
 const DRAIN_IDLE: Duration = Duration::from_secs(5);
 const DRAIN_MAX: Duration = Duration::from_secs(30);
+/// A probe request older than this when first seen is not acted on, so a control restart doesn't
+/// re-probe every past deploy, yet a request made while control restarted still runs.
+const TRIGGER_FRESH: Duration = Duration::from_secs(60);
 
 struct Entry {
     check: Check,
@@ -71,6 +74,8 @@ struct Entry {
     since: UnixMs,
     health: Health,
     writes_in_flight: u32,
+    /// The last `probe_requested_at` seen, acted on or not.
+    probe_request: Option<UnixMs>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -389,7 +394,18 @@ impl Engine {
             self.fire_timer(due, now);
         }
         let mut grown: Vec<Region> = Vec::new();
-        for job in self.budget.tick() {
+        let mut admitted: Vec<CheckId> = Vec::new();
+        let released = self.budget.tick(now);
+        for (check, by) in released.delayed {
+            if let Some(round) = self.entries.get(&check).and_then(|e| round_out(&e.health)) {
+                self.drive(check, Input::Delayed { round, by }, now);
+            }
+        }
+        for job in released.jobs {
+            let check = job.key.check;
+            if !self.budget.holds(check) && !admitted.contains(&check) {
+                admitted.push(check);
+            }
             let region = job.key.region.clone();
             self.queues
                 .entry(region.clone())
@@ -403,6 +419,9 @@ impl Engine {
         for region in grown {
             self.notify(&region);
         }
+        for check in admitted {
+            self.admit(check, now);
+        }
         for queue in self.queues.values_mut() {
             while let Some((_, drop_at)) = queue.routine.front()
                 && *drop_at < now
@@ -412,6 +431,25 @@ impl Engine {
             }
         }
         self.seen.expire(Instant::now());
+    }
+
+    /// Restarts the round's clock now its last job is out, and arms a timer for the new deadline.
+    fn admit(&mut self, check: CheckId, now: UnixMs) {
+        let Some(round) = self.entries.get(&check).and_then(|e| round_out(&e.health)) else {
+            return;
+        };
+        self.drive(check, Input::Admitted(round), now);
+        if let Some(at) = self
+            .entries
+            .get(&check)
+            .and_then(|e| deadline_of(&e.health, round))
+        {
+            self.timers.push(Reverse(Due {
+                at,
+                check,
+                what: What::RoundDeadline { round },
+            }));
+        }
     }
 
     fn fire_slot(&mut self, due: Due) {
@@ -464,6 +502,9 @@ impl Engine {
         };
         match due.what {
             What::Slot { .. } => {}
+            // Jobs still held back haven't started, so their round's clock hasn't either.
+            // `admit` arms the timer that counts.
+            What::RoundDeadline { .. } if self.budget.holds(due.check) => {}
             What::RoundDeadline { round } => {
                 self.drive(due.check, Input::RoundExpired(round), now);
             }
@@ -504,11 +545,14 @@ impl Engine {
                 replaced_orgs,
                 skipped,
             } => {
+                // A check the reload still returns stays held, as with Loaded, so the reload is
+                // not a fresh sighting of its probe request.
+                let kept: HashSet<CheckId> = reloaded.iter().map(|row| row.check.id).collect();
                 for org in replaced_orgs {
                     let ids: Vec<CheckId> = self
                         .entries
                         .iter()
-                        .filter(|(_, e)| e.check.org == org)
+                        .filter(|(id, e)| e.check.org == org && !kept.contains(id))
                         .map(|(id, _)| *id)
                         .collect();
                     for id in ids {
@@ -544,6 +588,7 @@ impl Engine {
     fn hold(&mut self, row: CheckRow) {
         let now = UnixMs::now();
         let id = row.check.id;
+        let requested = row.probe_requested;
         let adopt = |open: &OpenIncident| Input::Adopted {
             incident: open.id,
             revision: open.revision,
@@ -559,6 +604,7 @@ impl Engine {
                         since: now,
                         health: Health::Reachable,
                         writes_in_flight: 0,
+                        probe_request: None,
                     },
                 );
                 self.arm_slot(id, 0, now);
@@ -589,6 +635,17 @@ impl Engine {
             },
             // A write of ours is still landing; its reply says what Postgres holds.
             Some(_) => {}
+        }
+        // After any revision reset, so a deploy that moved the URL probes the new one.
+        if let Some(entry) = self.entries.get_mut(&id)
+            && requested > entry.probe_request
+        {
+            entry.probe_request = requested;
+            if let Some(at) = requested
+                && now.since(at) <= TRIGGER_FRESH
+            {
+                self.drive(id, Input::Triggered, now);
+            }
         }
     }
 
@@ -697,6 +754,16 @@ impl Engine {
 fn recheck_at(health: &Health) -> Option<UnixMs> {
     match health {
         Health::Unreachable(outage) if outage.round.is_none() => Some(outage.next_round_at),
+        Health::Reachable | Health::Suspect(_) | Health::Unreachable(_) => None,
+    }
+}
+
+fn deadline_of(health: &Health, id: RoundId) -> Option<UnixMs> {
+    match health {
+        Health::Suspect(round)
+        | Health::Unreachable(Outage {
+            round: Some(round), ..
+        }) if round.id == id => Some(round.deadline),
         Health::Reachable | Health::Suspect(_) | Health::Unreachable(_) => None,
     }
 }
