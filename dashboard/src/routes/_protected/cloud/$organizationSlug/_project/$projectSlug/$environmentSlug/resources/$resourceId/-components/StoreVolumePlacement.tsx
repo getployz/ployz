@@ -45,6 +45,9 @@ export function StoreVolumePlacement({ organizationSlug, environment, volume }: 
     accepting={members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id)} stage={stage} />;
 }
 
+/** When a mirror's copy catches up with the Primary: the schedule the Machines run, said once for every panel. */
+export const MIRROR_REFRESHES = "On every deploy and every 15 minutes";
+
 /** A staged chip or select takes its kind's colour, the same three Details uses. */
 const KIND_CLASSES = {
   add: "border-success-border bg-success-soft text-success",

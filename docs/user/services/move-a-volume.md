@@ -35,6 +35,15 @@ Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a vol
 bottom bar and the deployment page say what it is doing, for example "data · Moving to web-2".
 Cancel lets the step under way finish, and the rest waits for your next deploy.
 
+On the canvas each mirror hangs under its volume's tray as its own small card, for example
+`data-web-2` with "Mirror · 4 minutes ago". A staged mirror shows **New** in green and a staged
+removal shows **Removing** in red. A mirror about to become the primary shows **Primary**.
+
+Click a mirror to open it. It shows its server, when it last refreshed, and a link to its volume for
+restore points. **Make primary** stages the same move as picking its server in **Primary**, and
+**Remove mirror** stages its removal; its copy is deleted on the next deploy. A staged mirror has
+neither: discard it in Details.
+
 A mirror also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
 
 The commands below do the same from the CLI, one run at a time. Deleting a mirror is CLI-only.
