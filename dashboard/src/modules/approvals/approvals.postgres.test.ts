@@ -251,6 +251,17 @@ it.live("a Store that can't answer leaves a waiting approval pending", () =>
     expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
   }));
 
+it.live("nothing turns asking off: no Organization setting is kept, and a call without an approval needs one", () =>
+  Effect.gen(function* () {
+    const { provided } = yield* shopRemovingWeb();
+    const settings = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.execute<{ table: string | null }>(sql`select to_regclass('organization_settings')::text as table`, "objects");
+    }));
+    expect(settings).toEqual([{ table: null }]);
+    expect(yield* provided(trustedApproval(ORGANIZATION, null))).toEqual({ ok: true, approval: "required" });
+  }));
+
 it.live("the dashboard's writes never ask", () =>
   Effect.gen(function* () {
     const { provided, userId, store } = yield* shopRemovingWeb();
