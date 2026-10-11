@@ -14,3 +14,6 @@ export const RpcError = fail;
 
 export const allocateEnrollment = fail;
 export const ployzVersion = fail;
+export const agentTools = fail;
+export const agentStart = fail;
+export const agentResume = fail;

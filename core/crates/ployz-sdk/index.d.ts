@@ -246,6 +246,15 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 export declare function connect(options: ConnectOptions): Promise<Client>;
 /** The ployz version every fingerprint covers; a GitHub runner installs exactly this one. */
 export declare function ployzVersion(): string;
+/** A call's state between steps. Keep it and hand it back unchanged; only the step machine reads it. */
+export type AgentState = { readonly __brand: "AgentState" };
+export type AgentTurn = { step: import("./generated/payloads").Step; state: AgentState };
+/** What a model is told: the instructions and every tool. */
+export declare function agentTools(): { instructions: string; tools: import("./generated/payloads").ToolDef[] };
+/** Start `tool` at `place`. `callKey` is the transport's ID for this call, stable across retries. */
+export declare function agentStart(tool: string, input: unknown, place: import("./generated/payloads").Place, callKey: string): AgentTurn;
+/** Resume a call with the answers to its last step, in order. */
+export declare function agentResume(state: AgentState, answers: import("./generated/payloads").Answer[]): AgentTurn;
 export declare function applyAll(
   namespace: Namespace,
   specs: readonly RequestedServiceSpec[],
@@ -311,6 +320,8 @@ export declare class Client {
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
   /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
+  /** Answer a CloudQuery from this session's Servers; ones that did not answer are named in `seen.unanswered`. */
+  agentAsk(query: import("./generated/payloads").CloudQuery): Promise<import("./generated/payloads").ServersAnswer | import("./generated/payloads").ContainersAnswer>;
   inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**
    * Copy the image Container `container` runs on `source` to `dest`, by its local image ID and
