@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  causeText, checkSeries, checkState, formatSpan, historyDays, incidentWindow, observationText, rangeCovering, steps, uncheckedDays, unreachableHost,
+  barCount, causeText, checkSeries, checkState, formatSpan, historyBars, incidentWindow, observationText, rangeCovering, steps, unreachableHost,
   uptimePercent, wrongPathIncident,
 } from "./uptime";
 import type { IncidentObservation, ServiceUptime, UptimeIncidentEntry } from "./uptime-status";
@@ -16,8 +16,8 @@ const incident = (observations: IncidentObservation[], openedAt = at, closedAt: 
 const uptime = (patch: Partial<ServiceUptime>): ServiceUptime => ({
   check: { id: "chk", url: "https://acme.com/health", intervalSeconds: 300 },
   status: "up",
-  uptime: { "24h": null, "7d": null, "90d": null },
-  days: [],
+  uptime: null,
+  points: [],
   incidents: [],
   ...patch,
 });
@@ -61,11 +61,11 @@ describe("wrongPathIncident", () => {
   const open = incident([observation({ verdict: "pass", status: 200 }), observation({ status: 404 })]);
   it("is the open incident of a check that never passed and first failed with a 4xx", () => {
     expect(wrongPathIncident(uptime({ status: "unreachable", incidents: [open] }))).toBe(open);
-    expect(wrongPathIncident(uptime({ status: "unreachable", uptime: { "24h": 0, "7d": 0, "90d": 0 }, incidents: [open] }))).toBe(open);
+    expect(wrongPathIncident(uptime({ status: "unreachable", uptime: 0, incidents: [open] }))).toBe(open);
   });
 
-  it("is null once the check has passed, or when the failure is not a 4xx", () => {
-    expect(wrongPathIncident(uptime({ status: "unreachable", uptime: { "24h": 0, "7d": 0.5, "90d": 0.5 }, incidents: [open] }))).toBeNull();
+  it("is null once the check has passed in its range, or when the failure is not a 4xx", () => {
+    expect(wrongPathIncident(uptime({ status: "unreachable", uptime: 0.5, incidents: [open] }))).toBeNull();
     const closed = incident([observation({ status: 503 })], "2026-10-01T00:00:00.000Z", "2026-10-01T01:00:00.000Z");
     expect(wrongPathIncident(uptime({ status: "unreachable", incidents: [open, closed] }))).toBeNull();
     expect(wrongPathIncident(uptime({ status: "unreachable", incidents: [incident([observation({ status: 502 })])] }))).toBeNull();
@@ -144,21 +144,29 @@ describe("checkSeries", () => {
   });
 });
 
-describe("historyDays", () => {
-  it("marks each day an incident touched, including one still open", () => {
-    const first = Date.parse(at);
-    const to = first + 3 * DAY;
-    const days = [0, 1, 2].map((index) => ({ start: new Date(first + index * DAY).toISOString(), checked: index === 0 }));
-    const open = incident([observation({ status: 502 })], new Date(to - DAY - HOUR).toISOString());
-    expect(historyDays({ days, incidents: [open] }, to).map((day) => [day.checked, day.incidents.length]))
-      .toEqual([[true, 0], [true, 1], [true, 1]]);
+describe("historyBars", () => {
+  const to = Date.parse(at);
+
+  it("marks each bar an incident touched, including one still open, as checked", () => {
+    const open = incident([observation({ status: 502 })], new Date(to - 2 * HOUR - 1).toISOString());
+    const bars = historyBars("24h", to, { points: [], incidents: [open] });
+    expect(bars.map((bar) => [bar.checked, bar.incidents.length]).slice(-4)).toEqual([[false, 0], [true, 1], [true, 1], [true, 1]]);
   });
 
-  it("draws ninety grey days for a Service without a check", () => {
-    const days = historyDays({ days: uncheckedDays(Date.parse(at) + HOUR), incidents: [] }, Date.parse(at));
-    expect(days).toHaveLength(90);
-    expect(days.every((day) => !day.checked)).toBe(true);
-    expect(days.at(-1)?.start).toBe(Date.parse(at));
+  it("marks the bar of each point as checked", () => {
+    const points = [{ at: new Date(to - 3 * HOUR + 1).toISOString(), region: "ams", ms: null }];
+    const bars = historyBars("7d", to, { points, incidents: [] });
+    expect(bars.flatMap((bar, index) => bar.checked ? [index] : [])).toEqual([41]);
+    expect(bars[41]?.start).toBe(to - 4 * HOUR);
+  });
+
+  it("draws a grey bar per step of the range for a Service without a check", () => {
+    for (const [range, count] of [["24h", 24], ["7d", 42], ["90d", 90]] as const) {
+      const bars = historyBars(range, to + HOUR / 2, null);
+      expect(barCount(range)).toBe(count);
+      expect(bars).toHaveLength(count);
+      expect(bars.every((bar) => !bar.checked)).toBe(true);
+    }
   });
 });
 

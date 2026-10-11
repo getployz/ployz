@@ -16,12 +16,13 @@ import { admission } from "#/modules/config-store/store-deployments";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { LIMITS, previewMetrics } from "#/modules/uptime/metrics-preview";
 import {
+  barCount,
   causeText,
   checkSeries,
   checkState,
   formatMs,
   formatSpan,
-  historyDays,
+  historyBars,
   incidentSpan,
   incidentWindow,
   observationText,
@@ -29,20 +30,14 @@ import {
   rangeCovering,
   rangeWindow,
   steps,
-  uncheckedDays,
   uptimePercent,
   wrongPathIncident,
   type CheckState,
-  type HistoryDay,
+  type HistoryBar,
   type TimeWindow,
 } from "#/modules/uptime/uptime";
 import { UPTIME_RANGES, type UptimeIncidentEntry, type UptimeRange } from "#/modules/uptime/uptime-status";
-import {
-  type UptimeScope,
-  usePrefetchServiceUptime,
-  useServiceUptime,
-  useServiceUptimeSeries,
-} from "#/modules/uptime/uptime.queries";
+import { type UptimeScope, usePrefetchServiceUptime, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
 import { MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
 
@@ -67,7 +62,7 @@ export function MonitoringTab(props: MonitoringProps) {
   const toggle = <RangeToggle range={props.range} onRange={props.onRange} onHover={prefetch} />;
   return (
     <CatchBoundary getResetKey={() => props.service.id} errorComponent={MonitoringError}>
-      <Suspense fallback={<MonitoringSkeleton toggle={toggle} />}>
+      <Suspense fallback={<MonitoringSkeleton range={props.range} toggle={toggle} />}>
         <Monitoring {...props} scope={scope} toggle={toggle} />
       </Suspense>
     </CatchBoundary>
@@ -106,15 +101,17 @@ function RangeToggle({ range, onRange, onHover }: { range: UptimeRange; onRange:
   );
 }
 
-const STRIP_ENDS = (
-  <div className="flex justify-between text-xs text-muted-foreground">
-    <span>90 days ago</span>
-    <span>Today</span>
-  </div>
-);
+function StripEnds({ range }: { range: UptimeRange }) {
+  return (
+    <div className="flex justify-between text-xs text-muted-foreground">
+      <span>{range} ago</span>
+      <span>Now</span>
+    </div>
+  );
+}
 
-/** The tab's shape before its first read lands: a quiet header, ninety grey days, and the Response time card's outline. */
-function MonitoringSkeleton({ toggle }: { toggle: ReactNode }) {
+/** The tab's shape before its first read lands: a quiet header, grey bars, and the Response time card's outline. */
+function MonitoringSkeleton({ range, toggle }: { range: UptimeRange; toggle: ReactNode }) {
   return (
     <div className="flex flex-col gap-6" aria-busy>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -123,9 +120,9 @@ function MonitoringSkeleton({ toggle }: { toggle: ReactNode }) {
       </div>
       <div className="flex flex-col gap-1.5">
         <div className="flex h-7 items-stretch gap-px">
-          {Array.from({ length: 90 }, (_, index) => <div key={index} className="flex-1 rounded-[1px] bg-muted" />)}
+          {Array.from({ length: barCount(range) }, (_, index) => <div key={index} className="flex-1 rounded-[1px] bg-muted" />)}
         </div>
-        {STRIP_ENDS}
+        <StripEnds range={range} />
       </div>
       <EmptyChartCard title="Response time" />
     </div>
@@ -162,9 +159,13 @@ type Picked = { readonly incident: UptimeIncidentEntry; readonly x: number; read
 /** Ployz collects no Service metrics yet; dev builds draw invented ones so the layout can be judged. */
 const PREVIEW_METRICS = import.meta.env.DEV;
 
-/** Status, ninety days of history, then every metric on one time axis. Incidents shade each chart; a click tells the story. */
-function Monitoring({ organizationSlug, service, range, addDomain, fixPath, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
-  const { data: uptime, dataUpdatedAt } = useServiceUptime(scope, service.id);
+/**
+ * Status, history, then every metric on one time axis, all over one range. Incidents shade each chart; a click tells the
+ * story. A new range keeps the old one, dimmed, until its read lands.
+ */
+function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPath, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
+  const range = useDeferredValue(chosen);
+  const { data: uptime, dataUpdatedAt } = useServiceUptime(scope, service.id, range);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deployments = useStoreDeployments(organizationSlug, store).data.pages.flatMap((page) => page.deployments);
   const [zoom, setZoom] = useState<UptimeIncidentEntry | null>(null);
@@ -187,7 +188,7 @@ function Monitoring({ organizationSlug, service, range, addDomain, fixPath, scop
     const touched = deployment.services.length === 0 || deployment.services.includes(service.name);
     return deployment.status === "applied" && touched && ended !== undefined && ended >= window.from && ended < window.to ? [ended] : [];
   });
-  const share = uptimePercent(uptime?.uptime[range] ?? null);
+  const share = uptimePercent(uptime?.uptime ?? null);
   const open = openIncident(incidents);
   const wrongPath = uptime ? wrongPathIncident(uptime) : null;
   const pick = (at: number) => {
@@ -232,8 +233,8 @@ function Monitoring({ organizationSlug, service, range, addDomain, fixPath, scop
           ) : toggle}
         </div>
       </div>
-      <HistoryStrip days={historyDays({ days: uptime?.days ?? uncheckedDays(now), incidents }, now)} zoomed={zoom} onZoom={zoomTo} />
-      <div className="grid gap-3 sm:grid-cols-2"
+      <HistoryStrip range={range} bars={historyBars(range, now, uptime)} zoomed={zoom} onZoom={zoomTo} />
+      <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}
         onPointerDownCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}>
         <div className="sm:col-span-2">
           {uptime === null ? (
@@ -289,8 +290,8 @@ type ChartFrame = {
 };
 
 /**
- * The check's response time, averaged across regions. A new range keeps the old line, dimmed, until its read lands,
- * instead of falling back to an empty card.
+ * The check's response time, averaged across regions. A zoom reads the finest range that covers it, and keeps the old
+ * line, dimmed, until that read lands.
  */
 function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }: {
   scope: UptimeScope;
@@ -303,7 +304,7 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }:
   chart: ChartFrame;
 }) {
   const shown = useDeferredValue(range);
-  const check = checkSeries(useServiceUptimeSeries(scope, serviceId, shown), window);
+  const check = checkSeries(useServiceUptime(scope, serviceId, shown).data?.points ?? [], window);
   const checkMs = average(check);
   const series: MetricSeries[] = [
     ...(edge ? [{ label: "Edge", color: "var(--chart-1)", values: edge }] : []),
@@ -325,9 +326,10 @@ function ResponseTimeError({ reset }: ErrorComponentProps) {
   );
 }
 
-/** Ninety days, a bar each, red where an incident touched it. Hover tells it; click zooms the charts onto it. */
-function HistoryStrip({ days, zoomed, onZoom }: {
-  days: readonly HistoryDay[];
+/** The range in bars, red where an incident touched one. Hover tells it; click zooms the charts onto it. */
+function HistoryStrip({ range, bars, zoomed, onZoom }: {
+  range: UptimeRange;
+  bars: readonly HistoryBar[];
   zoomed: UptimeIncidentEntry | null;
   onZoom: (incident: UptimeIncidentEntry) => void;
 }) {
@@ -335,18 +337,19 @@ function HistoryStrip({ days, zoomed, onZoom }: {
     <TooltipProvider>
       <div className="flex flex-col gap-1.5">
         <div className="flex h-7 items-stretch gap-px" aria-label="History">
-          {days.map((day) => {
+          {bars.map((day) => {
+            const label = (range === "90d" ? DAY_FORMAT : AT_FORMAT).format(day.start);
             const first = day.incidents[0];
             return (
               <Tooltip key={day.start}>
                 <TooltipTrigger render={first
-                  ? <button type="button" aria-label={DAY_FORMAT.format(day.start)} onClick={() => onZoom(first)}
+                  ? <button type="button" aria-label={label} onClick={() => onZoom(first)}
                     className={cn("flex-1 cursor-pointer rounded-[1px] bg-destructive hover:opacity-80",
                       zoomed && day.incidents.some((incident) => incident.id === zoomed.id) && "ring-2 ring-foreground")} />
                   : <span className={cn("flex-1 rounded-[1px]", day.checked ? "bg-success" : "bg-muted")} />
                 } />
                 <TooltipContent className="flex-col items-start gap-0.5">
-                  <span className="font-medium">{DAY_FORMAT.format(day.start)}</span>
+                  <span className="font-medium">{label}</span>
                   {day.incidents.length === 0
                     ? <span>{day.checked ? "No incidents" : "No data"}</span>
                     : day.incidents.map((incident) => (
@@ -359,7 +362,7 @@ function HistoryStrip({ days, zoomed, onZoom }: {
             );
           })}
         </div>
-        {STRIP_ENDS}
+        <StripEnds range={range} />
       </div>
     </TooltipProvider>
   );
