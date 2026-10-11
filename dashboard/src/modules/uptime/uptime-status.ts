@@ -46,15 +46,12 @@ const EnvironmentScope = {
 export const ReadEnvironmentUptimeInput = Schema.Struct(EnvironmentScope);
 export type ReadEnvironmentUptimeInput = typeof ReadEnvironmentUptimeInput.Type;
 
-export const ReadServiceUptimeInput = Schema.Struct({ ...EnvironmentScope, serviceId: Schema.NonEmptyString });
-export type ReadServiceUptimeInput = typeof ReadServiceUptimeInput.Type;
-
-export const ReadServiceUptimeSeriesInput = Schema.Struct({
+export const ReadServiceUptimeInput = Schema.Struct({
   ...EnvironmentScope,
   serviceId: Schema.NonEmptyString,
   range: Schema.Literals(UPTIME_RANGES),
 });
-export type ReadServiceUptimeSeriesInput = typeof ReadServiceUptimeSeriesInput.Type;
+export type ReadServiceUptimeInput = typeof ReadServiceUptimeInput.Type;
 
 /** One check of the environment, and when its open incident opened. */
 export type EnvironmentUptimeCheck = {
@@ -84,13 +81,13 @@ export type UptimeIncidentEntry = {
   readonly observations: readonly IncidentObservation[];
 };
 
+/** A check over one range. */
 export type ServiceUptime = {
   readonly check: { readonly id: string; readonly url: string; readonly intervalSeconds: number };
   readonly status: UptimeStatus;
   /** Passing over pass plus fail routine probes, 0 to 1, by rolled-up hour. Null when no probe counted. */
-  readonly uptime: Readonly<Record<UptimeRange, number | null>>;
-  /** The last 90 UTC days, oldest first. `checked` when any hour of the day was rolled up. */
-  readonly days: readonly { readonly start: string; readonly checked: boolean }[];
-  /** Open and closed incidents that overlap the last 90 days, newest first. */
+  readonly uptime: number | null;
+  readonly points: readonly UptimePoint[];
+  /** Open and closed incidents that overlap the range, newest first. */
   readonly incidents: readonly UptimeIncidentEntry[];
 };

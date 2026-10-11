@@ -43,13 +43,13 @@ export function causeText(incident: UptimeIncidentEntry): string {
 }
 
 /**
- * The open incident of a check that never passed, when its first failure is a 4xx: the server answers, but not at the
+ * The open incident of a check that never passed in its range, when its first failure is a 4xx: the server answers, but not at the
  * healthcheck path. Null otherwise. A closed incident or any counted pass means the path worked once.
  */
 export function wrongPathIncident(uptime: ServiceUptime): UptimeIncidentEntry | null {
   const open = openIncident(uptime.incidents);
   const failure = open?.observations.find((observation) => observation.verdict === "fail");
-  const neverPassed = !uptime.uptime["90d"] && uptime.incidents.every((incident) => incident.closedAt === null);
+  const neverPassed = !uptime.uptime && uptime.incidents.every((incident) => incident.closedAt === null);
   return open && failure && failure.status >= 400 && failure.status < 500 && neverPassed ? open : null;
 }
 
@@ -116,24 +116,24 @@ export function checkSeries(points: readonly UptimePoint[], window: TimeWindow):
   });
 }
 
-/** Ninety unchecked UTC days up to `to`, oldest first: the strip of a Service without a check. */
-export const uncheckedDays = (to: number) => {
-  const today = Math.floor(to / DAY_MS) * DAY_MS;
-  return Array.from({ length: 90 }, (_, index) => ({ start: new Date(today - (89 - index) * DAY_MS).toISOString(), checked: false }));
-};
+/** Each range's history bar: an hour, 4 hours, a UTC day. */
+const BAR_MS = { "24h": HOUR_MS, "7d": 4 * HOUR_MS, "90d": DAY_MS } satisfies Record<UptimeRange, number>;
 
-/** One day of the history strip: the incidents that touched it, and whether the check ran at all. */
-export type HistoryDay = { readonly start: number; readonly incidents: readonly UptimeIncidentEntry[]; readonly checked: boolean };
+export const barCount = (range: UptimeRange) => UPTIME_RANGE_MS[range] / BAR_MS[range];
 
-/** The server's 90 days, each with the incidents that touched it. `to` closes an open incident. */
-export function historyDays(uptime: Pick<ServiceUptime, "days" | "incidents">, to: number): HistoryDay[] {
-  return uptime.days.map((day) => {
-    const start = Date.parse(day.start);
-    const incidents = uptime.incidents.filter((incident) => {
+/** One bar of the history strip: the incidents that touched it, and whether the check ran in it. */
+export type HistoryBar = { readonly start: number; readonly incidents: readonly UptimeIncidentEntry[]; readonly checked: boolean };
+
+/** `range` up to `to` in bars, oldest first. A bar is checked when a point or an incident falls in it. */
+export function historyBars(range: UptimeRange, to: number, uptime: Pick<ServiceUptime, "points" | "incidents"> | null): HistoryBar[] {
+  const stepMs = BAR_MS[range];
+  const probed = new Set(uptime?.points.map((point) => Math.floor(Date.parse(point.at) / stepMs) * stepMs));
+  return steps({ from: to - UPTIME_RANGE_MS[range], to, stepMs }).map((start) => {
+    const incidents = (uptime?.incidents ?? []).filter((incident) => {
       const span = incidentSpan(incident, to);
-      return span.from < start + DAY_MS && span.to > start;
+      return span.from < start + stepMs && span.to > start;
     });
-    return { start, incidents, checked: day.checked || incidents.length > 0 };
+    return { start, incidents, checked: probed.has(start) || incidents.length > 0 };
   });
 }
 

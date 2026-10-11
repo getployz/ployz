@@ -3,8 +3,8 @@ import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import contract from "#/modules/uptime/incident-evidence.fixture.json";
-import { IncidentEvidence, type UptimeRange } from "#/modules/uptime/uptime-status";
-import { readEnvironmentUptime, readServiceUptime, readServiceUptimeSeries } from "#/modules/uptime/uptime-status.server";
+import { IncidentEvidence, UPTIME_RANGES, type UptimeRange } from "#/modules/uptime/uptime-status";
+import { readEnvironmentUptime, readServiceUptime } from "#/modules/uptime/uptime-status.server";
 import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
@@ -48,12 +48,12 @@ function at<A, E>(effect: Effect.Effect<A, E, Database>) {
 type Scope = { environmentId: string; serviceId: string };
 
 const environment = (environmentId: string) => at(readEnvironmentUptime(actor, { organizationSlug: "acme", environmentId }));
-const service = (scope: Scope) => at(readServiceUptime(actor, { organizationSlug: "acme", ...scope }));
-const series = (scope: Scope, range: UptimeRange) =>
-  at(readServiceUptimeSeries(actor, { organizationSlug: "acme", ...scope, range }));
+const service = (scope: Scope, range: UptimeRange = "24h") =>
+  at(readServiceUptime(actor, { organizationSlug: "acme", ...scope, range }));
+const series = async (check: Check, range: UptimeRange) => (await summary(check, range)).points;
 
-async function summary(check: Check) {
-  const uptime = await service(check);
+async function summary(check: Check, range: UptimeRange = "24h") {
+  const uptime = await service(check, range);
   if (uptime === null) throw new Error("no check");
   return uptime;
 }
@@ -146,17 +146,16 @@ describe("uptime status", () => {
     expect((await summary(check)).check).toEqual({ id: check.id, url: "https://shop.example.com/", intervalSeconds: 60 });
   });
 
-  it("reads null and an empty chart for a Service without a check", async () => {
+  it("reads null for a Service without a check, in every range", async () => {
     const check = await createCheck();
     await hourly(check, "eu-west", hourAgo(2), 4, 0, 0, 120);
     const unchecked = { environmentId: check.environmentId, serviceId: randomUUID() };
-    expect(await service(unchecked)).toBeNull();
-    for (const range of ["24h", "7d", "90d"] as const) expect(await series(unchecked, range)).toEqual([]);
+    for (const range of UPTIME_RANGES) expect(await service(unchecked, range)).toBeNull();
   });
 });
 
 describe("uptime percentages", () => {
-  it("are passing over pass plus fail probes, summed across regions, per window", async () => {
+  it("are passing over pass plus fail probes, summed across regions, over the range", async () => {
     const check = await createCheck();
     const noise = await createCheck();
     await hourly(check, "eu-west", hourAgo(2), 10, 1, 5);
@@ -166,34 +165,29 @@ describe("uptime percentages", () => {
     await hourly(check, "eu-west", hourAgo(91 * 24), 100, 100, 0);
     await hourly(noise, "eu-west", hourAgo(2), 100, 100, 0);
 
-    expect((await summary(check)).uptime).toEqual({ "24h": 19 / 20, "7d": 29 / 40, "90d": 89 / 100 });
+    expect((await summary(check, "24h")).uptime).toBe(19 / 20);
+    expect((await summary(check, "7d")).uptime).toBe(29 / 40);
+    expect((await summary(check, "90d")).uptime).toBe(89 / 100);
+  });
+
+  it("count raw routine probes after the last rolled-up hour", async () => {
+    const check = await createCheck();
+    await hourly(check, "eu-west", hourAgo(2), 4, 0, 0);
+    await result(check, "eu-west", ago(2 * HOUR), "fail", 9000);
+    await result(check, "eu-west", ago(HOUR), "fail", 9000);
+    await result(check, "eu-west", ago(10 * 60_000), "pass", 120);
+    await result(check, "eu-west", ago(9 * 60_000), "inconclusive", 0);
+    await result(check, "eu-west", ago(8 * 60_000), "fail", 9000, "confirm");
+    for (const range of UPTIME_RANGES) expect((await summary(check, range)).uptime).toBe(5 / 6);
   });
 
   it("leave inconclusive probes out, and are null when no probe counted", async () => {
     const check = await createCheck();
     await hourly(check, "eu-west", hourAgo(2), 0, 0, 12);
-    expect((await summary(check)).uptime).toEqual({ "24h": null, "7d": null, "90d": null });
+    for (const range of UPTIME_RANGES) expect((await summary(check, range)).uptime).toBeNull();
 
     await hourly(check, "us-east", hourAgo(2), 4, 1, 40);
-    expect((await summary(check)).uptime).toEqual({ "24h": 3 / 4, "7d": 3 / 4, "90d": 3 / 4 });
-  });
-});
-
-describe("uptime history", () => {
-  it("is the last 90 UTC days, oldest first, checked on each day with a rolled-up hour", async () => {
-    const check = await createCheck();
-    await hourly(check, "eu-west", hourAgo(0), 4, 0, 0, 100);
-    await hourly(check, "us-east", hourAgo(0), 4, 4, 0);
-    await hourly(check, "eu-west", hourAgo(36), 4, 0, 0, 100);
-    await hourly(check, "eu-west", hourAgo(89 * 24 + 12), 1, 0, 0, 100);
-    await hourly(check, "eu-west", hourAgo(90 * 24), 1, 0, 0, 100);
-
-    const today = Date.parse("2026-10-11T00:00:00.000Z");
-    const { days } = await summary(check);
-    expect(days).toHaveLength(90);
-    expect(days.map((entry) => entry.start)).toEqual(
-      Array.from({ length: 90 }, (_, index) => new Date(today - (89 - index) * DAY).toISOString()));
-    expect(days.flatMap((entry, index) => entry.checked ? [index] : [])).toEqual([0, 88, 89]);
+    for (const range of UPTIME_RANGES) expect((await summary(check, range)).uptime).toBe(3 / 4);
   });
 });
 
@@ -214,8 +208,9 @@ describe("uptime chart", () => {
     ]);
   });
 
-  it("draws 7d from the hourly medians", async () => {
+  it("draws 7d from the hourly medians, then raw probes after the last rolled-up hour", async () => {
     const check = await createCheck();
+    await result(check, "eu-west", ago(3 * HOUR), "pass", 130);
     await result(check, "eu-west", ago(HOUR), "pass", 140);
     await hourly(check, "eu-west", hourAgo(2), 4, 0, 0, 210);
     await hourly(check, "us-east", hourAgo(2), 4, 4, 0, null);
@@ -226,7 +221,16 @@ describe("uptime chart", () => {
       { at: hourAgo(6 * 24), region: "eu-west", ms: 180 },
       { at: hourAgo(2), region: "eu-west", ms: 210 },
       { at: hourAgo(2), region: "us-east", ms: null },
+      { at: ago(HOUR), region: "eu-west", ms: 140 },
     ]);
+  });
+
+  it("draws a check's only probe before any hour rolled up, in every range", async () => {
+    const check = await createCheck();
+    await result(check, "eu-west", ago(10 * 60_000), "pass", 120);
+    for (const range of UPTIME_RANGES) {
+      expect(await series(check, range)).toEqual([{ at: ago(10 * 60_000), region: "eu-west", ms: 120 }]);
+    }
   });
 
   it("draws 90d in 6-hour buckets per region, averaging the medians by passing probes", async () => {
@@ -259,19 +263,23 @@ describe("retention", () => {
 });
 
 describe("uptime incidents", () => {
-  it("lists the incidents that overlap the last 90 days newest first, with the observations that opened them", async () => {
+  it("lists the incidents that overlap the range newest first, with the observations that opened them", async () => {
     const check = await createCheck();
     const old = await incident(check, ago(20 * DAY), ago(10 * DAY));
+    const lastWeek = await incident(check, ago(3 * DAY), ago(30 * HOUR));
     const recent = await incident(check, ago(5 * HOUR), ago(2 * HOUR));
-    const open = await incident(check, ago(HOUR));
+    const open = await incident(check, ago(10 * DAY));
     await incident(check, ago(100 * DAY), ago(91 * DAY));
     await incident(check, ago(-HOUR), ago(-2 * HOUR));
 
     const observations = contract.openedBy.observations;
-    expect((await summary(check)).incidents).toEqual([
-      { id: open, openedAt: ago(HOUR), closedAt: null, observations },
+    const ids = async (range: UptimeRange) => (await summary(check, range)).incidents.map((entry) => entry.id);
+    expect(await ids("24h")).toEqual([recent, open]);
+    expect(await ids("7d")).toEqual([recent, lastWeek, open]);
+    expect(await ids("90d")).toEqual([recent, lastWeek, open, old]);
+    expect((await summary(check, "24h")).incidents).toEqual([
       { id: recent, openedAt: ago(5 * HOUR), closedAt: ago(2 * HOUR), observations },
-      { id: old, openedAt: ago(20 * DAY), closedAt: ago(10 * DAY), observations },
+      { id: open, openedAt: ago(10 * DAY), closedAt: null, observations },
     ]);
   });
 
@@ -293,8 +301,7 @@ describe("authorization", () => {
     const foreign = await createCheck(other);
     const input = { organizationSlug: "other", environmentId: foreign.environmentId, serviceId: foreign.serviceId };
     expect(await refusal(readEnvironmentUptime(actor, input))).toMatchObject({ _tag: "NotFound" });
-    expect(await refusal(readServiceUptime(actor, input))).toMatchObject({ _tag: "NotFound" });
-    expect(await refusal(readServiceUptimeSeries(actor, { ...input, range: "24h" }))).toMatchObject({ _tag: "NotFound" });
+    expect(await refusal(readServiceUptime(actor, { ...input, range: "24h" }))).toMatchObject({ _tag: "NotFound" });
   });
 
   it("shows nothing of another organization's environment under the actor's slug", async () => {
@@ -303,8 +310,7 @@ describe("authorization", () => {
     await result(foreign, "eu-west", ago(HOUR), "pass", 120);
     await hourly(foreign, "eu-west", hourAgo(2), 4, 0, 0, 120);
     expect(await environment(foreign.environmentId)).toEqual([]);
-    expect(await service(foreign)).toBeNull();
-    for (const range of ["24h", "7d", "90d"] as const) expect(await series(foreign, range)).toEqual([]);
+    for (const range of UPTIME_RANGES) expect(await service(foreign, range)).toBeNull();
   });
 });
 

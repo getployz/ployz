@@ -5,22 +5,20 @@ import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { Database } from "#/server/database.server";
-import { clampSince } from "./retention";
+import { clampSince, type UptimeSeries } from "./retention";
 import { uptimeCheck, uptimeIncident, uptimeResult, uptimeResultHourly } from "./tables";
 import {
   type EnvironmentUptimeCheck,
   IncidentEvidence,
   type ReadEnvironmentUptimeInput,
   type ReadServiceUptimeInput,
-  type ReadServiceUptimeSeriesInput,
   type ServiceUptime,
   UPTIME_RANGE_MS,
   type UptimePoint,
   type UptimeRange,
 } from "./uptime-status";
 
-const DAY_MS = 86_400_000;
-const HISTORY_DAYS = 90;
+const HOUR_MS = 3_600_000;
 
 /**
  * The environment's checks, each with when its open incident opened. Both tables are filtered by the actor's
@@ -69,7 +67,7 @@ const ofCheck = (checkId: string, organizationId: string) =>
 
 const decodeEvidence = Schema.decodeUnknownEffect(IncidentEvidence);
 
-/** The Service's check with its status, uptime per range, 90 days of history and the incidents in them. Null without a check. */
+/** The Service's check with its status, uptime, latency points and the incidents over `range`. Null without a check. */
 export const readServiceUptime = Effect.fn("Uptime.readService")(function* (actor: Actor, input: ReadServiceUptimeInput) {
   const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
   const { drizzle } = yield* Database;
@@ -77,6 +75,8 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   const check = yield* findCheck(organization.id, input);
   if (check === undefined) return null;
   const of = ofCheck(check.id, organization.id);
+  const since = (series: UptimeSeries) =>
+    clampSince(organization.id, series, new Date(now.getTime() - UPTIME_RANGE_MS[input.range]), now);
 
   const [open] = yield* drizzle
     .select({ id: uptimeIncident.id })
@@ -89,45 +89,29 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .limit(1);
   const status = open !== undefined ? "unreachable" : probed === undefined ? "pending" : "up";
 
-  const hourlySince = (range: UptimeRange) =>
-    clampSince(organization.id, "hourly", new Date(now.getTime() - UPTIME_RANGE_MS[range]), now);
-  const inRange = (range: UptimeRange) => sql`${uptimeResultHourly.hour} >= ${hourlySince(range).toISOString()}`;
-  const passing = (range: UptimeRange) => sql<number | null>`
-    sum(${uptimeResultHourly.probes} - ${uptimeResultHourly.failures}) FILTER (WHERE ${inRange(range)})`.mapWith(Number);
-  const counted = (range: UptimeRange) =>
-    sql<number | null>`sum(${uptimeResultHourly.probes}) FILTER (WHERE ${inRange(range)})`.mapWith(Number);
-  const [sums] = yield* drizzle
+  const [rolled] = yield* drizzle
+    .select({ hour: sql<Date | null>`max(${uptimeResultHourly.hour})`.mapWith(uptimeResultHourly.hour) })
+    .from(uptimeResultHourly)
+    .where(of(uptimeResultHourly));
+  const tailFrom = new Date(Math.max((rolled?.hour?.getTime() ?? 0) + HOUR_MS, since("raw").getTime()));
+
+  const [hourly] = yield* drizzle
     .select({
-      pass24h: passing("24h"), probes24h: counted("24h"),
-      pass7d: passing("7d"), probes7d: counted("7d"),
-      pass90d: passing("90d"), probes90d: counted("90d"),
+      passing: sql<number | null>`sum(${uptimeResultHourly.probes} - ${uptimeResultHourly.failures})`.mapWith(Number),
+      counted: sql<number | null>`sum(${uptimeResultHourly.probes})`.mapWith(Number),
     })
     .from(uptimeResultHourly)
-    .where(and(of(uptimeResultHourly), inRange("90d")));
-  const fraction = (pass: number | null | undefined, probes: number | null | undefined) =>
-    probes === null || probes === undefined || probes === 0 ? null : (pass ?? 0) / probes;
-  const uptime = {
-    "24h": fraction(sums?.pass24h, sums?.probes24h),
-    "7d": fraction(sums?.pass7d, sums?.probes7d),
-    "90d": fraction(sums?.pass90d, sums?.probes90d),
-  };
+    .where(and(of(uptimeResultHourly), gte(uptimeResultHourly.hour, since("hourly"))));
+  const [raw] = yield* drizzle
+    .select({
+      passing: sql<number>`count(*) FILTER (WHERE ${uptimeResult.verdict} = 'pass')`.mapWith(Number),
+      counted: sql<number>`count(*) FILTER (WHERE ${uptimeResult.verdict} IN ('pass', 'fail'))`.mapWith(Number),
+    })
+    .from(uptimeResult)
+    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), gte(uptimeResult.scheduledAt, tailFrom)));
+  const counted = (hourly?.counted ?? 0) + (raw?.counted ?? 0);
+  const uptime = counted === 0 ? null : ((hourly?.passing ?? 0) + (raw?.passing ?? 0)) / counted;
 
-  const today = Math.floor(now.getTime() / DAY_MS) * DAY_MS;
-  const firstDay = new Date(today - (HISTORY_DAYS - 1) * DAY_MS);
-  const day = sql<Date>`date_trunc('day', ${uptimeResultHourly.hour}, 'UTC')`.mapWith(uptimeResultHourly.hour);
-  const checkedDays = yield* drizzle
-    .select({ day })
-    .from(uptimeResultHourly)
-    .where(and(of(uptimeResultHourly),
-      gte(uptimeResultHourly.hour, clampSince(organization.id, "hourly", firstDay, now))))
-    .groupBy(day);
-  const checked = new Set(checkedDays.map((row) => row.day.getTime()));
-  const days = Array.from({ length: HISTORY_DAYS }, (_, index) => {
-    const start = firstDay.getTime() + index * DAY_MS;
-    return { start: new Date(start).toISOString(), checked: checked.has(start) };
-  });
-
-  const incidentsSince = clampSince(organization.id, "incidents", new Date(now.getTime() - UPTIME_RANGE_MS["90d"]), now);
   const incidentRows = yield* drizzle
     .select({
       id: uptimeIncident.id,
@@ -139,7 +123,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .where(and(
       of(uptimeIncident),
       lte(uptimeIncident.openedAt, now),
-      or(isNull(uptimeIncident.closedAt), gte(uptimeIncident.closedAt, incidentsSince)),
+      or(isNull(uptimeIncident.closedAt), gte(uptimeIncident.closedAt, since("incidents"))),
     ))
     .orderBy(desc(uptimeIncident.openedAt), desc(uptimeIncident.id));
   const incidents = yield* Effect.forEach(incidentRows, (row) =>
@@ -154,42 +138,46 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
       })),
     ));
 
-  return { check, status, uptime, days, incidents } satisfies ServiceUptime;
+  const points = yield* readPoints(of, input.range, since("raw"), since("hourly"), tailFrom);
+  return { check, status, uptime, points, incidents } satisfies ServiceUptime;
 });
 
-/** The Service's latency chart for `range`, ordered by `at`, then region. Empty without a check. */
-export const readServiceUptimeSeries = Effect.fn("Uptime.readServiceSeries")(function* (
-  actor: Actor,
-  input: ReadServiceUptimeSeriesInput,
-) {
-  const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+/** Every routine probe since `from`, with its total time when it passed. */
+const readRawPoints = Effect.fn("Uptime.readRawPoints")(function* (of: ReturnType<typeof ofCheck>, from: Date) {
   const { drizzle } = yield* Database;
-  const now = new Date(yield* Clock.currentTimeMillis);
-  const check = yield* findCheck(organization.id, input);
-  if (check === undefined) return [];
-  const of = ofCheck(check.id, organization.id);
-  const since = (series: "raw" | "hourly") =>
-    clampSince(organization.id, series, new Date(now.getTime() - UPTIME_RANGE_MS[input.range]), now);
+  const rows = yield* drizzle
+    .select({ at: uptimeResult.scheduledAt, region: uptimeResult.region, verdict: uptimeResult.verdict,
+      totalMs: uptimeResult.totalMs })
+    .from(uptimeResult)
+    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), gte(uptimeResult.scheduledAt, from)))
+    .orderBy(asc(uptimeResult.scheduledAt), asc(uptimeResult.region));
+  return rows.map((row): UptimePoint => ({
+    at: row.at.toISOString(), region: row.region, ms: row.verdict === "pass" ? row.totalMs : null,
+  }));
+});
 
-  if (input.range === "24h") {
-    const rows = yield* drizzle
-      .select({ at: uptimeResult.scheduledAt, region: uptimeResult.region, verdict: uptimeResult.verdict,
-        totalMs: uptimeResult.totalMs })
-      .from(uptimeResult)
-      .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), gte(uptimeResult.scheduledAt, since("raw"))))
-      .orderBy(asc(uptimeResult.scheduledAt), asc(uptimeResult.region));
-    return rows.map((row): UptimePoint => ({
-      at: row.at.toISOString(), region: row.region, ms: row.verdict === "pass" ? row.totalMs : null,
-    }));
-  }
+/**
+ * The latency chart for `range`, ordered by `at`, then region. 7d and 90d read the hourly rollup, then raw probes from
+ * `tailFrom`, the first hour it has not rolled up, so a check's newest probes show before :05 of the next hour.
+ */
+const readPoints = Effect.fn("Uptime.readPoints")(function* (
+  of: ReturnType<typeof ofCheck>,
+  range: UptimeRange,
+  rawSince: Date,
+  hourlySince: Date,
+  tailFrom: Date,
+) {
+  if (range === "24h") return yield* readRawPoints(of, rawSince);
+  const { drizzle } = yield* Database;
+  const tail = yield* readRawPoints(of, tailFrom);
 
-  if (input.range === "7d") {
+  if (range === "7d") {
     const rows = yield* drizzle
       .select({ at: uptimeResultHourly.hour, region: uptimeResultHourly.region, ms: uptimeResultHourly.passMsP50 })
       .from(uptimeResultHourly)
-      .where(and(of(uptimeResultHourly), gte(uptimeResultHourly.hour, since("hourly"))))
+      .where(and(of(uptimeResultHourly), gte(uptimeResultHourly.hour, hourlySince)))
       .orderBy(asc(uptimeResultHourly.hour), asc(uptimeResultHourly.region));
-    return rows.map((row): UptimePoint => ({ ...row, at: row.at.toISOString() }));
+    return [...rows.map((row): UptimePoint => ({ ...row, at: row.at.toISOString() })), ...tail];
   }
 
   const passing = sql`(${uptimeResultHourly.probes} - ${uptimeResultHourly.failures})`;
@@ -204,8 +192,8 @@ export const readServiceUptimeSeries = Effect.fn("Uptime.readServiceSeries")(fun
         / nullif(sum(${passing}) FILTER (WHERE ${weighted}), 0))`.mapWith(Number),
     })
     .from(uptimeResultHourly)
-    .where(and(of(uptimeResultHourly), gte(uptimeResultHourly.hour, since("hourly"))))
+    .where(and(of(uptimeResultHourly), gte(uptimeResultHourly.hour, hourlySince)))
     .groupBy(bucket, uptimeResultHourly.region)
     .orderBy(asc(bucket), asc(uptimeResultHourly.region));
-  return rows.map((row): UptimePoint => ({ at: row.at.toISOString(), region: row.region, ms: row.ms }));
+  return [...rows.map((row): UptimePoint => ({ at: row.at.toISOString(), region: row.region, ms: row.ms })), ...tail];
 });

@@ -8,7 +8,7 @@ import {
 import { serviceSearchSchema } from "../../services/$serviceId/-components/service-pages";
 import { StoreServiceDrawer } from "../../services/$serviceId/-components/StoreServiceDrawer";
 import { domainsQuery } from "#/modules/config-store/store-view.queries";
-import { serviceUptimeQueryOptions, serviceUptimeSeriesQueryOptions } from "#/modules/uptime/uptime.queries";
+import { serviceUptimeQueryOptions } from "#/modules/uptime/uptime.queries";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
@@ -19,8 +19,7 @@ export const Route = createFileRoute(
     if (deps.tab === "monitoring") {
       const environment = await requireStoreEnvironment(context, params);
       const scope = { organizationSlug: params.organizationSlug, environmentId: environment.id };
-      streamRemote(context, serviceUptimeQueryOptions(scope, params.serviceId),
-        serviceUptimeSeriesQueryOptions(scope, params.serviceId, deps.range ?? "24h"));
+      streamRemote(context, serviceUptimeQueryOptions(scope, params.serviceId, deps.range ?? "24h"));
     }
     await prefetchStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: params.environmentSlug }));
   },
