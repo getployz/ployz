@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, between, desc, eq, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, between, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
@@ -91,7 +91,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .limit(1);
   const status = open !== undefined ? "unreachable" : probed === undefined ? "pending" : "up";
 
-  // Raw probes count where raw retention reaches; the hourly rollup counts the whole hours before that.
+  // Raw probes count where raw retention reaches; the hourly rollup counts the whole hours before that and before `to`.
   const rawFrom = since("raw", checked.from);
   const split = rawFrom.getTime() === checked.from ? rawFrom : new Date(Math.ceil(rawFrom.getTime() / HOUR_MS) * HOUR_MS);
   const [hourly] = split.getTime() === checked.from ? [] : yield* drizzle
@@ -103,7 +103,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .where(and(
       of(uptimeResultHourly),
       gte(uptimeResultHourly.hour, since("hourly", checked.from)),
-      lt(uptimeResultHourly.hour, new Date(Math.min(split.getTime(), checked.to))),
+      lte(uptimeResultHourly.hour, new Date(Math.min(split.getTime(), checked.to) - HOUR_MS)),
     ));
   const [raw] = yield* drizzle
     .select({

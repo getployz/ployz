@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkWindow, edgeText, parseEdge, pointSource, rangeLabel, resolveRange } from "./uptime-range";
+import { Schema } from "effect";
+import { checkWindow, edgeText, RangeEdge, parseEdge, pointSource, rangeLabel, resolveRange } from "./uptime-range";
 
 const NOW = Date.parse("2026-10-11T12:30:00.000Z");
 const MINUTE = 60_000;
@@ -58,6 +59,14 @@ describe("parseEdge", () => {
     }
     expect(edgeText("2026-10-11T18:30:00.000Z", NY)).toBe("2026-10-11 14:30");
     expect(edgeText("15m", NY)).toBe("15m ago");
+  });
+});
+
+describe("RangeEdge", () => {
+  it("holds now, offsets and real UTC instants only", () => {
+    const valid = Schema.is(RangeEdge);
+    for (const edge of ["now", "15m", "2026-10-11T14:00:00.000Z"]) expect(valid(edge)).toBe(true);
+    for (const edge of ["2026-99-99T00:00:00.000Z", "2026-02-30T00:00:00.000Z", "0m", "15M", "2026-10-11T14:00:00Z"]) expect(valid(edge)).toBe(false);
   });
 });
 

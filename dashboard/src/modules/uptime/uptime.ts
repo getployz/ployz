@@ -61,8 +61,8 @@ export type TimeWindow = { readonly from: number; readonly to: number; readonly 
 
 const STEPS_MS = [MINUTE_MS, 5 * MINUTE_MS, 15 * MINUTE_MS, 30 * MINUTE_MS, HOUR_MS, 3 * HOUR_MS, 6 * HOUR_MS, 12 * HOUR_MS, DAY_MS];
 
-/** The first round step of at least `ms`. */
-const roundStep = (ms: number) => STEPS_MS.find((step) => step >= ms) ?? DAY_MS;
+/** The first round step of at least `ms`, or whole days past the last. */
+const roundStep = (ms: number) => STEPS_MS.find((step) => step >= ms) ?? Math.ceil(ms / DAY_MS) * DAY_MS;
 
 /** The finest step each source's points fill: a probe interval, an hour, 6 hours. */
 const SOURCE_STEP_MS = { raw: 0, hourly: HOUR_MS, sixHourly: 6 * HOUR_MS } satisfies Record<PointSource, number>;

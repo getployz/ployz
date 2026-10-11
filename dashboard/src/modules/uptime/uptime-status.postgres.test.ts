@@ -180,6 +180,16 @@ describe("uptime percentages", () => {
     expect((await summary(check, "90d")).uptime).toBe(89 / 100);
   });
 
+  it("count only the hours that end by Until in a range past raw retention", async () => {
+    const check = await createCheck();
+    await hourly(check, "eu-west", hourAgo(40 * 24 + 1), 10, 0, 0);
+    await hourly(check, "eu-west", hourAgo(40 * 24), 10, 10, 0);
+    const until = new Date(Date.parse(hourAgo(40 * 24)) + 30 * MINUTE).toISOString();
+    const from = new Date(Date.parse(hourAgo(40 * 24 + 2))).toISOString();
+
+    expect((await summary(check, from, until)).uptime).toBe(1);
+  });
+
   it("count routine probes only", async () => {
     const check = await createCheck();
     await result(check, "eu-west", ago(20 * MINUTE), "fail", 9000);
