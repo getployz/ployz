@@ -7,11 +7,13 @@
 //! each pull request and passes its current facts in as a system event; the Store
 //! decides. An older read never replaces a newer one: facts are ordered by GitHub's
 //! `updated_at`. Opening makes the PR Environment and deploys it; renaming the head
-//! branch retracks it; closing closes it, unless the plan keeps it.
+//! branch retracks it; the merge lands its On merge list, once; closing closes it,
+//! unless the plan keeps it.
 //!
 //! Closing a Branch, for its pull request or for sitting idle a week, marks it
 //! `closing`. Cloud admits its removal from the Servers (`Admit { remove }`, with
-//! the runtime evidence it gathers) and the sweep deletes it once that applied.
+//! the runtime evidence it gathers) and the sweep deletes it once that applied. An
+//! idle PR Environment whose merge would land something only comes off the Servers.
 
 mod checks;
 mod on_merge;
@@ -207,14 +209,6 @@ pub struct Destination {
     pub changes: usize,
 }
 
-/// What Cloud checks before telling the Store about a push to a branch.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct PendingSyncs {
-    /// Pull requests into the branch that a draft includes, not known to have
-    /// merged: Cloud reports each that did.
-    pub standing: Vec<PullRequestNumber>,
-}
-
 /// A plan as stored, by Environment ID and Service lineage.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Stored {
@@ -404,9 +398,11 @@ pub(crate) fn pull_request(
             event.updated.as_str().into(),
         ],
     )?;
-    // Merged is for good: whatever order the events come in, the first merge stays.
+    // Merged is for good: whatever order the events come in, the first merge stays,
+    // and lands once.
+    let mut first_merge = None;
     if let Some(commit) = &event.merge_commit {
-        tx.execute(
+        let merged = tx.execute(
             "UPDATE config_pull_request SET merged = ?1 \
              WHERE organization_id = ?2 AND repository_id = ?3 AND number = ?4 \
              AND merged IS NULL",
@@ -423,19 +419,52 @@ pub(crate) fn pull_request(
                 number.into(),
             ],
         )?;
+        if merged == 1 {
+            first_merge = Some(commit);
+        }
     }
     let mut automated = Automated::default();
-    if written == 0 {
+    let fresh = written != 0;
+    if !fresh && first_merge.is_none() {
         // Older than what the Store holds: never undo a newer fact.
         return Ok(automated);
     }
     let current = current(tx, who, event.repository_id, event.number)?;
     // Everything this event may touch, locked first and in ID order: its PR
-    // Environments and where new ones start from. No Destination: a pull request's
-    // event writes no draft.
+    // Environments, where new ones start from, and at the merge the Destinations it
+    // lands in.
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(start_froms(tx, who, event.repository_id)?);
+    let target = facts(tx, who, repository_id, number)?.map(|facts| facts.target_branch);
+    if let (Some(_), Some(target)) = (first_merge, &target) {
+        for (_, project) in &current {
+            touched.extend(destinations_of(tx, project, repository_id, target)?);
+        }
+    }
     scope::lock_all(tx, touched)?;
+    // A land that fails leaves its PR Environment open, so nothing it held is lost.
+    let mut kept = BTreeSet::new();
+    if let (Some(commit), Some(target)) = (first_merge, &target) {
+        for (environment, _) in &current {
+            let at = on_merge::Merging {
+                commit,
+                target,
+                trusted,
+            };
+            if !on_merge::land(tx, who, environment, &at, &mut automated)? {
+                kept.insert(environment.clone());
+            }
+        }
+    }
+    if !fresh {
+        if !current.is_empty() {
+            automated.checks.push(PullRequestRef {
+                repository_id,
+                number,
+            });
+        }
+        return Ok(automated);
+    }
     let renamed = before
         .as_ref()
         .is_some_and(|before| before.head_branch != event.head_branch);
@@ -455,7 +484,7 @@ pub(crate) fn pull_request(
     if !event.open {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
-            if plan.remove_on_close {
+            if plan.remove_on_close && !kept.contains(environment) {
                 close(tx, who, environment, &mut automated)?;
             }
         }
@@ -850,6 +879,21 @@ fn settle(
     Ok(())
 }
 
+/// Take PR Environment `id` off the Servers, keeping it: its next push deploys it
+/// again.
+fn shut_down(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &EnvironmentId,
+    automated: &mut Automated,
+) -> Result<(), RpcError> {
+    let environment = scope::lock_id(tx, who, id)?;
+    if deployment::in_flight(tx, id)?.is_none() && teardown::on_servers(tx, id)?.is_some() {
+        automated.closing.push(environment.summary);
+    }
+    Ok(())
+}
+
 /// What the idle rule reads of each Branch: `environment_id`, kept, closing, its
 /// latest admission (-1 for none), its Branches and whether it is a Default.
 const IDLE_FACTS: &str = "SELECT b.environment_id, b.kept, b.closing, \
@@ -888,7 +932,13 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
             settle(tx, who, &id, &mut automated)?;
             continue;
         }
-        if idle_close(&row)?.is_some_and(|at| sweep.now >= at) {
+        if !idle_close(&row)?.is_some_and(|at| sweep.now >= at) {
+            continue;
+        }
+        // Closing would lose what its merge lands: shut it down instead.
+        if on_merge::awaits(tx, who, &id)? {
+            shut_down(tx, who, &id, &mut automated)?;
+        } else {
             close(tx, who, &id, &mut automated)?;
         }
     }
@@ -920,29 +970,31 @@ struct Merged {
     into: BranchName,
 }
 
-/// The pull requests into `branch` of `repository_id` a draft includes, not known to
-/// have merged.
-pub(crate) fn pending(
+/// The open pull requests into `branch` of `repository_id` with a PR Environment, not
+/// known to have merged: Cloud reports each that did before the push, so its merge
+/// lands first.
+pub(crate) fn awaiting_merge(
     tx: &mut dyn Tx,
     who: &Actor,
     repository_id: RepositoryId,
     branch: &BranchName,
-) -> Result<PendingSyncs, RpcError> {
+) -> Result<Vec<PullRequestNumber>, RpcError> {
     let rows = tx.query(
-        "SELECT DISTINCT p.number, r.facts FROM config_proposal p \
+        "SELECT DISTINCT p.number, r.facts FROM config_pr_environment p \
+         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
          JOIN config_pull_request r ON r.organization_id = p.organization_id \
          AND r.repository_id = p.repository_id AND r.number = p.number \
-         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND r.merged IS NULL \
-         ORDER BY p.number",
+         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND b.closing = 0 \
+         AND r.merged IS NULL ORDER BY p.number",
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
-    let mut pending = PendingSyncs::default();
+    let mut awaiting = Vec::new();
     for row in rows {
         let facts: PullRequest = row.json(1, "pull request")?;
-        let number = row.number(0, "proposal")?;
-        if facts.target_branch == *branch && !pending.standing.contains(&number) {
-            pending.standing.push(number);
+        let number = row.number(0, "pull request")?;
+        if facts.target_branch == *branch && !awaiting.contains(&number) {
+            awaiting.push(number);
         }
     }
-    Ok(pending)
+    Ok(awaiting)
 }

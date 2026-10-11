@@ -1209,3 +1209,25 @@ fn a_preview_reopened_while_the_old_one_closes_is_listed() {
     assert!(now.is_some() && now != old, "{now:?}");
     assert!(newer);
 }
+
+#[test]
+fn an_idle_preview_with_something_to_land_only_shuts_down() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    set(&store, &who, "pr-5", "web.env.A", json!("2"));
+
+    // A week idle: off the Servers, kept, so its merge still lands A.
+    let idle = sweep(&store, &who, now() + 8 * DAY);
+    assert_eq!(idle.closing.len(), 1, "{idle:?}");
+    assert_eq!(idle.closing[0].name.to_string(), "pr-5");
+    let off = remove(&store, &who, "pr-5");
+    run(&store, &off, &[]);
+    let swept = sweep(&store, &who, now() + 8 * DAY);
+    assert!(
+        swept.closing.is_empty() && swept.removed.is_empty(),
+        "{swept:?}"
+    );
+    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
+}

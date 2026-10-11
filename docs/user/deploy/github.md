@@ -121,8 +121,8 @@ workspace, leave the root directory at `/`. Set a
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own
   [preview environments](../environments/preview-environments.md) instead.
-- **Merging a pull request never changes your settings.** Its code deploys like any push. To take
-  setting changes from its preview, see
-  [Sync changes to production](../environments/preview-environments.md#sync-changes-to-production).
+- **Merging a pull request brings its preview's setting changes.** Its code deploys like any
+  push, and the changes its [preview](../environments/preview-environments.md) made land in
+  production as one saved change, **Merged #146**, that deploys with the merge.
 
 Next: [give your app its variables](../services/variables.md).

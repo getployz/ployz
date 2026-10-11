@@ -71,9 +71,9 @@ pub use id::*;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{
-    Destination, MergeRow, OnMerge, OnMergeInto, OnMergeQuery, OpenPullRequest, PendingSyncs,
-    PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery,
-    PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Sweep,
+    Destination, MergeRow, OnMerge, OnMergeInto, OnMergeQuery, OpenPullRequest, PrEnvironment,
+    PrPlan, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery, PullRequestRef,
+    PullRequestView, Ride, SetMergeValue, SetPrPlan, Sweep,
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss, docker_volume};
@@ -342,20 +342,20 @@ impl ConfigStore {
             .read(|tx| automation::head(tx, organization, repository_id, branch))
     }
 
-    /// The Conditional Syncs a push to `branch` may freeze or carry: Cloud reports
-    /// the pull requests that merged, then which merge commits the head contains.
+    /// The open pull requests into `branch` whose merge would land config: Cloud
+    /// reports each that merged before it tells the Store about the push.
     ///
     /// # Errors
     /// Returns a storage error.
-    pub fn pending_syncs(
+    pub fn awaiting_merge(
         &self,
         organization: &OrganizationId,
         repository_id: RepositoryId,
         branch: &BranchName,
-    ) -> Result<PendingSyncs, RpcError> {
+    ) -> Result<Vec<PullRequestNumber>, RpcError> {
         let who = Actor::system(organization.clone());
         self.storage
-            .read(|tx| pull_request::pending(tx, &who, repository_id, branch))
+            .read(|tx| pull_request::awaiting_merge(tx, &who, repository_id, branch))
     }
 
     /// Forget an Organization's configuration once it has no Project: what it

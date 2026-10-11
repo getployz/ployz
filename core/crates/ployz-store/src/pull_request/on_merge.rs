@@ -7,13 +7,19 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    Arrives, At, Cell, Plan, RowId, SavedVariableValue, SealedCell, Verdict, Why, marks_on,
+    Arrives, At, Cell, Cells, Plan, RowId, SavedVariableValue, SealedCell, Verdict, Why, marks_on,
+    put_back,
 };
 use serde_json::Value;
 
 use super::*;
 use crate::SealingKey;
-use crate::branch::{Move, NamedRow, RowRef, json_of, named, resolve_one, row_id, shown};
+use crate::automation;
+use crate::branch::{
+    Carried, Move, NamedRow, RowRef, config, end_included, json_of, named, resolve_one, row_id,
+    share, shown,
+};
+use crate::storage;
 use crate::variables::{self, VariableKey};
 
 /// Read a PR Environment's On merge list.
@@ -389,6 +395,236 @@ pub(crate) fn set_merge_value(
         )?;
     }
     listed(tx, who, from)
+}
+
+/// Whether `id` is the PR Environment of an open pull request whose merge lands
+/// something.
+pub(crate) fn awaits(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
+    let Some(pull_request) = of(tx, id)? else {
+        return Ok(false);
+    };
+    let open = facts(tx, who, pull_request.repository_id, pull_request.number)?
+        .is_some_and(|facts| facts.open);
+    if !open {
+        return Ok(false);
+    }
+    let from = scope::load_by_id(tx, id)?;
+    let (_, landings) = landings(tx, who, &from)?;
+    Ok(landings.iter().any(|landing| !landing.riding().is_empty()))
+}
+
+/// A pull request's merge, as the Store first learned of it.
+pub(crate) struct Merging<'a> {
+    /// The merge commit.
+    pub(crate) commit: &'a CommitSha,
+    /// The branch it merged into.
+    pub(crate) target: &'a BranchName,
+    pub(crate) trusted: &'a Trusted,
+}
+
+/// Land what PR Environment `from`'s pull request lands in each Destination, one
+/// Saved revision each, and deploy the Services it changed there. A Destination
+/// that can't take it is skipped and keeps what it had; returns whether every one
+/// took it. The caller holds the locks.
+pub(crate) fn land(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    from: &EnvironmentId,
+    merge: &Merging<'_>,
+    automated: &mut Automated,
+) -> Result<bool, RpcError> {
+    let from = scope::load_by_id(tx, from)?;
+    let (pull_request, landings) = landings(tx, who, &from)?;
+    let mut all = true;
+    for landing in landings {
+        let into = landing.into.summary.clone();
+        let landed = storage::attempt(tx, |tx| {
+            land_one(tx, who, &from, landing, pull_request.number)
+        });
+        match landed {
+            Ok(services) if services.is_empty() => {}
+            Ok(services) => automation::deploy_landed(
+                tx,
+                who,
+                &into.id,
+                (pull_request.repository_id, merge.target, merge.commit),
+                services,
+                merge.trusted,
+                automated,
+            )?,
+            Err(error) if automation::skippable(&error) => {
+                all = false;
+                automated.skipped.push(Skipped {
+                    environment: into.id,
+                    reason: format!(
+                        "Didn't land #{} in {}: {}",
+                        pull_request.number, into.name, error.message
+                    ),
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(all)
+}
+
+/// Land `landing` in its Destination: Saved State takes every riding row, and
+/// Working State each one it still holds as Saved did, so an edit staged there
+/// stays and wins at the next Save. Returns the IDs of the Services it changed.
+fn land_one(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    from: &Environment,
+    landing: Landing,
+    number: PullRequestNumber,
+) -> Result<Vec<String>, RpcError> {
+    let picks = landing.riding();
+    let Landing {
+        into: mut destination,
+        plan,
+        ..
+    } = landing;
+    if picks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let into = destination.summary.id.clone();
+    let values = edits(tx, &from.summary.id, &into)?;
+    let applied = plan.apply(&picks, &values).map_err(config)?;
+    let latest = review::latest_saved(tx, &into)?;
+    let old = latest
+        .as_ref()
+        .map_or_else(|| destination.working.clone(), |saved| saved.intent.clone());
+    let (saved, _) = scope::checked(
+        tx,
+        &destination.summary,
+        &old,
+        Some(&from.working),
+        &applied.next,
+    )?;
+    review::publish(
+        tx,
+        who,
+        &into,
+        saved.clone(),
+        latest.as_ref(),
+        Some(&format!("Merged #{number}")),
+    )?;
+
+    // Working: the nodes arriving as Saved has them, so their IDs match; then each
+    // row Working State holds as Saved did, with the variables Saved gained under
+    // Saved's IDs.
+    let arriving: BTreeSet<&str> = picks
+        .iter()
+        .filter(|pick| *pick.at() == At::Node)
+        .map(RowId::lineage)
+        .collect();
+    let mut working = destination.working.clone();
+    working.services.extend(
+        saved
+            .services
+            .iter()
+            .filter(|node| arriving.contains(node.lineage_id.as_str()))
+            .cloned(),
+    );
+    working.volumes.extend(
+        saved
+            .volumes
+            .iter()
+            .filter(|node| arriving.contains(node.resource_lineage_id.as_str()))
+            .cloned(),
+    );
+    working.configs.extend(
+        saved
+            .configs
+            .iter()
+            .filter(|node| arriving.contains(node.resource_lineage_id.as_str()))
+            .cloned(),
+    );
+    let way = Move::merge(tx, from, &destination)?;
+    let old_cells = Cells::of(&old, &way.hostnames.into);
+    let mirror = way.plan(&working);
+    let staged: BTreeSet<RowId> = mirror
+        .rows()
+        .iter()
+        .filter(|row| {
+            picks.contains(&row.id)
+                && !arriving.contains(row.id.lineage())
+                && matches!(row.verdict, Verdict::Moves { .. })
+                && row.into == *old_cells.at(&row.id)
+        })
+        .map(|row| row.id.clone())
+        .collect();
+    if !staged.is_empty() {
+        let next = mirror.apply(&staged, &values).map_err(config)?.next;
+        working = with_variable_ids_of(&saved, &working, next);
+    }
+    let consumed = end_included(tx, &into, Some(&from.summary.id))?;
+    if working != destination.working {
+        let carried = Carried::of(tx, &from.summary.id, &from.working)?;
+        crate::branch::land(
+            tx,
+            who,
+            &mut destination,
+            (&from.working, &carried),
+            working,
+            &staged,
+        )?;
+    } else if consumed {
+        scope::persist_working(tx, &mut destination)?;
+    }
+
+    // The pair shares what landed: an Edit's value, not the PR Environment's.
+    let mut base = applied.base;
+    for landed in &applied.landed {
+        if values.contains_key(&landed.row) {
+            base = put_back(&base, &landed.row, &landed.value).map_err(config)?;
+        }
+    }
+    share(tx, (&into, &from.summary.id), &base)?;
+    tx.execute(
+        "DELETE FROM config_merge_value WHERE environment_id = ?1 AND destination_id = ?2",
+        &[from.summary.id.as_str().into(), into.as_str().into()],
+    )?;
+    let lineages: BTreeSet<&str> = picks.iter().map(RowId::lineage).collect();
+    Ok(saved
+        .services
+        .iter()
+        .filter(|service| lineages.contains(service.lineage_id.as_str()))
+        .map(|service| service.id.clone())
+        .collect())
+}
+
+/// `next` with each variable `before` lacked under the ID `saved` gave it (by
+/// Service lineage and key), so Saved and Working State agree.
+fn with_variable_ids_of(
+    saved: &SavedEnvironmentIntent,
+    before: &SavedEnvironmentIntent,
+    mut next: SavedEnvironmentIntent,
+) -> SavedEnvironmentIntent {
+    for node in &mut next.services {
+        let had: BTreeSet<&str> = before
+            .services
+            .iter()
+            .find(|own| own.id == node.id)
+            .map(|own| own.variables.iter().map(|v| v.id.as_str()).collect())
+            .unwrap_or_default();
+        let Some(in_saved) = saved
+            .services
+            .iter()
+            .find(|own| own.lineage_id == node.lineage_id)
+        else {
+            continue;
+        };
+        for variable in &mut node.variables {
+            if had.contains(variable.id.as_str()) {
+                continue;
+            }
+            if let Some(own) = in_saved.variables.iter().find(|v| v.key == variable.key) {
+                variable.id.clone_from(&own.id);
+            }
+        }
+    }
+    next
 }
 
 /// Forget the Edits of PR Environment `environment`: its pull request retargeted.

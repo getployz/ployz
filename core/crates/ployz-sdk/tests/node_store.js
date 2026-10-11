@@ -42,7 +42,7 @@ async function expectInvalid(what, fn) {
   if ((await open()).converted() !== null) {
     throw new Error("a reopened Store has no receipt");
   }
-  for (const call of ["branchHead", "pendingSyncs"]) {
+  for (const call of ["branchHead", "awaitingMerge"]) {
     await expectInvalid(`${call} organization`, () => store[call]("Not An Id!", 1, "main"));
     await expectInvalid(`${call} repository`, () => store[call]("acme", -1, "main"));
     await expectInvalid(`${call} branch`, () => store[call]("acme", 1, "no spaces allowed"));

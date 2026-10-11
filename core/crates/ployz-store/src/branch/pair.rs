@@ -509,7 +509,7 @@ fn made_with(
 }
 
 /// What `a` and `b` last shared is `base` now.
-pub(super) fn share(
+pub(crate) fn share(
     tx: &mut dyn Tx,
     (a, b): (&EnvironmentId, &EnvironmentId),
     base: &SavedEnvironmentIntent,

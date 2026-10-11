@@ -4,8 +4,8 @@ description: Give every pull request a temporary copy of your app at its own htt
 ---
 
 Each pull request gets a temporary copy of your app at its own https address. Every push to the
-pull request redeploys it. When the pull request merges, production deploys the merge as usual,
-with any setting changes you synced from the preview, and the copy and its data are deleted.
+pull request redeploys it. When the pull request merges, production deploys the merge with the
+setting changes the preview made, and the copy and its data are deleted.
 Closing the pull request without merging deletes it too.
 
 The dashboard calls these PR environments.

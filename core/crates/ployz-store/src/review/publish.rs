@@ -105,7 +105,7 @@ pub(crate) fn publish(
     let review = review::review(tx, &environment)?;
     review::check(&review, publish.version.as_deref())?;
     // A manual Save ends the draft's proposals: what they brought is its own now.
-    let consumed = crate::branch::end_included(tx, &environment.summary.id)?;
+    let consumed = crate::branch::end_included(tx, &environment.summary.id, None)?;
     if review.saved.is_none()
         && canonicalize_environment_intent(environment.working.clone())
             == canonicalize_environment_intent(review.head.intent.clone())
@@ -171,7 +171,8 @@ pub(crate) fn discard(
     )?;
     let (mut environment, changed) = prepared.persist(tx)?;
     // Discarding the whole draft ends its proposals; a path keeps them.
-    if discard.path.is_none() && crate::branch::end_included(tx, &environment.id)? && !changed {
+    if discard.path.is_none() && crate::branch::end_included(tx, &environment.id, None)? && !changed
+    {
         let mut whole = scope::load_by_id(tx, &environment.id)?;
         scope::persist_working(tx, &mut whole)?;
         environment = whole.summary;

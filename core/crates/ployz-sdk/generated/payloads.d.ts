@@ -81,8 +81,9 @@ waiting: Array<EnvironmentId>,
  */
 skipped: Array<Skipped>,
 /**
- * Branches the Store is closing that still run on the Servers: Cloud admits
- * their removal (`Admit { remove }`) with the runtime evidence it gathers.
+ * Branches the Store is closing, and idle PR Environments it shuts down, that
+ * still run on the Servers: Cloud admits their removal (`Admit { remove }`)
+ * with the runtime evidence it gathers.
  */
 closing: Array<EnvironmentSummary>,
 /**

@@ -5,15 +5,18 @@
 //! A PR Environment's On merge list through the Store's interface, on SQLite and on
 //! Postgres (see `backend`): every change it made rides into its Destination, over
 //! whatever production changed since, a removal too; Exclude keeps a row here, an
-//! Edit gives a riding variable the value it lands with.
+//! Edit gives a riding variable the value it lands with. The merge lands the list
+//! in one Saved revision and deploys what it changed with the merge's push.
 
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AuthorizedRepository, Change, ConfigStore, CreateGitService, CreateProject, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentRef, MergeRow, NeverSync, OnMerge, OnMergeQuery,
-    OrganizationId, ProjectId, ProjectName, Publish, PullRequest, Ride, ServiceLineageId,
-    SetMergeValue, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SystemEvent, Trusted,
+    Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, ConfigStore,
+    CreateGitService, CreateProject, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentName,
+    EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, HistoryAction, HistoryPreviewQuery,
+    HistoryQuery, MergeRow, NeverSync, OnMerge, OnMergeQuery, OrganizationId, ProjectId,
+    ProjectName, Publish, PullRequest, Ride, SavedRevision, ServiceLineageId, SetMergeValue,
+    SetPrPlan, SettingPath, StageHistory, SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -441,4 +444,472 @@ fn retargeting_the_pull_request_forgets_its_edits() {
     assert_eq!(on_merge(&store, &who).destinations, []);
     pull(&store, &who, "main", "2026-09-29T10:00:02Z");
     assert_eq!(row(&store, &who, "web.env.A").ride, Ride::Rides);
+}
+
+// The merge.
+
+const MERGE: &str = "3333333333333333333333333333333333333333";
+const LATER: &str = "4444444444444444444444444444444444444444";
+
+fn system(store: &ConfigStore, who: &Actor, event: &SystemEvent) -> Automated {
+    let Written::Automated(automated) = store
+        .system(&who.organization, event, &Trusted::default())
+        .unwrap()
+    else {
+        panic!("a system event writes Automated")
+    };
+    automated
+}
+
+/// Pull request #5 merged at `commit`, as GitHub said at `updated`.
+fn merged(store: &ConfigStore, who: &Actor, updated: &str, commit: &str) -> Automated {
+    let event = SystemEvent::PullRequest(PullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        title: "Add search".into(),
+        author: "ada".into(),
+        bot: false,
+        head_branch: backend::git_branch("search"),
+        head: backend::sha(HEAD),
+        target_branch: backend::git_branch("main"),
+        commits: 1,
+        open: false,
+        merge_commit: Some(backend::sha(commit)),
+        updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
+    });
+    system(store, who, &event)
+}
+
+/// A push to `main`.
+fn push(base: Option<&str>, head: &str, changed: Option<&[&str]>) -> SystemEvent {
+    SystemEvent::BranchHead(BranchHead {
+        repository_id: backend::repo_id(11),
+        branch: backend::git_branch("main"),
+        base: base.map(backend::sha),
+        head: Some(backend::sha(head)),
+        changed: changed.map(|paths| paths.iter().map(|path| (*path).to_owned()).collect()),
+    })
+}
+
+/// The Services each admitted Deployment targets.
+fn deployed(automated: &Automated) -> Vec<Vec<String>> {
+    automated
+        .admitted
+        .iter()
+        .map(|admitted| {
+            admitted
+                .deployment
+                .services
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        })
+        .collect()
+}
+
+/// `environment`'s Working value at `path`.
+fn value(store: &ConfigStore, who: &Actor, environment: &str, path: &str) -> Option<Value> {
+    let query = EnvironmentQuery {
+        environment: at(environment),
+        path: None,
+        all: true,
+    };
+    store
+        .read(who, &query)
+        .unwrap()
+        .settings
+        .into_iter()
+        .find(|row| row.path.to_string() == path)
+        .map(|row| row.value)
+}
+
+fn history(store: &ConfigStore, who: &Actor) -> Vec<SavedRevision> {
+    store
+        .read(
+            who,
+            &HistoryQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .revisions
+}
+
+fn production_diff(store: &ConfigStore, who: &Actor) -> DiffView {
+    store
+        .read(
+            who,
+            &DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+}
+
+/// Whether pr-5 is still listed.
+fn preview_listed(store: &ConfigStore, who: &Actor) -> bool {
+    store
+        .read(who, &EnvironmentsQuery::default())
+        .unwrap()
+        .environments
+        .iter()
+        .any(|listing| listing.name.as_str() == "pr-5")
+}
+
+#[test]
+fn the_merge_lands_every_riding_row_in_one_saved_revision_that_undo_takes_back() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.A", json!("2")), ("web.env.B", json!("new"))],
+    );
+    unset(&store, &who, "pr-5", "web.env.D");
+    // production changed A since: the merge lands over it.
+    set(&store, &who, "production", &[("web.env.A", json!("5"))]);
+    save(&store, &who, "production");
+    let before = history(&store, &who).len();
+
+    let automated = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let revisions = history(&store, &who);
+    assert_eq!(revisions.len(), before + 1);
+    let landed = revisions
+        .iter()
+        .find(|revision| revision.message.as_deref() == Some("Merged #5"))
+        .unwrap();
+    // Saved and Working agree: nothing is left to save.
+    assert!(production_diff(&store, &who).published);
+    assert_eq!(
+        [
+            value(&store, &who, "production", "web.env.A"),
+            value(&store, &who, "production", "web.env.B"),
+            value(&store, &who, "production", "web.env.C"),
+            value(&store, &who, "production", "web.env.D"),
+        ],
+        [Some(json!("2")), Some(json!("new")), Some(json!("1")), None]
+    );
+    // It closes as before, once it landed.
+    assert!(
+        automated.closing.len() + automated.removed.len() == 1 || !preview_listed(&store, &who),
+        "{automated:?}"
+    );
+
+    // Undo, from History, puts production back.
+    let query = HistoryPreviewQuery {
+        environment: at("production"),
+        revision: landed.revision,
+        action: HistoryAction::Undo,
+    };
+    let preview = store.read(&who, &query).unwrap();
+    store
+        .write(
+            &who,
+            &StageHistory {
+                environment: at("production"),
+                revision: query.revision,
+                action: query.action,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        [
+            value(&store, &who, "production", "web.env.A"),
+            value(&store, &who, "production", "web.env.B"),
+            value(&store, &who, "production", "web.env.D"),
+        ],
+        [Some(json!("5")), None, Some(json!("1"))]
+    );
+}
+
+#[test]
+fn the_merge_lands_edits_and_not_set_secrets_and_leaves_what_stays() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &NeverSync {
+                environment: at("production"),
+                rows: vec!["web.env.D".into()],
+                off: false,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("web.env.A", json!("2")),
+            ("web.env.B", json!("new")),
+            ("web.env.C", json!("2")),
+            ("web.env.D", json!("2")),
+            ("web.env.TOKEN", json!({ "secret": "test-token" })),
+        ],
+    );
+    exclude(&store, &who, "web.env.B", false);
+    store
+        .write(&who, &merge_value("web.env.C", Some("prod")))
+        .unwrap();
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        [
+            value(&store, &who, "production", "web.env.A"),
+            value(&store, &who, "production", "web.env.B"),
+            value(&store, &who, "production", "web.env.C"),
+            value(&store, &who, "production", "web.env.D"),
+            value(&store, &who, "production", "web.env.TOKEN"),
+        ],
+        [
+            Some(json!("2")),
+            None,
+            Some(json!("prod")),
+            Some(json!("1")),
+            Some(json!({ "secret": false })),
+        ]
+    );
+}
+
+#[test]
+fn the_merge_lands_once_whatever_order_its_events_come_in() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    // GitHub's merged event came in after a later read: still the first merge.
+    pull(&store, &who, "main", "2026-09-29T12:00:00Z");
+    let stale = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(stale.checks.len(), 1, "{stale:?}");
+    let landed = history(&store, &who).len();
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("2"))
+    );
+
+    // production moves on; a replay or a later read lands nothing again.
+    set(&store, &who, "production", &[("web.env.A", json!("7"))]);
+    save(&store, &who, "production");
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    merged(&store, &who, "2026-09-29T13:00:00Z", MERGE);
+    assert_eq!(history(&store, &who).len(), landed + 1);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("7"))
+    );
+}
+
+#[test]
+fn productions_staged_edit_stays_staged_over_what_landed() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.A", json!("2")), ("web.env.B", json!("new"))],
+    );
+    set(&store, &who, "production", &[("web.env.A", json!("9"))]);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("9"))
+    );
+    assert_eq!(
+        value(&store, &who, "production", "web.env.B"),
+        Some(json!("new"))
+    );
+    // Saved holds the landed A; the staged 9 wins at the next Save.
+    let staged = serde_json::to_value(production_diff(&store, &who).draft_changes).unwrap();
+    assert_eq!(
+        staged[0]["settings"],
+        json!([{
+            "path": "web.env.A", "kind": "update", "before": "2", "after": "9",
+            "canRestore": true, "row": staged[0]["settings"][0]["row"],
+        }]),
+        "{staged}"
+    );
+}
+
+#[test]
+fn what_landed_deploys_with_the_next_push_if_the_merge_came_first() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.watchPaths", json!(["web/**"]))],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(landed.admitted.is_empty(), "{landed:?}");
+    // The merge's push changed nothing web watches: web deploys for what landed.
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(deployed(&pushed), [["web"]]);
+    // Once.
+    let next = system(
+        &store,
+        &who,
+        &push(Some(MERGE), LATER, Some(&["README.md"])),
+    );
+    assert!(next.admitted.is_empty(), "{next:?}");
+}
+
+#[test]
+fn what_landed_deploys_at_once_if_the_push_came_first() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.watchPaths", json!(["web/**"]))],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(deployed(&landed), [["web"]]);
+}
+
+#[test]
+fn what_landed_follows_auto_deploy_and_wait_for_ci() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.autoDeploy", json!("false"))],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("2"))
+    );
+}
+
+#[test]
+fn what_landed_waits_for_ci_with_the_push() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.watchPaths", json!(["web/**"])),
+            ("web.waitForCi", json!(true)),
+        ],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(pushed.waiting.len(), 1, "{pushed:?}");
+    let passed = system(
+        &store,
+        &who,
+        &SystemEvent::CheckSuite(CheckSuite {
+            repository_id: backend::repo_id(11),
+            suite: 1,
+            head: backend::sha(MERGE),
+            status: serde_json::from_value(json!("completed")).unwrap(),
+            conclusion: Some(serde_json::from_value(json!("success")).unwrap()),
+            updated: ployz_store::GithubTimestamp::parse("2026-09-29T11:30:00Z").unwrap(),
+        }),
+    );
+    assert_eq!(deployed(&passed), [["web"]]);
+}
+
+#[test]
+fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
+    let (store, who) = shop();
+    // A rides naming api, which stays here.
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                environment: at("pr-5"),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("api:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.A", json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+    exclude(&store, &who, "api", false);
+    let before = history(&store, &who).len();
+
+    let automated = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(automated.skipped.len(), 1, "{automated:?}");
+    assert!(
+        automated.skipped[0]
+            .reason
+            .starts_with("Didn't land #5 in production: "),
+        "{automated:?}"
+    );
+    assert_eq!(history(&store, &who).len(), before);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("1"))
+    );
+    assert!(automated.closing.is_empty() && automated.removed.is_empty());
+    assert!(preview_listed(&store, &who));
+}
+
+#[test]
+fn a_kept_preview_has_nothing_left_on_merge_once_it_landed() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: None,
+                start_from: None,
+                copy: None,
+                setup: None,
+                remove_on_close: Some(false),
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    let main = backend::git_branch("main");
+    assert_eq!(
+        store
+            .awaiting_merge(&who.organization, backend::repo_id(11), &main)
+            .unwrap(),
+        [backend::pr_number(5)]
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(preview_listed(&store, &who));
+    assert!(
+        store
+            .awaiting_merge(&who.organization, backend::repo_id(11), &main)
+            .unwrap()
+            .is_empty()
+    );
+    let on_merge = on_merge(&store, &who);
+    assert!(
+        on_merge
+            .destinations
+            .iter()
+            .all(|destination| destination.rows.is_empty()),
+        "{on_merge:?}"
+    );
 }

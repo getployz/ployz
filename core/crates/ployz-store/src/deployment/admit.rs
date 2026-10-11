@@ -210,7 +210,7 @@ fn deploy(
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
     // A manual Deploy ends the draft's proposals: what they brought is its own now.
-    crate::branch::end_included(tx, id)?;
+    crate::branch::end_included(tx, id, None)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
     gate(

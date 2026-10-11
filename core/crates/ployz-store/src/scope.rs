@@ -577,37 +577,58 @@ pub(crate) fn validate_and_refresh_working_from(
     environment: &mut Environment,
     from: Option<&SavedEnvironmentIntent>,
 ) -> Result<(), RpcError> {
-    let document = serde_json::to_value(&environment.working).expect("Working State is JSON");
-    environment.working = parse_environment_intent(document)
-        .map_err(|error| error::invalid(error.message, json!({ "path": error.path })))?;
     // What is stored now is what this write replaces: the rules compare the two.
-    let id = &environment.summary.id;
     let rows = tx.query(
         "SELECT working FROM config_environment WHERE id = ?1",
-        &[id.as_str().into()],
+        &[environment.summary.id.as_str().into()],
     )?;
     let before = rows
         .first()
         .ok_or_else(|| error::corrupt("Environment"))?
         .intent(0, "Working State")?;
-    let setup = crate::branch::branch_setup(tx, id)?;
-    let live = crate::branch::live_names(tx, id, &before)?;
-    environment.live = crate::branch::live_names(tx, id, &environment.working)?;
-    crate::rules::check_write(
+    let (working, live) = checked(
+        tx,
         &environment.summary,
+        &before,
+        from,
+        &environment.working,
+    )?;
+    environment.working = working;
+    environment.live = live;
+    Ok(())
+}
+
+/// `after`, parsed and checked against the rules as a write that replaces `before` in
+/// `environment`, with the live names it gives. What `from` already breaks is not new.
+pub(crate) fn checked(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentSummary,
+    before: &SavedEnvironmentIntent,
+    from: Option<&SavedEnvironmentIntent>,
+    after: &SavedEnvironmentIntent,
+) -> Result<(SavedEnvironmentIntent, BTreeMap<String, String>), RpcError> {
+    let document = serde_json::to_value(after).expect("an intent is JSON");
+    let after = parse_environment_intent(document)
+        .map_err(|error| error::invalid(error.message, json!({ "path": error.path })))?;
+    let id = &environment.id;
+    let setup = crate::branch::branch_setup(tx, id)?;
+    let live_before = crate::branch::live_names(tx, id, before)?;
+    let live = crate::branch::live_names(tx, id, &after)?;
+    crate::rules::check_write(
+        environment,
         crate::rules::Facts {
-            working: &before,
-            live: &live,
+            working: before,
+            live: &live_before,
             setup: &setup,
         },
         from,
         crate::rules::Facts {
-            working: &environment.working,
-            live: &environment.live,
+            working: &after,
+            live: &live,
             setup: &setup,
         },
     )?;
-    Ok(())
+    Ok((after, live))
 }
 
 pub(crate) fn revision_param(revision: Revision) -> Result<i64, RpcError> {

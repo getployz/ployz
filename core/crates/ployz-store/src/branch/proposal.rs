@@ -842,21 +842,34 @@ pub(crate) fn undo(
     Ok(Some(Undone { into: into.summary }))
 }
 
-/// Save, Deploy and a whole Discard end `environment`'s proposals: what they
-/// brought is the draft's own now. True when it had any.
-pub(crate) fn end_included(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<bool, RpcError> {
+/// Save, Deploy and a whole Discard end `environment`'s proposals, and a merge the
+/// ones from its PR Environment `from`: what they brought is the draft's own now.
+/// True when it had any.
+pub(crate) fn end_included(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    from: Option<&EnvironmentId>,
+) -> Result<bool, RpcError> {
+    let mut of = "SELECT id FROM config_proposal WHERE environment_id = ?1".to_owned();
+    let mut params = vec![environment.as_str().into()];
+    if let Some(from) = from {
+        of.push_str(" AND source_environment_id = ?2");
+        params.push(from.as_str().into());
+    }
     // The arrivals are the draft's own now. One a later Sync refreshed isn't that
     // Sync's alone: no Undo of it after.
     tx.execute(
-        "UPDATE config_sync_arrival SET proposal_id = NULL, source = NULL, \
-         sync_id = CASE WHEN proposal_id IN (SELECT id FROM config_proposal \
-         WHERE environment_id = ?1 AND first_sync <> last_sync) THEN NULL ELSE sync_id END \
-         WHERE environment_id = ?1 AND proposal_id IS NOT NULL",
-        &[environment.as_str().into()],
+        &format!(
+            "UPDATE config_sync_arrival SET sync_id = CASE WHEN proposal_id IN \
+             ({of} AND first_sync <> last_sync) THEN NULL ELSE sync_id END, \
+             proposal_id = NULL, source = NULL \
+             WHERE environment_id = ?1 AND proposal_id IN ({of})"
+        ),
+        &params,
     )?;
     let ended = tx.execute(
-        "DELETE FROM config_proposal WHERE environment_id = ?1",
-        &[environment.as_str().into()],
+        &format!("DELETE FROM config_proposal WHERE id IN ({of})"),
+        &params,
     )?;
     Ok(ended > 0)
 }
