@@ -38,25 +38,29 @@ export const IncidentEvidence = Schema.Struct({
 });
 export type IncidentEvidence = typeof IncidentEvidence.Type;
 
-export const ReadOpenUptimeIncidentsInput = Schema.Struct({
+const EnvironmentScope = {
   organizationSlug: Schema.NonEmptyString,
   environmentId: Schema.NonEmptyString,
-});
-export type ReadOpenUptimeIncidentsInput = typeof ReadOpenUptimeIncidentsInput.Type;
+};
 
-export const ReadUptimeCheckInput = Schema.Struct({
-  organizationSlug: Schema.NonEmptyString,
-  checkId: Schema.String.check(Schema.isUUID()),
+export const ReadEnvironmentUptimeInput = Schema.Struct(EnvironmentScope);
+export type ReadEnvironmentUptimeInput = typeof ReadEnvironmentUptimeInput.Type;
+
+export const ReadServiceUptimeInput = Schema.Struct({ ...EnvironmentScope, serviceId: Schema.NonEmptyString });
+export type ReadServiceUptimeInput = typeof ReadServiceUptimeInput.Type;
+
+export const ReadServiceUptimeSeriesInput = Schema.Struct({
+  ...EnvironmentScope,
+  serviceId: Schema.NonEmptyString,
   range: Schema.Literals(UPTIME_RANGES),
 });
-export type ReadUptimeCheckInput = typeof ReadUptimeCheckInput.Type;
+export type ReadServiceUptimeSeriesInput = typeof ReadServiceUptimeSeriesInput.Type;
 
-/** One check of the environment that has an open incident. */
-export type OpenUptimeIncident = {
-  readonly checkId: string;
+/** One check of the environment, and when its open incident opened. */
+export type EnvironmentUptimeCheck = {
   readonly serviceId: string;
-  readonly incidentId: string;
-  readonly openedAt: string;
+  readonly url: string;
+  readonly openIncidentAt: string | null;
 };
 
 /**
@@ -66,9 +70,9 @@ export type OpenUptimeIncident = {
 export type UptimeStatus = "pending" | "up" | "unreachable";
 
 /**
- * One point of the latency chart. In the 24h range it is one routine probe: `ms` is its total time when it passed and
- * null when it failed or was inconclusive. In 7d and 90d it is one region's hour: `ms` is the median total time of the
- * hour's passing probes, null when none passed.
+ * One point of the latency chart. In 24h it is one routine probe: `ms` is its total time when it passed and null when
+ * it failed or was inconclusive. In 7d it is one region's hour: `ms` is the median total time of its passing probes.
+ * In 90d it is one region's 6 hours: `ms` is the hourly medians averaged by passing probes. Null when none passed.
  */
 export type UptimePoint = { readonly at: string; readonly region: string; readonly ms: number | null };
 
@@ -80,23 +84,13 @@ export type UptimeIncidentEntry = {
   readonly observations: readonly IncidentObservation[];
 };
 
-export type UptimeCheckDetail = {
-  readonly check: {
-    readonly id: string;
-    readonly name: string;
-    readonly url: string;
-    readonly serviceId: string;
-    readonly intervalSeconds: number;
-    readonly timeoutMs: number;
-    readonly expect: "below_400";
-    readonly enabled: boolean;
-  };
+export type ServiceUptime = {
+  readonly check: { readonly id: string; readonly url: string; readonly intervalSeconds: number };
   readonly status: UptimeStatus;
   /** Passing over pass plus fail routine probes, 0 to 1, by rolled-up hour. Null when no probe counted. */
   readonly uptime: Readonly<Record<UptimeRange, number | null>>;
-  readonly range: UptimeRange;
-  /** Ordered by `at`, then region. */
-  readonly series: readonly UptimePoint[];
-  /** Open and closed incidents that overlap the range, newest first. */
+  /** The last 90 UTC days, oldest first. `checked` when any hour of the day was rolled up. */
+  readonly days: readonly { readonly start: string; readonly checked: boolean }[];
+  /** Open and closed incidents that overlap the last 90 days, newest first. */
   readonly incidents: readonly UptimeIncidentEntry[];
 };
