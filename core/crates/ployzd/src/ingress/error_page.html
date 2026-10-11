@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>{err.status_code} · {http.request.host}</title>
+<title>{err.status_code} · {ployz_host}</title>
 <style>
 :root {
   color-scheme: light dark;
@@ -96,7 +96,7 @@ footer a:hover b, footer a:focus-visible b { color: var(--accent); text-decorati
   </div>
   <div data-for="DOMAIN_NOT_FOUND">
     <h1>Nothing is deployed here</h1>
-    <p class="lede">Check the address. No app uses {http.request.host}.</p>
+    <p class="lede">Check the address. No app uses {ployz_host}.</p>
   </div>
   <div data-for="INTERNAL_ERROR">
     <h1>Something went wrong</h1>
@@ -120,7 +120,7 @@ footer a:hover b, footer a:focus-visible b { color: var(--accent); text-decorati
     </div>
     <div data-for="DOMAIN_NOT_FOUND">
       <p><b>This domain points at your server, but no service has it, or its certificate is still being issued.</b></p>
-      <p>Add <code>{http.request.host}</code> to a service, including any <code>www.</code></p>
+      <p>Add <code>{ployz_host}</code> to a service, including any <code>www.</code></p>
     </div>
     <div data-for="INTERNAL_ERROR">
       <p><b>Your server couldn't handle this request.</b></p>

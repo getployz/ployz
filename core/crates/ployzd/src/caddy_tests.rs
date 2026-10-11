@@ -139,6 +139,17 @@ fn every_site_answers_failures_with_the_error_page() {
     ] {
         assert!(snippet.contains(code), "{code}");
     }
+    // An HTTP/2 authority isn't validated like an HTTP/1 Host, so the page only shows a safe copy.
+    assert_eq!(
+        snippet.matches("{http.request.host}").count(),
+        1,
+        "only the sanitizing map reads the raw host"
+    );
+    assert!(snippet.contains(r#"map {http.request.host} {ployz_host} { ~^([a-zA-Z0-9.:-]+)$ "${1}" default "this domain" }"#));
+    assert!(
+        snippet.find("handle @json").unwrap() < snippet.find("handle @html").unwrap(),
+        "a client that accepts JSON at all gets JSON"
+    );
     for address in [
         "http://",
         "https://",
@@ -589,7 +600,8 @@ fn pending_challenge_is_answered_on_the_http_site() {
         "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
     );
     assert!(challenge.contains("respond \"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" 200"));
-    assert!(site.contains("error NOT_RUNNING 503"));
+    assert!(site.contains("error DOMAIN_NOT_FOUND 404"), "{site}");
+    assert!(!site.contains("NOT_RUNNING"), "{site}");
     assert!(!caddyfile.contains("https://secure.example.com"));
 }
 

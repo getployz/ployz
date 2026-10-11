@@ -227,14 +227,20 @@ https:// {{\n\
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for site in &projection.sites {
-        let http = site.route(HttpProtocol::Http);
-        if http.is_some() || site.challenge().is_some() {
+        // A challenge-only http site publishes nothing else, so it answers like the catch-all.
+        let http = match site.route(HttpProtocol::Http) {
+            Some(endpoints) => Some(proxy(endpoints)),
+            None => site
+                .challenge()
+                .map(|_| "\terror DOMAIN_NOT_FOUND 404\n".to_owned()),
+        };
+        if let Some(answer) = http {
             // The hostname's own site shadows the catch-all, so it answers the verify probe too.
             write_site(
                 &mut output,
                 "http",
                 &site.hostname,
-                http.unwrap_or_default(),
+                &answer,
                 &hostname_verify,
                 site.challenge(),
             );
@@ -248,7 +254,14 @@ https:// {{\n\
         let stem = super::certificate_file_stem(&site.hostname, material);
         let tls =
             format!("\ttls {CONTAINER_CERTS_DIR}/{stem}.crt {CONTAINER_CERTS_DIR}/{stem}.key\n");
-        write_site(&mut output, "https", &site.hostname, route, &tls, None);
+        write_site(
+            &mut output,
+            "https",
+            &site.hostname,
+            &proxy(route),
+            &tls,
+            None,
+        );
     }
     write_certificate_errors(&mut output, &projection.sites);
     output
@@ -287,6 +300,10 @@ fn write_error_page(output: &mut String) {
 			~^50[234] NO_RESPONSE "The app didn't respond." "#this-app-didnt-respond"
 			default INTERNAL_ERROR "Something went wrong." ""
 		}
+		map {http.request.host} {ployz_host} {
+			~^([a-zA-Z0-9.:-]+)$ "${1}"
+			default "this domain"
+		}
 		header {
 			ployz-error {ployz_error}
 			ployz-request-id {http.request.uuid}
@@ -298,6 +315,11 @@ fn write_error_page(output: &mut String) {
 			refresh 10
 		}
 		log_append request_id {http.request.uuid}
+		@json header Accept *json*
+		handle @json {
+			header content-type application/json
+			respond `{"error":{"status":{err.status_code},"code":"{ployz_error}","message":"{ployz_message}","request_id":"{http.request.uuid}","docs":"https://ployz.dev/docs/troubleshooting/app-not-reachable?utm_source=error-page&utm_medium=json&utm_campaign={ployz_error}&utm_content=docs{ployz_docs}"}}` {err.status_code}
+		}
 		@html header Accept *text/html*
 		handle @html {
 			header content-type "text/html; charset=utf-8"
@@ -307,11 +329,6 @@ fn write_error_page(output: &mut String) {
     output.push_str(ERROR_PAGE);
     output.push_str(
         r##"ERROR_PAGE {err.status_code}
-		}
-		@json header Accept *json*
-		handle @json {
-			header content-type application/json
-			respond `{"error":{"status":{err.status_code},"code":"{ployz_error}","message":"{ployz_message}","request_id":"{http.request.uuid}","docs":"https://ployz.dev/docs/troubleshooting/app-not-reachable?utm_source=error-page&utm_medium=json&utm_campaign={ployz_error}&utm_content=docs{ployz_docs}"}}` {err.status_code}
 		}
 		handle {
 			header content-type "text/plain; charset=utf-8"
@@ -358,11 +375,27 @@ fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
     }
 }
 
+/// Proxies to `endpoints`, or answers `NOT_RUNNING` when there are none.
+fn proxy(endpoints: &[IngressEndpoint]) -> String {
+    if endpoints.is_empty() {
+        return "\terror NOT_RUNNING 503\n".to_owned();
+    }
+    format!(
+        "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n\
+\tlog_append upstream {{http.reverse_proxy.upstream.hostport}}\n",
+        endpoints
+            .iter()
+            .map(|endpoint| ingress_upstream(endpoint.address, endpoint.port))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
 fn write_site(
     output: &mut String,
     protocol: &str,
     hostname: &IngressHost,
-    endpoints: &[IngressEndpoint],
+    answer: &str,
     directives: &str,
     challenge: Option<&CertificateChallenge>,
 ) {
@@ -376,22 +409,9 @@ fn write_site(
             )
         })
         .unwrap_or_default();
-    let proxy = if endpoints.is_empty() {
-        "\terror NOT_RUNNING 503\n".to_owned()
-    } else {
-        format!(
-            "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n\
-\tlog_append upstream {{http.reverse_proxy.upstream.hostport}}\n",
-            endpoints
-                .iter()
-                .map(|endpoint| ingress_upstream(endpoint.address, endpoint.port))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
-    };
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{directives}{handle}{proxy}\timport error_page\n\tlog\n}}\n"
+        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page\n\tlog\n}}\n"
     );
 }
 
