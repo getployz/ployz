@@ -37,6 +37,9 @@ Paste or edit them, then click **Update variables**.
 From the CLI, `ployz set web.env.API_URL --rename PUBLIC_API_URL` renames a variable. Its value
 moves with it, and a sealed variable stays sealed. Deploy to give your service the new name.
 
+In Ployz Cloud, open the variable's menu in the service's Variables tab and choose Rename. If
+Ployz refuses the new name, the dashboard shows why.
+
 - Ployz refuses a new name another variable of the service already has, and leaves both as
   they are. Rename or remove that one first.
 - Ployz refuses to rename a variable something references, such as `${{ web.API_URL }}`,
