@@ -78,11 +78,17 @@ export function runtimeLine(
 /** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */
 export type NodeIssues = { count: number; tone: "bad" | "warn" };
 
-/** What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, and domains that need them. */
-export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status">[]): NodeIssues | null {
+/**
+ * What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, domains that need them,
+ * and the hostname of an open uptime incident, which is red. Uptime adds nothing when the Service is already down, and
+ * shares one issue with a domain needing attention on the same hostname.
+ */
+export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status" | "hostname">[], unreachable: string | null = null): NodeIssues | null {
+  const attention = domains.filter((domain) => domain.status === "needs_attention");
+  const uptime = !status.down && unreachable !== null;
   const count = (status.down || status.tone === "warn" ? 1 : 0) + (status.checkFailing ? 1 : 0)
-    + domains.filter((domain) => domain.status === "needs_attention").length;
-  return count === 0 ? null : { count, tone: status.down ? "bad" : "warn" };
+    + attention.length + (uptime && !attention.some((domain) => domain.hostname === unreachable) ? 1 : 0);
+  return count === 0 ? null : { count, tone: status.down || uptime ? "bad" : "warn" };
 }
 
 /** The public domain a Service's card shows, of its domains: the first custom one, else the generated one; `live` once it's set up. */

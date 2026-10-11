@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BinaryHeap, HashSet},
+    collections::{BinaryHeap, HashMap, HashSet},
     future::Future,
     pin::Pin,
     str::FromStr,
@@ -11,11 +11,11 @@ use std::{
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
-    ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
-    ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineLogService,
-    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
-    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
-    resolve_container_selector, resolve_machine_selectors, select_service,
+    ContainerId, ContainerRef, ContainerSelector, ExecConfig, ExecOptions, ExecRequestFrame,
+    FanoutSelector, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
+    MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload, QualifiedService,
+    ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, TailLogsRequest,
+    op, resolve_container_selector, resolve_machine_selectors, select_service,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
 use crate::connect::{Client, ConnectError, TransportError};
+use history::HistorySelector;
 use ployz_core::EnvironmentValues;
 
 pub const DEFAULT_EXEC_COMMAND: &[&str] = &[
@@ -341,7 +342,7 @@ pub fn parse_log_time(value: &str, now_unix_seconds: i64) -> Result<Option<i64>,
         .ok_or_else(|| OperatorError::InvalidLogTime(value.to_owned()))
 }
 
-/// Go duration syntax, such as `1m30s` or `500ms`.
+/// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`.
 pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
     let mut remaining = value;
     let mut seconds = 0_f64;
@@ -355,6 +356,7 @@ pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
             .unwrap_or(remaining.len());
         let (unit, rest) = remaining.split_at(unit_end);
         let multiplier = match unit {
+            "d" => 86_400_f64,
             "h" => 3_600_f64,
             "m" => 60_f64,
             "s" => 1_f64,
@@ -484,6 +486,76 @@ pub async fn observe_service_logs(
     })
 }
 
+/// Exact Service history targets and membership omissions, before any history RPC.
+pub(crate) struct PreparedHistory {
+    pub(crate) targets: Vec<(MachineId, MachineName)>,
+    pub(crate) omissions: Vec<(MachineId, MachineName)>,
+    pub(crate) selectors: Vec<HistorySelector>,
+}
+
+/// Prepare qualified Service history without observing live Containers.
+/// Returns `None` when selector resolution or follow needs a live observation.
+///
+/// # Errors
+/// Returns Machine-list and Machine-selector errors.
+pub(crate) async fn prepare_service_history(
+    client: &mut Client,
+    machine_selectors: &[FanoutSelector],
+    args: &[ServiceArg],
+    options: &LogsOptions,
+    deployment: Option<&str>,
+) -> Result<Option<PreparedHistory>, OperatorError> {
+    if options.follow {
+        return Ok(None);
+    }
+    let Some(selectors) = qualified_history_selectors(args, deployment) else {
+        return Ok(None);
+    };
+    let machines = client.machines().await?;
+    let asked = asked_machines(&machines, machine_selectors)?;
+    let mut prepared = PreparedHistory {
+        targets: Vec::new(),
+        omissions: Vec::new(),
+        selectors,
+    };
+    for observation in machines {
+        if !asked.contains(&observation.machine.id) {
+            continue;
+        }
+        let invites_rpc = observation.invites_rpc();
+        let machine = (observation.machine.id, observation.machine.name);
+        if invites_rpc {
+            prepared.targets.push(machine);
+        } else {
+            prepared.omissions.push(machine);
+        }
+    }
+    Ok(Some(prepared))
+}
+
+fn qualified_history_selectors(
+    args: &[ServiceArg],
+    deployment: Option<&str>,
+) -> Option<Vec<HistorySelector>> {
+    if args.is_empty() {
+        return None;
+    }
+    args.iter()
+        .map(|arg| {
+            if !arg.containers.is_empty() {
+                return None;
+            }
+            let service = QualifiedService::parse(arg.service.as_str()).ok()?;
+            Some(HistorySelector {
+                namespace: Some(service.namespace.to_string()),
+                service: Some(service.name.to_string()),
+                deployment: deployment.map(str::to_owned),
+                container_id: None,
+            })
+        })
+        .collect()
+}
+
 /// The Servers a logs command asks: those `selectors` name, whatever their
 /// membership, or every Server without one.
 pub(crate) fn asked_machines(
@@ -545,32 +617,8 @@ pub async fn open_service_logs(
     };
     let mut inputs = Vec::new();
     for arg in args {
-        let service = select_service(&services, &arg.service).map_err(|error| {
-            let running_in_scope: Vec<String> = services
-                .iter()
-                .filter(|service| {
-                    namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
-                })
-                .map(|service| service.identity.name.to_string())
-                .collect();
-            match error {
-                ployz_core::ServiceSelectorError::NotFound { selector }
-                    if !running_in_scope.is_empty() =>
-                {
-                    OperatorError::NotRunning {
-                        name: selector
-                            .as_str()
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or_default()
-                            .to_owned(),
-                        running_in_scope,
-                    }
-                }
-                error @ (ployz_core::ServiceSelectorError::NotFound { .. }
-                | ployz_core::ServiceSelectorError::NameAmbiguity { .. }) => error.into(),
-            }
-        })?;
+        let service = select_service(&services, &arg.service)
+            .map_err(|error| not_running(&services, namespace, error))?;
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()
@@ -593,8 +641,8 @@ pub async fn open_service_logs(
         }
         for container in containers {
             let observation = container.as_observation();
-            let request = op::ContainerLogs::into_request(ContainerLogsRequest {
-                container_id: observation.container_id,
+            let request = op::TailLogs::into_request(TailLogsRequest {
+                target: LiveLogTarget::Container(observation.container_id),
                 options: options.clone(),
             })
             .encode()?;
@@ -604,7 +652,7 @@ pub async fn open_service_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .container_logs_stream(&target, request)
+                    .tail_logs_stream(&target, request)
                     .await
                     .map(|stream| stream_input(identity, stream))
             })
@@ -630,6 +678,154 @@ pub async fn open_service_logs(
         return Err(OperatorError::NoDeploymentContainers);
     }
     Ok(inputs)
+}
+
+fn not_running(
+    services: &[ServiceObservation],
+    namespace: Option<&Namespace>,
+    error: ployz_core::ServiceSelectorError,
+) -> OperatorError {
+    let running_in_scope: Vec<String> = services
+        .iter()
+        .filter(|service| {
+            namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
+        })
+        .map(|service| service.identity.name.to_string())
+        .collect();
+    match error {
+        ployz_core::ServiceSelectorError::NotFound { selector } if !running_in_scope.is_empty() => {
+            OperatorError::NotRunning {
+                name: selector
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+                running_in_scope,
+            }
+        }
+        error @ (ployz_core::ServiceSelectorError::NotFound { .. }
+        | ployz_core::ServiceSelectorError::NameAmbiguity { .. }) => error.into(),
+    }
+}
+
+impl LogScope {
+    /// The asked Servers that answered, in Cluster order: the ones whose Log
+    /// Store a history read asks.
+    #[must_use]
+    pub fn answered(&self) -> Vec<(MachineId, MachineName)> {
+        let unanswered = &self.unanswered;
+        unanswered
+            .names
+            .iter()
+            .filter(|(machine_id, _)| {
+                self.asked.contains(machine_id)
+                    && !unanswered.omissions.contains(machine_id)
+                    && !unanswered
+                        .failures
+                        .iter()
+                        .any(|failure| failure.machine_id == *machine_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The Deployment that created each running container, for `--json`.
+    #[must_use]
+    pub fn deployments(&self) -> HashMap<ContainerId, String> {
+        self.live
+            .services()
+            .iter()
+            .flat_map(ServiceObservation::members)
+            .filter_map(|container| {
+                let observation = container.as_observation();
+                observation
+                    .labels
+                    .get(DEPLOYMENT_LABEL)
+                    .map(|deployment| (observation.container_id, deployment.clone()))
+            })
+            .collect()
+    }
+}
+
+/// What a history read asks each Server's Log Store for: every Service of
+/// `namespace` (or of every running Namespace) when `args` is empty, else each
+/// named Service or container. A Service no longer running is still read by
+/// its `namespace/name`, so its stored logs print after it is removed.
+///
+/// # Errors
+///
+/// Returns [`OperatorError::NoServices`] when nothing is in scope, and the
+/// selector errors [`open_service_logs`] returns.
+pub fn history_selectors(
+    scope: &LogScope,
+    args: &[ServiceArg],
+    namespace: Option<&Namespace>,
+    deployment: Option<&str>,
+) -> Result<Vec<HistorySelector>, OperatorError> {
+    let services = scope.live.services();
+    let deployment = deployment.map(str::to_owned);
+    if args.is_empty() {
+        let mut namespaces = namespace.map_or_else(
+            || {
+                services
+                    .iter()
+                    .map(|service| service.identity.namespace.clone())
+                    .collect::<Vec<_>>()
+            },
+            |namespace| vec![namespace.clone()],
+        );
+        namespaces.sort();
+        namespaces.dedup();
+        if namespaces.is_empty() {
+            return Err(OperatorError::NoServices);
+        }
+        return Ok(namespaces
+            .into_iter()
+            .map(|namespace| HistorySelector {
+                namespace: Some(namespace.to_string()),
+                deployment: deployment.clone(),
+                ..HistorySelector::default()
+            })
+            .collect());
+    }
+    let mut selectors = Vec::new();
+    for arg in args {
+        let service = match select_service(&services, &arg.service) {
+            Ok(service) => service,
+            Err(ployz_core::ServiceSelectorError::NotFound { .. })
+                if arg.containers.is_empty()
+                    && QualifiedService::parse(arg.service.as_str()).is_ok() =>
+            {
+                let removed = QualifiedService::parse(arg.service.as_str())?;
+                selectors.push(HistorySelector {
+                    namespace: Some(removed.namespace.to_string()),
+                    service: Some(removed.name.to_string()),
+                    deployment: deployment.clone(),
+                    container_id: None,
+                });
+                continue;
+            }
+            Err(error) => return Err(not_running(&services, namespace, error)),
+        };
+        if arg.containers.is_empty() {
+            selectors.push(HistorySelector {
+                namespace: Some(service.identity.namespace.to_string()),
+                service: Some(service.identity.name.to_string()),
+                deployment: deployment.clone(),
+                container_id: None,
+            });
+            continue;
+        }
+        for container in select_log_containers(service, &arg.containers)? {
+            selectors.push(HistorySelector {
+                deployment: deployment.clone(),
+                container_id: Some(container.as_observation().container_id),
+                ..HistorySelector::default()
+            });
+        }
+    }
+    Ok(selectors)
 }
 
 /// Asked Servers whose Live Observation failed or was skipped, with every
@@ -667,8 +863,8 @@ pub async fn open_machine_logs(
     let mut inputs = Vec::new();
     for service in services {
         for machine in &machines {
-            let request = op::MachineLogs::into_request(MachineLogsRequest {
-                service,
+            let request = op::TailLogs::into_request(TailLogsRequest {
+                target: LiveLogTarget::Machine(service),
                 options: options.clone(),
             })
             .encode()?;
@@ -678,7 +874,7 @@ pub async fn open_machine_logs(
             // parent cancellation token is cancelled.
             if let Err(error) = open_log_input(&mut inputs, &cancellation, async {
                 client
-                    .machine_logs_stream(&target, request)
+                    .tail_logs_stream(&target, request)
                     .await
                     .map(|stream| stream_input(identity, stream))
             })
@@ -972,6 +1168,8 @@ async fn flush_ready(
     }
     Ok(())
 }
+
+pub mod history;
 
 #[cfg(test)]
 #[path = "operator_tests.rs"]
