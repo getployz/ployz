@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import contract from "#/modules/uptime/incident-evidence.fixture.json";
 import { mergePoints, tally } from "#/modules/uptime/uptime";
 import { FAILURE_CLASSES, type FailureClass, IncidentEvidence, PHASES, type UptimePoint } from "#/modules/uptime/uptime-status";
-import { readEnvironmentUptime, readServiceUptime } from "#/modules/uptime/uptime-status.server";
+import { readEnvironmentUptime, readServiceUptime, requestUptimeProbe } from "#/modules/uptime/uptime-status.server";
 import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
@@ -413,6 +413,75 @@ describe("uptime incidents", () => {
       [randomUUID(), acme, check.id, ago(HOUR), JSON.stringify({ ...contract.openedBy, region: "eu-west" })],
     );
     await expect(summary(check)).rejects.toThrow(/opened_by the dashboard can't read/);
+  });
+});
+
+describe("probe requests", () => {
+  const requested = async (check: Check) => {
+    const { rows } = await harness.pool.query<{ at: string | null; revision: number }>(
+      "select probe_requested_at::text as at, revision from uptime_check where id = $1", [check.id]);
+    return rows[0];
+  };
+  const request = (check: Check, organizationSlug = "acme") =>
+    at(requestUptimeProbe(actor, { organizationSlug, environmentId: check.environmentId, serviceId: check.serviceId }));
+  const requestAt = (check: Check, when: string) =>
+    harness.pool.query("update uptime_check set probe_requested_at = $2 where id = $1", [check.id, when]);
+
+  it("Check now asks for a probe without bumping the revision, and a second ask within 15 s writes nothing", async () => {
+    const check = await createCheck();
+    await request(check);
+    const first = await requested(check);
+    expect(first).toEqual({ at: expect.any(String), revision: 1 });
+    await harness.pool.query("select pg_sleep(0.05)");
+    await request(check);
+    expect(await requested(check)).toEqual(first);
+
+    await harness.pool.query("update uptime_check set probe_requested_at = now() - interval '20 seconds' where id = $1", [check.id]);
+    const aged = await requested(check);
+    await request(check);
+    expect((await requested(check))?.at).not.toBe(aged?.at);
+  });
+
+  it("asks again at once after the last request was answered, but a burst before the answer still writes once", async () => {
+    const check = await createCheck();
+    await request(check);
+    const first = await requested(check);
+    await harness.pool.query("select pg_sleep(0.05)");
+    await request(check);
+    expect(await requested(check)).toEqual(first);
+
+    await result(check, "eu-west", first?.at ?? "", "pass", 120, "triggered");
+    await harness.pool.query("select pg_sleep(0.05)");
+    await request(check);
+    const second = await requested(check);
+    expect(Date.parse(second?.at ?? "")).toBeGreaterThan(Date.parse(first?.at ?? ""));
+    expect(second?.revision).toBe(1);
+  });
+
+  it("asks nothing of another organization's check, under either slug", async () => {
+    const foreign = await createCheck(other);
+    expect(await at(Effect.flip(requestUptimeProbe(actor,
+      { organizationSlug: "other", environmentId: foreign.environmentId, serviceId: foreign.serviceId })))).toMatchObject({ _tag: "NotFound" });
+    await request(foreign);
+    expect(await requested(foreign)).toEqual({ at: null, revision: 1 });
+  });
+
+  it("reads a request as unanswered until a triggered result at or after it lands, and drops it after 45 s", async () => {
+    const check = await createCheck();
+    expect((await summary(check)).probe).toBeNull();
+
+    await requestAt(check, ago(10_000));
+    await result(check, "eu-west", ago(20_000), "pass", 120, "triggered");
+    await result(check, "eu-west", ago(5_000), "pass", 120, "routine");
+    expect((await summary(check)).probe).toEqual({ requestedAt: ago(10_000), answered: false });
+
+    await result(check, "us-east", ago(10_000), "pass", 120, "triggered");
+    expect((await summary(check)).probe).toEqual({ requestedAt: ago(10_000), answered: true });
+
+    await requestAt(check, ago(46_000));
+    expect((await summary(check)).probe).toBeNull();
+    await requestAt(check, ago(44_000));
+    expect((await summary(check)).probe).toEqual({ requestedAt: ago(44_000), answered: true });
   });
 });
 
