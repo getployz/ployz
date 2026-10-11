@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  causeText, checkSeries, checkState, formatSpan, historyDays, observationText, rangeCovering, uncheckedDays, unreachableHost,
+  causeText, checkSeries, checkState, formatSpan, historyDays, incidentWindow, observationText, rangeCovering, steps, uncheckedDays, unreachableHost,
   uptimePercent,
 } from "./uptime";
 import type { IncidentObservation, ServiceUptime, UptimeIncidentEntry } from "./uptime-status";
@@ -72,6 +72,22 @@ describe("rangeCovering", () => {
     expect(rangeCovering(to - 2 * DAY, to)).toBe("7d");
     expect(rangeCovering(to - 30 * DAY, to)).toBe("90d");
     expect(rangeCovering(to - 200 * DAY, to)).toBe("90d");
+  });
+});
+
+describe("incidentWindow", () => {
+  it("draws an unbroken line from the series its zoom reads, however old the incident", () => {
+    const to = Date.parse(at);
+    for (const age of [2 * HOUR, 3 * DAY, 12 * DAY, 80 * DAY]) {
+      const opened = to - age;
+      const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
+      const stepMs = { "24h": 5 * 60_000, "7d": HOUR, "90d": 6 * HOUR }[rangeCovering(window.from, to)];
+      const series = steps({ ...window, stepMs }).map((step) => ({ at: new Date(step).toISOString(), region: "ams", ms: 100 }));
+      const line = checkSeries(series, window);
+      expect(line.length).toBeGreaterThanOrEqual(12);
+      expect(line).not.toContain(null);
+      expect(window.from).toBeLessThanOrEqual(opened);
+    }
   });
 });
 

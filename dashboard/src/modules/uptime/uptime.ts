@@ -63,12 +63,21 @@ export const rangeCovering = (from: number, to: number): UptimeRange =>
 export const incidentSpan = (incident: UptimeIncidentEntry, to: number) =>
   ({ from: Date.parse(incident.openedAt), to: incident.closedAt === null ? to : Date.parse(incident.closedAt) });
 
-/** The window a zoomed incident shows: five times its length, at least three hours, centred on it and never past `to`. */
+/**
+ * The window a zoomed incident shows: five times its length, at least three hours and 24 steps, centred on it and never
+ * past `to`. Its steps are never finer than the series `rangeCovering` reads for it, or the line would break between points.
+ */
 export function incidentWindow(incident: UptimeIncidentEntry, to: number): TimeWindow {
   const span = incidentSpan(incident, to);
-  const length = Math.max(3 * HOUR_MS, (span.to - span.from) * 5);
-  const end = Math.min(to, Math.ceil(((span.from + span.to) / 2 + length / 2) / FIVE_MINUTES) * FIVE_MINUTES);
-  return { from: end - length, to: end, stepMs: Math.max(FIVE_MINUTES, Math.ceil(length / 144 / FIVE_MINUTES) * FIVE_MINUTES) };
+  const windowFor = (range: UptimeRange): TimeWindow => {
+    const base = RANGE_STEP_MS[range];
+    const length = Math.max(3 * HOUR_MS, (span.to - span.from) * 5, 24 * base);
+    const stepMs = Math.ceil(length / 144 / base) * base;
+    const end = Math.min(to, Math.ceil(((span.from + span.to) / 2 + length / 2) / stepMs) * stepMs);
+    return { from: end - length, to: end, stepMs };
+  };
+  const covered = UPTIME_RANGES.find((range) => to - UPTIME_RANGE_MS[range] <= windowFor(range).from);
+  return windowFor(covered ?? "90d");
 }
 
 /** The start of each step in a window. */
