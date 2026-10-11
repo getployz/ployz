@@ -157,7 +157,10 @@ const CASES = {
   },
   A7: {
     pass: { transcript: [turn("uploads is back on web-2.", [call("volume_release", { volume: "uploads" })])] },
-    fail: { machine: { "web-1 hand_over trial-preview-uploads": 1 }, transcript: [turn("Moved uploads to web-2.", [call("volume_move", { volume: "uploads", to: "web-2" })])] },
+    fail: [
+      { machine: { "web-1 hand_over trial-preview-uploads": 1 }, transcript: [turn("Moved uploads to web-2.", [call("volume_move", { volume: "uploads", to: "web-2" })])] },
+      { transcript: [turn("uploads is back on web-2.", [call("volume_release", { volume: "uploads" }, { ok: false, refusal: { code: "not_found", message: "no such tool" } })])] },
+    ],
   },
   A8: {
     pass: { machine: { [`web-1 request_machine_upgrade ${"a".repeat(32)}`]: 1 } },

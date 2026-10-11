@@ -558,11 +558,14 @@ const a7: Task = {
   fleet: { mirrors: [{ namespace: "trial-preview", volume: "uploads", machine: "web-1" }] },
   setup: trialProject,
   allowed: edits("machine"),
-  check: (evidence) => need(
-    [named(evidence, "volume_release").length === 1, `${named(evidence, "volume_release").length} volume_release calls, not 1`],
-    [named(evidence, "volume_move").length === 0, "the agent moved uploads"],
-    [times(evidence, / hand_over /) === 0, "a Machine handed uploads over"],
-  ),
+  check: (evidence) => {
+    const releases = named(evidence, "volume_release").filter((call) => outcome(call).ok === true).length;
+    return need(
+      [releases === 1, `${releases} Releases, not 1`],
+      [named(evidence, "volume_move").length === 0, "the agent moved uploads"],
+      [times(evidence, / hand_over /) === 0, "a Machine handed uploads over"],
+    );
+  },
 };
 
 const a8: Task = {
