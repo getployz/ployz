@@ -9,6 +9,7 @@ import {
   EventType,
   type Interrupt,
   isTerminalRunStatus,
+  maxIterations,
   type ModelMessage,
   modelMessagesToUIMessages,
   type StreamChunk,
@@ -272,6 +273,45 @@ const pageMarker = (page: PageContext) => defineChatMiddleware({
   },
 });
 
+/**
+ * Model turns one member message may take. Deploying a GitHub repository takes 14 before its Publish waits on a human,
+ * reading one file per turn as Haiku does; a model looping on one tool spends no more than this.
+ */
+export const STEP_LIMIT = 25;
+export const STEP_LIMIT_NOTE = `I stopped after ${STEP_LIMIT} steps, my limit for one message. Say "continue" and I'll pick up where I left off.`;
+
+/**
+ * Ends a turn the step limit cut off after its tool calls ran, before the model read their results, with a note the
+ * member sees and the thread keeps. The engine streams nothing after that tool phase, so `noted` appends the note to the
+ * stream, and the middleware saves it after withPersistence saved the turn: a reload shows it, and the member's
+ * "continue" follows an assistant message.
+ */
+const stepLimit = ({ stores }: Persistence) => {
+  let exhausted = false;
+  const messageId = randomUUID();
+  const middleware = defineChatMiddleware({
+    name: "ployz-step-limit",
+    onShouldContinue: (_ctx, { iterationCount, finishReason }) => {
+      exhausted = iterationCount >= STEP_LIMIT && finishReason === "tool_calls";
+      return undefined;
+    },
+    onFinish: async (ctx) => {
+      if (!exhausted) return;
+      const thread = await stores.messages.loadThread(ctx.threadId);
+      await stores.messages.saveThread(ctx.threadId, [...thread, { id: messageId, role: "assistant", content: STEP_LIMIT_NOTE }]);
+    },
+  });
+  async function* noted(stream: AsyncIterable<StreamChunk>): AsyncGenerator<StreamChunk> {
+    yield* stream;
+    if (!exhausted) return;
+    const timestamp = Date.now();
+    yield { type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant", timestamp };
+    yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: STEP_LIMIT_NOTE, timestamp };
+    yield { type: EventType.TEXT_MESSAGE_END, messageId, timestamp };
+  }
+  return { middleware, noted };
+};
+
 type AgentModel = { adapter: AnyTextAdapter; modelOptions?: AnthropicTextProviderOptions };
 const scripted = (script: ConstructorParameters<typeof ScriptedAdapter>[0]): AgentModel => ({ adapter: new ScriptedAdapter(script) });
 
@@ -432,6 +472,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
   // A page the client sent malformed is no page: the turn still answers.
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
   const turn = (stores: Persistence) => {
+    const limit = stepLimit(stores);
     const base = {
       adapter,
       modelOptions,
@@ -440,13 +481,14 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
       runId: request.runId,
       tools: agentTools(caller, run, request.runId),
       systemPrompts: [systemPrompt(caller)],
-      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run)],
+      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run), limit.middleware],
       interrupts: [approvalInterrupt],
+      agentLoopStrategy: maxIterations(STEP_LIMIT),
     };
     const options: typeof base & { resume?: ChatRequest["resume"]; abortController?: AbortController } = base;
     if (request.abortController !== undefined) options.abortController = request.abortController;
     if (resume !== undefined) options.resume = resume;
-    return chat(options);
+    return limit.noted(chat(options));
   };
   if (resume === undefined) return startOnce(run, persistence, scope, request, turn);
   return resumeOnce(run, persistence, scope, { ...request, resume }, turn);

@@ -1,11 +1,12 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigStore } from "@ployz/sdk";
 import { reconstructChat } from "@tanstack/ai-persistence";
-import { EventType, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
+import { type AnyTextAdapter, EventType, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
-import { agentChat, KEEPALIVE_MS } from "#/modules/agent/agent-chat.server";
+import { fakeText } from "@tanstack/ai/testing";
+import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
@@ -76,8 +77,8 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
   if (options.removeWeb) yield* write({ command: "remove_service", environment: here, service: "web" });
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" } };
   let runs = 0;
-  const say = (content: string, forwardedProps: Forwarded = {}) =>
-    provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}`, forwardedProps }))
+  const say = (content: string, forwardedProps: Forwarded = {}, model?: AnyTextAdapter) =>
+    provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}`, forwardedProps }, model))
       .pipe(Effect.flatMap(drain));
   const persistence = yield* provided(agentPersistence({ organizationId: ORGANIZATION, userId }));
   const waiting = Effect.promise(() => persistence.stores.interrupts.listPending(THREAD))
@@ -1077,4 +1078,49 @@ it.live("shipping a new image stages it without asking, and its Deploy runs with
     expect(shipped.interrupts).toEqual([]);
     expect(shipped.results).toMatchObject([{ ok: true, value: { written: "deployment" }, nothing_destroyed: true }]);
     expect(yield* deployments).toHaveLength(1);
+  }));
+
+const githubDeploy = [
+  { name: "github_ls", input: {} },
+  { name: "github_tree", input: { repository: "acme/api" } },
+  { name: "github_tree", input: { repository: "acme/api", match: "**/Dockerfile" } },
+  { name: "github_cat", input: { repository: "acme/api", path: "Dockerfile" } },
+  { name: "github_cat", input: { repository: "acme/api", path: "package.json" } },
+  { name: "github_cat", input: { repository: "acme/api", path: "compose.yaml" } },
+  { name: "project_new", input: { name: "api" } },
+  { name: "env_new", input: { project: "api", name: "production" } },
+  { name: "service_add", input: { project: "api", env: "production", name: "api", repo: "acme/api" } },
+  { name: "config_add", input: { project: "api", env: "production", name: "env" } },
+  { name: "config_mount", input: { project: "api", env: "production", config: "env", service: "api", path: "/app/.env" } },
+  { name: "domain_add", input: { project: "api", env: "production", service: "api", domain: "api.acme.dev" } },
+  { name: "diff", input: { project: "api", env: "production" } },
+  { name: "publish", input: { project: "api", env: "production" } },
+  { name: "deploy", input: { project: "api", env: "production" } },
+  { name: "deployment_show", input: { project: "api", env: "production" } },
+];
+
+it.live("deploying a GitHub repository one call per turn finishes within the step limit", () =>
+  Effect.gen(function* () {
+    const { say } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([...githubDeploy.map((call) => ({ toolCalls: [call] })), { text: "api is deploying." }]);
+    const answered = yield* say("deploy acme/api", {}, model);
+    expect(model.state.callCount).toBe(githubDeploy.length + 1);
+    expect(answered.said).toBe("api is deploying.");
+  }));
+
+it.live("a turn that runs out of steps tells the member to say continue, and the thread keeps the note", () =>
+  Effect.gen(function* () {
+    const { say, persistence } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses(Array.from({ length: STEP_LIMIT + 5 }, () => ({ toolCalls: [{ name: "service_ls", input: {} }] })));
+    const stopped = yield* say("tidy up", {}, model);
+    expect(model.state.callCount).toBe(STEP_LIMIT);
+    expect(stopped.said).toBe(STEP_LIMIT_NOTE);
+    const thread = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
+    expect(thread.at(-1)).toMatchObject({ role: "assistant", content: STEP_LIMIT_NOTE });
+    expect(yield* Effect.promise(() => persistence.stores.runs.findActiveRun(THREAD))).toBeNull();
+
+    model.setResponses([{ text: "Picking up." }]);
+    expect((yield* say("continue", {}, model)).said).toBe("Picking up.");
   }));
