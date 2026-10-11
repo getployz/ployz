@@ -427,7 +427,7 @@ fn machine_update_is_atomic_and_durable() {
 }
 
 #[test]
-fn resetting_state_is_durable_and_completed_on_the_next_open() {
+fn resetting_state_is_durable_and_kept_by_a_plain_open() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     let old_machine_id = store.record().id();
@@ -444,9 +444,14 @@ fn resetting_state_is_durable_and_completed_on_the_next_open() {
     assert_eq!(persisted.id(), old_machine_id);
     assert_eq!(persisted.phase(), LocalMachinePhase::Resetting);
 
-    let recreated = LocalMachineStore::open(&dir.0).unwrap();
-    assert_ne!(recreated.record().id(), old_machine_id);
-    assert_eq!(recreated.record().phase(), LocalMachinePhase::Uninitialized);
+    assert!(matches!(
+        LocalMachineStore::open(&dir.0),
+        Err(StoreError::ResetInterrupted(path)) if path == dir.0
+    ));
+    let persisted: LocalMachineRecord =
+        serde_json::from_slice(&fs::read(dir.0.join("machine.json")).unwrap()).unwrap();
+    assert_eq!(persisted.id(), old_machine_id);
+    assert_eq!(persisted.phase(), LocalMachinePhase::Resetting);
 }
 
 #[tokio::test]

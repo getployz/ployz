@@ -69,12 +69,12 @@ New to Ployz? Follow these steps from a first deploy to real users.
 ## More
 
 - [Production checklist](production-checklist.md): before you move real users
-- [CLI and coding agents](cli/overview.md): install the CLI, set up your coding agent, tokens for CI
+- [CLI and coding agents](cli/overview.md): install the CLI, set up your coding agent, MCP tools, tokens for CI
 - [Self-host Ployz Cloud](self-hosting.md): run the dashboard on your own infrastructure
 
 ## Troubleshooting
 
 - [Builds](troubleshooting/builds.md): detection failures, out of memory, stuck builds
 - [Deployments](troubleshooting/deployments.md): failed health checks, crashing services, queued deployments
-- [My app isn't reachable](troubleshooting/app-not-reachable.md): 502s, wrong ports, domains and certificates
+- [My app isn't reachable](troubleshooting/app-not-reachable.md): error pages, wrong ports, domains and certificates
 - [Servers](troubleshooting/servers.md): install failures, servers that don't join or go offline, full disks

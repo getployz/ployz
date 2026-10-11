@@ -118,6 +118,10 @@ _Avoid_: Container name, replica identity
 The unresolved Container ID, display name, or ID prefix used to select one Container.
 _Avoid_: Container name as identity, replica identity
 
+**Log Store**:
+The Machine-local copy of the output of every container Ployz runs, kept after the container is removed, capped by size and age. It holds only the output of containers that ran on its own Machine.
+_Avoid_: log database, log cache
+
 **Container Runtime Observation**:
 A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unrecognized external state carried verbatim as its observed value. Container observations do not combine into an authoritative Service state.
 Running health `stopping` is the daemon's own overlay, not Docker's: a client marked the Container ahead of a stop so the Ingress Proxies drop it first. The mark lives in daemon memory and ends when the stop runs.

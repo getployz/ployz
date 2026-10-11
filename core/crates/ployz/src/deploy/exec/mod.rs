@@ -1057,16 +1057,7 @@ async fn compensate<C: MachineOperations>(
     progress.set_running(index, OperationPhase::Compensating);
     let stop_new_container = match new_container {
         Some(container_id) => Some(StopAttempt::from(
-            ignore_not_found(
-                client
-                    .stop_container(
-                        &operation.machine_id,
-                        &container_id,
-                        Some(stop_grace_period(&operation.spec).unwrap_or(0)),
-                    )
-                    .await,
-            )
-            .map_err(|error| machine_error(MachineAction::StopContainer, error)),
+            stop_and_remove(client, operation, &container_id).await,
         )),
         None => None,
     };
@@ -1085,6 +1076,30 @@ async fn compensate<C: MachineOperations>(
         error,
         compensation: Box::new(compensation),
     }
+}
+
+/// The Log Store already holds the failed container's output and exit, so it
+/// is removed once stopped. A removal that fails leaves it stopped, as before.
+async fn stop_and_remove<C: MachineOperations>(
+    client: &C,
+    operation: &ReplacementOperation,
+    container_id: &ContainerId,
+) -> Result<(), ExecutionError> {
+    match client
+        .stop_container(
+            &operation.machine_id,
+            container_id,
+            Some(stop_grace_period(&operation.spec).unwrap_or(0)),
+        )
+        .await
+    {
+        Err(error) if error.code == RpcErrorCode::NotFound => return Ok(()),
+        result => result.map_err(|error| machine_error(MachineAction::StopContainer, error))?,
+    }
+    let _ = client
+        .remove_container(&operation.machine_id, container_id)
+        .await;
+    Ok(())
 }
 
 // Cancelling the Deploy does not abandon the container it stopped. The wait stays

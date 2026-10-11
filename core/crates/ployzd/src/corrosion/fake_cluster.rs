@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
     convert::Infallible,
+    hash::{BuildHasher, RandomState},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{Arc, Mutex},
 };
 
@@ -8,7 +10,7 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
     routing::post,
 };
 use futures_util::{StreamExt, stream};
@@ -27,6 +29,32 @@ struct ClusterKv {
     container_changes: broadcast::Sender<()>,
     machine_changes: broadcast::Sender<()>,
     subscriptions: bool,
+    snapshots_fail: bool,
+    tokens: Vec<String>,
+}
+
+impl ClusterKv {
+    fn new(subscriptions: bool) -> Self {
+        let (container_changes, _) = broadcast::channel(16);
+        let (machine_changes, _) = broadcast::channel(16);
+        Self {
+            network: "10.210.0.0/16".into(),
+            machines: BTreeMap::new(),
+            containers: BTreeMap::new(),
+            volumes: BTreeMap::new(),
+            container_changes,
+            machine_changes,
+            subscriptions,
+            snapshots_fail: false,
+            tokens: Vec::new(),
+        }
+    }
+}
+
+const TEST_TOKEN_LEN: usize = 64;
+
+fn test_token() -> String {
+    "a".repeat(TEST_TOKEN_LEN)
 }
 
 #[derive(Deserialize)]
@@ -47,37 +75,115 @@ pub(crate) async fn store_with_subscriptions() -> (ReplicatedStore, tokio::task:
 async fn bind(with_subscriptions: bool) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let (container_changes, _) = broadcast::channel(16);
-    let (machine_changes, _) = broadcast::channel(16);
-    let kv = Arc::new(Mutex::new(ClusterKv {
-        network: "10.210.0.0/16".into(),
-        machines: BTreeMap::new(),
-        containers: BTreeMap::new(),
-        volumes: BTreeMap::new(),
-        container_changes,
-        machine_changes,
-        subscriptions: with_subscriptions,
-    }));
+    let kv = Arc::new(Mutex::new(ClusterKv::new(with_subscriptions)));
     let server = tokio::spawn(async move {
-        axum::serve(
-            listener,
-            Router::new()
-                .route("/v1/queries", post(queries))
-                .route("/v1/transactions", post(transactions))
-                .route("/v1/subscriptions", post(subscriptions))
-                .with_state(kv),
-        )
-        .await
-        .unwrap();
+        axum::serve(listener, router(kv)).await.unwrap();
     });
     (
-        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        ReplicatedStore::new(ApiClient::http1(address, &test_token()).unwrap()),
         server,
     )
 }
 
-async fn queries(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> Vec<u8> {
-    query(&kv, serde_json::from_slice(&body).unwrap()).into()
+fn router(kv: Arc<Mutex<ClusterKv>>) -> Router {
+    Router::new()
+        .route("/v1/queries", post(queries))
+        .route("/v1/transactions", post(transactions))
+        .route("/v1/subscriptions", post(subscriptions))
+        .with_state(kv)
+}
+
+/// A loopback address that stays free after a test releases it. The kernel
+/// autobinds ports only from the ephemeral range, which starts at 32768 on
+/// Linux, and the random 127/8 address keeps concurrent tests apart.
+pub(crate) fn unclaimed_loopback() -> SocketAddrV4 {
+    let [a, b, c, low, high, ..] = RandomState::new().hash_one(()).to_le_bytes();
+    let port = 1024 + u16::from_le_bytes([low, high]) % (32768 - 1024);
+    SocketAddrV4::new(
+        Ipv4Addr::new(127, a.clamp(1, 254), b, c.clamp(1, 254)),
+        port,
+    )
+}
+
+/// A Corrosion stand-in on its own runtime, so stopping it severs every open
+/// connection including subscription streams, and restarting it reuses the
+/// address.
+pub(crate) struct FakeCluster {
+    address: SocketAddr,
+    kv: Arc<Mutex<ClusterKv>>,
+    runtime: Option<tokio::runtime::Runtime>,
+}
+
+impl FakeCluster {
+    pub(crate) fn start() -> Self {
+        let listener = std::net::TcpListener::bind(unclaimed_loopback()).unwrap();
+        let mut cluster = Self {
+            address: listener.local_addr().unwrap(),
+            kv: Arc::new(Mutex::new(ClusterKv::new(true))),
+            runtime: None,
+        };
+        cluster.serve(listener);
+        cluster
+    }
+
+    pub(crate) fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    pub(crate) fn token(&self) -> String {
+        test_token()
+    }
+
+    pub(crate) fn store(&self) -> ReplicatedStore {
+        ReplicatedStore::new(ApiClient::http1(self.address, &self.token()).unwrap())
+    }
+
+    pub(crate) fn stop(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
+
+    pub(crate) fn restart(&mut self) {
+        self.stop();
+        self.serve(std::net::TcpListener::bind(self.address).unwrap());
+    }
+
+    pub(crate) fn fail_snapshots(&self, fail: bool) {
+        self.kv.lock().unwrap().snapshots_fail = fail;
+    }
+
+    pub(crate) fn subscription_tokens(&self) -> Vec<String> {
+        self.kv.lock().unwrap().tokens.clone()
+    }
+
+    fn serve(&mut self, listener: std::net::TcpListener) {
+        listener.set_nonblocking(true).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let kv = self.kv.clone();
+        runtime.spawn(async move {
+            let listener = TcpListener::from_std(listener).unwrap();
+            axum::serve(listener, router(kv)).await.unwrap();
+        });
+        self.runtime = Some(runtime);
+    }
+}
+
+impl Drop for FakeCluster {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+async fn queries(
+    State(kv): State<Arc<Mutex<ClusterKv>>>,
+    body: Bytes,
+) -> Result<Vec<u8>, StatusCode> {
+    query(&kv, serde_json::from_slice(&body).unwrap()).map(Into::into)
 }
 
 async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> Vec<u8> {
@@ -86,10 +192,18 @@ async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> V
 
 async fn subscriptions(
     State(kv): State<Arc<Mutex<ClusterKv>>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Body, StatusCode> {
     let statement: Statement = serde_json::from_slice(&body).unwrap();
-    let kv = kv.lock().unwrap();
+    let mut kv = kv.lock().unwrap();
+    if let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    {
+        kv.tokens.push(token.to_owned());
+    }
     if !kv.subscriptions {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -124,9 +238,20 @@ async fn subscriptions(
     Ok(Body::from_stream(snapshot.chain(changes)))
 }
 
-fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
+fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCode> {
     let kv = kv.lock().unwrap();
-    match statement.query.as_str() {
+    Ok(match statement.query.as_str() {
+        "SELECT id, machine_id, container FROM containers ORDER BY id" => {
+            if kv.snapshots_fail {
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+            events(
+                &["id", "machine_id", "container"],
+                kv.containers.iter().map(|(id, (owner, container))| {
+                    vec![json!(id), json!(owner), json!(container)]
+                }),
+            )
+        }
         "SELECT id, info FROM machines ORDER BY name" => events(
             &["id", "info"],
             kv.machines
@@ -178,7 +303,7 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Bytes {
             events(&["site_id", "db_version"], Vec::new())
         }
         query => panic!("unexpected query {query}"),
-    }
+    })
 }
 
 fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {

@@ -67,7 +67,7 @@ function HealthcheckFields({ check, change, set }: Props & { check: Healthcheck 
 
   return (
     <>
-      <Field>
+      <Field id="healthcheck" className="scroll-mt-4">
         <FieldLabel>Healthcheck</FieldLabel>
         <FieldDescription>A new replica must pass it before it takes traffic.</FieldDescription>
         {kind === null ? (
