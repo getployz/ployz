@@ -113,13 +113,20 @@ export const changedProps = (change: { before: JsonValue } | undefined, shown: (
 
 /** A route row's value in a diff, as far as a domain needs it. */
 const decodeRoute = Schema.decodeUnknownOption(Schema.Struct({ hostname: Schema.String }));
+/** A Service's `managedHostnames` in a diff. */
+const decodeManaged = Schema.decodeUnknownOption(Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })));
 
 /**
- * Whether the next Deploy changes a domain: a generated one with its Service's `managedHostnames`, a custom one with
- * the route row whose value before or after has its hostname.
+ * Whether the next Deploy changes a domain: a generated one whose prefix or port its Service's `managedHostnames`
+ * didn't have, a custom one with the route row whose value before or after has its hostname.
  */
 export function domainChanged(changes: Map<string, ServiceSettingChange>, domain: DomainRow) {
-  if (domain.kind === "generated") return changes.has("managedHostnames");
+  if (domain.kind === "generated") {
+    const change = changes.get("managedHostnames");
+    if (change === undefined) return false;
+    const before = Option.getOrElse(decodeManaged(change.before), () => []);
+    return !before.some((managed) => managed.prefix === domain.prefix && managed.targetPort === domain.port);
+  }
   const hasHostname = (route: JsonValue) => Option.exists(decodeRoute(route), ({ hostname }) => hostname === domain.hostname);
   return [...changes].some(([setting, change]) => setting.startsWith("routes.") && (hasHostname(change.before) || hasHostname(change.after)));
 }

@@ -93,4 +93,8 @@ it("marks the domains the next Deploy changes: the generated one by its list, a 
   expect(domainChanged(changes, domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(false);
   const listChanged = { path: "web.managedHostnames", kind: "update" as const, before: [], after: [{ prefix: "web", targetPort: null }], canRestore: true, row: null };
   expect(domainChanged(new Map([["managedHostnames", listChanged]]), domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(true);
+  // A second generated domain marks only itself.
+  const another = { ...listChanged, before: [{ prefix: "web", targetPort: null }], after: [{ prefix: "web", targetPort: null }, { prefix: "shop", targetPort: null }] };
+  expect(domainChanged(new Map([["managedHostnames", another]]), domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(false);
+  expect(domainChanged(new Map([["managedHostnames", another]]), domain({ kind: "generated", prefix: "shop", hostname: null }))).toBe(true);
 });

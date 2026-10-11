@@ -117,6 +117,26 @@ it("shows a generated domain's new prefix at once, pink, under the same Cluster 
   expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toContain("web.managedHostnames");
 });
 
+it("adds another generated domain by its prefix and changes only the one named", async () => {
+  const { queryClient, read } = cached();
+  const domains = { query: "domains", environment: ref, service: null } as const;
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", scope, domains).queryKey, { ok: true, value: { environment, domains: [
+    { kind: "generated", prefix: "web", hostname: "web.acme.ployz.app", service: "web", port: null, status: "ready", reason: null, action: null },
+  ] } });
+  const prefixes = () => read<DomainsView>(domains)?.domains.map((domain) => domain.kind === "generated" ? domain.prefix : domain.hostname);
+  // Without a prefix the one it has stays alone.
+  await applyOptimistic(queryClient, "acme", { command: "add_domain", environment: ref, service: "web", hostname: null, port: null });
+  expect(prefixes()).toEqual(["web"]);
+  await applyOptimistic(queryClient, "acme", { command: "add_domain", environment: ref, service: "web", hostname: null, prefix: "shop", port: 3000 });
+  expect(read<DomainsView>(domains)?.domains).toMatchObject([{ prefix: "web", port: null }, { prefix: "shop", port: 3000 }]);
+  // With two, an unnamed change waits for the Store; a named one moves only that one.
+  await applyOptimistic(queryClient, "acme", { command: "set_generated_domain", environment: ref, service: "web", prefix: "api" });
+  expect(prefixes()).toEqual(["web", "shop"]);
+  await applyOptimistic(queryClient, "acme", { command: "set_generated_domain", environment: ref, service: "web", domain: "web.acme.ployz.app", prefix: "www" });
+  expect(read<DomainsView>(domains)?.domains).toMatchObject([{ prefix: "www", hostname: "www.acme.ployz.app" }, { prefix: "shop" }]);
+});
+
 it("renames a Project in the Projects list at once", async () => {
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "s", userId: "u" };

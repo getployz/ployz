@@ -240,6 +240,7 @@ fn add_service(
             environment: environment.clone(),
             service: name,
             hostname: None,
+            prefix: None,
             port: dockerfile.as_deref().and_then(exposed_port),
         })?;
     }

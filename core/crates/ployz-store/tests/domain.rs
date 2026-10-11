@@ -82,7 +82,15 @@ fn add(hostname: Option<&str>, port: Option<u16>) -> AddDomain {
         environment: EnvironmentRef::default(),
         service: ServiceName::parse("web").unwrap(),
         hostname: hostname.map(host),
+        prefix: None,
         port,
+    }
+}
+
+fn add_prefix(prefix: &str) -> AddDomain {
+    AddDomain {
+        prefix: Some(ployz_core::DomainPrefix::parse(prefix).unwrap()),
+        ..add(None, None)
     }
 }
 
@@ -111,23 +119,35 @@ fn rows(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Vec<DomainRow> {
 }
 
 #[test]
-fn a_generated_domain_is_one_per_service_and_unique_in_the_organization() {
+fn adding_a_generated_domain_again_keeps_it_and_offers_a_free_prefix() {
     let (store, who) = shop();
     let added = store
         .write_trusted(&who, &add(None, None), &cloud())
         .unwrap();
-    assert_eq!(added.domain.shown(), "web.acme.ployz.app");
-    assert_eq!(added.staged.len(), 1);
-    // Adding it again keeps it; a port retargets it.
+    assert_eq!(added.written.domain.shown(), "web.acme.ployz.app");
+    assert_eq!(added.written.staged.len(), 1);
+    assert!(added.added);
+    assert_eq!(added.free_prefix, None);
+    // Adding it again keeps it and names a prefix free for another; a port
+    // retargets it.
     let again = store
         .write_trusted(&who, &add(None, None), &cloud())
         .unwrap();
-    assert!(again.staged.is_empty());
-    assert_eq!(again.environment.revision, added.environment.revision);
+    assert!(!again.added);
+    assert!(again.written.staged.is_empty());
+    assert_eq!(
+        again.written.environment.revision,
+        added.written.environment.revision
+    );
+    assert_eq!(
+        again.free_prefix.as_ref().map(|p| p.as_str()),
+        Some("web-2")
+    );
     let retargeted = store
         .write_trusted(&who, &add(None, Some(8080)), &cloud())
         .unwrap();
-    assert_eq!(retargeted.domain.port, Some(8080));
+    assert_eq!(retargeted.written.domain.port, Some(8080));
+    assert!(!retargeted.added);
 
     // Staging's web shares the Cluster Domain, so it takes the next prefix.
     let staging = store
@@ -142,9 +162,140 @@ fn a_generated_domain_is_one_per_service_and_unique_in_the_organization() {
         .unwrap();
     // Without a reserved Cluster Domain it has a prefix but no hostname yet.
     assert_eq!(
-        serde_json::to_value(&staging.domain).unwrap(),
+        serde_json::to_value(&staging.written.domain).unwrap(),
         json!({ "service": "web", "kind": "generated", "prefix": "web-2", "hostname": null, "port": null })
     );
+    // The offer skips what the Organization holds, the Service's own included.
+    let offered = store
+        .write_trusted(&who, &add(None, None), &cloud())
+        .unwrap();
+    assert_eq!(
+        offered.free_prefix.as_ref().map(|p| p.as_str()),
+        Some("web-3")
+    );
+}
+
+#[test]
+fn a_service_takes_several_generated_domains_by_prefix() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add(None, None), &cloud())
+        .unwrap();
+    let second = store
+        .write_trusted(&who, &add_prefix("shop"), &cloud())
+        .unwrap();
+    assert!(second.added);
+    assert_eq!(second.written.domain.shown(), "shop.acme.ployz.app");
+    let shown = rows(&store, &who, &cloud())
+        .iter()
+        .map(|row| row.domain.shown().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(shown, ["web.acme.ployz.app", "shop.acme.ployz.app"]);
+
+    // Naming one it has keeps it; a port retargets only that one.
+    let again = store
+        .write_trusted(&who, &add_prefix("shop"), &cloud())
+        .unwrap();
+    assert!(!again.added);
+    assert!(again.written.staged.is_empty());
+    assert_eq!(again.free_prefix, None);
+    let retargeted = store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                port: Some(3000),
+                ..add_prefix("shop")
+            },
+            &cloud(),
+        )
+        .unwrap();
+    assert_eq!(retargeted.written.domain.port, Some(3000));
+    let ports = rows(&store, &who, &cloud())
+        .iter()
+        .map(|row| row.domain.port)
+        .collect::<Vec<_>>();
+    assert_eq!(ports, [None, Some(3000)]);
+
+    // A prefix another Service holds, or another Namespace publishes, is refused.
+    let taken = store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                environment: at(Some("staging")),
+                ..add_prefix("shop")
+            },
+            &cloud(),
+        )
+        .unwrap_err();
+    assert_eq!(taken.code, RpcErrorCode::Conflict);
+    let published = store
+        .write_trusted(
+            &who,
+            &add_prefix("old"),
+            &publishing("old.acme.ployz.app", "gone-production", "web"),
+        )
+        .unwrap_err();
+    assert_eq!(published.code, RpcErrorCode::Conflict);
+    // A domain is custom or generated, never both.
+    let both = store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                hostname: Some(host("app.example.com")),
+                ..add_prefix("app")
+            },
+            &cloud(),
+        )
+        .unwrap_err();
+    assert_eq!(both.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(rows(&store, &who, &cloud()).len(), 2);
+}
+
+#[test]
+fn changing_one_of_several_generated_domains_names_it() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &add(None, None), &cloud())
+        .unwrap();
+    store
+        .write_trusted(&who, &add_prefix("shop"), &cloud())
+        .unwrap();
+    let set = |domain: Option<&str>, prefix: &str| SetGeneratedDomain {
+        domain: domain.map(str::to_owned),
+        ..set_prefix(None, prefix)
+    };
+
+    let unnamed = store
+        .write_trusted(&who, &set(None, "store"), &cloud())
+        .unwrap_err();
+    assert_eq!(unnamed.code, RpcErrorCode::Ambiguous);
+    assert_eq!(
+        unnamed.details["valid_children"],
+        json!(["web.acme.ployz.app", "shop.acme.ployz.app"])
+    );
+    let missing = store
+        .write_trusted(&who, &set(Some("api"), "store"), &cloud())
+        .unwrap_err();
+    assert_eq!(missing.code, RpcErrorCode::NotFound);
+    assert_eq!(
+        missing.details["valid_children"],
+        json!(["web.acme.ployz.app", "shop.acme.ployz.app"])
+    );
+    // Taking the prefix of its other generated domain is refused.
+    let onto = store
+        .write_trusted(&who, &set(Some("shop"), "web"), &cloud())
+        .unwrap_err();
+    assert_eq!(onto.code, RpcErrorCode::Conflict);
+
+    let renamed = store
+        .write_trusted(&who, &set(Some("shop.acme.ployz.app"), "store"), &cloud())
+        .unwrap();
+    assert_eq!(renamed.domain.shown(), "store.acme.ployz.app");
+    let shown = rows(&store, &who, &cloud())
+        .iter()
+        .map(|row| row.domain.shown().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(shown, ["web.acme.ployz.app", "store.acme.ployz.app"]);
 }
 
 #[test]
@@ -153,15 +304,15 @@ fn a_custom_domain_is_added_retargeted_and_held_by_one_service() {
     let added = store
         .write_trusted(&who, &add(Some("app.example.com"), None), &cloud())
         .unwrap();
-    assert_eq!(added.domain.shown(), "app.example.com");
+    assert_eq!(added.written.domain.shown(), "app.example.com");
     let same = store
         .write_trusted(&who, &add(Some("app.example.com"), None), &cloud())
         .unwrap();
-    assert!(same.staged.is_empty());
+    assert!(same.written.staged.is_empty());
     let retarget = store
         .write_trusted(&who, &add(Some("app.example.com"), Some(3000)), &cloud())
         .unwrap();
-    assert_eq!(retarget.domain.port, Some(3000));
+    assert_eq!(retarget.written.domain.port, Some(3000));
 
     // Another Service, in any Environment, can't take it.
     let taken = store
@@ -565,6 +716,7 @@ fn set_prefix(environment: Option<&str>, prefix: &str) -> SetGeneratedDomain {
         environment: at(environment),
         service: ServiceName::parse("web").unwrap(),
         prefix: ployz_core::DomainPrefix::parse(prefix).unwrap(),
+        domain: None,
         port: None,
     }
 }
@@ -647,7 +799,7 @@ fn a_new_generated_prefix_avoids_published_hostnames() {
             &publishing("web.acme.ployz.app", "gone-production", "web"),
         )
         .unwrap();
-    assert_eq!(added.domain.shown(), "web-2.acme.ployz.app");
+    assert_eq!(added.written.domain.shown(), "web-2.acme.ployz.app");
 }
 
 #[test]

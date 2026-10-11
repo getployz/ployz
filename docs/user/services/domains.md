@@ -24,6 +24,16 @@ The address is the service's name under your organization's domain, like
 To change a service's subdomain, click the pencil on its domain, edit **Subdomain**, and click
 **Save domain**.
 
+### Add another generated domain
+
+A service can have several generated domains, like `web` and `shop`, each with its own port.
+Click **Generate Domain** again, edit **Subdomain**, which suggests a free one, like `web-2`,
+and click **Generate Domain**. The pencil on each domain changes only that one.
+
+From the CLI, name the subdomain: `ployz domain add web --prefix shop`. Without `--prefix`, a
+service that has a generated domain keeps it, and the CLI suggests a free subdomain. To change
+one of several, name it: `ployz domain set web store --domain shop`.
+
 ## Choose the port
 
 A domain sends traffic to one port inside your service. Left blank, it uses `PORT`, which is
@@ -47,7 +57,7 @@ Custom domains are free.
 3. Create the DNS records below at your DNS provider.
 4. Click **Deploy**.
 
-A service can have any number of custom domains next to its one generated domain, each with its
+A service can have any number of custom domains next to its generated domains, each with its
 own port.
 
 ## Point DNS at your servers

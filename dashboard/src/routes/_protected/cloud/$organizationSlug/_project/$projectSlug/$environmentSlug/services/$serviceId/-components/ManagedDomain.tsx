@@ -39,6 +39,7 @@ const serviceManagedHostnameSchema = coreSetting((value) => parseServiceSetting(
 
 export function ManagedDomainDialog({
   mode = "edit",
+  choosePrefix = mode === "edit",
   managed,
   clusterDomain,
   takenPrefixes,
@@ -47,6 +48,8 @@ export function ManagedDomainDialog({
   onSubmit,
 }: {
   mode?: "edit" | "generate";
+  /** Whether the subdomain is asked for: always when editing, and when generating another. */
+  choosePrefix?: boolean;
   managed: ServiceManagedHostname;
   clusterDomain: string | null;
   takenPrefixes: string[];
@@ -106,11 +109,13 @@ export function ManagedDomainDialog({
               <DialogDescription>
                 {mode === "edit"
                   ? "Change its subdomain or the port it reaches."
-                  : "Enter the port your app is listening on."}
+                  : choosePrefix
+                    ? "Pick its subdomain and the port your app is listening on."
+                    : "Enter the port your app is listening on."}
               </DialogDescription>
             </DialogHeader>
             <FieldGroup>
-              {mode === "edit" ? (
+              {choosePrefix ? (
                 <form.Field name="prefix">
                   {(field) => (
                     <field.Text

@@ -107,6 +107,8 @@ pub struct DnsLookup {
 
 /// Give a Service a public domain: `hostname` for a custom one, none for a generated
 /// one under the Cluster Domain. Adding one it already has changes only its port.
+/// Without a `prefix`, a Service that has a generated domain keeps it: name a
+/// prefix to add another.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct AddDomain {
@@ -116,6 +118,11 @@ pub struct AddDomain {
     /// A custom hostname; none generates one.
     #[serde(default)]
     pub hostname: Option<Hostname>,
+    /// The generated domain's prefix; none picks a free one from the Service's
+    /// Private DNS name. Not with `hostname`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub prefix: Option<DomainPrefix>,
     /// The container port it reaches; none follows the container's `PORT`.
     #[serde(default)]
     pub port: Option<u16>,
@@ -138,6 +145,11 @@ pub struct SetGeneratedDomain {
     #[serde(default)]
     pub environment: EnvironmentRef,
     pub service: ServiceName,
+    /// Which of the Service's generated domains, by hostname or prefix; needed
+    /// only when it has several.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub domain: Option<String>,
     /// Unique among the Organization's generated domains and the hostnames other
     /// Namespaces publish.
     pub prefix: DomainPrefix,
@@ -166,6 +178,18 @@ pub struct DomainStaged {
     pub domain: Domain,
     /// Its Service, when this changed it; empty when it already was so.
     pub staged: Vec<SettingPath>,
+}
+
+/// A domain given to a Service, or the one it already had.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct DomainAdded {
+    #[serde(flatten)]
+    pub written: DomainStaged,
+    /// Whether the Service lacked it; false when it already had it.
+    pub added: bool,
+    /// A prefix free for another generated domain, when one was asked for without
+    /// a prefix and the Service already had one.
+    pub free_prefix: Option<DomainPrefix>,
 }
 
 /// A Service's public domain.
@@ -323,7 +347,13 @@ pub(crate) fn add_domain(
     who: &Actor,
     add: &AddDomain,
     trusted: &Trusted,
-) -> Result<DomainStaged, RpcError> {
+) -> Result<DomainAdded, RpcError> {
+    if add.hostname.is_some() && add.prefix.is_some() {
+        return Err(error::invalid(
+            "A domain is a custom hostname or a generated prefix, not both",
+            json!({}),
+        ));
+    }
     let mut environment = scope::lock(tx, who, &add.environment)?;
     // Hostnames are unique across the Organization: all its Environments share the
     // Servers' ingress and one Cluster Domain.
@@ -335,8 +365,19 @@ pub(crate) fn add_domain(
         .collect::<Vec<_>>();
     // Hostnames under the Cluster Domain are Ployz's to hand out, never custom.
     let cluster = cluster_of(tx, &environment, trusted)?;
-    let own = environment.service(&add.service)?.id.clone();
+    let own = environment.service(&add.service)?;
+    let (own, own_prefixes) = (
+        own.id.clone(),
+        own.config
+            .managed_hostnames
+            .iter()
+            .map(|managed| managed.prefix.clone())
+            .collect::<Vec<_>>(),
+    );
     let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster.as_ref()))?;
+    if let Some(prefix) = &add.prefix {
+        refuse_taken(tx, who, &taken, prefix.as_str())?;
+    }
     if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster) {
         let (hostname, cluster) = (hostname.as_str(), cluster.as_str());
         if hostname == cluster || hostname.ends_with(&format!(".{cluster}")) {
@@ -349,7 +390,8 @@ pub(crate) fn add_domain(
         }
     }
     let service = environment.service_mut(&add.service)?;
-    let (name, port, changed) = match &add.hostname {
+    let mut free = None;
+    let (name, port, added, changed) = match &add.hostname {
         Some(hostname) => {
             let elsewhere = everywhere.iter().any(|(id, config)| {
                 *id != service.id
@@ -368,6 +410,7 @@ pub(crate) fn add_domain(
             let existing = routes
                 .iter_mut()
                 .find(|route| route.hostname == hostname.as_str());
+            let added = existing.is_none();
             let changed = existing
                 .as_ref()
                 .is_none_or(|route| route.target_port != add.port);
@@ -382,51 +425,72 @@ pub(crate) fn add_domain(
             let name = DomainName::Custom {
                 hostname: hostname.clone(),
             };
-            (name, add.port, changed)
+            (name, add.port, added, changed)
         }
         None => {
+            let base = service.config.private_dns.as_str().to_owned();
             let managed = &mut service.config.managed_hostnames;
-            // A Service needs one generated domain; adding it again keeps it.
-            let changed = match managed.first_mut() {
-                Some(existing) if add.port.is_none() || existing.target_port == add.port => false,
+            let mut taken = taken
+                .iter()
+                .map(|(prefix, _)| prefix.as_str())
+                .collect::<Vec<_>>();
+            // Without a prefix, a Service that has a generated domain keeps it.
+            let existing = match &add.prefix {
+                Some(prefix) => managed
+                    .iter_mut()
+                    .find(|managed| managed.prefix == prefix.as_str()),
+                None => managed.first_mut(),
+            };
+            let (prefix, port, added, changed) = match existing {
                 Some(existing) => {
-                    existing.target_port = add.port;
-                    true
+                    let changed = add.port.is_some() && existing.target_port != add.port;
+                    if changed {
+                        existing.target_port = add.port;
+                    }
+                    (
+                        existing.prefix.clone(),
+                        existing.target_port,
+                        false,
+                        changed,
+                    )
                 }
                 None => {
-                    let taken = taken
-                        .iter()
-                        .map(|(prefix, _)| prefix.as_str())
-                        .collect::<Vec<_>>();
-                    let prefix = free_prefix(service.config.private_dns.as_str(), &taken);
+                    let prefix = match &add.prefix {
+                        Some(prefix) => prefix.as_str().to_owned(),
+                        None => free_prefix(&base, &taken),
+                    };
                     managed.push(ServiceManagedHostname {
-                        prefix,
+                        prefix: prefix.clone(),
                         target_port: add.port,
                     });
-                    true
+                    (prefix, add.port, true, true)
                 }
             };
-            let managed = managed
-                .first()
-                .expect("a generated domain was just ensured");
-            let name = generated(managed.prefix.clone(), trusted);
-            (name, managed.target_port, changed)
+            if add.prefix.is_none() && !added {
+                taken.extend(own_prefixes.iter().map(String::as_str));
+                free = DomainPrefix::parse(free_prefix(&base, &taken)).ok();
+            }
+            (generated(prefix, trusted), port, added, changed)
         }
     };
     if changed {
         scope::save_working(tx, &mut environment)?;
     }
-    Ok(DomainStaged {
-        environment: environment.summary,
-        domain: Domain {
-            service: add.service.clone(),
-            name,
-            port,
+    Ok(DomainAdded {
+        written: DomainStaged {
+            environment: environment.summary,
+            domain: Domain {
+                service: add.service.clone(),
+                name,
+                port,
+            },
+            staged: changed
+                .then(|| SettingPath::whole(&add.service))
+                .into_iter()
+                .collect(),
         },
-        staged: changed
-            .then(|| SettingPath::whole(&add.service))
-            .into_iter()
-            .collect(),
+        added,
+        free_prefix: free,
     })
 }
 
@@ -441,23 +505,67 @@ pub(crate) fn set_generated_domain(
     let own = environment.service(&set.service)?.id.clone();
     let cluster = cluster_of(tx, &environment, trusted)?;
     let taken = taken_prefixes(tx, who, &environment, &own, (trusted, cluster.as_ref()))?;
-    match taken.iter().find(|(taken, _)| taken == prefix) {
-        Some((_, Some(published))) => return Err(clash(tx, who, published)?),
-        Some((_, None)) => {
-            return Err(error::conflict(
-                format!("Another generated domain of this Organization is {prefix}"),
-                json!({ "prefix": prefix }),
+    refuse_taken(tx, who, &taken, prefix)?;
+    let generated_domains = domains_of(&environment.working, trusted)
+        .into_iter()
+        .filter_map(|domain| match &domain.name {
+            DomainName::Generated { prefix, .. } if domain.service == set.service => {
+                Some((prefix.clone(), domain))
+            }
+            DomainName::Generated { .. } | DomainName::Custom { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let shown = || {
+        generated_domains
+            .iter()
+            .map(|(_, domain)| domain.shown().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let chosen = match (&set.domain, generated_domains.as_slice()) {
+        (_, []) => {
+            return Err(error::not_found(
+                format!("{} has no generated domain to change", set.service),
+                json!({ "next": format!("ployz domain add {}", set.service) }),
             ));
         }
-        None => {}
-    }
-    let service = environment.service_mut(&set.service)?;
-    let Some(managed) = service.config.managed_hostnames.first_mut() else {
-        return Err(error::not_found(
-            format!("{} has no generated domain to change", set.service),
-            json!({ "next": format!("ployz domain add {}", set.service) }),
-        ));
+        (Some(name), _) => generated_domains
+            .iter()
+            .find(|(_, domain)| domain.is_named(name))
+            .ok_or_else(|| {
+                error::not_found(
+                    format!("{} has no generated domain {name}", set.service),
+                    json!({ "valid_children": shown() }),
+                )
+            })?,
+        (None, [only]) => only,
+        (None, _) => {
+            return Err(error::ambiguous(
+                format!(
+                    "{} has several generated domains: name the one to change",
+                    set.service
+                ),
+                json!({ "valid_children": shown() }),
+            ));
+        }
     };
+    let current = chosen.0.clone();
+    let service = environment.service_mut(&set.service)?;
+    let managed = &mut service.config.managed_hostnames;
+    if prefix != current && managed.iter().any(|managed| managed.prefix == prefix) {
+        return Err(error::conflict(
+            format!("{} already has the generated domain {prefix}", set.service),
+            json!({ "prefix": prefix }),
+        ));
+    }
+    let managed = managed
+        .iter_mut()
+        .find(|managed| managed.prefix == current)
+        .ok_or_else(|| {
+            error::not_found(
+                format!("{} has no generated domain {current}", set.service),
+                json!({ "valid_children": shown() }),
+            )
+        })?;
     let port = set.port.unwrap_or(managed.target_port);
     let changed = managed.prefix != prefix || managed.target_port != port;
     prefix.clone_into(&mut managed.prefix);
@@ -477,6 +585,24 @@ pub(crate) fn set_generated_domain(
             .into_iter()
             .collect(),
     })
+}
+
+/// Refuse `prefix` when another Service's generated domain or another Namespace's
+/// published hostname holds it.
+fn refuse_taken(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    taken: &[(String, Option<&PublishedHostname>)],
+    prefix: &str,
+) -> Result<(), RpcError> {
+    match taken.iter().find(|(taken, _)| taken == prefix) {
+        Some((_, Some(published))) => Err(clash(tx, who, published)?),
+        Some((_, None)) => Err(error::conflict(
+            format!("Another generated domain of this Organization is {prefix}"),
+            json!({ "prefix": prefix }),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Each prefix a generated domain of Service `own` in `environment` can't take,
@@ -754,7 +880,7 @@ fn generated(prefix: String, trusted: &Trusted) -> DomainName {
     DomainName::Generated { prefix, hostname }
 }
 
-/// Every domain in `intent`: each Service's custom domains, then its generated one.
+/// Every domain in `intent`: each Service's custom domains, then its generated ones.
 fn domains_of(intent: &SavedEnvironmentIntent, trusted: &Trusted) -> Vec<Domain> {
     let mut domains = Vec::new();
     for service in &intent.services {

@@ -69,8 +69,9 @@ pub use deployment::{
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
-    DomainAction, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus,
-    DomainView, DomainsQuery, DomainsView, PublishedHostname, RemoveDomain, SetGeneratedDomain,
+    DomainAction, DomainAdded, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged,
+    DomainStatus, DomainView, DomainsQuery, DomainsView, PublishedHostname, RemoveDomain,
+    SetGeneratedDomain,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use github::{

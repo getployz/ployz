@@ -300,11 +300,12 @@ export const BINDINGS = new Map<string, AgentBinding>([
   ],
   [
     "domain add",
-    stage(Schema.Struct({ ...Env, service: Schema.String, host: Text, port: Int }), (input) => ({
+    stage(Schema.Struct({ ...Env, service: Schema.String, host: Text, prefix: Text, port: Int }), (input) => ({
       command: "add_domain",
       environment: environment(input),
       service: input.service,
       hostname: input.host === undefined ? null : input.host.trim().toLowerCase(),
+      prefix: input.prefix === undefined ? null : input.prefix.trim().toLowerCase(),
       port: input.port ?? null,
     })),
   ],

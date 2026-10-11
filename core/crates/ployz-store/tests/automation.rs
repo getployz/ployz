@@ -465,6 +465,7 @@ fn a_push_deploy_refuses_a_hostname_another_namespace_publishes() {
                 environment: EnvironmentRef::default(),
                 service: ServiceName::parse("web").unwrap(),
                 hostname: Some(hostname.clone()),
+                prefix: None,
                 port: None,
             },
             &trusted,

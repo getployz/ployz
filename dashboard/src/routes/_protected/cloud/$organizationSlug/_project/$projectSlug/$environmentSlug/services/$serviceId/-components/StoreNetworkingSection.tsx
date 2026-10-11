@@ -20,7 +20,7 @@ import { ManagedDomainDialog } from "./ManagedDomain";
 
 type Editor =
   | { kind: "generate" }
-  | { kind: "generated" }
+  | { kind: "generated"; prefix: string }
   | { kind: "add"; draft?: CustomDomain }
   | { kind: "custom"; hostname: string }
   | null;
@@ -28,14 +28,27 @@ type Editor =
 /** How a domain is addressed in commands: its hostname, or a generated one's prefix. */
 const nameOf = (domain: DomainRow) => domain.kind === "custom" ? domain.hostname : domain.prefix;
 
+const prefixesOf = (domains: readonly DomainRow[]) =>
+  domains.flatMap((domain) => domain.kind === "generated" ? [domain.prefix] : []);
+
 const portLabel = (port: number | null) => port === null ? "Uses PORT" : `Port ${port}`;
 
 const Route = Schema.Struct({ hostname: Schema.String });
 const Managed = Schema.Array(Schema.Struct({ prefix: Schema.String }));
 
+/** `base`, else the first of `base-2`, `base-3`, … not taken, as the Store picks one; the Store still checks it. */
+export function freePrefix(base: string, taken: readonly string[]) {
+  let candidate = base;
+  for (let n = 2; taken.includes(candidate); n += 1) {
+    const suffix = `-${n}`;
+    candidate = `${base.slice(0, 63 - suffix.length).replace(/-+$/u, "")}${suffix}`;
+  }
+  return candidate;
+}
+
 /**
- * Domains the next Deploy removes, from the review: a custom one's route row going, or the generated one when its
- * Service keeps none. They stay listed, struck through, until that Deploy.
+ * Domains the next Deploy removes, from the review: a custom one's route row going, or generated ones when its
+ * Service keeps fewer. They stay listed, struck through, until that Deploy.
  */
 function removedDomains(changes: Map<string, ServiceSettingChange>, domains: readonly DomainRow[]) {
   return [...changes.values()].flatMap((change) => {
@@ -44,11 +57,13 @@ function removedDomains(changes: Map<string, ServiceSettingChange>, domains: rea
       return [{ name: change.before.hostname, path: change.path }];
     }
     const kept = Schema.is(Managed)(change.after) ? change.after : [];
-    if (setting === "managedHostnames" && Schema.is(Managed)(change.before) && kept.length === 0
-      && !domains.some((domain) => domain.kind === "generated")) {
-      return change.before.map(({ prefix }) => ({ name: prefix, path: change.path }));
+    if (setting !== "managedHostnames" || !Schema.is(Managed)(change.before) || kept.length >= change.before.length) {
+      return [];
     }
-    return [];
+    // A renamed one isn't removed: only fewer generated domains show as removals.
+    const listed = (prefix: string) => kept.some((managed) => managed.prefix === prefix)
+      || domains.some((domain) => domain.kind === "generated" && domain.prefix === prefix);
+    return change.before.filter(({ prefix }) => !listed(prefix)).map(({ prefix }) => ({ name: prefix, path: change.path }));
   });
 }
 
@@ -58,8 +73,8 @@ export function defaultPortHint(port: JsonValue | undefined, domains: readonly P
 }
 
 /**
- * A Service's domains over the Config Store: at most one generated domain under the Cluster Domain and any custom
- * ones, each with the status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
+ * A Service's domains over the Config Store: generated ones under the Cluster Domain and custom ones, each with the
+ * status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
  */
 export function StoreNetworkingSection({ state, version, privateFirst = false, validatePrivateDns }: {
   state: StoreService;
@@ -78,23 +93,28 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
   const [editor, setEditor] = useState<Editor>(null);
   const [editingPrivateDns, setEditingPrivateDns] = useState(false);
   const privateDnsChange = changes.get("privateDns");
-  const generated = domains.find((domain) => domain.kind === "generated");
+  const own = prefixesOf(domains);
+  const generated = editor?.kind === "generated"
+    ? domains.find((domain) => domain.kind === "generated" && domain.prefix === editor.prefix)
+    : undefined;
   const edited = editor?.kind === "custom"
     ? domains.find((domain) => domain.kind === "custom" && domain.hostname === editor.hostname)
     : undefined;
-  const add = (hostname: string | null, port: number | null) =>
-    writer.commit({ command: "add_domain", environment, service: service.name, hostname, port });
+  // The Environment's generated domains; the Store checks the whole Organization and what Servers publish.
+  const allPrefixes = prefixesOf(all);
+  const clusterDomain = all.flatMap((domain) =>
+    domain.kind === "generated" && domain.hostname ? [domain.hostname.slice(domain.prefix.length + 1)] : [])[0] ?? null;
+  const add = (hostname: string | null, port: number | null, prefix: string | null = null) =>
+    writer.commit({ command: "add_domain", environment, service: service.name, hostname, prefix, port });
   const remove = (domain: string) => writer.commit({ command: "remove_domain", environment, domain });
 
   const removed = removedDomains(changes, domains);
   const addButtons = (
     <div className="flex shrink-0 flex-wrap gap-2">
-      {generated ? null : (
-        <Button type="button" variant="outline" onClick={() => setEditor({ kind: "generate" })}>
-          <ZapIcon data-icon="inline-start" />
-          Generate domain
-        </Button>
-      )}
+      <Button type="button" variant="outline" onClick={() => setEditor({ kind: "generate" })}>
+        <ZapIcon data-icon="inline-start" />
+        Generate domain
+      </Button>
       <Button type="button" variant="outline" onClick={() => setEditor({ kind: "add" })}>
         <PlusIcon data-icon="inline-start" />
         Custom domain
@@ -178,7 +198,7 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
                 changed={domainChanged(changes, domain)}
                 onEdit={() => domain.kind === "custom"
                   ? setEditor({ kind: "custom", hostname: domain.hostname })
-                  : setEditor({ kind: "generated" })}
+                  : setEditor({ kind: "generated", prefix: domain.prefix })}
                 onDelete={() => remove(name)}
               />
             );
@@ -190,19 +210,32 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
           Uses port {defaultPort}. <Link to="." search={(prev) => ({ ...prev, tab: "variables" })}>Change</Link>
         </FieldDescription>
       ) : null}
-        {editor?.kind === "generate" || (editor?.kind === "generated" && generated?.kind === "generated") ? (
+        {editor?.kind === "generate" ? (
           <ManagedDomainDialog
-            mode={editor.kind === "generate" ? "generate" : "edit"}
-            managed={{ prefix: generated?.kind === "generated" ? generated.prefix : service.private_dns, targetPort: generated?.port ?? null }}
-            clusterDomain={generated?.kind === "generated" && generated.hostname ? generated.hostname.slice(generated.prefix.length + 1) : null}
-            // The Environment's other generated domains; the Store checks the whole Organization and what Servers publish.
-            takenPrefixes={all.flatMap((domain) => domain.kind === "generated" && domain.service !== service.name ? [domain.prefix] : [])}
+            mode="generate"
+            // The first one takes the Private DNS name; another needs a subdomain of its own.
+            choosePrefix={own.length > 0}
+            managed={{ prefix: freePrefix(privateDns, allPrefixes), targetPort: null }}
+            clusterDomain={clusterDomain}
+            takenPrefixes={allPrefixes}
+            defaultTargetPort={null}
+            onClose={() => setEditor(null)}
+            onSubmit={({ prefix, targetPort }) => void add(null, targetPort, own.length > 0 ? prefix.trim().toLowerCase() : null)}
+          />
+        ) : null}
+        {generated?.kind === "generated" ? (
+          <ManagedDomainDialog
+            managed={{ prefix: generated.prefix, targetPort: generated.port }}
+            clusterDomain={clusterDomain}
+            takenPrefixes={allPrefixes.filter((prefix) => prefix !== generated.prefix)}
             defaultTargetPort={null}
             onClose={() => setEditor(null)}
             onSubmit={({ prefix, targetPort }) => {
-              if (generated?.kind !== "generated") return void add(null, targetPort);
               // One command: the subdomain, and the port (null follows the container's PORT).
-              writer.commit({ command: "set_generated_domain", environment, service: service.name, prefix: prefix.trim().toLowerCase(), port: targetPort });
+              writer.commit({
+                command: "set_generated_domain", environment, service: service.name, domain: generated.prefix,
+                prefix: prefix.trim().toLowerCase(), port: targetPort,
+              });
             }}
           />
         ) : null}

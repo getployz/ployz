@@ -232,31 +232,46 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       });
       return;
     case "add_domain": {
-      // A custom domain names its host; a generated one is the Service's Private DNS under the Cluster Domain.
-      const service = command.service;
+      // A custom domain names its host; a generated one takes the prefix given, else the Service's Private DNS. One it
+      // already has keeps its place, and a port retargets it. Without a prefix, a Service with a generated domain keeps
+      // that one.
+      const { service, hostname, port } = command;
+      const prefix = command.prefix ?? null;
       const known = listed(command.environment).find((listing) => listing.name === service);
       // Staged, as the Store words it: live after the next Deploy.
-      const staged = { status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" }, service, port: command.port } as const;
-      const domain: DomainsView["domains"][number] = command.hostname === null
-        ? { kind: "generated", prefix: known?.private_dns ?? service, hostname: null, ...staged }
-        : { kind: "custom", hostname: command.hostname, ...staged };
-      await views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: [
-        ...view.domains.filter((other) => other.service !== service || other.kind !== domain.kind
-          || (other.kind === "custom" ? other.hostname !== command.hostname : false)),
-        domain,
-      ] }));
-      const path = command.hostname === null ? `${service}.managedHostnames` : `${service}.routes.${command.hostname}`;
-      await stage(command.environment, service, { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false, row: null });
+      const staged = { status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" }, service, port } as const;
+      const same = (domain: DomainsView["domains"][number]) => domain.service === service && (hostname !== null
+        ? domain.kind === "custom" && domain.hostname === hostname
+        : domain.kind === "generated" && (prefix === null || domain.prefix === prefix));
+      await views<DomainsView>("domains", command.environment, (view) => {
+        const existing = view.domains.find(same);
+        if (existing) {
+          return port === null && existing.kind === "generated" ? view
+            : { ...view, domains: view.domains.map((domain) => domain === existing ? { ...domain, ...staged, port } : domain) };
+        }
+        const domain: DomainsView["domains"][number] = hostname === null
+          ? { kind: "generated", prefix: prefix ?? known?.private_dns ?? service, hostname: null, ...staged }
+          : { kind: "custom", hostname, ...staged };
+        return { ...view, domains: [...view.domains, domain] };
+      });
+      const path = hostname === null ? `${service}.managedHostnames` : `${service}.routes.${hostname}`;
+      await stage(command.environment, service, { path, kind: "add", before: null, after: hostname === null ? prefix ?? service : { hostname }, canRestore: false, row: null });
       return;
     }
     case "set_generated_domain": {
       const { service, prefix, port } = command;
-      // The hostname follows the prefix under the same Cluster Domain; an omitted port stays.
-      await views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: view.domains.map((domain) =>
-        domain.kind !== "generated" || domain.service !== service ? domain : {
+      const named = command.domain?.trim().toLowerCase();
+      // The named generated domain, or the Service's only one; with several and none named the Store refuses.
+      // Its hostname follows the prefix under the same Cluster Domain; an omitted port stays.
+      await views<DomainsView>("domains", command.environment, (view) => {
+        const generated = view.domains.filter((domain) => domain.kind === "generated" && domain.service === service);
+        const target = named === undefined ? (generated.length === 1 ? generated[0] : undefined)
+          : generated.find((domain) => domain.kind === "generated" && (domain.prefix === named || domain.hostname === named));
+        return { ...view, domains: view.domains.map((domain) => domain !== target || domain.kind !== "generated" ? domain : {
           ...domain, prefix, port: port === undefined ? domain.port : port,
           hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
-        }) }));
+        }) };
+      });
       await stage(command.environment, service, { path: `${service}.managedHostnames`, kind: "update", before: null, after: prefix, canRestore: false, row: null });
       return;
     }

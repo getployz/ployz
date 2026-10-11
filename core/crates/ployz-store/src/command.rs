@@ -251,7 +251,7 @@ commands! {
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
         => crate::deployment::cancel(tx, who, &c.deployment);
     /// Give a Service a generated or custom public domain.
-    AddDomain(crate::AddDomain) -> Domain(crate::DomainStaged)
+    AddDomain(crate::AddDomain) -> DomainAdded(crate::DomainAdded)
         => crate::domain::add_domain(tx, who, c, trusted);
     /// Change the prefix of a Service's generated domain.
     SetGeneratedDomain(crate::SetGeneratedDomain) -> Domain(crate::DomainStaged)
@@ -497,6 +497,7 @@ impl Written {
             Self::Discarded(discarded) => Some(&discarded.environment.id),
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
+            Self::DomainAdded(added) => Some(&added.written.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
             Self::SecretHeld(held) => Some(&held.environment.id),
             Self::Synced(synced) => Some(&synced.into.id),
@@ -563,7 +564,9 @@ pub enum Written {
     Discarded(Discarded),
     /// A Deployment admitted, started or cancelled, or what its runner recorded.
     Deployment(crate::DeploymentSummary),
-    /// A public domain was added or removed.
+    /// A public domain was given to a Service, or it already had it.
+    DomainAdded(crate::DomainAdded),
+    /// A public domain was changed or removed.
     Domain(crate::DomainStaged),
     /// What a system event made the Store do.
     Automated(crate::Automated),

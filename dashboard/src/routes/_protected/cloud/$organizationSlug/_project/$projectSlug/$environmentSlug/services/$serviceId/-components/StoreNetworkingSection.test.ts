@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultPortHint } from "./StoreNetworkingSection";
+import { defaultPortHint, freePrefix } from "./StoreNetworkingSection";
 
 describe("defaultPortHint", () => {
   it("names Ployz's default PORT when a domain routes to PORT and the user set none", () => {
@@ -11,5 +11,13 @@ describe("defaultPortHint", () => {
     expect(defaultPortHint("80", [{ port: null }])).toBeNull();
     expect(defaultPortHint(undefined, [{ port: 80 }])).toBeNull();
     expect(defaultPortHint(undefined, [])).toBeNull();
+  });
+});
+
+describe("freePrefix", () => {
+  it("takes the base, else the first numbered one no generated domain has", () => {
+    expect(freePrefix("web", [])).toBe("web");
+    expect(freePrefix("web", ["web", "web-2"])).toBe("web-3");
+    expect(freePrefix("a".repeat(63), ["a".repeat(63)])).toBe(`${"a".repeat(61)}-2`);
   });
 });

@@ -670,6 +670,7 @@ fn removing_a_deployed_domain_is_destructive() {
                 environment: EnvironmentRef::default(),
                 service: ServiceName::parse("web").unwrap(),
                 hostname: Some(Hostname::parse("app.example.com").unwrap()),
+                prefix: None,
                 port: None,
             },
             &Trusted::default(),

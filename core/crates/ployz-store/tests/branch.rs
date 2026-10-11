@@ -539,6 +539,7 @@ fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
                 environment: at("production"),
                 service: ServiceName::parse("web").unwrap(),
                 hostname: None,
+                prefix: None,
                 port: None,
             },
             &Trusted::default(),

@@ -1146,7 +1146,22 @@
         "multiple": false,
         "index": 2,
         "trailing": false,
-        "help": "Custom hostname, like app.example.com"
+        "help": "Custom hostname, like app.example.com",
+        "conflicts": [
+          "--prefix"
+        ]
+      },
+      {
+        "name": "--prefix",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Generated domain's prefix, to add another [default: a free one]",
+        "conflicts": [
+          "HOST"
+        ]
       },
       {
         "name": "--port",
@@ -1313,6 +1328,15 @@
         "index": 2,
         "trailing": false,
         "help": "One DNS label, unique among the Organization's generated domains"
+      },
+      {
+        "name": "--domain",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Which generated domain, by hostname or prefix, when it has several"
       },
       {
         "name": "--port",

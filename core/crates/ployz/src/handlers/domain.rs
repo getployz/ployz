@@ -26,6 +26,11 @@ pub(crate) fn command() -> Command {
             .arg(positional("service", true))
             .arg(positional("host", false).help("Custom hostname, like app.example.com"))
             .arg(
+                value("prefix", None)
+                    .conflicts_with("host")
+                    .help("Generated domain's prefix, to add another [default: a free one]"),
+            )
+            .arg(
                 value("port", None)
                     .value_parser(clap::value_parser!(u16).range(1..))
                     .help("Container port it reaches [default: the container's PORT]"),
@@ -39,6 +44,10 @@ pub(crate) fn command() -> Command {
             .arg(
                 positional("prefix", true)
                     .help("One DNS label, unique among the Organization's generated domains"),
+            )
+            .arg(
+                value("domain", None)
+                    .help("Which generated domain, by hostname or prefix, when it has several"),
             )
             .arg(
                 value("port", None)
@@ -86,14 +95,39 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
                 .map_err(|_| Error::usage("Expected a hostname like app.example.com"))
         })
         .transpose()?;
+    let prefix = matches
+        .get_one::<String>("prefix")
+        .map(|prefix| prefix_arg(prefix))
+        .transpose()?;
     let add = AddDomain {
         environment: store::environment(matches)?,
         service: store::service_name(matches, "service")?,
         hostname,
+        prefix,
         port: matches.get_one::<u16>("port").copied(),
     };
     let added = store::store(root)?.write(&add)?;
-    staged(matches, &added, "Staged domain", "is already on")
+    staged(
+        matches,
+        &added,
+        &added.written,
+        "Staged domain",
+        "is already on",
+    )?;
+    if let Some(free) = &added.free_prefix {
+        let service = add.service.as_str();
+        say_next(Some(store::next(
+            matches,
+            &["domain", "add", service, "--prefix", free.as_str()],
+        )));
+    }
+    Ok(())
+}
+
+/// A generated domain's prefix as typed; a rejected one is never echoed.
+fn prefix_arg(prefix: &str) -> Result<DomainPrefix, Error> {
+    DomainPrefix::parse(prefix.trim().to_ascii_lowercase())
+        .map_err(|_| Error::usage("Expected one DNS label, like shop"))
 }
 
 fn set(root: &ArgMatches) -> Result<(), Error> {
@@ -101,13 +135,14 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let set = SetGeneratedDomain {
         environment: store::environment(matches)?,
         service: store::service_name(matches, "service")?,
-        prefix: DomainPrefix::parse(required(matches, "prefix")?.trim().to_ascii_lowercase())
-            .map_err(|_| Error::usage("Expected one DNS label, like shop"))?,
+        domain: matches.get_one::<String>("domain").cloned(),
+        prefix: prefix_arg(&required(matches, "prefix")?)?,
         port: matches.get_one::<u16>("port").copied().map(Some),
     };
     let changed = store::store(root)?.write(&set)?;
     staged(
         matches,
+        &changed,
         &changed,
         "Staged generated domain",
         "already reaches",
@@ -123,6 +158,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
     let removed = store::store(root)?.write(&remove)?;
     staged(
         matches,
+        &removed,
         &removed,
         "Staged removal of domain",
         "is already off",
@@ -192,9 +228,11 @@ fn check(root: &ArgMatches) -> Result<(), Error> {
 
 /// A staged domain change and, when it changed anything, `ployz deploy` to ship it.
 /// A change that was already so says nothing changed: `already` joins the domain
-/// to its Service, as in `example.com is already on web`.
-fn staged(
+/// to its Service, as in `example.com is already on web`. `written` is what
+/// `--json` prints.
+fn staged<T: serde::Serialize>(
     matches: &ArgMatches,
+    written: &T,
     result: &DomainStaged,
     what: &str,
     already: &str,
@@ -202,7 +240,7 @@ fn staged(
     let where_ = format!("{}/{}", result.environment.project, result.environment.name);
     if result.staged.is_empty() {
         return ui::done(
-            &Next::new(result, None),
+            &Next::new(written, None),
             format_args!(
                 "Nothing changed in {where_}; {} {already} {}.",
                 result.domain.shown(),
@@ -212,7 +250,7 @@ fn staged(
     }
     let hint = store::next(matches, &["deploy"]);
     ui::done(
-        &Next::new(result, Some(hint.clone())),
+        &Next::new(written, Some(hint.clone())),
         format_args!(
             "{what} {} on {} in {where_} (revision {}).",
             result.domain.shown(),
