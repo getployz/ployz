@@ -19,6 +19,10 @@ fn namespace(value: &str) -> Namespace {
     Namespace::parse(value).unwrap()
 }
 
+fn service(value: &str) -> QualifiedService {
+    QualifiedService::parse(value).unwrap()
+}
+
 #[test]
 fn the_scope_reads_as_cloud_sends_it() {
     let every: DrainScope = serde_json::from_value(json!({ "scope": "every_namespace" })).unwrap();
@@ -35,6 +39,14 @@ fn the_scope_reads_as_cloud_sends_it() {
         serde_json::from_value::<DrainScope>(json!({ "scope": "owned" })).is_err(),
         "an owned scope names its Namespaces"
     );
+    let services: DrainScope =
+        serde_json::from_value(json!({ "scope": "services", "services": ["shop/web"] })).unwrap();
+    assert_eq!(
+        services,
+        DrainScope::Services {
+            services: vec![service("shop/web")]
+        }
+    );
 }
 
 #[test]
@@ -42,14 +54,22 @@ fn an_empty_owned_scope_chooses_nothing_and_reserved_namespaces_never() {
     let nothing = DrainScope::Owned {
         namespaces: Vec::new(),
     };
-    assert!(!nothing.includes(&namespace("shop")));
+    assert!(!nothing.includes(&service("shop/web")));
     let shop = DrainScope::Owned {
         namespaces: vec![namespace("shop")],
     };
-    assert!(shop.includes(&namespace("shop")) && !shop.includes(&namespace("blog")));
-    assert!(DrainScope::EveryNamespace.includes(&namespace("blog")));
-    let system = QualifiedService::system_ingress().namespace;
+    assert!(shop.includes(&service("shop/web")) && !shop.includes(&service("blog/web")));
+    assert!(DrainScope::EveryNamespace.includes(&service("blog/web")));
+    let system = QualifiedService::system_ingress();
     assert!(!DrainScope::EveryNamespace.includes(&system));
+    let web = DrainScope::Services {
+        services: vec![service("shop/web"), system.clone()],
+    };
+    assert!(web.includes(&service("shop/web")) && !web.includes(&service("shop/api")));
+    assert!(
+        !web.includes(&system),
+        "a listed reserved Service is still never drained"
+    );
 }
 
 #[test]
