@@ -66,7 +66,7 @@ app to check with you before every call, even when you've told it to skip permis
 Code honors this.
 
 When a `publish`, `deploy` or server command needs your approval (see
-[Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Approve and
 the command runs. Leave Approve unticked and Ployz denies the approval; any reason you type goes
 back to the agent, which is told nothing changed. Declining or closing the dialog denies it
@@ -170,7 +170,7 @@ with `--confirm`. Commands that would otherwise ask you to choose, such as `ploy
 a name or the storage choice in `ployz server add`, work the same way. A `publish` or `deploy`
 that needs an approval asks the same way in a terminal. Without one it waits for the approval in
 Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
-[Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions).
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it

@@ -60,10 +60,8 @@ server, like **Remove fra-1**.
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
 - **You approve one plan.** If the change moves on before you answer, the card says the plan
   changed, and the agent asks again about the new one.
-- **Turning off asking.** With **Ask before destructive actions** off in
-  [Organization → General](organizations.md#ask-before-destructive-actions), the agent deploys
-  new removals without stopping. A card already waiting still waits for your answer, and a card
-  whose plan changed still asks again about the new one.
+- **Asking is always on.** No setting turns it off. See
+  [Destructive actions ask first](organizations.md#destructive-actions-ask-first).
 - **Answer anywhere.** An approval is the same in every tab and on every device. Answer it once
   and every other card for it updates. If you answer a card someone already answered, it says the
   approval was already decided elsewhere, and how.
