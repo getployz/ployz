@@ -99,6 +99,16 @@ traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or a
 group) as well as the server's own. Then click **Check again** under **Domain** in
 **Organization → General**.
 
+If port 80 answers from your own computer, something else on that server holds it, often Caddy
+or nginx in front of a [self-hosted Ployz Cloud](../self-hosting.md#choose-where-it-runs). See
+what does:
+
+```sh
+sudo ss -ltnp '( sport = :80 or sport = :443 )'
+```
+
+Move that proxy to another server, or publish Ployz Cloud through a Cloudflare Tunnel instead.
+
 ## None of my servers takes web traffic
 
 You'll see **No Server receives traffic** or **No ingress Server has a public IP**. Either every server has web traffic turned off,
