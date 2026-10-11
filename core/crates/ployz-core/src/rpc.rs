@@ -3,6 +3,7 @@ use crate::{
     InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SeedVolumeRequest, ServiceVolumeRequest,
     SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
     WarmRequest,
+    metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1059,6 +1060,7 @@ define_responses! {
     MachineRemoved(MachineRemoved) => "machine_removed";
     WireGuardInspected(WireGuardInspected) => "wireguard_inspected";
     ResetAccepted(ResetAccepted) => "reset_accepted";
+    MetricHistoryReply(MetricHistoryReply) => "metric_history";
     Error(RpcError) => "error";
 }
 
