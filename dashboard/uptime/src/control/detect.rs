@@ -6,6 +6,11 @@
 //! when the quorum fails. Close: while Unreachable, recheck rounds run; a round passes when the
 //! quorum passes and nothing fails, and two consecutive passing rounds close the incident.
 //! Inconclusive never counts.
+//!
+//! A deploy or Check now sends a triggered round to every live region. While Reachable it is judged
+//! like a confirm round, so a quorum of failures opens at once. While Unreachable it replaces any
+//! recheck round, and one passing triggered round closes: a deploy is a change, not a flake
+//! recovering.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -20,9 +25,10 @@ use crate::domain::{
 pub enum Health {
     #[default]
     Reachable,
-    /// A routine probe failed and a confirm round is out.
+    /// A routine probe failed and a confirm round is out, or a triggered round is out.
     Suspect(Round),
-    /// An incident is open and recheck rounds run until two consecutive rounds pass.
+    /// An incident is open and recheck rounds run until two consecutive rounds pass, or one
+    /// triggered round does.
     Unreachable(Outage),
 }
 
@@ -52,7 +58,8 @@ pub struct Round {
     /// A confirm round's first entry is the routine failure that triggered it, which `expected`
     /// doesn't list.
     pub seen: Vec<Seen>,
-    /// Results arriving later are stored but not counted.
+    /// Results arriving later are stored but not counted. Pushed back by [`Input::Delayed`] and
+    /// [`Input::Admitted`].
     pub deadline: UnixMs,
 }
 
@@ -69,7 +76,18 @@ pub struct Seen {
 pub enum Input<'a> {
     Observed(&'a Judged),
     RoundExpired(RoundId),
+    /// The confirm budget handed out the round's last held job. The round was planned when its
+    /// jobs were queued, so under a backlog its clock restarts here.
+    Admitted(RoundId),
+    /// The confirm budget held the round's first job past its time, and moved the round's probes
+    /// later by `by` before handing any out.
+    Delayed {
+        round: RoundId,
+        by: Duration,
+    },
     RecheckDue,
+    /// A deploy or Check now asked for a probe.
+    Triggered,
     /// Postgres shows an open incident this engine doesn't hold (restart, resync, or another
     /// control plane).
     Adopted {
@@ -162,7 +180,7 @@ impl EvidenceItem {
 }
 
 /// Grace past the last probe's timeout before a round's results stop counting.
-const ROUND_GRACE: Duration = Duration::from_secs(15);
+pub(crate) const ROUND_GRACE: Duration = Duration::from_secs(15);
 /// Recheck every min(60s, interval) for this long after opening, then every interval.
 const FAST_RECHECK_FOR: Duration = Duration::from_secs(15 * 60);
 const RECHECK_REGIONS: usize = 3;
@@ -199,7 +217,23 @@ pub fn step(health: &mut Health, input: Input<'_>, ctx: &Ctx<'_>) -> Step {
         }
         Input::Observed(judged) => observed(health, judged, ctx),
         Input::RoundExpired(id) => expired(health, id, ctx),
+        Input::Admitted(id) => {
+            if let Some(round) = round_mut(health, id) {
+                round.deadline = round.deadline.max(ctx.now.plus(ctx.timeout + ROUND_GRACE));
+            }
+            Step::Nothing
+        }
+        Input::Delayed { round: id, by } => {
+            if let Some(round) = round_mut(health, id) {
+                for key in &mut round.expected {
+                    key.scheduled_at = key.scheduled_at.plus(by);
+                }
+                round.deadline = round.deadline.plus(by);
+            }
+            Step::Nothing
+        }
         Input::RecheckDue => recheck_due(health, ctx),
+        Input::Triggered => triggered(health, ctx),
     }
 }
 
@@ -243,16 +277,28 @@ fn observed(health: &mut Health, judged: &Judged, ctx: &Ctx<'_>) -> Step {
     }
 }
 
+/// A timer armed for a deadline that [`Input::Admitted`] has since moved is ignored.
 fn expired(health: &mut Health, id: RoundId, ctx: &Ctx<'_>) -> Step {
+    if round_mut(health, id).is_none_or(|round| ctx.now < round.deadline) {
+        return Step::Nothing;
+    }
     match health {
-        Health::Suspect(round) if round.id == id => {
+        Health::Suspect(_) => {
             *health = Health::Reachable;
             Step::Nothing
         }
-        Health::Unreachable(Outage {
+        Health::Unreachable(_) => finish_recheck(health, ctx),
+        Health::Reachable => Step::Nothing,
+    }
+}
+
+fn round_mut(health: &mut Health, id: RoundId) -> Option<&mut Round> {
+    match health {
+        Health::Suspect(round)
+        | Health::Unreachable(Outage {
             round: Some(round), ..
-        }) if round.id == id => finish_recheck(health, ctx),
-        Health::Reachable | Health::Suspect(_) | Health::Unreachable(_) => Step::Nothing,
+        }) if round.id == id => Some(round),
+        Health::Reachable | Health::Suspect(_) | Health::Unreachable(_) => None,
     }
 }
 
@@ -327,22 +373,9 @@ fn recheck_due(health: &mut Health, ctx: &Ctx<'_>) -> Step {
     if outage.round.is_some() {
         return Step::Nothing;
     }
-    let starts: Vec<(Region, UnixMs)> = match ctx.quorum {
-        // With fewer live regions than the quorum the round still goes out, so the evidence is
-        // stored, but it can't pass: one vantage point never closes what two opened.
-        Quorum::DistinctRegions(_) => ctx
-            .live
-            .iter()
-            .take(RECHECK_REGIONS)
-            .map(|r| (r.clone(), ctx.now))
-            .collect(),
-        Quorum::OneRegion { probes, spacing } => match ctx.live.first() {
-            Some(region) => (0..probes)
-                .map(|i| (region.clone(), ctx.now.plus(spacing * u32::from(i))))
-                .collect(),
-            None => Vec::new(),
-        },
-    };
+    // With fewer live regions than the quorum the round still goes out, so the evidence is stored,
+    // but it can't pass: one vantage point never closes what two opened.
+    let starts = round_starts(RECHECK_REGIONS, ctx);
     if starts.is_empty() {
         outage.passing_rounds = 0;
         outage.next_round_at = ctx
@@ -351,14 +384,53 @@ fn recheck_due(health: &mut Health, ctx: &Ctx<'_>) -> Step {
         return Step::Nothing;
     }
     let plan = plan(ProbeKind::Recheck, starts, ctx);
-    outage.round = Some(Round {
-        id: plan.round,
-        kind: plan.kind,
-        expected: plan.probes.clone(),
-        seen: Vec::new(),
-        deadline: plan.deadline,
-    });
+    outage.round = Some(Round::of(&plan));
     Step::Dispatch(plan)
+}
+
+/// Coalesces: while a confirm or triggered round is out, that round already answers within
+/// seconds, so the trigger is dropped.
+fn triggered(health: &mut Health, ctx: &Ctx<'_>) -> Step {
+    let starts = round_starts(ctx.live.len(), ctx);
+    if starts.is_empty() {
+        return Step::Nothing;
+    }
+    match health {
+        Health::Reachable => {
+            let plan = plan(ProbeKind::Triggered, starts, ctx);
+            *health = Health::Suspect(Round::of(&plan));
+            Step::Dispatch(plan)
+        }
+        Health::Unreachable(outage)
+            if outage
+                .round
+                .as_ref()
+                .is_none_or(|round| round.kind != ProbeKind::Triggered) =>
+        {
+            let plan = plan(ProbeKind::Triggered, starts, ctx);
+            outage.round = Some(Round::of(&plan));
+            Step::Dispatch(plan)
+        }
+        Health::Suspect(_) | Health::Unreachable(_) => Step::Nothing,
+    }
+}
+
+/// Every probe of a recheck or triggered round, across the first `regions` live regions.
+fn round_starts(regions: usize, ctx: &Ctx<'_>) -> Vec<(Region, UnixMs)> {
+    match ctx.quorum {
+        Quorum::DistinctRegions(_) => ctx
+            .live
+            .iter()
+            .take(regions)
+            .map(|r| (r.clone(), ctx.now))
+            .collect(),
+        Quorum::OneRegion { probes, spacing } => match ctx.live.first() {
+            Some(region) => (0..probes)
+                .map(|i| (region.clone(), ctx.now.plus(spacing * u32::from(i))))
+                .collect(),
+            None => Vec::new(),
+        },
+    }
 }
 
 /// Closes out the recheck round in flight: counts it as passing or not, and closes after enough in
@@ -375,7 +447,7 @@ fn finish_recheck(health: &mut Health, ctx: &Ctx<'_>) -> Step {
     } else {
         outage.passing_rounds = 0;
     }
-    if outage.passing_rounds >= PASSING_ROUNDS_TO_CLOSE {
+    if outage.passing_rounds >= rounds_to_close(round.kind) {
         let step = Step::Close {
             incident: outage.incident,
             revision: outage.revision,
@@ -388,6 +460,13 @@ fn finish_recheck(health: &mut Health, ctx: &Ctx<'_>) -> Step {
         .now
         .plus(recheck_cadence(ctx.now.since(outage.since), ctx.interval));
     Step::Nothing
+}
+
+fn rounds_to_close(kind: ProbeKind) -> u8 {
+    match kind {
+        ProbeKind::Triggered => 1,
+        ProbeKind::Routine | ProbeKind::Confirm | ProbeKind::Recheck => PASSING_ROUNDS_TO_CLOSE,
+    }
 }
 
 fn plan(kind: ProbeKind, starts: Vec<(Region, UnixMs)>, ctx: &Ctx<'_>) -> RoundPlan {
@@ -423,9 +502,9 @@ enum Decision {
     Rejected,
 }
 
-/// Confirmed once the quorum fails, rejected once every confirm is in without that. A round is the
-/// trigger plus one confirm per missing vote, so two failing regions always outnumber the passes
-/// and the quorum stays reachable until the last confirm arrives.
+/// Confirmed once the quorum fails, rejected once every probe is in without that. A confirm round is
+/// the routine failure plus one confirm per missing vote, so the quorum stays reachable until the
+/// last confirm arrives. A triggered round has no failure to start from and asks every live region.
 fn judge_confirm(round: &Round, quorum: Quorum) -> Decision {
     let fails = round.tally(Verdict::Fail, quorum);
     let needed = needed(quorum);
@@ -456,6 +535,16 @@ impl Seen {
 }
 
 impl Round {
+    fn of(plan: &RoundPlan) -> Round {
+        Round {
+            id: plan.round,
+            kind: plan.kind,
+            expected: plan.probes.clone(),
+            seen: Vec::new(),
+            deadline: plan.deadline,
+        }
+    }
+
     /// Counts the result if this round expects it, hasn't counted it yet and it arrived by the
     /// deadline.
     fn record(&mut self, judged: &Judged, now: UnixMs) -> bool {

@@ -56,7 +56,7 @@ or a command's exit code and output.
 - **Listen on `PORT`.** The health check calls the `PORT` variable, `8080` unless you set it.
   Make your app listen on it, or set `PORT` under **Variables** to the port it uses.
 - **Listen on `0.0.0.0`**, not `127.0.0.1`. See
-  [My app shows 502 Bad Gateway](app-not-reachable.md#my-app-shows-502-bad-gateway).
+  [This app didn't respond](app-not-reachable.md#this-app-didnt-respond).
 - **Answer with a 2xx status, not a redirect** to `https://` or `/login`. See
   [Deployments](../deploy/deployments.md).
 - **Give it time to boot.** If you lowered **Healthcheck timeout** under **Settings → Deploy**,
