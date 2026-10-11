@@ -31,12 +31,13 @@ export function serviceSetting<S extends ServiceSettingName>(name: S): (typeof c
  * edited in its first, the plain number.
  */
 export function scalarSetting(name: ServiceSettingName): SettingSchema {
-  const setting: Omit<SettingSchema, "type"> & { type?: string; anyOf?: readonly Shape[] } = serviceSetting(name);
+  const setting: Omit<SettingSchema, "type"> & { type?: string; anyOf?: readonly Alternative[] } = serviceSetting(name);
   const { anyOf, ...rest } = setting;
-  const first = anyOf?.find((shape): shape is Partial<SettingSchema> & { type: string } => typeof shape.type === "string");
-  return { ...rest, ...first, type: first?.type ?? rest.type ?? "object" };
+  const scalar = anyOf?.find((alternative): alternative is Partial<SettingSchema> => "type" in alternative);
+  return { ...rest, ...scalar, type: scalar?.type ?? rest.type ?? "object" };
 }
-type Shape = { type?: unknown; [constraint: string]: unknown };
+/** One of the values a Setting takes: a scalar, or an object with the fields it requires (a healthcheck). */
+type Alternative = Partial<SettingSchema> | { required: readonly string[] };
 
 /** A Setting's title by name, for rows that name any Setting (a diff); none for names outside the catalog. */
 export function settingTitle(name: string): string | undefined {
