@@ -469,21 +469,260 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(!stderr.contains(&"b".repeat(32)), "{args:?}: {stderr}");
     }
 
-    // When logs fail because a Server is down, the failure still names it first.
-    for args in [
-        &["logs", "app/gone"][..],
-        &["logs", "app/api", "--machine", "down"],
-    ] {
-        let output = run_ployz(address, args).await;
-        assert!(!output.status.success(), "{args:?}: {output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        let gap = stderr.find("! down did not answer");
-        let error = stderr.find("error:");
-        assert!(
-            gap.is_some() && error.is_some() && gap < error,
-            "{args:?}: {stderr}"
+    // A removed Service prints from the Servers that answered; the down one
+    // is named and the command is partial.
+    let output = run_ployz(address, &["logs", "app/gone"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.ends_with(" one gone/999999999999 | shutting down\n"),
+        "{stdout}"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("! down did not answer"), "{stderr}");
+
+    // Asking only the down Server reads nothing and names it.
+    let output = run_ployz(address, &["logs", "app/api", "--machine", "down"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("! down did not answer"), "{stderr}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn cli_exact_history_reads_without_docker_discovery() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('b', "other"));
+    service.container_list_outcomes.lock().unwrap().insert(
+        machine_id('a'),
+        VecDeque::from([Err(Status::internal("Docker is unavailable"))]),
+    );
+    let lists = service.container_list_calls.clone();
+    let requests = service.history_requests.clone();
+    let (address, server) = serve_discovery(service).await;
+    for target in ["one".to_owned(), machine_id('a').to_string()] {
+        let output = run_ployz(
+            address,
+            &[
+                "logs",
+                "app/gone",
+                "--machine",
+                &target,
+                "-n",
+                "7",
+                "--json",
+            ],
+        )
+        .await;
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            record.get("line").and_then(Value::as_str),
+            Some("shutting down")
         );
+        assert!(output.stderr.is_empty(), "{output:?}");
     }
+    assert!(lists.lock().unwrap().is_empty());
+    let expected = ployz_core::LogHistoryRequest {
+        namespace: Some("app".into()),
+        service: Some("gone".into()),
+        direction: ployz_core::LogDirection::Backward,
+        limit: 7,
+        ..Default::default()
+    };
+    assert_eq!(
+        *requests.lock().unwrap(),
+        vec![
+            (machine_id('a'), expected.clone()),
+            (machine_id('a'), expected)
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn cli_exact_history_reports_history_failures_and_membership_omissions() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('b', "failed"));
+    let mut omitted = machine('c', "unrecognized");
+    omitted.membership_evidence =
+        Some(ployz_core::MembershipEvidence::Unrecognized { raw: "up".into() });
+    service.machines.push(omitted);
+    let mut unrelated = machine('d', "unrelated");
+    unrelated.membership = MembershipObservation::Down;
+    service.machines.push(unrelated);
+    service
+        .history_failures
+        .lock()
+        .unwrap()
+        .insert(machine_id('b'), Status::unavailable("history unavailable"));
+    let requests = service.history_requests.clone();
+    let lists = service.container_list_calls.clone();
+    let (address, server) = serve_discovery(service).await;
+    for json in [false, true] {
+        let mut args = vec![
+            "logs",
+            "app/gone",
+            "--machine",
+            "one",
+            "--machine",
+            "failed",
+            "--machine",
+            "unrecognized",
+        ];
+        if json {
+            args.push("--json");
+        }
+        let output = run_ployz(address, &args).await;
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stdout.contains("shutting down"), "{stdout}");
+        for name in ["failed", "unrecognized"] {
+            assert_eq!(
+                stderr.matches(&format!("! {name} did not answer")).count(),
+                1,
+                "{stderr}"
+            );
+        }
+        assert!(!stderr.contains("unrelated"), "{stderr}");
+        if json {
+            let rows = stdout
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            let [record, gaps] = rows.as_slice() else {
+                panic!("{rows:?}")
+            };
+            assert_eq!(
+                record.get("line").and_then(Value::as_str),
+                Some("shutting down")
+            );
+            assert_eq!(gaps.get("omitted"), Some(&json!([machine_id('c')])));
+            let [failure] = gaps.get("failures").unwrap().as_array().unwrap().as_slice() else {
+                panic!("{gaps}")
+            };
+            assert_eq!(failure.get("machine_id"), Some(&json!(machine_id('b'))));
+            assert_eq!(
+                failure.pointer("/error/code").and_then(Value::as_str),
+                Some("unavailable")
+            );
+        }
+    }
+    assert!(lists.lock().unwrap().is_empty());
+    let mut targets = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    targets.sort();
+    assert_eq!(
+        targets,
+        vec![
+            machine_id('a'),
+            machine_id('a'),
+            machine_id('b'),
+            machine_id('b')
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn cli_history_keeps_live_resolution_for_ineligible_requests() {
+    let service = DiscoveryService::new(test_description());
+    let outcomes = service.container_list_outcomes.clone();
+    let lists = service.container_list_calls.clone();
+    let requests = service.history_requests.clone();
+    let (address, server) = serve_discovery(service).await;
+    for args in [
+        vec!["logs", "missing"],
+        vec!["logs", "app/gone", "missing"],
+        vec!["logs", "11111111111111111111111111111111"],
+        vec!["logs", "app/api:api-1"],
+        vec!["logs"],
+        vec!["logs", "app/gone", "--follow"],
+    ] {
+        lists.lock().unwrap().clear();
+        outcomes.lock().unwrap().insert(
+            machine_id('a'),
+            VecDeque::from([Err(Status::internal("Docker is unavailable"))]),
+        );
+        let output = run_ployz(address, &args).await;
+        assert!(!output.status.success(), "{args:?}: {output:?}");
+        assert!(
+            lists.lock().unwrap().contains_key(&machine_id('a')),
+            "{args:?}"
+        );
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let warning = stderr
+            .find("! one did not answer")
+            .unwrap_or_else(|| panic!("{args:?}: {stderr}"));
+        if args == ["logs", "missing"] {
+            let error = stderr.find("error:").unwrap_or_else(|| panic!("{stderr}"));
+            assert!(warning < error, "{stderr}");
+        }
+        assert!(requests.lock().unwrap().is_empty(), "{args:?}");
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn history_read_cancels_a_blocked_request_and_propagates_output_errors() {
+    use ployz::operator::history::{HistorySelector, HistoryWindow, read_history};
+    let received = Arc::new(tokio::sync::Notify::new());
+    let mut service = DiscoveryService::new(test_description());
+    service.history_blocked = Some(received.clone());
+    let (client, server, _) = connected_client(service).await;
+    let targets = [(
+        machine_id('a'),
+        ployz_core::MachineName::parse("one").unwrap(),
+    )];
+    let selectors = [HistorySelector {
+        namespace: Some("app".into()),
+        service: Some("gone".into()),
+        deployment: Some("dep_old".into()),
+        container_id: None,
+    }];
+    let window = HistoryWindow::Last {
+        lines: 7,
+        since: None,
+        until: None,
+    };
+    let cancellation = CancellationToken::new();
+    let read = read_history(
+        &client,
+        &targets,
+        &selectors,
+        window,
+        &cancellation,
+        |_| -> Result<(), &str> { panic!("blocked history cannot emit a record") },
+    );
+    let cancel = async {
+        received.notified().await;
+        cancellation.cancel();
+    };
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(read, cancel)
+    })
+    .await
+    .unwrap();
+    assert!(result.unwrap().is_empty());
+    server.abort();
+
+    let (client, server, _) = connected_client(DiscoveryService::new(test_description())).await;
+    let result = read_history(
+        &client,
+        &targets,
+        &selectors,
+        window,
+        &CancellationToken::new(),
+        |_| Err("output closed"),
+    )
+    .await;
+    assert_eq!(result, Err("output closed"));
     server.abort();
 }
 
@@ -884,7 +1123,7 @@ async fn stream_after_redial_uses_the_replaced_channel() {
         LogsOptions {
             follow: false,
             tail: 0,
-            since_unix_seconds: None,
+            since_nanos: None,
             until_unix_seconds: None,
         },
         CancellationToken::new(),

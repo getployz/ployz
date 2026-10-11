@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{err.status_code} · {ployz_host}</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --paper: oklch(97% 0.012 338);
+  --raised: oklch(99% 0.006 338);
+  --ink: oklch(19% 0.025 326);
+  --soft: oklch(36% 0.022 326);
+  --muted: oklch(47% 0.018 326);
+  --rule: oklch(86% 0.018 338);
+  --accent: oklch(52% 0.2 338);
+  --accent-ink: oklch(98% 0.008 338);
+  --warn: oklch(62% 0.15 60);
+  --ok: oklch(58% 0.13 150);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: oklch(17% 0.018 326);
+    --raised: oklch(21% 0.02 326);
+    --ink: oklch(95% 0.01 338);
+    --soft: oklch(80% 0.014 338);
+    --muted: oklch(66% 0.016 338);
+    --rule: oklch(30% 0.02 326);
+    --accent: oklch(70% 0.17 338);
+    --accent-ink: oklch(17% 0.02 326);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+main { width: min(34rem, 100% - 3rem); margin: auto; padding: 4rem 0 3rem; }
+code { font: 0.85em ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--raised); border: 1px solid var(--rule); border-radius: 0.35rem; padding: 0.05rem 0.3rem; }
+.code { font: 600 0.8rem/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 0.04em; color: var(--muted); display: flex; align-items: center; gap: 0.6rem; }
+.dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--accent); }
+[data-error="NOT_RUNNING"] .dot { background: var(--warn); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none !important; } }
+h1 { margin: 1.1rem 0 0.6rem; font-size: clamp(1.75rem, 5vw, 2.25rem); line-height: 1.15; letter-spacing: -0.02em; font-weight: 650; text-wrap: balance; }
+.lede { margin: 0; color: var(--soft); font-size: 1.05rem; text-wrap: pretty; overflow-wrap: anywhere; }
+.btn { margin-top: 2rem; border-radius: 0.65rem; height: 2.75rem; padding: 0 1.1rem; font-weight: 600; font-size: 0.95rem; background: var(--accent); color: var(--accent-ink); text-decoration: none; display: inline-flex; align-items: center; }
+.btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.hops { margin: 2.25rem 0 0; padding: 0; list-style: none; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--muted); }
+.hops li { display: flex; align-items: center; gap: 0.4rem; }
+.hops li + li::before { content: ""; width: 1.75rem; height: 1px; background: var(--rule); margin-right: 0.1rem; }
+.mark { width: 1.1rem; height: 1.1rem; border-radius: 50%; display: grid; place-items: center; font: 700 0.7rem/1 ui-sans-serif, system-ui, sans-serif; background: color-mix(in oklch, var(--ok) 18%, transparent); color: var(--ok); }
+.mark::after { content: "✓"; }
+.app { color: var(--ink); font-weight: 600; }
+.app .mark { background: color-mix(in oklch, var(--accent) 18%, transparent); color: var(--accent); }
+.app .mark::after { content: "✕"; }
+[data-error="NOT_RUNNING"] .app, [data-error="DOMAIN_NOT_FOUND"] .app { color: inherit; font-weight: inherit; }
+[data-error="NOT_RUNNING"] .app .mark, [data-error="DOMAIN_NOT_FOUND"] .app .mark { background: none; border: 1px dashed var(--rule); color: var(--muted); }
+[data-error="NOT_RUNNING"] .app .mark::after, [data-error="DOMAIN_NOT_FOUND"] .app .mark::after { content: "–"; }
+.own { margin-top: 2.5rem; padding-top: 1.1rem; border-top: 1px solid var(--rule); font-size: 0.93rem; color: var(--soft); }
+.own p { margin: 0; }
+.own p + p { margin-top: 0.4rem; }
+.own b { color: var(--ink); font-weight: 600; }
+.own a { color: var(--accent); font-weight: 600; text-underline-offset: 2px; }
+[data-for], [data-error="DOMAIN_NOT_FOUND"] .btn, [data-error="INTERNAL_ERROR"] .hops { display: none; }
+[data-error="NO_RESPONSE"] [data-for="NO_RESPONSE"],
+[data-error="NOT_RUNNING"] [data-for="NOT_RUNNING"],
+[data-error="DOMAIN_NOT_FOUND"] [data-for="DOMAIN_NOT_FOUND"],
+[data-error="INTERNAL_ERROR"] [data-for="INTERNAL_ERROR"] { display: block; }
+footer { border-top: 1px solid var(--rule); padding: 1rem 1.5rem; display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; justify-content: space-between; font: 0.78rem/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--muted); }
+footer dl { margin: 0; display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; }
+footer dt { display: inline; opacity: 0.75; }
+footer dd { display: inline; margin: 0 0 0 0.4rem; color: var(--soft); user-select: all; }
+footer a { color: inherit; text-decoration: none; }
+footer b { font-weight: 600; color: var(--soft); }
+footer a:hover b, footer a:focus-visible b { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+</style>
+</head>
+<body data-error="{ployz_error}">
+<main>
+  <div class="code"><span class="dot"></span>{err.status_code} · {ployz_error}</div>
+  <div data-for="NO_RESPONSE">
+    <h1>This app didn't respond</h1>
+    <p class="lede">It may be restarting. Try again in a minute.</p>
+  </div>
+  <div data-for="NOT_RUNNING">
+    <h1>This app isn't running</h1>
+    <p class="lede">It may be deploying. This page retries every 10 seconds.</p>
+  </div>
+  <div data-for="DOMAIN_NOT_FOUND">
+    <h1>Nothing is deployed here</h1>
+    <p class="lede">Check the address. No app uses {ployz_host}.</p>
+  </div>
+  <div data-for="INTERNAL_ERROR">
+    <h1>Something went wrong</h1>
+    <p class="lede">Try again in a minute.</p>
+  </div>
+  <a class="btn" href="">Try again</a>
+  <ol class="hops" aria-label="Where the request stopped">
+    <li><span class="mark" aria-hidden="true"></span>You</li>
+    <li><span class="mark" aria-hidden="true"></span>Ployz</li>
+    <li class="app"><span class="mark" aria-hidden="true"></span>App</li>
+  </ol>
+  <div class="own">
+    <p>Is this your app?</p>
+    <div data-for="NO_RESPONSE">
+      <p><b>Your server got the request, but the app didn't answer.</b></p>
+      <p>The app crashed, listens on <code>127.0.0.1</code> or a different port, or the server running it is down.</p>
+    </div>
+    <div data-for="NOT_RUNNING">
+      <p><b>No healthy replica is running.</b></p>
+      <p>A deploy is in progress, the service is stopped, or it fails its healthcheck.</p>
+    </div>
+    <div data-for="DOMAIN_NOT_FOUND">
+      <p><b>This domain points at your server, but no service has it, or its certificate is still being issued.</b></p>
+      <p>Add <code>{ployz_host}</code> to a service, including any <code>www.</code></p>
+    </div>
+    <div data-for="INTERNAL_ERROR">
+      <p><b>Your server couldn't handle this request.</b></p>
+      <p>Include the request id below when you report it.</p>
+    </div>
+    <p><a href="https://ployz.dev/docs/troubleshooting/app-not-reachable?utm_source=error-page&amp;utm_medium=html&amp;utm_campaign={ployz_error}&amp;utm_content=docs{ployz_docs}">Fix {ployz_error}</a></p>
+  </div>
+</main>
+<footer>
+  <dl>
+    <div><dt>Request</dt><dd>{http.request.uuid}</dd></div>
+    <div><dt>Time</dt><dd>{time.now.http}</dd></div>
+  </dl>
+  <span>Served by <a href="https://ployz.dev/?utm_source=error-page&amp;utm_medium=html&amp;utm_campaign={ployz_error}&amp;utm_content=served-by"><b>Ployz</b></a></span>
+</footer>
+</body>
+</html>
