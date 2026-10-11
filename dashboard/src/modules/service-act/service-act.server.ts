@@ -140,7 +140,7 @@ const writeLegs = (request: ActRequest, runId: string, legs: ServiceActLeg[]) =>
 export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
   request: ActRequest,
   runId: string,
-  server: string,
+  machine: string,
   side: "stop" | "start",
 ) {
   const row = yield* readAct(request.actId);
@@ -155,9 +155,9 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
     });
   const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
   for (const leg of legs) {
-    if (leg.server !== server || !takes(leg, side) || leg[side] !== null && leg[side] !== "sent") continue;
+    if (leg.machine !== machine || !takes(leg, side) || leg[side] !== null && leg[side] !== "sent") continue;
     if (leg[side] === "sent") {
-      if (!(yield* write(leg, "unknown", `${server} didn't answer.`))) return legs;
+      if (!(yield* write(leg, "unknown", `${leg.server} didn't answer.`))) return legs;
       continue;
     }
     if (alreadyThere(row.verb, side, states.get(leg.container))) {
@@ -165,19 +165,19 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
       continue;
     }
     if (session.status !== "connected") {
-      if (!(yield* write(leg, "failed", `Cloud couldn't reach ${server}.`))) return legs;
+      if (!(yield* write(leg, "failed", `Cloud couldn't reach ${leg.server}.`))) return legs;
       continue;
     }
     if (!(yield* write(leg, "sent"))) return legs;
     const sent: Effect.Effect<readonly [LegStep, string | null], PloyzSdkError> = side === "stop"
       ? session.connected.stopContainer(leg.machine, leg.container).pipe(Effect.as(["done", leg.reason] as const))
       : session.connected.startContainer(leg.machine, leg.container).pipe(
-        Effect.map((serving) => serving ? ["done", leg.reason] as const : ["unknown", `${server} started it, but it isn't serving.`] as const),
+        Effect.map((serving) => serving ? ["done", leg.reason] as const : ["unknown", `${leg.server} started it, but it isn't serving.`] as const),
       );
     const [step, reason] = yield* sent.pipe(
       Effect.catch((error) => Effect.succeed(rpcErrorCode(error) === "unavailable"
-        ? ["unknown", `${server} didn't answer.`] as const
-        : ["failed", `${server} couldn't ${side} it.`] as const)),
+        ? ["unknown", `${leg.server} didn't answer.`] as const
+        : ["failed", `${leg.server} couldn't ${side} it.`] as const)),
     );
     if (!(yield* write(leg, step, reason))) return legs;
   }

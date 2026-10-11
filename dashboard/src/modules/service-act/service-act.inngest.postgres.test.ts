@@ -93,6 +93,15 @@ describe("act-service", () => {
     expect(calls).toHaveLength(4);
   });
 
+  it("restarts two Machines that share a name one at a time", async () => {
+    copies.copies = copies.copies.map((copy) => ({ ...copy, server: "alpha" }));
+    const admitted = await request("restart");
+    if (!admitted.ok) throw new Error("refused");
+
+    expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "done" });
+    expect(calls).toEqual(["stop web-a", "start web-a", "stop web-b", "start web-b"]);
+  });
+
   it("answers a replayed attempt with its row, and refuses another act while the Service is busy", async () => {
     const attemptId = crypto.randomUUID();
     const first = await request("stop", attemptId);
@@ -193,7 +202,7 @@ describe("act-service", () => {
       [admitted.id, JSON.stringify(copies), JSON.stringify(sent)],
     );
 
-    expect(await runEffect(actOnServer({ actId: admitted.id, organizationId }, "run-1", "alpha", "stop")))
+    expect(await runEffect(actOnServer({ actId: admitted.id, organizationId }, "run-1", "m-alpha", "stop")))
       .toEqual([{ ...sent[0], stop: "unknown", reason: "alpha didn't answer." }]);
     expect(calls).toEqual([]);
   });
