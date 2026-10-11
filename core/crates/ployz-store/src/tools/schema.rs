@@ -48,7 +48,8 @@ pub(crate) fn input<T: JsonSchema>() -> Value {
 }
 
 /// `schema` in the subset every provider takes: no `$schema`, `$ref`, `oneOf`,
-/// nullable types or `x-ployz-*` annotations.
+/// nullable types, exclusive bounds or `x-ployz-*` annotations. An exclusive
+/// bound becomes the inclusive one; the Store still refuses the edge.
 #[must_use]
 pub fn portable(mut schema: Value) -> Value {
     let defs = match &mut schema {
@@ -91,6 +92,14 @@ fn tidy(schema: &mut Value, defs: &Map<String, Value>) {
             });
             if let Some(one_of) = object.remove("oneOf") {
                 object.insert("anyOf".into(), one_of);
+            }
+            for (exclusive, inclusive) in [
+                ("exclusiveMinimum", "minimum"),
+                ("exclusiveMaximum", "maximum"),
+            ] {
+                if let Some(bound) = object.remove(exclusive) {
+                    object.entry(inclusive).or_insert(bound);
+                }
             }
             drop_null(object);
             for (key, value) in object.iter_mut() {

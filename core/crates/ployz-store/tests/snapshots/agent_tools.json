@@ -242,8 +242,8 @@
                   0.5,
                   2
                 ],
-                "exclusiveMinimum": 0,
                 "maximum": 64.0,
+                "minimum": 0,
                 "title": "CPU limit",
                 "type": "number"
               },
@@ -439,8 +439,8 @@
               "memLimit": {
                 "anyOf": [
                   {
-                    "exclusiveMinimum": 0,
                     "maximum": 1024.0,
+                    "minimum": 0,
                     "type": "number"
                   },
                   {
