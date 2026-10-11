@@ -44,6 +44,8 @@ export const uptimeCheck = pgTable(
     serviceId: text("service_id").notNull(),
     // When a deploy or Check now last asked for a probe. Writing it leaves revision alone, so it never closes an incident.
     probeRequestedAt: timestamptz("probe_requested_at"),
+    // The request the checker last finished judging, to the millisecond. Only the checker writes it.
+    probeAnsweredAt: timestamptz("probe_answered_at"),
     createdAt,
     updatedAt,
   },

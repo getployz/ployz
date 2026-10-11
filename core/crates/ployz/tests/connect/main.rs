@@ -37,6 +37,7 @@ mod sdk_data_loss;
 mod sdk_destroy_cluster;
 mod sdk_destroy_namespace;
 mod sdk_drain;
+mod sdk_metrics;
 mod sdk_prepare;
 mod sdk_register;
 mod sdk_remove_machine;
