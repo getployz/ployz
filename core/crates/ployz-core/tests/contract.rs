@@ -1563,3 +1563,245 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         attempt
     );
 }
+
+fn main_wire(command: &str, payload: Value) -> OpaquePayload {
+    OpaquePayload::new(
+        serde_json::to_vec(&json!({
+            "protocol_major": PROTOCOL_MAJOR,
+            "command": command,
+            "payload": payload,
+        }))
+        .unwrap(),
+    )
+}
+
+#[test]
+fn main_tail_logs_wire_decodes_beside_the_split_commands() {
+    use ployz_core::{LiveLogTarget, MachineLogService, TailLogsOptions, TailLogsRequest};
+
+    let container_id = "c".repeat(64);
+    let options = TailLogsOptions {
+        follow: false,
+        tail: 10,
+        since_nanos: None,
+        until_unix_seconds: None,
+    };
+    let wire = |target: Value| {
+        main_wire(
+            "tail_logs",
+            json!({ "target": target, "options": { "follow": false, "tail": 10 } }),
+        )
+    };
+
+    assert_eq!(
+        wire(json!({ "container": container_id }))
+            .decode_request()
+            .unwrap(),
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Container(ContainerId::parse(container_id.clone()).unwrap()),
+            options: options.clone(),
+        })
+    );
+    assert_eq!(
+        wire(json!({ "machine": "corrosion" }))
+            .decode_request()
+            .unwrap(),
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Machine(MachineLogService::Corrosion),
+            options,
+        })
+    );
+    for target in [
+        json!({ "machine": "journald" }),
+        json!({ "container": "not-a-container-id" }),
+        json!({ "volume": container_id }),
+        json!({ "container": container_id, "machine": "ployz" }),
+        json!("ployz"),
+    ] {
+        assert!(
+            matches!(
+                wire(target.clone()).decode_request(),
+                Err(CodecError::DecodeJson(_))
+            ),
+            "{target} must not decode"
+        );
+    }
+    for (command, payload) in [
+        (
+            "container_logs",
+            json!({
+                "container_id": container_id,
+                "options": { "follow": true, "tail": 200, "since_unix_seconds": 1_786_698_000 },
+            }),
+        ),
+        (
+            "machine_logs",
+            json!({ "service": "ployz", "options": { "follow": false, "tail": 10 } }),
+        ),
+    ] {
+        assert_eq!(
+            main_wire(command, payload)
+                .decode_request()
+                .unwrap()
+                .body
+                .command(),
+            command
+        );
+    }
+}
+
+#[test]
+fn tail_logs_keep_typed_control_options_outside_raw_frames() {
+    use ployz_core::{LiveLogTarget, MachineLogService, TailLogsOptions, TailLogsRequest};
+
+    let options = TailLogsOptions {
+        follow: true,
+        tail: -1,
+        since_nanos: Some(1_786_698_000_123_456_789),
+        until_unix_seconds: Some(1_786_701_600),
+    };
+    for request in [
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Container(ContainerId::parse("c".repeat(64)).unwrap()),
+            options: options.clone(),
+        }),
+        op::TailLogs::into_request(TailLogsRequest {
+            target: LiveLogTarget::Machine(MachineLogService::Ployz),
+            options,
+        }),
+    ] {
+        assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    }
+}
+
+#[test]
+fn tail_logs_since_nanos_reaches_docker_as_the_containing_second() {
+    use ployz_core::{LogsOptions, TailLogsOptions};
+
+    let read = |since_nanos| {
+        LogsOptions::from(TailLogsOptions {
+            follow: true,
+            tail: -1,
+            since_nanos,
+            until_unix_seconds: Some(1_786_701_600),
+        })
+    };
+    assert_eq!(
+        read(Some(1_786_698_000_123_456_789)),
+        LogsOptions {
+            follow: true,
+            tail: -1,
+            since_unix_seconds: Some(1_786_698_000),
+            until_unix_seconds: Some(1_786_701_600),
+        }
+    );
+    assert_eq!(
+        read(Some(1_786_698_000_000_000_000)).since_unix_seconds,
+        Some(1_786_698_000)
+    );
+    assert_eq!(read(Some(-1)).since_unix_seconds, Some(-1));
+    assert_eq!(read(None).since_unix_seconds, None);
+}
+
+#[test]
+fn main_log_history_wire_decodes_and_validates() {
+    use ployz_core::{LogDirection, LogHistoryRequest};
+
+    let request = op::LogHistory::into_request(LogHistoryRequest {
+        namespace: Some("prod".into()),
+        service: Some("web".into()),
+        since_nanos: Some(1_765_000_000_123_456_789),
+        limit: 5_000,
+        ..LogHistoryRequest::default()
+    });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert_eq!(
+        main_wire(
+            "log_history",
+            json!({
+                "namespace": "prod",
+                "service": "web",
+                "deployment": null,
+                "container_id": null,
+                "since_nanos": 1_765_000_000_123_456_789_i64,
+                "until_nanos": null,
+                "direction": "forward",
+                "limit": 5_000,
+                "cursor": null,
+            }),
+        )
+        .decode_request()
+        .unwrap(),
+        request
+    );
+    assert_eq!(
+        main_wire(
+            "log_history",
+            json!({
+                "service": "web",
+                "container_id": "d".repeat(64),
+                "direction": "backward",
+                "limit": 500,
+            }),
+        )
+        .decode_request()
+        .unwrap(),
+        op::LogHistory::into_request(LogHistoryRequest {
+            service: Some("web".into()),
+            container_id: Some(ContainerId::parse("d".repeat(64)).unwrap()),
+            direction: LogDirection::Backward,
+            limit: 500,
+            ..LogHistoryRequest::default()
+        })
+    );
+
+    let selected = LogHistoryRequest {
+        service: Some("web".into()),
+        limit: 1,
+        ..LogHistoryRequest::default()
+    };
+    assert_eq!(selected.validate(), Ok(()));
+    for request in [
+        LogHistoryRequest {
+            limit: 1,
+            ..LogHistoryRequest::default()
+        },
+        LogHistoryRequest {
+            limit: 0,
+            ..selected.clone()
+        },
+        LogHistoryRequest {
+            limit: 5_001,
+            ..selected.clone()
+        },
+        LogHistoryRequest {
+            since_nanos: Some(2),
+            until_nanos: Some(1),
+            ..selected.clone()
+        },
+    ] {
+        assert!(request.validate().is_err(), "{request:?}");
+    }
+}
+
+#[test]
+fn history_end_row_keeps_main_wire_bytes() {
+    use ployz_core::{HistoryRow, LogEntry};
+
+    let header = br#"{"row":"end","next":null}"#;
+    let mut expected = vec![0x14];
+    expected.extend_from_slice(&u32::try_from(4 + header.len()).unwrap().to_be_bytes());
+    expected.extend_from_slice(&u32::try_from(header.len()).unwrap().to_be_bytes());
+    expected.extend_from_slice(header);
+
+    let end = HistoryRow::End { next: None };
+    let encoded = end.encode().unwrap();
+    assert_eq!(encoded.json, expected);
+    assert_eq!(HistoryRow::decode(&encoded).unwrap(), end);
+    assert!(LogEntry::decode(&encoded).is_err());
+
+    let heartbeat = LogEntry::heartbeat(log_frame_metadata(), 1)
+        .encode()
+        .unwrap();
+    assert!(HistoryRow::decode(&heartbeat).is_err());
+}

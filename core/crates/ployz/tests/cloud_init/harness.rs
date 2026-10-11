@@ -309,6 +309,8 @@ impl MachineRpc for JoinDaemon {
     type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type LogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -992,6 +994,18 @@ impl MachineRpc for JoinDaemon {
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::MachineLogsStream>, Status> {
+        unused()
+    }
+    async fn tail_logs(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
+        unused()
+    }
+    async fn log_history(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
         unused()
     }
     async fn runtime_watch(

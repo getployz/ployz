@@ -18,6 +18,7 @@ enum StreamKind {
     LogStderr = 0x11,
     LogHeartbeat = 0x12,
     LogError = 0x13,
+    LogHistory = 0x14,
     ExecId = 0x81,
     ExecStdout = 0x82,
     ExecStderr = 0x83,
@@ -35,6 +36,7 @@ impl fmt::Display for StreamKind {
             Self::LogStderr => "log stderr",
             Self::LogHeartbeat => "log heartbeat",
             Self::LogError => "log error",
+            Self::LogHistory => "log history",
             Self::ExecId => "exec ID",
             Self::ExecStdout => "exec stdout",
             Self::ExecStderr => "exec stderr",
@@ -56,6 +58,7 @@ impl TryFrom<u8> for StreamKind {
             0x11 => Ok(Self::LogStderr),
             0x12 => Ok(Self::LogHeartbeat),
             0x13 => Ok(Self::LogError),
+            0x14 => Ok(Self::LogHistory),
             0x81 => Ok(Self::ExecId),
             0x82 => Ok(Self::ExecStdout),
             0x83 => Ok(Self::ExecStderr),
@@ -188,6 +191,7 @@ impl ExecRequestFrame {
             | StreamKind::LogStderr
             | StreamKind::LogHeartbeat
             | StreamKind::LogError
+            | StreamKind::LogHistory
             | StreamKind::ExecId
             | StreamKind::ExecStdout
             | StreamKind::ExecStderr
@@ -240,7 +244,8 @@ impl ExecResponseFrame {
             | StreamKind::LogStdout
             | StreamKind::LogStderr
             | StreamKind::LogHeartbeat
-            | StreamKind::LogError) => Err(unexpected("exec response", actual)),
+            | StreamKind::LogError
+            | StreamKind::LogHistory) => Err(unexpected("exec response", actual)),
         }
     }
 }
@@ -402,7 +407,8 @@ impl LogEntry {
                 _,
             ) => return Err(invalid("log entry", "desynced kind and header")),
             (
-                actual @ (StreamKind::ExecConfig
+                actual @ (StreamKind::LogHistory
+                | StreamKind::ExecConfig
                 | StreamKind::ExecStdin
                 | StreamKind::ExecResize
                 | StreamKind::ExecId
@@ -419,6 +425,53 @@ impl LogEntry {
             timestamp_unix_nanos: header.timestamp_unix_nanos,
             body,
         })
+    }
+}
+
+/// One row of a `ployz.logs.history.v2` page, in main's wire shape. This
+/// release keeps no Log Store, so it only ever answers with the closing row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistoryRow {
+    /// `next` is the cursor for the following page, or `None` when the range
+    /// holds nothing more.
+    End { next: Option<String> },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "row", rename_all = "snake_case")]
+enum HistoryHeader {
+    End { next: Option<String> },
+}
+
+impl HistoryRow {
+    pub fn encode(&self) -> Result<OpaquePayload, StreamProtocolError> {
+        let Self::End { next } = self;
+        let header = json(&HistoryHeader::End { next: next.clone() }, "history header")?;
+        let header_length = u32::try_from(header.len())
+            .map_err(|_| StreamProtocolError::PayloadTooLarge(header.len()))?;
+        let mut payload = Vec::with_capacity(4 + header.len());
+        payload.extend_from_slice(&header_length.to_be_bytes());
+        payload.extend_from_slice(&header);
+        StreamFrame {
+            kind: StreamKind::LogHistory,
+            payload,
+        }
+        .encode()
+    }
+
+    pub fn decode(payload: &OpaquePayload) -> Result<Self, StreamProtocolError> {
+        let frame = StreamFrame::decode(payload)?;
+        if frame.kind != StreamKind::LogHistory {
+            return Err(unexpected("log history", frame.kind));
+        }
+        let Some((header_length, rest)) = frame.payload.split_first_chunk::<4>() else {
+            return Err(invalid("log history", "truncated metadata length"));
+        };
+        let Some(header) = rest.get(..u32::from_be_bytes(*header_length) as usize) else {
+            return Err(invalid("log history", "truncated metadata"));
+        };
+        let HistoryHeader::End { next } = decode_json(header, "history header")?;
+        Ok(Self::End { next })
     }
 }
 

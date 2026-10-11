@@ -473,6 +473,8 @@ impl MachineRpc for DiscoveryService {
     type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type LogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -1067,6 +1069,18 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(tokio_stream::empty()))
     }
 
+    async fn tail_logs(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
+        Err(Status::unimplemented("log reads are outside this fake"))
+    }
+    async fn log_history(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        Err(Status::unimplemented("log reads are outside this fake"))
+    }
     async fn runtime_watch(
         &self,
         request: Request<OpaquePayload>,
