@@ -110,8 +110,8 @@ pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::R
     let mut containers = Vec::new();
     scan(&store.raw_metrics(), range, |row| match (scope, row) {
         (MetricScope::Machine, Row::Host(sample)) => hosts.push(sample),
-        (MetricScope::Service { service_id }, Row::Container(sample))
-            if sample.service_id.as_ref() == Some(service_id) =>
+        (MetricScope::Service { service }, Row::Container(sample))
+            if sample.service.as_ref() == Some(service) =>
         {
             containers.push(sample);
         }
@@ -191,7 +191,7 @@ mod tests {
     use std::{collections::BTreeMap, fs, io::Write as _};
 
     use ployz_core::{
-        ContainerId, MachineId, ServiceId,
+        ContainerId, MachineId, QualifiedService, ServiceId,
         metrics::{
             CpuJiffies, DiskBreakdown, HostMemory, HostSample, InterfaceBytes, MetricRange,
             MetricSample, MetricScope,
@@ -222,6 +222,10 @@ mod tests {
         ServiceId::parse(format!("{n:02x}").repeat(16)).unwrap()
     }
 
+    fn qualified(n: u8) -> QualifiedService {
+        QualifiedService::parse(format!("prod/web-{n}")).unwrap()
+    }
+
     fn container(n: u32) -> ContainerId {
         ContainerId::parse(format!("{n:08x}").repeat(8)).unwrap()
     }
@@ -231,7 +235,7 @@ mod tests {
             machine_id: machine(),
             container_id: container(container_n),
             service_id: Some(service(service_n)),
-            namespace: Some("prod".into()),
+            service: Some(qualified(service_n)),
             deployment_id: Some("01JABCDEFGHJKMNPQRSTVWXYZ0".into()),
             replica: format!("web-{container_n}"),
             ts,
@@ -321,7 +325,7 @@ mod tests {
 
         let window = range(T0, T0 + 2 * HOUR);
         let scope = MetricScope::Service {
-            service_id: service(1),
+            service: qualified(1),
         };
         assert_eq!(
             read(&store, window, &scope).unwrap(),
@@ -380,7 +384,7 @@ mod tests {
         }
         assert_eq!(segments(&store), ["1759996800.jsonl"]);
         let scope = MetricScope::Service {
-            service_id: service(1),
+            service: qualified(1),
         };
         let Selected::Service(samples) = read(&store, range(T0, T0 + HOUR), &scope).unwrap() else {
             panic!("service scope reads service samples");
