@@ -566,26 +566,6 @@ fn service_changes(
         BuildCommand
     );
     field!(effects, id, &before.config.template, template, Template);
-    let common: BTreeSet<_> = before
-        .config
-        .routes
-        .iter()
-        .map(|route| &route.id)
-        .filter(|id| routes.iter().any(|route| &route.id == *id))
-        .collect();
-    invariant(
-        before
-            .config
-            .routes
-            .iter()
-            .filter(|route| common.contains(&route.id))
-            .map(|route| &route.id)
-            .eq(routes
-                .iter()
-                .filter(|route| common.contains(&route.id))
-                .map(|route| &route.id)),
-        "History cannot restore reordered custom routes",
-    )?;
     for route in keys(&before.config.routes, routes, |route| &route.id) {
         if let Some(delta) = Delta::between(
             &before
@@ -1671,6 +1651,7 @@ pub(super) fn prepare_history(
     previous: Option<&SavedEnvironmentIntent>,
 ) -> Result<Prepared, RpcError> {
     let target = if let Some(previous) = previous {
+        keeps_route_order(previous, selected)?;
         let plan = Plan::between(previous, selected)?;
         let mut target = environment.working.clone();
         plan.reverse_into(&mut target, &(0..plan.effects.len()).collect::<Vec<_>>())?;
@@ -1679,6 +1660,31 @@ pub(super) fn prepare_history(
         selected.clone()
     };
     Prepared::from_target(tx, environment, saved, target, selected)
+}
+/// An inverse puts a removed route back by its old neighbours, so undoing a
+/// revision that reordered common routes would not restore their order.
+fn keeps_route_order(
+    before: &SavedEnvironmentIntent,
+    after: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    for service in &after.services {
+        let Some(prior) = before.services.iter().find(|prior| prior.id == service.id) else {
+            continue;
+        };
+        let common = |routes: &[ServiceRoute], other: &[ServiceRoute]| -> Vec<String> {
+            routes
+                .iter()
+                .filter(|route| other.iter().any(|value| value.id == route.id))
+                .map(|route| route.id.clone())
+                .collect()
+        };
+        invariant(
+            common(&prior.config.routes, &service.config.routes)
+                == common(&service.config.routes, &prior.config.routes),
+            "History cannot restore reordered custom routes",
+        )?;
+    }
+    Ok(())
 }
 pub(super) fn prepare_discard(
     tx: &mut dyn Tx,
