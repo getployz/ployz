@@ -751,14 +751,14 @@ impl Client {
     /// Refused before membership mutation when this is the last Machine and any
     /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
     /// Also refused while the Machine answers with a copy of any Volume, which only its
-    /// reset demotes; a Machine that does not answer goes.
+    /// reset demotes, or answers without its storage; a Machine that does not answer goes.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
     /// it is the last Machine and a Management Client holds a key or its holders
-    /// can't be read, when it answers holding a Volume copy, or when shared-row
-    /// removal fails.
+    /// can't be read, when it answers holding a Volume copy or its storage can't be read,
+    /// or when shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
@@ -769,7 +769,7 @@ impl Client {
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
         }
-        let held = self.held_copies(observation).await;
+        let held = self.held_copies(observation).await?;
         if !held.is_empty() {
             return Err(copies_left_behind(
                 &observation.machine.name,
@@ -790,17 +790,34 @@ impl Client {
 
     /// The Docker Volumes `machine` answers holding a copy of, as writer or any other
     /// role: a removal without a reset would leave each behind. Empty when it doesn't answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when `machine` is asked and its storage can't be read.
     pub(crate) async fn held_copies(
         &self,
         machine: &MachineObservation,
-    ) -> BTreeSet<DockerVolumeName> {
-        self.inspect_storage(std::slice::from_ref(machine))
-            .await
+    ) -> Result<BTreeSet<DockerVolumeName>, RpcError> {
+        let inspected = self.inspect_storage(std::slice::from_ref(machine)).await;
+        if let Some(failure) = inspected.failures.into_iter().next() {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: format!(
+                    "Cannot read the Volume copies Server {} holds. No changes made.",
+                    machine.machine.name
+                ),
+                details: Value::Null,
+                cause: std::iter::once(failure.error.message)
+                    .chain(failure.error.cause)
+                    .collect(),
+            });
+        }
+        Ok(inspected
             .successes
             .iter()
             .flat_map(|success| success.value.roles())
             .map(|(name, _)| name.clone())
-            .collect()
+            .collect())
     }
 
     /// List images on each target Machine with independent bounded retries.

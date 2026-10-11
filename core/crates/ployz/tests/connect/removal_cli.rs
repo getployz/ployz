@@ -319,6 +319,7 @@ async fn a_server_cloud_manages_leaves_through_cloud_even_without_a_reset() {
     );
     let mut service = DiscoveryService::new(test_description());
     service.machines.push(machine('b', "two"));
+    service.storage_capacity = Some(empty_storage());
     let (output, service) = remove_cloud_server(
         service,
         "two",
@@ -354,6 +355,7 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
     gone.membership = MembershipObservation::Down;
     service.machines.push(gone);
     service.machines.push(machine('c', "three"));
+    service.storage_capacity = Some(empty_storage());
     let resets = service.reset_machines.clone();
     let removals = service.removed_machines.clone();
     let (address, server) = serve_discovery(service).await;

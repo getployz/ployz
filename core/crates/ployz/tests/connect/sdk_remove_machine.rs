@@ -12,7 +12,7 @@ use tokio::time::timeout;
 use ployz::connect::Remover;
 
 use super::support::{DiscoveryService, confirmation, connected_client, machine};
-use super::support::{docker_volume, machine_named};
+use super::support::{docker_volume, empty_storage, machine_named};
 use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
@@ -350,6 +350,25 @@ async fn remove_machine_membership_refuses_a_server_that_answers_holding_copies(
 }
 
 #[tokio::test]
+async fn remove_machine_membership_refuses_a_server_whose_storage_cannot_be_read() {
+    let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
+    service.storage_capacity = None;
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine_membership(&ployz_core::MachineTarget::from(&peer.machine.id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        error.message,
+        "Cannot read the Volume copies Server peer holds. No changes made."
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
 async fn remove_machine_membership_removes_a_server_that_does_not_answer() {
     let (_description, peer, service) = cluster_with_a_held_peer(MembershipObservation::Down);
     let (mut client, server, _) = connected_client(service.clone()).await;
@@ -404,6 +423,7 @@ fn last_machine_cluster() -> (ContractDescription, MachineObservation, Discovery
     let mut service = DiscoveryService::new(description.clone());
     service.machines = vec![entry.clone()];
     *service.listed_volumes.lock().unwrap() = BTreeMap::from([(entry.machine.id, vec![])]);
+    service.storage_capacity = Some(empty_storage());
     (description, entry, service)
 }
 

@@ -48,7 +48,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             }
             let hold = refuse_last_managed(&client, &machines, selected.id).await?;
             let held = if no_reset {
-                client.held_copies(observation).await
+                client.held_copies(observation).await?
             } else {
                 BTreeSet::new()
             };
