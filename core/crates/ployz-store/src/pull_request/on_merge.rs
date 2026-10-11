@@ -7,8 +7,9 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    Arrives, At, Cell, Cells, Plan, RowId, SavedEnvironmentIntent, SavedVariableValue, SealedCell,
-    ValuePart, ValuePartOwner, Verdict, Why, marks_on,
+    Arrives, At, Cell, Cells, PRIVATE_DOMAIN_KEY, Plan, RowId, SERVICE_NAME_KEY,
+    SavedEnvironmentIntent, SavedVariableValue, SealedCell, Setting, ValuePart, ValuePartOwner,
+    Verdict, Why, marks_on,
 };
 use serde_json::Value;
 
@@ -406,14 +407,19 @@ pub(crate) fn set_merge_value(
 }
 
 /// Whether closing PR Environment `id` would lose something: its pull request is
-/// open or merged, and it holds a row for some Destination, riding or not.
+/// open, or merged and some Destination didn't take it, and it holds a row for
+/// some Destination, riding or not. Once the merge landed everywhere, nothing
+/// else of it lands.
 pub(crate) fn holds(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
     let Some(pull_request) = of(tx, id)? else {
         return Ok(false);
     };
     let open = facts(tx, who, pull_request.repository_id, pull_request.number)?
         .is_some_and(|facts| facts.open);
-    if !open && unlanded(tx, who, &pull_request)?.is_none() {
+    if !open
+        && !unlanded(tx, who, &pull_request)?
+            .is_some_and(|unlanded| unlanded.iter().any(|destination| !destination.saved))
+    {
         return Ok(false);
     }
     let from = scope::load_by_id(tx, id)?;
@@ -682,13 +688,25 @@ fn land_one(
 /// mounted Config's files too.
 fn affected(saved: &SavedEnvironmentIntent, picks: &BTreeSet<RowId>) -> Vec<String> {
     let lineages: BTreeSet<&str> = picks.iter().map(RowId::lineage).collect();
+    // A Service's Private DNS also produces its built-in address variables.
     let mut changed: BTreeSet<(String, String)> = picks
         .iter()
-        .filter_map(|pick| {
-            let At::Variable(key) = pick.at() else {
-                return None;
+        .flat_map(|pick| {
+            let keys = match pick.at() {
+                At::Variable(key) => vec![key.clone()],
+                At::Setting(Setting::PrivateDns) => {
+                    vec![PRIVATE_DOMAIN_KEY.to_owned(), SERVICE_NAME_KEY.to_owned()]
+                }
+                At::Node
+                | At::Data
+                | At::Name
+                | At::Storage
+                | At::File(_)
+                | At::Setting(_)
+                | At::Mount(_)
+                | At::ConfigMount(_) => Vec::new(),
             };
-            Some((pick.lineage().to_owned(), key.clone()))
+            keys.into_iter().map(|key| (pick.lineage().to_owned(), key))
         })
         .collect();
     let reads = |changed: &BTreeSet<(String, String)>, own: &str, parts: &[ValuePart]| {

@@ -16,7 +16,7 @@ use ployz_core::config::{
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 struct Delta<T> {
     before: T,
@@ -71,7 +71,7 @@ impl VersionedValue {
         (variable.value, variable.value_fingerprint) =
             (self.value.clone(), self.fingerprint.clone());
     }
-    fn shown(&self, names: &std::collections::BTreeMap<String, String>) -> Value {
+    fn shown(&self, names: &BTreeMap<String, String>) -> Value {
         match &self.value {
             SavedVariableValue::Literal { value } => json!(render_variable_parts(
                 &[ValuePart::Text {
@@ -616,13 +616,21 @@ fn service_changes(
         managed_hostnames,
         ManagedHostnames
     );
-    for key in keys(&before.variables, variables, |variable| &variable.key) {
+    // By key, so a History page over a large Environment stays linear in its variables.
+    fn by_key(variables: &[SavedVariableIntent]) -> BTreeMap<&str, &SavedVariableIntent> {
+        variables
+            .iter()
+            .map(|variable| (variable.key.as_str(), variable))
+            .collect()
+    }
+    let (earlier, later) = (by_key(&before.variables), by_key(variables));
+    for key in earlier.keys().chain(later.keys()).collect::<BTreeSet<_>>() {
         variable_changes(
             effects,
             id,
-            &key,
-            before.variables.iter().find(|variable| variable.key == key),
-            variables.iter().find(|variable| variable.key == key),
+            key,
+            earlier.get(key).copied(),
+            later.get(key).copied(),
         );
     }
     for resource in keys(&before.volume_attachments, volume_attachments, |mount| {
@@ -1986,7 +1994,7 @@ fn lifecycle_rows(
     after: &SavedEnvironmentIntent,
     name: &str,
     lineage: &str,
-    names: &std::collections::BTreeMap<String, String>,
+    names: &BTreeMap<String, String>,
 ) -> Result<Vec<ServiceSettingChange>, RpcError> {
     let removed = effect.lifecycle() == Some(ReviewLifecycleKind::Delete);
     let mut rows = match effect {

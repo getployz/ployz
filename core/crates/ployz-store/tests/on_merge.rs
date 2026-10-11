@@ -1258,6 +1258,43 @@ fn a_merge_deploys_an_image_service_it_changed_and_the_services_that_read_it() {
 }
 
 #[test]
+fn a_merge_that_renames_a_private_dns_deploys_the_services_that_read_its_address() {
+    let (store, who) = shop_with(|store, who| {
+        store
+            .write(
+                who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("api").unwrap(),
+                    image: Some("api:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            store,
+            who,
+            "production",
+            &[("web.env.API", json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"))],
+        );
+        save(store, who, "production");
+    });
+    watching(&store, &who);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("api.privateDns", json!("backend"))],
+    );
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(deployed_services(&landed), ["api", "web"]);
+}
+
+#[test]
 fn what_landed_waits_for_ci_on_the_newest_head() {
     let (store, who) = shop();
     watching(&store, &who);

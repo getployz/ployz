@@ -194,13 +194,16 @@ fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -
 /// The built-in variable that holds a Service's [`private_domain`].
 pub const PRIVATE_DOMAIN_KEY: &str = "PLOYZ_PRIVATE_DOMAIN";
 
+/// The built-in variable that holds a Service's Private DNS name.
+pub const SERVICE_NAME_KEY: &str = "PLOYZ_SERVICE_NAME";
+
 /// The variables every Service provides without declaring them, which any
 /// reference may read.
 pub const BUILT_IN_VARIABLES: [&str; 6] = [
     PRIVATE_DOMAIN_KEY,
     "PORT",
     "PLOYZ_ENVIRONMENT_NAME",
-    "PLOYZ_SERVICE_NAME",
+    SERVICE_NAME_KEY,
     "PLOYZ_ENVIRONMENT_ID",
     "PLOYZ_SERVICE_ID",
 ];

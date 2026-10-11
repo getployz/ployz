@@ -73,13 +73,18 @@ export const storeViewPrefix = (organizationSlug: string) => ["store-view", orga
 
 /**
  * One bounded Store view: an Environment's Settings, its diff or plan, one page of its Deployments, one Deployment.
- * A refusal (`not_found`, `ambiguous`) is the view's answer, not a failed read. The Organization change stream
- * refetches it when a table behind it changes; only a settling domains view polls.
+ * A refusal (`not_found`, `ambiguous`) is the view's answer, not a failed read; a busy Store (`unavailable`) is a
+ * failed read. The Organization change stream refetches it when a table behind it changes; only a settling domains
+ * view polls.
  */
 export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
-  const queryFn = async ({ signal }: { signal: AbortSignal }) =>
+  const queryFn = async ({ signal }: { signal: AbortSignal }) => {
     // SAFETY: the Store answers each query kind with the view of the same name.
-    await readStoreViewServerFn({ data: { organizationSlug, query }, signal }) as StoreResult<StoreViewOf<Q>>;
+    const result = await readStoreViewServerFn({ data: { organizationSlug, query }, signal }) as StoreResult<StoreViewOf<Q>>;
+    // A busy Store is a failed read, retried; the view keeps its last answer.
+    if (!result.ok && result.refusal.code === "unavailable") throw new Error(result.refusal.message);
+    return result;
+  };
   return queryOptions({
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, query] as const,
     staleTime: Infinity,
@@ -94,17 +99,32 @@ export function queryOf(query: Query): ConfigQuery | null {
   return prefix === "store-view" ? config as ConfigQuery : null;
 }
 
-/** The change stream named a Store table family: refetch every view of the Organization it backs. */
-export function refetchStoreViews(organizationSlug: string, scope: CollectionScope, name: StoreViewName) {
-  void scope.queryClient.invalidateQueries({
+/** Views with one more read queued behind the read in flight. */
+const rereads = new WeakSet<Query>();
+
+/**
+ * The change stream named Store table families: refetch every view of the Organization they back. A read in flight
+ * finishes, and one more read follows it, since it may predate the change. Restarting it instead never finishes
+ * while changes come faster than it reads, and the Store still does each abandoned read.
+ */
+export function refetchStoreViews(organizationSlug: string, scope: CollectionScope, names: readonly StoreViewName[]) {
+  const filters = {
     queryKey: storeViewPrefix(organizationSlug),
-    predicate: (query) => {
+    predicate: (query: Query) => {
       const config = queryOf(query);
-      if (config === null) return false;
-      const families: readonly StoreViewName[] = refreshedBy[config.query];
-      return families.includes(name);
+      return config !== null && refreshedBy[config.query].some((name) => names.includes(name));
     },
-  });
+  };
+  for (const query of scope.queryClient.getQueryCache().findAll({ ...filters, fetchStatus: "fetching" })) {
+    const reading = query.promise;
+    if (reading === undefined || rereads.has(query)) continue;
+    rereads.add(query);
+    void reading.catch(() => undefined).finally(() => {
+      rereads.delete(query);
+      void scope.queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true }, { cancelRefetch: false });
+    });
+  }
+  void scope.queryClient.invalidateQueries(filters, { cancelRefetch: false });
 }
 
 /** Names an Environment the same way however a ref spells it; the Store resolves omitted names to defaults. */

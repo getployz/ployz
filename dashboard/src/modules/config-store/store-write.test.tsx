@@ -209,7 +209,7 @@ it("refetches only the views a changed Store table family backs", () => {
   const deployments = storeViewOptions("acme", scope, { query: "deployments", environment: ref, limit: null, cursor: null }).queryKey;
   for (const key of [settings, diff, deployments]) queryClient.setQueryData<unknown>(key, { ok: true, value: {} });
 
-  refetchStoreViews("acme", scope, "store_deployment");
+  refetchStoreViews("acme", scope, ["store_deployment"]);
   const invalidated = (key: readonly unknown[]) => queryClient.getQueryState(key)?.isInvalidated;
   expect([invalidated(settings), invalidated(diff), invalidated(deployments)]).toEqual([false, true, true]);
 });

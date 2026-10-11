@@ -1293,6 +1293,40 @@ fn an_idle_open_preview_whose_rows_are_all_excluded_only_shuts_down() {
 }
 
 #[test]
+fn an_idle_kept_preview_edited_after_its_merge_landed_closes() {
+    let (store, who) = shop();
+    plan(
+        &store,
+        &who,
+        SetPrPlan {
+            remove_on_close: Some(false),
+            ..on()
+        },
+    );
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    set(&store, &who, "pr-5", "web.env.A", json!("2"));
+    pull(
+        &store,
+        &who,
+        PullRequest {
+            merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+            ..facts(false, "2026-09-29T11:00:00Z")
+        },
+    );
+    assert_eq!(production_env(&store, &who).unwrap()["A"], json!("2"));
+
+    // The merge landed everywhere; nothing edited afterwards can land, so a week idle closes it.
+    set(&store, &who, "pr-5", "web.env.A", json!("3"));
+    let idle = sweep(&store, &who, now() + 8 * DAY);
+    assert_eq!(idle.closing.len(), 1, "{idle:?}");
+    let off = remove(&store, &who, "pr-5");
+    run(&store, &off, &[]);
+    sweep(&store, &who, now() + 8 * DAY);
+    assert_eq!(listed(&store, &who), ["production"]);
+}
+
+#[test]
 fn a_merge_reported_after_its_close_still_lands() {
     let (store, who) = shop();
     plan(&store, &who, on());

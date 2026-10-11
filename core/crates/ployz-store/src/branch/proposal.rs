@@ -819,7 +819,7 @@ pub(crate) fn undo(
     if proposal.first_sync != *sync || proposal.last_sync != *sync {
         return Err(error::conflict(
             format!(
-                "{} was refreshed since: Remove it in Changes",
+                "{} was refreshed since: Remove it in Details",
                 proposal.name
             ),
             json!({ "proposal": proposal.id }),
