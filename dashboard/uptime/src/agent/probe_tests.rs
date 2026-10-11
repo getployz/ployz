@@ -241,6 +241,22 @@ async fn a_head_over_the_limit_fails_the_request_phase() {
 }
 
 #[tokio::test]
+async fn many_small_headers_under_the_byte_limit_still_return_the_status() {
+    let (listener, port) = listener(LOOPBACK).await;
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        read_head(&mut stream).await;
+        let headers: String = (0..150).map(|i| format!("X-H{i}: v\r\n")).collect();
+        let reply = format!("HTTP/1.1 200 OK\r\n{headers}Content-Length: 0\r\n\r\n");
+        let _ = stream.write_all(reply.as_bytes()).await;
+    });
+    let resolver = Answers::new(&["127.0.0.1"]);
+    let prober = local(&resolver, ProbeConfig::default(), RootCertStore::empty());
+    let seen = observe(&prober, &job(Scheme::Http, named(), port, "/")).await;
+    assert_eq!(seen.outcome, Outcome::Http { status: 200 });
+}
+
+#[tokio::test]
 async fn a_refused_connect_fails_the_connect_phase() {
     let port = closed_port().await;
     let resolver = Answers::new(&["127.0.0.1"]);

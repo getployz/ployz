@@ -291,6 +291,8 @@ impl<R: Resolve> Prober<R> {
         run.phase(Phase::Request, None, async move {
             let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
                 .max_buf_size(header_limit)
+                // No header line is shorter than 4 bytes, so the byte limit alone decides.
+                .max_headers(header_limit / 4)
                 .handshake(TokioIo::new(io))
                 .await?;
             let mut connection = pin!(connection);
