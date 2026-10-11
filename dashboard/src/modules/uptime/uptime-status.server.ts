@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, between, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, between, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
@@ -72,6 +72,9 @@ const ofCheck = (checkId: string, organizationId: string) =>
 
 const decodeEvidence = Schema.decodeUnknownEffect(IncidentEvidence);
 
+/** The probes uptime and the chart count. A triggered probe is evidence like a routine one; confirms and rechecks only decide incidents. */
+const countedKinds = inArray(uptimeResult.kind, ["routine", "triggered"]);
+
 /** The Service's check with its status, uptime, latency points, results and the incidents over a range. Null without a check. */
 export const readServiceUptime = Effect.fn("Uptime.readService")(function* (actor: Actor, input: ReadServiceUptimeInput) {
   const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
@@ -118,7 +121,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
       counted: sql<number>`count(*) FILTER (WHERE ${uptimeResult.verdict} IN ('pass', 'fail'))`.mapWith(Number),
     })
     .from(uptimeResult)
-    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), between(uptimeResult.scheduledAt, rawStart, to)));
+    .where(and(of(uptimeResult), countedKinds, between(uptimeResult.scheduledAt, rawStart, to)));
   const counted = (hourly?.counted ?? 0) + (raw?.counted ?? 0);
   const uptime = counted === 0 ? null : ((hourly?.passing ?? 0) + (raw?.passing ?? 0)) / counted;
 
@@ -173,7 +176,7 @@ const readChecks = Effect.fn("Uptime.readChecks")(function* (of: ReturnType<type
   return rows.reverse().map((row): UptimeCheckResult => ({ ...row, at: row.at.toISOString() }));
 });
 
-/** Every routine probe between `from` and `to`, each as its own point. */
+/** Every routine and triggered probe between `from` and `to`, each as its own point. */
 const readRawPoints = Effect.fn("Uptime.readRawPoints")(function* (of: ReturnType<typeof ofCheck>, from: Date, to: Date) {
   const { drizzle } = yield* Database;
   const failed = sql`${uptimeResult.verdict} = 'fail'`;
@@ -186,7 +189,7 @@ const readRawPoints = Effect.fn("Uptime.readRawPoints")(function* (of: ReturnTyp
       text: sql<string | null>`CASE WHEN ${failed} THEN ${failureTextSql(failureClassSql)} END`,
     })
     .from(uptimeResult)
-    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), between(uptimeResult.scheduledAt, from, to)))
+    .where(and(of(uptimeResult), countedKinds, between(uptimeResult.scheduledAt, from, to)))
     .orderBy(asc(uptimeResult.scheduledAt), asc(uptimeResult.region));
   return rows.map((row): UptimePoint => {
     const at = row.at.toISOString();
