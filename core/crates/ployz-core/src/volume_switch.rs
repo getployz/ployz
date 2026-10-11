@@ -480,6 +480,17 @@ pub struct StartReceiveRequest {
     pub resume_token: Option<String>,
 }
 
+/// SeedVolume on the writer: a new Volume `into` holding the restore point `guid` of
+/// `name`, received locally from the writer's own snapshot. Leased on `name`; converges
+/// on retry, replying once `into` is a root here.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct SeedVolumeRequest {
+    pub switch: Switch,
+    pub name: DockerVolumeName,
+    pub into: DockerVolumeName,
+    pub guid: SnapshotGuid,
+}
+
 /// Ask a mirror Machine how the receive of `round` is going. Carries no lease.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct InspectReceiveRequest {
@@ -605,6 +616,8 @@ pub enum SwitchError {
     Busy,
     VolumeSwitching,
     NoWriter,
+    /// The restore point a seed asked for is no longer on the writer.
+    RestorePointGone,
     NoCapacity,
 }
 
@@ -633,7 +646,8 @@ impl SwitchError {
             | Self::Precondition
             | Self::Busy
             | Self::VolumeSwitching
-            | Self::NoWriter => RpcErrorCode::Conflict,
+            | Self::NoWriter
+            | Self::RestorePointGone => RpcErrorCode::Conflict,
             Self::NoCapacity => RpcErrorCode::Unavailable,
         }
     }

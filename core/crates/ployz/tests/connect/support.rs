@@ -1053,6 +1053,14 @@ impl MachineRpc for DiscoveryService {
             "Volume switch verbs are not used by this fixture",
         ))
     }
+    async fn seed_volume(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
     async fn declare_mirror(
         &self,
         _request: Request<OpaquePayload>,
