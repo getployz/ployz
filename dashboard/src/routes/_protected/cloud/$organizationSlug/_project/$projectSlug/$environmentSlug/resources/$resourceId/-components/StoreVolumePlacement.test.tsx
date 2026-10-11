@@ -71,6 +71,14 @@ describe("VolumePlacementPanel", () => {
     expect(screen.queryByRole("button", { name: /undo|discard/i })).toBeNull();
   });
 
+  it("drops a staged move when the select picks the live Primary again", async () => {
+    const stage = panel([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }));
+    fireEvent.click(primary());
+    const option = await screen.findByRole("option", { name: "web-1" });
+    await waitFor(() => { fireEvent.click(option); expect(stage).toHaveBeenCalledTimes(1); });
+    expect(stage).toHaveBeenLastCalledWith(null, []);
+  });
+
   it("stages a mirror from + Add, then shows it green with no ×, and the detached copy it deletes first red and struck", async () => {
     const add = panel([member("web-1", "writer"), pooled("web-3")], null);
     fireEvent.click(screen.getByRole("button", { name: "Add mirror" }));

@@ -14,7 +14,8 @@ import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
   appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
-  type PlacementItem, placementForm, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
+  placementChanges, type PlacementItem, placementForm, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
+  undoPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useStagePlacement } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -75,7 +76,10 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
   const applied = appliedMirrors(observed, row);
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
   const targets = placementTargets(volume, members, row, accepting);
-  const moveTo = targets.move.filter((server) => server.id !== target.primary);
+  // A staged move's select offers the live Primary back: picking it drops the move, like typing a field back.
+  const staged = row ? placementChanges(volume, members, row).find((change) => change.kind === "move") ?? null : null;
+  const back = staged?.from ?? null;
+  const moveTo = [...(back ? [back] : []), ...targets.move.filter((server) => server.id !== target.primary && server.id !== back?.id)];
   const mirrorOn = target.mirrors.length > 0 ? [] : targets.mirror.filter((server) => server.id !== target.primary);
   const offer = failover(observed, row);
   // While a Deploy runs the change, the form shows where it goes without the staged colours.
@@ -99,7 +103,11 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
         {runs.length > 0 ? <FieldDescription>Runs {runs.join(", ")}</FieldDescription> : null}
       </FieldContent>
       <Select items={primaryChoices} value={form.primary.server.id} disabled={locked || moveTo.length === 0}
-        onValueChange={(next) => { if (next !== null && next !== target.primary) edit({ kind: "move", to: next }); }}>
+        onValueChange={(next) => {
+          if (next === null || next === target.primary) return;
+          if (row && staged && next === back?.id) stage(undoPlacement(volume, members, row, staged), applied);
+          else edit({ kind: "move", to: next });
+        }}>
         <SelectTrigger aria-label="Primary" className="w-full @md/field-group:w-56" data-changed={kindOf(form.primary) ? true : undefined}>
           <SelectValue />
         </SelectTrigger>
