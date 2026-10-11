@@ -33,7 +33,7 @@ async function createCheck() {
   return row.id;
 }
 
-type Kind = "routine" | "confirm" | "recheck";
+type Kind = "routine" | "confirm" | "recheck" | "triggered";
 type Verdict = "pass" | "fail" | "inconclusive";
 
 function result(checkId: string, region: string, scheduledAt: string, verdict: Verdict, totalMs: number, kind: Kind = "routine") {
@@ -171,6 +171,19 @@ describe("uptime-rollup", () => {
         failures: 1, classes: counts({ [cls]: 1 }), last_error_class: cls, last_error: index % 2 ? `${words[cls]} · why` : words[cls],
       });
     }
+  });
+
+  it("counts a triggered probe like a routine one, even at the same instant in the same region", async () => {
+    const a = await createCheck();
+    await result(a, "eu", "2026-10-11T09:00:00Z", "pass", 100);
+    await result(a, "eu", "2026-10-11T09:00:00Z", "fail", 9000, "triggered");
+    await result(a, "eu", "2026-10-11T09:30:00Z", "pass", 300, "triggered");
+
+    await rollup("2026-10-11T10:05:00Z");
+
+    expect(await hourly(a)).toEqual([
+      { region: "eu", hour: "2026-10-11T09:00", probes: 3, failures: 1, inconclusive: 0, pass_ms_sum: 400, pass_ms_max: 300, pass_ms_p50: 200 },
+    ]);
   });
 
   it("rolls up the hours before the run's scheduled time, however late the run starts", async () => {
