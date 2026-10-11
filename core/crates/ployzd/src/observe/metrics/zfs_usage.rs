@@ -5,12 +5,13 @@ use std::{
     collections::BTreeMap,
     io,
     num::NonZeroU64,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::Stdio,
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
-use tokio::process::Command;
+use tokio::{io::AsyncReadExt, process::Command, sync::oneshot};
 
 pub(crate) const ZFS_LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -44,7 +45,7 @@ pub(crate) enum ZfsUsageGap {
 pub(crate) struct ZfsUsageReader {
     program: PathBuf,
     timeout: Duration,
-    running: tokio::sync::Mutex<()>,
+    running: Arc<tokio::sync::Mutex<()>>,
     last: Mutex<Arc<ZfsUsage>>,
 }
 
@@ -53,17 +54,25 @@ impl ZfsUsageReader {
         Self {
             program,
             timeout,
-            running: tokio::sync::Mutex::new(()),
+            running: Arc::new(tokio::sync::Mutex::new(())),
             last: Mutex::new(Arc::new(ZfsUsage::Gap(ZfsUsageGap::NotYetRead))),
         }
     }
 
     /// Runs `zfs list`, or returns the last result while another call runs it.
     pub(crate) async fn read(&self) -> Arc<ZfsUsage> {
-        let Ok(_running) = self.running.try_lock() else {
+        let Ok(running) = Arc::clone(&self.running).try_lock_owned() else {
             return self.last();
         };
-        let usage = Arc::new(self.list().await);
+        let (sender, receiver) = oneshot::channel();
+        let (program, timeout) = (self.program.clone(), self.timeout);
+        // A killed `zfs` stuck in kernel I/O can outlive the deadline; the run
+        // stays in flight until it exits so stuck processes never pile up.
+        tokio::spawn(async move {
+            let _running = running;
+            list(&program, timeout, sender).await;
+        });
+        let usage = Arc::new(receiver.await.unwrap_or(ZfsUsage::Gap(ZfsUsageGap::Failed)));
         *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&usage);
         usage
     }
@@ -71,23 +80,46 @@ impl ZfsUsageReader {
     fn last(&self) -> Arc<ZfsUsage> {
         Arc::clone(&self.last.lock().unwrap_or_else(PoisonError::into_inner))
     }
+}
 
-    async fn list(&self) -> ZfsUsage {
-        let mut command = Command::new(&self.program);
-        command
-            .args(["list", "-Hp", "-o", "name,referenced,refquota,available"])
-            .kill_on_drop(true);
-        match tokio::time::timeout(self.timeout, command.output()).await {
-            Ok(Ok(output)) if output.status.success() => String::from_utf8(output.stdout)
-                .ok()
-                .and_then(|stdout| parse(&stdout))
-                .map_or(ZfsUsage::Gap(ZfsUsageGap::Unparsable), ZfsUsage::Measured),
-            Ok(Err(error)) if error.kind() == io::ErrorKind::NotFound => {
-                ZfsUsage::Gap(ZfsUsageGap::NotInstalled)
-            }
-            Ok(Ok(_) | Err(_)) => ZfsUsage::Gap(ZfsUsageGap::Failed),
-            Err(_) => ZfsUsage::Gap(ZfsUsageGap::TimedOut),
+async fn list(program: &Path, timeout: Duration, result: oneshot::Sender<ZfsUsage>) {
+    let spawned = Command::new(program)
+        .args(["list", "-Hp", "-o", "name,referenced,refquota,available"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let _ = result.send(ZfsUsage::Gap(ZfsUsageGap::NotInstalled));
+            return;
         }
+        Err(_) => {
+            let _ = result.send(ZfsUsage::Gap(ZfsUsageGap::Failed));
+            return;
+        }
+    };
+    let mut stdout = Vec::new();
+    let finished = tokio::time::timeout(timeout, async {
+        let mut pipe = child.stdout.take()?;
+        let (read, status) = tokio::join!(pipe.read_to_end(&mut stdout), child.wait());
+        read.ok()?;
+        status.ok()
+    })
+    .await;
+    let usage = match finished {
+        Ok(Some(status)) if status.success() => String::from_utf8(stdout)
+            .ok()
+            .and_then(|stdout| parse(&stdout))
+            .map_or(ZfsUsage::Gap(ZfsUsageGap::Unparsable), ZfsUsage::Measured),
+        Ok(_) => ZfsUsage::Gap(ZfsUsageGap::Failed),
+        Err(_) => ZfsUsage::Gap(ZfsUsageGap::TimedOut),
+    };
+    let _ = result.send(usage);
+    if finished.is_err() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
     }
 }
 
