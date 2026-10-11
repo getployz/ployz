@@ -1,7 +1,8 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz_core::{ContainerId, MachineId, Namespace, ServiceName};
-use ployz_store::tools::{self, Answer, CloudQuery, Place};
+use ployz_store::tools::{self, Act, Answer, CloudQuery, Place};
+use serde::{Deserialize, Serialize};
 
 use crate::{Client, invalid_argument, rpc_to_napi, to_json};
 
@@ -48,6 +49,24 @@ pub fn agent_resume(
     let answers: Vec<Answer> = ployz_core::decode::decode(&answers).map_err(invalid_argument)?;
     let (step, state) = tools::resume(state, answers.into_iter().map(Into::into).collect());
     turn(&step, &state)
+}
+
+/// What `ployz mcp` hands Cloud: an ask's query or an Act.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum CloudCall {
+    Ask(CloudQuery),
+    Act(Act),
+}
+
+/// Decode `{ ask: CloudQuery }` or `{ act: Act }` in full.
+///
+/// # Errors
+/// Returns `invalid_argument` naming what is malformed.
+#[napi]
+pub fn agent_cloud_call(call: serde_json::Value) -> Result<serde_json::Value> {
+    let call: CloudCall = ployz_core::decode::decode(&call).map_err(invalid_argument)?;
+    to_json(&call)
 }
 
 fn turn(step: &tools::Step, state: &tools::State) -> Result<serde_json::Value> {

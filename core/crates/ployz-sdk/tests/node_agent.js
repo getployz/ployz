@@ -54,6 +54,11 @@ async function expectCode(code, promise) {
   await expectCode("unsupported", client.agentAsk({ query: "github_connection" }));
   await expectCode("invalid_argument", client.agentAsk({ query: "nowhere" }));
   await client.close();
+
+  assert.deepEqual(sdk.agentCloudCall({ ask: { query: "servers" } }), { ask: { query: "servers", only: null } });
+  for (const malformed of [{ ask: { query: "bogus" } }, { act: { action: { action: "drain" } } }, { ask: {}, act: {} }]) {
+    await expectCode("invalid_argument", (async () => sdk.agentCloudCall(malformed))());
+  }
 })().catch((error) => {
   console.error(error);
   process.exit(1);

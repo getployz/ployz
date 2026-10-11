@@ -255,6 +255,8 @@ export declare function agentTools(): { instructions: string; tools: import("./g
 export declare function agentStart(tool: string, input: unknown, place: import("./generated/payloads").Place, callKey: string): AgentTurn;
 /** Resume a call with the answers to its last step, in order. */
 export declare function agentResume(state: AgentState, answers: import("./generated/payloads").Answer[]): AgentTurn;
+/** Decode what `ployz mcp` hands Cloud in full; throws `invalid_argument` naming what is malformed. */
+export declare function agentCloudCall(call: unknown): { ask: import("./generated/payloads").CloudQuery } | { act: import("./generated/payloads").Act };
 export declare function applyAll(
   namespace: Namespace,
   specs: readonly RequestedServiceSpec[],

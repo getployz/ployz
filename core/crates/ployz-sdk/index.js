@@ -397,6 +397,9 @@ module.exports = {
   agentResume: (state, answers) => {
     try { return native.agentResume(state, answers); } catch (error) { throwRpcError(error); }
   },
+  agentCloudCall: (call) => {
+    try { return native.agentCloudCall(call); } catch (error) { throwRpcError(error); }
+  },
   connect,
   Client,
   RpcError,
