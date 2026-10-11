@@ -156,8 +156,8 @@ describe("data boundaries", () => {
     const factories = remoteFiles.flatMap((path) => [...readFileSync(join(SRC, path), "utf8").matchAll(/export function (\w+Options)\(/g)].map((match) => match[1] ?? ""));
     const loaderCode = sources.filter(({ path }) => path.startsWith("routes/") || path === "collections/route-data.ts").map(({ text }) => text).join("\n");
     // Presence check: some loader (or a route-data helper) prefetches the factory; review checks it is the page's own loader.
-    const unprefetched = factories.filter((name) => !new RegExp(`(prefetchRemote\\w*\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));
-    expect(unprefetched.sort(), "Prefetch it with prefetchRemote in the page's loader, or list it as on demand").toEqual(Object.keys(ON_DEMAND_READS).sort());
+    const unprefetched = factories.filter((name) => !new RegExp(`((prefetchRemote\\w*|streamRemote)\\([^;]*?|ensureQueryData\\()\\b${name}\\(`).test(loaderCode));
+    expect(unprefetched.sort(), "Prefetch it with prefetchRemote or streamRemote in the page's loader, or list it as on demand").toEqual(Object.keys(ON_DEMAND_READS).sort());
   });
 
   it("uses spinners only for writes and running processes", () => {

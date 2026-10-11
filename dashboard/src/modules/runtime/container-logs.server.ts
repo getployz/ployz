@@ -15,9 +15,14 @@ export const logSearchSchema = Schema.Struct({
   projectSlug: Schema.optional(Schema.String),
   deploymentId: Schema.optional(Schema.String.check(Schema.isUUID())),
   serviceId: Schema.optional(Schema.String.check(Schema.isUUID())),
-  before: Schema.optional(Schema.fromJsonString(Schema.Record(Schema.String, Schema.String.check(Schema.isPattern(/^-?\d{1,19}$/))))),
 });
 export type LogSearch = typeof logSearchSchema.Type;
+
+/** A read of the Log Store instead of following: its newest page, or the one behind `cursor`. The cursor holds a place per Server, so it travels in a body, not a URL. */
+export const logHistorySchema = Schema.Struct({
+  ...logSearchSchema.fields,
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(1 << 18))),
+});
 
 /**
  * Whose logs: a Deployment's (its Namespace, then the containers labelled with its ID), or an Environment's (its
@@ -31,11 +36,16 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
     : null;
   if (query === null) return yield* new Validation({ message: "An environment is required." });
   const view = yield* readStore(organizationId, query).pipe(Effect.mapError(() => missing));
-  return { namespace: view.namespace, serviceId: search.serviceId, deploymentId } satisfies LogFilter;
+  // A Deployment names its Services' runtime names, so the Log Store finds one even after it's removed.
+  const node = "runtime_names" in view ? view.nodes.find(candidate => candidate.type === "service" && candidate.id === search.serviceId) : undefined;
+  const serviceName = node && "runtime_names" in view ? view.runtime_names[node.name] ?? node.name : undefined;
+  return { namespace: view.namespace, serviceId: search.serviceId, serviceName, deploymentId } satisfies LogFilter;
 });
 
+const HISTORY_PAGE = 500;
+
 /** The response owns this scope until its consumer disconnects. */
-export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch) {
+export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch, history?: { cursor?: string }) {
   const { organizationId } = yield* authorizeRuntimeOrganization({ headers: request.headers, organizationSlug: search.organizationSlug });
   const filter = yield* resolveLogFilter(organizationId, search);
   const scope = yield* Scope.make();
@@ -44,11 +54,11 @@ export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function
   const session = yield* runtime.open(organizationId).pipe(Effect.provideService(Scope.Scope, scope), Effect.onError(() => close));
   if (session.status !== "connected") {
     yield* close;
-    if (search.before === undefined) return { type: "offline" as const };
+    if (history === undefined) return { type: "offline" as const };
     return yield* new Validation({ message: "Container logs are unavailable while the server is disconnected." });
   }
-  if (search.before !== undefined) {
-    return yield* session.connected.logHistory({ filter, before: search.before, limit: 200, signal: request.signal })
+  if (history !== undefined) {
+    return yield* session.connected.logHistory({ filter, cursor: history.cursor, limit: HISTORY_PAGE, signal: request.signal })
       .pipe(Effect.map(page => ({ type: "history" as const, page })), Effect.ensuring(close));
   }
   const options = { filter, tail: 200, signal: request.signal };
