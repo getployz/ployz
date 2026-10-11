@@ -664,13 +664,28 @@ fn ships_all(ours: &[ServiceName], newer: &[ServiceName]) -> bool {
     newer.is_empty() || !ours.is_empty() && ours.iter().all(|service| newer.contains(service))
 }
 
+/// `ployz deploy --plan --json`: the plan, plus each domain change as people read it.
+#[derive(serde::Serialize)]
+struct Planned<'p> {
+    #[serde(flatten)]
+    plan: &'p ployz_store::PlanView,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    domain_changes: Vec<super::store::DomainLine>,
+}
+
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
     let plan = store.read(&PlanQuery {
         environment: environment(matches)?,
         services,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
-    crate::ui::finish(&Next::new(&plan, Some(hint.clone())), || {
+    let shown = Planned {
+        domain_changes: super::store::domain_changes(
+            plan.changes.iter().flat_map(|change| &change.settings),
+        ),
+        plan: &plan,
+    };
+    crate::ui::finish(&Next::new(&shown, Some(hint.clone())), || {
         let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
         if plan.changes.is_empty() {
             crate::ui::stream(format_args!("No authored changes to deploy in {where_}."));

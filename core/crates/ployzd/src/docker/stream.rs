@@ -8,7 +8,7 @@ use bollard::{
 use chrono::DateTime;
 use futures_util::{Stream, StreamExt};
 use ployz_core::{
-    ContainerLogsRequest, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
+    ContainerId, ExecRequestFrame, ExecResponseFrame, LogMetadata, LogOrigin, LogsOptions,
     MachineId, MachineName, OpaquePayload, RpcError, RpcErrorCode,
 };
 use serde_json::Value;
@@ -20,8 +20,7 @@ use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
 };
 
-#[path = "log_history.rs"]
-mod log_history;
+const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
@@ -144,10 +143,11 @@ impl ContainerRuntime {
         &self,
         machine_id: &MachineId,
         machine_name: &MachineName,
-        request: ContainerLogsRequest,
+        container_id: ContainerId,
+        options: &LogsOptions,
     ) -> Result<RpcStream, Status> {
         let observation = self
-            .inspect_managed(&request.container_id, machine_id)
+            .inspect_managed(&container_id, machine_id)
             .await
             .map_err(docker_status)?;
         let metadata = LogMetadata {
@@ -160,59 +160,29 @@ impl ContainerRuntime {
             machine_id: *machine_id,
             machine_name: machine_name.clone(),
         };
-        let source = self.raw_logs(request.container_id.as_str(), &request.options)?;
-        Ok(serve_logs(source, metadata, request.options.follow))
-    }
-
-    pub async fn container_log_history(
-        &self,
-        machine_id: &MachineId,
-        machine_name: &MachineName,
-        request: ployz_core::ContainerLogHistoryRequest,
-    ) -> Result<RpcStream, Status> {
-        let observation = self
-            .inspect_managed(&request.container_id, machine_id)
-            .await
-            .map_err(docker_status)?;
-        let metadata = LogMetadata {
-            origin: LogOrigin::Service {
-                service_id: observation.service_id(),
-                service_name: observation.resolved_spec.name.clone(),
-                container_id: observation.container_id,
-                hook: observation.labels.get(super::LABEL_HOOK).cloned(),
-            },
-            machine_id: *machine_id,
-            machine_name: machine_name.clone(),
-        };
-        if !(1..=1000).contains(&request.limit) {
-            return Err(Status::invalid_argument("limit must be 1..1000"));
-        }
-        let before = request
-            .before_nanos
-            .parse::<i64>()
-            .map_err(|_| Status::invalid_argument("before_nanos must be an i64 timestamp"))?;
-        let entries = log_history::read_history(
-            self,
-            request.container_id.as_str(),
-            before,
-            i32::from(request.limit),
-        )
-        .await?;
-        let source = Box::pin(futures_util::stream::iter(entries.into_iter().map(Ok))) as LogSource;
-        Ok(serve_logs(source, metadata, false))
+        let source = self.raw_logs(container_id.as_str(), options)?;
+        Ok(serve_logs(source, metadata, options.follow))
     }
 
     #[allow(clippy::result_large_err)]
     pub fn raw_logs(&self, container: &str, options: &LogsOptions) -> Result<LogSource, Status> {
-        let options = docker_log_options(options)?;
+        let since = options.since_nanos;
+        let docker_options = docker_log_options(options)?;
         let stream = self
             .docker
             .client
-            .logs(container, Some(options))
+            .logs(container, Some(docker_options))
             .map(|entry| {
                 entry
                     .map(parse_log_output)
                     .map_err(|error| JournalError::Docker(ployz_core::error_chain::inline(&error)))
+            })
+            .filter(move |entry| {
+                std::future::ready(
+                    entry
+                        .as_ref()
+                        .map_or(true, |entry| not_before(entry.timestamp_unix_nanos, since)),
+                )
             });
         Ok(Box::pin(stream))
     }
@@ -410,13 +380,19 @@ fn docker_log_options(
         .follow(options.follow)
         .timestamps(true)
         .tail(&tail);
-    if let Some(since) = options.since_unix_seconds {
-        builder = builder.since(docker_log_timestamp(since)?);
+    if let Some(since) = options.since_nanos {
+        builder = builder.since(docker_log_timestamp(since.div_euclid(NANOS_PER_SECOND))?);
     }
     if let Some(until) = options.until_unix_seconds {
         builder = builder.until(docker_log_timestamp(until)?);
     }
     Ok(builder.build())
+}
+
+/// Docker takes `since` in whole seconds, so it sends the rest of that
+/// second too; an entry with no readable time is kept.
+fn not_before(ts: i64, since: Option<i64>) -> bool {
+    ts == 0 || since.is_none_or(|since| ts >= since)
 }
 
 #[allow(clippy::result_large_err)]
@@ -482,16 +458,22 @@ mod tests {
     }
 
     #[test]
-    fn docker_log_bounds_are_absolute_unix_seconds() {
+    fn a_nanosecond_since_keeps_exactly_the_output_from_that_instant() {
+        let since = 1_786_698_000_123_456_789;
         let options = docker_log_options(&LogsOptions {
             follow: false,
             tail: 100,
-            since_unix_seconds: Some(1_786_698_000),
+            since_nanos: Some(since),
             until_unix_seconds: Some(1_786_701_600),
         })
         .unwrap();
 
         assert_eq!(options.since, 1_786_698_000);
         assert_eq!(options.until, 1_786_701_600);
+        assert!(!not_before(since - 1, Some(since)));
+        assert!(not_before(since, Some(since)));
+        assert!(not_before(since + 1, Some(since)));
+        assert!(not_before(0, Some(since)));
+        assert!(not_before(1, None));
     }
 }
