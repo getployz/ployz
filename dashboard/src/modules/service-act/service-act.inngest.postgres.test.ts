@@ -135,7 +135,7 @@ describe("act-service", () => {
   });
 
   it("leaves a Container that isn't running where it is on stop", async () => {
-    copies.copies[1] = { ...copies.copies[1]!, state: "exited" };
+    copies.copies = copies.copies.map((copy) => copy.container === "web-b" ? { ...copy, state: "exited" } : copy);
     const admitted = await request("stop");
     if (!admitted.ok) throw new Error("refused");
 

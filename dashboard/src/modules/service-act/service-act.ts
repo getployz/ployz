@@ -47,11 +47,10 @@ export const mayStart = (verb: ServiceVerb, leg: ServiceActLeg) =>
 
 export const serversOf = (legs: readonly ServiceActLeg[]) => [...new Set(legs.map(({ server }) => server))];
 
+export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActState>; reason: string | null };
+
 /** How the act ended, from its legs. With nothing to move, Servers that didn't answer leave it unknown. */
-export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[]): {
-  state: Exclude<ServiceActState, ActiveServiceActState>;
-  reason: string | null;
-} {
+export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[]): ServiceActEnd {
   if (legs.length === 0) {
     return before.unanswered.length > 0
       ? { state: "unknown", reason: `${before.unanswered.join(", ")} didn't answer.` }
@@ -64,7 +63,7 @@ export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[]):
   return { state: "done", reason: null };
 }
 
-const RECEIPTS: Record<LegStep, Receipt> = { sent: "unknown", unknown: "unknown", done: "yes", already_there: "yes", failed: "no" };
+const RECEIPTS = { sent: "unknown", unknown: "unknown", done: "yes", already_there: "yes", failed: "no" } as const satisfies Record<LegStep, Receipt>;
 
 export const legOf = (leg: ServiceActLeg): Leg => ({
   server: leg.server,
