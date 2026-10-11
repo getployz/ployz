@@ -35,7 +35,7 @@ Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a vol
 bottom bar and the deployment page say what it is doing, for example "data · Moving to web-2".
 Cancel lets the step under way finish, and the rest waits for your next deploy.
 
-Backups are not part of Placement. See [Back up a database](databases.md#back-up-a-database).
+A mirror also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
 
 The commands below do the same from the CLI, one run at a time. Deleting a mirror is CLI-only.
 
