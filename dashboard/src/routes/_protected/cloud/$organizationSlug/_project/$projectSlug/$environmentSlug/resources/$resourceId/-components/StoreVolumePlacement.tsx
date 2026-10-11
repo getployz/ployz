@@ -1,27 +1,32 @@
 import type { ReactNode } from "react";
-import { MoreVerticalIcon } from "lucide-react";
-import type { EnvironmentRef, MachineId } from "@ployz/sdk";
+import { PlusIcon, XIcon } from "lucide-react";
+import type { ChangeKind, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { InfoHint } from "#/components/info-hint";
+import { RelativeTime } from "#/components/relative-time";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  appliedMirrors, detachedName, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
-  type PlacementEntry, placementEntries, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
+  appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
+  type PlacementItem, placementForm, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useStagePlacement } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import { runWords } from "#/modules/volume-run/volume-copies";
-import { copyName, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers } from "#/modules/volume-run/volume-run.queries";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
-type StoreVolumePlacementProps = { organizationSlug: string; environment: EnvironmentRef; volume: PlacementVolume };
+/** A Volume as the panel shows it: who mounts it names who its Primary runs. */
+type PanelVolume = PlacementVolume & { readonly mounts: readonly { readonly service: string }[] };
+
+type StoreVolumePlacementProps = { organizationSlug: string; environment: EnvironmentRef; volume: PanelVolume };
 
 /** A deployed managed Volume's Primary and Mirrors. Every edit is staged; the next Deploy runs it before its Services. */
 export function StoreVolumePlacement({ organizationSlug, environment, volume }: StoreVolumePlacementProps) {
@@ -40,10 +45,15 @@ export function StoreVolumePlacement({ organizationSlug, environment, volume }: 
     accepting={members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id)} stage={stage} />;
 }
 
-const ROLE_WORDS = { primary: null, mirror: "Mirror", detached: "Detached" } as const satisfies Record<PlacementEntry["role"], string | null>;
+/** A staged chip or select takes its kind's colour, the same three Details uses. */
+const KIND_CLASSES = {
+  add: "border-success-border bg-success-soft text-success",
+  update: "border-changed-border bg-changed-soft text-changed-deep",
+  remove: "border-destructive-border bg-destructive-soft text-destructive",
+} satisfies Record<ChangeKind, string>;
 
 export function VolumePlacementPanel({ volume, members, row, running, accepting, disabled, stage }: {
-  volume: PlacementVolume;
+  volume: PanelVolume;
   members: readonly Member[];
   row: PlacementRow | null;
   running: VolumeRunView | null;
@@ -54,7 +64,8 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
 }) {
   const observed = observePlacement(members);
   const target = targetPlacement(observed, row);
-  if (target === null) {
+  const form = placementForm(volume, members, row);
+  if (target === null || form === null) {
     return <SettingsSection id="placement" title="Placement">
       <Empty variant="placeholder"><EmptyDescription>No server reports a copy.</EmptyDescription></Empty>
     </SettingsSection>;
@@ -63,33 +74,16 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
   const locked = disabled || deploying;
   const applied = appliedMirrors(observed, row);
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
-  const entries = placementEntries(volume, members, row);
   const targets = placementTargets(volume, members, row, accepting);
   const moveTo = targets.move.filter((server) => server.id !== target.primary);
   const mirrorOn = target.mirrors.length > 0 ? [] : targets.mirror.filter((server) => server.id !== target.primary);
   const offer = failover(observed, row);
-  const nameOf = (entry: PlacementEntry) =>
-    entry.role === "primary" ? volume.name : entry.role === "mirror" ? copyName(volume.name, entry.server.name) : detachedName(volume);
+  // While a Deploy runs the change, the form shows where it goes without the staged colours.
+  const kindOf = (item: PlacementItem) => (deploying ? null : item.change);
+  const runs = [...new Set(volume.mounts.map((mount) => mount.service))];
+  const primaryChoices = [form.primary.server, ...moveTo].map((server) => ({ value: server.id, label: server.name }));
 
-  const menuOf = (entry: PlacementEntry, name: string): ReactNode => {
-    if (entry.change !== null) return null;
-    if (entry.role === "primary") {
-      return moveTo.length === 0 ? null : <Menu label={name} disabled={locked}>
-        {moveTo.map((server) => <DropdownMenuItem key={server.id} onClick={() => edit({ kind: "move", to: server.id })}>Move to {server.name}</DropdownMenuItem>)}
-      </Menu>;
-    }
-    const kind = entry.role === "mirror" ? "remove_mirror" : "delete_copy";
-    return <Menu label={name} disabled={locked}>
-      <DropdownMenuItem variant="destructive" onClick={() => edit({ kind, server: entry.server.id })}>{entry.role === "mirror" ? "Remove mirror" : "Delete"}</DropdownMenuItem>
-    </Menu>;
-  };
-
-  return <SettingsSection id="placement" title="Placement" action={mirrorOn.length > 0 ? <DropdownMenu>
-    <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={locked} />}>Add mirror</DropdownMenuTrigger>
-    <DropdownMenuContent align="end"><DropdownMenuGroup>
-      {mirrorOn.map((server) => <DropdownMenuItem key={server.id} onClick={() => edit({ kind: "add_mirror", server: server.id })}>{server.name}</DropdownMenuItem>)}
-    </DropdownMenuGroup></DropdownMenuContent>
-  </DropdownMenu> : null}>
+  return <SettingsSection id="placement" title="Placement">
     {offer ? <Alert variant="destructive">
       <AlertTitle>{offer.down.name} is not answering</AlertTitle>
       <AlertDescription>{offer.lostAfter ? `Changes after ${lossTime(offer.lostAfter)} lost` : "Recent changes lost"}</AlertDescription>
@@ -99,33 +93,67 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
       <Spinner role="presentation" aria-hidden="true" />
       <span>{running ? [runWords(running), running.message].filter(Boolean).join(" · ") : "Deploying"}</span>
     </div> : null}
-    <ItemGroup role="list" aria-label="Placement">
-      {entries.map((entry) => {
-        const name = nameOf(entry);
-        const role = ROLE_WORDS[entry.role];
-        const struck = entry.change === "remove";
-        return <Item key={entry.key} role="listitem" size="xs" data-changed={entry.change === null || deploying ? undefined : true}>
-          <ItemContent className="min-w-0">
-            <ItemTitle className={cn(struck && "text-muted-foreground line-through")}>{name}</ItemTitle>
-            <ItemDescription className="flex items-center gap-1">
-              {[entry.server.name, role].filter(Boolean).join(" · ")}
-              {entry.role === "mirror" && !struck ? <span className="-my-1 inline-flex">
-                <InfoHint label="When it refreshes">Refreshes on every deploy and every 15 minutes.</InfoHint>
-              </span> : null}
-            </ItemDescription>
-          </ItemContent>
-          <ItemActions>
-            {menuOf(entry, name)}
-          </ItemActions>
-        </Item>;
-      })}
-    </ItemGroup>
+    <Field orientation="responsive">
+      <FieldContent>
+        <FieldLabel>Primary</FieldLabel>
+        {runs.length > 0 ? <FieldDescription>Runs {runs.join(", ")}</FieldDescription> : null}
+      </FieldContent>
+      <Select items={primaryChoices} value={form.primary.server.id} disabled={locked || moveTo.length === 0}
+        onValueChange={(next) => { if (next !== null && next !== target.primary) edit({ kind: "move", to: next }); }}>
+        <SelectTrigger aria-label="Primary" className="w-full @md/field-group:w-56" data-changed={kindOf(form.primary) ? true : undefined}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {primaryChoices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </Field>
+    <Field orientation="responsive">
+      <FieldContent>
+        <FieldLabel className="items-center gap-1">
+          Mirrors
+          <span className="-my-1 inline-flex"><InfoHint label="When it refreshes">Refreshes on every deploy and every 15 minutes.</InfoHint></span>
+        </FieldLabel>
+      </FieldContent>
+      <Chips label="Mirrors">
+        {form.mirrors.map((item) => <Chip key={item.server.id} item={item} kind={kindOf(item)}
+          note={item.newest ? <RelativeTime date={item.newest} /> : null}
+          action={<Button variant="ghost" size="icon-xs" aria-label={`Remove mirror on ${item.server.name}`} disabled={locked}
+            onClick={() => edit({ kind: "remove_mirror", server: item.server.id })}><XIcon /></Button>} />)}
+        {mirrorOn.length > 0 ? <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="outline" size="xs" aria-label="Add mirror" disabled={locked}
+            className="h-7 rounded-full border-dashed px-2.5 text-sm" />}><PlusIcon />Add</DropdownMenuTrigger>
+          <DropdownMenuContent align="start"><DropdownMenuGroup>
+            {mirrorOn.map((server) => <DropdownMenuItem key={server.id} onClick={() => edit({ kind: "add_mirror", server: server.id })}>{server.name}</DropdownMenuItem>)}
+          </DropdownMenuGroup></DropdownMenuContent>
+        </DropdownMenu> : form.mirrors.length === 0 ? <span className="text-sm text-muted-foreground">None</span> : null}
+      </Chips>
+    </Field>
+    {form.detached.length > 0 ? <Field orientation="responsive">
+      <FieldContent><FieldLabel>Detached</FieldLabel></FieldContent>
+      <Chips label="Detached">
+        {form.detached.map((item) => <Chip key={item.server.id} item={item} kind={kindOf(item)} note={null}
+          action={<Button variant="ghost" size="icon-xs" aria-label={`Delete copy on ${item.server.name}`} disabled={locked}
+            onClick={() => edit({ kind: "delete_copy", server: item.server.id })}><XIcon /></Button>} />)}
+      </Chips>
+    </Field> : null}
   </SettingsSection>;
 }
 
-function Menu({ label, disabled, children }: { label: string; disabled: boolean; children: ReactNode }) {
-  return <DropdownMenu>
-    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${label}`} disabled={disabled} />}><MoreVerticalIcon /></DropdownMenuTrigger>
-    <DropdownMenuContent align="end" className="w-auto"><DropdownMenuGroup>{children}</DropdownMenuGroup></DropdownMenuContent>
-  </DropdownMenu>;
+function Chips({ label, children }: { label: string; children: ReactNode }) {
+  return <div role="list" aria-label={label} className="flex min-w-0 flex-wrap items-center gap-1.5 @md/field-group:w-56">{children}</div>;
+}
+
+/**
+ * One Server in a group. A live chip says when its copy refreshed and carries its action; a staged one wears its kind's
+ * colour, "New" when the Deploy creates it, struck when it removes it, and no action: Details discards.
+ */
+function Chip({ item, kind, note, action }: { item: PlacementItem; kind: ChangeKind | null; note: ReactNode; action: ReactNode }) {
+  return <span role="listitem" data-change={kind ?? undefined}
+    className={cn("inline-flex h-7 items-center gap-1.5 rounded-full border bg-background pr-1 pl-2.5 text-sm", kind && KIND_CLASSES[kind], item.change !== null && "pr-2.5")}>
+    <span className={cn(item.change === "remove" && "line-through")}>{item.server.name}</span>
+    {kind === "add" ? <span className="text-xs">New</span>
+      : item.change === null && note ? <span className="text-xs text-muted-foreground">{note}</span> : null}
+    {item.change === null ? action : null}
+  </span>;
 }

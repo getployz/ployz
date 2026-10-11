@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
@@ -24,81 +24,101 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 
 function panel(members: Member[], placement: PlacementRow | null, running: VolumeRunView | null = null) {
   const stage = vi.fn();
-  render(<VolumePlacementPanel volume={{ id: "v1", name: "data" }} members={members} row={placement} running={running}
+  render(<VolumePlacementPanel volume={{ id: "v1", name: "data", mounts: [{ service: "postgres" }] }} members={members} row={placement} running={running}
     accepting={members.map((entry) => entry.machine.id)} disabled={false} stage={stage} />);
   return stage;
 }
-const rows = () => screen.getAllByRole("listitem").map((item) => item.textContent);
-const staged = () => screen.getAllByRole("listitem").map((item) => item.hasAttribute("data-changed"));
-const struck = (name: string) => screen.getByText(name).className.includes("line-through");
-async function choose(menu: string, item: string) {
-  fireEvent.click(screen.getByRole("button", { name: menu }));
-  fireEvent.click(await screen.findByRole("menuitem", { name: item }));
-}
+const primary = () => screen.getByRole("combobox", { name: "Primary" });
+const primaryServer = () => primary().querySelector("[data-slot=select-value]")?.textContent;
+/** Each chip in a group as `server:kind`, its kind the colour it wears, `live` when unstaged. */
+const chips = (group: string) => within(screen.getByRole("list", { name: group })).queryAllByRole("listitem")
+  .map((chip) => `${chip.firstElementChild?.textContent}:${chip.getAttribute("data-change") ?? "live"}`);
+const chip = (group: string, server: string) => {
+  const found = within(screen.getByRole("list", { name: group })).getAllByRole("listitem").find((one) => one.firstElementChild?.textContent === server);
+  if (found === undefined) throw new Error(`no ${server} in ${group}`);
+  return found;
+};
+const struck = (group: string, server: string) => chip(group, server).firstElementChild?.className.includes("line-through");
+const actions = (group: string, server: string) => within(chip(group, server)).queryAllByRole("button");
 
 describe("VolumePlacementPanel", () => {
   afterEach(cleanup);
 
-  it("shows the Primary and its mirror with no badge or staged treatment, and stages a move that promotes the mirror", async () => {
+  it("shows the Primary as a select naming who it runs, and each live mirror as a chip with its ×", async () => {
     const stage = panel([member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")], row(["web-2"]));
-    expect(rows()).toEqual(["dataweb-1", "data-web-2web-2 · Mirror"]);
-    expect(staged()).toEqual([false, false]);
+    expect(primaryServer()).toBe("web-1");
+    expect(primary().hasAttribute("data-changed")).toBe(false);
+    expect(screen.getByText("Runs postgres")).toBeTruthy();
+    expect(chips("Mirrors")).toEqual(["web-2:live"]);
+    expect(screen.queryByRole("list", { name: "Detached" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add mirror" })).toBeNull();
-    await choose("Actions for data", "Move to web-2");
-    expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
+    fireEvent.click(screen.getByRole("button", { name: "Remove mirror on web-2" }));
+    expect(stage).toHaveBeenLastCalledWith({ primary: id("web-1"), mirrors: [], deletes: [] }, [id("web-2")]);
+    fireEvent.click(primary());
+    const option = await screen.findByRole("option", { name: "web-2" });
+    await waitFor(() => { fireEvent.click(option); expect(stage).toHaveBeenCalledTimes(2); });
+    expect(stage).toHaveBeenLastCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
   });
 
-  it("shows a staged move in pink on the new Server and leaves the old copy detached, with no Was or Undo", () => {
+  it("rings a moved Primary pink and shows the copy it leaves as a new detached chip, with no Was, Undo or ×", () => {
     panel([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }));
-    expect(rows()).toEqual(["dataweb-3", "data-oldweb-1 · Detached"]);
-    expect(staged()).toEqual([true, true]);
-    expect(screen.queryByText(/staged|was/i)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    expect(primaryServer()).toBe("web-3");
+    expect(primary().getAttribute("data-changed")).toBe("true");
+    expect(chips("Detached")).toEqual(["web-1:add"]);
+    expect(chip("Detached", "web-1").textContent).toBe("web-1New");
+    expect(actions("Detached", "web-1")).toEqual([]);
+    expect(screen.queryByText(/staged|was|copies|kept/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /undo|discard/i })).toBeNull();
   });
 
-  it("stages a mirror, and staged rows offer no actions", async () => {
+  it("stages a mirror from + Add, then shows it green with no ×, and the detached copy it deletes first red and struck", async () => {
     const add = panel([member("web-1", "writer"), pooled("web-3")], null);
-    await choose("Add mirror", "web-3");
+    fireEvent.click(screen.getByRole("button", { name: "Add mirror" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "web-3" }));
     expect(add).toHaveBeenCalledWith({ primary: id("web-1"), mirrors: [id("web-3")], deletes: [] }, []);
     cleanup();
-    panel([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"], deletes: ["web-1"] }));
-    expect(rows()).toEqual(["dataweb-2", "data-web-3web-3 · Mirror", "data-oldweb-1 · Detached"]);
-    expect(screen.queryByRole("button", { name: "Actions for data-web-3" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Actions for data-old" })).toBeNull();
+    panel([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"] }));
+    expect(chips("Mirrors")).toEqual(["web-3:add"]);
+    expect(chip("Mirrors", "web-3").textContent).toBe("web-3New");
+    expect(actions("Mirrors", "web-3")).toEqual([]);
+    expect(chips("Detached")).toEqual(["web-1:remove"]);
+    expect(struck("Detached", "web-1")).toBe(true);
+    expect(actions("Detached", "web-1")).toEqual([]);
   });
 
-  it("strikes a removed mirror and keeps it in the list until Deploy", () => {
+  it("strikes a removed mirror red and keeps it in its group until Deploy, with no ×", () => {
     panel([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"], { primary: "web-1" }));
-    expect(rows()).toEqual(["dataweb-1", "data-web-2web-2 · Mirror"]);
-    expect(staged()).toEqual([false, true]);
-    expect(struck("data-web-2")).toBe(true);
+    expect(primary().hasAttribute("data-changed")).toBe(false);
+    expect(chips("Mirrors")).toEqual(["web-2:remove"]);
+    expect(struck("Mirrors", "web-2")).toBe(true);
+    expect(actions("Mirrors", "web-2")).toEqual([]);
   });
 
-  it("deletes a detached copy from its menu", async () => {
+  it("deletes a live detached copy from its ×", () => {
     const stage = panel([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([]));
-    expect(rows()).toEqual(["dataweb-2", "data-oldweb-1 · Detached"]);
-    expect(screen.queryByRole("note")).toBeNull();
-    await choose("Actions for data-old", "Delete");
+    expect(chips("Detached")).toEqual(["web-1:live"]);
+    fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-1" }));
     expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [id("web-1")] }, []);
   });
 
-  it("offers the mirror when the Primary's Server stops answering, without marking the silent Primary staged", () => {
+  it("offers the mirror when the Primary's Server stops answering, without staging the silent Primary", () => {
     const stage = panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36))], row(["web-2"]));
     expect(screen.getByRole("alert").textContent).toBe("web-1 is not answeringChanges after 10:36 lostUse mirror");
-    expect(staged()).toEqual([false, false]);
+    expect(primary().hasAttribute("data-changed")).toBe(false);
+    expect(chips("Mirrors")).toEqual(["web-2:live"]);
     fireEvent.click(screen.getByRole("button", { name: "Use mirror" }));
     expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
   });
 
-  it("shows the run under way, and drops the staged treatment and edits while a Deploy runs the move", () => {
+  it("shows the run under way, and drops the staged colours and edits while a Deploy runs the move", () => {
     panel([member("web-1", "writer"), pooled("web-3"), pooled("web-4")], row([], { primary: "web-3" }, "dep-1"));
     expect(screen.getByRole("status").textContent).toBe("Deploying");
-    expect(rows()).toEqual(["dataweb-3", "data-oldweb-1 · Detached"]);
-    expect(staged()).toEqual([false, false]);
+    expect(primary().hasAttribute("data-changed")).toBe(false);
+    expect(chips("Detached")).toEqual(["web-1:live"]);
     expect(screen.getByRole("button", { name: "Add mirror" }).hasAttribute("disabled")).toBe(true);
     cleanup();
     panel([member("web-1", "writer"), member("web-3", "mirror")], row(["web-3"]), run("move", { to: "web-3" }, "running"));
     expect(screen.getByRole("status").textContent).toBe("Moving to web-3");
-    expect(screen.getByRole("button", { name: "Actions for data" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Remove mirror on web-3" }).hasAttribute("disabled")).toBe(false);
   });
 });

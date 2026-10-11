@@ -12,12 +12,13 @@ import {
   placementChanges,
   placementSteps,
   placementTargets,
-  placementEntries,
+  placementForm,
   placementGroup,
   stagedOffServer,
   storageStep,
   targetPlacement,
   undoPlacement,
+  type PlacementItem,
   type PlacementRow,
 } from "./volume-placement";
 
@@ -126,37 +127,36 @@ describe("placementChanges", () => {
   });
 });
 
-describe("placementEntries", () => {
-  const entries = (members: Member[], placement: PlacementRow | null) => placementEntries(volume, members, placement)
-    .map(({ role, server, change }) => ({ role, server: server.name, change }));
+describe("placementForm", () => {
+  const form = (members: Member[], placement: PlacementRow | null) => {
+    const groups = placementForm(volume, members, placement);
+    if (groups === null) throw new Error("no form");
+    const items = (list: readonly PlacementItem[]) => list.map(({ server, change }) => `${server.name}:${change ?? "none"}`);
+    return { primary: items([groups.primary])[0], mirrors: items(groups.mirrors), detached: items(groups.detached) };
+  };
 
   it("marks nothing when nothing is staged, even while the primary is silent", () => {
-    expect(entries([member("web-1", "unanswered"), member("web-2", "mirror")], row(["web-2"]))).toEqual([
-      { role: "primary", server: "web-1", change: null },
-      { role: "mirror", server: "web-2", change: null },
-    ]);
+    expect(form([member("web-1", "unanswered"), member("web-2", "mirror")], row(["web-2"])))
+      .toEqual({ primary: "web-1:none", mirrors: ["web-2:none"], detached: [] });
   });
 
-  it("shows a staged move on the new Server, what it was, and the old copy it leaves detached", () => {
-    expect(entries([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }))).toEqual([
-      { role: "primary", server: "web-3", change: "update" },
-      { role: "detached", server: "web-1", change: "add" },
-    ]);
+  it("changes the Primary on a staged move and creates the detached copy it leaves", () => {
+    expect(form([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" })))
+      .toEqual({ primary: "web-3:update", mirrors: [], detached: ["web-1:add"] });
   });
 
-  it("strikes a detached copy a new mirror deletes first, with no Undo of its own", () => {
-    expect(entries([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual([
-      { role: "primary", server: "web-2", change: null },
-      { role: "mirror", server: "web-3", change: "add" },
-      { role: "detached", server: "web-1", change: "remove" },
-    ]);
+  it("creates a new mirror and removes the detached copy it deletes first", () => {
+    expect(form([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"] })))
+      .toEqual({ primary: "web-2:none", mirrors: ["web-3:add"], detached: ["web-1:remove"] });
   });
 
-  it("keeps a removed mirror and a deleted copy in the list, struck, each with its Undo", () => {
-    expect(entries([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"], { primary: "web-1" }))[1])
-      .toEqual({ role: "mirror", server: "web-2", change: "remove" });
-    expect(entries([member("web-2", "writer"), member("web-1", "mirror")], row([], { primary: "web-2", deletes: ["web-1"] }))[1])
-      .toEqual({ role: "detached", server: "web-1", change: "remove" });
+  it("keeps a removed mirror and a deleted copy in their groups as removes", () => {
+    expect(form([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"], { primary: "web-1" })).mirrors).toEqual(["web-2:remove"]);
+    expect(form([member("web-2", "writer"), member("web-1", "mirror")], row([], { primary: "web-2", deletes: ["web-1"] })).detached).toEqual(["web-1:remove"]);
+  });
+
+  it("is null when no Server holds the Volume", () => {
+    expect(placementForm(volume, [], null)).toBeNull();
   });
 });
 

@@ -284,17 +284,25 @@ export function stagedOffServer(server: string, rows: readonly PlacementRow[], c
 
 const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;
 
-export type PlacementEntry = {
-  readonly key: string;
-  readonly role: "primary" | "mirror" | "detached";
+/** One Server in the Placement form, and what the next Deploy does to it: add, update, remove, or nothing (null). */
+export type PlacementItem = {
   readonly server: MachineRef;
   readonly change: ChangeKind | null;
+  /** When its copy last refreshed, as its Server reports it. */
+  readonly newest: Date | null;
 };
 
-export function placementEntries(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): PlacementEntry[] {
+/** The Placement form: the Primary, its Mirrors, and the detached copies kept until the user deletes them. */
+export type PlacementForm = {
+  readonly primary: PlacementItem;
+  readonly mirrors: readonly PlacementItem[];
+  readonly detached: readonly PlacementItem[];
+};
+
+export function placementForm(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): PlacementForm | null {
   const observed = observePlacement(members);
   const target = targetPlacement(observed, row);
-  if (target === null) return [];
+  if (target === null) return null;
   const machine = (id: MachineId): MachineRef =>
     members.find((member) => member.machine.id === id)?.machine ?? { id, name: id };
   const changes = placementChanges(volume, members, row);
@@ -302,18 +310,16 @@ export function placementEntries(volume: PlacementVolume, members: readonly Memb
   const changeOn = (kinds: readonly PlacementChange["kind"][], id: MachineId) =>
     changes.find((change) => kinds.includes(change.kind) && "server" in change && change.server.id === id) ?? null;
   const cleared = new Set(changes.flatMap((change) => change.kind === "move" || change.kind === "add_mirror" ? change.clears.map((server) => server.id) : []));
-  const entry = (key: string, role: PlacementEntry["role"], server: MachineRef, from: PlacementChange | null, change = from && CHANGE_KINDS[from.kind]): PlacementEntry =>
-    ({ key, role, server, change });
+  const item = (server: MachineRef, change: ChangeKind | null): PlacementItem =>
+    ({ server, change, newest: observed.copies.find((copy) => copy.server.id === server.id)?.newest ?? null });
+  const kindOf = (change: PlacementChange | null) => change && CHANGE_KINDS[change.kind];
   const mirrors = [...new Set([...appliedMirrors(observed, row), ...target.mirrors])].filter((id) => id !== target.primary)
-    .map((id) => entry(`mirror:${id}`, "mirror", machine(id), changeOn(["add_mirror", "remove_mirror"], id)));
-  const left = move !== null && move.how !== "restore" && move.from !== null ? [entry(`detached:${move.from.id}`, "detached", move.from, null, "add")] : [];
+    .map((id) => item(machine(id), kindOf(changeOn(["add_mirror", "remove_mirror"], id))));
+  const left = move !== null && move.how !== "restore" && move.from !== null ? [item(move.from, "add")] : [];
   const detached = detachedCopies(observed, row)
     .filter((copy) => copy.server.id !== target.primary && !target.mirrors.includes(copy.server.id))
-    .map((copy) => {
-      const deleted = changeOn(["delete_copy"], copy.server.id);
-      return entry(`detached:${copy.server.id}`, "detached", copy.server, deleted, deleted || cleared.has(copy.server.id) ? "remove" : null);
-    });
-  return [entry("primary", "primary", machine(target.primary), move), ...mirrors, ...left, ...detached];
+    .map((copy) => item(copy.server, changeOn(["delete_copy"], copy.server.id) || cleared.has(copy.server.id) ? "remove" : null));
+  return { primary: item(machine(target.primary), kindOf(move)), mirrors, detached: [...left, ...detached] };
 }
 
 export function undoPlacement(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, change: PlacementChange): Placement | null {
