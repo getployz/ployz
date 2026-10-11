@@ -2,6 +2,7 @@
 //! Every change is staged in Working State until a Deploy ships it.
 
 use clap::{ArgMatches, Command};
+use ployz_core::config::ReviewLifecycleKind;
 use ployz_store::{
     CreateGitService, CreateService, DomainRow, DomainsQuery, EnvironmentQuery, RemoveService,
     RenameService, ServiceLineageId, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
@@ -132,19 +133,26 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         environment: environment.clone(),
         service: name.clone(),
     })?;
-    let settings = store
-        .read(&EnvironmentQuery {
-            environment: environment.clone(),
-            path: Some(SettingPath::parse(name.as_str())?),
-            all: false,
-        })?
-        .settings;
-    let domains = store
-        .read(&DomainsQuery {
-            environment,
-            service: Some(name),
-        })?
-        .domains;
+    // A Service staged for removal is gone from Working State: it shows what is
+    // deployed, with no Settings or domains left to edit.
+    let (settings, domains) = if view.service.change == Some(ReviewLifecycleKind::Delete) {
+        (Vec::new(), Vec::new())
+    } else {
+        let settings = store
+            .read(&EnvironmentQuery {
+                environment: environment.clone(),
+                path: Some(SettingPath::parse(name.as_str())?),
+                all: false,
+            })?
+            .settings;
+        let domains = store
+            .read(&DomainsQuery {
+                environment,
+                service: Some(name),
+            })?
+            .domains;
+        (settings, domains)
+    };
     let service = &view.service.service;
     let mut record = Fields::new()
         .field("service", &service.name)
