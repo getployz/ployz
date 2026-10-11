@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type {
   Client,
+  CloudQuery,
   LogOptions, LogEvent, LogHistoryOptions, LogHistoryPage,
   EnrollmentAssignment,
   EnrollmentSnapshot,
@@ -107,6 +108,11 @@ export interface PloyzSession {
     machine: MachineTarget,
     container: string,
   ) => Effect.Effect<{ readonly container: ContainerObservation }, PloyzSdkError>;
+  readonly agentAsk: (query: CloudQuery) => Effect.Effect<unknown, PloyzSdkError>;
+  readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
+  /** Fails with an `unavailable` RpcError when the stop may have happened. */
+  readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
+  readonly startContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
     container: string,
@@ -126,6 +132,8 @@ export interface PloyzSession {
     timeoutMs: number,
   ) => Effect.Effect<RuntimeWatchView, RuntimeConnectionFailure>;
 }
+
+export type ServiceCopies = Awaited<ReturnType<Client["observeService"]>>;
 
 type SharedConnectOptions = Omit<
   Extract<ConnectOptions, { readonly connections: readonly Connection[] }>,
@@ -239,6 +247,10 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>
       sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
+    agentAsk: (query) => sdkPromise("agent ask", () => client.agentAsk(query)),
+    observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
+    stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
+    startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     requestMachineUpgrade: (machine, attemptId, release) =>
