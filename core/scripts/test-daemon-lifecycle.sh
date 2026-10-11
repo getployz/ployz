@@ -8,8 +8,10 @@ trap 'sudo rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/install" "$TMP/systemd" "$TMP/runtime-systemd" "$TMP/state" "$TMP/run"
 LOG=$TMP/commands.log
 SCENARIO=active
+DOCKER_ROOT=$TMP/docker-root
 export SCENARIO
 export LOG
+export DOCKER_ROOT
 : > "$LOG"
 
 cat > "$TMP/bin/docker" <<'EOF'
@@ -27,6 +29,7 @@ case "$*" in
     'ps -aq --filter label=ployz.managed') echo managed-container ;;
     'ps -aq --filter name=^/ployz-corrosion$') echo corrosion-container ;;
     'network ls -q --filter name=^ployz$') echo ployz-network ;;
+    'info --format {{.DockerRootDir}}') echo "$DOCKER_ROOT" ;;
     'rm -f '*)
         grep -Eq '^systemctl stop .*ployz-volume-plugin\.(socket|service)' "$LOG" && {
             echo "volume plugin stopped before managed containers were removed" >&2
@@ -99,7 +102,7 @@ done
 chmod 0755 "$TMP/bin"/*
 
 run_uninstall() {
-    sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" SCENARIO="$SCENARIO" PLOYZ_AUTO_CONFIRM=true \
+    sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" SCENARIO="$SCENARIO" DOCKER_ROOT="$DOCKER_ROOT" PLOYZ_AUTO_CONFIRM=true \
         INSTALL_BIN_DIR="$TMP/install" INSTALL_SYSTEMD_DIR="$TMP/systemd" RUNTIME_SYSTEMD_DIR="$TMP/runtime-systemd" \
         PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/uninstall.sh"
 }
@@ -114,6 +117,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
     printf 'CLI retained\n' > "$TMP/install/ployz"
     chmod 0755 "$TMP/install/ployzd" "$TMP/install/ployz-uninstall"
     touch "$TMP/docker" "$TMP/images" "$TMP/volumes" "$TMP/docker-config"
+    mkdir -p "$DOCKER_ROOT/ployz-observe/v1/containers" "$DOCKER_ROOT/containers"
 
     if [ "$SCENARIO" = symlink-failure ]; then
         printf 'protected target\n' | sudo tee "$TMP/protected-target" >/dev/null
@@ -165,6 +169,9 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         grep -Fq 'docker network rm ployz-network' "$LOG"
         grep -Fxq 'ip link delete ployz-wg' "$LOG"
         grep -Fxq 'ip link delete ployz' "$LOG"
+        grep -Fxq 'systemctl stop ployz-observe.service' "$LOG"
+        [ ! -e "$DOCKER_ROOT/ployz-observe" ]
+        [ -d "$DOCKER_ROOT/containers" ]
     else
         case "$SCENARIO" in *failure|busy) ;; *) echo "unexpected uninstall failure: $SCENARIO" >&2; exit 1 ;; esac
         [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
