@@ -786,19 +786,81 @@ fn a_merge_menu_sync_refreshes_an_included_pr_now() {
     assert_eq!((listed.len(), listed[0].offered), (1, false));
 }
 
+/// A Sync now from pr-5 into production, which #5 hasn't merged into, is offered
+/// as a Merge-menu Sync is, replacing the offer: the draft, its version and its
+/// History are as they were. It can't close pr-5.
 #[test]
-fn a_sync_now_replaces_the_offer() {
+fn a_sync_now_into_a_destination_is_offered_while_the_pr_is_unmerged() {
     let db = shop();
     set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
     let offered_first = offer(&db);
+    set(&db, "pr-5", &[("web.env.MODE", json!("slow"))]);
+    let (before, version) = (db.production(), diff(&db).version);
+    let review = offered_now(&db, "production");
+    assert_eq!(review.at_merge, Some(backend::pr_number(5)));
+    let mut request = sync(&review);
+    request.when = Some(When::Now { close_after: false });
+    let synced = synced(&db, &request);
+    let SyncedWhen::AtMerge { conditional_sync } = &synced.when else {
+        panic!("a Sync now of an unmerged PR into its Destination offers")
+    };
+    assert_eq!(names(&conditional_sync.rows), ["web.env.MODE"]);
+    let after = db.production();
+    assert_eq!(after.len(), before.len());
+    assert_eq!(after[..3], before[..3]);
+    assert_eq!(after[4..], before[4..]);
+    assert_eq!(diff(&db).version, version);
+    assert!(env(&db, "production").get("MODE").is_none());
+    let listed = included(&db);
+    assert_eq!((listed.len(), listed[0].offered), (1, true));
+    assert_ne!(listed[0].proposal, offered_first);
+    assert_eq!(listed[0].proposal, proposal_of(&synced));
+
+    request.when = Some(When::Now { close_after: true });
+    let refused = db
+        .store
+        .write(&db.who, &Command::Sync(request))
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(db.production(), after);
+}
+
+/// Once #5 merged into what production deploys, a Sync now from pr-5, kept open by
+/// its plan, lands in the draft directly, which Save then takes.
+#[test]
+fn a_sync_now_of_a_merged_pr_lands_in_the_draft() {
+    let db = shop();
+    db.store
+        .write(
+            &db.who,
+            &SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: None,
+                start_from: None,
+                copy: None,
+                setup: None,
+                remove_on_close: Some(false),
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
+    let offered_first = offer(&db);
+    observe(&db, merged());
     let review = offered_now(&db, "production");
     assert_eq!(review.at_merge, None);
     let synced = synced(&db, &sync(&review));
     assert!(matches!(synced.when, SyncedWhen::Now { .. }));
     assert_eq!(env(&db, "production")["MODE"], json!("fast"));
     let listed = included(&db);
-    assert_eq!((listed.len(), listed[0].offered), (1, false));
+    assert_eq!(
+        (listed.len(), listed[0].offered, listed[0].readiness),
+        (1, false, Some(Readiness::Ready))
+    );
     assert_ne!(listed[0].proposal, offered_first);
+    publish(&db, "production", Some(diff(&db).version)).unwrap();
+    assert!(included(&db).is_empty());
 }
 
 /// production stages its own OTHER beside PR #5's MODE: while #5 is unmerged, Save

@@ -142,10 +142,11 @@ pub enum HintSource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum When {
-    /// Staged in the receiver now.
+    /// Staged in the receiver now; offered, as [`When::AtMerge`], from a PR Environment
+    /// into one of its Destinations its pull request hasn't merged into.
     Now {
         /// Close the Branch once its changes landed in its Parent: refused for a
-        /// kept Branch, and for a Sync into anything but its Parent.
+        /// kept Branch, for a Sync into anything but its Parent, and for one offered.
         #[serde(default)]
         #[ts(as = "Option<bool>", optional)]
         close_after: bool,

@@ -71,7 +71,9 @@ a new service, don't. Sync them:
 Production doesn't change yet: the changes are **offered** there. The preview's button reads
 **Offered**, and production's bottom bar shows **PR #142 · Offered**. From the CLI,
 `ployz env sync --to production` from the preview prints the same: "Offered to production: include
-it in Changes after PR #142 merges."
+it in Changes after PR #142 merges." A sync that asks to land now, like the SDK's `when: now`,
+is offered the same way until #142 merges into a branch production deploys, and `--close` is
+refused until then.
 
 To take the offer, open production's bottom bar and click **Details**. **Included** lists
 `pr-142 · 3 changes` with **Include**. Click it, and the changes become production's changes to

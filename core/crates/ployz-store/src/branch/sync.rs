@@ -24,7 +24,8 @@ pub struct SyncChanges {
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
     /// When they land; omitted, at the merge from a PR Environment into one of its
-    /// Destinations, else now.
+    /// Destinations, else now. Now into a Destination the pull request hasn't merged
+    /// into is at the merge too.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub when: Option<When>,
@@ -406,8 +407,9 @@ pub(crate) fn sync_view(
 }
 
 /// Where a Sync from `from` goes, and when. It goes into `into`, else a PR
-/// Environment's only Destination, else the sender's Parent; at the merge when that is
-/// one of a PR Environment's Destinations and `when` doesn't say now, else now.
+/// Environment's only Destination unless `when` says now, else the sender's Parent; at
+/// the merge when that is one of a PR Environment's Destinations, unless `when` says now
+/// and the pull request merged there already; else now.
 fn target(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -416,14 +418,13 @@ fn target(
 ) -> Result<Target, RpcError> {
     let summary = scope::environment(tx, who, from)?.summary;
     let next = json!({ "next": format!("ployz env sync --to ENV --project {} --env {}", summary.project, summary.name) });
-    let merge = match when {
-        Some(When::Now { .. }) => None,
-        Some(When::AtMerge) | None => merge_of(tx, who, &summary)?,
-    };
-    let into = match (into, &merge) {
-        (Some(into), _) => scope::environment(tx, who, into)?.summary,
-        (None, Some((pr, destinations))) => destination(tx, pr, destinations)?,
-        (None, None) => match row(tx, &summary.id)? {
+    let merge = merge_of(tx, who, &summary)?;
+    let into = match (into, when, &merge) {
+        (Some(into), _, _) => scope::environment(tx, who, into)?.summary,
+        (None, Some(When::AtMerge) | None, Some((pr, destinations))) => {
+            destination(tx, pr, destinations)?
+        }
+        (None, _, _) => match row(tx, &summary.id)? {
             Some(row) => scope::load_by_id(tx, &row.parent)?.summary,
             None => {
                 return Err(error::invalid(
@@ -456,6 +457,22 @@ fn target(
             ));
         }
         (Some(When::AtMerge) | None, Some((pr, _)), true) => Lands::AtMerge(pr),
+        // Into a Destination the pull request hasn't merged into, a Sync now is offered
+        // too: in the draft, it would hold up every Save and Deploy there.
+        (Some(When::Now { close_after }), Some((pr, _)), true)
+            if !merged_into(tx, &into.id, &pr)? =>
+        {
+            if close_after {
+                return Err(error::invalid(
+                    format!(
+                        "#{} isn't merged: its Sync is offered, so sync without close_after",
+                        pr.number
+                    ),
+                    next,
+                ));
+            }
+            Lands::AtMerge(pr)
+        }
         (Some(When::Now { close_after }), _, _) => Lands::Now { close_after },
         (None, _, _) => Lands::Now { close_after: false },
     };
@@ -501,6 +518,16 @@ fn merge_of(
     let destinations =
         crate::pull_request::destinations_of(tx, &project, repository_id, &pr.target_branch)?;
     Ok(Some((pr, destinations)))
+}
+
+/// Whether `pr` merged into a branch `into` deploys.
+fn merged_into(tx: &mut dyn Tx, into: &EnvironmentId, pr: &PullRequest) -> Result<bool, RpcError> {
+    let reference = PullRequestRef {
+        repository_id: pr.repository_id,
+        number: pr.number,
+    };
+    Ok(crate::pull_request::readiness(tx, into, &reference)?
+        == crate::pull_request::Readiness::Ready)
 }
 
 /// The Destination of `pr` a Sync named nowhere goes into: its only one.

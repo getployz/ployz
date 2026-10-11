@@ -833,7 +833,7 @@ fn include_pr(
 }
 
 /// Include what `pr-5` offers into `into` as Sync `n`, saying `when` as the Dashboard
-/// does; the proposal, or the refusal.
+/// does, then the offer if the Sync made one; the proposal, or the refusal.
 fn include_from_pr(
     store: &ConfigStore,
     who: &Actor,
@@ -869,10 +869,33 @@ fn include_from_pr(
             },
         )
         .map_err(|error| (error.code, error.message))?;
-    let ployz_store::SyncedWhen::Now { proposal, .. } = synced.when else {
-        panic!("an Include stages now")
+    // An unmerged pull request's Sync into its Destination is offered: Include it.
+    let offer = match synced.when {
+        ployz_store::SyncedWhen::Now { proposal, .. } => return Ok(proposal),
+        ployz_store::SyncedWhen::AtMerge { conditional_sync } => conditional_sync.id,
     };
-    Ok(proposal)
+    let environment = at(into);
+    let version = store
+        .read(
+            who,
+            &ployz_store::DiffQuery {
+                environment: environment.clone(),
+            },
+        )
+        .unwrap()
+        .version;
+    let included = store
+        .write(
+            who,
+            &ployz_store::IncludeProposal {
+                environment,
+                proposal: ployz_store::ProposalId::parse(offer.as_str()).unwrap(),
+                version,
+                values: std::collections::BTreeMap::new(),
+            },
+        )
+        .map_err(|error| (error.code, error.message))?;
+    Ok(included.proposal)
 }
 
 /// Included into one of its Destinations, a pull request's preview is the pull
