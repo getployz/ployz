@@ -48,12 +48,15 @@ const updateUptimeCheck = Effect.fn("Uptime.updateCheck")(function* (check: type
 /**
  * Make `environmentId`'s uptime checks match its Applied State: one per Service with a generated domain. Creates the
  * missing, updates a changed URL, deletes a check whose Service or domain is gone, and leaves the rest. Running it
- * again changes nothing.
+ * again changes nothing. Syncs of one Environment run one at a time.
  */
 export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organizationId: string, environmentId: string) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    // A Deployment's slot serializes its own syncs but not the backfill. With the lock, the later sync reads the
+    // Applied State committed before it and so writes last.
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`uptime-sync:${environmentId}`}))`);
     const applied = yield* drizzle.execute<{ serviceId: string; node: string; clusterDomain: string | null }>(sql`
       select a.node_id as "serviceId", a.node, d.cluster_domain as "clusterDomain"
       from config_applied a join config_deployment d on d.id = a.deployment_id

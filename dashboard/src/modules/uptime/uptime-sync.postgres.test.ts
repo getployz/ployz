@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { JsonValue, SavedServiceIntent } from "@ployz/sdk";
 import { sql, type SQL } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
@@ -87,7 +87,10 @@ const setup = Effect.fn(function* () {
     function: backfill,
     events: [{ name: uptimeBackfillRequestedEvent, data: {} }],
   }).execute());
-  return { query, apply, sync, checks, deliver, runBackfill };
+  /** `program` inside one open transaction, as a sync that has not committed yet. */
+  const inTransaction = <A, E>(program: Effect.Effect<A, E, Database>) =>
+    Effect.gen(function* () { return yield* (yield* Database).transaction(program); }).pipe(Effect.provide(services));
+  return { query, apply, sync, checks, deliver, runBackfill, inTransaction };
 });
 
 const none: Healthcheck = { type: "none" };
@@ -203,4 +206,21 @@ it.live("the backfill gives a Service applied before rollout its check, and a se
   expect(first).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/healthz`, revision: 1 })]);
   yield* runBackfill;
   expect(yield* checks).toEqual(first);
+}));
+
+// The backfill holds no Deployment's slot, so a Deployment's sync can run beside it.
+it.live("a sync waits for an uncommitted sync of the same Environment, then reads what applied since", () => Effect.gen(function* () {
+  const { apply, sync, checks, inTransaction } = yield* setup();
+  yield* apply({ prefixes: ["web-shop"], healthcheck: none });
+  const release = yield* Deferred.make<void>();
+  const first = yield* Effect.forkChild(inTransaction(syncUptimeChecks(ORGANIZATION, ENVIRONMENT).pipe(Effect.andThen(Deferred.await(release)))));
+  yield* Effect.sleep("300 millis");
+  yield* apply({ prefixes: ["web-shop"], healthcheck: http("/up") });
+  const second = yield* Effect.forkChild(sync);
+  yield* Effect.sleep("500 millis");
+  expect(second.pollUnsafe()).toBeUndefined();
+  yield* Deferred.succeed(release, undefined);
+  yield* Fiber.join(first);
+  yield* Fiber.join(second);
+  expect(yield* checks).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/up`, revision: 2 })]);
 }));
