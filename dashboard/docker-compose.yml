@@ -33,6 +33,9 @@ services:
       - '8395:8080'
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/ployz_cloud
+      # Probe regions, comma separated, each `code` or `code=Name`. The dashboard shows the name, else the code.
+      # `all` probes from the first region only and defaults to `local`.
+      # UPTIME_REGIONS: ams=Amsterdam
     depends_on:
       postgres:
         condition: service_healthy
