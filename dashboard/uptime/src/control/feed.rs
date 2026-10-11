@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use crate::control::pg::{Pg, PgError, column};
 use crate::domain::{
-    BadExpect, BadInterval, BadTarget, Check, CheckId, Expect, IncidentId, Interval, OrgId,
-    Revision, Target, UnixMs,
+    BadExpect, BadInterval, BadTarget, Check, CheckId, Expect, IncidentId, Interval,
+    MAX_TIMEOUT_MS, OrgId, Revision, Target, UnixMs,
 };
 
 const PAGE: i64 = 10_000;
@@ -25,7 +25,7 @@ const PAGE: i64 = 10_000;
 const HORIZON: &str = "SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS cursor";
 
 const SELECT: &str = "SELECT c.id, c.organization_id, c.name, c.url, c.interval_seconds, \
-    c.timeout_ms, c.expect, c.enabled, c.revision, \
+    c.timeout_ms, c.expect, c.enabled, c.revision, c.probe_requested_at, \
     i.id AS incident_id, i.check_revision, i.opened_at \
     FROM uptime_check c \
     LEFT JOIN uptime_incident i ON i.check_id = c.id AND i.closed_at IS NULL";
@@ -50,6 +50,8 @@ pub struct OpenIncident {
 pub struct CheckRow {
     pub check: Check,
     pub open_incident: Option<OpenIncident>,
+    /// When a deploy or Check now last asked for a probe.
+    pub probe_requested: Option<UnixMs>,
 }
 
 /// A row the feed refused. It is not held: a check that becomes malformed is dropped.
@@ -303,11 +305,12 @@ fn parse(row: &Row) -> Result<Parsed, PgError> {
             since: unix_ms(column(row, "opened_at")?),
         }),
     };
+    let probe_requested = column::<Option<SystemTime>>(row, "probe_requested_at")?.map(unix_ms);
     let checked = (|| -> Result<Check, BadRow> {
         let interval = Interval::parse(u32::try_from(interval).unwrap_or(0))?;
         let timeout = u64::try_from(timeout_ms)
             .ok()
-            .filter(|ms| (1000..=30_000).contains(ms))
+            .filter(|ms| (1000..=MAX_TIMEOUT_MS).contains(ms))
             .map(Duration::from_millis)
             .filter(|t| *t < interval.as_duration())
             .ok_or(BadRow::Timeout(timeout_ms))?;
@@ -327,6 +330,7 @@ fn parse(row: &Row) -> Result<Parsed, PgError> {
         Ok(check) => Parsed::Held(CheckRow {
             check,
             open_incident,
+            probe_requested,
         }),
         Err(reason) => Parsed::Skipped(Skipped {
             check: id,

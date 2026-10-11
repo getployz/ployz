@@ -183,6 +183,26 @@ async fn jobs_cross_the_link_intact_and_the_server_clock_comes_with_them() {
 }
 
 #[tokio::test]
+async fn every_probe_kind_crosses_the_link() {
+    let server = server(Some("hunter2")).await;
+    let kinds = [
+        ProbeKind::Routine,
+        ProbeKind::Confirm,
+        ProbeKind::Recheck,
+        ProbeKind::Triggered,
+    ];
+    for kind in kinds {
+        let mut job = job(1);
+        job.key.kind = kind;
+        server.plane.jobs.lock().unwrap().push(job);
+    }
+    let link = HttpLink::new(&server.url, Some(Secret::new("hunter2")), region("fra")).unwrap();
+    let pulled = link.pull(8).await.unwrap();
+    let got: Vec<ProbeKind> = pulled.jobs.iter().map(|job| job.key.kind).collect();
+    assert_eq!(got, kinds);
+}
+
+#[tokio::test]
 async fn every_outcome_kind_survives_the_round_trip_with_its_batch_id() {
     let server = server(Some("hunter2")).await;
     let link = HttpLink::new(&server.url, Some(Secret::new("hunter2")), region("fra")).unwrap();

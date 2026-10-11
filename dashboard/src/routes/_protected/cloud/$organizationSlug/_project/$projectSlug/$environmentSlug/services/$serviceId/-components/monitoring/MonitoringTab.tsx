@@ -1,4 +1,4 @@
-import { Suspense, useDeferredValue, useRef, useState, type ReactNode } from "react";
+import { Suspense, useDeferredValue, useEffect, useState, type ReactNode } from "react";
 import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { CatchBoundary, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
 import { createChartCursor, type ChartCursorController } from "@tanstack/charts/cursor";
@@ -9,26 +9,25 @@ import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
 import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
 import { Skeleton } from "#/components/ui/skeleton";
-import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
+import { Spinner } from "#/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "#/components/ui/tooltip";
 import { cn } from "#/lib/utils";
 import { admission } from "#/modules/config-store/store-deployments";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { LIMITS, previewMetrics } from "#/modules/uptime/metrics-preview";
 import {
-  barCount,
   causeText,
-  checkSeries,
+  chartWindow,
   checkState,
+  checkSteps,
   formatMs,
   formatSpan,
   historyBars,
+  incidentRange,
   incidentSpan,
-  incidentWindow,
   observationText,
   openIncident,
-  rangeCovering,
-  rangeWindow,
+  regionLabel,
   steps,
   uptimePercent,
   wrongPathIncident,
@@ -36,10 +35,14 @@ import {
   type HistoryBar,
   type TimeWindow,
 } from "#/modules/uptime/uptime";
-import { UPTIME_RANGES, type UptimeIncidentEntry, type UptimeRange } from "#/modules/uptime/uptime-status";
-import { type UptimeScope, usePrefetchServiceUptime, useServiceUptime } from "#/modules/uptime/uptime.queries";
+import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modules/uptime/uptime-range";
+import type { RegionNames, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
+import { type UptimeScope, usePrefetchServiceUptime, useRequestUptimeProbe, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
-import { MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
+import { useTimeZone } from "#/utils/time-zone";
+import { atFormat, MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
+import { RangePicker } from "./RangePicker";
+import { ResponseTooltip } from "./ResponseTooltip";
 
 type MonitoringProps = {
   organizationSlug: string;
@@ -53,16 +56,16 @@ type MonitoringProps = {
 
 /**
  * A Service's Monitoring tab: one layout in every state. The status line says what the check sees; the strip and charts
- * stay put and fill in as results arrive. Checks follow each Deploy, so it only reads.
+ * stay put and fill in as results arrive. Checks follow each Deploy and run after it; Check now runs one on demand.
  */
 export function MonitoringTab(props: MonitoringProps) {
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = { organizationSlug: props.organizationSlug, environmentId };
   const prefetch = usePrefetchServiceUptime(scope, props.service.id);
-  const toggle = <RangeToggle range={props.range} onRange={props.onRange} onHover={prefetch} />;
+  const toggle = <RangePicker range={props.range} onRange={props.onRange} onHover={prefetch} />;
   return (
     <CatchBoundary getResetKey={() => props.service.id} errorComponent={MonitoringError}>
-      <Suspense fallback={<MonitoringSkeleton range={props.range} toggle={toggle} />}>
+      <Suspense fallback={<MonitoringSkeleton toggle={toggle} />}>
         <Monitoring {...props} scope={scope} toggle={toggle} />
       </Suspense>
     </CatchBoundary>
@@ -87,31 +90,17 @@ function StatusLine({ tone, children }: { tone: "ok" | "bad" | "quiet"; children
   );
 }
 
-function RangeToggle({ range, onRange, onHover }: { range: UptimeRange; onRange: (range: UptimeRange) => void; onHover: (range: UptimeRange) => void }) {
+function StripEnds({ from, to }: { from: ReactNode; to: ReactNode }) {
   return (
-    <ToggleGroup variant="outline" size="sm" spacing={0} value={[range]} aria-label="Range"
-      onValueChange={(next) => {
-        const chosen = UPTIME_RANGES.find((candidate) => candidate === next[0]);
-        if (chosen) onRange(chosen);
-      }}>
-      {UPTIME_RANGES.map((candidate) => (
-        <ToggleGroupItem key={candidate} value={candidate} onPointerEnter={() => onHover(candidate)}>{candidate}</ToggleGroupItem>
-      ))}
-    </ToggleGroup>
-  );
-}
-
-function StripEnds({ range }: { range: UptimeRange }) {
-  return (
-    <div className="flex justify-between text-xs text-muted-foreground">
-      <span>{range} ago</span>
-      <span>Now</span>
+    <div className="flex h-4 justify-between text-xs text-muted-foreground">
+      <span>{from}</span>
+      <span>{to}</span>
     </div>
   );
 }
 
 /** The tab's shape before its first read lands: a quiet header, grey bars, and the Response time card's outline. */
-function MonitoringSkeleton({ range, toggle }: { range: UptimeRange; toggle: ReactNode }) {
+function MonitoringSkeleton({ toggle }: { toggle: ReactNode }) {
   return (
     <div className="flex flex-col gap-6" aria-busy>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -120,9 +109,9 @@ function MonitoringSkeleton({ range, toggle }: { range: UptimeRange; toggle: Rea
       </div>
       <div className="flex flex-col gap-1.5">
         <div className="flex h-7 items-stretch gap-px">
-          {Array.from({ length: barCount(range) }, (_, index) => <div key={index} className="flex-1 rounded-[1px] bg-muted" />)}
+          {Array.from({ length: 30 }, (_, index) => <div key={index} className="flex-1 rounded-[1px] bg-muted" />)}
         </div>
-        <StripEnds range={range} />
+        <StripEnds from={null} to={null} />
       </div>
       <EmptyChartCard title="Response time" />
     </div>
@@ -138,8 +127,6 @@ function EmptyChartCard({ title, children }: { title: string; children?: ReactNo
   );
 }
 
-const DAY_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-const AT_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 const unit = (suffix: string, digits = 0) => (value: number) => `${value.toFixed(digits)}${suffix}`;
 const latest = (values: readonly (number | null)[]) => values.filter((value) => value !== null).at(-1) ?? null;
@@ -155,6 +142,8 @@ const STATUS_WORDS = { no_domain: "Not checked", pending: "Checking", up: "Up", 
 const STATUS_TONES = { no_domain: "quiet", pending: "quiet", up: "ok", unreachable: "bad" } as const satisfies Record<CheckState, "ok" | "bad" | "quiet">;
 
 type Picked = { readonly incident: UptimeIncidentEntry; readonly x: number; readonly y: number };
+/** An incident the charts zoomed onto, and the range they read for it, fixed when zoomed so each poll reads the same key. */
+type Zoom = { readonly incident: UptimeIncidentEntry; readonly range: UptimeRange };
 
 /** Ployz collects no Service metrics yet; dev builds draw invented ones so the layout can be judged. */
 const PREVIEW_METRICS = import.meta.env.DEV;
@@ -166,23 +155,40 @@ const PREVIEW_METRICS = import.meta.env.DEV;
 function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPath, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
   const range = useDeferredValue(chosen);
   const { data: uptime, dataUpdatedAt } = useServiceUptime(scope, service.id, range);
+  const checkNow = useRequestUptimeProbe(scope, service.id);
+  const checking = checkNow.isPending || (uptime?.probe ? !uptime.probe.answered : false);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deployments = useStoreDeployments(organizationSlug, store).data.pages.flatMap((page) => page.deployments);
-  const [zoom, setZoom] = useState<UptimeIncidentEntry | null>(null);
+  const [zoom, setZoom] = useState<Zoom | null>(null);
   const [picked, setPicked] = useState<Picked | null>(null);
   const [cursor] = useState(() => createChartCursor<Date, number>());
-  const pointer = useRef({ x: 0, y: 0 });
+  // The library leaves a pinned shared cursor up on outside clicks, so a tap elsewhere or Escape lets it go here.
+  useEffect(() => {
+    const release = (event: PointerEvent | KeyboardEvent) => {
+      if (!cursor.getState()?.pinned) return;
+      if (event instanceof KeyboardEvent ? event.key !== "Escape"
+        : event.target instanceof Element && event.target.closest("[data-metric-chart], .metric-tooltip")) return;
+      cursor.setState(null);
+    };
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("keydown", release);
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("keydown", release);
+    };
+  }, [cursor]);
   // When Cloud answered, so the page renders the same on server and client and moves on with each poll.
   const now = dataUpdatedAt;
+  const at = atFormat(useTimeZone());
   const state = checkState(uptime);
   const incidents = uptime?.incidents ?? [];
-  const window = zoom ? incidentWindow(zoom, now) : rangeWindow(now, range);
+  const checked = checkWindow(resolveRange(range, now));
+  // Capped per-result bars begin at the oldest result shown, not at the range.
+  const bars = historyBars(checked, uptime);
+  const charted = zoom?.range ?? range;
+  const window = chartWindow(resolveRange(charted, now), now, (uptime?.check.intervalSeconds ?? 60) * 1000);
   const times = steps(window);
   const metrics = PREVIEW_METRICS ? previewMetrics(incidents, window, now) : [];
-  const bands = incidents.flatMap((incident) => {
-    const span = incidentSpan(incident, now);
-    return span.to > window.from && span.from < window.to ? [{ id: incident.id, ...span }] : [];
-  });
   const deploys = deployments.flatMap((deployment) => {
     const ended = admission(deployment).ended?.getTime();
     const touched = deployment.services.length === 0 || deployment.services.includes(service.name);
@@ -191,18 +197,27 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
   const share = uptimePercent(uptime?.uptime ?? null);
   const open = openIncident(incidents);
   const wrongPath = uptime ? wrongPathIncident(uptime) : null;
-  const pick = (at: number) => {
-    const incident = incidents.find((candidate) => {
-      const span = incidentSpan(candidate, now);
-      return at >= span.from - window.stepMs && at <= span.to;
-    });
-    setPicked(incident ? { incident, ...pointer.current } : null);
-  };
   const zoomTo = (incident: UptimeIncidentEntry) => {
+    const shown = incidentRange(incident, now);
     setPicked(null);
-    setZoom(incident);
+    setZoom({ incident, range: { from: instantEdge(shown.from), to: shown.to >= now ? "now" : instantEdge(shown.to) } });
   };
-  const chart = { times, bands, deploys, from: window.from, to: window.to, cursor, onPick: pick };
+  // A chart frame shows the incidents of the read it draws: a zoom reads its own range.
+  const frame = (shownIncidents: readonly UptimeIncidentEntry[]): ChartFrame => ({
+    times, deploys, from: window.from, to: window.to, cursor,
+    bands: shownIncidents.flatMap((incident) => {
+      const span = incidentSpan(incident, now);
+      return span.to > window.from && span.from < window.to ? [{ id: incident.id, ...span }] : [];
+    }),
+    incidentAt: (at) => {
+      const incident = shownIncidents.find((candidate) => {
+        const span = incidentSpan(candidate, now);
+        return at >= span.from - window.stepMs && at <= span.to;
+      });
+      return incident ? (x, y) => setPicked({ incident, x, y }) : null;
+    },
+  });
+  const chart = frame(incidents);
   const column = (key: keyof (typeof metrics)[number]) => metrics.map((row) => row[key]);
   const requests = average(metrics.map((row) => row.ok + row.errors));
   return (
@@ -225,26 +240,32 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
         <div className="flex items-center gap-2">
           {state === "no_domain" ? addDomain : null}
           {wrongPath ? fixPath : null}
+          {uptime ? (
+            <Button variant="outline" size="sm" disabled={checking} onClick={() => checkNow.mutate()}>
+              {checking ? <Spinner data-icon="inline-start" /> : null}
+              {checking ? "Checking" : "Check now"}
+            </Button>
+          ) : null}
           {zoom ? (
             <Button variant="secondary" size="sm" onClick={() => setZoom(null)}>
-              {AT_FORMAT.format(Date.parse(zoom.openedAt))} · {causeText(zoom)}
+              {at.format(Date.parse(zoom.incident.openedAt))} · {causeText(zoom.incident)}
               <XIcon data-icon="inline-end" />
             </Button>
           ) : toggle}
         </div>
       </div>
-      <HistoryStrip range={range} bars={historyBars(range, now, uptime)} zoomed={zoom} onZoom={zoomTo} />
-      <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}
-        onPointerDownCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}>
+      <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
+        from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
+      <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}>
         <div className="sm:col-span-2">
           {uptime === null ? (
             <MetricChart id="response" title="Response time" format={formatMs} {...chart} value="–" series={[]} />
           ) : (
-            <CatchBoundary getResetKey={() => `${service.id}:${zoom ? rangeCovering(window.from, now) : range}`} errorComponent={ResponseTimeError}>
+            <CatchBoundary getResetKey={() => `${service.id}:${charted.from}:${charted.to}`} errorComponent={ResponseTimeError}>
               <Suspense fallback={<MetricChart id="response" title="Response time" format={formatMs} {...chart} value="" series={[]} />}>
-                <ResponseTime scope={scope} serviceId={service.id} range={zoom ? rangeCovering(window.from, now) : range} window={window}
+                <ResponseTime scope={scope} serviceId={service.id} range={charted} window={window}
                   pending={state === "pending" ? `First check within ${formatSpan(uptime.check.intervalSeconds * 1000)}` : null}
-                  edge={PREVIEW_METRICS ? column("edgeMs") : null} chart={chart} />
+                  edge={PREVIEW_METRICS ? column("edgeMs") : null} frame={frame} />
               </Suspense>
             </CatchBoundary>
           )}
@@ -270,7 +291,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
         {picked ? (
           <PopoverContent side="bottom" align="start"
             anchor={{ getBoundingClientRect: () => DOMRect.fromRect({ x: picked.x, y: picked.y, width: 0, height: 0 }) }}>
-            <Evidence incident={picked.incident} now={now} onZoom={zoom?.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
+            <Evidence incident={picked.incident} regions={uptime?.regions ?? {}} now={now} at={at} onZoom={zoom?.incident.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
               fixPath={picked.incident.id === wrongPath?.id ? fixPath : null} />
           </PopoverContent>
         ) : null}
@@ -286,14 +307,14 @@ type ChartFrame = {
   from: number;
   to: number;
   cursor: ChartCursorController<Date, number>;
-  onPick: (at: number) => void;
+  incidentAt: (at: number) => ((x: number, y: number) => void) | null;
 };
 
 /**
- * The check's response time, averaged across regions. A zoom reads the finest range that covers it, and keeps the old
- * line, dimmed, until that read lands.
+ * The check's response time, the median across regions, with each region's on hover. A zoom reads its own range, and
+ * keeps the old line, dimmed, until that read lands.
  */
-function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }: {
+function ResponseTime({ scope, serviceId, range, window, pending, edge, frame }: {
   scope: UptimeScope;
   serviceId: string;
   range: UptimeRange;
@@ -301,18 +322,28 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }:
   /** The value while the check has no result yet. */
   pending: string | null;
   edge: readonly (number | null)[] | null;
-  chart: ChartFrame;
+  frame: (incidents: readonly UptimeIncidentEntry[]) => ChartFrame;
 }) {
   const shown = useDeferredValue(range);
-  const check = checkSeries(useServiceUptime(scope, serviceId, shown).data?.points ?? [], window);
+  const { data } = useServiceUptime(scope, serviceId, shown);
+  const checked = checkSteps(data?.points ?? [], window);
+  const check = checked.map((step) => step.medianMs);
   const checkMs = average(check);
+  const byAt = new Map(checked.map((step, index) => [step.at, index]));
   const series: MetricSeries[] = [
     ...(edge ? [{ label: "Edge", color: "var(--chart-1)", values: edge }] : []),
     { label: "Check", color: "var(--chart-2)", values: check },
   ];
   return (
-    <MetricChart id="response" title="Response time" format={formatMs} {...chart} dimmed={shown !== range}
-      value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series} />
+    <MetricChart id="response" title="Response time" format={formatMs} {...frame(data?.incidents ?? [])} dimmed={shown !== range}
+      value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series}
+      focusAt={checked.flatMap((step) => step.medianMs === null && step.regions.length > 0 ? [step.at] : [])}
+      renderTooltip={(at) => {
+        const index = byAt.get(at);
+        const step = index === undefined ? undefined : checked[index];
+        return step ? <ResponseTooltip step={step} end={checked[(index ?? 0) + 1]?.at ?? window.to} edgeMs={edge?.[index ?? -1] ?? null}
+          regions={data?.regions ?? {}} /> : null;
+      }} />
   );
 }
 
@@ -326,10 +357,31 @@ function ResponseTimeError({ reset }: ErrorComponentProps) {
   );
 }
 
-/** The range in bars, red where an incident touched one. Hover tells it; click zooms the charts onto it. */
-function HistoryStrip({ range, bars, zoomed, onZoom }: {
-  range: UptimeRange;
+const KIND_WORDS = { routine: null, triggered: "Triggered", confirm: "Confirm", recheck: "Recheck" } as const;
+
+/** A result in a few words: "Amsterdam · 212 ms", "sin · 502 · Confirm". */
+function ResultText({ result, regions }: { result: UptimeCheckResult; regions: RegionNames }) {
+  const label = regionLabel(regions, result.region);
+  const answer = result.verdict === "inconclusive" ? "Inconclusive"
+    : result.verdict === "pass" ? formatMs(result.ms)
+    : result.status === 0 ? "No response" : String(result.status);
+  return (
+    <span>
+      {label ? <><span className={label.named ? undefined : "font-mono"}>{label.text}</span> · </> : null}
+      {[answer, KIND_WORDS[result.kind]].filter(Boolean).join(" · ")}
+    </span>
+  );
+}
+
+const TONES = { up: "bg-success", down: "bg-destructive", none: "bg-muted" } as const satisfies Record<HistoryBar["tone"], string>;
+
+/** The check window in bars, red where a check failed or an incident touched. Hover tells it; click zooms onto its incident. */
+function HistoryStrip({ bars, regions, at, from, to, zoomed, onZoom }: {
   bars: readonly HistoryBar[];
+  regions: RegionNames;
+  at: Intl.DateTimeFormat;
+  from: string;
+  to: string;
   zoomed: UptimeIncidentEntry | null;
   onZoom: (incident: UptimeIncidentEntry) => void;
 }) {
@@ -337,22 +389,24 @@ function HistoryStrip({ range, bars, zoomed, onZoom }: {
     <TooltipProvider>
       <div className="flex flex-col gap-1.5">
         <div className="flex h-7 items-stretch gap-px" aria-label="History">
-          {bars.map((day) => {
-            const label = (range === "90d" ? DAY_FORMAT : AT_FORMAT).format(day.start);
-            const first = day.incidents[0];
+          {bars.map((bar) => {
+            const label = at.format(bar.start);
+            const first = bar.incidents[0];
+            const tone = cn("flex-1 rounded-[1px]", TONES[bar.tone]);
             return (
-              <Tooltip key={day.start}>
+              <Tooltip key={`${bar.start}-${bar.result?.region}-${bar.result?.kind}`}>
                 <TooltipTrigger render={first
                   ? <button type="button" aria-label={label} onClick={() => onZoom(first)}
-                    className={cn("flex-1 cursor-pointer rounded-[1px] bg-destructive hover:opacity-80",
-                      zoomed && day.incidents.some((incident) => incident.id === zoomed.id) && "ring-2 ring-foreground")} />
-                  : <span className={cn("flex-1 rounded-[1px]", day.checked ? "bg-success" : "bg-muted")} />
+                    className={cn(tone, "cursor-pointer hover:opacity-80",
+                      zoomed && bar.incidents.some((incident) => incident.id === zoomed.id) && "ring-2 ring-foreground")} />
+                  : <span className={tone} />
                 } />
                 <TooltipContent className="flex-col items-start gap-0.5">
                   <span className="font-medium">{label}</span>
-                  {day.incidents.length === 0
-                    ? <span>{day.checked ? "No incidents" : "No data"}</span>
-                    : day.incidents.map((incident) => (
+                  {bar.result ? <ResultText result={bar.result} regions={regions} /> : null}
+                  {bar.incidents.length === 0
+                    ? bar.result ? null : <span>{bar.tone === "up" ? "No incidents" : "No data"}</span>
+                    : bar.incidents.map((incident) => (
                       <span key={incident.id}>
                         {incident.closedAt === null ? "Ongoing" : formatSpan(Date.parse(incident.closedAt) - Date.parse(incident.openedAt))} · {causeText(incident)}
                       </span>
@@ -362,16 +416,18 @@ function HistoryStrip({ range, bars, zoomed, onZoom }: {
             );
           })}
         </div>
-        <StripEnds range={range} />
+        <StripEnds from={from} to={to} />
       </div>
     </TooltipProvider>
   );
 }
 
 /** What opened an incident: when, how long, and what each region got back. */
-function Evidence({ incident, now, onZoom, fixPath }: {
+function Evidence({ incident, regions, now, at, onZoom, fixPath }: {
   incident: UptimeIncidentEntry;
+  regions: RegionNames;
   now: number;
+  at: Intl.DateTimeFormat;
   onZoom: (() => void) | null;
   fixPath: ReactNode;
 }) {
@@ -384,15 +440,18 @@ function Evidence({ incident, now, onZoom, fixPath }: {
       </PopoverTitle>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
         <dt className="text-muted-foreground">Since</dt>
-        <dd>{AT_FORMAT.format(span.from)}</dd>
-        <dt className="text-muted-foreground">Regions</dt>
-        <dd className="flex flex-col font-mono">
-          {incident.observations.map((observation) => (
-            <span key={`${observation.region}-${observation.at}`} className="flex gap-2">
-              <span>{observation.region}</span>
-              <span className={observation.verdict === "fail" ? "text-destructive" : "text-muted-foreground"}>{observationText(observation)}</span>
-            </span>
-          ))}
+        <dd>{at.format(span.from)}</dd>
+        <dt className="text-muted-foreground">{Object.keys(regions).length > 1 ? "Regions" : "Checks"}</dt>
+        <dd className="flex flex-col">
+          {incident.observations.map((observation) => {
+            const label = regionLabel(regions, observation.region);
+            return (
+              <span key={`${observation.region}-${observation.at}`} className="flex gap-2">
+                {label ? <span className={label.named ? undefined : "font-mono"}>{label.text}</span> : null}
+                <span className={observation.verdict === "fail" ? "text-destructive" : "text-muted-foreground"}>{observationText(observation)}</span>
+              </span>
+            );
+          })}
         </dd>
       </dl>
       {onZoom || fixPath ? (
