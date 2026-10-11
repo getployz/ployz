@@ -1,4 +1,5 @@
 import { MutationObserver } from "@tanstack/react-query";
+import { Schema } from "effect";
 import type { Change, ConfigCommand, ConfigWritten, EnvironmentRef } from "@ployz/sdk";
 import { toast } from "sonner";
 import { isUnauthorized } from "#/lib/error-message";
@@ -29,8 +30,8 @@ function writtenRevision(written: ConfigWritten): number | null {
     ? last.environment.revision : null;
 }
 
-const isStale = (error: Error) => error instanceof StoreRefused && error.code === "conflict"
-  && typeof error.details === "object" && error.details !== null && "revision" in error.details;
+const isStaleRevision = Schema.is(Schema.Struct({ revision: Schema.Number }));
+const isStale = (error: Error) => error instanceof StoreRefused && error.code === "conflict" && isStaleRevision(error.details);
 
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
