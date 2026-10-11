@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, between, desc, eq, exists, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, between, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
@@ -25,8 +25,11 @@ import { tally } from "./uptime";
 import { checkWindow, MAX_CHECK_BARS, perCheck, type PointSource, pointSource, type RangeWindow, resolveRange } from "./uptime-range";
 
 const HOUR_MS = 3_600_000;
-// Long enough for a self-host round, whose second probe goes 30 s after the first, to land and move the status.
-const PROBE_SHOWN_MS = 45_000;
+// A probe request reads as checking until the slowest round ends: a self-host round's second probe goes 30 s after the
+// first, runs up to the check's timeout, and its result counts for ROUND_GRACE in uptime/src/control/detect.rs after.
+const ONE_REGION_SPACING_MS = 30_000;
+const ROUND_GRACE_MS = 15_000;
+const probeShownMs = (timeoutMs: number) => ONE_REGION_SPACING_MS + timeoutMs + ROUND_GRACE_MS;
 
 /**
  * The environment's checks, each with when its open incident opened. Both tables are filtered by the actor's
@@ -61,7 +64,7 @@ const findCheck = Effect.fn("Uptime.findCheck")(function* (organizationId: strin
   const [check] = yield* drizzle
     .select({
       id: uptimeCheck.id, url: uptimeCheck.url, intervalSeconds: uptimeCheck.intervalSeconds,
-      probeRequestedAt: uptimeCheck.probeRequestedAt,
+      timeoutMs: uptimeCheck.timeoutMs, probeRequestedAt: uptimeCheck.probeRequestedAt, probeAnsweredAt: uptimeCheck.probeAnsweredAt,
     })
     .from(uptimeCheck)
     .where(and(
@@ -88,7 +91,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   const now = new Date(yield* Clock.currentTimeMillis);
   const found = yield* findCheck(organization.id, input);
   if (found === undefined) return null;
-  const { probeRequestedAt, ...check } = found;
+  const { timeoutMs, probeRequestedAt, probeAnsweredAt, ...check } = found;
   const of = ofCheck(check.id, organization.id);
   const window = resolveRange(input, now.getTime());
   const checked = checkWindow(window);
@@ -167,13 +170,10 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   ])];
   const named = yield* drizzle.select({ region: uptimeRegion.region, name: uptimeRegion.name }).from(uptimeRegion);
   const regions = { ...Object.fromEntries(codes.map((code) => [code, null])), ...Object.fromEntries(named.map((row) => [row.region, row.name])) };
-  const probe = probeRequestedAt === null || now.getTime() - probeRequestedAt.getTime() > PROBE_SHOWN_MS ? null : {
+  const probe = probeRequestedAt === null || now.getTime() - probeRequestedAt.getTime() > probeShownMs(timeoutMs) ? null : {
     requestedAt: probeRequestedAt.toISOString(),
-    answered: (yield* drizzle
-      .select({ at: uptimeResult.scheduledAt })
-      .from(uptimeResult)
-      .where(and(of(uptimeResult), eq(uptimeResult.kind, "triggered"), gte(uptimeResult.scheduledAt, probeRequestedAt)))
-      .limit(1)).length > 0,
+    // Both read to the millisecond, the precision the checker answers with.
+    answered: probeAnsweredAt !== null && probeAnsweredAt >= probeRequestedAt,
   };
   return { check, status, uptime, points, checks, incidents, regions, probe } satisfies ServiceUptime;
 });
@@ -186,12 +186,8 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
 export const requestUptimeProbe = Effect.fn("Uptime.requestProbe")(function* (actor: Actor, input: RequestUptimeProbeInput) {
   const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
   const { drizzle } = yield* Database;
-  const answered = exists(drizzle.select({ one: sql`1` }).from(uptimeResult).where(and(
-    eq(uptimeResult.checkId, uptimeCheck.id),
-    eq(uptimeResult.organizationId, uptimeCheck.organizationId),
-    eq(uptimeResult.kind, "triggered"),
-    gte(uptimeResult.scheduledAt, uptimeCheck.probeRequestedAt),
-  )));
+  // The checker answers with the request's millisecond, but `now()` writes microseconds.
+  const answered = gte(uptimeCheck.probeAnsweredAt, sql`date_trunc('milliseconds', ${uptimeCheck.probeRequestedAt})`);
   yield* drizzle.update(uptimeCheck).set({ probeRequestedAt: sql`now()` }).where(and(
     eq(uptimeCheck.organizationId, organization.id),
     eq(uptimeCheck.environmentId, input.environmentId),

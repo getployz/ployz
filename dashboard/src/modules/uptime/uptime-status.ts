@@ -133,8 +133,8 @@ export type ServiceUptime = {
   /** Every region the install lists and every region the points, checks and incidents name, with its display name or null. */
   readonly regions: RegionNames;
   /**
-   * The probe a deploy or Check now asked for in the last 45 s, and whether a result for it has landed. Null when none
-   * was, so a request the checker never answers stops reading as checking.
+   * The probe a deploy or Check now asked for within its slowest round (45 s plus the check's timeout), and whether the checker has judged the round that
+   * answers it. Null when none was, so a request the checker never answers stops reading as checking.
    */
   readonly probe: { readonly requestedAt: string; readonly answered: boolean } | null;
 };
