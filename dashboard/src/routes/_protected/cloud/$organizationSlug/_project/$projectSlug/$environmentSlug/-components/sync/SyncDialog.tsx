@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { EnvironmentRef, NeverSyncedRow, RowId, SyncRow, Synced } from "@ployz/sdk";
 import { ArrowRightIcon, ChevronDownIcon, HardDriveIcon, PackageIcon, PinIcon, PinOffIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
@@ -39,7 +39,9 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   const [closeAfter, setCloseAfter] = useState(true);
   const [pending, setPending] = useState(false);
   const [stale, setStale] = useState(false);
-  const [syncId] = useState(() => crypto.randomUUID());
+  // The id of the last Sync sent and what it asked: an identical retry reuses it, so a lost response never syncs twice,
+  // and changed picks, values or version mint a new one, so the Store never answers them with the old Sync.
+  const lastSync = useRef<{ intent: string; id: string } | null>(null);
   // The never-synced list, opened from the footer.
   const [listing, setListing] = useState(false);
   const name = from.environment ?? "";
@@ -62,13 +64,17 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
       const value = values[row.row];
       if (row.secret && value) typed[row.row] = value;
     }
+    const when = closing && closeAfter ? { kind: "now", close_after: true } as const : null;
+    const intent = JSON.stringify([[...pickedRows], typed, view.value.version, when]);
+    if (lastSync.current?.intent !== intent) lastSync.current = { intent, id: crypto.randomUUID() };
+    const id = lastSync.current.id;
     let written;
     try {
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
       // The Store decides when it lands, as the review read it; only closing after says now.
       written = await writer.commit({
         command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, id: syncId, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
+        values: typed, version: view.value.version, id, when,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.
