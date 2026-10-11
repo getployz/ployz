@@ -72,6 +72,16 @@ pub fn portable(mut schema: Value) -> Value {
     schema
 }
 
+/// A default an agent assumes anyway: none, nothing, zero or off.
+fn says_nothing(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(false) => true,
+        Value::Number(number) => number.as_u64() == Some(0),
+        Value::Array(items) => items.is_empty(),
+        Value::Bool(true) | Value::String(_) | Value::Object(_) => false,
+    }
+}
+
 fn tidy(schema: &mut Value, defs: &Map<String, Value>) {
     match schema {
         Value::Array(items) => items.iter_mut().for_each(|item| tidy(item, defs)),
@@ -87,7 +97,7 @@ fn tidy(schema: &mut Value, defs: &Map<String, Value>) {
             object.retain(|key, value| {
                 !(key == "$schema"
                     || key.starts_with("x-ployz-")
-                    || (key == "default" && value.is_null())
+                    || (key == "default" && says_nothing(value))
                     || (key == "format" && !value.as_str().is_some_and(is_standard_format)))
             });
             if let Some(one_of) = object.remove("oneOf") {
