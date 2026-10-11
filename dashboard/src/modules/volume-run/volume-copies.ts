@@ -1,5 +1,5 @@
-import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
-import { copyName, parseDockerVolumeName, type VolumeRunView } from "./volume-run";
+import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
+import { parseDockerVolumeName, type VolumeRunView } from "./volume-run";
 
 /** Any run's arguments, each field present only for the kinds that take it. */
 function runArgs(run: VolumeRunView): Partial<{ readonly to: string; readonly from: string; readonly full: boolean; readonly slot: string | null; readonly into: { readonly name: string } }> {
@@ -20,23 +20,16 @@ export function runWords(run: VolumeRunView): string {
   }[run.kind];
 }
 
-export type TrayCopy = { readonly kind: "moving"; readonly text: string } | { readonly kind: "mirror"; readonly label: string } | null;
-
 /**
- * What a Volume's canvas tray says about its copies: the run under way, a copy switching with no run as a bare
- * "Moving", else the mirror by name.
+ * What a Volume's canvas tray says while its copies change: the run under way, or a copy switching with no run as a
+ * bare "Moving". Its mirrors are nodes of their own under the tray.
  */
-export function trayCopy(input: {
-  readonly volume: { readonly id: string; readonly name: string };
+export function trayMoving(input: {
+  readonly volume: { readonly id: string };
   readonly copies: readonly RuntimeVolumeCopy[];
-  readonly machines: readonly Pick<RuntimeMachineRecord, "id" | "name">[];
   readonly active: VolumeRunView | null;
-}): TrayCopy {
+}): string | null {
   const own = input.copies.filter((copy) => parseDockerVolumeName(copy.name)?.volumeId === input.volume.id);
-  if (input.active !== null && input.active.kind !== "sync") return { kind: "moving", text: runWords(input.active) };
-  if (own.some((copy) => copy.role === "switching")) return { kind: "moving", text: "Moving" };
-  const mirror = own.find((copy) => copy.role === "slot");
-  if (mirror === undefined) return null;
-  const server = input.machines.find((machine) => machine.id === mirror.machineId)?.name ?? mirror.machineId;
-  return { kind: "mirror", label: copyName(input.volume.name, server) };
+  if (input.active !== null && input.active.kind !== "sync") return runWords(input.active);
+  return own.some((copy) => copy.role === "switching") ? "Moving" : null;
 }

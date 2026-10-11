@@ -11,7 +11,7 @@ import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { usePlacementStaged } from "#/modules/volume-placement/volume-placement.hooks";
-import { trayCopy } from "#/modules/volume-run/volume-copies";
+import { trayMoving } from "#/modules/volume-run/volume-copies";
 import { useActiveVolumeRuns } from "#/modules/volume-run/volume-run.queries";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
 import { SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -30,7 +30,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
   const pick = useNodePick(volume.name);
   const lens = useRuntimeLens(params.organizationSlug);
   const { data: active = [] } = useActiveVolumeRuns(params.organizationSlug);
-  const copy = trayCopy({ volume, copies: lens.volumeCopies, machines: lens.machines, active: active.find((run) => run.volume_id === volume.id) ?? null });
+  const moving = trayMoving({ volume, copies: lens.volumeCopies, active: active.find((run) => run.volume_id === volume.id) ?? null });
   const placed = usePlacementStaged(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store, volume);
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged || placed ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
@@ -51,8 +51,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
     <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
       : surface === "destructive" ? <span>Removing</span>
-      : copy?.kind === "moving" ? <span className="shrink-0 text-info">{copy.text}</span>
-      : copy ? <span className="shrink-0 truncate">{copy.label}</span>
+      : moving ? <span className="shrink-0 text-info">{moving}</span>
       : shared ? <span className="shrink-0 text-warning">shared · {writers} writers</span>
       : alsoMounted ? <LinkIcon className="size-3.5 shrink-0" aria-label={alsoMounted} /> : null}
   </>;

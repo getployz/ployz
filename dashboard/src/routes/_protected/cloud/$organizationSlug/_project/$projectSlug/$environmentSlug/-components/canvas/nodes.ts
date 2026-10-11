@@ -3,8 +3,9 @@ import { Position, type Edge } from "@xyflow/react";
 import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { serviceChanges } from "#/modules/config-store/store-services";
 import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
-import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
+import { MIRROR_NODE_HEIGHT, SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
+import { type CanvasMirror, parseMirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import type {
   CanvasResourceNode,
   CanvasResourceType,
@@ -69,13 +70,17 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
  * or Config a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & { live?: StoreLiveNode[] },
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "live" | "mirrors">>,
   canvasPositions: CanvasPosition[],
   environmentId: string,
 ): CanvasResourceNode[] {
   const trayCount = new Map(store.services.map(({ service, trays, configTrays }) => [service.id, trays.length + configTrays.length]));
-  // A Service's node grows by its trays; placing one keeps clear of each node's whole height.
-  const sizeOf = (id: string) => ({ ...SERVICE_NODE_SIZE, height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT });
+  const mirrorsOf = mirrorsByNode(store);
+  // A node grows by its trays and mirrors; placing one keeps clear of each node's whole height.
+  const sizeOf = (id: string) => ({
+    ...SERVICE_NODE_SIZE,
+    height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT + (mirrorsOf.get(id)?.length ?? 0) * MIRROR_NODE_HEIGHT,
+  });
   const positionByResource = getPositionByCanvasResource(canvasPositions);
   const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
   const place = (resourceType: CanvasResourceType, resourceId: string) => {
@@ -97,16 +102,21 @@ export function buildStoreNodes(
         id: service.service.id,
         type: "storeService",
         position: place("service", service.service.id),
-        data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
+        data: { ...service, mirrors: mirrorsOf.get(service.service.id) ?? [], resourceType: "service", resourceId: service.service.id, environmentId },
       } satisfies CanvasStoreServiceNode;
     }),
-    ...store.unmountedVolumes.map((volume) => ({
-      ...node,
-      id: volume.id,
-      type: "storeVolume",
-      position: place("volume", volume.id),
-      data: { volume, resourceType: "volume", resourceId: volume.id, environmentId },
-    } satisfies CanvasStoreVolumeNode)),
+    ...store.unmountedVolumes.map((volume) => {
+      const { height } = sizeOf(volume.id);
+      return {
+        ...node,
+        height,
+        handles: handles(height),
+        id: volume.id,
+        type: "storeVolume",
+        position: place("volume", volume.id),
+        data: { volume, mirrors: mirrorsOf.get(volume.id) ?? [], resourceType: "volume", resourceId: volume.id, environmentId },
+      } satisfies CanvasStoreVolumeNode;
+    }),
     ...store.unmountedConfigs.map((config) => ({
       ...node,
       id: config.id,
@@ -126,6 +136,16 @@ export function buildStoreNodes(
   ];
 }
 
+/** Each Volume's mirrors, keyed by the node that shows the Volume: its first Service's, else its own. */
+export function mirrorsByNode(store: Pick<StoreCanvas, "services"> & Partial<Pick<StoreCanvas, "mirrors">>) {
+  const byNode = new Map<string, CanvasMirror[]>();
+  for (const [volumeId, mirrors] of store.mirrors ?? []) {
+    const shownBy = store.services.find(({ trays }) => trays.some((tray) => tray.volume.id === volumeId))?.service.id ?? volumeId;
+    byNode.set(shownBy, [...byNode.get(shownBy) ?? [], ...mirrors]);
+  }
+  return byNode;
+}
+
 /** Links into Live Nodes are dashed. */
 const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
 
@@ -137,7 +157,10 @@ export function buildStoreEdges(store: { live?: StoreLiveNode[] }): Edge[] {
 }
 
 /** The node that shows `id` on the canvas: the node itself, else the first Service with it as a tray; null when none does. */
-export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string) {
+export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string): string | null {
+  // A mirror hangs inside the node that shows its Volume.
+  const mirror = parseMirrorResourceId(id);
+  if (mirror !== null) return canvasNodeOf(nodes, mirror.volumeId);
   const shown = nodes.find((node) => node.id === id)
     ?? nodes.find((node) => node.type === "storeService"
       && (node.data.trays.some((tray) => tray.volume.id === id) || node.data.configTrays.some((tray) => tray.config.id === id)));
