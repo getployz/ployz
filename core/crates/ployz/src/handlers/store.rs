@@ -528,6 +528,71 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
     }
 }
 
+/// Run `read`, several Store reads, again when `torn` finds they came back at
+/// different revisions: an edit landed between them. Torn twice is a conflict.
+pub(crate) fn at_one_revision<T>(
+    command: &str,
+    read: impl Fn() -> Result<T, Error>,
+    torn: impl Fn(&T) -> bool,
+) -> Result<T, Error> {
+    let first = read()?;
+    if !torn(&first) {
+        return Ok(first);
+    }
+    let again = read()?;
+    if torn(&again) {
+        return Err(
+            Error::conflict(format!("Working State changed while {command} read it."))
+                .hint(Hint::Retry(super::typed_with(&[]))),
+        );
+    }
+    Ok(again)
+}
+
+#[cfg(test)]
+/// A local Store holding Project `shop`, and a Service `webN` created in it by
+/// each `edit()`: a write between two reads.
+pub(crate) fn store_with_edits(matches: &ArgMatches) -> (Store<'_>, impl Fn()) {
+    let who = Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap());
+    let local = std::sync::Arc::new(
+        ConfigStore::open("sqlite::memory:", SealingKey::new(&[7; 32]).unwrap()).unwrap(),
+    );
+    local
+        .write(
+            &who,
+            &ployz_store::CreateProject {
+                id: ployz_store::ProjectId::parse(mint()).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: ployz_store::EnvironmentId::parse(mint()).unwrap(),
+            },
+        )
+        .unwrap();
+    let edits = std::cell::Cell::new(0);
+    let writer = (std::sync::Arc::clone(&local), who.clone());
+    let edit = move || {
+        edits.set(edits.get() + 1);
+        writer
+            .0
+            .write(
+                &writer.1,
+                &ployz_store::CreateService {
+                    id: ployz_store::ServiceLineageId::parse(mint()).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse(format!("web{}", edits.get())).unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    };
+    let store = Store {
+        backend: Backend::Local(local, who),
+        matches,
+        words: vec!["get".to_owned()],
+    };
+    (store, edit)
+}
+
 /// Mint the ID a create is keyed by, so a retried request replays instead of repeating.
 pub(crate) fn mint() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -774,6 +839,58 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(changed(&route), ["web.domains: removed app.example.com"]);
+    }
+
+    /// Two reads of Working State's revision, with `between` run between them.
+    fn two_reads(store: &Store<'_>, between: impl Fn()) -> Result<(u64, u64), Error> {
+        let revision = || -> Result<u64, Error> {
+            let view = store.read(&ployz_store::ServicesQuery {
+                environment: EnvironmentRef::default(),
+            })?;
+            Ok(view.environment.revision.0)
+        };
+        let first = revision()?;
+        between();
+        Ok((first, revision()?))
+    }
+
+    #[test]
+    fn an_edit_between_reads_reads_again_at_one_revision() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "get"])
+            .unwrap();
+        let (store, edit) = store_with_edits(leaf_matches(&root));
+        let attempts = std::cell::Cell::new(0);
+        let read = || {
+            attempts.set(attempts.get() + 1);
+            two_reads(&store, || {
+                if attempts.get() == 1 {
+                    edit();
+                }
+            })
+        };
+        let (first, second) = at_one_revision("get", read, |(a, b)| a != b).unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn edits_between_every_read_refuse_as_a_conflict_to_retry() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "get"])
+            .unwrap();
+        let (store, edit) = store_with_edits(leaf_matches(&root));
+        let error =
+            at_one_revision("get", || two_reads(&store, &edit), |(a, b)| a != b).unwrap_err();
+        assert!(
+            error
+                .hints()
+                .iter()
+                .any(|hint| matches!(hint, Hint::Retry(_)))
+        );
+        let error = error.report();
+        assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(error.message, "Working State changed while get read it.");
     }
 
     #[test]

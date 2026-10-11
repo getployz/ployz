@@ -4,9 +4,9 @@
 use clap::{ArgMatches, Command};
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_store::{
-    CreateGitService, CreateService, DomainRow, DomainsQuery, EnvironmentQuery, RemoveService,
-    RenameService, ServiceLineageId, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
-    SettingPath, SettingRow,
+    CreateGitService, CreateService, DomainRow, DomainsQuery, DomainsView, EnvironmentQuery,
+    EnvironmentView, RemoveService, RenameService, ServiceLineageId, ServiceQuery, ServiceStaged,
+    ServiceView, ServicesQuery, SettingPath, SettingRow,
 };
 use serde::Serialize;
 
@@ -129,30 +129,31 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let environment = store::environment(matches)?;
     let name = service_name(matches, "service")?;
     let store = store::store(root)?;
-    let view = store.read(&ServiceQuery {
-        environment: environment.clone(),
-        service: name.clone(),
-    })?;
-    // A Service staged for removal is gone from Working State: it shows what is
-    // deployed, with no Settings or domains left to edit.
-    let (settings, domains) = if view.service.change == Some(ReviewLifecycleKind::Delete) {
-        (Vec::new(), Vec::new())
-    } else {
-        let settings = store
-            .read(&EnvironmentQuery {
-                environment: environment.clone(),
-                path: Some(SettingPath::parse(name.as_str())?),
-                all: false,
-            })?
-            .settings;
-        let domains = store
-            .read(&DomainsQuery {
-                environment,
-                service: Some(name),
-            })?
-            .domains;
-        (settings, domains)
+    let read = || -> Result<_, Error> {
+        let view = store.read(&ServiceQuery {
+            environment: environment.clone(),
+            service: name.clone(),
+        })?;
+        // A Service staged for removal is gone from Working State: it shows what is
+        // deployed, with no Settings or domains left to edit.
+        if view.service.change == Some(ReviewLifecycleKind::Delete) {
+            return Ok((view, None));
+        }
+        let settings = store.read(&EnvironmentQuery {
+            environment: environment.clone(),
+            path: Some(SettingPath::parse(name.as_str())?),
+            all: false,
+        })?;
+        let domains = store.read(&DomainsQuery {
+            environment: environment.clone(),
+            service: Some(name.clone()),
+        })?;
+        Ok((view, Some((settings, domains))))
     };
+    let (view, rest) = store::at_one_revision("service inspect", read, torn)?;
+    let (settings, domains) = rest.map_or_else(Default::default, |(settings, domains)| {
+        (settings.settings, domains.domains)
+    });
     let service = &view.service.service;
     let mut record = Fields::new()
         .field("service", &service.name)
@@ -182,6 +183,15 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         domains: &domains,
     };
     crate::ui::fields(&inspected, &record)
+}
+
+/// Whether `service inspect`'s Settings or domains were read in another Environment or
+/// at another revision than the Service. Without `--env` each read resolves the
+/// Default Environment itself.
+fn torn((view, rest): &(ServiceView, Option<(EnvironmentView, DomainsView)>)) -> bool {
+    rest.as_ref().is_some_and(|(settings, domains)| {
+        settings.environment != view.environment || domains.environment != view.environment
+    })
 }
 
 /// `service inspect`'s result: the Service, every Setting with its default, and its
@@ -243,3 +253,55 @@ fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<()
 }
 
 use crate::handlers::store::service_name;
+
+#[cfg(test)]
+mod tests {
+    use ployz_store::EnvironmentRef;
+
+    use super::*;
+
+    #[test]
+    fn settings_or_domains_read_elsewhere_or_after_an_edit_are_torn_from_the_service() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "service", "inspect", "web1"])
+            .unwrap();
+        let (store, edit) = store::store_with_edits(leaf_matches(&root));
+        edit();
+        let web = ployz_core::ServiceName::parse("web1").unwrap();
+        let settings = || {
+            store
+                .read(&EnvironmentQuery {
+                    environment: EnvironmentRef::default(),
+                    path: Some(SettingPath::parse("web1").unwrap()),
+                    all: false,
+                })
+                .unwrap()
+        };
+        let domains = || {
+            store
+                .read(&DomainsQuery {
+                    environment: EnvironmentRef::default(),
+                    service: Some(web.clone()),
+                })
+                .unwrap()
+        };
+        let view = store
+            .read(&ServiceQuery {
+                environment: EnvironmentRef::default(),
+                service: web.clone(),
+            })
+            .unwrap();
+        let (before, domains_before) = (settings(), domains());
+        assert!(!torn(&(view.clone(), None)));
+        assert!(!torn(&(
+            view.clone(),
+            Some((before.clone(), domains_before.clone()))
+        )));
+        let mut elsewhere = domains_before.clone();
+        elsewhere.environment.id = ployz_store::EnvironmentId::parse(store::mint()).unwrap();
+        assert!(torn(&(view.clone(), Some((before.clone(), elsewhere)))));
+        edit();
+        assert!(torn(&(view.clone(), Some((settings(), domains_before)))));
+        assert!(torn(&(view, Some((before, domains())))));
+    }
+}
