@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, between, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
@@ -17,11 +17,11 @@ import {
   FAILURE_CLASSES,
   type FailureClass,
   PHASES,
-  UPTIME_RANGE_MS,
+  type UptimeCheckResult,
   type UptimePoint,
-  type UptimeRange,
 } from "./uptime-status";
 import { tally } from "./uptime";
+import { checkWindow, MAX_CHECK_BARS, perCheck, type PointSource, pointSource, type RangeWindow, resolveRange } from "./uptime-range";
 
 const HOUR_MS = 3_600_000;
 
@@ -72,7 +72,7 @@ const ofCheck = (checkId: string, organizationId: string) =>
 
 const decodeEvidence = Schema.decodeUnknownEffect(IncidentEvidence);
 
-/** The Service's check with its status, uptime, latency points and the incidents over `range`. Null without a check. */
+/** The Service's check with its status, uptime, latency points, results and the incidents over a range. Null without a check. */
 export const readServiceUptime = Effect.fn("Uptime.readService")(function* (actor: Actor, input: ReadServiceUptimeInput) {
   const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
   const { drizzle } = yield* Database;
@@ -80,8 +80,10 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   const check = yield* findCheck(organization.id, input);
   if (check === undefined) return null;
   const of = ofCheck(check.id, organization.id);
-  const since = (series: UptimeSeries) =>
-    clampSince(organization.id, series, new Date(now.getTime() - UPTIME_RANGE_MS[input.range]), now);
+  const window = resolveRange(input, now.getTime());
+  const checked = checkWindow(window);
+  const since = (series: UptimeSeries, from: number) => clampSince(organization.id, series, new Date(from), now);
+  const to = new Date(checked.to);
 
   const [open] = yield* drizzle
     .select({ id: uptimeIncident.id })
@@ -90,30 +92,33 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   const [probed] = open !== undefined ? [] : yield* drizzle
     .select({ at: uptimeResult.scheduledAt })
     .from(uptimeResult)
-    .where(and(of(uptimeResult), gte(uptimeResult.scheduledAt, clampSince(organization.id, "raw", new Date(0), now))))
+    .where(and(of(uptimeResult), gte(uptimeResult.scheduledAt, since("raw", 0))))
     .limit(1);
   const status = open !== undefined ? "unreachable" : probed === undefined ? "pending" : "up";
 
-  const [rolled] = yield* drizzle
-    .select({ hour: sql<Date | null>`max(${uptimeResultHourly.hour})`.mapWith(uptimeResultHourly.hour) })
-    .from(uptimeResultHourly)
-    .where(of(uptimeResultHourly));
-  const tailFrom = new Date(Math.max((rolled?.hour?.getTime() ?? 0) + HOUR_MS, since("raw").getTime()));
-
-  const [hourly] = yield* drizzle
+  // The hourly rollup counts the whole hours that end before raw retention's next hour and by `to`; raw probes count the rest.
+  const rawFrom = since("raw", checked.from);
+  const split = rawFrom.getTime() === checked.from ? rawFrom : new Date(Math.ceil(rawFrom.getTime() / HOUR_MS) * HOUR_MS);
+  const hoursEnd = Math.floor(Math.min(split.getTime(), checked.to) / HOUR_MS) * HOUR_MS;
+  const rawStart = new Date(Math.max(rawFrom.getTime(), hoursEnd));
+  const [hourly] = split.getTime() === checked.from ? [] : yield* drizzle
     .select({
       passing: sql<number | null>`sum(${uptimeResultHourly.probes} - ${uptimeResultHourly.failures})`.mapWith(Number),
       counted: sql<number | null>`sum(${uptimeResultHourly.probes})`.mapWith(Number),
     })
     .from(uptimeResultHourly)
-    .where(and(of(uptimeResultHourly), gte(uptimeResultHourly.hour, since("hourly"))));
+    .where(and(
+      of(uptimeResultHourly),
+      gte(uptimeResultHourly.hour, since("hourly", checked.from)),
+      lte(uptimeResultHourly.hour, new Date(hoursEnd - HOUR_MS)),
+    ));
   const [raw] = yield* drizzle
     .select({
       passing: sql<number>`count(*) FILTER (WHERE ${uptimeResult.verdict} = 'pass')`.mapWith(Number),
       counted: sql<number>`count(*) FILTER (WHERE ${uptimeResult.verdict} IN ('pass', 'fail'))`.mapWith(Number),
     })
     .from(uptimeResult)
-    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), gte(uptimeResult.scheduledAt, tailFrom)));
+    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), between(uptimeResult.scheduledAt, rawStart, to)));
   const counted = (hourly?.counted ?? 0) + (raw?.counted ?? 0);
   const uptime = counted === 0 ? null : ((hourly?.passing ?? 0) + (raw?.passing ?? 0)) / counted;
 
@@ -127,8 +132,8 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .from(uptimeIncident)
     .where(and(
       of(uptimeIncident),
-      lte(uptimeIncident.openedAt, now),
-      or(isNull(uptimeIncident.closedAt), gte(uptimeIncident.closedAt, since("incidents"))),
+      lte(uptimeIncident.openedAt, to),
+      or(isNull(uptimeIncident.closedAt), gte(uptimeIncident.closedAt, since("incidents", checked.from))),
     ))
     .orderBy(desc(uptimeIncident.openedAt), desc(uptimeIncident.id));
   const incidents = yield* Effect.forEach(incidentRows, (row) =>
@@ -143,7 +148,8 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
       })),
     ));
 
-  const points = yield* readPoints(of, input.range, since("raw"), since("hourly"), tailFrom);
+  const checks = perCheck(checked) && rawFrom.getTime() === checked.from ? yield* readChecks(of, rawFrom, to) : null;
+  const points = yield* readPoints(of, window, pointSource(window, now.getTime()), since);
   const codes = [...new Set([
     ...points.map((point) => point.region),
     ...incidents.flatMap((incident) => incident.observations.map((observation) => observation.region)),
@@ -154,11 +160,24 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .where(inArray(uptimeRegion.region, codes));
   const names = new Map(named.map((row) => [row.region, row.name]));
   const regions = Object.fromEntries(codes.map((code) => [code, names.get(code) ?? null]));
-  return { check, status, uptime, points, incidents, regions } satisfies ServiceUptime;
+  return { check, status, uptime, points, checks, incidents, regions } satisfies ServiceUptime;
 });
 
-/** Every routine probe since `from`, each as its own point. */
-const readRawPoints = Effect.fn("Uptime.readRawPoints")(function* (of: ReturnType<typeof ofCheck>, from: Date) {
+/** The newest results of every kind between `from` and `to`, oldest first. */
+const readChecks = Effect.fn("Uptime.readChecks")(function* (of: ReturnType<typeof ofCheck>, from: Date, to: Date) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle
+    .select({ at: uptimeResult.scheduledAt, region: uptimeResult.region, kind: uptimeResult.kind,
+      verdict: uptimeResult.verdict, status: uptimeResult.status, ms: uptimeResult.totalMs })
+    .from(uptimeResult)
+    .where(and(of(uptimeResult), between(uptimeResult.scheduledAt, from, to)))
+    .orderBy(desc(uptimeResult.scheduledAt), desc(uptimeResult.region), desc(uptimeResult.kind))
+    .limit(MAX_CHECK_BARS);
+  return rows.reverse().map((row): UptimeCheckResult => ({ ...row, at: row.at.toISOString() }));
+});
+
+/** Every routine probe between `from` and `to`, each as its own point. */
+const readRawPoints = Effect.fn("Uptime.readRawPoints")(function* (of: ReturnType<typeof ofCheck>, from: Date, to: Date) {
   const { drizzle } = yield* Database;
   const failed = sql`${uptimeResult.verdict} = 'fail'`;
   const rows = yield* drizzle
@@ -170,7 +189,7 @@ const readRawPoints = Effect.fn("Uptime.readRawPoints")(function* (of: ReturnTyp
       text: sql<string | null>`CASE WHEN ${failed} THEN ${failureTextSql(failureClassSql)} END`,
     })
     .from(uptimeResult)
-    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), gte(uptimeResult.scheduledAt, from)))
+    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), between(uptimeResult.scheduledAt, from, to)))
     .orderBy(asc(uptimeResult.scheduledAt), asc(uptimeResult.region));
   return rows.map((row): UptimePoint => {
     const at = row.at.toISOString();
@@ -194,21 +213,27 @@ type HourlyRow = Record<ReturnType<typeof failureColumn> | ReturnType<typeof pha
 };
 
 /**
- * The latency chart for `range`, ordered by `at`, then region. 7d and 90d read the hourly rollup, then raw probes from
- * `tailFrom`, the first hour it has not rolled up, so a check's newest probes show before :05 of the next hour. 90d
- * merges each region's hours into 6-hour points by `mergePoints`' rule.
+ * The latency chart over `window`, ordered by `at`, then region. A rollup source reads the hourly rollup, then raw probes
+ * from the first hour it has not rolled up, so a check's newest probes show before :05 of the next hour. A sixHourly
+ * source merges each region's hours into 6-hour points by `mergePoints`' rule.
  */
 const readPoints = Effect.fn("Uptime.readPoints")(function* (
   of: ReturnType<typeof ofCheck>,
-  range: UptimeRange,
-  rawSince: Date,
-  hourlySince: Date,
-  tailFrom: Date,
+  window: RangeWindow,
+  source: PointSource,
+  since: (series: UptimeSeries, from: number) => Date,
 ) {
-  if (range === "24h") return yield* readRawPoints(of, rawSince);
+  const to = new Date(window.to);
+  if (source === "raw") return yield* readRawPoints(of, since("raw", window.from), to);
   const { drizzle } = yield* Database;
-  const tail = yield* readRawPoints(of, tailFrom);
-  const bucket = range === "7d" ? sql`hour` : sql`to_timestamp(floor(extract(epoch from hour) / 21600) * 21600)`;
+  const [rolled] = yield* drizzle
+    .select({ hour: sql<Date | null>`max(${uptimeResultHourly.hour})`.mapWith(uptimeResultHourly.hour) })
+    .from(uptimeResultHourly)
+    .where(of(uptimeResultHourly));
+  const tailFrom = new Date(Math.max((rolled?.hour?.getTime() ?? 0) + HOUR_MS, since("raw", window.from).getTime()));
+  const tail = tailFrom > to ? [] : yield* readRawPoints(of, tailFrom, to);
+  const hourlySince = since("hourly", Math.floor(window.from / HOUR_MS) * HOUR_MS);
+  const bucket = source === "hourly" ? sql`hour` : sql`to_timestamp(floor(extract(epoch from hour) / 21600) * 21600)`;
   const weighted = sql`FILTER (WHERE pass_ms_p50 IS NOT NULL)`;
   const newest = (column: string) =>
     sql`(array_agg(${sql.raw(column)} ORDER BY last_error_at DESC) FILTER (WHERE last_error_at IS NOT NULL))[1]`;
@@ -221,7 +246,8 @@ const readPoints = Effect.fn("Uptime.readPoints")(function* (
            ${newest("last_error")} AS "lastError", ${newest("last_error_class")} AS "lastErrorClass",
            max(last_error_at) AS "lastErrorAt"
     FROM uptime_result_hourly
-    WHERE ${of(uptimeResultHourly)} AND hour >= ${hourlySince.toISOString()}::timestamptz
+    WHERE ${of(uptimeResultHourly)}
+      AND hour BETWEEN ${hourlySince.toISOString()}::timestamptz AND ${to.toISOString()}::timestamptz
     GROUP BY 1, region
     ORDER BY 1, region`, "objects");
   return [...rows.map((row): UptimePoint => ({

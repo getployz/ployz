@@ -1,13 +1,5 @@
 import { Schema } from "effect";
-
-export const UPTIME_RANGES = ["24h", "7d", "90d"] as const;
-export type UptimeRange = (typeof UPTIME_RANGES)[number];
-
-export const UPTIME_RANGE_MS = {
-  "24h": 24 * 3_600_000,
-  "7d": 7 * 86_400_000,
-  "90d": 90 * 86_400_000,
-} as const satisfies Record<UptimeRange, number>;
+import { RangeEdge } from "./uptime-range";
 
 const Int = Schema.Finite.check(Schema.isInt());
 
@@ -49,7 +41,8 @@ export type ReadEnvironmentUptimeInput = typeof ReadEnvironmentUptimeInput.Type;
 export const ReadServiceUptimeInput = Schema.Struct({
   ...EnvironmentScope,
   serviceId: Schema.NonEmptyString,
-  range: Schema.Literals(UPTIME_RANGES),
+  from: RangeEdge,
+  to: RangeEdge,
 });
 export type ReadServiceUptimeInput = typeof ReadServiceUptimeInput.Type;
 
@@ -83,7 +76,8 @@ export const PHASES = ["dns", "connect", "tls", "ttfb"] as const;
 export type Phase = (typeof PHASES)[number];
 
 /**
- * One region's probes over one stretch of the latency chart: a routine probe in 24h, an hour in 7d, 6 hours in 90d.
+ * One region's probes over one stretch of the latency chart, as `pointSource` picks for the range: one routine probe
+ * for a range up to a day within raw retention, an hour up to 7 days, 6 hours longer.
  * `probes` is pass plus fail, never inconclusive. `medianMs`, `maxMs` and `phaseMsSum` are over passing probes only,
  * and the first two are null when none passed. `lastError` is the newest failure. `mergePoints` folds two into one.
  */
@@ -98,6 +92,16 @@ export type UptimePoint = {
   readonly lastError: { readonly at: string; readonly cls: FailureClass; readonly text: string } | null;
 };
 
+/** One probe result of any kind, as a bar of the history strip. `status` is 0 when there was no HTTP response. */
+export type UptimeCheckResult = {
+  readonly at: string;
+  readonly region: string;
+  readonly kind: IncidentObservation["kind"];
+  readonly verdict: IncidentObservation["verdict"];
+  readonly status: number;
+  readonly ms: number;
+};
+
 export type UptimeIncidentEntry = {
   readonly id: string;
   readonly openedAt: string;
@@ -106,14 +110,22 @@ export type UptimeIncidentEntry = {
   readonly observations: readonly IncidentObservation[];
 };
 
-/** A check over one range. */
+/**
+ * A check over one range. `uptime`, `checks` and `incidents` cover its check window, at least the last 30 minutes of
+ * it; `points` cover the range itself, the time axis every chart shares.
+ */
 export type ServiceUptime = {
   readonly check: { readonly id: string; readonly url: string; readonly intervalSeconds: number };
   readonly status: UptimeStatus;
-  /** Passing over pass plus fail routine probes, 0 to 1, by rolled-up hour. Null when no probe counted. */
+  /** Passing over pass plus fail routine probes, 0 to 1. Null when no probe counted. */
   readonly uptime: number | null;
   readonly points: readonly UptimePoint[];
-  /** Open and closed incidents that overlap the range, newest first. */
+  /**
+   * Every result in a check window of 6 hours or less, the newest 120, oldest first. Null for a longer window, or one
+   * older than raw retention, which the strip draws as spans of time.
+   */
+  readonly checks: readonly UptimeCheckResult[] | null;
+  /** Open and closed incidents that overlap the check window, newest first. */
   readonly incidents: readonly UptimeIncidentEntry[];
   /** Every region the points and incidents name, with its display name, or null when it has none. */
   readonly regions: RegionNames;

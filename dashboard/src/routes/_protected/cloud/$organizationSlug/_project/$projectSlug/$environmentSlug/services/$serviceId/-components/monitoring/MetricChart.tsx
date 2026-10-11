@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { areaY, crosshair, defineChart, lineY, rect, ruleX, ruleY } from "@tanstack/charts";
+import { areaY, crosshair, defineChart, dot, lineY, rect, ruleX, ruleY } from "@tanstack/charts";
 import { cursorHost, type ChartCursorController } from "@tanstack/charts/cursor";
 import { decorative } from "@tanstack/charts/mark/decorative";
 import { Chart } from "@tanstack/charts/react/tooltip";
@@ -9,12 +9,19 @@ import { portal } from "@tanstack/charts/tooltip/portal";
 import { scaleUtc } from "d3-scale";
 import { Card } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
+import { useTimeZone } from "#/utils/time-zone";
 
 export type MetricSeries = { readonly label: string; readonly color: string; readonly values: readonly (number | null)[] };
 export type TimeBand = { readonly id: string; readonly from: number; readonly to: number };
 type Row = { readonly at: Date; readonly values: readonly (number | null)[] };
 
-const AT_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+/** "Oct 11, 2:05 PM" in `timeZone`. */
+export const atFormat = (timeZone: string) =>
+  new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone });
+
+/** A value with no neighbour on either side draws no line, so it gets a dot. */
+const isolated = (values: readonly (number | null)[], index: number) =>
+  values[index] != null && values[index - 1] == null && values[index + 1] == null;
 
 /**
  * One metric as a card: title and latest value on top, a thin line over a soft fill, incident bands, deploy rules and an
@@ -43,6 +50,11 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
   dimmed?: boolean;
   height?: number;
 }) {
+  const timeZone = useTimeZone();
+  const at = atFormat(timeZone);
+  const tick = new Intl.DateTimeFormat("en-US", to - from <= 86_400_000
+    ? { hour: "numeric", minute: "2-digit", timeZone }
+    : { month: "short", day: "numeric", timeZone });
   const rows: Row[] = times.map((at, index) => ({ at: new Date(at), values: series.map((line) => line.values[index] ?? null) }));
   const focusRows = rows.filter((row) => focusAt.includes(row.at.getTime()));
   const peak = Math.max(limit ?? 0, ...series.flatMap((line) => line.values.flatMap((point) => point === null ? [] : [point])), 0);
@@ -52,6 +64,8 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
       decorative(rect(bands, { x1: (band) => new Date(band.from), x2: (band) => new Date(band.to), y1: () => 0, y2: () => top, fill: "var(--destructive)", fillOpacity: 0.12, inset: 0 })),
       ...series.map((_, index) => decorative(areaY(rows, { x: "at", y: (row) => row.values[index] ?? null, fill: `url(#fill-${index})` }))),
       ...series.map((line, index) => lineY(rows, { x: "at", y: (row) => row.values[index] ?? null, stroke: line.color, strokeWidth: 1.5, z: () => line.label })),
+      ...series.map((line, index) => decorative(dot(rows.filter((_, step) => isolated(line.values, step)),
+        { x: "at", y: (row) => row.values[index] ?? null, r: 2, fill: line.color }))),
       lineY(focusRows, { x: "at", y: () => 0, strokeOpacity: 0, z: () => "focus" }),
       ...(limit === undefined ? [] : [ruleY([limit], { stroke: "currentColor", strokeOpacity: 0.45, strokeDasharray: "4 4" })]),
       ruleX(deploys.map((at) => new Date(at)), { stroke: "currentColor", strokeOpacity: 0.35, strokeDasharray: "2 3" }),
@@ -64,7 +78,7 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
     clip: true,
     scales: {
       // Railway's look: no axis lines or tick marks, faint dashed grid, muted labels.
-      x: { scale: () => scaleUtc().domain([new Date(from), new Date(to)]), axis: { line: false, ticks: { count: 4, size: 0 } } },
+      x: { scale: () => scaleUtc().domain([new Date(from), new Date(to)]), axis: { line: false, ticks: { count: 4, size: 0, format: (value: Date) => tick.format(value) } } },
       y: {
         scale: () => scaleLinear().domain([0, top]),
         grid: { strokeOpacity: 0.12, strokeDasharray: "3 3" },
@@ -82,7 +96,7 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
       formatGroup: (points) => {
         const row = points[0]?.datum;
         if (!row || !("values" in row)) return "";
-        return [AT_FORMAT.format(row.at), ...series.map((line, index) => {
+        return [at.format(row.at), ...series.map((line, index) => {
           const point = row.values[index];
           return `${line.label}  ${point === null || point === undefined ? "–" : format(point)}`;
         })].join("\n");

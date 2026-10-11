@@ -1,6 +1,6 @@
 import { queryOptions, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { unreachableHost } from "./uptime";
-import type { UptimeRange } from "./uptime-status";
+import type { UptimeRange } from "./uptime-range";
 import { readEnvironmentUptimeServerFn, readServiceUptimeServerFn } from "./uptime-status.functions";
 
 export type UptimeScope = { readonly organizationSlug: string; readonly environmentId: string };
@@ -19,8 +19,8 @@ export function environmentUptimeQueryOptions(scope: UptimeScope) {
 /** One Service's status, uptime, response time and incidents over `range`, or null without a check. */
 export function serviceUptimeQueryOptions(scope: UptimeScope, serviceId: string, range: UptimeRange) {
   return queryOptions({
-    queryKey: ["uptime", scope.environmentId, serviceId, range] as const,
-    queryFn: () => readServiceUptimeServerFn({ data: { ...scope, serviceId, range } }),
+    queryKey: ["uptime", scope.environmentId, serviceId, range.from, range.to] as const,
+    queryFn: () => readServiceUptimeServerFn({ data: { ...scope, serviceId, from: range.from, to: range.to } }),
     staleTime: 30_000,
     refetchInterval: 60_000,
   });

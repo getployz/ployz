@@ -1,18 +1,19 @@
 import { failureTotal, formatMs, passes, regionLabel, type UptimeStep } from "#/modules/uptime/uptime";
 import { PHASES, type Phase, type RegionNames, type UptimePoint } from "#/modules/uptime/uptime-status";
+import { useTimeZone } from "#/utils/time-zone";
+import { atFormat } from "./MetricChart";
 
 const PHASE_LABELS = { dns: "DNS", connect: "Connect", tls: "TLS", ttfb: "First byte" } satisfies Record<Phase, string>;
 // Shades of the Check line's colour, lightest first, blended into the tooltip's own background so both themes hold.
 const PHASE_SHADES = { dns: 30, connect: 55, tls: 80, ttfb: 100 } satisfies Record<Phase, number>;
 const shade = (phase: Phase) => `color-mix(in oklab, var(--chart-2) ${PHASE_SHADES[phase]}%, var(--popover))`;
 
-const TIME_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-const DAY_HOUR_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric" });
-const HOUR_FORMAT = new Intl.DateTimeFormat("en-US", { hour: "numeric" });
-
-/** "Oct 3, 6 PM – 12 AM" for a step of hours, "Oct 3, 6:05 PM" for a probe's own step. */
-const stepLabel = (at: number, stepMs: number) =>
-  stepMs <= 5 * 60_000 ? TIME_FORMAT.format(at) : `${DAY_HOUR_FORMAT.format(at)} – ${HOUR_FORMAT.format(at + stepMs)}`;
+/** "Oct 3, 6:05 PM" for a step of 5 minutes or less, "Oct 3, 6:00 PM – 12:00 AM" for a longer one, in `timeZone`. */
+function stepLabel(at: number, end: number, timeZone: string) {
+  const start = atFormat(timeZone).format(at);
+  if (end - at <= 5 * 60_000) return start;
+  return `${start} – ${new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone }).format(end)}`;
+}
 
 function checksLabel(regions: readonly UptimePoint[]) {
   const counts = regions.map((point) => point.probes);
@@ -25,18 +26,19 @@ function checksLabel(regions: readonly UptimePoint[]) {
 const phaseMeans = (point: UptimePoint) => PHASES.map((phase) => ({ phase, ms: point.phaseMsSum[phase] / Math.max(1, passes(point)) }));
 const meanTotal = (point: UptimePoint) => phaseMeans(point).reduce((sum, part) => sum + part.ms, 0);
 
-/** One step of the Response time chart, region by region: how fast, where the time went, and what failed. */
-export function ResponseTooltip({ step, stepMs, edgeMs, regions }: {
+/** One step of the Response time chart, ending at `end`, region by region: how fast, where the time went, and what failed. */
+export function ResponseTooltip({ step, end, edgeMs, regions }: {
   step: UptimeStep;
-  stepMs: number;
+  end: number;
   edgeMs: number | null;
   regions: RegionNames;
 }) {
+  const timeZone = useTimeZone();
   const slowest = Math.max(...step.regions.map(meanTotal), 0);
   return (
     <div className="flex w-64 flex-col gap-2 rounded-lg bg-popover p-2.5 text-popover-foreground shadow-md ring-1 ring-foreground/10">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="font-medium">{stepLabel(step.at, stepMs)}</span>
+        <span className="font-medium">{stepLabel(step.at, end, timeZone)}</span>
         {step.regions.length > 0 ? <span className="text-muted-foreground tabular-nums">{checksLabel(step.regions)}</span> : null}
       </div>
       {step.regions.length === 0 ? <span className="text-muted-foreground">No checks</span> : null}
@@ -77,7 +79,7 @@ function RegionRow({ point, slowest, regions }: { point: UptimePoint; slowest: n
         ) : (
           <span className="tabular-nums">
             {point.medianMs === null ? "–" : formatMs(point.medianMs)}
-            {single || point.maxMs === null ? null : <span className="text-muted-foreground"> · max {Math.round(point.maxMs)}</span>}
+            {single || point.maxMs === null ? null : <span className="text-muted-foreground"> · max {formatMs(point.maxMs)}</span>}
           </span>
         )}
       </div>
