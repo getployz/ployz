@@ -206,7 +206,10 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 "CPU limit is below one nanocpu",
             ));
         }
-        let memory_bytes = config.mem_limit.map(|gb| (gb * 1_000_000_000.0) as i64);
+        // Whole bytes: 1GiB is stored as 1.073741824 GB, a hair under in floating point.
+        let memory_bytes = config
+            .mem_limit
+            .map(|gb| (gb * 1_000_000_000.0).round() as i64);
         if memory_bytes == Some(0) {
             return Err(ConfigError::at(
                 "memLimit",

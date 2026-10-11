@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DiffView, DomainRow, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
-import { serviceSetting, settingChange, settingError } from "./catalog";
+import { scalarSetting, serviceSetting, settingChange, settingError } from "./catalog";
 import { domainChanged, newServiceName, serviceChangeCount, serviceChanges } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
@@ -44,6 +44,11 @@ describe("catalog fields", () => {
     expect(settingChange("web.replicas", replicas, "3")).toEqual({ op: "set", path: "web.replicas", value: 3 });
     expect(settingChange("web.startCommand", serviceSetting("startCommand"), "npm start")).toEqual({ op: "set", path: "web.startCommand", value: "npm start" });
     expect(settingChange("web.replicas", replicas, "")).toEqual({ op: "unset", path: "web.replicas" });
+    // Memory takes GB or a size with a unit; its field edits GB.
+    const memory = scalarSetting("memLimit");
+    expect(settingError(memory, "1.5")).toBeNull();
+    expect(settingError(memory, "2000")).toBe("Enter a number above 0, up to 1024.");
+    expect(settingChange("web.memLimit", memory, "1.5")).toEqual({ op: "set", path: "web.memLimit", value: 1.5 });
   });
 });
 

@@ -26,6 +26,18 @@ export function serviceSetting<S extends ServiceSettingName>(name: S): (typeof c
   return catalog.$defs.service.properties[name];
 }
 
+/**
+ * A scalar Setting as one form field: a Setting that takes several shapes (memory as GB or as a size with a unit) is
+ * edited in its first, the plain number.
+ */
+export function scalarSetting(name: ServiceSettingName): SettingSchema {
+  const setting: Omit<SettingSchema, "type"> & { type?: string; anyOf?: readonly Shape[] } = serviceSetting(name);
+  const { anyOf, ...rest } = setting;
+  const first = anyOf?.find((shape): shape is Partial<SettingSchema> & { type: string } => typeof shape.type === "string");
+  return { ...rest, ...first, type: first?.type ?? rest.type ?? "object" };
+}
+type Shape = { type?: unknown; [constraint: string]: unknown };
+
 /** A Setting's title by name, for rows that name any Setting (a diff); none for names outside the catalog. */
 export function settingTitle(name: string): string | undefined {
   const properties: Record<string, { title?: string }> = catalog.$defs.service.properties;

@@ -116,7 +116,7 @@ fn service() -> Value {
         "mounts".to_owned(),
         json!({
             "title": "Mounts",
-            "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create a Volume with `ployz volume add`. Unset detaches it: the Volume and its data stay.",
+            "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create the Volume first. Unset detaches it: the Volume and its data stay.",
             "type": "object",
             "patternProperties": { NODE_NAME: mount() },
             "additionalProperties": false,
@@ -130,7 +130,7 @@ fn service() -> Value {
         "configs".to_owned(),
         json!({
             "title": "Config mounts",
-            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add a Config with `ployz config add`. Unset unmounts it: the Config and its files stay.",
+            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add the Config first. Unset unmounts it: the Config and its files stay.",
             "type": "object",
             "patternProperties": { NODE_NAME: config_mount() },
             "additionalProperties": false,
@@ -142,7 +142,7 @@ fn service() -> Value {
     );
     json!({
         "title": "Service",
-        "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
+        "description": "A Service's Settings, by name. Reads show them in this shape, and a patch takes the same shape.",
         "type": "object",
         "properties": properties,
         "additionalProperties": false,
@@ -269,20 +269,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn no_setting_text_names_a_command_or_a_flag() {
+        let schemas = [
+            schema(Some("web")).unwrap(),
+            schema(Some("web.env.K")).unwrap(),
+            schema(Some("web.env.K.exported")).unwrap(),
+            schema(Some("web.mounts.data")).unwrap(),
+            schema(Some("web.configs.sentry")).unwrap(),
+        ];
+        for schema in schemas {
+            let text = schema.to_string();
+            assert!(!text.contains("ployz ") && !text.contains("--"), "{text}");
+        }
+    }
+
     /// The JSON Schema keywords the catalog emits.
     fn satisfies(value: &Value, schema: &Value) -> bool {
-        if let Some(options) = schema.get("oneOf").and_then(Value::as_array) {
+        if let Some(options) = schema.get("anyOf").and_then(Value::as_array) {
             let mut rest = schema.as_object().unwrap().clone();
-            rest.remove("oneOf");
-            return options
-                .iter()
-                .filter(|one| {
-                    let mut both = rest.clone();
-                    both.extend(one.as_object().unwrap().clone());
-                    satisfies(value, &Value::Object(both))
-                })
-                .count()
-                == 1;
+            rest.remove("anyOf");
+            // An alternative's own fields replace the shared ones, as additionalProperties does.
+            return options.iter().any(|one| {
+                let mut both = rest.clone();
+                both.extend(one.as_object().unwrap().clone());
+                satisfies(value, &Value::Object(both))
+            });
         }
         if let Some(constant) = schema.get("const") {
             return value == constant;

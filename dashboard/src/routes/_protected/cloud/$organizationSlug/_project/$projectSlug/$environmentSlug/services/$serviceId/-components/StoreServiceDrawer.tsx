@@ -19,7 +19,7 @@ import { cn } from "#/lib/utils";
 import { sourceText } from "#/modules/config-store/store-branches";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
+import { scalarSetting, serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { templateLabel } from "#/modules/config-store/database-presets";
 import { changedProps, dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
@@ -279,7 +279,7 @@ const policyText = (value: JsonValue | undefined) => value === null || value ===
 function StoreSettingField({ state, name, warning }: { state: StoreService; name: ServiceSettingName; warning?: ReactNode }) {
   // A Store refusal (a rule the panel didn't foresee, or a change from elsewhere) shows on the row, not only in a toast.
   const [refusal, setRefusal] = useState<string | null>(null);
-  const setting: SettingSchema = serviceSetting(name);
+  const setting = scalarSetting(name);
   const row = state.rows.get(name);
   // Settings that don't apply to this source (a Dockerfile path on an image) have no row.
   if (!row) return null;

@@ -383,7 +383,15 @@ path: SettingPath,
 /**
  * Its Settings by name.
  */
-value: JsonValue, };
+value: JsonValue, } | { "op": "rename",
+/**
+ * The variable, as `SERVICE.env.KEY`.
+ */
+path: SettingPath,
+/**
+ * Its new name.
+ */
+to: string, };
 
 export type ChangeKind = "add" | "update" | "remove";
 

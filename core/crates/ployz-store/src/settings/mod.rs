@@ -10,6 +10,8 @@ pub(crate) mod query;
 pub(crate) use path::{NodeField, Target, config_name, name_a_setting};
 pub use path::{NodeName, SettingPath};
 
+mod size;
+
 use ployz_core::RpcError;
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
@@ -178,7 +180,9 @@ impl ServiceSetting {
             }
             Self::Image => "The container image each replica runs.",
             Self::MaxRetries => "How often an on-failure restart policy restarts a replica.",
-            Self::MemLimit => "Most memory each replica may use, in GB. Unset means no limit.",
+            Self::MemLimit => {
+                "Most memory each replica may use. A number is GB; a string takes a unit. Unset means no limit."
+            }
             Self::PreDeployCommand => {
                 "Runs once in a new replica before a Deploy starts the Service."
             }
@@ -186,7 +190,7 @@ impl ServiceSetting {
                 "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name."
             }
             Self::RegistryCredential => {
-                "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -."
+                "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}, and sending that back keeps it."
             }
             Self::Replicas => "How many copies of the Service run.",
             Self::RestartPolicy => "When a stopped replica restarts.",
@@ -263,34 +267,46 @@ impl ServiceSetting {
             Self::CpuLimit => {
                 json!({ "type": "number", "exclusiveMinimum": 0, "maximum": CPU_LIMIT_MAX })
             }
-            Self::MemLimit => {
-                json!({ "type": "number", "exclusiveMinimum": 0, "maximum": MEM_LIMIT_MAX })
-            }
-            Self::Healthcheck => json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
-                        "minLength": 1,
-                        "maxLength": HEALTHCHECK_PATH_MAX,
-                    },
-                    "command": {
-                        "type": "string",
-                        "pattern": "^[^\\u0000]*$",
-                        "minLength": 1,
-                        "maxLength": COMMAND_MAX,
-                    },
-                    "timeoutSeconds": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": HEALTHCHECK_TIMEOUT_MAX,
-                        "default": HEALTHCHECK_TIMEOUT_DEFAULT,
-                    },
-                },
-                "oneOf": [{ "required": ["path"] }, { "required": ["command"] }],
-                "additionalProperties": false,
+            Self::MemLimit => json!({
+                "anyOf": [
+                    { "type": "number", "exclusiveMinimum": 0, "maximum": MEM_LIMIT_MAX },
+                    { "type": "string", "pattern": size::PATTERN },
+                ],
             }),
+            Self::Healthcheck => {
+                let path = json!({
+                    "type": "string",
+                    "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                    "minLength": 1,
+                    "maxLength": HEALTHCHECK_PATH_MAX,
+                });
+                let command = json!({
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$",
+                    "minLength": 1,
+                    "maxLength": COMMAND_MAX,
+                });
+                let timeout = json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": HEALTHCHECK_TIMEOUT_MAX,
+                    "default": HEALTHCHECK_TIMEOUT_DEFAULT,
+                });
+                // Each alternative names its own fields, so a path and a command together match neither.
+                let only = |field: &str, schema: &Value| {
+                    json!({
+                        "properties": { field: schema, "timeoutSeconds": timeout },
+                        "required": [field],
+                        "additionalProperties": false,
+                    })
+                };
+                json!({
+                    "type": "object",
+                    "properties": { "path": path, "command": command, "timeoutSeconds": timeout },
+                    "anyOf": [only("path", &path), only("command", &command)],
+                    "additionalProperties": false,
+                })
+            }
             Self::Image => {
                 json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": IMAGE_MAX })
             }
@@ -318,7 +334,7 @@ impl ServiceSetting {
                 "type": "object",
                 "properties": {
                     "username": { "type": "string", "minLength": 1, "maxLength": 255 },
-                    "secret": { "oneOf": [{ "type": "string", "minLength": 1 }, { "const": true }] },
+                    "secret": { "anyOf": [{ "type": "string", "minLength": 1 }, { "const": true }] },
                 },
                 "required": ["secret"],
                 "additionalProperties": false,
@@ -338,7 +354,7 @@ impl ServiceSetting {
             ]),
             Self::Image => json!(["nginx:1.27", "ghcr.io/acme/web:1.4.0"]),
             Self::MaxRetries => json!([3]),
-            Self::MemLimit => json!([0.5, 4]),
+            Self::MemLimit => json!(["1GiB", "512MiB", 0.5]),
             Self::PreDeployCommand => json!(["npm run migrate"]),
             Self::PrivateDns => json!(["api", "api-v2"]),
             Self::RegistryCredential => json!([{ "secret": true }]),
@@ -447,7 +463,10 @@ impl ServiceSetting {
         if value.is_null() {
             return Err(self.invalid("null never clears a Setting; unset it"));
         }
-        let value = self.coerce(value);
+        let value = match self {
+            Self::MemLimit => self.mem_limit(value)?,
+            _ => self.coerce(value),
+        };
         if let Self::Git(git) = self {
             return git.set(config, value, trusted);
         }
@@ -521,6 +540,30 @@ impl ServiceSetting {
             | Value::Object(_) => return Err(self.invalid(EXPECTED)),
         };
         Ok(serde_json::to_value(healthcheck).expect("a healthcheck is JSON"))
+    }
+
+    /// A memory limit in GB from a number, text spelling one, or a size with a unit,
+    /// rounded to whole bytes. A number of bytes is refused with its size.
+    fn mem_limit(self, value: Value) -> Result<Value, RpcError> {
+        if let Some(bytes) = value.as_str().and_then(|text| size::bytes(text.trim())) {
+            return Ok(json!(bytes / 1e9));
+        }
+        let value = self.coerce_number(value);
+        if value.is_string() {
+            return Err(self.invalid(
+                "expected GB above 0 and up to 1024, or a size with a unit such as \"512MiB\" or \"1GiB\"",
+            ));
+        }
+        if let Some((size, text)) = value.as_f64().and_then(size::looks_like_bytes) {
+            return Err(error::invalid(
+                format!(
+                    "{}: {value} is above the most, {MEM_LIMIT_MAX} GB. It looks like bytes: {size} is \"{text}\".",
+                    self.name()
+                ),
+                json!({ "setting": self.name(), "expected": self.expected(), "example": text }),
+            ));
+        }
+        Ok(value)
     }
 
     /// Return this Setting to its [`default`](Self::default).

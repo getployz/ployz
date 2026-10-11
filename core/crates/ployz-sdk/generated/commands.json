@@ -4130,6 +4130,7 @@
         "conflicts": [
           "--secret",
           "--from-env-file",
+          "--rename",
           "--at-merge"
         ],
         "stdin": "on-dash"
@@ -4143,7 +4144,8 @@
         "trailing": false,
         "help": "Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value",
         "conflicts": [
-          "--patch"
+          "--patch",
+          "--rename"
         ],
         "stdin": "only"
       },
@@ -4157,9 +4159,24 @@
         "help": "Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret",
         "conflicts": [
           "--patch",
+          "--rename",
           "--at-merge"
         ],
         "stdin": "on-dash"
+      },
+      {
+        "name": "--rename",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Rename the variable SERVICE.env.KEY to NAME; its value moves with it, and a secret stays sealed",
+        "conflicts": [
+          "--patch",
+          "--secret",
+          "--from-env-file"
+        ]
       },
       {
         "name": "--at-merge",

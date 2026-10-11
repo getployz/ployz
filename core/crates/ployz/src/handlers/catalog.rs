@@ -367,16 +367,22 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     if let Some(values) = schema.get("enum") {
         record.push("allowed", values);
     }
-    // The bounds the Store enforces, so a refused value needs no second read.
-    let low = schema
+    // The bounds the Store enforces, so a refused value needs no second read: the
+    // schema's own, or its number alternative's (a memory limit also takes a size).
+    let bounded = schema
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .and_then(|options| options.iter().find(|one| one.get("maximum").is_some()))
+        .unwrap_or(schema);
+    let low = bounded
         .get("minimum")
         .map(|low| format!("at least {low}"))
         .or_else(|| {
-            schema
+            bounded
                 .get("exclusiveMinimum")
                 .map(|low| format!("above {low}"))
         });
-    let high = schema.get("maximum").map(|high| format!("at most {high}"));
+    let high = bounded.get("maximum").map(|high| format!("at most {high}"));
     match (low, high) {
         (Some(low), Some(high)) => record.push("range", format_args!("{low}, {high}")),
         (Some(bound), None) | (None, Some(bound)) => record.push("range", bound),
@@ -396,7 +402,7 @@ fn type_of(schema: &Value) -> String {
         return kind.to_owned();
     }
     let mut kinds: Vec<&str> = schema
-        .get("oneOf")
+        .get("anyOf")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()

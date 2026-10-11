@@ -136,14 +136,7 @@ pub(crate) fn set(
     value: Value,
     sealing: &SealingKey,
 ) -> Result<(bool, Option<Typed>), RpcError> {
-    // Ployz provides these; a Service's own value would lie about its name and address. PORT is meant to be set.
-    // Only setting is refused, so an Environment that already holds one can still unset it.
-    if key.as_str() != "PORT" && ployz_core::config::BUILT_IN_VARIABLES.contains(&key.as_str()) {
-        return Err(error::invalid(
-            format!("{key} is set by Ployz; pick another name"),
-            json!({ "reserved": key.as_str() }),
-        ));
-    }
+    refuse_reserved(key)?;
     let (input, exported) = match value {
         Value::Object(mut fields) if !fields.contains_key("secret") => {
             if fields
@@ -191,9 +184,11 @@ pub(crate) fn set(
         ),
         (Some(Input::Keep), _) => return Err(invalid(key, "it holds no secret to keep")),
         (Some(Input::Text(_)), Some(current)) if secret(current) => {
-            return Err(invalid(
-                key,
-                "it is secret, and a secret never becomes plain text: set it with --secret",
+            return Err(error::conflict(
+                format!(
+                    "{key} is a secret, and a secret never becomes plain text: set a new secret, or unset it first"
+                ),
+                json!({ "variable": key.as_str() }),
             ));
         }
         (Some(Input::Text(text)), _) => {
@@ -240,6 +235,57 @@ pub(crate) fn set(
         None => variables.push(next),
     }
     Ok((true, typed))
+}
+
+/// Ployz provides these; a Service's own value would lie about its name and address.
+/// PORT is meant to be set. Only setting is refused, so an Environment that already
+/// holds one can still unset it.
+fn refuse_reserved(key: &VariableKey) -> Result<(), RpcError> {
+    if key.as_str() != "PORT" && ployz_core::config::BUILT_IN_VARIABLES.contains(&key.as_str()) {
+        return Err(error::invalid(
+            format!("{key} is set by Ployz; pick another name"),
+            json!({ "reserved": key.as_str() }),
+        ));
+    }
+    Ok(())
+}
+
+/// Rename variable `key` of `service` to `to`, keeping its value, secret or not,
+/// without opening it. Already renamed is no change, so a retried rename succeeds.
+/// References to the old name elsewhere are left as they are.
+pub(crate) fn rename(
+    environment: &mut Environment,
+    service: &ServiceName,
+    key: &VariableKey,
+    to: &VariableKey,
+) -> Result<bool, RpcError> {
+    refuse_reserved(to)?;
+    let node = environment.service(service)?;
+    let has = |name: &VariableKey| node.variables.iter().any(|v| v.key == name.as_str());
+    match (has(key), key != to && has(to)) {
+        // A rename onto a name in use would lose one value: refuse, and change neither.
+        (true, true) => Err(error::conflict(
+            format!(
+                "{} already has a variable {to}; rename or unset that one first",
+                node.slug
+            ),
+            json!({ "variable": to.as_str() }),
+        )),
+        (true, false) if key == to => Ok(false),
+        // Already renamed by an earlier try.
+        (false, true) => Ok(false),
+        (false, false) => find(node, key).map(|_| false),
+        (true, false) => {
+            let variable = environment
+                .service_mut(service)?
+                .variables
+                .iter_mut()
+                .find(|variable| variable.key == key.as_str())
+                .ok_or_else(|| error::corrupt("variable"))?;
+            to.as_str().clone_into(&mut variable.key);
+            Ok(true)
+        }
+    }
 }
 
 /// Text as a variable's parts, referencing Services by their names in `names`
@@ -389,14 +435,14 @@ pub(crate) fn schema() -> Value {
     });
     json!({
         "title": "Variable",
-        "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it; set a new one with --secret or --from-env-file. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
-        "oneOf": [
+        "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
+        "anyOf": [
             { "type": "string" },
             secret,
             {
                 "type": "object",
                 "properties": {
-                    "value": { "oneOf": [{ "type": "string" }, secret] },
+                    "value": { "anyOf": [{ "type": "string" }, secret] },
                     "exported": { "type": "boolean", "default": false },
                 },
                 "additionalProperties": false,

@@ -83,6 +83,28 @@ fn lowering_refuses_unexpanded_managed_hostnames() {
 }
 
 #[test]
+fn lowering_a_memory_limit_gives_its_whole_bytes() {
+    // 15MiB stored as GB multiplies back to a hair under its bytes.
+    for (gb, bytes) in [
+        (1.073_741_824, 1_073_741_824_i64),
+        (0.015_728_64, 15_728_640),
+    ] {
+        let config = json!({"version":2,"privateDns":"api",
+            "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+            "healthcheck":{"type":"none"},"restartPolicy":"on-failure","memLimit":gb
+        });
+        let intent = lowered(json!({
+            "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            intent["target"][0]["container"]["resources"]["memory_bytes"],
+            bytes
+        );
+    }
+}
+
+#[test]
 fn lowering_retains_commands_limits_restart_and_network_ownership() {
     let config = json!({"version":2,"privateDns":"api",
         "source":{"version":1,"type":"image","image":"registry.test/api@sha256:captured","credentials":{"type":"none"}},

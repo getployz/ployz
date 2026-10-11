@@ -2,7 +2,7 @@
   "$defs": {
     "service": {
       "additionalProperties": false,
-      "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
+      "description": "A Service's Settings, by name. Reads show them in this shape, and a patch takes the same shape.",
       "properties": {
         "autoDeploy": {
           "default": true,
@@ -62,7 +62,7 @@
         },
         "configs": {
           "additionalProperties": false,
-          "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add a Config with `ployz config add`. Unset unmounts it: the Config and its files stay.",
+          "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add the Config first. Unset unmounts it: the Config and its files stay.",
           "examples": [
             {
               "sentry": "/etc/sentry"
@@ -131,18 +131,7 @@
           ],
           "patternProperties": {
             "^[A-Z_][A-Z0-9_]{0,127}$": {
-              "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it; set a new one with --secret or --from-env-file. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
-              "examples": [
-                "postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app",
-                {
-                  "secret": true
-                },
-                {
-                  "exported": true,
-                  "value": "info"
-                }
-              ],
-              "oneOf": [
+              "anyOf": [
                 {
                   "type": "string"
                 },
@@ -166,7 +155,7 @@
                       "type": "boolean"
                     },
                     "value": {
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "type": "string"
                         },
@@ -188,6 +177,17 @@
                   "type": "object"
                 }
               ],
+              "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
+              "examples": [
+                "postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app",
+                {
+                  "secret": true
+                },
+                {
+                  "exported": true,
+                  "value": "info"
+                }
+              ],
               "title": "Variable",
               "x-ployz-apply": "staged",
               "x-ployz-data-loss": false,
@@ -202,6 +202,48 @@
         },
         "healthcheck": {
           "additionalProperties": false,
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "maxLength": 500,
+                  "minLength": 1,
+                  "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                  "type": "string"
+                },
+                "timeoutSeconds": {
+                  "default": 300,
+                  "maximum": 300,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "command": {
+                  "maxLength": 2000,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$",
+                  "type": "string"
+                },
+                "timeoutSeconds": {
+                  "default": 300,
+                  "maximum": 300,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command"
+              ]
+            }
+          ],
           "description": "A check a new replica must pass before it takes traffic: an HTTP path on the container PORT or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check.",
           "examples": [
             {
@@ -211,18 +253,6 @@
             {
               "command": "pg_isready -h 127.0.0.1",
               "timeoutSeconds": 60
-            }
-          ],
-          "oneOf": [
-            {
-              "required": [
-                "path"
-              ]
-            },
-            {
-              "required": [
-                "command"
-              ]
             }
           ],
           "properties": {
@@ -281,22 +311,31 @@
           "x-ployz-secret": false
         },
         "memLimit": {
-          "description": "Most memory each replica may use, in GB. Unset means no limit.",
-          "examples": [
-            0.5,
-            4
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1024.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^[0-9]+(\\.[0-9]+)?\\s?(MB|GB|TB|MiB|GiB|TiB)$",
+              "type": "string"
+            }
           ],
-          "exclusiveMinimum": 0,
-          "maximum": 1024.0,
+          "description": "Most memory each replica may use. A number is GB; a string takes a unit. Unset means no limit.",
+          "examples": [
+            "1GiB",
+            "512MiB",
+            0.5
+          ],
           "title": "Memory limit",
-          "type": "number",
           "x-ployz-apply": "staged",
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },
         "mounts": {
           "additionalProperties": false,
-          "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create a Volume with `ployz volume add`. Unset detaches it: the Volume and its data stay.",
+          "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create the Volume first. Unset detaches it: the Volume and its data stay.",
           "examples": [
             {
               "data": "/var/lib/data"
@@ -372,7 +411,7 @@
         },
         "registryCredential": {
           "additionalProperties": false,
-          "description": "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -.",
+          "description": "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}, and sending that back keeps it.",
           "examples": [
             {
               "secret": true
@@ -380,7 +419,7 @@
           ],
           "properties": {
             "secret": {
-              "oneOf": [
+              "anyOf": [
                 {
                   "minLength": 1,
                   "type": "string"

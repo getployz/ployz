@@ -1890,6 +1890,34 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
             12
         );
 
+        ok(store, &["set", "web.memLimit=1GiB"]);
+        assert_eq!(
+            ok(store, &["get", "web.memLimit"])["settings"][0]["value"],
+            json!(1.073741824)
+        );
+        let bytes = failed(store, &["set", "web.memLimit=1073741824"], 2);
+        assert_eq!(bytes.pointer("/details/example"), Some(&json!("1GiB")));
+
+        ok(store, &["set", "web.env.API_URL=https://api.example"]);
+        let renamed = ok(
+            store,
+            &["set", "web.env.API_URL", "--rename", "PUBLIC_API_URL"],
+        );
+        assert_eq!(
+            renamed.get("staged"),
+            Some(&json!(["web.env.PUBLIC_API_URL", "web.env.API_URL"]))
+        );
+        assert_eq!(
+            ok(store, &["get", "web.env.PUBLIC_API_URL"])["settings"][0]["value"],
+            json!("https://api.example")
+        );
+        ok(store, &["set", "web.env.LOG_LEVEL=info"]);
+        let clash = error(
+            store,
+            &["set", "web.env.LOG_LEVEL", "--rename", "PUBLIC_API_URL"],
+        );
+        assert_eq!(clash.get("code"), Some(&json!("conflict")));
+
         for patch in [r#"{"memLimit": null}"#, "not json"] {
             let refused = failed(store, &["set", "web", "--patch", patch], 2);
             assert_eq!(

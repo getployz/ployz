@@ -54,6 +54,12 @@ pub(crate) fn set_command() -> Command {
                 .help("Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret"),
         )
         .arg(
+            value("rename", None)
+                .value_name("NAME")
+                .conflicts_with_all(["patch", "secret", "from-env-file"])
+                .help("Rename the variable SERVICE.env.KEY to NAME; its value moves with it, and a secret stays sealed"),
+        )
+        .arg(
             value("at-merge", None)
                 .value_name("PR")
                 .requires("secret")
@@ -169,6 +175,24 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             }],
         );
     }
+    if let Some(to) = matches.get_one::<String>("rename") {
+        let path = one_service(
+            matches,
+            "--rename takes one variable: set web.env.API_URL --rename PUBLIC_API_URL",
+        )?;
+        if path.contains('=') {
+            return Err(Error::usage(
+                "--rename takes a variable, not a value: set web.env.API_URL --rename PUBLIC_API_URL",
+            ));
+        }
+        return edit(
+            root,
+            vec![Change::Rename {
+                path: SettingPath::parse(&path)?,
+                to: to.clone(),
+            }],
+        );
+    }
     if matches.get_flag("secret") {
         let path = one_service(
             matches,
@@ -228,7 +252,7 @@ fn repeated(changes: &[Change]) -> Option<String> {
     let mut seen = std::collections::BTreeSet::new();
     changes.iter().find_map(|change| match change {
         Change::Set { path, .. } => (!seen.insert(path.to_string())).then(|| path.to_string()),
-        Change::Unset { .. } | Change::Patch { .. } => None,
+        Change::Unset { .. } | Change::Patch { .. } | Change::Rename { .. } => None,
     })
 }
 
@@ -375,12 +399,16 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
 
 /// Why an edit that changed nothing had nothing to change.
 fn unchanged(changes: &[Change]) -> String {
+    if let [Change::Rename { path, to }] = changes {
+        return format!("{path} is already named {to}");
+    }
     let paths = changes
         .iter()
         .map(|change| match change {
-            Change::Set { path, .. } | Change::Unset { path } | Change::Patch { path, .. } => {
-                path.to_string()
-            }
+            Change::Set { path, .. }
+            | Change::Unset { path }
+            | Change::Patch { path, .. }
+            | Change::Rename { path, .. } => path.to_string(),
         })
         .collect::<Vec<_>>()
         .join(", ");

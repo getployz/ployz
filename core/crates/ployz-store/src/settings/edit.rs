@@ -1,4 +1,5 @@
-//! Edits: `set` and `unset` of Settings in an Environment's Working State.
+//! Edits: `set`, `unset` and `rename` of Settings and variables in an Environment's
+//! Working State.
 //!
 //! An edit is blind by default: it applies to the latest Working State under the
 //! Environment's lock, so edits to different Settings never overwrite each other.
@@ -61,6 +62,21 @@ pub enum Change {
         /// Its Settings by name.
         value: Value,
     },
+    /// Rename a variable. Its value moves with it, and a secret stays sealed.
+    /// Already renamed is no change, so a retried rename succeeds.
+    Rename {
+        /// The variable, as `SERVICE.env.KEY`.
+        path: SettingPath,
+        /// Its new name.
+        to: String,
+    },
+}
+
+/// One expanded change: a value to set, a Setting to unset, or a variable's new name.
+enum Step {
+    Set(Value),
+    Unset,
+    Rename(VariableKey),
 }
 
 /// The Environment after an edit, and which Setting paths it changed: staged until
@@ -110,10 +126,37 @@ pub(crate) fn edit(
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
     let mut typed_addresses: Vec<TypedAddresses> = Vec::new();
-    for (path, value) in expand(&edit.changes)? {
+    for (path, step) in expand(&edit.changes)? {
+        let service = path.settings_of()?;
+        let value = match step {
+            Step::Set(value) => Some(value),
+            Step::Unset => None,
+            Step::Rename(to) => {
+                let Some(Target::Variable(key)) = path.target() else {
+                    return Err(error::invalid(
+                        format!("{path}: only a variable is renamed"),
+                        json!({ "example": "web.env.API_URL" }),
+                    ));
+                };
+                let renamed = SettingPath::at(service, Target::Variable(to.clone()));
+                if variables::rename(&mut environment, service, key, &to)? {
+                    // What the variable types moves with it.
+                    for typed in &mut typed_addresses {
+                        if typed.path == path {
+                            typed.path = renamed.clone();
+                        }
+                    }
+                    for changed in [renamed, path] {
+                        if !staged.contains(&changed) {
+                            staged.push(changed);
+                        }
+                    }
+                }
+                continue;
+            }
+        };
         // Only the last change to a variable decides what it types.
         typed_addresses.retain(|typed| typed.path != path);
-        let service = path.settings_of()?;
         // A new credential applies at once; turning one on or off is staged.
         if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
             let changed = match &value {
@@ -266,18 +309,21 @@ pub(crate) fn edit(
     })
 }
 
-/// Every change as one path to set (with its value) or unset.
-fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcError> {
+/// Every change as one path to set (with its value), unset, or rename.
+fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Step)>, RpcError> {
     let mut expanded = Vec::new();
     for change in changes {
         match change {
-            Change::Set { path, value } => expanded.push((path.clone(), Some(value.clone()))),
-            Change::Unset { path } => expanded.push((path.clone(), None)),
+            Change::Set { path, value } => expanded.push((path.clone(), Step::Set(value.clone()))),
+            Change::Unset { path } => expanded.push((path.clone(), Step::Unset)),
+            Change::Rename { path, to } => {
+                expanded.push((path.clone(), Step::Rename(VariableKey::parse(to)?)));
+            }
             Change::Patch { path, value } => {
                 let service = path.settings_of()?;
                 if path.target().is_some() {
                     return Err(error::invalid(
-                        "A patch addresses a Service: set SERVICE --patch",
+                        "A patch addresses a Service, not one of its Settings",
                         json!({ "example": service }),
                     ));
                 }
@@ -298,7 +344,7 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         for (key, value) in variables {
                             let key = VariableKey::parse(key)?;
                             let path = SettingPath::at(service, Target::Variable(key));
-                            expanded.push((path, Some(value.clone())));
+                            expanded.push((path, Step::Set(value.clone())));
                         }
                         continue;
                     }
@@ -312,7 +358,7 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         for (volume, value) in mounts {
                             let volume = VolumeName::parse(volume.as_str())?;
                             let path = SettingPath::at(service, Target::Mount(volume));
-                            expanded.push((path, Some(value.clone())));
+                            expanded.push((path, Step::Set(value.clone())));
                         }
                         continue;
                     }
@@ -326,13 +372,13 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         for (config, value) in mounts {
                             let config = crate::settings::config_name(config)?;
                             let path = SettingPath::at(service, Target::ConfigMount(config.into()));
-                            expanded.push((path, Some(value.clone())));
+                            expanded.push((path, Step::Set(value.clone())));
                         }
                         continue;
                     }
                     let setting = ServiceSetting::parse(name)?;
                     let path = SettingPath::of(service, setting);
-                    expanded.push((path, Some(value.clone())));
+                    expanded.push((path, Step::Set(value.clone())));
                 }
             }
         }

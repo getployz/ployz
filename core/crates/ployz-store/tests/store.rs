@@ -216,11 +216,67 @@ fn every_setting_round_trips_get_patch_get() {
         )
         .unwrap();
     let after = get(&store, &who, Some("web")).values.unwrap();
+    // A size reads back as GB.
+    assert_eq!(values["memLimit"], "1GiB");
+    values.insert("memLimit".to_owned(), json!(1.073_741_824));
     assert_eq!(json!(after), json!(values));
     let again = store
         .write(&who, &edit(None, vec![patch(Value::Object(after))]))
         .unwrap();
     assert!(again.staged.is_empty(), "sending get back changes nothing");
+}
+
+#[test]
+fn a_memory_limit_takes_a_size_with_a_unit_and_refuses_bytes() {
+    let (store, who) = shop();
+    for (given, gb) in [
+        (json!("1GiB"), json!(1.073_741_824)),
+        (json!("512 MiB"), json!(0.536_870_912)),
+        (json!("2"), json!(2.0)),
+        (json!(0.5), json!(0.5)),
+    ] {
+        store
+            .write(&who, &edit(None, vec![set("web.memLimit", given.clone())]))
+            .unwrap();
+        assert_eq!(value(&store, &who, "web.memLimit"), gb, "{given}");
+    }
+    store
+        .write(
+            &who,
+            &edit(None, vec![patch(json!({ "memLimit": "1GiB" }))]),
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "web.memLimit"), json!(1.073_741_824));
+
+    let bytes = store
+        .write(
+            &who,
+            &edit(None, vec![set("web.memLimit", json!(1_073_741_824))]),
+        )
+        .unwrap_err();
+    assert_eq!(bytes.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        bytes.message,
+        "memLimit: 1073741824 is above the most, 1024 GB. It looks like bytes: 1 GiB is \"1GiB\"."
+    );
+    assert_eq!(bytes.details["example"], "1GiB");
+    for refused in [
+        json!("1gib"),
+        json!("1 KiB"),
+        json!("2TiB"),
+        json!(2000),
+        json!(0),
+    ] {
+        let error = store
+            .write(
+                &who,
+                &edit(None, vec![set("web.memLimit", refused.clone())]),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{refused}");
+        assert!(!error.message.contains("looks like bytes"), "{refused}");
+    }
+    assert_eq!(value(&store, &who, "web.memLimit"), json!(1.073_741_824));
 }
 
 #[test]

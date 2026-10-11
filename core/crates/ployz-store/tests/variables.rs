@@ -85,6 +85,34 @@ fn unset(store: &ConfigStore, path: &str) -> Edited {
         .unwrap()
 }
 
+/// Rename variable `path` to `to`, after setting `changes`, in one edit.
+fn rename(
+    store: &ConfigStore,
+    changes: &[(&str, Value)],
+    path: &str,
+    to: &str,
+) -> Result<Edited, RpcError> {
+    let mut changes = changes
+        .iter()
+        .map(|(path, value)| Change::Set {
+            path: SettingPath::parse(path).unwrap(),
+            value: value.clone(),
+        })
+        .collect::<Vec<_>>();
+    changes.push(Change::Rename {
+        path: SettingPath::parse(path).unwrap(),
+        to: to.to_owned(),
+    });
+    store.write(
+        &who(),
+        &Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes,
+        },
+    )
+}
+
 fn get(store: &ConfigStore, path: Option<&str>) -> ployz_store::EnvironmentView {
     store
         .read(
@@ -391,8 +419,9 @@ fn a_secret_is_kept_by_its_marker_and_never_becomes_plain() {
         assert!(staged(&set(&store, &[("web.env.TOKEN", same)]).unwrap()).is_empty());
     }
     let refused = set(&store, &[("web.env.TOKEN", json!("plain now"))]).unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
-    assert!(refused.message.contains("--secret"));
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert!(refused.message.contains("never becomes plain text"));
+    assert_eq!(value(&store, "web.env.TOKEN"), json!({ "secret": true }));
     assert!(!refused.to_string().contains("plain now"));
     // Nothing to keep on a plain or new variable.
     set(&store, &[("web.env.PLAIN", json!("x"))]).unwrap();
@@ -539,6 +568,94 @@ fn diff_and_plan_show_a_plain_template_opener_escaped_as_get_does() {
     let plan = json!(store.read(&who(), &PlanQuery::default()).unwrap());
     assert!(plan.to_string().contains("echo $${{ HOME }}"), "{plan}");
     assert!(!plan.to_string().contains("echo ${{ HOME }}"), "{plan}");
+}
+
+#[test]
+fn a_renamed_secret_stays_sealed_and_keeps_its_value() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.TOKEN", json!({ "secret": SECRET })),
+            (
+                "web.env.API_URL",
+                json!({ "value": "https://api", "exported": true }),
+            ),
+        ],
+    )
+    .unwrap();
+    let edited = rename(&store, &[], "web.env.TOKEN", "api_token").unwrap();
+    assert_eq!(staged(&edited), ["web.env.API_TOKEN", "web.env.TOKEN"]);
+    assert!(!json!(edited).to_string().contains("s3cr3t"));
+    assert_eq!(
+        value(&store, "web.env.API_TOKEN"),
+        json!({ "secret": true })
+    );
+    let gone = store
+        .read(
+            &who(),
+            &EnvironmentQuery {
+                path: Some(SettingPath::parse("web.env.TOKEN").unwrap()),
+                ..EnvironmentQuery::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(gone.code, RpcErrorCode::NotFound);
+    // A retry, or a rename to its own name, changes nothing.
+    assert!(staged(&rename(&store, &[], "web.env.TOKEN", "API_TOKEN").unwrap()).is_empty());
+    assert!(staged(&rename(&store, &[], "web.env.API_TOKEN", "API_TOKEN").unwrap()).is_empty());
+    // Exported stays exported.
+    rename(&store, &[], "web.env.API_URL", "PUBLIC_API_URL").unwrap();
+    assert_eq!(
+        value(&store, "web.env.PUBLIC_API_URL.exported"),
+        json!(true)
+    );
+    let id = admit(&store, 1).unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let web = environment_of(&claimed, "web");
+    assert_eq!(web["API_TOKEN"], SECRET);
+    assert_eq!(web["PUBLIC_API_URL"], "https://api");
+    assert!(web.get("TOKEN").is_none() && web.get("API_URL").is_none());
+}
+
+#[test]
+fn a_rename_onto_a_name_in_use_changes_neither() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.API_URL", json!("https://api")),
+            ("web.env.LOG_LEVEL", json!("info")),
+        ],
+    )
+    .unwrap();
+    // All or none: the set before the refused rename does not land either.
+    let refused = rename(
+        &store,
+        &[("web.env.LOG_LEVEL", json!("debug"))],
+        "web.env.API_URL",
+        "LOG_LEVEL",
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.details["variable"], "LOG_LEVEL");
+    assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
+    assert_eq!(value(&store, "web.env.LOG_LEVEL"), json!("info"));
+
+    let missing = rename(&store, &[], "web.env.API_UR", "OTHER").unwrap_err();
+    assert_eq!(missing.code, RpcErrorCode::NotFound);
+    assert_eq!(missing.details["did_you_mean"], "API_URL");
+    let reserved = rename(&store, &[], "web.env.API_URL", "PLOYZ_SERVICE_ID").unwrap_err();
+    assert_eq!(reserved.code, RpcErrorCode::InvalidArgument);
+    for (path, to) in [("web.replicas", "REPLICAS"), ("web.env.API_URL", "9LIVES")] {
+        let error = rename(&store, &[], path, to).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{path} → {to}");
+    }
+    assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
 }
 
 #[test]
