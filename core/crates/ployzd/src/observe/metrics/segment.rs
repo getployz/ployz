@@ -2,7 +2,8 @@
 //!
 //! Every container's rows share the hour's file, so disk grows with the hours
 //! kept rather than with how many containers came and went. Cleanup deletes
-//! a segment once its hour is a day old.
+//! a segment once its hour is a day old, or sooner when the Observe Store
+//! passes its cap or the disk its free floor.
 //!
 //! A crash can leave a segment's last line half written. Reads skip any line
 //! that does not parse, and the next append first ends the torn line so it

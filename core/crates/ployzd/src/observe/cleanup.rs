@@ -10,8 +10,10 @@
 //! store's link would free nothing, so only files the store alone holds
 //! (`nlink == 1`) count toward the cap and are deleted.
 //!
-//! Raw metric segments go by age alone: a segment is deleted once its whole
-//! hour is more than a day old.
+//! Closed raw metric segments share the cap and the free floor with log
+//! files, ordered by the end of their hour, so under pressure the oldest
+//! hours go first. A segment is also deleted once its whole hour is more than
+//! a day old. The open hour is never a candidate.
 
 use std::{
     ffi::CString,
@@ -92,8 +94,15 @@ pub struct Report {
     pub segments_deleted: usize,
 }
 
+enum Place {
+    /// A log file in the named container dir.
+    Log(CString),
+    /// A segment in the raw metrics dir open as this fd.
+    Segment(RawFd),
+}
+
 struct Candidate {
-    container: CString,
+    place: Place,
     name: CString,
     order: (i64, String, u64),
     size: u64,
@@ -116,7 +125,7 @@ const DIR_FLAGS: OFlag = OFlag::O_RDONLY
 
 /// Runs one cleanup pass. `container_exists` says whether Docker still has a
 /// container; a store dir is removed once its container is gone and it holds
-/// no log files. Raw metric segments past a day old are deleted too.
+/// no log files.
 ///
 /// # Errors
 ///
@@ -154,6 +163,22 @@ pub fn run(
         }
     }
 
+    let mut raw = match open_raw_metrics(store) {
+        Ok(raw) => raw,
+        Err(error) => {
+            tracing::warn!(%error, "could not open the raw metric segments");
+            None
+        }
+    };
+    let now_secs = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    if let Some(raw) = raw.as_mut() {
+        scan_raw_metrics(raw, now_secs, &mut candidates);
+    }
+
+    let raw_age_limit =
+        i64::try_from(now_secs.saturating_sub(RAW_METRICS_AGE.as_secs())).unwrap_or(i64::MAX);
     let age_limit = now
         .checked_sub(limits.max_age)
         .and_then(|limit| limit.duration_since(SystemTime::UNIX_EPOCH).ok())
@@ -163,7 +188,10 @@ pub fn run(
     let mut held: u64 = candidates.iter().map(|candidate| candidate.size).sum();
     let mut released: u64 = 0;
     for candidate in &candidates {
-        let too_old = candidate.order.0 < age_limit;
+        let too_old = match candidate.place {
+            Place::Log(_) => candidate.order.0 < age_limit,
+            Place::Segment(_) => candidate.order.0 <= raw_age_limit,
+        };
         let over_cap = held > limits.cap_bytes;
         let under_floor = disk.free_bytes.saturating_add(released) < limits.free_floor_bytes;
         if !(too_old || over_cap || under_floor) {
@@ -173,14 +201,19 @@ pub fn run(
             Ok(()) => {
                 held -= candidate.size;
                 released += candidate.allocated_bytes;
-                report.files_deleted += 1;
                 report.bytes_freed += candidate.size;
-                if let Some(dir) = dirs.iter_mut().find(|dir| dir.name == candidate.container) {
-                    dir.log_files -= 1;
+                match &candidate.place {
+                    Place::Log(container) => {
+                        report.files_deleted += 1;
+                        if let Some(dir) = dirs.iter_mut().find(|dir| &dir.name == container) {
+                            dir.log_files -= 1;
+                        }
+                    }
+                    Place::Segment(_) => report.segments_deleted += 1,
                 }
             }
             Err(error) => {
-                tracing::warn!(?candidate.name, %error, "could not delete a stored log file")
+                tracing::warn!(?candidate.name, %error, "could not delete a stored file")
             }
         }
     }
@@ -198,23 +231,12 @@ pub fn run(
         }
     }
 
-    match prune_raw_metrics(store, now) {
-        Ok(deleted) => report.segments_deleted = deleted,
-        Err(error) => tracing::warn!(%error, "could not prune raw metric segments"),
-    }
     Ok(report)
 }
 
-/// Deletes every raw segment whose hour ended more than a day before `now`,
-/// opening the segment dir as `open_containers` opens its dir.
-fn prune_raw_metrics(store: &StoreRoot, now: SystemTime) -> nix::Result<usize> {
-    let Some(cutoff) = now
-        .checked_sub(RAW_METRICS_AGE)
-        .and_then(|cutoff| cutoff.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|cutoff| cutoff.as_secs())
-    else {
-        return Ok(0);
-    };
+/// Opens the raw segment dir as `open_containers` opens its dir, or `None`
+/// before any segment was written.
+fn open_raw_metrics(store: &StoreRoot) -> nix::Result<Option<Dir>> {
     let base = Dir::open(store.base(), DIR_FLAGS, Mode::empty())?;
     let version = Dir::openat(
         Some(base.as_raw_fd()),
@@ -229,33 +251,54 @@ fn prune_raw_metrics(store: &StoreRoot, now: SystemTime) -> nix::Result<usize> {
         Mode::empty(),
     ) {
         Ok(metrics) => metrics,
-        Err(Errno::ENOENT) => return Ok(0),
+        Err(Errno::ENOENT) => return Ok(None),
         Err(error) => return Err(error),
     };
-    let mut raw = match Dir::openat(Some(metrics.as_raw_fd()), RAW_DIR, DIR_FLAGS, Mode::empty()) {
-        Ok(raw) => raw,
-        Err(Errno::ENOENT) => return Ok(0),
-        Err(error) => return Err(error),
-    };
+    match Dir::openat(Some(metrics.as_raw_fd()), RAW_DIR, DIR_FLAGS, Mode::empty()) {
+        Ok(raw) => Ok(Some(raw)),
+        Err(Errno::ENOENT) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Adds every closed segment to `candidates`, ordered by the end of its hour.
+fn scan_raw_metrics(raw: &mut Dir, now_secs: u64, candidates: &mut Vec<Candidate>) {
     let raw_fd = raw.as_raw_fd();
-    let expired: Vec<CString> = raw
+    let closed: Vec<(CString, SegmentName)> = raw
         .iter()
         .filter_map(Result::ok)
-        .filter(|entry| {
-            SegmentName::parse(entry.file_name().to_bytes())
-                .is_some_and(|name| name.end_secs() <= cutoff)
+        .filter_map(|entry| {
+            let segment = SegmentName::parse(entry.file_name().to_bytes())?;
+            (segment.end_secs() <= now_secs).then(|| (entry.file_name().to_owned(), segment))
         })
-        .map(|entry| entry.file_name().to_owned())
         .collect();
-    let mut deleted = 0;
-    for name in expired {
-        match unlinkat(Some(raw_fd), name.as_c_str(), UnlinkatFlags::NoRemoveDir) {
-            Ok(()) => deleted += 1,
-            Err(Errno::EISDIR | Errno::ENOENT) => {}
-            Err(error) => tracing::warn!(?name, %error, "could not delete a raw metric segment"),
+    for (name, segment) in closed {
+        let stat = match fstatat(Some(raw_fd), name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(error) => {
+                tracing::warn!(?name, %error, "skipping a raw metric segment");
+                continue;
+            }
+        };
+        if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFREG {
+            continue;
         }
+        candidates.push(Candidate {
+            place: Place::Segment(raw_fd),
+            name,
+            order: (
+                i64::try_from(segment.end_secs()).unwrap_or(i64::MAX),
+                String::new(),
+                segment.start_secs(),
+            ),
+            size: u64::try_from(stat.st_size).unwrap_or(0),
+            allocated_bytes: u64::try_from(stat.st_blocks)
+                .unwrap_or(0)
+                .saturating_mul(512),
+            dev: stat.st_dev,
+            ino: stat.st_ino,
+        });
     }
-    Ok(deleted)
 }
 
 /// Removes one container's store dir, log files included: the harvester held
@@ -359,7 +402,7 @@ fn scan_container(
         log_files += 1;
         if stat.st_nlink == 1 {
             candidates.push(Candidate {
-                container: name.clone(),
+                place: Place::Log(name.clone()),
                 name: file,
                 order: (stat.st_mtime, id.as_str().to_owned(), parsed.seq),
                 size: u64::try_from(stat.st_size).unwrap_or(0),
@@ -396,14 +439,24 @@ fn is_store_file(name: &CString) -> bool {
 }
 
 fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
-    let dir = Dir::openat(
-        Some(containers_fd),
-        candidate.container.as_c_str(),
-        DIR_FLAGS,
-        Mode::empty(),
-    )?;
+    match &candidate.place {
+        Place::Log(container) => {
+            let dir = Dir::openat(
+                Some(containers_fd),
+                container.as_c_str(),
+                DIR_FLAGS,
+                Mode::empty(),
+            )?;
+            unlink_unchanged(dir.as_raw_fd(), candidate)
+        }
+        Place::Segment(raw_fd) => unlink_unchanged(*raw_fd, candidate),
+    }
+}
+
+/// Unlinks the candidate only if it is still the file it was when scanned.
+fn unlink_unchanged(dir_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
     let stat = fstatat(
-        Some(dir.as_raw_fd()),
+        Some(dir_fd),
         candidate.name.as_c_str(),
         AtFlags::AT_SYMLINK_NOFOLLOW,
     )?;
@@ -416,7 +469,7 @@ fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
         return Err(Errno::ESTALE);
     }
     unlinkat(
-        Some(dir.as_raw_fd()),
+        Some(dir_fd),
         candidate.name.as_c_str(),
         UnlinkatFlags::NoRemoveDir,
     )
@@ -722,6 +775,85 @@ mod tests {
         want.sort();
         assert_eq!(names, want);
         assert_eq!(store.clean(u64::MAX, u64::MAX, &[]).segments_deleted, 0);
+    }
+
+    fn segment_name(hours_back: u64) -> String {
+        let hour = T0 - T0 % 3_600;
+        format!("{}.jsonl", hour - hours_back * 3_600)
+    }
+
+    impl Store {
+        fn segment(&self, hours_back: u64, size: usize) -> u64 {
+            let raw = self.root.raw_metrics();
+            fs::create_dir_all(&raw).unwrap();
+            let path = raw.join(segment_name(hours_back));
+            fs::write(&path, vec![b'x'; size]).unwrap();
+            fs::metadata(path).unwrap().blocks() * 512
+        }
+
+        fn segments(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(self.root.raw_metrics())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    #[test]
+    fn below_the_free_floor_the_oldest_metric_hours_go_first_and_the_open_hour_stays() {
+        let store = store();
+        store.file(&cid(1), "1-10.log", 10_000, 60);
+        let oldest = store.segment(3, 10_000);
+        let next = store.segment(2, 10_000);
+        store.segment(1, 10_000);
+        store.segment(0, 10_000);
+        let limits = Limits {
+            cap_bytes: u64::MAX,
+            free_floor_bytes: 1_000 + oldest + next,
+            max_age: Duration::from_secs(30 * 86_400),
+        };
+        let disk = Disk {
+            total_bytes: u64::MAX,
+            free_bytes: 1_000,
+        };
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(T0);
+        let report = run(&store.root, &limits, disk, now, |_| true).unwrap();
+        assert_eq!(
+            (
+                report.segments_deleted,
+                report.files_deleted,
+                report.bytes_freed
+            ),
+            (2, 0, 20_000)
+        );
+        let mut want = vec![segment_name(1), segment_name(0)];
+        want.sort();
+        assert_eq!(store.segments(), want);
+        assert_eq!(store.names(&cid(1)), ["1-10.log"]);
+
+        let disk = Disk {
+            total_bytes: u64::MAX,
+            free_bytes: 0,
+        };
+        let report = run(&store.root, &limits, disk, now, |_| true).unwrap();
+        assert_eq!((report.segments_deleted, report.files_deleted), (1, 1));
+        assert_eq!(store.segments(), [segment_name(0)]);
+    }
+
+    #[test]
+    fn metric_hours_share_the_cap_with_logs_in_age_order() {
+        let store = store();
+        store.file(&cid(1), "1-10.log", 100, 10 * 3_600);
+        store.segment(3, 100);
+        store.segment(2, 100);
+        store.file(&cid(1), "2-11.log", 100, 60);
+
+        let report = store.clean(200, u64::MAX, &[]);
+        assert_eq!((report.files_deleted, report.segments_deleted), (1, 1));
+        assert_eq!(store.names(&cid(1)), ["2-11.log"]);
+        assert_eq!(store.segments(), [segment_name(2)]);
     }
 
     #[test]

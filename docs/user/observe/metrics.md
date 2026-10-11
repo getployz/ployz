@@ -51,6 +51,9 @@ service, until its 90 days run out.
 - **Plain Docker volumes aren't measured**, and neither are files a service writes outside its
   volumes. Use a volume with a storage limit to see its usage. On a server that shows **Docker
   only**, Ployz warns when less than 10% of the disk is free.
+- **Metrics give way when disk runs low.** The last day of readings shares the disk space Ployz
+  keeps for logs. When that space fills, or the disk runs short of free space, the oldest hours
+  go first. See [Logs](logs.md).
 - **A missing number shows as not measured, never as zero.** A server that doesn't answer is
   named, and the other servers' numbers still show.
 - **Metrics share a CPU budget with logs.** Ployz caps its helper for both at 10% of one CPU core.
