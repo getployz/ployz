@@ -32,6 +32,7 @@ mod service;
 mod settings;
 mod storage;
 mod teardown;
+pub mod tools;
 mod trusted;
 mod typed_address;
 mod variables;
