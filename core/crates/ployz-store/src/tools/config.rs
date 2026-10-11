@@ -126,9 +126,12 @@ impl Tool for ConfigWrite {
             }));
         }
         let results = cx.batch(&scope, self.expect_revision, commands)?;
-        let staged = written(results, |one| match one {
-            Written::Config(staged) => Some(staged),
-            _ => None,
+        let staged = written(results, |one| {
+            if let Written::Config(staged) = one {
+                Some(staged)
+            } else {
+                None
+            }
         })?;
         Ok(json!({
             "at": at(&staged.environment),
@@ -187,9 +190,12 @@ impl Tool for ConfigRemove {
             }),
         };
         let results = cx.batch(&scope, self.expect_revision, vec![command])?;
-        let staged = written(results, |one| match one {
-            Written::Config(staged) | Written::ConfigRemoved(staged) => Some(staged),
-            _ => None,
+        let staged = written(results, |one| {
+            if let Written::Config(staged) | Written::ConfigRemoved(staged) = one {
+                Some(staged)
+            } else {
+                None
+            }
         })?;
         Ok(json!({
             "at": at(&staged.environment),

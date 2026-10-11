@@ -11,6 +11,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::LineCap;
+use super::machine::Stop;
 use super::refusal::{Refusal, ToolResult};
 use crate::github::{GithubFileQuery, GithubTreeQuery};
 use crate::{Command, DeploymentId, EnvironmentId, Query, VolumeId, VolumeName};
@@ -25,7 +26,7 @@ pub enum Step {
     /// Answer every ask, in order, then resume.
     Read { asks: Vec<Ask> },
     /// Run the one write, then resume with its answer.
-    Write { write: Write },
+    Write { write: Box<Write> },
     /// Sleep `ms`, answer every ask in `then`, then resume.
     Wait { ms: u32, then: Vec<Ask> },
     /// The call's result.
@@ -44,7 +45,9 @@ impl WriteSlot {
 
     /// The write step, spending the slot.
     pub(crate) fn spend(self, write: Write) -> Step {
-        Step::Write { write }
+        Step::Write {
+            write: Box::new(write),
+        }
     }
 }
 
@@ -207,10 +210,10 @@ impl AcceptedLoss {
     ///
     /// # Errors
     /// `invalid_argument` on `version` when Volumes come without one.
-    pub fn from_input(
+    pub(crate) fn from_input(
         volumes: Vec<String>,
         version: Option<String>,
-    ) -> Result<Option<Self>, Refusal> {
+    ) -> Result<Option<Self>, Stop> {
         if volumes.is_empty() {
             return Ok(None);
         }
@@ -218,7 +221,8 @@ impl AcceptedLoss {
             return Err(Refusal::invalid(
                 "Accepting Volume loss needs the version the refusal named",
                 "version",
-            ));
+            )
+            .into());
         };
         Ok(Some(Self { volumes, version }))
     }
@@ -255,8 +259,8 @@ impl RequestKey {
     /// A key of 8 to 64 letters, digits, `_` or `-`.
     ///
     /// # Errors
-    /// `invalid_argument` on `request_key` for anything else.
-    pub fn parse(key: impl Into<String>) -> Result<Self, Refusal> {
+    /// Why anything else is not a key.
+    pub fn parse(key: impl Into<String>) -> Result<Self, &'static str> {
         let key = key.into();
         let fits = (8..=64).contains(&key.len())
             && key
@@ -264,10 +268,7 @@ impl RequestKey {
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
         match fits {
             true => Ok(Self(key)),
-            false => Err(Refusal::invalid(
-                "A request key is 8 to 64 letters, digits, '_' or '-'",
-                "request_key",
-            )),
+            false => Err("A request key is 8 to 64 letters, digits, '_' or '-'"),
         }
     }
 
@@ -293,7 +294,7 @@ impl TryFrom<String> for RequestKey {
     type Error = String;
 
     fn try_from(key: String) -> Result<Self, String> {
-        Self::parse(key).map_err(|refusal| refusal.message)
+        Self::parse(key).map_err(str::to_owned)
     }
 }
 

@@ -121,9 +121,12 @@ impl Tool for VolumeAdd {
             self.expect_revision,
             vec![BatchCommand::CreateVolume(create)],
         )?;
-        let staged = written(results, |one| match one {
-            Written::Volume(staged) => Some(staged),
-            _ => None,
+        let staged = written(results, |one| {
+            if let Written::Volume(staged) = one {
+                Some(staged)
+            } else {
+                None
+            }
         })?;
         Ok(json!({
             "at": at(&staged.environment),

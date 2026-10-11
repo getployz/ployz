@@ -56,10 +56,16 @@ pub fn portable(mut schema: Value) -> Value {
             .remove("$defs")
             .and_then(|defs| match defs {
                 Value::Object(defs) => Some(defs),
-                _ => None,
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Array(_) => None,
             })
             .unwrap_or_default(),
-        _ => Map::new(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => {
+            Map::new()
+        }
     };
     tidy(&mut schema, &defs);
     schema
@@ -97,7 +103,7 @@ fn tidy(schema: &mut Value, defs: &Map<String, Value>) {
                 }
             }
         }
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 

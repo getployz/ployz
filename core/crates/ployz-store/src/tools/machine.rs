@@ -80,7 +80,7 @@ impl Kind {
 /// Why a plan stopped before answering.
 pub(crate) enum Stop {
     /// It needs this step's answers.
-    Step(Step, Kind),
+    Step(Box<Step>, Kind),
     /// It refuses.
     Refuse(Box<Refusal>),
 }
@@ -341,7 +341,7 @@ impl Cx<'_> {
     }
 
     fn next_step<T>(&self, step: Step, kind: Kind) -> Result<T, Stop> {
-        Err(Stop::Step(step, kind))
+        Err(Stop::Step(Box::new(step), kind))
     }
 }
 
@@ -493,7 +493,7 @@ fn advance(mut state: State) -> (Step, State) {
         ),
         Err(Stop::Step(step, kind)) => {
             state.pending = Some(kind);
-            (step, state)
+            (*step, state)
         }
         Err(Stop::Refuse(refusal)) => {
             let refusal = finish(*refusal, entry, &call, &state.call_key);

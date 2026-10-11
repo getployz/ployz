@@ -145,10 +145,6 @@ impl Refusal {
         Self::new(RpcErrorCode::Conflict, message)
     }
 
-    pub(crate) fn unsupported(message: impl Into<String>, fix: &Fix) -> Self {
-        Self::new(RpcErrorCode::Unsupported, message).with_fix(fix)
-    }
-
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self::new(RpcErrorCode::Internal, message)
     }
@@ -182,11 +178,6 @@ impl Refusal {
 
     pub(crate) fn with_retry(mut self, retry: Call) -> Self {
         self.retry = retry;
-        self
-    }
-
-    pub(crate) fn with_example(mut self, example: Value) -> Self {
-        self.example = Some(example);
         self
     }
 

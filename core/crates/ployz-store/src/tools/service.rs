@@ -156,9 +156,12 @@ impl Tool for ServiceAdd {
                     self.expect_revision,
                     vec![BatchCommand::CreateService(create)],
                 )?;
-                let staged = written(results, |one| match one {
-                    Written::Service(staged) => Some(staged),
-                    _ => None,
+                let staged = written(results, |one| {
+                    if let Written::Service(staged) = one {
+                        Some(staged)
+                    } else {
+                        None
+                    }
                 })?;
                 (staged, json!({ "image": image }))
             }
@@ -172,10 +175,7 @@ impl Tool for ServiceAdd {
                     branch: self.branch.clone(),
                 };
                 let staged = cx.write(&create)?;
-                let mut source = json!({ "repository": repository });
-                if let Some(branch) = self.branch {
-                    source["branch"] = json!(branch);
-                }
+                let source = json!({ "repository": repository, "branch": self.branch });
                 (staged, source)
             }
         };
