@@ -4,7 +4,7 @@
 //! it; a new secret arrives as `{"secret": "…"}` and is sealed before it is stored.
 //! `exported` marks a variable other Services are meant to reference.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use ployz_core::config::{
@@ -465,6 +465,9 @@ pub(crate) struct Resolved {
     pub(crate) env: BTreeMap<String, BTreeMap<String, String>>,
     /// Each Config's files, by Config ID.
     pub(crate) configs: BTreeMap<String, BTreeMap<ConfigFileName, ResolvedConfigFile>>,
+    /// The keys of each Service's environment whose value is or references a secret,
+    /// by Service ID.
+    pub(crate) secret: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
@@ -514,6 +517,7 @@ pub(crate) fn resolve(
     let mut resolved = Resolved {
         env: BTreeMap::new(),
         configs: BTreeMap::new(),
+        secret: BTreeMap::new(),
     };
     for node in &compiled.node_snapshots {
         let config = match &node.snapshot.0 {
@@ -534,6 +538,7 @@ pub(crate) fn resolve(
             CompiledNodeConfig::Volume(_) => continue,
         };
         let mut env = BTreeMap::new();
+        let mut secret = BTreeSet::new();
         for (key, value) in &config.env {
             let value = match value {
                 ServiceEnvValue::Literal { value, parts: None } => Some(value.clone()),
@@ -544,8 +549,15 @@ pub(crate) fn resolve(
                     self_owner_id: node.node_id.clone(),
                     producers: producers.clone(),
                 }) {
-                    ResolveVariablesResult::Resolved { value, secret, .. } => {
-                        (unseal.is_some() || !secret).then_some(value)
+                    ResolveVariablesResult::Resolved {
+                        value,
+                        secret: is_secret,
+                        ..
+                    } => {
+                        if is_secret {
+                            secret.insert(key.clone());
+                        }
+                        (unseal.is_some() || !is_secret).then_some(value)
                     }
                     ResolveVariablesResult::Cycle { path } => {
                         return Err(cycle(compiled, &path));
@@ -553,13 +565,17 @@ pub(crate) fn resolve(
                 },
                 ServiceEnvValue::Secret {
                     encrypted_value, ..
-                } => open(encrypted_value.as_ref())?,
+                } => {
+                    secret.insert(key.clone());
+                    open(encrypted_value.as_ref())?
+                }
             };
             if let Some(value) = value {
                 env.insert(key.clone(), value);
             }
         }
         resolved.env.insert(node.node_id.clone(), env);
+        resolved.secret.insert(node.node_id.clone(), secret);
     }
     Ok(resolved)
 }

@@ -336,6 +336,7 @@ pub(crate) fn claim(
     let Lowered {
         input,
         mut intent,
+        secret_env,
         warnings,
     } = lower(
         &stored.summary.environment_id,
@@ -377,6 +378,7 @@ pub(crate) fn claim(
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
+        secret_env,
         input,
         receipts,
         sources,

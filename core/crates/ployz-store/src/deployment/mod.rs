@@ -15,7 +15,7 @@ pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
 pub use rows::{FailedAt, Failure, RowPhase, RowState, RowTracker, ServerProgress, ServerRow};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentConfig, LowerDeploymentConfigFile,
@@ -321,6 +321,10 @@ pub struct Claimed {
     /// Services without a source of their own are left out; they build from
     /// `deployment.upload` through the SDK's preparation of `input`.
     pub intent: DeployIntent,
+    /// The environment keys of each Service in `intent` that hold a secret, by runtime
+    /// name. Every other key of its environment is plain. A failed Container's log is
+    /// scrubbed of these values before anyone sees it.
+    pub secret_env: BTreeMap<ServiceName, BTreeSet<String>>,
     /// The lowering input `intent` came from: what SDK preparation takes.
     pub input: Value,
     /// Every build receipt of each Service, by runtime name, its Environment's own

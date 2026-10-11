@@ -139,6 +139,8 @@ pub(super) struct Lowered {
     /// The lowering input the runner lowers again once it built.
     pub(super) input: Value,
     pub(super) intent: DeployIntent,
+    /// The environment keys of each lowered Service that hold a secret, by runtime name.
+    pub(super) secret_env: BTreeMap<ServiceName, BTreeSet<String>>,
     /// Config file references whose resolved value may break the file. Only
     /// lowering with the sealing key sees every value, so only it warns.
     pub(super) warnings: Vec<DeploymentWarning>,
@@ -200,6 +202,13 @@ pub(super) fn lower(
                 },
             )),
             CompiledNodeConfig::Volume(_) | CompiledNodeConfig::Config(_) => None,
+        })
+        .collect();
+    let secret_env = snapshots
+        .iter()
+        .filter_map(|(config, snapshot)| {
+            let keys = resolved.secret.remove(snapshot.service_id.as_deref()?)?;
+            Some((config.settings.private_dns.clone(), keys))
         })
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
@@ -323,6 +332,7 @@ pub(super) fn lower(
     Ok(Lowered {
         input: json_value(&input(with(false))),
         intent,
+        secret_env,
         warnings,
     })
 }
