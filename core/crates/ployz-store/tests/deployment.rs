@@ -1348,6 +1348,7 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
                         name: ployz_store::VolumeName::parse("data").unwrap(),
                         storage: ployz_core::config::VolumeKind::Docker {},
                         shared_writes: true,
+                        storage_locked: false,
                         mounts: ["web", "api"]
                             .into_iter()
                             .map(|service| ployz_store::Mount {

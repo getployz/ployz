@@ -890,7 +890,11 @@ mounts: Array<Mount>,
 /**
  * Let more than one container write it; off refuses a second writer.
  */
-shared_writes?: boolean, };
+shared_writes?: boolean,
+/**
+ * Fix its storage now, as a Deploy would. A restored Volume keeps the storage of the copy it lands on.
+ */
+storage_locked?: boolean, };
 
 export type Cycle = "open" | "closed";
 

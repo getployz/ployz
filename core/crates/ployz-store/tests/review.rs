@@ -372,6 +372,7 @@ fn discard_keeps_mounts_it_does_not_name() {
             &CreateVolume {
                 // Three replicas of web write it below.
                 shared_writes: true,
+                storage_locked: false,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("data").unwrap(),
