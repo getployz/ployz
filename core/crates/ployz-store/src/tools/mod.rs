@@ -12,6 +12,7 @@ pub mod logs;
 mod machine;
 mod refusal;
 mod release;
+mod runtime;
 mod schema;
 mod server;
 mod service;
@@ -59,6 +60,11 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<github::GithubLs>(),
     entry::<github::GithubConnect>(),
     entry::<server::ServerShow>(),
+    entry::<runtime::ServiceState>(),
+    entry::<runtime::ServiceLogs>(),
+    entry::<runtime::ServiceRestart>(),
+    entry::<runtime::ServiceStart>(),
+    entry::<runtime::ServiceStop>(),
     entry::<server::ServerDrain>(),
     entry::<server::ServerUpgrade>(),
     entry::<server::ServerClean>(),
