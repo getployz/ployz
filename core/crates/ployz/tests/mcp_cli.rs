@@ -188,3 +188,65 @@ fn closing_stdout_stops_the_server_and_the_call_it_is_running() {
         "the server died of a signal: {status}"
     );
 }
+
+/// `ployz` run in `dir` on the in-process Store in `home`, away from any ambient scope.
+fn local(home: &std::path::Path, dir: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command
+        .current_dir(dir)
+        .env("HOME", home)
+        .env("PLOYZ_CONFIG", home.join("config.toml"))
+        .env(
+            "PLOYZ_STORE",
+            format!("sqlite:{}", home.join("store.db").display()),
+        )
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
+        .env_remove("PLOYZ_PROJECT")
+        .env_remove("PLOYZ_ENV");
+    command
+}
+
+#[test]
+fn each_call_acts_where_the_directory_is_linked_when_it_starts() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let ployz = |args: &[&str]| {
+        let output = local(home.path(), dir.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    ployz(&["project", "new", "shop"]);
+    ployz(&["env", "new", "staging"]);
+    ployz(&["link"]);
+    let mut server = local(home.path(), dir.path())
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = server.stdin.take().unwrap();
+    let mut stdout = BufReader::new(server.stdout.take().unwrap());
+    initialize(&mut stdin, &mut stdout);
+    let mut shown = |id: u64| {
+        send(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": "environment_show", "arguments": {} },
+            }),
+        );
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        reply
+            .pointer("/result/structuredContent/at")
+            .cloned()
+            .unwrap_or_else(|| panic!("{reply}"))
+    };
+    assert_eq!(shown(2), "shop/production");
+    ployz(&["link", "--env", "staging"]);
+    assert_eq!(shown(3), "shop/staging");
+    drop(stdin);
+    assert!(exited_within(&mut server, Duration::from_secs(10)).is_some());
+}

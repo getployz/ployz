@@ -11,10 +11,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-#[path = "../../tests/deploy_client/support.rs"]
-#[allow(dead_code)]
-mod support;
-use support::*;
+use crate::sdk::test_support::*;
 
 fn fixture() -> (PathBuf, DeployService, Arc<BuildFixture>) {
     let root = std::env::temp_dir().join(format!("ployz-prepare-{}", uuid::Uuid::new_v4()));
