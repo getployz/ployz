@@ -226,13 +226,6 @@ pub(crate) fn commands() -> Vec<CommandEntry> {
     out
 }
 
-/// The catalog the SDK ships, as `ployz-sdk/generated/commands.json` holds it.
-#[must_use]
-pub fn commands_json() -> String {
-    let json = serde_json::to_string_pretty(&commands()).expect("the catalog serializes");
-    format!("{json}\n")
-}
-
 fn args(path: &str, command: &Command) -> Vec<ArgEntry> {
     let visible = |arg: &&Arg| {
         !arg.is_global_set()
