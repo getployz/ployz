@@ -94,6 +94,12 @@ describe("Config Store nodes", () => {
     expect(canvasNodeOf(nodes, "unknown")).toBeNull();
   });
 
+  it("finds a mirror by the node that shows its Volume", () => {
+    const nodes = buildStoreNodes(store, [], "e");
+    expect(canvasNodeOf(nodes, "shared~web-2")).toBe("s1");
+    expect(canvasNodeOf(nodes, "loose~web-3")).toBe("loose");
+  });
+
   it("shows what a Deployment Page lights by the nodes that show it, each once", () => {
     expect(shownNodeIds(buildStoreNodes(store, [], "e"), ["shared", "own", "s2", "loose", "gone"])).toEqual(["s1", "s2", "loose"]);
   });

@@ -5,7 +5,7 @@ import { serviceChanges } from "#/modules/config-store/store-services";
 import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { MIRROR_NODE_HEIGHT, SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
-import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
+import { type CanvasMirror, parseMirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import type {
   CanvasResourceNode,
   CanvasResourceType,
@@ -157,7 +157,10 @@ export function buildStoreEdges(store: { live?: StoreLiveNode[] }): Edge[] {
 }
 
 /** The node that shows `id` on the canvas: the node itself, else the first Service with it as a tray; null when none does. */
-export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string) {
+export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string): string | null {
+  // A mirror hangs inside the node that shows its Volume.
+  const mirror = parseMirrorResourceId(id);
+  if (mirror !== null) return canvasNodeOf(nodes, mirror.volumeId);
   const shown = nodes.find((node) => node.id === id)
     ?? nodes.find((node) => node.type === "storeService"
       && (node.data.trays.some((tray) => tray.volume.id === id) || node.data.configTrays.some((tray) => tray.config.id === id)));

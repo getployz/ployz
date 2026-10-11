@@ -37,13 +37,13 @@ async function show(mirrors: readonly CanvasMirror[]) {
 
 const node = () => screen.getByRole("link", { name: "data-web-2, mirror of data" });
 
-it("shows a live mirror by name with how fresh it is, and opens its Volume", async () => {
+it("shows a live mirror by name with how fresh it is, and opens its own drawer", async () => {
   const router = await show([mirror(null)]);
   expect(node().textContent).toBe("data-web-2Mirror · 4 minutes ago");
   expect(node().className).not.toMatch(/soft/);
   fireEvent.click(node());
   await screen.findByText("data");
-  expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/vol-1");
+  expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/vol-1~m2");
 });
 
 it("shows a staged mirror green with New", async () => {
@@ -57,6 +57,12 @@ it("shows a staged removal red and struck through with Removing", async () => {
   expect(within(node()).getByText("Removing")).toBeTruthy();
   expect(node().className).toMatch(/bg-destructive-soft/);
   expect(within(node()).getByText("data-web-2").className).toMatch(/line-through/);
+});
+
+it("shows a mirror staged to become the Primary blue, with Primary", async () => {
+  await show([mirror("update")]);
+  expect(within(node()).getByText("Primary")).toBeTruthy();
+  expect(node().className).toMatch(/bg-info-soft/);
 });
 
 it("shows no mirror node for a Volume without mirrors", async () => {
