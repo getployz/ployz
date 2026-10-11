@@ -1295,6 +1295,62 @@ fn a_merge_that_renames_a_private_dns_deploys_the_services_that_read_its_address
 }
 
 #[test]
+fn a_deploy_warns_only_about_the_services_it_ships() {
+    let (store, who) = shop_with(|store, who| {
+        store
+            .write(
+                who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("db").unwrap(),
+                    image: Some("db:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        // web reads db, so the preview has db too.
+        set(
+            store,
+            who,
+            "production",
+            &[("web.env.DB", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
+        );
+        save(store, who, "production");
+    });
+    watching(&store, &who);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("db.env.TOKEN", json!({ "secret": "test-token" }))],
+    );
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(deployed_services(&landed), ["db"]);
+    let warnings = |automated: &Automated| {
+        let claimed = store
+            .claim(
+                &automated.admitted[0].deployment.id,
+                &ployz_store::RunnerId::parse("runner").unwrap(),
+            )
+            .unwrap();
+        json!(claimed.deployment.warnings)
+    };
+    let not_set = json!([{ "service": "db", "variable": "TOKEN" }]);
+    assert_eq!(warnings(&landed), not_set);
+
+    // A push under web/ ships web alone: db's Not set secret isn't its to warn about.
+    let pushed = system(
+        &store,
+        &who,
+        &push(Some(MERGE), LATER, Some(&["web/app.rs"])),
+    );
+    assert_eq!(deployed_services(&pushed), ["web"]);
+    assert_eq!(warnings(&pushed), json!([]));
+}
+
+#[test]
 fn what_landed_waits_for_ci_on_the_newest_head() {
     let (store, who) = shop();
     watching(&store, &who);

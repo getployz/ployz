@@ -217,10 +217,15 @@ pub(super) fn lower(
         .iter()
         .map(|service| (service.lineage_id.as_str(), service.slug.as_str()))
         .collect();
+    // Only the Services this Deploy ships; the rest ride along unchanged.
     let mut warnings: Vec<DeploymentWarning> = snapshots
         .iter()
         .filter_map(|(config, snapshot)| {
-            let keys = resolved.not_set.remove(snapshot.service_id.as_deref()?)?;
+            let id = snapshot.service_id.as_deref()?;
+            if !services.is_empty() && !targeted.contains(&id) {
+                return None;
+            }
+            let keys = resolved.not_set.remove(id)?;
             Some(keys.into_iter().map(|variable| DeploymentWarning::NotSet {
                 service: config.settings.private_dns.clone(),
                 variable,
