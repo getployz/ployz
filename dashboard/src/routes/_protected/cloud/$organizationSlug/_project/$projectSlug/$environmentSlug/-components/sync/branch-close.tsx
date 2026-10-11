@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, EnvironmentRef } from "@ployz/sdk";
-import { DeletionDialog, type DeletionCheck } from "#/components/deletion-dialog";
+import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
+import { useVolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { removeTarget, type RemovalConsent } from "#/modules/config-store/store-workspace";
 import type { EnvironmentRouteParams } from "../environment-route-paths";
 
 /** Once the Branch is gone (the Store deletes a closed one), the page opens the Parent it had. */
@@ -25,38 +26,58 @@ export function useLeaveWhenClosed(params: EnvironmentRouteParams, branch: Store
   }, [gone]);
 }
 
+/** The Volumes a shutdown accepts losing, at the version the Store asked about (none before it asked). */
+type Acceptance = { accept: readonly string[]; version: string | null };
+
+/** What the user confirmed: a shutdown's accepted Volumes, or a close's whole removal consent. */
+type Consent = { shut: true; acceptance: Acceptance } | { shut: false; consent: RemovalConsent };
+
 /**
- * Closing a Branch over the Config Store: it comes off the Servers as a Deployment that asks before deleting Volume
- * data and that closes it; never deployed, or already off, that applies at once. The Store deletes it then, and the
- * page opens its Parent once it's gone.
+ * Closing a Branch over the Config Store: one `remove`, which asks before deleting Volume data and which the Store
+ * finishes, deleting it once it's off the Servers; the page opens its Parent once it's gone. Shutting it down takes it
+ * off the Servers and keeps it, asking the same.
  */
 export function useStoreBranchClose(params: EnvironmentRouteParams, store: EnvironmentRef, branch: BranchView) {
   const writer = useStoreWriter(params.organizationSlug);
   const lossOf = useVolumeLossCheck(params.organizationSlug);
   const place = `${store.project ?? ""}/${store.environment ?? ""}`;
-  const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
-  // Shutting down takes it off the Servers and keeps it; closing then removes it.
-  const [shutting, setShutting] = useState(false);
+  const [loss, setLoss] = useState<DeletionCheck<Consent> | null>(null);
   const name = branch.environment.name;
+  const commit = (command: Parameters<typeof writer.commit>[0], handles: readonly string[]) =>
+    writer.commit(command, handles).isPersisted.promise;
 
-  async function takeOff({ accept, version }: { accept: readonly string[]; version: string | null }, shut = shutting): Promise<DeletionCheck<Acceptance> | null> {
+  async function shutDown({ accept, version }: Acceptance): Promise<DeletionCheck<Consent> | null> {
     try {
-      await writer.commit({
-        command: "admit", admit: "remove", id: crypto.randomUUID(), environment: store, version, accept_volume_loss: [...accept],
-        close: !shut,
-      }, ["confirmation_required"]).isPersisted.promise;
-      toast(`${name} is coming off the servers`,
-        { description: shut ? "The pull request's next push brings it back." : "It closes once it's off." });
+      await commit({
+        command: "admit", admit: "shut_down", id: crypto.randomUUID(), environment: store, version, accept_volume_loss: [...accept],
+      }, ["confirmation_required"]);
+      toast(`${name} is coming off the servers`, { description: "The pull request's next push brings it back." });
       return null;
     } catch (error) {
-      return error instanceof StoreRefused ? lossOf(error) : null;
+      const check = error instanceof StoreRefused ? lossOf(error) : null;
+      return check && { items: check.items, evidence: { shut: true, acceptance: check.evidence } };
     }
   }
 
+  async function close(consent: RemovalConsent): Promise<DeletionCheck<Consent> | null> {
+    const answer = await removeTarget(commit, { project: store.project ?? "", environment: name }, consent);
+    if ("sent" in answer) {
+      toast(`${name} is coming off the servers`, { description: "It closes once it's off." });
+      return null;
+    }
+    const items = [
+      ...Object.values(answer.ask.accept).flat().map((volume): DeletionItem => ({ kind: "volume", name: volume })),
+      ...answer.waitingOn.map((waiting): DeletionItem => ({ kind: "server", name: waiting.server, detail: waiting.why })),
+    ];
+    return { items, evidence: { shut: false, consent: answer.ask } };
+  }
+
+  const take = (consent: Consent) => consent.shut ? shutDown(consent.acceptance) : close(consent.consent);
+  const shutting = loss?.evidence.shut === true;
+
   /** Shuts it down (`shut`), or closes it. */
   async function start(shut: boolean) {
-    setShutting(shut);
-    setLoss(await takeOff({ accept: [], version: null }, shut));
+    setLoss(await take(shut ? { shut: true, acceptance: { accept: [], version: null } } : { shut: false, consent: { accept: {}, version: null, everyCopy: {} } }));
   }
 
   return {
@@ -70,10 +91,8 @@ export function useStoreBranchClose(params: EnvironmentRouteParams, store: Envir
         confirmLabel={shutting ? "Shut down" : "Close branch"}
         items={loss?.items}
         callbacks={{
-          load: () => Promise.resolve(loss ?? { items: [], evidence: { accept: [], version: "" } }),
-          confirm: async (evidence) => {
-            return (await takeOff(evidence)) ?? undefined;
-          },
+          load: () => Promise.resolve(loss ?? { items: [], evidence: { shut: true as const, acceptance: { accept: [], version: null } } }),
+          confirm: async (evidence) => (await take(evidence)) ?? undefined,
         }}
       />
     ),

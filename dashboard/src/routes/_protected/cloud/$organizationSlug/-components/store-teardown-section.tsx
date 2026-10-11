@@ -3,25 +3,21 @@
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
-import type { DeploymentStatus, EnvironmentListing } from "@ployz/sdk";
+import type { DeploymentStatus, EnvironmentListing, Removal } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { toErrorMessage } from "#/lib/error-message";
 import { fetchStoreView, removalsQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { StoreRefused } from "#/modules/config-store/store.contract";
-import { removing, teardownStep, type AcceptedLoss, type TeardownStep, type TeardownTarget } from "#/modules/config-store/store-workspace";
+import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { DangerRow } from "./danger-row";
 import { SettingsSection } from "./SettingsSection";
 import { FieldDescription } from "#/components/ui/field";
-
-type Waiting = Extract<TeardownStep, { done: false }>;
 
 /** How a removal that didn't apply ended, after "Deployment #N". */
 function ended(status: DeploymentStatus) {
@@ -30,10 +26,10 @@ function ended(status: DeploymentStatus) {
 }
 
 /**
- * Deletes a Config Store Environment or Project through the one teardown path: the dialog lists every Service and Volume
- * that goes, by Environment, and asks for `place`. What never ran on the Servers goes at once; the rest comes off them
- * first, one removal Deployment per Environment, and this tab carries on once each applied. A removal that didn't
- * finish shows here, with its Deployment, until it's tried again.
+ * Deletes a Config Store Environment or Project in one `remove`: the dialog lists every Service and Volume that goes,
+ * by Environment, and asks for `place`. What never ran on the Servers goes at once; the Store takes the rest off them,
+ * one removal Deployment per Environment, and deletes it once each applied, with or without this tab. A removal that
+ * didn't finish shows here, with its Deployment, until it's tried again.
  */
 export function StoreTeardownSection({ organizationSlug, target, environments, name, place, title, description, actionLabel,
   disabledReason, headingId, onCompleted }: {
@@ -53,38 +49,18 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const scope = useCollectionScope();
   const writer = useStoreWriter(organizationSlug);
   const [open, setOpen] = useState(false);
-  const [run, setRun] = useState<{ accepted: AcceptedLoss; waiting: Waiting } | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [left, setLeft] = useState<Extract<Removal, { removal: "removing" }> | null>(null);
   const inScope = target.environment === null ? environments : environments.filter((row) => row.name === target.environment);
   const commit = (command: Parameters<typeof writer.commit>[0], handles: readonly string[]) =>
     writer.commit(command, handles).isPersisted.promise;
 
-  async function advance(accepted: AcceptedLoss, at: TeardownTarget = target) {
-    const step = await teardownStep(commit, at, accepted);
-    // Waiting on a Deploy still running there, not on its removal: nothing here would ever carry on, so say so, as
-    // `ployz env rm` does.
-    if (!step.done && !step.admitted && environments.find((row) => row.name === step.environment)?.removal?.id !== step.deployment) {
-      throw new Error(`A Deployment of ${step.environment} is still running. Wait for it or cancel it, then delete again.`);
-    }
-    if (!step.done) setRun({ accepted, waiting: step });
-    else if (at === target) onCompleted();
-    else setRun(null);
-  }
-
-  // The removal this tab waits on applied: carry on with what its user confirmed.
-  const awaited = run ? environments.find((row) => row.name === run.waiting.environment)?.removal : undefined;
-  // A closed Branch leaves the list on its own once its removal applied.
-  const gone = run !== null && !environments.some((row) => row.name === run.waiting.environment);
-  const applied = run !== null && (gone || (awaited?.id === run.waiting.deployment && awaited.status === "applied"));
+  // The Store deleted the Environment this tab is removing.
+  const gone = left !== null && target.environment !== null && inScope.length === 0;
   useEffect(() => {
-    if (!applied || !run) return;
-    advance(run.accepted).catch((error: Error) => {
-      setRun(null);
-      setFailure(toErrorMessage(error, "Couldn't finish deleting."));
-    });
-  }, [applied]);
+    if (gone) onCompleted();
+  }, [gone]);
 
-  async function load(): Promise<DeletionCheck<AcceptedLoss>> {
+  async function load(): Promise<DeletionCheck<RemovalConsent>> {
     const read = <Q extends ConfigQuery>(query: Q) => fetchStoreView(organizationSlug, scope, query);
     const each = await Promise.all(inScope.map(async (environment) => {
       const ref = { project: target.project, environment: environment.name };
@@ -104,41 +80,41 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
       ...each.flatMap(({ environment, volumes }) => volumes.map((volume): DeletionItem =>
         ({ kind: "volume", name: volume, detail: detail(environment) }))),
     ];
-    return { items, evidence: Object.fromEntries(each.map(({ environment, deployed }) => [environment.name, deployed])) };
+    const accept = Object.fromEntries(each.map(({ environment, deployed }) => [environment.name, deployed]));
+    return { items, evidence: { accept, version: null, everyCopy: {} } };
   }
 
-  async function confirm(accepted: AcceptedLoss) {
-    setFailure(null);
-    try {
-      await advance(accepted);
-    } catch (error) {
-      // The Volumes deployed changed since the dialog read them: it shows them again, to be typed for again.
-      if (error instanceof StoreRefused && (error.code === "confirmation_required" || error.code === "invalid_argument")) return load();
-      throw error;
+  async function confirm(consent: RemovalConsent) {
+    const answer = await removeTarget(commit, target, consent);
+    if ("ask" in answer) {
+      // The Store found more to lose than the dialog showed, or Servers it couldn't check: shown again, to be typed for again.
+      const { items } = await load();
+      const servers = answer.waitingOn.map((waiting): DeletionItem => ({ kind: "server", name: waiting.server, detail: waiting.why }));
+      return { items: [...items, ...servers], evidence: answer.ask };
     }
+    if (answer.sent.removal === "removed") onCompleted();
+    else setLeft(answer.sent);
   }
 
-  function finish(environment: EnvironmentListing) {
-    // The Default Environment comes off its Servers last, when its whole Project goes.
-    const at = environment.default ? { project: target.project, environment: null } : { project: target.project, environment: environment.name };
-    const same = at.environment === target.environment;
-    advance({}, same ? target : at).catch((error: Error) => setFailure(toErrorMessage(error, "Couldn't finish deleting.")));
-  }
-
-  const busy = run !== null || inScope.some(removing);
+  const busy = inScope.some(removing);
   const params = (environment: string) => ({ organizationSlug, projectSlug: target.project, environmentSlug: environment });
 
   return (
     <>
       <SettingsSection id={headingId} title="Danger">
-          {failure && <Alert variant="destructive"><AlertTitle>Deleting {name} didn't finish</AlertTitle><AlertDescription>{failure}</AlertDescription></Alert>}
+          {left?.waiting_on.map((waiting) => (
+            <Alert key={waiting.server}>
+              <AlertTitle>Waiting on {waiting.server}</AlertTitle>
+              <AlertDescription>{waiting.why}</AlertDescription>
+            </Alert>
+          ))}
           {inScope.flatMap((environment) => {
             const removal = environment.removal;
             if (!removal) return [];
             const deployment = <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params(environment.name), deploymentId: removal.id }}
               className="underline underline-offset-4">Deployment #{removal.number}</Link>;
-            const waited = run?.waiting.deployment === removal.id;
-            if (removing(environment) || (waited && removal.status === "applied")) return [
+            // Applied, while the Store is deleting it: the next sweep finishes it.
+            if (removing(environment) || (left !== null && removal.status === "applied")) return [
               <Alert key={environment.id}>
                 <Spinner />
                 <AlertTitle>Deleting {environment.name}…</AlertTitle>
@@ -149,7 +125,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
               <Alert key={environment.id}>
                 <AlertTitle>{environment.name} is off your servers</AlertTitle>
                 <AlertDescription><span>{deployment} removed it. Nothing is left to lose: finish deleting it.</span></AlertDescription>
-                <AlertAction><Button variant="outline" size="sm" disabled={run !== null} onClick={() => finish(environment)}>Finish deleting</Button></AlertAction>
+                <AlertAction><Button variant="outline" size="sm" onClick={() => setOpen(true)}>Finish deleting</Button></AlertAction>
               </Alert>,
             ];
             return [

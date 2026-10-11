@@ -1,4 +1,5 @@
-import type { ConfigCommand, ConfigWritten, EnvironmentListing } from "@ployz/sdk";
+import type { ConfigCommand, ConfigWritten, EnvironmentListing, Removal } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 import { StoreRefused } from "./store.contract";
 
 /** A Project's Environments in tree order: roots first, each Branch right under its Parent, siblings as listed. */
@@ -30,46 +31,80 @@ export function storeEnvironmentNotes(environment: EnvironmentListing) {
   ].filter((note): note is string => typeof note === "string");
 }
 
-/** What a teardown deletes: one Environment, or a whole Project (`environment` null). */
+/** What a deletion removes: one Environment, or a whole Project (`environment` null). */
 export type TeardownTarget = { project: string; environment: string | null };
 
-/** The Volumes whose data the user accepted losing, by Environment: each removal accepts only its own. */
-export type AcceptedLoss = Readonly<Record<string, readonly string[]>>;
+/** Volume names by Environment. */
+type ByEnvironment = Readonly<Record<string, readonly string[]>>;
 
 /**
- * Done, or waiting on `deployment` of `environment`: the removal this step `admitted`, or one already there, which is
- * also how the Store answers while an ordinary Deploy of it hasn't ended.
+ * What the user confirmed: the Volumes whose data they accepted losing, the version the Store reviewed once it asked
+ * for one, and the Volumes they gave up every copy of, wherever one turns up.
  */
-export type TeardownStep = { done: true } | { done: false; environment: string; deployment: string; admitted: boolean };
+export type RemovalConsent = { accept: ByEnvironment; version: string | null; everyCopy: ByEnvironment };
+
+/** A Server the Store couldn't check, and why. */
+type Unchecked = { server: string; why: string };
+
+/** Sent, or a question for the user first: what the Store reviewed, and the Servers it couldn't check. */
+export type RemovalAnswer = { sent: Removal } | { ask: RemovalConsent; waitingOn: readonly Unchecked[] };
+
+const ByEnvironmentSchema = Schema.Record(Schema.String, Schema.Array(Schema.String));
+
+/** A `confirmation_required` removal refusal: the version the Store reviewed and the Volumes it loses. */
+const decodeReviewed = Schema.decodeUnknownOption(Schema.Struct({ version: Schema.String, accept: ByEnvironmentSchema }));
+
+/** An `unavailable` removal refusal: the Servers it couldn't check, and the every-copy consent it offers. */
+const decodeUnchecked = Schema.decodeUnknownOption(Schema.Struct({
+  waiting_on: Schema.Array(Schema.Struct({ server: Schema.String, why: Schema.String })),
+  every_copy: Schema.Struct({
+    input: Schema.Struct({ version: Schema.String, accept_volume_loss: ByEnvironmentSchema, every_copy: ByEnvironmentSchema }),
+  }),
+}));
+
+/** The Volumes as the command carries them. */
+function carried(byEnvironment: ByEnvironment): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(byEnvironment).map(([environment, volumes]) => [environment, [...volumes]]));
+}
 
 type Commit = (command: ConfigCommand, handles: readonly string[]) => Promise<ConfigWritten>;
 
+const byText = (left: string, right: string) => left.localeCompare(right);
+
+/** The same Volumes, by Environment, ignoring order. */
+function same(left: ByEnvironment, right: ByEnvironment) {
+  const keyed = (byEnvironment: ByEnvironment) => JSON.stringify(Object.entries(byEnvironment)
+    .filter(([, volumes]) => volumes.length > 0).sort(([left], [right]) => byText(left, right))
+    .map(([environment, volumes]) => [environment, [...volumes].sort(byText)]));
+  return keyed(left) === keyed(right);
+}
+
 /**
- * One step of the one teardown path, as `ployz env rm` and `ployz project rm` take it. The Store deletes what never ran
- * on the Servers at once; otherwise it names the Environment still there, which a removal Deployment takes off (unless
- * one is already running), and the same step, taken again once that applied, goes on.
+ * Delete `target`, as `ployz env rm` and `ployz project rm` do: one `remove`, which the Store finishes on its own.
+ * Without a version the Store names the one it reviewed; when it loses exactly the Volumes the user accepted, that
+ * version goes back at once, and anything else is a question for the user. So is a Server that couldn't say whether
+ * it holds the data: the Store offers giving up every copy.
  */
-export async function teardownStep(commit: Commit, target: TeardownTarget, accepted: AcceptedLoss): Promise<TeardownStep> {
-  const remove: ConfigCommand = target.environment === null
-    ? { command: "remove_project", project: target.project }
-    : { command: "remove_environment", environment: { project: target.project, environment: target.environment } };
-  // A closed Branch goes on its own once its removal applied (see `close` below): gone is done.
-  const written = await commit(remove, target.environment === null ? [] : ["not_found"]).catch((error: Error) => {
-    if (target.environment !== null && error instanceof StoreRefused && error.code === "not_found") return null;
-    throw error;
-  });
-  if (written === null) return { done: true };
-  if (written.written !== "environment_removed" && written.written !== "project_removed") {
-    throw new Error(`The Store answered a removal with ${written.written}`);
+export async function removeTarget(commit: Commit, target: TeardownTarget, consent: RemovalConsent): Promise<RemovalAnswer> {
+  const written = await commit({
+    command: "remove", project: target.project, environment: target.environment, version: consent.version,
+    accept_volume_loss: carried(consent.accept), every_copy: carried(consent.everyCopy),
+  }, ["confirmation_required", "unavailable"]).catch((error: Error) => error);
+  if (!(written instanceof Error)) {
+    if (written.written !== "removal") throw new Error(`The Store answered a removal with ${written.written}`);
+    return { sent: written };
   }
-  if (written.teardown === "removed") return { done: true };
-  if (written.teardown === "waiting") return { done: false, environment: written.environment, deployment: written.deployment, admitted: false };
-  const id = crypto.randomUUID();
-  await commit({
-    command: "admit", admit: "remove", id, environment: { project: target.project, environment: written.environment },
-    version: null, accept_volume_loss: [...accepted[written.environment] ?? []],
-    // Deleting one Environment: the Store finishes a Branch itself once this applied, even if this tab is gone.
-    close: target.environment !== null,
-  }, ["confirmation_required", "invalid_argument"]);
-  return { done: false, environment: written.environment, deployment: id, admitted: true };
+  if (!(written instanceof StoreRefused)) throw written;
+  const reviewed = written.code === "confirmation_required" ? Option.getOrNull(decodeReviewed(written.details)) : null;
+  if (reviewed) {
+    const asked: RemovalConsent = { ...consent, accept: reviewed.accept, version: reviewed.version };
+    return consent.version === null && same(asked.accept, consent.accept) ? removeTarget(commit, target, asked) : { ask: asked, waitingOn: [] };
+  }
+  const unchecked = written.code === "unavailable" ? Option.getOrNull(decodeUnchecked(written.details)) : null;
+  if (!unchecked) throw written;
+  const { input } = unchecked.every_copy;
+  return {
+    ask: { accept: input.accept_volume_loss, version: input.version, everyCopy: input.every_copy },
+    waitingOn: unchecked.waiting_on,
+  };
 }

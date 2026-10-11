@@ -168,7 +168,7 @@ type Reply = {
     readonly code: string;
     readonly message: string;
     readonly details: {
-      readonly next?: string;
+      readonly next?: string | { readonly tool: string; readonly input: Readonly<Record<string, string>> };
       readonly approval?: string;
       readonly approval_id?: string;
       readonly channel?: string;
@@ -591,9 +591,9 @@ it.live(
         assert.isTrue(created.ok);
         const refused = yield* cli("DELETE", `organizations/${slug}`, alice);
         assert.strictEqual(refused.status, 409);
-        assert.strictEqual(refused.json.error?.details.next, "ployz project rm shop --confirm shop");
+        assert.deepStrictEqual(refused.json.error?.details.next, { tool: "remove", input: { project: "shop" } });
         assert.isTrue(server.slots.has("cloud"));
-        assert.isTrue((yield* write({ operation: "write", command: { command: "remove_project", project: "shop" } })).ok);
+        assert.isTrue((yield* write({ operation: "write", command: { command: "remove", project: "shop" } })).ok);
 
         // A Server offline: the Organization stays, disabled, and says which Server must still confirm.
         server.online = false;

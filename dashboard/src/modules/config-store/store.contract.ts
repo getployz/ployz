@@ -23,8 +23,12 @@ export type StoreResult<T> = { ok: true; value: T } | { ok: false; refusal: Stor
 /** The views a dashboard write answers with, as committed: the named Environment's review, Services and Settings (all). */
 export type CommittedViews = { diff?: DiffView; services?: ServicesView; environment?: EnvironmentView };
 
-/** The Environment a command names, the one its committed views and write queue are of; a Batch names one for all. */
+/**
+ * The Environment a command names, the one its committed views and write queue are of; a Batch names one for all. A
+ * removal names its Environment within the Project it removes from, and moves no views of one.
+ */
 export function commandEnvironment(command: ConfigCommand): StoreEnvironmentRef | null {
+  if (command.command === "remove" || command.command === "cancel_removal") return null;
   return "environment" in command && command.environment ? command.environment : null;
 }
 
