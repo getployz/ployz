@@ -23,6 +23,7 @@
     "db:studio": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs studio",
     "pr:check": "bash scripts/pr-check.sh",
     "test": "vitest run",
+    "sdk:eval": "PLOYZ_SDK_FEATURES=eval bash ../core/scripts/build-cloud-sdk.sh",
     "eval:live": "PLOYZ_EVAL_LIVE=1 vitest run --project eval evals/agent/live.eval.ts",
     "eval:replay": "vitest run --project eval evals/agent/replay.eval.ts",
     "typecheck": "tsc --noEmit",

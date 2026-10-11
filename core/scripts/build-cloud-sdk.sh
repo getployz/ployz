@@ -3,6 +3,8 @@ set -euo pipefail
 repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_dir"
 node_out=crates/ployz-sdk/ployz-sdk.node
+# `eval` lets the addon dial unix sockets, for the agent eval's fake fleet. Images never set it.
+features=${PLOYZ_SDK_FEATURES:-}
 
 # Worktrees share built bindings, keyed by the committed sources they come from (as cloud.yml's CI cache is).
 # Uncommitted changes to those sources, or no git (Docker), always build. kache can't cover this: our crates'
@@ -10,7 +12,7 @@ node_out=crates/ployz-sdk/ployz-sdk.node
 inputs=(crates Cargo.toml Cargo.lock .cargo scripts/build-cloud-sdk.sh scripts/build-config-wasm.sh)
 cached=
 if git rev-parse --git-dir >/dev/null 2>&1 && [ -z "$(git status --porcelain -- "${inputs[@]}")" ]; then
-  key=$( { git ls-tree HEAD -- "${inputs[@]}"; uname -sm; rustc -V; } | sha256sum | cut -c1-32)
+  key=$( { git ls-tree HEAD -- "${inputs[@]}"; uname -sm; rustc -V; echo "features=$features"; } | sha256sum | cut -c1-32)
   cached=${XDG_CACHE_HOME:-$HOME/.cache}/ployz/sdk/$key.node
 fi
 
@@ -19,7 +21,7 @@ if [ -n "$cached" ] && [ -f "$cached" ]; then
   rm -f "$node_out" && cp "$cached" "$node_out"
   echo "build-cloud-sdk: reused $cached"
 else
-  cargo build -p ployz-sdk --release --locked
+  cargo build -p ployz-sdk --release --locked ${features:+--features "$features"}
   case "$(uname -s)" in
     Darwin) binding=${CARGO_TARGET_DIR:-target}/release/libployz_sdk.dylib ;;
     Linux) binding=${CARGO_TARGET_DIR:-target}/release/libployz_sdk.so ;;

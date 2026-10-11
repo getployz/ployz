@@ -62,9 +62,15 @@ jobs:
         run: pnpm pr:check lint
 
   sdk:
-    name: Prepare matching SDK
+    name: Prepare matching SDK${{ matrix.features && format(' ({0})', matrix.features) || '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The image ships the default addon. Tests get `eval`, which also dials the fake fleet's unix sockets.
+    strategy:
+      matrix:
+        features: ["", eval]
+    env:
+      PLOYZ_SDK_FEATURES: ${{ matrix.features }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -79,7 +85,7 @@ jobs:
             core/crates/ployz-sdk/ployz-sdk.node
             core/crates/ployz-sdk/generated/config-wasm.mjs
           # No restore prefix: a binding from different source is not valid evidence.
-          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/Cargo.toml', 'core/Cargo.lock', 'core/.cargo/**', 'core/crates/**', '!core/crates/*/tests/**', '!core/crates/ployzd/**', '!core/crates/ployz-testkit/**', 'core/scripts/build-cloud-sdk.sh', 'core/scripts/build-config-wasm.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
+          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.features }}-${{ hashFiles('core/Cargo.toml', 'core/Cargo.lock', 'core/.cargo/**', 'core/crates/**', '!core/crates/*/tests/**', '!core/crates/ployzd/**', '!core/crates/ployz-testkit/**', 'core/scripts/build-cloud-sdk.sh', 'core/scripts/build-config-wasm.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
       - uses: ./.github/actions/setup-rust
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         with:
@@ -102,7 +108,7 @@ jobs:
           key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
-          name: cloud-sdk
+          name: cloud-sdk${{ matrix.features && format('-{0}', matrix.features) || '' }}
           path: |
             core/crates/ployz-sdk/ployz-sdk.node
             core/crates/ployz-sdk/generated/config-wasm.mjs
@@ -168,7 +174,7 @@ jobs:
       - uses: ./.github/actions/setup-cloud
       - uses: actions/download-artifact@v4
         with:
-          name: cloud-sdk
+          name: cloud-sdk-eval
           path: core/crates/ployz-sdk
       - name: Unit and PostgreSQL tests
         env:
