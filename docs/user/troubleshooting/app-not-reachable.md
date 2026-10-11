@@ -108,8 +108,8 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
 
 ## My domain is behind Cloudflare
 
-- Set **SSL/TLS** to **Full (strict)**. **Flexible** reaches your servers over plain http and
-  always gets Not Found.
+- Set **SSL/TLS** to **Full (strict)**. **Flexible** reaches your servers over plain http, which
+  redirects back to https, so the browser says "too many redirects".
 - If the domain shows **Your proxy redirects to HTTPS: exempt /.well-known/acme-challenge/* from
   it**, Cloudflare's redirect is blocking your certificate. Set the DNS record to **DNS only**,
   or turn off **Always Use HTTPS** and add a redirect rule that sends http to https for every

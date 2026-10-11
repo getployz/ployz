@@ -646,7 +646,11 @@ fn https_only_hostname_redirects_http_but_keeps_its_challenge_and_verify_probe()
     );
 
     let http = automatic_site_block(&caddyfile, "http://secure.example.com");
-    assert!(http.contains("redir https://{host}{uri} 308"), "{http}");
+    // Caddy orders a bare `redir` before every handle; inside a matcherless handle it runs last.
+    assert!(
+        http.contains("handle { redir https://{host}{uri} 308 }"),
+        "{http}"
+    );
     assert!(!http.contains("reverse_proxy"), "{http}");
     assert!(
         http.contains("/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0")
