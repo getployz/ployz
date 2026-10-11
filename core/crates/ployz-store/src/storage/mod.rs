@@ -53,6 +53,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0010_drop_conditional_sync",
         Step::Sql(include_str!("migrations/0010_drop_conditional_sync.sql")),
     ),
+    (
+        "0011_retire_offers",
+        Step::Sql(include_str!("migrations/0011_retire_offers.sql")),
+    ),
 ];
 
 /// One migration.

@@ -7,12 +7,12 @@
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 //   staging     a kept Branch of production (api, worker) that includes search's changes, then sets one itself
 //   search      a Branch of staging, synced into it and changed again since: Details offers Include newer changes
-// and project `blog`, one Service from acme/blog with pull request previews, whose production Details list:
-//   #140        an offer, with a secret production lacks: Include asks to Set value
-//   #141        included, still open: Awaits #141, so Save and Deploy wait with Needs #141
-//   #142        included, merged into main: Ready
-//   #143        included, closed: Closed
-//   #144        included, retargeted to dev and merged there: Elsewhere
+// and project `blog`, one Service from acme/blog with pull request previews, a PR Environment per pull request:
+//   #140        open, with a secret production lacks
+//   #141        open
+//   #142        merged into main
+//   #143        closed
+//   #144        retargeted to dev and merged there
 // A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
 // real Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and
 // opens no PR Environment, before a Server joins.
@@ -160,7 +160,7 @@ const seed = Effect.gen(function* () {
   yield* edit("staging overrides search", "staging", [{ op: "set", path: "worker.env.MODE", value: "index-slow" }]);
   yield* edit("search moves on", "search", [{ op: "set", path: "api.env.SEARCH_URL", value: "http://search:7701" }]);
 
-  // blog: pull requests offered to production and included there, one per readiness.
+  // blog: pull requests, each with its own PR Environment and changes.
   const blog = (environment: string | null) => ({ project: "blog", environment });
   yield* write("project blog", { command: "create_project", id: randomUUID(), name: "blog", default_environment: randomUUID() });
   // GitHub isn't asked: the repository's evidence is handed to the Store as Cloud would observe it.
@@ -196,25 +196,6 @@ const seed = Effect.gen(function* () {
       const changes: Change[] = [{ op: "set", path: `web.env.CHANGE_${number}`, value: "on" }];
       if (number === 140) changes.push({ op: "set", path: "web.env.TOKEN", value: { secret: "preview-token" } });
       yield* write(`blog pr-${number} edits`, { command: "edit", environment: blog(`pr-${number}`), expect: null, changes });
-      // A Merge-menu Sync: from a PR Environment into its Destination, it's offered there.
-      const review = yield* callStore(organizationId, ada.id, { operation: "read", query: { query: "sync", from: blog(`pr-${number}`), into: null } });
-      if (review.ok && review.value.view === "sync") {
-        yield* write(`blog #${number} offered`, { command: "sync", from: blog(`pr-${number}`), version: review.value.version, id: randomUUID() });
-      } else {
-        writes[`blog #${number} offered`] = review.ok ? `unexpected view ${review.value.view}` : `refused: ${review.refusal.code} ${review.refusal.message}`;
-      }
-    }
-    for (const number of numbers.filter((number) => number !== 140)) {
-      const diff = yield* callStore(organizationId, ada.id, { operation: "read", query: { query: "diff", environment: blog("production") } });
-      const offer = diff.ok && diff.value.view === "diff"
-        ? diff.value.included.find(({ source }) => source.kind === "pull_request" && source.number === number) : undefined;
-      if (!diff.ok || diff.value.view !== "diff" || offer === undefined) {
-        writes[`blog #${number} included`] = diff.ok ? `no offer for #${number}` : `refused: ${diff.refusal.code} ${diff.refusal.message}`;
-        continue;
-      }
-      yield* write(`blog #${number} included`, {
-        command: "include_proposal", environment: blog("production"), proposal: offer.proposal, version: diff.value.version,
-      });
     }
     yield* observe("blog #142 merges", pullRequest(142, 1, { open: false, merge_commit: "4".repeat(40) }));
     yield* observe("blog #143 closes", pullRequest(143, 1, { open: false }));

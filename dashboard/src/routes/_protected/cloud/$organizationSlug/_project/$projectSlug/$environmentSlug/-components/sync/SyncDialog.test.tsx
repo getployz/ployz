@@ -31,7 +31,7 @@ const rows = [
   row("w:variables.KEY", "worker", "env.KEY", { from: { secret: true }, change: "new", secret, requires: id("w:node") }),
 ];
 const syncView = (extra: Partial<SyncView> = {}): SyncView => ({
-  from: summary("fix-api"), into: summary("production"), at_merge: null, version: "4:abc", rows, proposal: null,
+  from: summary("fix-api"), into: summary("production"), version: "4:abc", rows, proposal: null,
   never_synced: [{ row: id("a:variables.STRIPE_KEY"), node: "api", kind: "service", name: "env.STRIPE_KEY", marks: [{ environment: "fix-api", row: id("a:variables.STRIPE_KEY") }] }],
   ...extra,
 });
@@ -101,8 +101,8 @@ it("syncs a PR Environment into production now, with production's value for a se
   fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "s3cret" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 1 change" }));
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
-  expect(write.mock.calls[0]![0].data.command).toMatchObject({
-    command: "sync", into: { environment: "production" }, values: { "a:variables.TOKEN": "s3cret" }, when: null,
+  expect(write.mock.calls[0]?.[0].data.command).toMatchObject({
+    command: "sync", into: { environment: "production" }, values: { "a:variables.TOKEN": "s3cret" }, close_after: false,
   });
 });
 

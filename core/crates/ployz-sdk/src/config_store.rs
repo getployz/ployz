@@ -115,7 +115,7 @@ impl ConfigStore {
             .await
     }
 
-    /// What converting Conditional Syncs to offers did (`Converted`) when opening this
+    /// What retiring Conditional Syncs did (`Converted`) when opening this
     /// Store converted them, for Cloud to log; null after an earlier open did.
     ///
     /// # Errors

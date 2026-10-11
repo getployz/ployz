@@ -6,7 +6,7 @@ import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { DeploymentSummary, Included } from "@ployz/sdk";
+import type { DeploymentSummary } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { asTestDouble } from "#/lib/test-double";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
@@ -24,13 +24,9 @@ const onDiscardAll = vi.fn();
 const onPublish = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
-let included: Included[] = [];
-const offer = (number: number) =>
-  asTestDouble<Included>()({ offered: true, source: { kind: "pull_request", number } });
 
 beforeEach(() => {
   active = [];
-  included = [];
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); onPublish.mockReset(); });
@@ -48,7 +44,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
         <div ref={setSlot} />
         <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={active} notes={{}}
-          proposals={{ included }} />
+          proposals={{ included: [] }} />
         <Outlet />
       </BottomBarSlot.Provider>
     );
@@ -119,16 +115,6 @@ it("otherwise shows the running Deployment, and the queued one while the running
   await screen.findByText("Deployment Page");
   expect(router.state.location.href).toBe(`${canvasUrl}/deployments/${running}`);
   expect((await bar()).getByText("Queued · Deployment #2")).toBeTruthy();
-});
-
-it("keeps the offers in view under a queued Deployment", async () => {
-  active = [deployment(queued, "queued", 2)];
-  included = [offer(5), offer(6)];
-  open(canvasUrl);
-  const shown = await bar();
-  expect(shown.getByText("Queued · Deployment #2")).toBeTruthy();
-  expect(shown.getByText("PR #5, PR #6")).toBeTruthy();
-  expect(shown.getByText("Queued")).toBeTruthy();
 });
 
 it("hides while nothing is staged or running, and while the only Deployment's page is open", async () => {

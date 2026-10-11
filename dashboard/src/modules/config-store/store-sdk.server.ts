@@ -53,10 +53,10 @@ export class ConfigStoreOpenFailure extends Data.TaggedError("ConfigStoreOpenFai
   readonly publicErrorCategory = "internal" as const;
 }
 
-/** The open that converted Conditional Syncs to offers logs what it did, once. */
+/** The open that retired Conditional Syncs logs what it did, once. */
 const logConverted = (store: ConfigStore) => {
   const converted = store.converted();
-  return converted === null ? Effect.void : Effect.logInfo("Conditional Syncs converted to offers.", converted);
+  return converted === null ? Effect.void : Effect.logInfo("Conditional Syncs retired.", converted);
 };
 
 /**

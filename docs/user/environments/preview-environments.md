@@ -73,10 +73,8 @@ production when you want them live. From the CLI, `ployz env sync --to productio
 preview does the same. A secret the preview added arrives in production **Not set** unless you
 type production's value in its row of the dialog.
 
-Ployz also posts a **Ployz · ready to merge** check on the pull request, and the Sync button's ▾
-menu shows it. It asks for action, like `3 changes to sync in Ployz`, while the preview has
-changes you haven't synced. To block merging until they're synced, make it a required check in
-your repository's branch protection rules.
+Ployz also posts a **Ployz · ready to merge** check on the pull request. It never blocks a merge:
+it says what goes live with the pull request, like `3 changes go live with this PR`.
 
 ## Shut down a preview
 

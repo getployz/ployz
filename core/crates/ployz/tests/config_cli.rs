@@ -1031,9 +1031,10 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
             ],
         );
         assert_eq!(
-            synced["when"],
-            json!({ "kind": "now", "staged": ["web"], "closing": false })
+            (&synced["staged"], &synced["closing"]),
+            (&json!(["web"]), &json!(false))
         );
+        assert!(synced.get("proposal").is_none());
         assert_eq!(synced["next"], json!("ployz deploy --env production"));
         assert_eq!(
             ok(store, &["get", "web.image"])["settings"][0]["value"],
@@ -1050,7 +1051,7 @@ fn an_agent_syncs_a_branch_into_its_parent_without_servers() {
             store,
             &["env", "sync", "--to", "--env", "fix-web", "--close"],
         );
-        assert_eq!(closed["when"]["closing"], json!(true));
+        assert_eq!(closed["closing"], json!(true));
         let listed = ok(store, &["env", "ls"]);
         assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
     }
@@ -1133,7 +1134,7 @@ fn an_agent_syncs_between_any_two_environments_of_a_project() {
                 version,
             ],
         );
-        assert_eq!(synced["when"]["staged"], json!(["web"]));
+        assert_eq!(synced["staged"], json!(["web"]));
         assert_eq!(
             ok(store, &["get", "web.image", "--env", "staging"])["settings"][0]["value"],
             json!("web:1")
@@ -2964,15 +2965,12 @@ fn a_sync_from_a_pr_environment_stages_in_production_now() {
     assert_eq!(code, Some(0), "{set}");
     // From a PR Environment, --to with no value is its Parent, and the Sync stages now.
     let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
-    assert_eq!(
-        (&plan["into"]["name"], &plan["at_merge"]),
-        (&json!("production"), &Value::Null)
-    );
+    assert_eq!(plan["into"]["name"], json!("production"));
     assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
     let synced = ok(&store, &["env", "sync", "--to", "--env", "pr-5"]);
     assert_eq!(
-        synced["when"],
-        json!({ "kind": "now", "staged": ["web"], "closing": false })
+        (&synced["staged"], &synced["closing"]),
+        (&json!(["web"]), &json!(false))
     );
     assert_eq!(
         ok(&store, &["get", "web.env.MODE", "--env", "production"])["settings"][0]["value"],

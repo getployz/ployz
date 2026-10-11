@@ -15,8 +15,7 @@ use ployz_store::{
     Actor, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Discard,
     Edit, EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, OrganizationId, ProjectId,
     ProjectName, Publish, RemoveService, RenameService, SecretRow, ServiceLineageId, ServiceQuery,
-    SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, SyncedWhen,
-    UndoSync, When,
+    SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, UndoSync,
 };
 use serde_json::{Value, json};
 
@@ -159,7 +158,6 @@ fn offered(store: &ConfigStore, who: &Actor, from: &str, into: &str) -> SyncView
             &SyncQuery {
                 from: at(from),
                 into: Some(at(into)),
-                when: None,
             },
         )
         .unwrap()
@@ -173,7 +171,6 @@ fn view(store: &ConfigStore, who: &Actor) -> SyncView {
             &SyncQuery {
                 from: at("fix-web"),
                 into: None,
-                when: None,
             },
         )
         .unwrap()
@@ -213,7 +210,7 @@ fn sync(view: &SyncView, picks: Option<&[&str]>) -> SyncChanges {
     SyncChanges {
         from: at(view.from.name.as_str()),
         into: Some(at(view.into.name.as_str())),
-        when: None,
+        close_after: false,
         version: view.version.clone(),
         picks: picks.map(|picks| picks.iter().map(|label| (*label).into()).collect()),
         skip: Vec::new(),
@@ -261,9 +258,7 @@ fn discard(store: &ConfigStore, who: &Actor, path: &str) {
 
 /// Remove the proposal `synced` included from `into`'s draft; false when gone.
 fn remove(store: &ConfigStore, who: &Actor, into: &str, synced: &Synced) -> bool {
-    let SyncedWhen::Now { proposal, .. } = &synced.when else {
-        panic!("a Sync between Branches stages now")
-    };
+    let proposal = &synced.proposal;
     store
         .write(
             who,
@@ -375,12 +370,7 @@ fn a_branch_syncs_its_picked_changes_into_its_parent_and_leaves_the_rest_for_nex
         .write(&who, &sync(&review, Some(&["web.source"])))
         .unwrap();
     assert_eq!(synced.into.name.as_str(), "production");
-    let SyncedWhen::Now {
-        staged, closing, ..
-    } = &synced.when
-    else {
-        panic!("a Sync between Branches stages now")
-    };
+    let (staged, closing) = (&synced.staged, &synced.closing);
     assert_eq!(
         staged.iter().map(ToString::to_string).collect::<Vec<_>>(),
         ["web"]
@@ -836,7 +826,7 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         kept,
     };
     let closing = SyncChanges {
-        when: Some(When::Now { close_after: true }),
+        close_after: true,
         ..sync(&view(&store, &who), None)
     };
     store.write(&who, &keep(true)).unwrap();
@@ -877,7 +867,7 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         ..closing
     };
     let synced = store.write(&who, &closing).unwrap();
-    assert!(matches!(synced.when, SyncedWhen::Now { closing: true, .. }));
+    assert!(synced.closing);
     assert_eq!(
         values(&store, &who, "production", "web")["image"],
         json!("web:2")
@@ -1073,7 +1063,6 @@ fn a_sync_stays_within_its_project() {
     let across = SyncQuery {
         from: in_project("shop", "fix-web"),
         into: Some(in_project("blog", "production")),
-        when: None,
     };
     let refused = store.read(&who, &across).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
@@ -1100,7 +1089,6 @@ fn a_sync_stays_within_its_project() {
             &SyncQuery {
                 from: in_project("shop", "production"),
                 into: None,
-                when: None,
             },
         )
         .unwrap_err();
@@ -1313,11 +1301,11 @@ fn a_sync_that_closed_its_branch_can_still_be_undone() {
     let (store, who) = shop(false);
     set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
     let closing = SyncChanges {
-        when: Some(When::Now { close_after: true }),
+        close_after: true,
         ..sync(&view(&store, &who), None)
     };
     let synced = store.write(&who, &closing).unwrap();
-    assert!(matches!(synced.when, SyncedWhen::Now { closing: true, .. }));
+    assert!(synced.closing);
     assert_eq!(undo(&store, &who, &synced), Ok("production".into()));
     assert_eq!(
         values(&store, &who, "production", "web")["image"],

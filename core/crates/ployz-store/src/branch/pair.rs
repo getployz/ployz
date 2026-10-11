@@ -36,9 +36,6 @@ pub(crate) struct Move {
     pub(crate) base: SavedEnvironmentIntent,
     pub(crate) hostnames: Hostnames,
     pub(super) rules: Rules,
-    /// What arriving Services carry, as snapshotted when the source may be gone;
-    /// none reads it from the source.
-    carried: Option<Carried>,
 }
 
 /// Who owns what a [`Checked::apply`] lands.
@@ -115,7 +112,6 @@ impl Move {
                 held: BTreeSet::new(),
                 accepted: BTreeMap::new(),
             },
-            carried: None,
         })
     }
 
@@ -174,29 +170,7 @@ impl Move {
                 held: BTreeSet::new(),
                 accepted: BTreeMap::new(),
             },
-            carried: None,
         })
-    }
-
-    /// An offer's Sync, from what it stored when it was offered: the source may be
-    /// gone, so nothing of it is read again.
-    pub(crate) fn offered(
-        source: EnvironmentId,
-        into: &EnvironmentName,
-        (from, base, hostnames): (SavedEnvironmentIntent, SavedEnvironmentIntent, Hostnames),
-        rules: Rules,
-        carried: Carried,
-    ) -> Self {
-        Self {
-            other: source.clone(),
-            source,
-            nothing: format!("Nothing to include in {into}"),
-            from,
-            base,
-            hostnames,
-            rules,
-            carried: Some(carried),
-        }
     }
 
     /// A Sync now of `from` into `into` that includes it: the rows other proposals
@@ -279,10 +253,6 @@ impl Checked<'_> {
         &self.plan
     }
 
-    pub(crate) fn version(&self) -> &str {
-        &self.version
-    }
-
     /// Land `picks` in `into`, `values` filling the secrets that need one, and advance
     /// the pair's base by exactly what landed, recording each row's arrival for
     /// `owner`. Arrivals are recorded before the rows land, so the release that
@@ -305,10 +275,7 @@ impl Checked<'_> {
             ));
         }
         let applied = self.plan.apply(picks, values).map_err(config)?;
-        let carried = match &of.carried {
-            Some(carried) => carried.clone(),
-            None => Carried::of(tx, &of.source, &of.from)?,
-        };
+        let carried = Carried::of(tx, &of.source, &of.from)?;
         let how = match of.rules.way {
             Way::Follow => How::Follow,
             Way::Sync | Way::Copy => How::Sync,

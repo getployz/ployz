@@ -86,21 +86,6 @@ describe("the Sync button", () => {
     expect(syncButtonState(pr, removal("applied", false))).toMatchObject({ into: "production", changes: 4 });
   });
 
-  it("reads a PR Environment's Destination: Queued once its Sync is queued there, after Off", () => {
-    const pr = { parent: "staging", to_parent: 1, pull_request: { repository_id: 1, number: 142 } };
-    const merge = { number: 142, into: "production", changes: 3, standing: null };
-    const off = asTestDouble<DeploymentSummary>()({ status: "applied", in_flight: false });
-    expect([
-      syncButtonState(pr, null, merge),
-      syncButtonState(pr, null, { ...merge, standing: "cs-1" }),
-      syncButtonState(pr, off, { ...merge, standing: "cs-1" }),
-    ]).toEqual([
-      { label: "Sync to production", into: "production", changes: 3, count: 3 },
-      { label: "Queued", into: "production", changes: 3, count: null },
-      { label: "Off", into: "production", changes: 3, count: null },
-    ]);
-  });
-
   it("says in whole days when an idle Branch closes", () => {
     const day = 24 * 60 * 60;
     expect([closesIn(5 * day, 0), closesIn(4.2 * day, 0), closesIn(60, 0), closesIn(0, 60)])

@@ -153,8 +153,6 @@ pub(crate) struct Review {
     pub(crate) view: DiffView,
     pub(crate) saved: Option<Saved>,
     pub(crate) head: Head,
-    /// The pull requests the draft includes, and whether each merged here.
-    pub(crate) gated: Vec<crate::branch::Gated>,
 }
 
 pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Review, RpcError> {
@@ -170,16 +168,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let draft = saved_comparison(environment, &baseline)?;
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count;
-    let gated = crate::branch::gated(tx, id)?;
-    if let Some(gate) = crate::branch::version_gate(&gated) {
-        view.version = format!("{}:{gate}", view.version);
-    }
-    Ok(Review {
-        view,
-        saved,
-        head,
-        gated,
-    })
+    Ok(Review { view, saved, head })
 }
 
 fn saved_comparison(
@@ -533,34 +522,15 @@ pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcErr
         version == current
             || version
                 .strip_prefix(current)
-                .is_some_and(|rest| rest.starts_with(':') && !rest.starts_with(":g"))
+                .is_some_and(|rest| rest.starts_with(':'))
     };
     match version {
         Some(version) if !names_it(version) => Err(error::conflict(
             "The Environment changed after this review. Review the latest changes and try again",
             json!({ "diff": review.view }),
         )),
-        None if !review.gated.is_empty() => Err(error::conflict(
-            "This draft includes a pull request: review it and pass its version",
-            json!({ "diff": review.view }),
-        )),
         Some(_) | None => Ok(()),
     }
-}
-
-/// [`check`] for taking a pull request out of the draft: refuse a version whose
-/// content is stale, not one only a readiness change since the review moved.
-pub(crate) fn check_content(review: &Review, version: &str) -> Result<(), RpcError> {
-    fn content(version: &str) -> Vec<&str> {
-        version
-            .split(':')
-            .filter(|part| !part.starts_with('g'))
-            .collect()
-    }
-    if content(version) == content(&review.view.version) {
-        return Ok(());
-    }
-    check(review, Some(version))
 }
 
 /// Publish `intent` as the next Saved revision, or keep the latest when it already

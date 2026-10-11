@@ -13,8 +13,6 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{Converted, fault};
-use crate::conditional_sync::Offer;
-use crate::id::ProposalId;
 use crate::storage::{Storage, Tx};
 
 const BEFORE: &str = "0007_proposal_carried";
@@ -60,14 +58,6 @@ impl Fixture {
 
     fn stored(&self) -> &str {
         self.standing["stored"].as_str().unwrap()
-    }
-
-    fn held_key(&self) -> String {
-        format!(
-            "{}/{}",
-            self.held["lineage"].as_str().unwrap(),
-            self.held["at"].as_str().unwrap()
-        )
     }
 
     fn held_value(&self) -> &str {
@@ -341,7 +331,7 @@ fn a_stop_after_any_row_leaves_the_legacy_store_as_it_was() {
 }
 
 #[test]
-fn every_pending_conditional_sync_becomes_an_offer_of_what_it_stored() {
+fn the_conditional_syncs_go_leaving_each_merge_as_merged() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::load();
     let url = legacy(&dir, "store", &fixture);
@@ -362,70 +352,11 @@ fn every_pending_conditional_sync_becomes_an_offer_of_what_it_stored() {
                 tx.query("SELECT COUNT(*) FROM config_waiting_deploy", &[])?[0].int(0)?,
                 2
             );
-            let offers = tx.query(
-                "SELECT id, environment_id, source_environment_id, number, source_name, \
-                 source_revision, first_sync, last_sync, offered \
-                 FROM config_proposal ORDER BY id",
-                &[],
-            )?;
-            let ids: Vec<&str> = offers.iter().map(|row| row.text(0).unwrap()).collect();
-            assert_eq!(ids, [FROZEN, fixture.standing_id()]);
-            let stored: Value = serde_json::from_str(fixture.stored()).unwrap();
-            let source = stored["environment"]["id"].as_str().unwrap();
-            for (row, (into, from, number, held)) in offers.iter().zip([
-                (STAGING, source, 6, 1),
-                (PRODUCTION, fixture.pr_environment(), 5, 1),
-            ]) {
-                let id = row.text(0)?;
-                assert_eq!(row.text(1)?, into);
-                assert_eq!(row.text(2)?, from);
-                assert_eq!(row.int(3)?, number);
-                assert_eq!(
-                    row.text(4)?,
-                    stored["environment"]["name"].as_str().unwrap()
-                );
-                assert_eq!(
-                    row.int(5)?,
-                    fixture.standing["working_revision"].as_i64().unwrap()
-                );
-                assert_eq!((row.text(6)?, row.text(7)?), (id, id));
-                let offered: Value = serde_json::from_str(row.text(8)?).unwrap();
-                assert!(
-                    offered["stored"].as_str() == Some(fixture.stored()),
-                    "offer {id} doesn't hold what its Conditional Sync stored"
-                );
-                let values = offered["held"].as_object().unwrap();
-                assert_eq!(values.len(), held);
-                assert!(
-                    values.get(&fixture.held_key()).and_then(Value::as_str)
-                        == Some(fixture.held_value()),
-                    "offer {id} doesn't hold its held value as sealed"
-                );
-                let offer = Offer::decode(&ProposalId::parse(id).unwrap(), row.text(8)?)?;
-                assert_eq!(offer.held.len(), held);
-                assert!(!offer.stored.picks.is_empty());
-            }
-            let receipts = tx.query(
-                "SELECT sync_id, environment_id, proposal_id FROM config_sync_receipt \
-                 ORDER BY sync_id",
-                &[],
-            )?;
-            let receipts: Vec<(&str, &str, &str)> = receipts
-                .iter()
-                .map(|row| {
-                    (
-                        row.text(0).unwrap(),
-                        row.text(1).unwrap(),
-                        row.text(2).unwrap(),
-                    )
-                })
-                .collect();
+            let proposal = columns(tx, "config_proposal")?;
+            assert!(!proposal.iter().any(|column| column == "offered"));
             assert_eq!(
-                receipts,
-                [
-                    (FROZEN, STAGING, FROZEN),
-                    (fixture.standing_id(), PRODUCTION, fixture.standing_id())
-                ]
+                tx.query("SELECT COUNT(*) FROM config_proposal", &[])?[0].int(0)?,
+                0
             );
             let prs = tx.query(
                 "SELECT number, facts, merged FROM config_pull_request ORDER BY number",
@@ -470,10 +401,8 @@ fn the_open_that_converts_returns_what_it_counted_once() {
     assert_eq!(
         open(&url).converted(),
         Some(&Converted {
-            standing: 1,
-            frozen: 1,
-            landed_dropped: 1,
-            orphan_held: 1,
+            dropped: 3,
+            held_dropped: 3,
             retired_attachments: 1,
         })
     );
@@ -487,138 +416,27 @@ fn the_open_that_converts_returns_what_it_counted_once() {
 fn an_unreadable_conditional_sync_stops_the_open_naming_it_until_repaired() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::load();
-    for broken in [
-        format!("UPDATE config_conditional_sync SET stored = 'not json' WHERE id = '{FROZEN}'"),
-        format!("UPDATE config_conditional_sync SET state = 'gone' WHERE id = '{FROZEN}'"),
-    ] {
-        let url = legacy(&dir, "store", &fixture);
-        run(&url, &broken);
-        let before = dump(&url, LEGACY_TABLES);
-        let error = Storage::open(&url).err().expect("the open fails closed");
-        assert!(error.message.contains(FROZEN), "{}", error.message);
-        assert!(
-            dump(&url, LEGACY_TABLES) == before,
-            "a failed open changed the Store"
-        );
-        let mut repaired = String::new();
-        if broken.contains("stored") {
-            repaired = format!(
-                "UPDATE config_conditional_sync SET stored = '{}' WHERE id = '{FROZEN}'",
-                fixture.stored().replace('\'', "''")
-            );
-        } else {
-            repaired.push_str(&format!(
-                "UPDATE config_conditional_sync SET state = 'frozen' WHERE id = '{FROZEN}'"
-            ));
-        }
-        run(&url, &repaired);
-        Storage::open(&url).unwrap();
-        assert!(
-            dump_all(&url) == clean(&dir, &fixture),
-            "a repaired open differs from a clean one"
-        );
-        if !postgres() {
-            std::fs::remove_file(url.strip_prefix("sqlite:").unwrap()).unwrap();
-            std::fs::remove_file(dir.path().join("clean.db")).unwrap();
-        }
-    }
-}
-
-#[test]
-fn a_proposal_already_there_stops_the_open_naming_both() {
-    let dir = tempfile::tempdir().unwrap();
-    let fixture = Fixture::load();
     let url = legacy(&dir, "store", &fixture);
-    let included = "00000000-0000-4000-8000-000000000070";
     run(
         &url,
-        &format!(
-            "INSERT INTO config_proposal (id, organization_id, environment_id, \
-             source_environment_id, repository_id, number, source_name, source_revision, \
-             first_sync, last_sync) VALUES ('{included}', '{ORG}', '{PRODUCTION}', \
-             '{}', 11, 5, 'pr-5', 1, '{included}', '{included}')",
-            fixture.pr_environment()
-        ),
-    );
-    let before = dump(&url, LEGACY_TABLES);
-    let error = Storage::open(&url).err().expect("the open fails closed");
-    assert!(
-        error.message.contains(fixture.standing_id()),
-        "{}",
-        error.message
-    );
-    assert!(error.message.contains(included), "{}", error.message);
-    assert!(
-        dump(&url, LEGACY_TABLES) == before,
-        "a failed open changed the Store"
-    );
-}
-
-/// The legacy table keys no pull request: a row standing beside a frozen one for the
-/// same Destination and pull request stops the open, naming both, until one goes.
-#[test]
-fn two_conditional_syncs_on_one_pull_request_stop_the_open_naming_both() {
-    let dir = tempfile::tempdir().unwrap();
-    let fixture = Fixture::load();
-    let url = legacy(&dir, "store", &fixture);
-    let twin = "00000000-0000-4000-8000-000000000062";
-    run(
-        &url,
-        &format!(
-            "INSERT INTO config_conditional_sync (id, organization_id, environment_id, state, \
-             pr_environment_id, repository_id, number, target_branch, working_revision, \
-             merge_commit, synced_at, stored) \
-             SELECT '{twin}', organization_id, environment_id, 'standing', NULL, repository_id, \
-             number, target_branch, working_revision, NULL, synced_at, stored \
-             FROM config_conditional_sync WHERE id = '{FROZEN}'"
-        ),
+        &format!("UPDATE config_conditional_sync SET state = 'gone' WHERE id = '{FROZEN}'"),
     );
     let before = dump(&url, LEGACY_TABLES);
     let error = Storage::open(&url).err().expect("the open fails closed");
     assert!(error.message.contains(FROZEN), "{}", error.message);
-    assert!(error.message.contains(twin), "{}", error.message);
-    assert!(error.message.contains("delete one"), "{}", error.message);
     assert!(
         dump(&url, LEGACY_TABLES) == before,
         "a failed open changed the Store"
     );
     run(
         &url,
-        &format!("DELETE FROM config_conditional_sync WHERE id = '{twin}'"),
+        &format!("UPDATE config_conditional_sync SET state = 'frozen' WHERE id = '{FROZEN}'"),
     );
     Storage::open(&url).unwrap();
     assert!(
         dump_all(&url) == clean(&dir, &fixture),
         "a repaired open differs from a clean one"
     );
-}
-
-/// Only a pull request's proposal is offered: the Store refuses an offer without one.
-#[test]
-fn an_offer_without_a_pull_request_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let fixture = Fixture::load();
-    let url = legacy(&dir, "store", &fixture);
-    let (storage, _) = Storage::open(&url).unwrap();
-    let insert = |number: &str| {
-        storage.write(|tx| {
-            tx.execute(
-                &format!(
-                    "INSERT INTO config_proposal (id, organization_id, environment_id, \
-                     source_environment_id, repository_id, number, source_name, \
-                     source_revision, first_sync, last_sync, offered) \
-                     VALUES ('00000000-0000-4000-8000-000000000071', ?1, ?2, ?3, \
-                     {number}, {number}, 'staging', 1, 'a', 'a', '{{}}')"
-                ),
-                &[ORG.into(), PRODUCTION.into(), STAGING.into()],
-            )
-        })
-    };
-    assert!(
-        insert("NULL").is_err(),
-        "an offer without a pull request was stored"
-    );
-    insert("8").unwrap();
 }
 
 #[test]

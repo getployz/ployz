@@ -247,9 +247,6 @@ commands! {
         => crate::branch::remove_proposal(tx, who, c);
     /// Stage the hints a Parent left in an Environment.
     Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
-    /// Include an offer in its Destination's draft.
-    IncludeProposal(crate::IncludeProposal) -> ProposalIncluded(crate::ProposalIncluded)
-        => crate::conditional_sync::include(tx, who, sealing, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
     /// Mark rows of an Environment Never sync, or sync them again.
@@ -476,7 +473,6 @@ impl Written {
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
-            Self::ProposalIncluded(included) => Some(&included.environment.id),
             Self::Synced(synced) => Some(&synced.into.id),
             Self::Undone(undone) => Some(&undone.into.id),
             Self::Removed(removed) => Some(&removed.environment.id),
@@ -554,14 +550,12 @@ pub enum Written {
     BuildOrder(crate::BuildOrderView),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
-    /// A Sync was undone, or its offer forgotten.
+    /// A Sync was undone.
     Undone(crate::Undone),
     /// A proposal was removed from its draft, or was gone already.
     Removed(crate::Removed),
     /// Hints were staged.
     Taken(crate::Taken),
-    /// An offer was included in its draft, or was already.
-    ProposalIncluded(crate::ProposalIncluded),
     /// An Environment's settings marked Never sync changed.
     NeverSynced(crate::NeverSynced),
     /// The Default Environment changed: the Project's Environments after it.

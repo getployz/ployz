@@ -203,11 +203,11 @@ it("offers a Save message when the draft reverses Saved with no runtime changes"
 describe("Included", () => {
   const staging: Included = {
     proposal: "p-staging", source: { kind: "environment", id: "e-staging", name: "staging", live: true },
-    revision: 4, newer: true, changes: 2, sync: "s-1", offered: false,
+    revision: 4, newer: true, changes: 2, sync: "s-1",
   };
   const pr: Included = {
     proposal: "p-pr", source: { kind: "pull_request", repository_id: 1, number: 142, name: "pr-142", environment: "e-pr" },
-    revision: 2, newer: true, changes: 1, sync: "s-2", offered: false,
+    revision: 2, newer: true, changes: 1, sync: "s-2",
   };
 
   it("lists each included source with Remove, and Include newer changes once an Environment changed since", async () => {
@@ -225,21 +225,6 @@ describe("Included", () => {
     expect(onRemoveIncluded).toHaveBeenCalledWith(staging);
   });
 
-  it("labels each included pull request by whether it merged here, and offers Include newer changes once its preview changed", async () => {
-    const states = (["open", "ready", "closed", "elsewhere"] as const).map((readiness, index): Included => ({
-      ...pr, proposal: `p-${readiness}`, readiness, source: { ...pr.source, number: 140 + index, name: `pr-${140 + index}` } as Included["source"],
-      merged_into: readiness === "ready" ? "main" : readiness === "elsewhere" ? "release" : undefined,
-    }));
-    const onIncludeNewer = vi.fn();
-    review({ groups: [], totalChanges: 0, canPublish: true, included: states, onRemoveIncluded: vi.fn(), onIncludeNewer });
-
-    for (const [name, label] of [["pr-140", "Waiting for #140"], ["pr-141", "Merged"], ["pr-142", "Closed"], ["pr-143", "Merged into release"]] as const) {
-      expect(lineOf(`${name} · 1 change`).getByText(label)).toBeTruthy();
-    }
-    fireEvent.click((await menuOf("pr-141")).getByRole("menuitem", { name: "Include newer changes" }));
-    expect(onIncludeNewer).toHaveBeenCalledWith(states[1]);
-  });
-
   it("offers no Include newer changes once a pull request's preview is gone", async () => {
     review({ groups: [], totalChanges: 0, canPublish: true, included: [{ ...pr, source: { ...pr.source, environment: null } as Included["source"] }],
       onRemoveIncluded: vi.fn(), onIncludeNewer: vi.fn() });
@@ -247,43 +232,5 @@ describe("Included", () => {
     const items = await menuOf("pr-142");
     expect(items.getByRole("menuitem", { name: "Remove" })).toBeTruthy();
     expect(items.queryByRole("menuitem", { name: "Include newer changes" })).toBeNull();
-  });
-
-  it("lists an offer under Queued, apart from Included, and applies it, asking for the value of each secret the draft lacks", async () => {
-    const offer: Included = { ...pr, offered: true, newer: false, readiness: "open" };
-    const onInclude = vi.fn<NonNullable<EnvironmentChangesReviewProps["onInclude"]>>()
-      .mockResolvedValueOnce(["api.env.TOKEN"]).mockResolvedValueOnce([]);
-    review({ groups: [], totalChanges: 0, canPublish: false, included: [offer, staging], onRemoveIncluded: vi.fn(), onInclude });
-
-    const queued = within(screen.getByRole("region", { name: "Queued" }));
-    expect(queued.getByText("pr-142 · 1 change")).toBeTruthy();
-    expect(queued.queryByText("staging · 2 changes")).toBeNull();
-    expect(within(screen.getByRole("region", { name: "Included" })).queryByText("pr-142 · 1 change")).toBeNull();
-    fireEvent.click(queued.getByRole("button", { name: "Apply" }));
-    const value = await screen.findByLabelText("Set value of api.env.TOKEN");
-    expect(screen.getByRole("button", { name: "Apply" }).hasAttribute("disabled")).toBe(true);
-    fireEvent.change(value, { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-    await vi.waitFor(() => expect(onInclude).toHaveBeenLastCalledWith(offer, { "api.env.TOKEN": "secret" }));
-    await vi.waitFor(() => expect(screen.queryByLabelText("Set value of api.env.TOKEN")).toBeNull());
-    expect((await menuOf("pr-142")).getByRole("menuitem", { name: "Remove" })).toBeTruthy();
-  });
-
-  it("shows no Included section and no Save for queued offers alone", () => {
-    review({ groups: [], totalChanges: 0, canPublish: false, included: [{ ...pr, offered: true, newer: false, readiness: "open" }],
-      onRemoveIncluded: vi.fn(), onInclude: vi.fn() });
-
-    expect(screen.getByRole("region", { name: "Queued" })).toBeTruthy();
-    expect(screen.queryByRole("region", { name: "Included" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-  });
-
-  it("holds Save and Deploy while an included pull request isn't ready, and says which", () => {
-    review({ groups: [api([row("api.replicas")])], totalChanges: 1, canDeploy: true, canPublish: true,
-      included: [{ ...pr, readiness: "open" }], blockedBy: 142 });
-
-    expect(screen.getByRole("status").textContent).toBe("Waiting for #142");
-    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByRole("button", { name: "Deploy changes" }).hasAttribute("disabled")).toBe(true);
   });
 });

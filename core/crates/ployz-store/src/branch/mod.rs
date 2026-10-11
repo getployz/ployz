@@ -5,7 +5,6 @@
 //! deployed changes since. Core plans the picks and compares the rows
 //! (`plan_branch`, `plan`, `live_values`); this module stores and lands them.
 
-mod admission;
 mod create;
 mod follow;
 mod live;
@@ -14,7 +13,6 @@ mod pair;
 mod proposal;
 mod setup;
 mod sync;
-pub(crate) use admission::{Gated, consume, forget_included, gated, ready, version_gate};
 pub(crate) use create::*;
 pub use follow::{FollowHint, IncomingChange};
 pub(crate) use follow::{follow, hints, incoming};
@@ -22,19 +20,17 @@ pub(crate) use live::*;
 pub use never_sync::{NeverSync, NeverSynced};
 pub(crate) use never_sync::{marked, marks, never_sync};
 pub(crate) use pair::*;
-pub(crate) use proposal::included;
 pub(crate) use proposal::remove as remove_proposal;
 pub use proposal::{Included, ProposalSource, RemoveProposal, Removed};
-pub(crate) use proposal::{
-    Owners, credentials, keep_carried, keep_receipt, owners as proposal_owners, release_changed,
-};
+pub(crate) use proposal::{Owners, release_changed};
+pub(crate) use proposal::{end_included, included};
 pub use setup::SetBranchSetup;
 pub(crate) use setup::{branch_setup, set_branch_setup};
 pub use sync::{
     Mark, NeverSyncedRow, SecretRow, SyncChange, SyncChanges, SyncQuery, SyncRow, SyncView, Synced,
-    SyncedWhen, UndoSync, Undone,
+    UndoSync, Undone,
 };
-pub(crate) use sync::{picks, sealed, sync, sync_view, take, undo};
+pub(crate) use sync::{sync, sync_view, take, undo};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -135,23 +131,6 @@ pub struct Take {
 pub enum HintSource {
     /// The Branch's Parent: [`FollowHint::from`].
     Parent(EnvironmentName),
-}
-
-/// When a Sync's changes land. Omitted: now.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum When {
-    /// Staged in the receiver now.
-    Now {
-        /// Close the Branch once its changes landed in its Parent: refused for a
-        /// kept Branch, and for a Sync into anything but its Parent.
-        #[serde(default)]
-        #[ts(as = "Option<bool>", optional)]
-        close_after: bool,
-    },
-    /// With the pull request's merge: a Conditional Sync, replacing the one
-    /// standing there.
-    AtMerge,
 }
 
 /// A row, and its name where it is shown. Only [`pair::named`] makes one, so `kind`

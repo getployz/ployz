@@ -48,9 +48,8 @@ const refreshedBy = {
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
-  // A Sync compares two Environments over what they last shared; from a PR Environment into a Destination it is
-  // offered for after the merge, which reads the pull request.
-  sync: ["store_environment", "store_deployment", "store_pull_request"],
+  // A Sync compares two Environments over what they last shared.
+  sync: ["store_environment", "store_deployment"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
   projects: ["store_project", "store_environment"],

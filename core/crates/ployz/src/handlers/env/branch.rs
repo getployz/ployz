@@ -6,7 +6,7 @@ use ployz_core::ServiceName;
 use ployz_store::{
     Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, HintSource, KeepBranch, RowRef, SetupCommand, SyncChanges, SyncId, SyncQuery,
-    SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
+    SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
 
 use super::super::config::expected;
@@ -70,19 +70,14 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if let Some(sync) = matches.get_one::<String>("undo") {
         return undo(root, sync);
     }
-    let when = matches
-        .get_flag("close")
-        .then_some(When::Now { close_after: true });
     let query = match named("from")? {
         Some(from) => SyncQuery {
             from,
             into: Some(here),
-            when,
         },
         None => SyncQuery {
             from: here,
             into: named("to")?,
-            when,
         },
     };
     let store = store(root)?;
@@ -106,7 +101,7 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let request = SyncChanges {
         from: query.from,
         into: query.into,
-        when,
+        close_after: matches.get_flag("close"),
         version: matches
             .get_one::<String>("version")
             .cloned()
@@ -251,12 +246,8 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
         )
     });
     crate::ui::finish(&Next::new(view, next), || {
-        let when = view
-            .at_merge
-            .map(|number| format!(" at #{number}'s merge"))
-            .unwrap_or_default();
         crate::ui::stream(format_args!(
-            "{} → {}{when} (version {}):",
+            "{} → {} (version {}):",
             view.from.name, view.into.name, view.version
         ));
         if view.rows.is_empty() {
@@ -309,40 +300,27 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
 /// What a Sync did, and `deploy` of where it landed when it staged something.
 fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
-    let next = matches!(&synced.when, SyncedWhen::Now { staged, .. } if !staged.is_empty())
+    let next = (!synced.staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
     // The proposal is the Dashboard's to Remove; here a Sync is undone by its id.
     let mut json = serde_json::to_value(synced).expect("a Sync serializes");
-    if let Some(when) = json
-        .get_mut("when")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        when.remove("proposal");
+    if let Some(json) = json.as_object_mut() {
+        json.remove("proposal");
     }
     crate::ui::finish(&Next::new(&json, next.clone()), || {
         let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
-        match &synced.when {
-            SyncedWhen::AtMerge { conditional_sync } => {
-                crate::ui::stream(format_args!(
-                    "Queued for {into}: apply it in Changes once PR #{} merges.",
-                    conditional_sync.pull_request,
-                ));
-                crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
-            }
-            SyncedWhen::Now {
-                staged, closing, ..
-            } => {
-                crate::ui::stream(format_args!("Synced {from} → {into}."));
-                if !staged.is_empty() {
-                    crate::ui::stream(format_args!("Staged: {}", crate::handlers::joined(staged)));
-                }
-                if *closing {
-                    crate::ui::stream(format_args!("Closing {from}."));
-                }
-                crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
-            }
+        crate::ui::stream(format_args!("Synced {from} → {into}."));
+        if !synced.staged.is_empty() {
+            crate::ui::stream(format_args!(
+                "Staged: {}",
+                crate::handlers::joined(&synced.staged)
+            ));
         }
+        if synced.closing {
+            crate::ui::stream(format_args!("Closing {from}."));
+        }
+        crate::ui::hint(&crate::ui::Hint::Undo(undo));
         if let Some(next) = &next {
             crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
         }

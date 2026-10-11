@@ -781,7 +781,6 @@ fn include(store: &ConfigStore, who: &Actor, from: &str, into: &str, n: u8) -> p
             &ployz_store::SyncQuery {
                 from: at(from),
                 into: Some(at(into)),
-                when: None,
             },
         )
         .unwrap();
@@ -791,7 +790,7 @@ fn include(store: &ConfigStore, who: &Actor, from: &str, into: &str, n: u8) -> p
             &ployz_store::SyncChanges {
                 from: at(from),
                 into: Some(at(into)),
-                when: None,
+                close_after: false,
                 version: view.version,
                 picks: None,
                 skip: Vec::new(),

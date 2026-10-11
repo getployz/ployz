@@ -9,7 +9,6 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { HistoryIcon, PlusIcon } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "./store-hints";
@@ -36,8 +35,6 @@ import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { StoreRefused } from "#/modules/config-store/store.contract";
-import { needsValue } from "#/modules/config-store/store-offers";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
@@ -220,7 +217,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
   const { noServers } = use(RuntimeLensContext);
   const groups = reviewGroups(diff, store.services.map(({ service }) => service));
-  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.some((item) => !item.offered);
+  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
   return (
@@ -242,18 +239,6 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
           included: diff.included,
           onRemoveIncluded: ({ proposal }) => void writer.commit({ command: "remove_proposal", environment: ref, proposal, version: diff.version }),
           onIncludeNewer: ({ source }) => setIncluding(source.name),
-          onInclude: async ({ proposal }, values) => {
-            try {
-              await writer.commit({ command: "include_proposal", environment: ref, proposal, version: diff.version, values }, ["conflict"]).isPersisted.promise;
-              return [];
-            } catch (error) {
-              if (!(error instanceof StoreRefused) || error.code !== "conflict") return [];
-              const needed = needsValue(error);
-              if (needed !== null) return needed;
-              toast.error(error.message);
-              return [];
-            }
-          },
         }}
         noServers={noServers}
       />

@@ -201,18 +201,14 @@ pub struct Destination {
     pub name: EnvironmentName,
     /// The changes a Sync there would hold: the Sync view's ticked rows.
     pub changes: usize,
-    /// Its Conditional Sync there, if any.
-    pub conditional_sync: Option<DestinationSync>,
 }
 
-/// A PR Environment's Conditional Sync into one Destination.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DestinationSync {
-    pub id: crate::ConditionalSyncId,
-    /// False once the PR Environment or the target branch changed since: sync again.
-    pub standing: bool,
-    /// How many changes it holds.
-    pub changes: usize,
+/// What Cloud checks before telling the Store about a push to a branch.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PendingSyncs {
+    /// Pull requests into the branch that a draft includes, not known to have
+    /// merged: Cloud reports each that did.
+    pub standing: Vec<PullRequestNumber>,
 }
 
 /// A plan as stored, by Environment ID and Service lineage.
@@ -915,74 +911,29 @@ struct Merged {
     into: BranchName,
 }
 
-/// Whether a pull request's change may go live in a Destination.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum Readiness {
-    /// Not merged yet, or nothing is known of it.
-    Open,
-    /// Merged into a branch this Destination deploys.
-    Ready,
-    /// Merged into a branch this Destination doesn't deploy.
-    Elsewhere,
-    /// Closed without merging.
-    Closed,
-}
-
-impl Readiness {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Ready => "ready",
-            Self::Elsewhere => "elsewhere",
-            Self::Closed => "closed",
+/// The pull requests into `branch` of `repository_id` a draft includes, not known to
+/// have merged.
+pub(crate) fn pending(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    branch: &BranchName,
+) -> Result<PendingSyncs, RpcError> {
+    let rows = tx.query(
+        "SELECT DISTINCT p.number, r.facts FROM config_proposal p \
+         JOIN config_pull_request r ON r.organization_id = p.organization_id \
+         AND r.repository_id = p.repository_id AND r.number = p.number \
+         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND r.merged IS NULL \
+         ORDER BY p.number",
+        &[who.organization.as_str().into(), repository_id.into()],
+    )?;
+    let mut pending = PendingSyncs::default();
+    for row in rows {
+        let facts: PullRequest = row.json(1, "pull request")?;
+        let number = row.number(0, "proposal")?;
+        if facts.target_branch == *branch && !pending.standing.contains(&number) {
+            pending.standing.push(number);
         }
     }
-}
-
-/// How pull request `pr` stands for Destination `into`.
-pub(crate) fn readiness(
-    tx: &mut dyn Tx,
-    into: &EnvironmentId,
-    pr: &PullRequestRef,
-) -> Result<Readiness, RpcError> {
-    Ok(standing(tx, into, pr)?.0)
-}
-
-/// As [`readiness`], with the branch `pr` merged into once it did.
-pub(crate) fn standing(
-    tx: &mut dyn Tx,
-    into: &EnvironmentId,
-    pr: &PullRequestRef,
-) -> Result<(Readiness, Option<BranchName>), RpcError> {
-    let rows = tx.query(
-        "SELECT p.facts, p.merged FROM config_pull_request p \
-         JOIN config_environment e ON e.organization_id = p.organization_id \
-         WHERE e.id = ?1 AND p.repository_id = ?2 AND p.number = ?3",
-        &[
-            into.as_str().into(),
-            pr.repository_id.into(),
-            pr.number.into(),
-        ],
-    )?;
-    let Some(row) = rows.first() else {
-        return Ok((Readiness::Open, None));
-    };
-    if let Some(merged) = row.optional_text(1)? {
-        let merged: Merged =
-            serde_json::from_str(merged).map_err(|_| error::corrupt("pull request"))?;
-        let project = scope::project_of(tx, into)?.id;
-        let destinations = destinations_of(tx, &project, pr.repository_id, &merged.into)?;
-        let readiness = match destinations.contains(into) {
-            true => Readiness::Ready,
-            false => Readiness::Elsewhere,
-        };
-        return Ok((readiness, Some(merged.into)));
-    }
-    let facts: PullRequest = row.json(0, "pull request")?;
-    let readiness = match facts.open {
-        true => Readiness::Open,
-        false => Readiness::Closed,
-    };
-    Ok((readiness, None))
+    Ok(pending)
 }

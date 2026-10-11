@@ -10,7 +10,6 @@ mod build;
 mod builders;
 pub mod catalog;
 mod command;
-mod conditional_sync;
 mod config_item;
 mod deployment;
 mod domain;
@@ -45,7 +44,7 @@ pub use automation::{
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     KeepBranch, LiveNode, PlannedNode, PlannedRole, SetBranchSetup, SetupCommand, SyncChanges,
-    SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
+    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
 pub use branch::{
     FollowHint, HintSource, Included, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced,
@@ -57,9 +56,6 @@ pub use build::{
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
-pub use conditional_sync::{
-    ConditionalSync, ConditionalSyncState, IncludeProposal, PendingSyncs, ProposalIncluded,
-};
 pub use deployment::{
     Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, Failure, LOG_TAIL,
     NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress,
@@ -75,9 +71,8 @@ pub use id::*;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{
-    Destination, DestinationSync, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery,
-    PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, Readiness,
-    SetPrPlan, Sweep,
+    Destination, OpenPullRequest, PendingSyncs, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView,
+    PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss, docker_volume};
@@ -359,7 +354,7 @@ impl ConfigStore {
     ) -> Result<PendingSyncs, RpcError> {
         let who = Actor::system(organization.clone());
         self.storage
-            .read(|tx| conditional_sync::pending(tx, &who, repository_id, branch))
+            .read(|tx| pull_request::pending(tx, &who, repository_id, branch))
     }
 
     /// Forget an Organization's configuration once it has no Project: what it

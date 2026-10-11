@@ -407,8 +407,8 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
             },
         )
         .unwrap();
-    assert!(!view.passing);
-    assert_eq!(view.reason, "1 change to sync in Ployz");
+    assert!(view.passing);
+    assert_eq!(view.reason, "1 change goes live with this PR");
 }
 
 #[test]
@@ -778,12 +778,10 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
             &who,
             &ployz_store::SyncQuery {
                 from: at("pr-5"),
-                into: None,
-                when: Some(ployz_store::When::AtMerge),
+                into: Some(at("qa")),
             },
         )
         .unwrap();
-    assert_eq!(review.into.name.as_str(), "qa");
     let rows: Vec<String> = review.rows.iter().map(|row| row.at.to_string()).collect();
     assert_eq!(rows, ["site.env.MODE"]);
     let view = store
@@ -799,7 +797,7 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
     assert_eq!(destinations.len(), 1);
     assert_eq!(destinations[0].name.as_str(), "qa");
     assert_eq!(destinations[0].changes, review.rows.len());
-    assert_eq!(view.reason, "1 change to sync in Ployz");
+    assert_eq!(view.reason, "1 change goes live with this PR");
 }
 
 /// Run `sql` on the database at `url`, beside the Store.
@@ -819,26 +817,20 @@ fn execute(url: &str, sql: &str) -> usize {
     }
 }
 
-fn now_when() -> ployz_store::When {
-    ployz_store::When::Now { close_after: false }
-}
-
 /// Include what `pr-5` offers into production as Sync `n`; the proposal, or the refusal.
 fn include_pr(
     store: &ConfigStore,
     who: &Actor,
     n: u8,
 ) -> Result<ployz_store::ProposalId, (RpcErrorCode, String)> {
-    include_from_pr(store, who, "production", Some(now_when()), n)
+    include_from_pr(store, who, "production", n)
 }
 
-/// Include what `pr-5` offers into `into` as Sync `n`, saying `when` as the Dashboard
-/// does, then the offer if the Sync made one; the proposal, or the refusal.
+/// Include what `pr-5` offers into `into` as Sync `n`; the proposal, or the refusal.
 fn include_from_pr(
     store: &ConfigStore,
     who: &Actor,
     into: &str,
-    when: Option<ployz_store::When>,
     n: u8,
 ) -> Result<ployz_store::ProposalId, (RpcErrorCode, String)> {
     let view = store
@@ -847,7 +839,6 @@ fn include_from_pr(
             &ployz_store::SyncQuery {
                 from: at("pr-5"),
                 into: Some(at(into)),
-                when,
             },
         )
         .unwrap();
@@ -857,7 +848,7 @@ fn include_from_pr(
             &ployz_store::SyncChanges {
                 from: at("pr-5"),
                 into: Some(at(into)),
-                when,
+                close_after: false,
                 version: view.version,
                 picks: None,
                 skip: Vec::new(),
@@ -869,33 +860,7 @@ fn include_from_pr(
             },
         )
         .map_err(|error| (error.code, error.message))?;
-    // An unmerged pull request's Sync into its Destination is offered: Include it.
-    let offer = match synced.when {
-        ployz_store::SyncedWhen::Now { proposal, .. } => return Ok(proposal),
-        ployz_store::SyncedWhen::AtMerge { conditional_sync } => conditional_sync.id,
-    };
-    let environment = at(into);
-    let version = store
-        .read(
-            who,
-            &ployz_store::DiffQuery {
-                environment: environment.clone(),
-            },
-        )
-        .unwrap()
-        .version;
-    let included = store
-        .write(
-            who,
-            &ployz_store::IncludeProposal {
-                environment,
-                proposal: ployz_store::ProposalId::parse(offer.as_str()).unwrap(),
-                version,
-                values: std::collections::BTreeMap::new(),
-            },
-        )
-        .map_err(|error| (error.code, error.message))?;
-    Ok(included.proposal)
+    Ok(synced.proposal)
 }
 
 /// Included into one of its Destinations, a pull request's preview is the pull
@@ -922,7 +887,7 @@ fn a_preview_is_its_pull_requests_proposal_only_in_a_destination() {
     plan(&store, &who, on());
     pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
     set(&store, &who, "pr-5", "web.env.X", json!("1"));
-    include_from_pr(&store, &who, "staging", None, 1).unwrap();
+    include_from_pr(&store, &who, "staging", 1).unwrap();
     include_pr(&store, &who, 2).unwrap();
 
     let source = |environment: &str| {
@@ -1092,7 +1057,7 @@ fn a_change_included_in_the_previews_parent_still_syncs_to_its_destination() {
     );
     pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
     set(&store, &who, "pr-5", "web.env.X", json!("1"));
-    include_from_pr(&store, &who, "staging", None, 1).unwrap();
+    include_from_pr(&store, &who, "staging", 1).unwrap();
 
     let view = store
         .read(
@@ -1100,7 +1065,6 @@ fn a_change_included_in_the_previews_parent_still_syncs_to_its_destination() {
             &ployz_store::SyncQuery {
                 from: at("pr-5"),
                 into: Some(at("production")),
-                when: None,
             },
         )
         .unwrap();

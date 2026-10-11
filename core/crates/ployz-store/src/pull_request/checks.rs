@@ -23,7 +23,6 @@ pub(crate) fn view(
             let into = scope::load_by_id(tx, &into)?;
             destinations.push(Destination {
                 changes: branch::changes_into(tx, &environment, &into)?,
-                conditional_sync: crate::conditional_sync::standing_in(tx, &environment, &into)?,
                 name: into.summary.name,
             });
         }
@@ -45,8 +44,8 @@ pub(crate) fn view(
     })
 }
 
-/// Whether the pull request is ready to merge, and why: every Destination with
-/// changes has a standing Conditional Sync, and a value for each secret it brings.
+/// What the pull request's check says: it always passes, naming the changes that go
+/// live with the merge.
 pub(super) fn check(environments: &[PrEnvironment], target: &str) -> (bool, String) {
     let destinations: Vec<&Destination> = environments
         .iter()
@@ -55,17 +54,11 @@ pub(super) fn check(environments: &[PrEnvironment], target: &str) -> (bool, Stri
     if destinations.is_empty() {
         return (true, format!("No environment deploys {target}"));
     }
-    let waiting: Vec<&&Destination> = destinations
+    let landing: usize = destinations
         .iter()
-        .filter(|destination| {
-            destination.changes > 0
-                || destination
-                    .conditional_sync
-                    .as_ref()
-                    .is_some_and(|sync| sync.standing)
-        })
-        .collect();
-    if waiting.is_empty() {
+        .map(|destination| destination.changes)
+        .sum();
+    if landing == 0 {
         let names: BTreeSet<&str> = destinations
             .iter()
             .map(|destination| destination.name.as_str())
@@ -78,29 +71,11 @@ pub(super) fn check(environments: &[PrEnvironment], target: &str) -> (bool, Stri
             ),
         );
     }
-    if waiting.iter().any(|destination| {
-        destination
-            .conditional_sync
-            .as_ref()
-            .is_some_and(|sync| !sync.standing)
-    }) {
-        return (false, "Changed since synced · sync again".into());
-    }
-    let unsaved: usize = waiting
-        .iter()
-        .filter(|destination| destination.conditional_sync.is_none())
-        .map(|destination| destination.changes)
-        .sum();
-    if unsaved > 0 {
-        return (false, format!("{} to sync in Ployz", changes(unsaved)));
-    }
-    let saved: usize = waiting
-        .iter()
-        .filter_map(|destination| destination.conditional_sync.as_ref())
-        .map(|sync| sync.changes)
-        .sum();
-    let verb = if saved == 1 { "goes" } else { "go" };
-    (true, format!("{} {verb} live with this PR", changes(saved)))
+    let verb = if landing == 1 { "goes" } else { "go" };
+    (
+        true,
+        format!("{} {verb} live with this PR", changes(landing)),
+    )
 }
 
 pub(super) fn changes(n: usize) -> String {

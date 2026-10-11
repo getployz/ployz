@@ -154,7 +154,6 @@ fn view(store: &ConfigStore, who: &Actor) -> SyncView {
             &SyncQuery {
                 from: at("fix-web"),
                 into: None,
-                when: None,
             },
         )
         .unwrap()
@@ -172,7 +171,6 @@ fn between(
             &SyncQuery {
                 from: at(from),
                 into: Some(at(into)),
-                when: None,
             },
         )
         .unwrap();
@@ -203,7 +201,7 @@ fn sync(view: &SyncView, picks: Option<Vec<ployz_store::RowId>>) -> SyncChanges 
     SyncChanges {
         from: at("fix-web"),
         into: None,
-        when: None,
+        close_after: false,
         version: view.version.clone(),
         picks,
         skip: Vec::new(),
@@ -561,11 +559,7 @@ fn a_branchs_copy_of_a_service_is_named_by_its_lineages_row() {
 fn include(store: &ConfigStore, who: &Actor) -> ployz_store::ProposalId {
     let mut changes = sync(&view(store, who), None);
     changes.id = Some(ployz_store::SyncId::parse("00000000-0000-4000-8000-000000000201").unwrap());
-    let ployz_store::SyncedWhen::Now { proposal, .. } = store.write(who, &changes).unwrap().when
-    else {
-        panic!("a Sync into a Branch's Parent stages now")
-    };
-    proposal
+    store.write(who, &changes).unwrap().proposal
 }
 
 #[test]

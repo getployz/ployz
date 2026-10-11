@@ -51,7 +51,6 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
                 &SyncQuery {
                     from: at("fix-web"),
                     into: None,
-                    when: None,
                 },
             )
             .unwrap(),
@@ -68,7 +67,6 @@ fn comparisons(store: &ConfigStore, who: &Actor) -> (SyncView, BranchView) {
 
 /// The schema as it was before `0008_proposal_offer`, with no Conditional Syncs.
 const BEFORE_OFFERS: &str = "
-    ALTER TABLE config_proposal DROP COLUMN offered;
     ALTER TABLE config_pull_request DROP COLUMN merged;
     CREATE TABLE config_conditional_sync (
         id TEXT PRIMARY KEY,
@@ -96,7 +94,8 @@ const BEFORE_OFFERS: &str = "
     );
     ALTER TABLE config_waiting_deploy ADD COLUMN syncs TEXT NOT NULL DEFAULT '[]';
     DELETE FROM config_migration WHERE name IN
-    ('0008_proposal_offer', '0009_offer_conditional_syncs', '0010_drop_conditional_sync');
+    ('0008_proposal_offer', '0009_offer_conditional_syncs', '0010_drop_conditional_sync',
+    '0011_retire_offers');
 ";
 
 /// The schema as it was before `0002_sync`: one base per Branch.
@@ -204,7 +203,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
                 &SyncChanges {
                     from: at("fix-web"),
                     into: None,
-                    when: None,
+                    close_after: false,
                     version: view.version.clone(),
                     picks: Some(vec![image.at.row().clone().into()]),
                     skip: Vec::new(),

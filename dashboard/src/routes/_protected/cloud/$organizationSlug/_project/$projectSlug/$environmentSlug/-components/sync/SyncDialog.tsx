@@ -63,7 +63,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
       written = await writer.commit({
         command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, id: syncId, when: closable && closeAfter ? { kind: "now", close_after: true } : null,
+        values: typed, version: view.value.version, id: syncId, close_after: closable && closeAfter,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.

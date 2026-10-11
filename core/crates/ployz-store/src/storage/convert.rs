@@ -1,32 +1,25 @@
-//! `0009_offer_conditional_syncs`: every Conditional Sync still waiting for its pull
-//! request becomes an offered proposal, and what the pull requests' facts said about
-//! their merge becomes the sticky `merged`.
-//!
-//! What a Conditional Sync stored is copied as text: only its source Environment's ID
-//! and name are read, so nothing is unsealed or sealed again. A row it cannot read,
-//! or one that would overwrite a proposal already there, stops the migration and
-//! names the row; the transaction rolls back and the legacy tables stay as they were.
+//! `0009_offer_conditional_syncs`: what the pull requests' facts said about their
+//! merge becomes the sticky `merged`, and the Conditional Syncs go. A standing one's
+//! changes land with its pull request's merge from the PR Environment, all of them;
+//! a frozen one's pull request merged already, so its `merged` stops a late event
+//! from landing it again.
 
 use ployz_core::RpcError;
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::{Backend, Param, Tx};
+use super::{Backend, Tx};
 use crate::error;
 
-/// What converting a Store's Conditional Syncs to offers did: its one receipt, which
-/// the process that opened the Store logs.
+/// What retiring a Store's Conditional Syncs did: its one receipt, which the process
+/// that opened the Store logs.
 #[derive(Debug, Default, PartialEq, Eq, Serialize, TS)]
 pub struct Converted {
-    /// Standing Conditional Syncs offered.
-    pub standing: usize,
-    /// Frozen ones offered, their pull request merged.
-    pub frozen: usize,
-    /// Landed ones, dropped: what landed is Saved, and any hint one left goes too.
-    pub landed_dropped: usize,
-    /// Held secret values no offer took, dropped with their table.
-    pub orphan_held: usize,
+    /// Conditional Syncs dropped, landed or not.
+    pub dropped: usize,
+    /// Held secret values dropped with their table.
+    pub held_dropped: usize,
     /// Waiting pushes that carried frozen Conditional Syncs: they deploy from Saved now.
     pub retired_attachments: usize,
 }
@@ -42,114 +35,58 @@ pub(super) fn step(tx: &mut dyn Tx, backend: Backend) -> Result<Converted, RpcEr
     }
     let converted = convert(tx)?;
     tracing::info!(
-        standing = converted.standing,
-        frozen = converted.frozen,
-        landed_dropped = converted.landed_dropped,
-        orphan_held = converted.orphan_held,
+        dropped = converted.dropped,
+        held_dropped = converted.held_dropped,
         retired_attachments = converted.retired_attachments,
-        "Conditional Syncs converted to offers"
+        "Conditional Syncs retired"
     );
     Ok(converted)
 }
 
 fn convert(tx: &mut dyn Tx) -> Result<Converted, RpcError> {
-    let mut converted = Converted::default();
     facts(tx)?;
     let rows = tx.query(
-        "SELECT id, organization_id, environment_id, state, pr_environment_id, repository_id, \
-         number, target_branch, working_revision, merge_commit, stored \
+        "SELECT id, organization_id, state, repository_id, number, target_branch, merge_commit \
          FROM config_conditional_sync ORDER BY id",
         &[],
     )?;
-    let mut held_taken = 0;
     for (done, row) in rows.iter().enumerate() {
         fault::at(done)?;
         let id = row.text(0)?;
         let corrupt = || error::corrupt(&format!("Conditional Sync {id}"));
-        let state = row.text(3).map_err(|_| corrupt())?;
-        match state {
-            "landed" => {
-                converted.landed_dropped += 1;
-                continue;
-            }
-            "standing" => converted.standing += 1,
-            "frozen" => converted.frozen += 1,
+        match row.text(2).map_err(|_| corrupt())? {
+            "landed" | "standing" => continue,
+            "frozen" => {}
             _ => return Err(corrupt()),
         }
-        let organization = row.text(1).map_err(|_| corrupt())?;
-        let into = row.text(2).map_err(|_| corrupt())?;
-        let repository = row.int(5).map_err(|_| corrupt())?;
-        let number = row.int(6).map_err(|_| corrupt())?;
-        let stored = row.text(10).map_err(|_| corrupt())?;
-        let environment = serde_json::from_str::<Value>(stored)
-            .ok()
-            .and_then(|stored| stored.get("environment").cloned())
-            .ok_or_else(corrupt)?;
-        let (Some(source_id), Some(name)) = (
-            environment.get("id").and_then(Value::as_str),
-            environment.get("name").and_then(Value::as_str),
-        ) else {
-            return Err(corrupt());
-        };
-        let source = row
-            .optional_text(4)
-            .map_err(|_| corrupt())?
-            .unwrap_or(source_id);
-        let held = held(tx, into, repository, number)?;
-        held_taken += held.len();
-        let offered = json!({ "v": 1, "stored": stored, "held": held }).to_string();
-        collide(tx, id, into, source, (repository, number))?;
+        let commit = row.text(6).map_err(|_| corrupt())?;
+        let target = row.text(5).map_err(|_| corrupt())?;
         tx.execute(
-            "INSERT INTO config_proposal (id, organization_id, environment_id, \
-             source_environment_id, repository_id, number, source_name, source_revision, \
-             first_sync, last_sync, offered) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?1, ?1, ?9)",
+            "UPDATE config_pull_request SET merged = ?1 \
+             WHERE organization_id = ?2 AND repository_id = ?3 AND number = ?4 \
+             AND merged IS NULL",
             &[
-                id.into(),
-                organization.into(),
-                into.into(),
-                source.into(),
-                repository.into(),
-                number.into(),
-                name.into(),
-                row.int(8).map_err(|_| corrupt())?.into(),
-                offered.as_str().into(),
+                json!({ "commit": commit, "into": target })
+                    .to_string()
+                    .as_str()
+                    .into(),
+                row.text(1).map_err(|_| corrupt())?.into(),
+                row.int(3).map_err(|_| corrupt())?.into(),
+                row.int(4).map_err(|_| corrupt())?.into(),
             ],
         )?;
-        tx.execute(
-            "INSERT INTO config_sync_receipt (organization_id, sync_id, environment_id, \
-             source_environment_id, proposal_id) VALUES (?1, ?2, ?3, ?4, ?2) \
-             ON CONFLICT DO NOTHING",
-            &[organization.into(), id.into(), into.into(), source.into()],
-        )?;
-        if state == "frozen" {
-            let commit = row.text(9).map_err(|_| corrupt())?;
-            let target = row.text(7).map_err(|_| corrupt())?;
-            tx.execute(
-                "UPDATE config_pull_request SET merged = ?1 \
-                 WHERE organization_id = ?2 AND repository_id = ?3 AND number = ?4 \
-                 AND merged IS NULL",
-                &[
-                    json!({ "commit": commit, "into": target })
-                        .to_string()
-                        .as_str()
-                        .into(),
-                    organization.into(),
-                    repository.into(),
-                    number.into(),
-                ],
-            )?;
-        }
     }
     fault::at(rows.len())?;
-    let all_held = tx.query("SELECT COUNT(*) FROM config_held_secret", &[])?;
-    converted.orphan_held = count(&all_held)?.saturating_sub(held_taken);
+    let held = tx.query("SELECT COUNT(*) FROM config_held_secret", &[])?;
     let attached = tx.query(
         "SELECT COUNT(*) FROM config_waiting_deploy WHERE syncs <> '[]'",
         &[],
     )?;
-    converted.retired_attachments = count(&attached)?;
-    Ok(converted)
+    Ok(Converted {
+        dropped: rows.len(),
+        held_dropped: count(&held)?,
+        retired_attachments: count(&attached)?,
+    })
 }
 
 /// Every pull request's facts without `merge_reached`, which no longer exists, and
@@ -187,78 +124,6 @@ fn facts(tx: &mut dyn Tx) -> Result<(), RpcError> {
         )?;
     }
     Ok(())
-}
-
-/// The Destination's held values for the pull request, by `<lineage>/<at>`, each
-/// the sealed cell's text as held.
-fn held(
-    tx: &mut dyn Tx,
-    into: &str,
-    repository: i64,
-    number: i64,
-) -> Result<Map<String, Value>, RpcError> {
-    let rows = tx.query(
-        "SELECT lineage, at, value FROM config_held_secret \
-         WHERE environment_id = ?1 AND repository_id = ?2 AND number = ?3 \
-         ORDER BY lineage, at",
-        &[into.into(), repository.into(), number.into()],
-    )?;
-    rows.iter()
-        .map(|row| {
-            Ok((
-                format!("{}/{}", row.text(0)?, row.text(1)?),
-                Value::String(row.text(2)?.to_owned()),
-            ))
-        })
-        .collect()
-}
-
-/// Refuse to convert `id` over a proposal already there for the same Destination and
-/// source or pull request, or with its ID: naming both, so an operator can remove it.
-fn collide(
-    tx: &mut dyn Tx,
-    id: &str,
-    into: &str,
-    source: &str,
-    (repository, number): (i64, i64),
-) -> Result<(), RpcError> {
-    let found = tx.query(
-        "SELECT id FROM config_proposal WHERE id = ?1 OR (environment_id = ?2 \
-         AND (source_environment_id = ?3 OR (repository_id = ?4 AND number = ?5))) \
-         ORDER BY id",
-        &[
-            id.into(),
-            into.into(),
-            source.into(),
-            Param::Int(repository),
-            Param::Int(number),
-        ],
-    )?;
-    let Some(row) = found.first() else {
-        return Ok(());
-    };
-    let proposal = row.text(0)?;
-    // The legacy table has no key on its pull request: two of its rows may wait on
-    // the same one for the same Destination, and only one becomes the offer.
-    let converted = !tx
-        .query(
-            "SELECT id FROM config_conditional_sync WHERE id = ?1",
-            &[proposal.into()],
-        )?
-        .is_empty();
-    let message = if converted {
-        format!(
-            "Conditional Syncs {proposal} and {id} wait on the same pull request in the same Environment: delete one, then open the Config Store again"
-        )
-    } else {
-        format!(
-            "Conditional Sync {id} can't become an offer: proposal {proposal} is already there. Remove it, then open the Config Store again"
-        )
-    };
-    Err(error::conflict(
-        message,
-        json!({ "conditional_sync": id, "proposal": proposal }),
-    ))
 }
 
 fn count(rows: &[super::Row]) -> Result<usize, RpcError> {

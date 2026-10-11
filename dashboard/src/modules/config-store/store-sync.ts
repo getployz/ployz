@@ -1,7 +1,6 @@
-import type { BranchView, ConditionalSyncId, DeploymentSummary, PullRequestView, RowId, SyncRow } from "@ployz/sdk";
+import type { BranchView, DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { rowText, settingName } from "./store-branches";
-import { OFFERED } from "./store-offers";
 
 /** One change of the Sync dialog in words: its name (a variable's is its key, in monospace) and at most one badge. */
 export type SyncLine = {
@@ -68,43 +67,22 @@ export function syncPicks(rows: readonly SyncRow[], flips: Flips) {
 }
 
 /**
- * A PR Environment's Destination, as its pull request's view has it: where a Sync is offered to include after the merge
- * (#`number`), how many changes it would hold, and whether one is offered there. The first Destination, or the offered one.
- */
-export type MergeSync = {
-  number: number; into: string; changes: number;
-  /** The Sync offered there: what Undo passes. */
-  standing: ConditionalSyncId | null;
-};
-
-export function mergeSync(view: PullRequestView, environment: string): MergeSync | null {
-  const destinations = view.environments.find((row) => row.environment.name === environment)?.destinations ?? [];
-  const destination = destinations.find((row) => row.conditional_sync?.standing) ?? destinations[0];
-  if (!view.pull_request || !destination) return null;
-  const standing = destination.conditional_sync?.standing ? destination.conditional_sync.id : null;
-  return { number: view.pull_request.number, into: destination.name, changes: destination.changes, standing };
-}
-
-/**
  * What the Sync button says, where its Sync goes (`into`) and the changes that carries, and the count it shows, if
  * that's what it says.
  */
 export type SyncButtonState = { label: string; into: string; changes: number; count: number | null };
 
 /**
- * The Sync button's words, the first that applies: a shutdown under way or failed, Off, a Sync offered at the merge,
- * then what a Sync into the Parent (a PR Environment's Destination, `merge`) carries. A PR Environment shuts down until
- * its next push; any other Branch comes off the Servers to close.
+ * The Sync button's words, the first that applies: a shutdown under way or failed, Off, then what a Sync into the
+ * Parent carries. A PR Environment shuts down until its next push; any other Branch comes off the Servers to close.
  */
-export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: DeploymentSummary | null,
-  merge: MergeSync | null = null): SyncButtonState {
+export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: DeploymentSummary | null): SyncButtonState {
   const shuts = branch.pull_request !== null;
-  const [into, changes] = merge ? [merge.into, merge.changes] : [branch.parent, branch.to_parent];
+  const [into, changes] = [branch.parent, branch.to_parent];
   const say = (label: string, count: number | null = null) => ({ label, into, changes, count });
   if (removal?.in_flight) return say(shuts ? "Shutting down" : "Closing");
   if (removal?.status === "applied") return say(shuts ? "Off" : "Closing");
   if (removal) return say(shuts ? "Shutdown failed" : "Closing failed");
-  if (merge?.standing) return say(OFFERED);
   return changes > 0 ? say(`Sync to ${into}`, changes) : say(`In sync with ${into}`);
 }
 

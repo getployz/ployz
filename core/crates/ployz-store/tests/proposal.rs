@@ -15,7 +15,7 @@ use ployz_store::{
     Actor, AuthorizedRepository, ConfigStore, CreateBranch, CreateGitService, CreateProject,
     CreateService, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
     ProjectName, ProposalId, RemoveProposal, ServiceLineageId, ServiceQuery, SettingPath,
-    SyncChanges, SyncId, SyncQuery, SyncView, Synced, SyncedWhen, Trusted, When,
+    SyncChanges, SyncId, SyncQuery, SyncView, Synced, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -172,7 +172,6 @@ impl Db {
                 &SyncQuery {
                     from: at(from),
                     into: Some(at(into)),
-                    when: None,
                 },
             )
             .unwrap()
@@ -507,7 +506,7 @@ fn changes(view: &SyncView, id: &SyncId, picks: Option<&[&str]>) -> SyncChanges 
     SyncChanges {
         from: at(view.from.name.as_str()),
         into: Some(at(view.into.name.as_str())),
-        when: None,
+        close_after: false,
         version: view.version.clone(),
         picks: picks.map(|picks| picks.iter().map(|label| (*label).into()).collect()),
         skip: Vec::new(),
@@ -517,10 +516,7 @@ fn changes(view: &SyncView, id: &SyncId, picks: Option<&[&str]>) -> SyncChanges 
 }
 
 fn proposal(synced: &Synced) -> ProposalId {
-    let SyncedWhen::Now { proposal, .. } = &synced.when else {
-        panic!("an Include stages now")
-    };
-    proposal.clone()
+    synced.proposal.clone()
 }
 
 /// Include, override, amend, refresh and Remove, with the rows stored after each.
@@ -1118,17 +1114,14 @@ fn replayed(
     close_after: bool,
 ) -> Result<bool, (RpcErrorCode, String)> {
     let request = SyncChanges {
-        when: Some(When::Now { close_after }),
+        close_after,
         ..changes(view, id, None)
     };
     let synced = db
         .store
         .write(&db.who, &request)
         .map_err(|error| (error.code, error.message))?;
-    let SyncedWhen::Now { closing, .. } = synced.when else {
-        panic!("an Include stages now")
-    };
-    Ok(closing)
+    Ok(synced.closing)
 }
 
 #[test]
