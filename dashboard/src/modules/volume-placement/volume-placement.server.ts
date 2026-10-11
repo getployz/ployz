@@ -28,6 +28,9 @@ const view = (row: Row): PlacementRow => ({
 const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
 const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check the Deploy that took this Volume. Try again.", details: null };
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
+const STAGING: StoreRefusal = { code: "conflict", message: "This restore is still being staged. Try again in a minute.", details: null };
+/** How long a restore's row may wait on its Store write; past it, the write was lost and the row can go. */
+const STAGING_MS = 60_000;
 
 /** Every Volume placement in the organization: one row per Volume the dashboard has a record for. */
 export const listPlacements = Effect.fn("VolumePlacement.list")(function* (organizationId: string) {
@@ -160,6 +163,9 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
     const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
     const restored = volumes.find((volume) => volume.id === volumeId);
     const source = volumes.find((volume) => volume.id === seed.sourceVolumeId);
+    if (restored === undefined && Date.now() - current.createdAt.getTime() < STAGING_MS) {
+      return { ok: false, refusal: STAGING } satisfies PlacementDiscard;
+    }
     const commands: BatchCommand[] = restored?.change !== "create" ? [] : [
       { command: "discard", environment, path: `volumes.${restored.name}`, version: null },
       ...restored.mounts

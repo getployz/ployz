@@ -103,6 +103,27 @@ it.live("writes the restore's row before its Store write, so a Deploy admitted r
     .toMatchObject([{ volumeId: staged.placement.volumeId, deploymentId: deployment }]);
 }));
 
+it.live("refuses to discard a restore whose Store write hasn't committed, so the seed outlives the write", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  let refused = "";
+  const write: ConfigStore["write"] = async (organizationId, command, trusted, principal) => {
+    if (command.command === "batch" && command.commands.some((step) => step.command === "create_volume")) {
+      const [row] = await Effect.runPromise(listPlacements(ORGANIZATION).pipe(Effect.provide(services)));
+      const discarded = await Effect.runPromise(discardPlacement(ORGANIZATION, null, row?.volumeId ?? "", shop).pipe(Effect.provide(services)));
+      refused = discarded.ok ? "" : discarded.refusal.message;
+    }
+    return store.write(organizationId, command, trusted, principal);
+  };
+  const proxy = asTestDouble<ConfigStore>()({ read: (...args: Parameters<ConfigStore["read"]>) => store.read(...args), write });
+
+  const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+    .pipe(Effect.provideService(CloudStore, { open: Effect.succeed(proxy) }), Effect.provide(services));
+  if (!staged.ok) throw new Error(staged.refusal.message);
+  expect(refused).toBe("This restore is still being staged. Try again in a minute.");
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services)))
+    .toMatchObject([{ volumeId: staged.placement.volumeId, staged: { seed: { sourceVolumeId: SOURCE } } }]);
+}));
+
 it.live("restores onto the source's storage, locked, with the source's shared writes", () => Effect.gen(function* () {
   const managed = { kind: "provisioned", maximumBytes: 5_000_000_000 } as const;
   const mounts: Mount[] = [{ service: "web", path: "/data" }, { service: "worker", path: "/data" }];
