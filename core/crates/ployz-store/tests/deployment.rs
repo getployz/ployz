@@ -11,14 +11,15 @@ use ployz_core::{
     RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, AttachConfig, Cancel, Change, Command, ConfigId, ConfigMountAt, ConfigStore,
-    ConfigsQuery, CreateConfig, CreateProject, CreateService, DeleteConfig, Deploy, DeploymentId,
-    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DetachConfig, DiffQuery, DiffView,
-    Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
-    PlanQuery, Principal, ProjectId, ProjectName, PutConfigFile, Query, RemoveService,
-    RenameConfig, RenameService, Retry, Revision, RowPhase, RowState, RowTracker, RunEvidence,
-    RunnerId, ServerRow, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Start,
-    Trusted, UploadBase, UploadedSource, View, Written,
+    Actor, Admit, Approval, ApprovalDigest, AttachConfig, Cancel, Change, Command, ConfigId,
+    ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
+    DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery,
+    DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentRef,
+    NamespaceQuery, NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId, ProjectName,
+    Publish, PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision,
+    RowPhase, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
+    ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -2954,4 +2955,218 @@ fn discard_config_mount_preserves_same_name_replacement() {
         after.config.mounts, before.config.mounts,
         "Discarding A's deleted mount must preserve B's independently authored replacement mount"
     );
+}
+
+fn deploy_as(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    approval: Approval,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+        }),
+        &Trusted {
+            approval,
+            ..Trusted::default()
+        },
+    )
+}
+
+fn apply_both(store: &ConfigStore, who: &Actor, n: u8) {
+    admit(store, who, n, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(n), &a).unwrap();
+    store
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(n), &a, succeeded(&["web", "api"]))
+        .unwrap();
+}
+
+fn remove_web(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+}
+
+fn approved(refused: &RpcError) -> Approval {
+    assert_eq!(refused.code.as_str(), "approval_required");
+    let approval = refused.details["approval"].as_str().unwrap();
+    Approval::Approved(ApprovalDigest::parse(approval).unwrap())
+}
+
+#[test]
+fn a_deploy_that_removes_a_deployed_service_waits_for_approval() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = deploy_as(&store, &who, 2, Approval::Required).unwrap_err();
+    assert_eq!(changed(&store, &who), ["web"]);
+    deploy_as(&store, &who, 2, approved(&refused)).unwrap();
+    assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
+fn a_new_deploy_asks_again_for_a_removal_still_queued() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = deploy_as(&store, &who, 2, Approval::Required).unwrap_err();
+    deploy_as(&store, &who, 2, approved(&refused)).unwrap();
+    set_replicas(&store, &who, "api", 2);
+    let again = deploy_as(&store, &who, 3, Approval::Required).unwrap_err();
+    assert_eq!(again.details["effects"][0]["name"], "web");
+    assert_ne!(again.details["approval"], refused.details["approval"]);
+}
+
+#[test]
+fn deploying_or_retrying_saved_state_asks_nothing_again() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    remove_web(&store, &who);
+    let refused = deploy_as(&store, &who, 2, Approval::Required).unwrap_err();
+    deploy_as(&store, &who, 2, approved(&refused)).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    deploy_as(&store, &who, 3, Approval::Required).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(4),
+                deployment: id(2),
+            }),
+            &Trusted {
+                approval: Approval::Required,
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+}
+
+fn publish_asking(
+    store: &ConfigStore,
+    who: &Actor,
+    approval: Approval,
+) -> Result<Written, RpcError> {
+    store.write_trusted(
+        who,
+        &Command::Publish(Publish {
+            environment: EnvironmentRef::default(),
+            version: None,
+            accept_volume_loss: Vec::new(),
+        }),
+        &Trusted {
+            approval,
+            ..Trusted::default()
+        },
+    )
+}
+
+fn asked(refused: &RpcError) -> Vec<(Value, Value)> {
+    refused.details["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|effect| (effect["kind"].clone(), effect["name"].clone()))
+        .collect()
+}
+
+#[test]
+fn removing_a_service_the_deployment_in_flight_creates_asks() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    remove_web(&store, &who);
+    let refused = publish_asking(&store, &who, Approval::Required).unwrap_err();
+    assert_eq!(asked(&refused), [(json!("removes_service"), json!("web"))]);
+    publish_asking(&store, &who, approved(&refused)).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    deploy_as(&store, &who, 2, Approval::Required).unwrap();
+}
+
+#[test]
+fn a_newer_queued_deployment_keeps_a_running_ones_creates_deployed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &runner("runner-a")).unwrap();
+    set_replicas(&store, &who, "api", 2);
+    admit(&store, &who, 2, &["api"], None).unwrap();
+    remove_web(&store, &who);
+    let refused = publish_asking(&store, &who, Approval::Required).unwrap_err();
+    assert_eq!(asked(&refused), [(json!("removes_service"), json!("web"))]);
+}
+
+#[test]
+fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["api"], None).unwrap();
+    cancel(&store, &who, 1).unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &runner("runner-a")).unwrap();
+    store
+        .write(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(1),
+            }),
+        )
+        .unwrap();
+    remove_web(&store, &who);
+    let refused = publish_asking(&store, &who, Approval::Required).unwrap_err();
+    assert_eq!(asked(&refused), [(json!("removes_service"), json!("web"))]);
+}
+
+#[test]
+fn removing_a_volume_no_service_mounts_asks_nothing_while_its_deployment_runs() {
+    let (store, who) = shop();
+    let data = ployz_store::VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data.clone(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                shared_writes: false,
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data,
+            },
+        )
+        .unwrap();
+    assert!(diff(&store, &who).effects.is_empty());
+    publish_asking(&store, &who, Approval::Required).unwrap();
 }
