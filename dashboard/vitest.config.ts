@@ -22,7 +22,7 @@ export default defineConfig({
         test: {
           ...sharedTestConfig,
           name: "unit",
-          include: ["src/**/*.test.{ts,tsx}"],
+          include: ["src/**/*.test.{ts,tsx}", "evals/**/*.test.ts"],
           exclude: ["**/*.postgres.test.ts", "**/*.static.test.ts"],
           maxWorkers: 4,
           isolate: false,
@@ -36,6 +36,17 @@ export default defineConfig({
           // One server for the run; each file gets its own copy of the migrated database.
           globalSetup: ["./src/test/postgres.global-setup.ts"],
           maxWorkers: 4,
+        },
+      },
+      {
+        test: {
+          ...sharedTestConfig,
+          name: "eval",
+          // The agent eval on the Store: graders and replay always, live trials only through `pnpm eval:live`.
+          include: ["evals/**/*.eval.ts"],
+          globalSetup: ["./src/test/postgres.global-setup.ts"],
+          maxWorkers: 4,
+          testTimeout: 60_000,
         },
       },
       {

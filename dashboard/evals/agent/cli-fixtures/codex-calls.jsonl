@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"01a125e1-2dd4-7bd0-9dda-b1d66889c631"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"ployz","tool":"set_setting","arguments":{"service":"web","path":"LOG_LEVEL","value":"debug"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"ployz","tool":"set_setting","arguments":{"service":"web","path":"LOG_LEVEL","value":"debug"},"result":null,"error":{"message":"MCP tool call requires approval, but approval policy is never"},"status":"failed"}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"ployz","tool":"set_setting","arguments":{"service":"worker","path":"LOG_LEVEL","value":"debug"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"ployz","tool":"set_setting","arguments":{"service":"worker","path":"LOG_LEVEL","value":"debug"},"result":null,"error":{"message":"MCP tool call requires approval, but approval policy is never"},"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"I couldn’t update either service: both calls were blocked because approval is unavailable."}}
+{"type":"turn.completed","usage":{"input_tokens":13963,"cached_input_tokens":9472,"cache_write_input_tokens":0,"output_tokens":126,"reasoning_output_tokens":0}}

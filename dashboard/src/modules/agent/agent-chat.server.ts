@@ -419,12 +419,15 @@ async function* startOnce(
   yield { type: EventType.RUN_ERROR, threadId, runId, message, code: "run_exists", timestamp: Date.now() };
 }
 
-/** One sidebar turn, or the resumption of one, as `caller` in their thread: the event stream the client renders. */
-export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, request: ChatRequest) {
+/**
+ * One sidebar turn, or the resumption of one, as `caller` in their thread: the event stream the client renders. `model`
+ * replaces the configured one, for the agent eval.
+ */
+export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, request: ChatRequest, model?: AnyTextAdapter) {
   const run: Run = Effect.runPromiseWith(yield* Effect.context<AgentServices>());
   const scope: AgentScope = { organizationId: caller.organization.id, userId: caller.userId };
   const persistence = yield* agentPersistence(scope);
-  const { adapter, modelOptions } = yield* agentModel;
+  const { adapter, modelOptions }: AgentModel = model === undefined ? yield* agentModel : { adapter: model };
   const { resume } = request;
   // A page the client sent malformed is no page: the turn still answers.
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;

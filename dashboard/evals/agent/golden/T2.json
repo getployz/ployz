@@ -1,0 +1,677 @@
+{
+  "task": "T2",
+  "model": "gpt-6-luna",
+  "member": [
+    "set web's memory limit to 1 GiB",
+    "hey, can you cap web's memory at 1 GiB?",
+    "Not quite. I need 1 GiB, which is 1024³ bytes, not 1 GB (10⁹ bytes). Can you set it to 1 GiB for web in app/staging?"
+  ],
+  "calls": [
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653812693
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e3-b6ee-7433-a65d-59cb59a2be83_item_0",
+        "toolCallName": "service_inspect",
+        "toolName": "service_inspect",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653824798,
+        "parentMessageId": "a9b691b4-bb58-4e85-a478-d3402b8a2b56",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e3-b6ee-7433-a65d-59cb59a2be83_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653824798,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"service\":\"web\"}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"service\":\"web\"}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e3-b6ee-7433-a65d-59cb59a2be83_item_0",
+        "toolCallName": "service_inspect",
+        "toolName": "service_inspect",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653824798,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "service": "web"
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653824798,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653824809
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e3-de75-70f1-bf9e-bc3183d106a4_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653835843,
+        "parentMessageId": "cffbc1f2-67da-4b12-90ce-647c77794e75",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e3-de75-70f1-bf9e-bc3183d106a4_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653835843,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e3-de75-70f1-bf9e-bc3183d106a4_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653835843,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "assignment": [
+            "web.memory=1GiB"
+          ]
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653835843,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653835853
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e4-0e15-7ed1-a821-5ddb75398501_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653846336,
+        "parentMessageId": "93fbc0aa-a684-42dc-8bd3-1bfa2f5eae54",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e4-0e15-7ed1-a821-5ddb75398501_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653846336,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e4-0e15-7ed1-a821-5ddb75398501_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653846336,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "assignment": [
+            "web.memory=1GiB"
+          ]
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653846336,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653846347
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e4-3986-7112-a1c6-c08a8b480baf_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653858024,
+        "parentMessageId": "8b5fe055-e938-4087-bd5c-e44d96dd0e35",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e4-3986-7112-a1c6-c08a8b480baf_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653858024,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e4-3986-7112-a1c6-c08a8b480baf_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653858024,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "assignment": [
+            "web.memory=1GiB"
+          ]
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653858024,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653858036
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e4-691e-7213-91ac-1513696e6bfa_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653872297,
+        "parentMessageId": "66a014ec-20f3-4c74-b5ae-cf64dad48f65",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e4-691e-7213-91ac-1513696e6bfa_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653872297,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memory=1GiB\"]}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e4-691e-7213-91ac-1513696e6bfa_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653872297,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "assignment": [
+            "web.memory=1GiB"
+          ]
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-1",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653872297,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653883312
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e4-c803-7671-942d-cd904c968293_item_0",
+        "toolCallName": "service_inspect",
+        "toolName": "service_inspect",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653893967,
+        "parentMessageId": "b27c955b-2eca-439e-bed5-6a5d412b3458",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e4-c803-7671-942d-cd904c968293_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653893967,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"service\":\"web\"}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"service\":\"web\"}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e4-c803-7671-942d-cd904c968293_item_0",
+        "toolCallName": "service_inspect",
+        "toolName": "service_inspect",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653893967,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "service": "web"
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653893967,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653893978
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e4-f778-7d70-b7a8-bca1ac5752f1_item_0",
+        "toolCallName": "get",
+        "toolName": "get",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653906957,
+        "parentMessageId": "bc433641-025d-4c0f-99ad-6a3b232108d9",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e4-f778-7d70-b7a8-bca1ac5752f1_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653906957,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"path\":\"web\"}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"path\":\"web\"}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e4-f778-7d70-b7a8-bca1ac5752f1_item_0",
+        "toolCallName": "get",
+        "toolName": "get",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653906957,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "path": "web"
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653906957,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653906968
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e5-272e-7911-9f2f-25b76effeb4f_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653918911,
+        "parentMessageId": "54563ca6-ba56-4797-9dda-bf912705f395",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e5-272e-7911-9f2f-25b76effeb4f_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653918911,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memLimit=1GiB\"]}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memLimit=1GiB\"]}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e5-272e-7911-9f2f-25b76effeb4f_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653918911,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "assignment": [
+            "web.memLimit=1GiB"
+          ]
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653918911,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653918931
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e5-567f-72f3-9dcd-fdea4205ee2c_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653932411,
+        "parentMessageId": "3208a630-3378-42f6-b545-350f93cef958",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e5-567f-72f3-9dcd-fdea4205ee2c_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653932411,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memLimit=1\"]}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memLimit=1\"]}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e5-567f-72f3-9dcd-fdea4205ee2c_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653932411,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "assignment": [
+            "web.memLimit=1"
+          ]
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653932411,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653932442
+      },
+      {
+        "type": "TEXT_MESSAGE_START",
+        "messageId": "6f52f43c-c49a-4d72-9457-016c1ee373d8",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653942501,
+        "role": "assistant"
+      },
+      {
+        "type": "TEXT_MESSAGE_CONTENT",
+        "messageId": "6f52f43c-c49a-4d72-9457-016c1ee373d8",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653942501,
+        "delta": "Done — web’s memory limit is staged at 1 GB for app/staging.",
+        "content": "Done — web’s memory limit is staged at 1 GB for app/staging."
+      },
+      {
+        "type": "TEXT_MESSAGE_END",
+        "messageId": "6f52f43c-c49a-4d72-9457-016c1ee373d8",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653942501
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-2",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653942501,
+        "finishReason": "stop"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653955598
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e5-e0e9-7cd2-9e38-cd18deabbe44_item_0",
+        "toolCallName": "get",
+        "toolName": "get",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653967721,
+        "parentMessageId": "7a39ac33-b20f-4230-8fbd-b8106987313f",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e5-e0e9-7cd2-9e38-cd18deabbe44_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653967721,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"path\":\"web.memLimit\"}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"path\":\"web.memLimit\"}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e5-e0e9-7cd2-9e38-cd18deabbe44_item_0",
+        "toolCallName": "get",
+        "toolName": "get",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653967721,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "path": "web.memLimit"
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653967721,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653967726
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e6-146d-7f31-8eb4-9db25a6017c2_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653978987,
+        "parentMessageId": "ce55ebda-daf6-4200-a8df-87dc65f101f2",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e6-146d-7f31-8eb4-9db25a6017c2_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653978987,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memLimit=1.073741824\"]}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"assignment\":[\"web.memLimit=1.073741824\"]}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e6-146d-7f31-8eb4-9db25a6017c2_item_0",
+        "toolCallName": "set",
+        "toolName": "set",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653978987,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "assignment": [
+            "web.memLimit=1.073741824"
+          ]
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653978987,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653979009
+      },
+      {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "call_01a126e6-3fd4-75b1-935f-ea302f6232de_item_0",
+        "toolCallName": "get",
+        "toolName": "get",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653990355,
+        "parentMessageId": "e6291ba8-6b88-48f0-913e-4ec9261b0115",
+        "index": 0
+      },
+      {
+        "type": "TOOL_CALL_ARGS",
+        "toolCallId": "call_01a126e6-3fd4-75b1-935f-ea302f6232de_item_0",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653990355,
+        "delta": "{\"project\":\"app\",\"env\":\"staging\",\"path\":\"web.memLimit\"}",
+        "args": "{\"project\":\"app\",\"env\":\"staging\",\"path\":\"web.memLimit\"}"
+      },
+      {
+        "type": "TOOL_CALL_END",
+        "toolCallId": "call_01a126e6-3fd4-75b1-935f-ea302f6232de_item_0",
+        "toolCallName": "get",
+        "toolName": "get",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653990355,
+        "input": {
+          "project": "app",
+          "env": "staging",
+          "path": "web.memLimit"
+        }
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653990355,
+        "finishReason": "tool_calls"
+      }
+    ],
+    [
+      {
+        "type": "RUN_STARTED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791653990360
+      },
+      {
+        "type": "TEXT_MESSAGE_START",
+        "messageId": "456b8654-519b-40fa-9755-f04bac0d5000",
+        "model": "gpt-6-luna",
+        "timestamp": 1791654001798,
+        "role": "assistant"
+      },
+      {
+        "type": "TEXT_MESSAGE_CONTENT",
+        "messageId": "456b8654-519b-40fa-9755-f04bac0d5000",
+        "model": "gpt-6-luna",
+        "timestamp": 1791654001798,
+        "delta": "Done — web’s memory limit in app/staging is set to 1.073741824 GB, equivalent to 1 GiB (1024³ bytes). The change is staged.",
+        "content": "Done — web’s memory limit in app/staging is set to 1.073741824 GB, equivalent to 1 GiB (1024³ bytes). The change is staged."
+      },
+      {
+        "type": "TEXT_MESSAGE_END",
+        "messageId": "456b8654-519b-40fa-9755-f04bac0d5000",
+        "model": "gpt-6-luna",
+        "timestamp": 1791654001798
+      },
+      {
+        "type": "RUN_FINISHED",
+        "runId": "trial-T2-run-3",
+        "threadId": "trial-T2",
+        "model": "gpt-6-luna",
+        "timestamp": 1791654001798,
+        "finishReason": "stop"
+      }
+    ]
+  ]
+}

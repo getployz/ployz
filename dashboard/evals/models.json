@@ -1,0 +1,9 @@
+{
+  "providers": {
+    "claude-haiku-5-5": "claude-cli",
+    "claude-sonnet-5-5": "claude-cli",
+    "gpt-6-luna": "codex-cli"
+  },
+  "simulator": "claude-haiku-5-5",
+  "agents": ["claude-haiku-5-5", "claude-sonnet-5-5", "gpt-6-luna"]
+}

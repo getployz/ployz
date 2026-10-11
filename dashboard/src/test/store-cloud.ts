@@ -53,12 +53,12 @@ export const storeTestCloud = Effect.fn(function* (options: {
   );
 });
 
-/** Organization `id` (slug `shop`), whose one member Ada installed the GitHub App on `acme` as installation 7. */
-export const seedStoreOrganization = Effect.fn(function* (id: string) {
+/** Organization `id` (Shop by default), whose one member Ada installed the GitHub App on `acme` as installation 7. */
+export const seedStoreOrganization = Effect.fn(function* (id: string, named: { name: string; slug: string } = { name: "Shop", slug: "shop" }) {
   const { drizzle } = yield* Database;
   const [owner] = yield* drizzle.insert(user).values({ email: "ada@example.test", name: "Ada" }).returning();
   const userId = owner?.id ?? "";
-  yield* drizzle.insert(organization).values({ id, name: "Shop", slug: "shop" });
+  yield* drizzle.insert(organization).values({ id, ...named });
   yield* drizzle.insert(member).values({ userId, organizationId: id, role: "owner" });
   yield* drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
   return userId;
