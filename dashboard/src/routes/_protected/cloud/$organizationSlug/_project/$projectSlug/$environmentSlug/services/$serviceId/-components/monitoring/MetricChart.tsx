@@ -13,7 +13,7 @@ export type MetricSeries = { readonly label: string; readonly color: string; rea
 export type TimeBand = { readonly id: string; readonly from: number; readonly to: number };
 type Row = { readonly at: Date; readonly values: readonly (number | null)[] };
 
-const AT_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const AT_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 /**
  * One metric as a card: title and latest value on top, a thin line over a soft fill, incident bands, deploy rules and an

@@ -138,8 +138,8 @@ function EmptyChartCard({ title, children }: { title: string; children?: ReactNo
   );
 }
 
-const DAY_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
-const AT_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+const DAY_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+const AT_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 const unit = (suffix: string, digits = 0) => (value: number) => `${value.toFixed(digits)}${suffix}`;
 const latest = (values: readonly (number | null)[]) => values.filter((value) => value !== null).at(-1) ?? null;
@@ -333,11 +333,11 @@ function HistoryStrip({ days, zoomed, onZoom }: {
             const first = day.incidents[0];
             return (
               <Tooltip key={day.start}>
-                <TooltipTrigger render={
-                  <button type="button" aria-label={DAY_FORMAT.format(day.start)} onClick={() => { if (first) onZoom(first); }}
-                    className={cn("flex-1 rounded-[1px]",
-                      first ? "cursor-pointer bg-destructive hover:opacity-80" : day.checked ? "cursor-default bg-success" : "cursor-default bg-muted",
+                <TooltipTrigger render={first
+                  ? <button type="button" aria-label={DAY_FORMAT.format(day.start)} onClick={() => onZoom(first)}
+                    className={cn("flex-1 cursor-pointer rounded-[1px] bg-destructive hover:opacity-80",
                       zoomed && day.incidents.some((incident) => incident.id === zoomed.id) && "ring-2 ring-foreground")} />
+                  : <span className={cn("flex-1 rounded-[1px]", day.checked ? "bg-success" : "bg-muted")} />
                 } />
                 <TooltipContent className="flex-col items-start gap-0.5">
                   <span className="font-medium">{DAY_FORMAT.format(day.start)}</span>
