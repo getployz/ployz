@@ -2,7 +2,7 @@ import { Option, Schema } from "effect";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { serviceActRequestedEventType } from "#/modules/inngest/events";
-import { cameBack, serversOf, stepsOf } from "#/modules/service-act/service-act";
+import { cameBack, machinesOf, stepsOf } from "#/modules/service-act/service-act";
 import {
   actOnServer,
   claimServiceAct,
@@ -32,11 +32,11 @@ export async function executeServiceAct(
   const claimed = await step.run("claim", () => runEffect(claimServiceAct(request, runId)));
   if (claimed.kind === "settled") return { actId: request.actId, state: claimed.state };
   const { stop, start } = stepsOf(claimed.verb);
-  for (const server of serversOf(claimed.legs)) {
-    if (stop) await step.run(`stop:${server}`, () => runEffect(actOnServer(request, runId, server, "stop")));
+  for (const machine of machinesOf(claimed.legs)) {
+    if (stop) await step.run(`stop:${machine}`, () => runEffect(actOnServer(request, runId, machine, "stop")));
     if (!start) continue;
-    const legs = await step.run(`start:${server}`, () => runEffect(actOnServer(request, runId, server, "start")));
-    if (stop && !cameBack(legs, server)) break;
+    const legs = await step.run(`start:${machine}`, () => runEffect(actOnServer(request, runId, machine, "start")));
+    if (stop && !cameBack(legs, machine)) break;
   }
   return step.run("record", () => runEffect(recordServiceAct(request, runId)));
 }

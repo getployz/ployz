@@ -38,7 +38,7 @@ export const serviceAct = pgTable(
   },
   (table) => [
     uniqueIndex("service_act_one_active_idx")
-      .on(table.organizationId, table.environmentId, table.service)
+      .on(table.organizationId, table.environmentId, table.runtime)
       .where(sql`${table.state} in ('accepted', 'running')`),
     uniqueIndex("service_act_run_uidx").on(table.inngestRunId).where(sql`${table.inngestRunId} is not null`),
     index("service_act_latest_idx").on(table.organizationId, table.environmentId, table.service, table.requestedAt.desc()),
