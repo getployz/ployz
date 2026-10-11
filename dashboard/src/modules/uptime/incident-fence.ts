@@ -49,7 +49,7 @@ export const controlPlaneStatements = {
   WITH closed AS (
     UPDATE uptime_incident i SET closed_at = $3, closed_by = $4
     WHERE i.id = $1 AND i.check_revision = $2 AND i.closed_at IS NULL
-      AND EXISTS (SELECT 1 FROM uptime_check c WHERE c.id = i.check_id AND c.enabled AND c.revision = $2)
+      AND EXISTS (SELECT 1 FROM uptime_check c WHERE c.id = i.check_id AND c.enabled AND c.revision = $2 FOR SHARE)
     RETURNING i.id, i.organization_id),
   alerted AS (
     INSERT INTO uptime_alert (organization_id, incident_id, kind, payload)

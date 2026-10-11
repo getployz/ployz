@@ -53,6 +53,16 @@ function edit(checkId: string, enabled = true) {
   }));
 }
 
+async function waitForLockWaiter() {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const { rows } = await harness.pool.query<{ waiting: number }>(
+      "select count(*)::int as waiting from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+    if (one(rows).waiting > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("the close never waited on the uncommitted bump");
+}
+
 async function state(checkId: string) {
   const incidents = await harness.pool.query<{ id: string; closed_by: { kind: string } | null }>(
     "select id, closed_by from uptime_incident where check_id = $1 order by opened_at", [checkId]);
@@ -126,6 +136,23 @@ describe("observed close", () => {
       incidents: [{ id: incidentId, closed_by: null }],
       alerts: [{ incident_id: incidentId, kind: "opened" }],
     });
+  });
+
+  it("waits on an uncommitted revision bump, then applies 0 times", async () => {
+    const checkId = await createCheck();
+    const { incidentId } = await open(checkId, 1);
+    const bump = await harness.pool.connect();
+    try {
+      await bump.query("begin");
+      await bump.query("update uptime_check set revision = revision + 1 where id = $1", [checkId]);
+      const closing = observedClose(incidentId, 1);
+      await waitForLockWaiter();
+      await bump.query("commit");
+      expect(await closing).toBe(0);
+    } finally {
+      bump.release(true);
+    }
+    expect(await state(checkId)).toMatchObject({ incidents: [{ id: incidentId, closed_by: null }], revision: 2 });
   });
 });
 
