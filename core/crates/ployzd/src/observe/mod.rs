@@ -8,6 +8,7 @@ mod harvest;
 #[cfg(test)]
 mod integration_tests;
 pub mod layout;
+pub(crate) mod metrics;
 mod query;
 mod serve;
 
