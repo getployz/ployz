@@ -606,6 +606,68 @@ fn pending_challenge_is_answered_on_the_http_site() {
 }
 
 #[test]
+fn https_only_hostname_redirects_http_but_keeps_its_challenge_and_verify_probe() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let observations = vec![observation(
+        1,
+        &local,
+        "api",
+        Some([10, 210, 1, 2]),
+        vec![
+            ingress("both.example.com", 80, HttpProtocol::Http),
+            ingress("both.example.com", 8443, HttpProtocol::Https),
+            ingress("secure.example.com", 8443, HttpProtocol::Https),
+        ],
+    )];
+    let issued = || Some((test_material(), ployz_core::ClusterRoute::Direct));
+    let certificates = BTreeMap::from([
+        (
+            CertificateHost::parse("both.example.com").unwrap(),
+            CertificateRow::from_parts(issued(), None),
+        ),
+        (
+            CertificateHost::parse("secure.example.com").unwrap(),
+            CertificateRow::from_parts(
+                issued(),
+                Some(CertificateChallenge::parse(
+                    "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+                    "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                ).unwrap()),
+            ),
+        ),
+    ]);
+
+    let caddyfile = caddyfile_for(
+        &local,
+        "node-a",
+        &service_containers(observations),
+        "TIMESTAMP",
+        &certificates,
+    );
+
+    let http = automatic_site_block(&caddyfile, "http://secure.example.com");
+    // Caddy orders a bare `redir` before every handle; inside a matcherless handle it runs last.
+    assert!(
+        http.contains(
+            r#"handle { header cache-control "max-age=300" redir https://{host}{uri} 308 }"#
+        ),
+        "{http}"
+    );
+    assert!(!http.contains("reverse_proxy"), "{http}");
+    assert!(
+        http.contains("/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0")
+    );
+    assert!(http.contains(HOSTNAME_VERIFY_PATH), "{http}");
+    let https = automatic_site_block(&caddyfile, "https://secure.example.com");
+    assert!(https.contains("reverse_proxy 10.210.1.2:8443"));
+    assert!(!https.contains("redir"));
+
+    let both = automatic_site_block(&caddyfile, "http://both.example.com");
+    assert!(both.contains("reverse_proxy 10.210.1.2:80"), "{both}");
+    assert!(!both.contains("redir"), "{both}");
+}
+
+#[test]
 fn last_error_is_a_skipped_certificate_comment() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let observations = vec![observation(

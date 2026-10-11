@@ -227,9 +227,12 @@ https:// {{\n\
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for site in &projection.sites {
+        let https = site.material().zip(site.route(HttpProtocol::Https));
+        // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
         // A challenge-only http site publishes nothing else, so it answers like the catch-all.
         let http = match site.route(HttpProtocol::Http) {
             Some(endpoints) => Some(proxy(endpoints)),
+            None if https.is_some() => Some(REDIRECT_TO_HTTPS.to_owned()),
             None => site
                 .challenge()
                 .map(|_| "\terror DOMAIN_NOT_FOUND 404\n".to_owned()),
@@ -245,10 +248,7 @@ https:// {{\n\
                 site.challenge(),
             );
         }
-        let Some(material) = site.material() else {
-            continue;
-        };
-        let Some(route) = site.route(HttpProtocol::Https) else {
+        let Some((material, route)) = https else {
             continue;
         };
         let stem = super::certificate_file_stem(&site.hostname, material);
@@ -374,6 +374,10 @@ fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
         let _ = writeln!(output, "# - {}: {error}", site.hostname);
     }
 }
+
+/// A matcherless `handle` runs after the path handles, unlike a bare `redir`, which Caddy orders first.
+/// Browsers cache a 308 forever by default; a short max-age lets a later http route take over.
+const REDIRECT_TO_HTTPS: &str = "\thandle {\n\t\theader cache-control \"max-age=300\"\n\t\tredir https://{host}{uri} 308\n\t}\n";
 
 /// Proxies to `endpoints`, or answers `NOT_RUNNING` when there are none.
 fn proxy(endpoints: &[IngressEndpoint]) -> String {
