@@ -1,3 +1,4 @@
+use super::catalog::{Approval::*, Runnable, local};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 use std::path::Path;
 
@@ -245,12 +246,12 @@ pub(crate) fn command() -> Command {
         .subcommand(base("rm", "Remove a local context").arg(positional("context-name", true)))
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "" => super::link::show,
-        "ls" => list,
-        "rm" => remove,
-        "use" => select,
+        "" => local(Never, super::link::show),
+        "ls" => local(Never, list),
+        "rm" => local(Never, remove),
+        "use" => local(Never, select),
         _ => return None,
     })
 }
