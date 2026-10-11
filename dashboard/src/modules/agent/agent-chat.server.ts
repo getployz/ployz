@@ -27,7 +27,6 @@ import {
   inputSchema,
   type StoreBinding,
   toolName,
-  uuidFrom,
 } from "#/modules/agent/agent-tools";
 import {
   type AgentScope,
@@ -46,6 +45,7 @@ import { callStore } from "#/modules/config-store/config-store.server";
 import type { StoreCall, StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { projectJsonValue } from "#/lib/json";
+import { uuidFrom } from "#/server/uuid-from";
 
 const GATED = new Map(AGENT_COMMANDS.flatMap(({ command, binding }) => binding.kind === "gated" ? [[toolName(command.command), binding]] : []));
 

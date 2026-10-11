@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Change, ConfigCommand, ConfigQuery, EnvironmentRef, JsonValue, SetupCommand } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import commandsJson from "../../../../core/crates/ployz-sdk/generated/commands.json";
@@ -7,6 +6,7 @@ import { type StoreCall, StoreRefused } from "#/modules/config-store/store.contr
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { Validation } from "#/server/public-error";
+import { uuidFrom } from "#/server/uuid-from";
 
 const CatalogArg = Schema.Struct({
   name: Schema.String,
@@ -93,13 +93,6 @@ const stored = <C extends StoreCall>(caller: Caller, call: C) =>
     Effect.flatMap((result) => result.ok ? Effect.succeed(result.value) : Effect.fail(new StoreRefused(result.refusal))));
 
 const usage = (message: string) => new StoreRefused({ code: "invalid_argument", message, details: null });
-
-/** A UUID that `seed` always yields, for a Store ID that must come out the same when its command is sent again. */
-export const uuidFrom = (seed: string) => {
-  const hex = createHash("sha256").update(seed).digest("hex");
-  const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-};
 
 /** `path` as the Store names it: a Service's name is lowercase, so `WEB.replicas` is `web.replicas`. */
 const canonical = (path: string) => {
