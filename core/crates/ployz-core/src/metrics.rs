@@ -202,6 +202,9 @@ pub struct MetricRange {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct MetricHistoryReply {
     pub points: MetricPoints,
+    /// Bucket width used. It can be wider than the request asked, to keep the
+    /// reply at most 4,000 buckets, or to fit stored 5 minute rollups.
+    pub step_nanos: i64,
     #[serde(default)]
     pub gaps: Vec<MetricGap>,
 }
@@ -366,6 +369,7 @@ mod tests {
                 io_r: None,
                 io_w: None,
             }]),
+            step_nanos: 100,
             gaps: vec![MetricGap {
                 from: 100,
                 to: 300,

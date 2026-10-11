@@ -51,14 +51,22 @@ impl Buckets {
         }
     }
 
-    fn index(&self, ts: i64) -> Option<usize> {
+    pub(super) fn step(&self) -> i64 {
+        self.step
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(super) fn index(&self, ts: i64) -> Option<usize> {
         if ts < self.since || ts >= self.until {
             return None;
         }
         usize::try_from((ts - self.since) / self.step).ok()
     }
 
-    fn start(&self, index: usize) -> i64 {
+    pub(super) fn start(&self, index: usize) -> i64 {
         self.since + self.step * i64::try_from(index).expect("index is below len")
     }
 
@@ -67,7 +75,7 @@ impl Buckets {
     }
 
     /// One merged `not_sampled` gap per run of buckets nothing landed in.
-    fn gaps<T>(&self, buckets: &[Option<T>]) -> Vec<MetricGap> {
+    pub(super) fn gaps<T>(&self, buckets: &[Option<T>]) -> Vec<MetricGap> {
         let mut gaps: Vec<MetricGap> = Vec::new();
         for (index, _) in buckets.iter().enumerate().filter(|(_, b)| b.is_none()) {
             let (from, to) = (self.start(index), self.end(index));
@@ -119,20 +127,20 @@ impl Delta {
 
 /// Mean of a gauge over the samples that reported it.
 #[derive(Clone, Copy, Debug, Default)]
-struct Mean {
+pub(super) struct Mean {
     sum: u128,
     count: u64,
 }
 
 impl Mean {
-    fn add(&mut self, value: Option<u64>) {
+    pub(super) fn add(&mut self, value: Option<u64>) {
         if let Some(value) = value {
             self.sum += u128::from(value);
             self.count += 1;
         }
     }
 
-    fn get(self) -> Option<u64> {
+    pub(super) fn get(self) -> Option<u64> {
         (self.count > 0).then(|| {
             u64::try_from(self.sum / u128::from(self.count)).expect("mean of u64 fits u64")
         })
@@ -297,6 +305,7 @@ pub(crate) fn service_history(samples: &[MetricSample], buckets: Buckets) -> Met
         .collect();
     MetricHistoryReply {
         points: MetricPoints::Service(points),
+        step_nanos: buckets.step,
         gaps,
     }
 }
@@ -410,6 +419,7 @@ pub(crate) fn machine_history(samples: &[HostSample], buckets: Buckets) -> Metri
         .collect();
     MetricHistoryReply {
         points: MetricPoints::Machine(points),
+        step_nanos: buckets.step,
         gaps,
     }
 }

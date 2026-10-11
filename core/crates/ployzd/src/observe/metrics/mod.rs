@@ -1,13 +1,11 @@
-//! Resource samples of Ployz containers and their Server.
+//! Resource samples of Ployz containers and their Machine, and the history
+//! queries over them.
 
 mod cgroup;
 mod disk;
+pub(crate) mod history;
 mod host;
 mod net;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by the metric query in M9")
-)]
 mod rate;
 pub(crate) mod rollup;
 pub(crate) mod sampler;

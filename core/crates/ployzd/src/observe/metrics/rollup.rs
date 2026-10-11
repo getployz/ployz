@@ -11,11 +11,6 @@
 //! converges on the same bytes. An hour is folded again whenever its raw
 //! segment changed after its rollup was written.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "rollups are read by the metric queries in M9")
-)]
-
 use std::{
     collections::BTreeMap,
     fs,
@@ -157,7 +152,7 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
     let mut hosts = Vec::new();
     let mut markers = Vec::new();
     let mut services: BTreeMap<DeploymentKey, Vec<MetricSample>> = BTreeMap::new();
-    segment::scan(&store.raw_metrics(), lead_in, |row| match row {
+    segment::scan(&store.raw_metrics(), lead_in, None, |row| match row {
         segment::Row::Host(sample) => hosts.push(sample),
         segment::Row::Container(sample) => {
             if let (Some(service_id), Some(service)) = (sample.service_id, sample.service.clone()) {
@@ -227,21 +222,51 @@ fn write_rollup(store: &StoreRoot, hour: SegmentName, rows: &[Row]) -> io::Resul
 pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::Result<Rolled> {
     let mut hosts = Vec::new();
     let mut deployments = Vec::new();
-    segment::scan(&store.rollup_metrics(), range, |row| match (scope, row) {
-        (MetricScope::Machine, Row::Host(point)) => hosts.push(point),
-        (MetricScope::Service { service }, Row::Service(deployment))
-            if deployment.service == *service =>
-        {
-            deployments.push(deployment);
-        }
-        _ => {}
-    })?;
+    let needle = segment::needle(scope);
+    segment::scan(
+        &store.rollup_metrics(),
+        range,
+        Some(&needle),
+        |row| match (scope, row) {
+            (MetricScope::Machine, Row::Host(point)) => hosts.push(point),
+            (MetricScope::Service { service }, Row::Service(deployment))
+                if deployment.service == *service =>
+            {
+                deployments.push(deployment);
+            }
+            _ => {}
+        },
+    )?;
     hosts.sort_by_key(|point| point.ts);
     deployments.sort_by_key(|deployment| deployment.point.ts);
     Ok(match scope {
         MetricScope::Machine => Rolled::Machine(hosts),
         MetricScope::Service { .. } => Rolled::Service(deployments),
     })
+}
+
+/// The end of the newest folded hour in Unix nanoseconds, or `None` before
+/// the first fold. Raw segments answer for the time after it.
+///
+/// # Errors
+///
+/// Returns an error when the rollup dir exists but cannot be listed.
+pub fn folded_until(store: &StoreRoot) -> io::Result<Option<i64>> {
+    let entries = match fs::read_dir(store.rollup_metrics()) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| SegmentName::parse(entry.file_name().as_encoded_bytes()))
+        .map(SegmentName::end_secs)
+        .max()
+        .map(|secs| {
+            i64::try_from(secs)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(NANOS_PER_SEC)
+        }))
 }
 
 #[cfg(test)]
@@ -426,6 +451,32 @@ mod tests {
     }
 
     #[test]
+    fn a_row_kind_this_reader_does_not_know_is_skipped_in_raw_and_rollup_files() {
+        let (_dir, store) = store();
+        write_hour(&store, &[(1, 1, 1)]);
+        let marker = format!(
+            "{{\"row\":\"marker\",\"kind\":\"oom\",\"service_id\":\"{}\",\"service\":\"{}\",\"ts\":{}}}\n",
+            service(1),
+            qualified(1),
+            T0 + SEC
+        );
+        let append_marker = |path: std::path::PathBuf| {
+            let mut bytes = fs::read(&path).unwrap();
+            bytes.extend_from_slice(marker.as_bytes());
+            fs::write(&path, bytes).unwrap();
+        };
+        append_marker(store.raw_metrics().join("1759996800.jsonl"));
+        fold_hour(&store, hour(T0)).unwrap();
+        append_marker(store.rollup_metrics().join("1759996800.jsonl"));
+
+        assert_eq!(service_points(&store, 1).len(), 12);
+        let Rolled::Machine(hosts) = read(&store, all(), &MetricScope::Machine).unwrap() else {
+            panic!("machine scope reads host points");
+        };
+        assert_eq!(hosts.len(), 12);
+    }
+
+    #[test]
     fn a_container_deleted_mid_hour_still_counts_after_its_raw_hour_is_gone() {
         let (_dir, store) = store();
         for tick in -1..360 {
@@ -477,7 +528,7 @@ mod tests {
         fs::remove_dir_all(store.raw_metrics()).unwrap();
 
         let mut kept = Vec::new();
-        segment::scan(&store.rollup_metrics(), all(), |row| {
+        segment::scan(&store.rollup_metrics(), all(), None, |row| {
             if let rollup::Row::Marker(m) = row {
                 kept.push(m);
             }

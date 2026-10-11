@@ -11,12 +11,8 @@
 //!
 //! A crash can leave a segment's last line half written. Reads skip any line
 //! that does not parse, and the next append first ends the torn line so it
-//! cannot swallow the row written after it.
-
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "segments are read by the metric queries in M9")
-)]
+//! cannot swallow the row written after it. A row kind this reader does not
+//! know is skipped the same way, so new kinds can join the file.
 
 use std::{
     collections::BTreeMap,
@@ -26,6 +22,7 @@ use std::{
     path::Path,
 };
 
+use memchr::memmem::Finder;
 use nix::fcntl::OFlag;
 use ployz_core::metrics::{HostSample, MetricMarker, MetricRange, MetricSample, MetricScope};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -122,14 +119,17 @@ fn append_lines(path: &Path, mut buf: Vec<u8>) -> io::Result<()> {
 pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::Result<Selected> {
     let mut hosts = Vec::new();
     let mut containers = Vec::new();
-    scan(&store.raw_metrics(), range, |row| match (scope, row) {
-        (MetricScope::Machine, Row::Host(sample)) => hosts.push(sample),
-        (MetricScope::Service { service }, Row::Container(sample))
-            if sample.service.as_ref() == Some(service) =>
-        {
-            containers.push(sample);
+    let needle = needle(scope);
+    scan(&store.raw_metrics(), range, Some(&needle), |row| {
+        match (scope, row) {
+            (MetricScope::Machine, Row::Host(sample)) => hosts.push(sample),
+            (MetricScope::Service { service }, Row::Container(sample))
+                if sample.service.as_ref() == Some(service) =>
+            {
+                containers.push(sample);
+            }
+            _ => {}
         }
-        _ => {}
     })?;
     hosts.sort_by_key(|sample| sample.ts);
     containers.sort_by_key(|sample| sample.ts);
@@ -139,8 +139,19 @@ pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::R
     })
 }
 
+/// Bytes every stored line `scope` selects contains: its Service's quoted
+/// `namespace/name`, or a host row's tag. Checking them first skips parsing
+/// the other Services' rows. The quotes keep `prod/web` from matching
+/// `prod/web-2`.
+pub fn needle(scope: &MetricScope) -> Vec<u8> {
+    match scope {
+        MetricScope::Machine => br#""row":"host""#.to_vec(),
+        MetricScope::Service { service } => format!("\"{service}\"").into_bytes(),
+    }
+}
+
 /// Calls `visit` with every row in `range` of the hourly files in `dir`,
-/// oldest hour first.
+/// oldest hour first, skipping lines without `needle` unparsed.
 ///
 /// # Errors
 ///
@@ -149,8 +160,10 @@ pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::R
 pub fn scan<R: DeserializeOwned + Stamped>(
     dir: &Path,
     range: MetricRange,
+    needle: Option<&[u8]>,
     mut visit: impl FnMut(R),
 ) -> io::Result<()> {
+    let finder = needle.map(Finder::new);
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -164,7 +177,7 @@ pub fn scan<R: DeserializeOwned + Stamped>(
     segments.sort();
     for name in segments {
         let path = dir.join(name.to_string());
-        let skipped = match read_segment(&path, range, &mut visit) {
+        let skipped = match read_segment(&path, range, finder.as_ref(), &mut visit) {
             Ok(skipped) => skipped,
             Err(error) => {
                 tracing::warn!(segment = %path.display(), %error, "skipping a metric segment");
@@ -189,6 +202,7 @@ fn overlaps(name: SegmentName, range: MetricRange) -> bool {
 fn read_segment<R: DeserializeOwned + Stamped>(
     path: &Path,
     range: MetricRange,
+    finder: Option<&Finder<'_>>,
     visit: &mut impl FnMut(R),
 ) -> io::Result<usize> {
     let file = fs::OpenOptions::new()
@@ -206,6 +220,9 @@ fn read_segment<R: DeserializeOwned + Stamped>(
         let Some(complete) = line.strip_suffix(b"\n") else {
             return Ok(skipped + 1);
         };
+        if finder.is_some_and(|finder| finder.find(complete).is_none()) {
+            continue;
+        }
         match serde_json::from_slice::<R>(complete) {
             Ok(row) if (range.since_nanos..range.until_nanos).contains(&row.ts()) => visit(row),
             Ok(_) => {}
@@ -400,6 +417,39 @@ mod tests {
         assert_eq!(
             read(&store, everything, &MetricScope::Machine).unwrap(),
             Selected::Machine(vec![host(T0), host(T0 + 20 * SEC)])
+        );
+    }
+
+    #[test]
+    fn a_row_kind_this_reader_does_not_know_is_skipped() {
+        let (_dir, store) = store();
+        append(&store, &[Row::Host(host(T0))]).unwrap();
+        let marker = format!(
+            "{{\"row\":\"marker\",\"kind\":\"exit\",\"exit_code\":143,\"service_id\":\"{}\",\"service\":\"{}\",\"ts\":{}}}\n",
+            service(1),
+            qualified(1),
+            T0 + SEC
+        );
+        let path = store.raw_metrics().join("1759996800.jsonl");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(marker.as_bytes())
+            .unwrap();
+        append(&store, &[Row::Container(sample(1, 1, T0 + 2 * SEC))]).unwrap();
+
+        let everything = range(T0, T0 + HOUR);
+        assert_eq!(
+            read(&store, everything, &MetricScope::Machine).unwrap(),
+            Selected::Machine(vec![host(T0)])
+        );
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        assert_eq!(
+            read(&store, everything, &scope).unwrap(),
+            Selected::Service(vec![sample(1, 1, T0 + 2 * SEC)])
         );
     }
 
