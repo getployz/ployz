@@ -14,23 +14,26 @@ const AppliedService = Schema.fromJsonString(Schema.Struct({
       Schema.Struct({ type: Schema.Literals(["none", "command"]) }),
     ]),
     managedHostnames: Schema.Array(Schema.Struct({ prefix: Schema.String })),
+    routes: Schema.Array(Schema.Struct({ hostname: Schema.String })),
   }),
 }));
 const decodeAppliedService = Schema.decodeUnknownEffect(AppliedService);
 
-/** The check a Service gets: its generated domain, at its HTTP healthcheck path or `/`. */
+/** The check a Service gets: its generated domain, else its first custom one, at its HTTP healthcheck path or `/`. */
 type WantedCheck = { readonly serviceId: string; readonly name: string; readonly url: string };
 
 /**
- * The check `node` wants, or null when it has no generated domain. The hostname is expanded with the Cluster Domain
- * the applying Deployment froze, as the Store's own expansion does.
+ * The check `node` wants, or null when it has no public domain. A generated hostname is expanded with the Cluster
+ * Domain the applying Deployment froze, as the Store's own expansion does.
  */
 const wantedCheck = Effect.fn("Uptime.wantedCheck")(function* (row: { serviceId: string; node: string; clusterDomain: string | null }) {
   const service = yield* decodeAppliedService(row.node);
   const [generated] = service.config.managedHostnames;
-  if (generated === undefined || row.clusterDomain === null) return null;
+  const [custom] = service.config.routes;
+  const hostname = generated !== undefined && row.clusterDomain !== null ? `${generated.prefix}.${row.clusterDomain}` : custom?.hostname;
+  if (hostname === undefined) return null;
   const path = service.config.healthcheck.type === "http" ? service.config.healthcheck.path : "/";
-  return { serviceId: row.serviceId, name: service.slug, url: `https://${generated.prefix}.${row.clusterDomain}${path}` } satisfies WantedCheck;
+  return { serviceId: row.serviceId, name: service.slug, url: `https://${hostname}${path}` } satisfies WantedCheck;
 });
 
 /**
@@ -46,7 +49,7 @@ const updateUptimeCheck = Effect.fn("Uptime.updateCheck")(function* (check: type
 });
 
 /**
- * Make `environmentId`'s uptime checks match its Applied State: one per Service with a generated domain. Creates the
+ * Make `environmentId`'s uptime checks match its Applied State: one per Service with a public domain. Creates the
  * missing, updates a changed URL, deletes a check whose Service or domain is gone, and leaves the rest. Running it
  * again changes nothing. Syncs of one Environment run one at a time.
  */

@@ -53,10 +53,15 @@ const setup = Effect.fn(function* () {
   if (introduced === undefined) throw new Error("the Store introduced no Service");
   const saved = JSON.parse(introduced.node) as SavedServiceIntent;
 
-  const apply = (config: { prefixes: string[]; healthcheck: Healthcheck }) => {
+  const apply = (config: { prefixes: string[]; healthcheck: Healthcheck; customDomains?: string[] }) => {
     const node = JSON.stringify({
       ...saved,
-      config: { ...saved.config, healthcheck: config.healthcheck, managedHostnames: config.prefixes.map((prefix) => ({ prefix, targetPort: null })) },
+      config: {
+        ...saved.config,
+        healthcheck: config.healthcheck,
+        managedHostnames: config.prefixes.map((prefix) => ({ prefix, targetPort: null })),
+        routes: (config.customDomains ?? []).map((hostname) => ({ id: hostname, hostname, targetPort: null })),
+      },
     });
     return query(sql`
       insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
@@ -114,6 +119,16 @@ it.live("a Service without an HTTP healthcheck is checked at /, and one without 
   yield* apply({ prefixes: ["web-shop"], healthcheck: none });
   yield* sync;
   expect((yield* checks).map((check) => check.url)).toEqual([`https://web-shop.${CLUSTER_DOMAIN}/`]);
+}));
+
+it.live("a Service with only custom domains is checked at its first, and a generated domain wins over them", () => Effect.gen(function* () {
+  const { apply, sync, checks } = yield* setup();
+  yield* apply({ prefixes: [], customDomains: ["acme.com", "www.acme.com"], healthcheck: http("/healthz") });
+  yield* sync;
+  expect((yield* checks).map((check) => check.url)).toEqual(["https://acme.com/healthz"]);
+  yield* apply({ prefixes: ["web-shop"], customDomains: ["acme.com"], healthcheck: http("/healthz") });
+  yield* sync;
+  expect((yield* checks).map((check) => check.url)).toEqual([`https://web-shop.${CLUSTER_DOMAIN}/healthz`]);
 }));
 
 it.live("an unchanged URL writes nothing", () => Effect.gen(function* () {
