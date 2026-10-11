@@ -255,7 +255,7 @@ const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId
 
 const SwitchErrorDetails = Schema.Struct({
   details: Schema.Struct({
-    reason: Schema.Literals(["stale_lease", "stale_step", "precondition", "busy", "volume_switching", "no_writer", "no_capacity"]),
+    reason: Schema.Literals(["stale_lease", "stale_step", "precondition", "busy", "volume_switching", "no_writer", "no_capacity", "restore_point_gone"]),
   }),
 });
 const decodeSwitchError = Schema.decodeUnknownOption(SwitchErrorDetails);
@@ -289,6 +289,8 @@ export function switchFailureMessage(
       return `${name} has no writer on ${machine.name}`;
     case "no_capacity":
       return `${machine.name} has no room for ${name}'s mirror`;
+    case "restore_point_gone":
+      return `the restore point is gone from ${name} on ${machine.name}`;
     case "busy":
       return undefined;
   }

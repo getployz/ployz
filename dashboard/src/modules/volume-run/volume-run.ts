@@ -4,7 +4,7 @@ export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "can
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 
-export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore"] as const;
+export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
 export type VolumeRunArgs = {
@@ -14,6 +14,11 @@ export type VolumeRunArgs = {
   move: { readonly to: MachineName };
   release: Record<string, never>;
   restore: { readonly from: MachineName };
+  seed: {
+    readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
+    readonly guid: string;
+    readonly name: string;
+  };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
