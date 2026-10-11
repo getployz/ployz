@@ -261,19 +261,28 @@ pub(super) fn lower(
         for (name, file) in &config.files {
             let resolved = files.remove(name).ok_or_else(|| error::corrupt("Config"))?;
             if warns {
+                let shown =
+                    |reference: &ployz_core::config::FragileReference| match &reference.owner {
+                        ValuePartOwner::Service { lineage_id } => {
+                            match slugs.get(lineage_id.as_str()) {
+                                Some(slug) => format!("{slug}.{}", reference.key),
+                                None => reference.key.clone(),
+                            }
+                        }
+                        ValuePartOwner::Self_ => reference.key.clone(),
+                    };
                 warnings.extend(resolved.fragile.iter().map(|reference| {
                     DeploymentWarning::Fragile {
                         config: config.name.clone(),
                         file: name.clone(),
-                        variable: match &reference.owner {
-                            ValuePartOwner::Service { lineage_id } => {
-                                match slugs.get(lineage_id.as_str()) {
-                                    Some(slug) => format!("{slug}.{}", reference.key),
-                                    None => reference.key.clone(),
-                                }
-                            }
-                            ValuePartOwner::Self_ => reference.key.clone(),
-                        },
+                        variable: shown(reference),
+                    }
+                }));
+                warnings.extend(resolved.not_set.iter().map(|reference| {
+                    DeploymentWarning::NotSetInFile {
+                        config: config.name.clone(),
+                        file: name.clone(),
+                        secret: shown(reference),
                     }
                 }));
             }

@@ -70,6 +70,8 @@ const BEFORE_OFFERS: &str = "
     ALTER TABLE config_pull_request DROP COLUMN merged;
     DROP TABLE config_merge_value;
     DROP TABLE config_merge_deploy;
+    ALTER TABLE config_branch DROP COLUMN recent;
+    ALTER TABLE config_pull_request DROP COLUMN unlanded;
     CREATE TABLE config_conditional_sync (
         id TEXT PRIMARY KEY,
         organization_id TEXT NOT NULL,
@@ -464,4 +466,63 @@ fn legacy_arrivals_migrate_unowned_with_their_syncs_receipted() {
         ]
     };
     assert_eq!(receipts, [receipt(101), receipt(102)]);
+}
+
+/// The schema as it was before `0011_retire_offers`, with an offered proposal and a
+/// plain one, each with a receipt.
+const BEFORE_RETIRE: &str = "
+    DROP TABLE config_merge_value;
+    DROP TABLE config_merge_deploy;
+    ALTER TABLE config_branch DROP COLUMN recent;
+    ALTER TABLE config_pull_request DROP COLUMN unlanded;
+    ALTER TABLE config_proposal ADD COLUMN offered TEXT
+        CHECK (offered IS NULL OR number IS NOT NULL);
+    DELETE FROM config_migration WHERE name IN ('0011_retire_offers', '0012_on_merge');
+    INSERT INTO config_proposal (id, organization_id, environment_id, source_environment_id,
+        repository_id, number, source_name, source_revision, first_sync, last_sync, offered)
+    VALUES
+    ('00000000-0000-4000-8000-000000000201', 'org', '00000000-0000-4000-8000-000000000002',
+     '00000000-0000-4000-8000-000000000004', NULL, NULL, 'fix-web', 1,
+     '00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000101', NULL),
+    ('00000000-0000-4000-8000-000000000202', 'org', '00000000-0000-4000-8000-000000000002',
+     '00000000-0000-4000-8000-000000000005', 11, 5, 'pr-5', 1,
+     '00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000102', '{}');
+    INSERT INTO config_sync_receipt
+        (organization_id, sync_id, environment_id, source_environment_id, proposal_id)
+    VALUES
+    ('org', '00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000002',
+     '00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000201'),
+    ('org', '00000000-0000-4000-8000-000000000102', '00000000-0000-4000-8000-000000000002',
+     '00000000-0000-4000-8000-000000000005', '00000000-0000-4000-8000-000000000202');
+";
+
+#[test]
+fn an_offered_proposal_goes_with_its_receipt_when_offers_retire() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    {
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        store
+            .write(
+                &who,
+                &CreateProject {
+                    id: ProjectId::parse(uuid(1)).unwrap(),
+                    name: ProjectName::parse("shop").unwrap(),
+                    default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                },
+            )
+            .unwrap();
+    }
+    run(&url, BEFORE_RETIRE);
+
+    ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(
+        select(&url, "SELECT id FROM config_proposal"),
+        [["00000000-0000-4000-8000-000000000201".to_owned()]]
+    );
+    assert_eq!(
+        select(&url, "SELECT proposal_id FROM config_sync_receipt"),
+        [["00000000-0000-4000-8000-000000000201".to_owned()]]
+    );
 }

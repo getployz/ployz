@@ -107,6 +107,8 @@ pub struct ResolvedConfigFile {
     pub secret: bool,
     /// References whose value may break the file's syntax, each once.
     pub fragile: Vec<FragileReference>,
+    /// References that are, or read, a secret without a value, each once.
+    pub not_set: Vec<FragileReference>,
 }
 
 impl std::fmt::Debug for ResolvedConfigFile {
@@ -115,6 +117,7 @@ impl std::fmt::Debug for ResolvedConfigFile {
             .field("content_len", &self.content.len())
             .field("secret", &self.secret)
             .field("fragile", &self.fragile)
+            .field("not_set", &self.not_set)
             .finish()
     }
 }
@@ -146,6 +149,7 @@ pub fn resolve_config_file(
         content: String::new(),
         secret: false,
         fragile: Vec::new(),
+        not_set: Vec::new(),
     };
     let mut quote = None;
     for part in parts {
@@ -178,6 +182,9 @@ pub fn resolve_config_file(
             owner: owner.clone(),
             key: key.clone(),
         };
+        if taint == Taint::NotSet && !file.not_set.contains(&reference) {
+            file.not_set.push(reference.clone());
+        }
         if breaks && !file.fragile.contains(&reference) {
             file.fragile.push(reference);
         }

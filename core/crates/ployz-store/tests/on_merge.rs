@@ -52,6 +52,11 @@ fn vouched() -> Trusted {
 /// Project `shop`: `production` runs Git Service `web` from `acme/web`'s `main`, with
 /// `A=1`, `C=1` and `D=1` saved; pull request #5 opened `pr-5` from it.
 fn shop() -> (ConfigStore, Actor) {
+    shop_with(|_, _| {})
+}
+
+/// [`shop`], with `setup` run on `production` before pull request #5 opens.
+fn shop_with(setup: impl FnOnce(&ConfigStore, &Actor)) -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
@@ -88,6 +93,7 @@ fn shop() -> (ConfigStore, Actor) {
         ],
     );
     save(&store, &who, "production");
+    setup(&store, &who);
     store
         .write(
             &who,
@@ -777,7 +783,7 @@ fn what_landed_deploys_at_once_if_the_push_came_first() {
 }
 
 #[test]
-fn what_landed_follows_auto_deploy_and_wait_for_ci() {
+fn what_landed_deploys_with_auto_deploy_off() {
     let (store, who) = shop();
     set(
         &store,
@@ -788,8 +794,9 @@ fn what_landed_follows_auto_deploy_and_wait_for_ci() {
     system(&store, &who, &push(None, HEAD, None));
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    // web follows no push, but its config changed: the merge's push deploys it.
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+    assert_eq!(deployed(&pushed), [["web"]]);
     assert_eq!(
         value(&store, &who, "production", "web.env.A"),
         Some(json!("2"))
@@ -873,7 +880,12 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
         (stuck.conclusion, stuck.title.as_str()),
         (OnMergeConclusion::Neutral, "Didn't land in production")
     );
-    assert!(stuck.summary.contains("`web · A`"), "{stuck:?}");
+    assert!(
+        stuck
+            .summary
+            .contains("web references a removed Service (A)"),
+        "{stuck:?}"
+    );
 }
 
 #[test]
@@ -1012,4 +1024,438 @@ fn the_check_names_a_missing_secret_without_its_value_and_what_stays_here() {
     );
     assert!(edited.summary.contains("`web · TOKEN`: set"), "{edited:?}");
     assert!(!format!("{edited:?}").contains("prod-token"));
+}
+
+// Review findings.
+
+/// Pull request `number` from `head_branch` onto `target`, as GitHub said at `updated`.
+fn event(
+    number: u64,
+    head_branch: &str,
+    target: &str,
+    merge: Option<&str>,
+    open: bool,
+    updated: &str,
+) -> SystemEvent {
+    SystemEvent::PullRequest(PullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(number),
+        title: "Add search".into(),
+        author: "ada".into(),
+        bot: false,
+        head_branch: backend::git_branch(head_branch),
+        head: backend::sha(HEAD),
+        target_branch: backend::git_branch(target),
+        commits: 1,
+        open,
+        merge_commit: merge.map(backend::sha),
+        updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
+    })
+}
+
+/// A push to `branch`.
+fn push_on(branch: &str, base: Option<&str>, head: &str, changed: &[&str]) -> SystemEvent {
+    SystemEvent::BranchHead(BranchHead {
+        repository_id: backend::repo_id(11),
+        branch: backend::git_branch(branch),
+        base: base.map(backend::sha),
+        head: Some(backend::sha(head)),
+        changed: Some(changed.iter().map(|path| (*path).to_owned()).collect()),
+    })
+}
+
+/// CI passed on `head`.
+fn passed(store: &ConfigStore, who: &Actor, head: &str) -> Automated {
+    system(
+        store,
+        who,
+        &SystemEvent::CheckSuite(CheckSuite {
+            repository_id: backend::repo_id(11),
+            suite: 1,
+            head: backend::sha(head),
+            status: serde_json::from_value(json!("completed")).unwrap(),
+            conclusion: Some(serde_json::from_value(json!("success")).unwrap()),
+            updated: ployz_store::GithubTimestamp::parse("2026-09-29T11:30:00Z").unwrap(),
+        }),
+    )
+}
+
+/// PR Environments stay when their pull request closes.
+fn keep(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: None,
+                start_from: None,
+                copy: None,
+                setup: None,
+                remove_on_close: Some(false),
+                include_bots: None,
+            },
+        )
+        .unwrap();
+}
+
+/// Every Service the admitted Deployments target, sorted.
+fn deployed_services(automated: &Automated) -> Vec<String> {
+    let mut services: Vec<String> = deployed(automated).into_iter().flatten().collect();
+    services.sort();
+    services
+}
+
+/// `web` deploys only for changes under `web/`; main's head is `HEAD`.
+fn watching(store: &ConfigStore, who: &Actor) {
+    set(
+        store,
+        who,
+        "production",
+        &[("web.watchPaths", json!(["web/**"]))],
+    );
+    system(store, who, &push(None, HEAD, None));
+}
+
+#[test]
+fn a_kept_preview_closed_unmerged_awaits_no_merge() {
+    let (store, who) = shop();
+    keep(&store, &who);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    system(
+        &store,
+        &who,
+        &event(5, "search", "main", None, false, "2026-09-29T11:00:00Z"),
+    );
+    assert!(preview_listed(&store, &who));
+    let main = backend::git_branch("main");
+    assert!(
+        store
+            .awaiting_merge(&who.organization, backend::repo_id(11), &main)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn what_landed_deploys_at_once_if_the_branch_already_moved_past_the_merge() {
+    let (store, who) = shop();
+    watching(&store, &who);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let later = system(
+        &store,
+        &who,
+        &push(Some(MERGE), LATER, Some(&["README.md"])),
+    );
+    assert!(later.admitted.is_empty(), "{later:?}");
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(deployed(&landed), [["web"]]);
+}
+
+#[test]
+fn a_merge_that_changes_only_a_mounted_config_deploys_its_service() {
+    let config = || ployz_core::ConfigName::parse("sentry").unwrap();
+    let file = |environment: EnvironmentRef, content: &str| ployz_store::PutConfigFile {
+        environment,
+        config: config(),
+        file: ployz_core::ConfigFileName::parse("config.yml").unwrap(),
+        content: content.into(),
+        mode: None,
+        uid: None,
+        gid: None,
+    };
+    let (store, who) = shop_with(|store, who| {
+        store
+            .write(
+                who,
+                &ployz_store::CreateConfig {
+                    id: ployz_store::ConfigId::parse(uuid(9)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: config(),
+                    mounts: vec![ployz_store::ConfigMountAt {
+                        service: ServiceName::parse("web").unwrap(),
+                        dir: "/etc/sentry".into(),
+                    }],
+                },
+            )
+            .unwrap();
+        store
+            .write(who, &file(EnvironmentRef::default(), "level: info\n"))
+            .unwrap();
+        save(store, who, "production");
+    });
+    watching(&store, &who);
+    store
+        .write(&who, &file(at("pr-5"), "level: debug\n"))
+        .unwrap();
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(deployed(&landed), [["web"]]);
+}
+
+#[test]
+fn a_merge_deploys_an_image_service_it_changed_and_the_services_that_read_it() {
+    let (store, who) = shop_with(|store, who| {
+        store
+            .write(
+                who,
+                &ployz_store::CreateService {
+                    id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("api").unwrap(),
+                    image: Some("api:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+        set(
+            store,
+            who,
+            "production",
+            &[
+                ("api.env.X", json!("1")),
+                ("web.env.API", json!("${{ api.X }}")),
+            ],
+        );
+        save(store, who, "production");
+    });
+    watching(&store, &who);
+    set(&store, &who, "pr-5", &[("api.env.X", json!("2"))]);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(deployed_services(&landed), ["api", "web"]);
+}
+
+#[test]
+fn what_landed_waits_for_ci_on_the_newest_head() {
+    let (store, who) = shop();
+    watching(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.waitForCi", json!(true))],
+    );
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(pushed.waiting.len(), 1, "{pushed:?}");
+    // Another push before CI passed: what landed waits on it instead.
+    let later = system(
+        &store,
+        &who,
+        &push(Some(MERGE), LATER, Some(&["README.md"])),
+    );
+    assert_eq!(later.waiting.len(), 1, "{later:?}");
+
+    assert_eq!(deployed(&passed(&store, &who, LATER)), [["web"]]);
+}
+
+#[test]
+fn a_push_without_a_head_keeps_what_landed() {
+    let (store, who) = shop();
+    // web follows no push: only what landed deploys it, after the branch comes back.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.autoDeploy", json!("false"))],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let deleted = SystemEvent::BranchHead(BranchHead {
+        repository_id: backend::repo_id(11),
+        branch: backend::git_branch("main"),
+        base: Some(backend::sha(HEAD)),
+        head: None,
+        changed: None,
+    });
+    system(&store, &who, &deleted);
+
+    let pushed = system(&store, &who, &push(None, MERGE, Some(&["README.md"])));
+    assert_eq!(deployed(&pushed), [["web"]]);
+}
+
+#[test]
+fn merges_from_two_branches_into_one_environment_each_deploy() {
+    let (store, who) = shop_with(|store, who| {
+        store
+            .write_trusted(
+                who,
+                &CreateGitService {
+                    id: ServiceLineageId::parse(uuid(8)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse("worker").unwrap(),
+                    repository: backend::repo_name("acme/web"),
+                    branch: Some(backend::git_branch("release")),
+                },
+                &vouched(),
+            )
+            .unwrap();
+        save(store, who, "production");
+    });
+    set(
+        &store,
+        &who,
+        "production",
+        &[("worker.watchPaths", json!(["worker/**"]))],
+    );
+    watching(&store, &who);
+    system(&store, &who, &push_on("release", None, HEAD, &[]));
+    system(
+        &store,
+        &who,
+        &event(6, "fix", "release", None, true, "2026-09-29T10:00:00Z"),
+    );
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    set(&store, &who, "pr-6", &[("worker.env.W", json!("2"))]);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    system(
+        &store,
+        &who,
+        &event(
+            6,
+            "fix",
+            "release",
+            Some(LATER),
+            false,
+            "2026-09-29T11:00:00Z",
+        ),
+    );
+    let main = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(deployed(&main), [["web"]]);
+    let release = system(
+        &store,
+        &who,
+        &push_on("release", Some(HEAD), LATER, &["README.md"]),
+    );
+    assert_eq!(deployed(&release), [["worker"]]);
+}
+
+#[test]
+fn a_kept_preview_edited_after_its_merge_still_reads_landed() {
+    let (store, who) = shop();
+    keep(&store, &who);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    store
+        .write(&who, &merge_value("web.env.A", Some("3")))
+        .unwrap();
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("3"))
+    );
+    assert_eq!(check(&store, &who), None);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("5"))]);
+    assert_eq!(check(&store, &who), None);
+}
+
+#[test]
+fn a_stale_merged_event_still_closes_the_preview() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    pull(&store, &who, "main", "2026-09-29T12:00:00Z");
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("2"))
+    );
+    assert!(!preview_listed(&store, &who));
+}
+
+#[test]
+fn an_excluded_rows_edit_can_always_be_cleared() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    store
+        .write(&who, &merge_value("web.env.A", Some("9")))
+        .unwrap();
+    exclude(&store, &who, "web.env.A", false);
+
+    store.write(&who, &merge_value("web.env.A", None)).unwrap();
+    exclude(&store, &who, "web.env.A", true);
+    let a = row(&store, &who, "web.env.A");
+    assert_eq!((a.lands, a.ride), (json!("2"), Ride::Rides));
+}
+
+#[test]
+fn a_removal_takes_no_edit_and_lands_as_a_removal() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    store
+        .write(&who, &merge_value("web.env.A", Some("9")))
+        .unwrap();
+    // The pull request then removes A: its Edit no longer applies.
+    unset(&store, &who, "pr-5", "web.env.A");
+    let a = row(&store, &who, "web.env.A");
+    assert_eq!((a.lands, a.ride), (Value::Null, Ride::Rides));
+    let refused = store
+        .write(&who, &merge_value("web.env.A", Some("9")))
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(value(&store, &who, "production", "web.env.A"), None);
+}
+
+#[test]
+fn a_config_file_reading_a_secret_the_merge_left_not_set_warns() {
+    let (store, who) = shop();
+    watching(&store, &who);
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.TOKEN", json!({ "secret": "test-token" }))],
+    );
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let config = || ployz_core::ConfigName::parse("sentry").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(9)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: config(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: ServiceName::parse("web").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: config(),
+                file: ployz_core::ConfigFileName::parse("config.yml").unwrap(),
+                content: "token: \"${{ web.TOKEN }}\"\n".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    save(&store, &who, "production");
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let id = &pushed.admitted[0].deployment.id;
+    let claimed = store
+        .claim(id, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let warnings = json!(claimed.deployment.warnings);
+    let warned = json!({ "config": "sentry", "file": "config.yml", "secret": "web.TOKEN" });
+    assert!(warnings.as_array().unwrap().contains(&warned), "{warnings}");
 }

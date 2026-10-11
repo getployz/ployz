@@ -1185,7 +1185,11 @@ variable: string, } | { service: ServiceName,
 /**
  * The variable's key, such as `TOKEN`.
  */
-variable: string, };
+variable: string, } | { config: ConfigName, file: ConfigFileName,
+/**
+ * The variable as the file references it, such as `api.TOKEN`.
+ */
+secret: string, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**

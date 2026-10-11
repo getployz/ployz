@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    Arrives, At, Cell, Cells, Plan, RowId, SavedVariableValue, SealedCell, Verdict, Why, marks_on,
-    put_back,
+    Arrives, At, Cell, Cells, Plan, RowId, SavedEnvironmentIntent, SavedVariableValue, SealedCell,
+    ValuePart, ValuePartOwner, Verdict, Why, marks_on,
 };
 use serde_json::Value;
 
@@ -201,7 +201,8 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
                 conflict,
                 arrives,
             } => {
-                let edited = stored.contains_key(&row.id);
+                // A removal lands as one: an Edit never brings the row back.
+                let edited = stored.contains_key(&row.id) && row.from != Cell::Absent;
                 let ride = if edited { Ride::Edited } else { Ride::Rides };
                 (ride, *conflict, *arrives)
             }
@@ -337,18 +338,6 @@ pub(crate) fn set_merge_value(
         .iter()
         .find(|named| named.row == row)
         .map_or_else(|| row.to_string(), ToString::to_string);
-    if !landing.riding().contains(&row) {
-        return Err(error::invalid(
-            format!("{label} doesn't land in {}", landing.into.summary.name),
-            json!({ "row": row }),
-        ));
-    }
-    let At::Variable(key) = row.at() else {
-        return Err(error::invalid(
-            format!("{label}: only a variable takes an Edit"),
-            json!({ "row": row }),
-        ));
-    };
     let at = row.at().to_string();
     let key_values = [
         from.summary.id.as_str().into(),
@@ -356,18 +345,37 @@ pub(crate) fn set_merge_value(
         row.lineage().into(),
         at.as_str().into(),
     ];
+    // Taking an Edit back always works, wherever the row went since.
     tx.execute(
         "DELETE FROM config_merge_value \
          WHERE environment_id = ?1 AND destination_id = ?2 AND lineage = ?3 AND at = ?4",
         &key_values,
     )?;
     if let Some(value) = &request.value {
+        if !landing.riding().contains(&row) {
+            return Err(error::invalid(
+                format!("{label} doesn't land in {}", landing.into.summary.name),
+                json!({ "row": row }),
+            ));
+        }
+        let At::Variable(key) = row.at() else {
+            return Err(error::invalid(
+                format!("{label}: only a variable takes an Edit"),
+                json!({ "row": row }),
+            ));
+        };
         let planned = landing
             .plan
             .rows()
             .iter()
             .find(|planned| planned.id == row)
             .ok_or_else(|| error::corrupt("On merge row"))?;
+        if planned.from == Cell::Absent {
+            return Err(error::invalid(
+                format!("{label}: the merge removes it, so it takes no Edit"),
+                json!({ "row": row }),
+            ));
+        }
         let cell = if planned.from.is_secret() || planned.into.is_secret() {
             SealedCell::Secret(crate::branch::seal_secret(sealing, &row, &label, value)?)
         } else {
@@ -397,20 +405,74 @@ pub(crate) fn set_merge_value(
     listed(tx, who, from)
 }
 
-/// Whether `id` is the PR Environment of an open pull request whose merge lands
-/// something.
-pub(crate) fn awaits(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
+/// Whether closing PR Environment `id` would lose something: its pull request is
+/// open or merged, and it holds a row for some Destination, riding or not.
+pub(crate) fn holds(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
     let Some(pull_request) = of(tx, id)? else {
         return Ok(false);
     };
     let open = facts(tx, who, pull_request.repository_id, pull_request.number)?
         .is_some_and(|facts| facts.open);
-    if !open {
+    if !open && unlanded(tx, who, &pull_request)?.is_none() {
         return Ok(false);
     }
     let from = scope::load_by_id(tx, id)?;
     let (_, landings) = landings(tx, who, &from)?;
-    Ok(landings.iter().any(|landing| !landing.riding().is_empty()))
+    Ok(landings.iter().any(|landing| !landing.rows.is_empty()))
+}
+
+/// What a Destination didn't take when the pull request merged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Unlanded {
+    /// The Destination.
+    pub(crate) into: EnvironmentName,
+    /// Whether it saved what landed, but didn't deploy it.
+    pub(crate) saved: bool,
+    /// Why not.
+    pub(crate) reason: String,
+}
+
+/// What the pull request's merge didn't do, once it landed; none before.
+pub(crate) fn unlanded(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    pull_request: &PullRequestRef,
+) -> Result<Option<Vec<Unlanded>>, RpcError> {
+    tx.query(
+        "SELECT unlanded FROM config_pull_request \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND unlanded IS NOT NULL",
+        &[
+            who.organization.as_str().into(),
+            pull_request.repository_id.into(),
+            pull_request.number.into(),
+        ],
+    )?
+    .first()
+    .map(|row| row.json(0, "unlanded"))
+    .transpose()
+}
+
+/// Record what the pull request's merge didn't do.
+pub(crate) fn record_unlanded(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    pull_request: &PullRequestRef,
+    unlanded: &[Unlanded],
+) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_pull_request SET unlanded = ?4 \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+        &[
+            who.organization.as_str().into(),
+            pull_request.repository_id.into(),
+            pull_request.number.into(),
+            serde_json::to_string(unlanded)
+                .expect("unlanded is JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// A pull request's merge, as the Store first learned of it.
@@ -425,13 +487,14 @@ pub(crate) struct Merging<'a> {
 /// Land what PR Environment `from`'s pull request lands in each Destination, one
 /// Saved revision each, and deploy the Services it changed there. A Destination
 /// that can't take it is skipped and keeps what it had; returns whether every one
-/// took it. The caller holds the locks.
+/// took it. What didn't land, or landed but didn't deploy, goes in `unlanded`. The
+/// caller holds the locks.
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
     from: &EnvironmentId,
     merge: &Merging<'_>,
-    automated: &mut Automated,
+    (automated, unlanded): (&mut Automated, &mut Vec<Unlanded>),
 ) -> Result<bool, RpcError> {
     let from = scope::load_by_id(tx, from)?;
     let (pull_request, landings) = landings(tx, who, &from)?;
@@ -443,17 +506,37 @@ pub(crate) fn land(
         });
         match landed {
             Ok(services) if services.is_empty() => {}
-            Ok(services) => automation::deploy_landed(
-                tx,
-                who,
-                &into.id,
-                (pull_request.repository_id, merge.target, merge.commit),
-                services,
-                merge.trusted,
-                automated,
-            )?,
+            Ok(services) => {
+                let skipped = automated.skipped.len();
+                automation::deploy_landed(
+                    tx,
+                    who,
+                    &into.id,
+                    (pull_request.repository_id, merge.target, merge.commit),
+                    services,
+                    merge.trusted,
+                    automated,
+                )?;
+                unlanded.extend(
+                    automated
+                        .skipped
+                        .iter()
+                        .skip(skipped)
+                        .filter(|skip| skip.environment == into.id)
+                        .map(|skip| Unlanded {
+                            into: into.name.clone(),
+                            saved: true,
+                            reason: skip.reason.clone(),
+                        }),
+                );
+            }
             Err(error) if automation::skippable(&error) => {
                 all = false;
+                unlanded.push(Unlanded {
+                    into: into.name.clone(),
+                    saved: false,
+                    reason: error.message.clone(),
+                });
                 automated.skipped.push(Skipped {
                     environment: into.id,
                     reason: format!(
@@ -479,6 +562,12 @@ fn land_one(
     number: PullRequestNumber,
 ) -> Result<Vec<String>, RpcError> {
     let picks = landing.riding();
+    let edited: BTreeSet<RowId> = landing
+        .rows
+        .iter()
+        .filter(|row| row.ride == Ride::Edited)
+        .map(|row| row.at.row.clone())
+        .collect();
     let Landing {
         into: mut destination,
         plan,
@@ -488,7 +577,8 @@ fn land_one(
         return Ok(Vec::new());
     }
     let into = destination.summary.id.clone();
-    let values = edits(tx, &from.summary.id, &into)?;
+    let mut values = edits(tx, &from.summary.id, &into)?;
+    values.retain(|row, _| edited.contains(row));
     let applied = plan.apply(&picks, &values).map_err(config)?;
     let latest = review::latest_saved(tx, &into)?;
     let old = latest
@@ -573,25 +663,84 @@ fn land_one(
         scope::persist_working(tx, &mut destination)?;
     }
 
-    // The pair shares what landed: an Edit's value, not the PR Environment's.
-    let mut base = applied.base;
-    for landed in &applied.landed {
-        if values.contains_key(&landed.row) {
-            base = put_back(&base, &landed.row, &landed.value).map_err(config)?;
-        }
-    }
-    share(tx, (&into, &from.summary.id), &base)?;
+    // The pair shares the PR Environment's values: an Edit is the Destination's own
+    // change, never one the preview still has to send.
+    share(tx, (&into, &from.summary.id), &applied.base)?;
     tx.execute(
         "DELETE FROM config_merge_value WHERE environment_id = ?1 AND destination_id = ?2",
         &[from.summary.id.as_str().into(), into.as_str().into()],
     )?;
+    Ok(affected(&saved, &picks))
+}
+
+/// The IDs of the Services of `saved` that `picks` changed: their own rows, a Volume
+/// or Config they mount, or a variable they read, through other variables or a
+/// mounted Config's files too.
+fn affected(saved: &SavedEnvironmentIntent, picks: &BTreeSet<RowId>) -> Vec<String> {
     let lineages: BTreeSet<&str> = picks.iter().map(RowId::lineage).collect();
-    Ok(saved
+    let mut changed: BTreeSet<(String, String)> = picks
+        .iter()
+        .filter_map(|pick| {
+            let At::Variable(key) = pick.at() else {
+                return None;
+            };
+            Some((pick.lineage().to_owned(), key.clone()))
+        })
+        .collect();
+    let reads = |changed: &BTreeSet<(String, String)>, own: &str, parts: &[ValuePart]| {
+        parts.iter().any(|part| match part {
+            ValuePart::Ref { owner, key } => {
+                let lineage = match owner {
+                    ValuePartOwner::Self_ => own,
+                    ValuePartOwner::Service { lineage_id } => lineage_id.as_str(),
+                };
+                changed.contains(&(lineage.to_owned(), key.clone()))
+            }
+            ValuePart::Text { .. } => false,
+        })
+    };
+    loop {
+        let before = changed.len();
+        for service in &saved.services {
+            for variable in &service.variables {
+                if reads(&changed, &service.lineage_id, variable.value.parts()) {
+                    changed.insert((service.lineage_id.clone(), variable.key.clone()));
+                }
+            }
+        }
+        if changed.len() == before {
+            break;
+        }
+    }
+    saved
         .services
         .iter()
-        .filter(|service| lineages.contains(service.lineage_id.as_str()))
+        .filter(|service| {
+            let own = service.lineage_id.as_str();
+            lineages.contains(own)
+                || service
+                    .variables
+                    .iter()
+                    .any(|variable| changed.contains(&(own.to_owned(), variable.key.clone())))
+                || service.volume_attachments.iter().any(|mount| {
+                    saved.volumes.iter().any(|volume| {
+                        volume.resource_id == mount.volume_resource_id
+                            && lineages.contains(volume.resource_lineage_id.as_str())
+                    })
+                })
+                || service.config_attachments.iter().any(|mount| {
+                    saved.configs.iter().any(|config| {
+                        config.resource_id == mount.config_resource_id
+                            && (lineages.contains(config.resource_lineage_id.as_str())
+                                || config
+                                    .files
+                                    .values()
+                                    .any(|file| reads(&changed, own, &file.content)))
+                    })
+                })
+        })
         .map(|service| service.id.clone())
-        .collect())
+        .collect()
 }
 
 /// `next` with each variable `before` lacked under the ID `saved` gave it (by

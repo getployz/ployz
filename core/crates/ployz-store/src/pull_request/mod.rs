@@ -436,15 +436,22 @@ pub(crate) fn pull_request(
         // Older than what the Store holds: never undo a newer fact.
         return Ok(automated);
     }
-    let current = current(tx, who, event.repository_id, event.number)?;
+    // A merge lands from every PR Environment, one closing too: a close may come
+    // before the merge.
+    let landing = match first_merge {
+        Some(_) => current(tx, who, event.repository_id, event.number, true)?,
+        None => Vec::new(),
+    };
+    let current = current(tx, who, event.repository_id, event.number, false)?;
     // Everything this event may touch, locked first and in ID order: its PR
     // Environments, where new ones start from, and at the merge the Destinations it
     // lands in.
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
+    touched.extend(landing.iter().map(|(id, _)| id.clone()));
     touched.extend(start_froms(tx, who, event.repository_id)?);
     let target = facts(tx, who, repository_id, number)?.map(|facts| facts.target_branch);
-    if let (Some(_), Some(target)) = (first_merge, &target) {
-        for (_, project) in &current {
+    if let Some(target) = &target {
+        for (_, project) in &landing {
             touched.extend(destinations_of(tx, project, repository_id, target)?);
         }
     }
@@ -452,42 +459,55 @@ pub(crate) fn pull_request(
     // A land that fails leaves its PR Environment open, so nothing it held is lost.
     let mut kept = BTreeSet::new();
     if let (Some(commit), Some(target)) = (first_merge, &target) {
-        for (environment, _) in &current {
+        let mut unlanded = Vec::new();
+        for (environment, _) in &landing {
             let at = on_merge::Merging {
                 commit,
                 target,
                 trusted,
             };
-            if !on_merge::land(tx, who, environment, &at, &mut automated)? {
+            let all = on_merge::land(tx, who, environment, &at, (&mut automated, &mut unlanded))?;
+            if !all {
                 kept.insert(environment.clone());
+                tx.execute(
+                    "UPDATE config_environment_branch SET closing = 0 WHERE environment_id = ?1",
+                    &[environment.as_str().into()],
+                )?;
             }
         }
+        on_merge::record_unlanded(
+            tx,
+            who,
+            &PullRequestRef {
+                repository_id,
+                number,
+            },
+            &unlanded,
+        )?;
     }
-    if !fresh {
-        if !current.is_empty() {
+    if fresh {
+        let renamed = before
+            .as_ref()
+            .is_some_and(|before| before.head_branch != event.head_branch);
+        if renamed {
+            for (environment, _) in &current {
+                retrack(tx, who, environment, event)?;
+            }
+        }
+        let retargeted = before
+            .as_ref()
+            .is_some_and(|before| before.target_branch != event.target_branch);
+        if retargeted {
+            for (environment, _) in &current {
+                forget_edits(tx, environment)?;
+            }
             automated.checks.push(PullRequestRef {
                 repository_id,
                 number,
             });
         }
-        return Ok(automated);
     }
-    let renamed = before
-        .as_ref()
-        .is_some_and(|before| before.head_branch != event.head_branch);
-    if renamed {
-        for (environment, _) in &current {
-            retrack(tx, who, environment, event)?;
-        }
-    }
-    let retargeted = before
-        .as_ref()
-        .is_some_and(|before| before.target_branch != event.target_branch);
-    if retargeted {
-        for (environment, _) in &current {
-            forget_edits(tx, environment)?;
-        }
-    }
+    // A merge closes it whichever event told of it first; older facts never reopen.
     if !event.open {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
@@ -495,15 +515,17 @@ pub(crate) fn pull_request(
                 close(tx, who, environment, &mut automated)?;
             }
         }
-    } else {
+    } else if fresh {
         open(tx, who, (event, trusted), &current, &mut automated)?;
     }
-    let has_environments = !current.is_empty() || !automated.admitted.is_empty();
-    if has_environments || retargeted {
-        automated.checks.push(PullRequestRef {
-            repository_id: event.repository_id,
-            number: event.number,
-        });
+    let reported = PullRequestRef {
+        repository_id,
+        number,
+    };
+    let has_environments =
+        !current.is_empty() || !landing.is_empty() || !automated.admitted.is_empty();
+    if has_environments && !automated.checks.contains(&reported) {
+        automated.checks.push(reported);
     }
     Ok(automated)
 }
@@ -526,23 +548,26 @@ fn start_froms(
     Ok(ids)
 }
 
-/// The pull request's PR Environments not being closed, with their Projects.
+/// The pull request's PR Environments not being closed, or with `closing` every
+/// one, with their Projects.
 fn current(
     tx: &mut dyn Tx,
     who: &Actor,
     repository_id: RepositoryId,
     pr: PullRequestNumber,
+    closing: bool,
 ) -> Result<Vec<(EnvironmentId, crate::id::ProjectId)>, RpcError> {
     let rows = tx.query(
         "SELECT p.environment_id, e.project_id FROM config_pr_environment p \
          JOIN config_environment e ON e.id = p.environment_id \
          JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND p.number = ?3 AND b.closing = 0 \
-         ORDER BY p.environment_id",
+         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND p.number = ?3 \
+         AND b.closing <= ?4 ORDER BY p.environment_id",
         &[
             who.organization.as_str().into(),
             repository_id.into(),
             pr.into(),
+            i64::from(closing).into(),
         ],
     )?;
     rows.iter()
@@ -942,8 +967,8 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
         if !idle_close(&row)?.is_some_and(|at| sweep.now >= at) {
             continue;
         }
-        // Closing would lose what its merge lands: shut it down instead.
-        if on_merge::awaits(tx, who, &id)? {
+        // Closing would lose what it holds for its merge: shut it down instead.
+        if on_merge::holds(tx, who, &id)? {
             shut_down(tx, who, &id, &mut automated)?;
         } else {
             close(tx, who, &id, &mut automated)?;
@@ -999,7 +1024,7 @@ pub(crate) fn awaiting_merge(
     for row in rows {
         let facts: PullRequest = row.json(1, "pull request")?;
         let number = row.number(0, "pull request")?;
-        if facts.target_branch == *branch && !awaiting.contains(&number) {
+        if facts.open && facts.target_branch == *branch && !awaiting.contains(&number) {
             awaiting.push(number);
         }
     }

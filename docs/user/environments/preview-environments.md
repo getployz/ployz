@@ -87,6 +87,15 @@ When the pull request merges, production gets one saved change, **Merged #142 ·
 the merge commit's push deploys it with the code. To take it back, click **Undo** beside it in
 production's **History**.
 
+The merge deploys every service it changed: one whose own settings changed, one that mounts a
+changed config, and one that reads a changed variable. It does so even for a service with
+auto-deploy off or one that doesn't build from the branch, which redeploys with the code it last
+built. An edit you staged in production but didn't save stays staged.
+
+If the merge couldn't land in production, or landed but couldn't deploy, the check says so, like
+**Didn't land in production** or **Saved in production, not deployed**, with the reason. A preview
+whose changes didn't land stays open, so nothing it held is lost.
+
 To take the changes before the merge, click **Sync · 3**, check each change as for any
 [sync](environments.md#sync-the-change-to-production), and click **Sync 3 changes**. They become
 production's changes to deploy now, and leave the On merge list. From the CLI, `ployz env sync --to

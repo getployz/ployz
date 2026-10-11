@@ -1240,3 +1240,53 @@ fn an_idle_preview_with_something_to_land_only_shuts_down() {
     );
     assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
 }
+
+#[test]
+fn an_idle_open_preview_whose_rows_are_all_excluded_only_shuts_down() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    set(&store, &who, "pr-5", "web.env.A", json!("2"));
+    store
+        .write(
+            &who,
+            &ployz_store::NeverSync {
+                environment: at("pr-5"),
+                rows: vec!["web.env.A".into()],
+                off: false,
+            },
+        )
+        .unwrap();
+
+    // Nothing rides, but closing would lose the Excluded row: off the Servers, kept.
+    let idle = sweep(&store, &who, now() + 8 * DAY);
+    assert_eq!(idle.closing.len(), 1, "{idle:?}");
+    let off = remove(&store, &who, "pr-5");
+    run(&store, &off, &[]);
+    let swept = sweep(&store, &who, now() + 8 * DAY);
+    assert!(
+        swept.closing.is_empty() && swept.removed.is_empty(),
+        "{swept:?}"
+    );
+    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
+}
+
+#[test]
+fn a_merge_reported_after_its_close_still_lands() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    set(&store, &who, "pr-5", "web.env.A", json!("2"));
+
+    // GitHub's closed event, without the merge commit, came in first.
+    let closing = pull(&store, &who, facts(false, "2026-09-29T11:00:01Z"));
+    assert_eq!(closing.closing.len(), 1, "{closing:?}");
+    let merged = PullRequest {
+        merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+        ..facts(false, "2026-09-29T11:00:00Z")
+    };
+    pull(&store, &who, merged);
+    assert_eq!(production_env(&store, &who).unwrap()["A"], json!("2"));
+}

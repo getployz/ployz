@@ -143,6 +143,13 @@ pub enum DeploymentWarning {
         /// The variable's key, such as `TOKEN`.
         variable: String,
     },
+    /// A Config file reference left empty: it is, or reads, a secret without a value.
+    NotSetInFile {
+        config: ConfigName,
+        file: ConfigFileName,
+        /// The variable as the file references it, such as `api.TOKEN`.
+        secret: String,
+    },
 }
 
 /// The most characters a Deployment message has.

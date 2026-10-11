@@ -13,7 +13,7 @@ pub(crate) fn view(
 ) -> Result<PullRequestView, RpcError> {
     let pull_request = facts(tx, who, query.repository_id, query.number)?;
     let mut environments = Vec::new();
-    for (id, _) in current(tx, who, query.repository_id, query.number)? {
+    for (id, _) in current(tx, who, query.repository_id, query.number, false)? {
         let environment = scope::load_by_id(tx, &id)?;
         let (_, landings) = on_merge::landings(tx, who, &environment)?;
         environments.push(PrEnvironment {
@@ -28,9 +28,14 @@ pub(crate) fn view(
                 .collect(),
         });
     }
+    let reference = PullRequestRef {
+        repository_id: query.repository_id,
+        number: query.number,
+    };
+    let unlanded = on_merge::unlanded(tx, who, &reference)?.unwrap_or_default();
     let check = pull_request
         .as_ref()
-        .and_then(|pull_request| check(pull_request, &environments));
+        .and_then(|pull_request| check(pull_request, &environments, &unlanded));
     Ok(PullRequestView {
         pull_request,
         environments,
@@ -39,13 +44,16 @@ pub(crate) fn view(
 }
 
 /// What the pull request's GitHub check says, if it says anything: while it is open,
-/// what its merge lands; once merged, only what didn't land.
+/// what its merge lands; once merged, only what the merge recorded it didn't do.
 pub(super) fn check(
     pull_request: &PullRequest,
     environments: &[PrEnvironment],
+    unlanded: &[on_merge::Unlanded],
 ) -> Option<OnMergeCheck> {
-    let merged = pull_request.merge_commit.is_some();
-    if environments.is_empty() || !(pull_request.open || merged) {
+    if pull_request.merge_commit.is_some() {
+        return merged_check(pull_request, unlanded);
+    }
+    if environments.is_empty() || !pull_request.open {
         return None;
     }
     let sections: Vec<(&PrEnvironment, &OnMergeInto)> = environments
@@ -70,23 +78,7 @@ pub(super) fn check(
     }
     let neutral = !not_set.is_empty() || riding.iter().any(|row| row.conflict);
     let mut summary = String::new();
-    let title = if merged {
-        let stuck: BTreeSet<&str> = sections
-            .iter()
-            .filter(|(_, into)| into.rows.iter().any(|row| row.ride.rides()))
-            .map(|(_, into)| into.name.as_str())
-            .collect();
-        if stuck.is_empty() {
-            return None;
-        }
-        let stuck = stuck.into_iter().collect::<Vec<_>>().join(", ");
-        let _ = writeln!(
-            summary,
-            "Ployz couldn't land these when #{} merged. They stay in the preview; sync it into {stuck} to take them.\n",
-            pull_request.number
-        );
-        format!("Didn't land in {stuck}")
-    } else if riding.is_empty() {
+    let title = if riding.is_empty() {
         "No config changes".to_owned()
     } else {
         let mut title = config_changes(riding.len());
@@ -110,12 +102,57 @@ pub(super) fn check(
         summary.push_str("No config changes.\n");
     }
     Some(OnMergeCheck {
-        conclusion: if merged || neutral {
+        conclusion: if neutral {
             OnMergeConclusion::Neutral
         } else {
             OnMergeConclusion::Success
         },
         title,
+        summary: summary.trim_end().to_owned(),
+    })
+}
+
+/// A merged pull request's check, from what its merge recorded: silent when every
+/// Destination took it and deployed.
+fn merged_check(
+    pull_request: &PullRequest,
+    unlanded: &[on_merge::Unlanded],
+) -> Option<OnMergeCheck> {
+    let names = |saved: bool| {
+        let names: BTreeSet<&str> = unlanded
+            .iter()
+            .filter(|unlanded| unlanded.saved == saved)
+            .map(|unlanded| unlanded.into.as_str())
+            .collect();
+        names.into_iter().collect::<Vec<_>>().join(", ")
+    };
+    let (stuck, undeployed) = (names(false), names(true));
+    let mut title = Vec::new();
+    let mut summary = String::new();
+    if !stuck.is_empty() {
+        title.push(format!("Didn't land in {stuck}"));
+        let _ = writeln!(
+            summary,
+            "Ployz couldn't land these when #{} merged. They stay in the preview; sync it into {stuck} to take them.\n",
+            pull_request.number
+        );
+    }
+    if !undeployed.is_empty() {
+        title.push(format!("Saved in {undeployed}, not deployed"));
+        let _ = writeln!(
+            summary,
+            "The merge saved its changes in {undeployed}, but Ployz couldn't deploy them.\n"
+        );
+    }
+    if title.is_empty() {
+        return None;
+    }
+    for unlanded in unlanded {
+        let _ = writeln!(summary, "- {}: {}", unlanded.into, unlanded.reason);
+    }
+    Some(OnMergeCheck {
+        conclusion: OnMergeConclusion::Neutral,
+        title: title.join(" · "),
         summary: summary.trim_end().to_owned(),
     })
 }
