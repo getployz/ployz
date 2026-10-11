@@ -13,7 +13,8 @@ use std::{
 
 use ployz_core::metrics::{
     DiskBreakdown, HostMemory, HostPoint, InterfaceRate, MetricGap, MetricGapReason,
-    MetricHistoryReply, MetricHistoryRequest, MetricPoints, MetricRange, MetricScope, ServicePoint,
+    MetricHistoryReply, MetricHistoryRequest, MetricMarker, MetricPoints, MetricRange, MetricScope,
+    ServicePoint,
 };
 
 use super::{
@@ -27,6 +28,8 @@ const HOUR_NANOS: i64 = 3_600 * 1_000_000_000;
 const RAW_SPAN: i64 = 23 * HOUR_NANOS;
 /// Read before a raw range so its first rate has a previous sample.
 const LEAD_IN: i64 = STEP_NANOS;
+/// Keeps a reply well under the 4 MiB gRPC message limit.
+const MAX_MARKERS: usize = 1_000;
 
 /// The bucket grid `request` is answered on at `now` Unix nanoseconds.
 fn grid(request: &MetricHistoryRequest, now: i64) -> Buckets {
@@ -101,8 +104,14 @@ pub(crate) fn history(
             average_services(&points, buckets)
         }
     };
-    reply.markers = markers;
+    reply.markers = newest(markers);
     Ok(reply)
+}
+
+/// The newest `MAX_MARKERS` of `markers`, oldest first.
+fn newest(mut markers: Vec<MetricMarker>) -> Vec<MetricMarker> {
+    markers.drain(..markers.len().saturating_sub(MAX_MARKERS));
+    markers
 }
 
 /// The reply for a read that did not finish in time: no points, and one
@@ -139,7 +148,7 @@ fn raw(
         Selected::Machine(samples) => rate::machine_history(&samples, buckets),
         Selected::Service(samples) => rate::service_history(&samples, buckets),
     };
-    reply.markers = markers;
+    reply.markers = newest(markers);
     Ok(reply)
 }
 
@@ -373,7 +382,7 @@ pub(crate) mod tests {
         },
     };
 
-    use super::history;
+    use super::{MAX_MARKERS, history};
     use crate::{
         observe::{
             layout::{SegmentName, StoreRoot},
@@ -532,6 +541,19 @@ pub(crate) mod tests {
             assert!(near(Some(eth0.rx), 1_000.0), "{point:?}");
             assert!(near(Some(eth0.tx), 500.0), "{point:?}");
         }
+    }
+
+    #[test]
+    fn a_reply_keeps_only_the_newest_thousand_markers() {
+        let (_dir, store) = store();
+        let markers: Vec<_> = (0..1_500)
+            .map(|i| marker(1, T0 + i * SEC, MarkerKind::Restart))
+            .collect();
+        append_markers(&store, &markers);
+        let now = T0 + HOUR;
+
+        let reply = history(&store, &request(MetricScope::Machine, T0, now, None), now).unwrap();
+        assert_eq!(reply.markers, markers[500..]);
     }
 
     #[test]
@@ -823,7 +845,7 @@ pub(crate) mod tests {
             match &reply.points {
                 MetricPoints::Machine(points) => {
                     assert_eq!(points.len(), 300);
-                    assert_eq!(reply.markers.len(), 90 * 24);
+                    assert_eq!(reply.markers.len(), MAX_MARKERS);
                 }
                 MetricPoints::Service(points) => {
                     assert_eq!(points.len(), 300);
