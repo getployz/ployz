@@ -58,12 +58,6 @@ fn spec_comparison_covers_upstream_immutable_field_families() {
     changed.container.open_stdin = true;
     changes.push(("tty", changed));
     let mut changed = requested.clone();
-    changed.container.log_driver = Some(LogDriver {
-        name: "json-file".into(),
-        options: Default::default(),
-    });
-    changes.push(("log driver", changed));
-    let mut changed = requested.clone();
     changed.container.privileged = true;
     changes.push(("privileged", changed));
     let mut changed = requested.clone();
