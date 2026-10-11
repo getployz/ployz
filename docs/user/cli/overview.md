@@ -50,49 +50,44 @@ yourself. Run step 2 again to update the skill.
 
 ### Give the agent Ployz tools
 
-`ployz mcp` serves the Cloud commands to your agent as MCP tools. The setup prompt above
-registers it. To add it by hand for every project:
+`ployz mcp` gives your agent Ployz tools over MCP. The setup prompt above registers it. To add it
+by hand for every project:
 
 ```sh
 claude mcp add -s user ployz -- ployz mcp
 ```
 
-For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
-`--json`, signed in as you, and returns its one result. Tools that can change something live,
-such as `deploy`, `server rm`, and `token new`, are marked destructive. Every one of them that
-acts the moment it runs, rather than through a plan Ployz reviews first, also asks the agent's
-app to check with you before every call, even when you've told it to skip permission prompts.
-`server rm`, `service stop`, and `token new` ask this way; `deploy` and `publish` don't. Claude
-Code honors this.
+For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They read and
+stage changes in your Projects, review, publish and deploy them, and show Services, Servers,
+Volumes and logs. Logs never show a secret. The agent can resend a call after a lost reply
+without running it twice.
 
-When a `publish`, `deploy` or server command needs your approval (see
+Some things are not tools. Run these yourself in a terminal:
+
+- `login`, `ctx use` and other commands that act on this computer.
+- `server add`, which installs Ployz over SSH or on this computer.
+- `exec`, `service port-forward`, `logs --follow` and `up`.
+- Branches and tokens.
+- Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
+
+Tools that can remove something are marked destructive: `publish`, `deploy`,
+`environment_remove`, `project_remove`, the server commands that drain, clean or remove a
+server, and the Volume commands that move, mirror or release a copy. When one of them needs your
+approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
-the agent's app shows you what it would remove and asks you to approve or deny it. Approve and
-the command runs. Leave Approve unticked and Ployz denies the approval; any reason you type goes
-back to the agent, which is told nothing changed. Declining or closing the dialog denies it
-too, without a reason. Answer within 30 minutes of the agent's call; a later answer isn't
-recorded and the approval stays pending in Ployz Cloud. An app that can't show this dialog gets
-an error instead. The agent relays what the command would do and asks you to approve it in
-the Ployz Cloud sidebar or to run the command yourself in a terminal, then calls the tool again.
+the agent's app shows you what it would remove and asks you to approve or deny it. Removing a
+Project, an Environment or a Server also asks you to type its name. Approve and the call goes
+ahead. Leave Approve unticked and Ployz denies the approval; any reason you type goes back to the
+agent, which is told nothing changed. Declining or closing the dialog denies it too, without a
+reason. Answer within 30 minutes of the agent's call; a later answer isn't recorded and the
+approval stays pending in Ployz Cloud.
 
-Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
-Servers are added with `ployz server add` from a terminal, not through MCP, because it installs
-Ployz over SSH or on this computer. `exec` is interactive, and `service port-forward` stays open
-until you stop it. Run these yourself. The tools also leave out the arguments that read stdin
-and the ones that keep a command waiting, such as `logs --follow` and `volume sync --wait`.
+An app that can't show this dialog gets an error instead. The agent relays what the call would
+remove and asks you to approve it in the Ployz Cloud sidebar, then calls the tool again with
+that approval.
 
-New secrets can't be added through MCP. `set SERVICE --from-env-file PATH` does replace the
-values of secrets the service already has, and they stay secret. To add a secret, run
-`ployz set web.env.KEY --secret` yourself.
-
-A tool call that runs for more than 30 minutes is stopped, along with the processes it started
-on this computer, except a process that leaves the call's process group, for example with
-`setsid` or `setpgid`. Calls still running
-when the agent closes `ployz mcp` stop the same way. A deployment or volume run a call started
-keeps going in Cloud, and the tool's error names the command that shows where it stands, such as
-`ployz status`. When `ployz mcp` reaches Servers over SSH, through an SSH context or
-`--connect ssh://`, the shared SSH connection is one such process: it stays open for up to 10
-idle minutes so the next command reuses it.
+`ployz mcp` stops a call that runs for more than 30 minutes. A deployment or Volume run it
+started keeps going in Cloud, and the error names the tool that shows where it stands.
 
 ## Deploy a directory
 
