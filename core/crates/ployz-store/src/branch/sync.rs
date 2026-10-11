@@ -222,9 +222,8 @@ pub(crate) fn sync(
         }
         Lands::Now { close_after } => close_after,
     };
-    if let Some(removal) = crate::teardown::removing(tx, &from.summary.id)? {
-        return Err(crate::teardown::being_removed(&from, &removal));
-    }
+    crate::removal::marked(tx, &from)?;
+    crate::removal::marked(tx, &into)?;
     if close_after {
         if row(tx, &from.summary.id)?.is_some_and(|row| row.parent != into.summary.id) {
             return Err(error::invalid(
@@ -245,7 +244,8 @@ pub(crate) fn sync(
     let id = SyncId::parse(uuid::Uuid::new_v4().to_string())?;
     let staged = checked.apply(tx, who, &mut into, &picks, &values, Some(&id))?;
     if close_after {
-        crate::pull_request::close(tx, who, &from.summary.id, &mut Default::default())?;
+        let because = crate::removal::mark::Closed::Synced;
+        crate::removal::close(tx, who, &from.summary.id, because, &mut Default::default())?;
     }
     Ok(Synced {
         sync: id,
@@ -568,10 +568,10 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
     if branch_row(tx, branch)?.kept {
         return Err(error::invalid(
             format!("{} is kept: stop keeping it to close it", summary.name),
-            json!({ "next": format!("ployz env keep --off --project {} --env {}", summary.project, summary.name) }),
+            json!({ "next": crate::removal::next("keep_branch", json!({ "environment": { "project": summary.project, "environment": summary.name }, "kept": false })) }),
         ));
     }
-    crate::teardown::guard(tx, branch)
+    crate::removal::guard(tx, branch)
 }
 
 /// Undo Sync `request.sync` in its receiver, or withdraw the Conditional Sync it made.

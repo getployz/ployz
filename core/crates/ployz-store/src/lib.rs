@@ -32,6 +32,7 @@ mod service;
 mod settings;
 mod storage;
 mod teardown;
+pub mod tools;
 mod trusted;
 mod typed_address;
 mod variables;
@@ -63,15 +64,15 @@ pub use conditional_sync::{
     SecretHeld,
 };
 pub use deployment::{
-    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, Failure, LOG_TAIL,
+    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, FailedAt, Failure,
     NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress,
     ServerRow, Unclaimed, UploadBase, UploadedSource,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
-    DomainAction, DomainAdded, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged,
-    DomainStatus, DomainView, DomainsQuery, DomainsView, PublishedHostname, RemoveDomain,
-    SetGeneratedDomain,
+    DomainAction, DomainAdded, DomainChange, DomainEdit, DomainEvidence, DomainName, DomainQuery,
+    DomainRow, DomainStaged, DomainStatus, DomainView, DomainsQuery, DomainsView,
+    PublishedHostname, RemoveDomain, SetGeneratedDomain,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use github::{
@@ -85,15 +86,17 @@ pub use pull_request::{
     PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
 };
 pub use query::*;
-pub use removal::{RemovedVolume, VolumeLoss, docker_volume};
+pub use removal::{
+    CancelRemoval, Due, DueQuery, Fix, Left, LeftStatus, Removal, RemovalCancelled, Remove,
+    RemovedVolume, Residual, VolumeLoss, Waiting, docker_volume,
+};
 pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
 pub use teardown::{
-    AppliedVolume, EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
-    OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
-    RemoveEnvironment, RemoveProject, SetDefaultEnvironment, Teardown,
+    AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
+    ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment,
 };
 pub use trusted::{Approval, Trusted, VolumeObservation};
 

@@ -5,7 +5,6 @@ import { sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect, vi } from "vitest";
 import {
-  askBeforeDestructive,
   decideApproval,
   gateOperation,
   getApproval,
@@ -14,7 +13,6 @@ import {
   operationDigest,
   pendingApprovals,
   requestApproval,
-  setOrganizationSettings,
   trustedApproval,
 } from "#/modules/approvals/approvals.server";
 import { asTestDouble } from "#/lib/test-double";
@@ -98,8 +96,6 @@ type Reply = { written?: string; error?: { code: string; message: string; detail
 it.live("a destructive CLI publish waits for a human to approve exactly what it destroys, once", () =>
   Effect.gen(function* () {
     const { provided, write, refusal, caller, store, withApproval } = yield* shopRemovingWeb();
-    // No settings row: the Organization asks.
-    expect(yield* provided(askBeforeDestructive(ORGANIZATION))).toBe(true);
     expect(yield* provided(trustedApproval(ORGANIZATION, null))).toEqual({ ok: true, approval: "required" });
 
     const refused = yield* refusal;
@@ -255,13 +251,15 @@ it.live("a Store that can't answer leaves a waiting approval pending", () =>
     expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("pending");
   }));
 
-it.live("an Organization that doesn't ask tells the Store nothing needs approving", () =>
+it.live("nothing turns asking off: no Organization setting is kept, and a call without an approval needs one", () =>
   Effect.gen(function* () {
-    const { provided, userId } = yield* shopRemovingWeb();
-    expect(yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false })))
-      .toEqual({ id: ORGANIZATION, askBeforeDestructive: false });
-    expect(yield* provided(askBeforeDestructive(ORGANIZATION))).toBe(false);
-    expect(yield* provided(trustedApproval(ORGANIZATION, null))).toEqual({ ok: true, approval: "not_required" });
+    const { provided } = yield* shopRemovingWeb();
+    const settings = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      return yield* drizzle.execute<{ table: string | null }>(sql`select to_regclass('organization_settings')::text as table`, "objects");
+    }));
+    expect(settings).toEqual([{ table: null }]);
+    expect(yield* provided(trustedApproval(ORGANIZATION, null))).toEqual({ ok: true, approval: "required" });
   }));
 
 it.live("the dashboard's writes never ask", () =>
@@ -366,17 +364,14 @@ const recorded = [
 ];
 
 for (const { state, leave, reachesStore, answers } of recorded) {
-  for (const asking of [true, false]) {
-    it.live(`a retry naming ${state} answers the same with asking ${asking ? "on" : "off"}`, () =>
-      Effect.gen(function* () {
-        const shop = yield* shopRemovingWeb();
-        const id = yield* leave(shop);
-        yield* shop.provided(setOrganizationSettings(shop.caller, { organizationSlug: "shop", askBeforeDestructive: asking }));
-        const writes = vi.spyOn(shop.store, "write");
-        expect(yield* shop.cli(publish, id)).toMatchObject(answers(id));
-        expect(writes.mock.calls.length > 0).toBe(reachesStore);
-      }));
-  }
+  it.live(`a retry naming ${state} answers the same`, () =>
+    Effect.gen(function* () {
+      const shop = yield* shopRemovingWeb();
+      const id = yield* leave(shop);
+      const writes = vi.spyOn(shop.store, "write");
+      expect(yield* shop.cli(publish, id)).toMatchObject(answers(id));
+      expect(writes.mock.calls.length > 0).toBe(reachesStore);
+    }));
 }
 
 const MACHINE = "a".repeat(32);
@@ -425,14 +420,6 @@ it.live("an operation that destroys nothing runs without asking", () =>
   Effect.gen(function* () {
     const { gate, rows } = yield* operationCloud();
     expect(yield* gate({ ...drainOf(["shop.web"]), effects: [] })).toEqual({ ok: true, approvalId: null });
-    expect(yield* rows).toEqual([]);
-  }));
-
-it.live("an Organization that doesn't ask runs a destructive operation without recording an approval", () =>
-  Effect.gen(function* () {
-    const { provided, userId, gate, rows } = yield* operationCloud();
-    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
-    expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
     expect(yield* rows).toEqual([]);
   }));
 
@@ -581,22 +568,19 @@ it("a removal that resets the Server and one that keeps its data are different a
 });
 
 for (const verb of ["remove", "drain", "clean"] as const) {
-  for (const asking of [true, false]) {
-    for (const reason of ["declined", "cancelled"]) {
-      it.live(`a ${reason} ${verb} refuses its named retry with asking ${asking ? "on" : "off"}, even once it destroys nothing`, () =>
-        Effect.gen(function* () {
-          const { provided, caller, gate, rows } = yield* operationCloud();
-          const plan = { ...drainOf(["shop.web"]), verb };
-          const asked = refusedWith(yield* gate(plan));
-          yield* provided(decideApproval(caller, asked.approval_id, { reject: { reason } }, answers(asked.approval)));
-          yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: asking }));
+  for (const reason of ["declined", "cancelled"]) {
+    it.live(`a ${reason} ${verb} refuses its named retry, even once it destroys nothing`, () =>
+      Effect.gen(function* () {
+        const { provided, caller, gate, rows } = yield* operationCloud();
+        const plan = { ...drainOf(["shop.web"]), verb };
+        const asked = refusedWith(yield* gate(plan));
+        yield* provided(decideApproval(caller, asked.approval_id, { reject: { reason } }, answers(asked.approval)));
 
-          const denied = { ok: false, refusal: { code: "approval_denied", message: `A human denied the request to ${verb} fra-1: ${reason}` } };
-          expect(yield* gate(plan, asked.approval_id)).toMatchObject(denied);
-          expect(yield* gate({ ...plan, effects: [] }, asked.approval_id)).toMatchObject(denied);
-          expect(yield* rows).toEqual([{ id: asked.approval_id, status: "denied", subject: `server:${MACHINE}` }]);
-        }));
-    }
+        const denied = { ok: false, refusal: { code: "approval_denied", message: `A human denied the request to ${verb} fra-1: ${reason}` } };
+        expect(yield* gate(plan, asked.approval_id)).toMatchObject(denied);
+        expect(yield* gate({ ...plan, effects: [] }, asked.approval_id)).toMatchObject(denied);
+        expect(yield* rows).toEqual([{ id: asked.approval_id, status: "denied", subject: `server:${MACHINE}` }]);
+      }));
   }
 }
 
@@ -613,13 +597,12 @@ it.live("a named approval no human denied lets an operation that destroys nothin
     expect(yield* gate(emptied, crypto.randomUUID())).toMatchObject({ ok: false, refusal: { code: "invalid_argument" } });
   }));
 
-it.live("a pending approval named with asking off still waits on the human", () =>
+it.live("a pending approval still waits on the human whether a retry names it or not", () =>
   Effect.gen(function* () {
-    const { provided, caller, gate, rows } = yield* operationCloud();
+    const { gate, rows } = yield* operationCloud();
     const waiting = refusedWith(yield* gate(drainOf(["shop.web"])));
-    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
     expect(refusedWith(yield* gate(drainOf(["shop.web"]), waiting.approval_id)).approval_id).toBe(waiting.approval_id);
-    expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
+    expect(refusedWith(yield* gate(drainOf(["shop.web"]))).approval_id).toBe(waiting.approval_id);
     expect(yield* rows).toEqual([{ id: waiting.approval_id, status: "pending", subject: `server:${MACHINE}` }]);
   }));
 

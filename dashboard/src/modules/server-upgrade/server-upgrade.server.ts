@@ -8,7 +8,8 @@ import type { Actor } from "#/modules/identity/actor";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
+import { createCliServerUpgradeRequestedEvent, createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
@@ -422,9 +423,9 @@ const UNCLAIMED = "";
 
 /**
  * `server upgrade` from the signed-in CLI: one Server, along the Organization's Release Channel. A `channel` other than
- * the Organization's refuses `channel_mismatch` naming it.
+ * the Organization's refuses `channel_mismatch` naming it. A running attempt on the Server answers for this request.
  */
-export const requestCliServerUpgrade = Effect.fn("ServerUpgrade.requestCli")(function* (
+export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
   input: { readonly machineId: string; readonly channel: string | undefined },
 ) {
@@ -450,25 +451,22 @@ export const requestCliServerUpgrade = Effect.fn("ServerUpgrade.requestCli")(fun
     .orderBy(desc(serverUpgradeAttempt.startedAt))
     .limit(1);
   if (running !== undefined && !outlivedObservation(running.startedAt, Date.now())) {
-    return { ok: true, id: running.attemptId } as const;
+    return () => Effect.succeed({ ok: true, id: running.attemptId } as const);
   }
   const unavailable = (message: string) =>
     ({ ok: false, refusal: { code: "unavailable", message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
   const fromVersion = yield* observeUpgradeableServer(caller.organizationId, input.machineId).pipe(Effect.option);
   if (fromVersion._tag === "None") return unavailable("Your servers aren't answering. Try again once they are.");
   if (fromVersion.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
-  const request = {
-    organizationId: caller.organizationId,
-    machineId: input.machineId,
-    trigger: "manual",
-    userId: caller.userId,
-    attemptId: mintAttemptId(),
-  } as const;
-  yield* recordUpgradeAttempt({ request, attemptId: request.attemptId, channel, fromVersion: fromVersion.value, inngestRunId: UNCLAIMED });
-  yield* sendInngestEvent(createServerUpgradeRequestedEvent(request)).pipe(
-    Effect.tapError(() => dropUpgradeAttempt(caller.organizationId, request.attemptId)),
-  );
-  return { ok: true, id: request.attemptId } as const;
+  const from = fromVersion.value;
+  return (attempt: string) => Effect.gen(function* () {
+    // SAFETY: an attempt is a UUID; without its dashes it is 32 lowercase hex digits, the daemon's attempt ID form.
+    const attemptId = attempt.replaceAll("-", "") as MachineUpgradeAttemptId;
+    const request = { organizationId: caller.organizationId, machineId: input.machineId, trigger: "manual", userId: caller.userId, attemptId } as const;
+    yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED });
+    yield* enqueueEvent(createCliServerUpgradeRequestedEvent(request));
+    return { ok: true, id: attemptId } as const;
+  });
 });
 
 export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function* (organizationId: string, attemptId: string) {

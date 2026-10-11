@@ -7,8 +7,8 @@ use std::path::Path;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
-    OrganizationId, ProjectName, Publish, Published, RemovalsQuery, SealingKey, Tell, Trusted,
-    View, VolumeObservation, Written,
+    OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey,
+    Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -191,7 +191,9 @@ impl<'m> Store<'m> {
     /// Publish Working State. Locally this CLI observes Volume loss; Cloud gathers its own evidence.
     pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => self.observe(&publish.environment, false)?,
+            Backend::Local(..) => {
+                self.observe(std::slice::from_ref(&publish.environment), false)?
+            }
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -208,10 +210,13 @@ impl<'m> Store<'m> {
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
         let volumes = match (&self.backend, admit) {
             (Backend::Local(..), Admit::Deploy(deploy)) if deploy.services.is_empty() => {
-                self.observe(&deploy.environment, false)?
+                self.observe(std::slice::from_ref(&deploy.environment), false)?
             }
             (Backend::Local(..), Admit::Remove(removal)) => {
-                self.observe(&removal.environment, true)?
+                self.observe(std::slice::from_ref(&removal.environment), true)?
+            }
+            (Backend::Local(..), Admit::ShutDown(shut_down)) => {
+                self.observe(std::slice::from_ref(&shut_down.environment), true)?
             }
             _ => None,
         };
@@ -224,25 +229,58 @@ impl<'m> Store<'m> {
         )
     }
 
+    /// Remove an Environment or a Project. The in-process Store reviews Volume loss
+    /// against what this CLI observes of `members`' Volumes.
+    pub(crate) fn remove(
+        &self,
+        remove: &Remove,
+        members: &[EnvironmentRef],
+    ) -> Result<Removal, StoreCallError> {
+        let volumes = match &self.backend {
+            Backend::Local(..) => self.observe(members, true)?,
+            Backend::Cloud(..) => None,
+        };
+        self.approved(
+            remove,
+            &Trusted {
+                volumes,
+                ..Trusted::default()
+            },
+        )
+    }
+
+    /// Move every removal on in the in-process Store, as Cloud's sweep does there.
+    pub(crate) fn sweep(&self) -> Result<(), StoreCallError> {
+        match &self.backend {
+            Backend::Local(store, who) => sweep(store, who).map_err(StoreCallError::Refused),
+            Backend::Cloud(..) => Ok(()),
+        }
+    }
+
     /// Which Servers hold the data of the Volumes a Deploy (or a removal: `remove`)
-    /// deletes. A Cluster this can't reach leaves the evidence out, so the Store refuses.
+    /// of `environments` deletes. A Cluster this can't reach leaves the evidence out,
+    /// so the Store refuses.
     fn observe(
         &self,
-        environment: &EnvironmentRef,
+        environments: &[EnvironmentRef],
         remove: bool,
     ) -> Result<Option<VolumeObservation>, StoreCallError> {
-        let removals = self.backend.read(&RemovalsQuery {
-            environment: environment.clone(),
-            remove,
-        })?;
-        if removals.volumes.is_empty() {
+        let mut sought = Vec::new();
+        for environment in environments {
+            let removals = self.backend.read(&RemovalsQuery {
+                environment: environment.clone(),
+                remove,
+            })?;
+            sought.extend(
+                removals
+                    .volumes
+                    .into_iter()
+                    .map(|volume| volume.docker_volume),
+            );
+        }
+        if sought.is_empty() {
             return Ok(None);
         }
-        let sought = removals
-            .volumes
-            .into_iter()
-            .map(|volume| volume.docker_volume)
-            .collect();
         // Publish takes no `--context`; it reaches the Cluster `--connect` or the current context names.
         let context = self
             .matches
@@ -326,14 +364,12 @@ impl<'m> Store<'m> {
             } if error.code == RpcErrorCode::ConfirmationRequired => {
                 let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
                 let carried = self.carried();
-                let accept = error
-                    .details
-                    .get("accept")
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(text)
-                    .collect();
+                let mut accept: Vec<String> = Vec::new();
+                for name in accepted_names(error.details.get("accept")) {
+                    if !accept.contains(&name) {
+                        accept.push(name);
+                    }
+                }
                 let version = error.details.get("version").and_then(text);
                 let retry = self.retry(Carried {
                     accept,
@@ -396,6 +432,39 @@ impl<'m> Store<'m> {
     }
 }
 
+/// The Volume names a refusal's `accept` lists: flat, or by Environment.
+fn accepted_names(accept: Option<&serde_json::Value>) -> Vec<String> {
+    let names = |list: &serde_json::Value| {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|name| name.as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    match accept {
+        Some(serde_json::Value::Object(by_environment)) => {
+            by_environment.values().flat_map(names).collect()
+        }
+        Some(list) => names(list),
+        None => Vec::new(),
+    }
+}
+
+fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::RpcError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
+    store
+        .system(
+            &who.organization,
+            &SystemEvent::Sweep(Sweep { now }),
+            &Trusted::default(),
+        )
+        .map(drop)
+}
+
 struct Carried {
     accept: Vec<String>,
     version: Option<String>,
@@ -431,7 +500,10 @@ pub(crate) fn local_mode() -> bool {
 
 /// The Store as seen with the CLI config at `config` (where a device's sign-in lives).
 pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
-    if let Ok(url) = std::env::var(env::STORE) {
+    if let Some(url) = std::env::var_os(env::STORE) {
+        let Some(url) = url.to_str() else {
+            return Err(Error::usage("PLOYZ_STORE must be valid Unicode"));
+        };
         let actor = Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"));
         // The hidden test mode keeps its sealing key beside its database.
         let key = match url
@@ -442,10 +514,10 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
             None => config.with_file_name("store.key"),
         };
         let key = SealingKey::from_file(&key)?;
-        return Ok(Some(Backend::Local(
-            std::sync::Arc::new(ConfigStore::open(&url, key)?),
-            actor,
-        )));
+        let store = ConfigStore::open(url, key)?;
+        // Cloud sweeps on a clock; the in-process Store sweeps as each command starts.
+        sweep(&store, &actor).map_err(StoreCallError::Refused)?;
+        return Ok(Some(Backend::Local(std::sync::Arc::new(store), actor)));
     }
     let credentials = CredentialStore::beside(config);
     let runtime = runtime()?;
@@ -552,6 +624,67 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
     format!("{start}… ({length} chars)")
 }
 
+/// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
+/// one line per domain, `web.domains: added shop`, never as the field storing it.
+pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
+    let Some(domains) = ployz_store::DomainChange::of(row) else {
+        return vec![format!(
+            "{}: {} → {}",
+            row.path,
+            shown(&row.before),
+            shown(&row.after)
+        )];
+    };
+    let service = row.path.split('.').next().unwrap_or_default();
+    domains
+        .iter()
+        .map(|domain| format!("{service}.domains: {domain}"))
+        .collect()
+}
+
+/// A Setting's value as `get` and `inspect` show it, marked when it is the default
+/// and followed by the default when it is not: `3 (default 1)`.
+pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
+    let value = plain(&row.value);
+    if row.value == row.default {
+        format!("{value} (default)")
+    } else if row.default.is_null() {
+        value
+    } else {
+        format!("{value} (default {})", plain(&row.default))
+    }
+}
+
+/// A value on one line: text unquoted, nothing as `-`.
+pub(crate) fn plain(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.escape_debug().to_string(),
+        serde_json::Value::Null => "-".to_owned(),
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Array(_)
+        | serde_json::Value::Object(_) => value.to_string(),
+    }
+}
+
+/// A Service's domains on one line, `shop.acme.ployz.app, app.example.com (port 3000)`,
+/// or `-` when it has none.
+pub(crate) fn domain_list(domains: &[ployz_store::DomainRow], service: &str) -> String {
+    let listed: Vec<String> = domains
+        .iter()
+        .filter(|row| row.domain.service.as_str() == service)
+        .map(|row| match row.domain.port {
+            Some(port) => format!("{} (port {port})", row.domain.shown()),
+            None => row.domain.shown().to_owned(),
+        })
+        .collect();
+    if listed.is_empty() {
+        "-".to_owned()
+    } else {
+        listed.join(", ")
+    }
+}
+
 /// Argument `arg`, a Service name. Core's name error quotes the value; a rejected
 /// value is never echoed.
 pub(crate) fn service_name(
@@ -623,6 +756,25 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_staged_domain_change_reads_as_a_domain() {
+        let row: ployz_core::config::ServiceSettingChange = serde_json::from_value(serde_json::json!({
+            "path": "web.managedHostnames", "kind": "update", "canRestore": false,
+            "before": [{ "prefix": "web", "targetPort": null }],
+            "after": [{ "prefix": "web", "targetPort": null }, { "prefix": "shop", "targetPort": null }],
+        }))
+        .unwrap();
+        assert_eq!(changed(&row), ["web.domains: added shop"]);
+        let route: ployz_core::config::ServiceSettingChange =
+            serde_json::from_value(serde_json::json!({
+                "path": "web.routes.r1", "kind": "remove", "canRestore": false,
+                "before": { "id": "r1", "hostname": "app.example.com", "targetPort": null },
+                "after": null,
+            }))
+            .unwrap();
+        assert_eq!(changed(&route), ["web.domains: removed app.example.com"]);
+    }
 
     #[test]
     fn a_long_value_shows_its_start_and_length() {

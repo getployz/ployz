@@ -3,13 +3,30 @@ title: The Ployz agent
 description: Ask the agent in the dashboard about your app, have it deploy for you, and approve what it would remove.
 ---
 
-The Ployz agent lives on the right edge of every organization page. Ask it about your projects,
-deployments and servers, or ask it to change something and deploy. Before a deploy removes
+The Ployz agent lives on the right edge of every organization page. Ask it about your projects
+and deployments, or ask it to change something and deploy. Before a deploy removes
 anything, it stops and asks you.
 
-The agent can create projects, environments, services from a GitHub repository,
-[configs](../services/configs.md) and domains, and set variables. Ask it to deploy a repository, like "deploy acme/web", and it reads the repository's
-files to work out how to build and start your app, then sets it up and deploys it.
+The agent works in the project and environment you're looking at, unless you name another. It
+can add and change services, [configs](../services/configs.md), volumes and domains, review
+what's staged, publish and deploy. It can also read your GitHub repositories and work on your
+servers. It doesn't create projects or environments, and it can't read a service's logs yet.
+
+## What it can do on your servers
+
+The agent asks your servers and Cloud directly, so its answers are as fresh as the servers that
+replied. It can:
+
+- Show a server, a service's containers, and where each volume's copies live
+  (**server show**, **service status**, **volume show**).
+- Restart, start or stop a service (**service restart**, **service start**, **service stop**).
+- Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
+  **server clean**, **server remove**).
+- Mirror a volume to another server, refresh that mirror, move a volume, release it, or remove a
+  mirror (**volume mirror**, **volume move**, **volume release**, **volume mirror remove**). To
+  refresh a mirror, ask for a **volume mirror** to the same server again.
+- Read a connected GitHub repository, or tell you how to connect one (**github ls**,
+  **github connect**).
 
 ## Talk to the agent
 
@@ -23,14 +40,19 @@ The panel's header names your organization and, on an environment's pages, the e
 (like `production`). Your conversation is kept for this organization, so it's still there
 after you reload or come back later. Closing the panel keeps the conversation.
 
-Each thing the agent runs shows as a short line under its reply, named like the CLI command it
-matches. When it deploys or publishes, that line becomes a card with the deployment's status,
-like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
+Each thing the agent runs shows as a short line under its reply, named for what it does, like
+**environment show**. When it deploys or publishes, that line becomes a card with the
+deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
+When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
+name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
+went to see where it got to.
 
 ## Approve or deny a removal
 
 When a deploy or publish would remove a running service, delete a volume, detach a volume from a
-service or remove a domain, the agent stops and shows a card. The card leads with what would be
+service or remove a domain, the agent stops and shows a card. It does the same before it removes
+a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
+command that deletes data. The card leads with what would be
 destroyed. Everything else the change does is folded under a count, like **2 other changes**;
 click it to see them.
 
@@ -58,12 +80,13 @@ server, like **Remove fra-1**.
   "publish, accepting the volume loss", and only in the same project and environment.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
+  Restarting, starting or stopping a service never asks, and neither does upgrading a server.
+- **One at a time.** The agent runs at most one command that might ask per reply, so you never
+  get two cards for one message.
 - **You approve one plan.** If the change moves on before you answer, the card says the plan
   changed, and the agent asks again about the new one.
-- **Turning off asking.** With **Ask before destructive actions** off in
-  [Organization → General](organizations.md#ask-before-destructive-actions), the agent deploys
-  new removals without stopping. A card already waiting still waits for your answer, and a card
-  whose plan changed still asks again about the new one.
+- **Asking is always on.** No setting turns it off. See
+  [Destructive actions ask first](organizations.md#destructive-actions-ask-first).
 - **Answer anywhere.** An approval is the same in every tab and on every device. Answer it once
   and every other card for it updates. If you answer a card someone already answered, it says the
   approval was already decided elsewhere, and how.

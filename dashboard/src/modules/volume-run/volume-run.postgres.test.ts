@@ -23,6 +23,8 @@ import {
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
+import type { Caller } from "#/modules/identity/actor";
+import { runVolume } from "#/modules/operations/operations.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -266,7 +268,7 @@ describe("volume runs", () => {
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
     await harness.pool.query(`
-      truncate table organization, "user" cascade;
+      truncate table organization, "user", operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
       insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
     `);
@@ -286,13 +288,13 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", inngest_run_id: "run-1", lease: "1", message: null, finished_at: expect.any(Date) }]);
     });
 
-    it("a request whose event can't be sent ends not_started, and frees the Volume", async () => {
+    it("a request whose event can't be sent stays requested, with its event left for the sweep", async () => {
       send.mockRejectedValueOnce(new Error("Inngest is down"));
       const run = await requested({ kind: "sync", args: { full: false } });
 
-      expect(run.state).toBe("not_started");
-      expect(await rows()).toMatchObject([{ state: "not_started", finished_at: expect.any(Date) }]);
-      expect((await request({ kind: "sync", args: { full: false } })).ok).toBe(true);
+      expect(run.state).toBe("requested");
+      expect((await harness.pool.query("select event_id, sent_at from operation_outbox")).rows)
+        .toEqual([{ event_id: `volume-run-${run.id}`, sent_at: null }]);
     });
 
     it("rerun_from_step_refused: a rerun under a new run id stops at its first effect step", async () => {
@@ -848,6 +850,46 @@ describe("volume runs", () => {
 
       expect(verbs).toEqual([]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
+    });
+  });
+
+  describe("admission", () => {
+    const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" } };
+    const run = (input: VolumeRunInput) => runEffect(runVolume(caller, { volumeId, environment, ...input }, { key: null, approvalId: null }));
+
+    it("a Mirror Remove of the last copy asks first, names the copy it deletes, and writes no run", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: null, lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null },
+      ];
+
+      const admitted = await run({ kind: "delete_mirror", args: { slot: null, confirmed_name: "data" } });
+
+      expect(admitted).toMatchObject({
+        ok: false,
+        refusal: { code: "approval_required", details: { effects: [{ kind: "deletes_volume", node: `${idOf("fsn-2")}/${dockerVolume}` }] } },
+      });
+      expect(await rows()).toEqual([]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a Release after HandOver refuses as a conflict that names where the Move continues", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: sourceCopy("handed"), lease: null },
+        { name: "fsn-2", pool: true, copy: slotCopy("30", "handed_in"), lease: null },
+      ];
+
+      const admitted = await run({ kind: "release", args: {} });
+
+      expect(admitted).toEqual({
+        ok: false,
+        refusal: {
+          code: "conflict",
+          message: "data is handed to fsn-2; volume move data --to fsn-2 again continues from there",
+          details: { move_to: "fsn-2" },
+        },
+      });
+      expect(await rows()).toEqual([]);
     });
   });
 

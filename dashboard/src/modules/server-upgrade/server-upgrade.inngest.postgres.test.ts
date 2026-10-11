@@ -18,10 +18,11 @@ import { createCancelServerUpgrade, createRollOutServerUpgrade, createScheduleSe
 import {
   listLatestServerUpgrades,
   readCliServerUpgrade,
-  requestCliServerUpgrade,
+  planCliServerUpgrade,
   requestServerUpgrade,
   setServerUpgradeSettings,
 } from "#/modules/server-upgrade/server-upgrade.server";
+import { admitOperation } from "#/modules/operations/keyed.server";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -149,7 +150,7 @@ describe("roll-out-server-upgrade", () => {
     publishedBeta = null;
     send.mockClear();
     await harness.pool.query(`
-      truncate table organization, "user" cascade;
+      truncate table organization, "user", operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
       insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
       insert into member (id, organization_id, user_id, role, created_at)
@@ -592,14 +593,18 @@ describe("roll-out-server-upgrade", () => {
   });
 
   describe("`server upgrade` from the CLI", () => {
-    const requestCli = () => runEffect(requestCliServerUpgrade({ organizationId, userId }, { machineId, channel: undefined }));
+    const requestCli = (key: string | null = null) => runEffect(admitOperation(
+      organizationId,
+      { tool: "server_upgrade", key, body: { machineId } },
+      planCliServerUpgrade({ organizationId, userId }, { machineId, channel: undefined }),
+    ));
     const readCli = (attemptId: string) => runEffect(readCliServerUpgrade(organizationId, attemptId));
     const rollOutSent = () => {
       const [event] = send.mock.lastCall ?? [];
       return rollOutRequested((event as { data: ServerUpgradeRequestedEventData }).data);
     };
-    const requested = async () => {
-      const answer = await requestCli();
+    const requested = async (key: string | null = null) => {
+      const answer = await requestCli(key);
       if (!answer.ok) throw new Error(answer.refusal.message);
       return answer.id;
     };
@@ -657,11 +662,24 @@ describe("roll-out-server-upgrade", () => {
       expect(await requested()).not.toBe(stale);
     });
 
-    it("drops its attempt when the event can't be sent", async () => {
+    it("keeps its attempt and leaves its event for the sweep when the send fails", async () => {
       send.mockRejectedValueOnce(new Error("Inngest is down"));
 
-      await expect(requestCli()).rejects.toThrow();
-      expect(await rows()).toEqual([]);
+      const id = await requested();
+      expect(await readCli(id)).toEqual({ state: "running" });
+      const outbox = await harness.pool.query("select event_id, sent_at from operation_outbox");
+      expect(outbox.rows).toEqual([{ event_id: `server-upgrade-${id}`, sent_at: null }]);
+    });
+
+    it("answers a replayed request key with its first attempt, even after that attempt ended, and sends nothing new", async () => {
+      const id = await requested("lost-reply-1");
+      await rollOutSent();
+      expect(await readCli(id)).toMatchObject({ state: "finished", outcome: "succeeded" });
+
+      expect(await requested("lost-reply-1")).toBe(id);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(requests).toHaveLength(1);
+      expect((await rows()).map((row) => row.attempt_id)).toEqual([id]);
     });
   });
 

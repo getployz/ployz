@@ -1,4 +1,4 @@
-import type { ConfigWritten } from "@ployz/sdk";
+import type { ConfigWritten, ToolResult } from "@ployz/sdk";
 import { defineInterrupt } from "@tanstack/ai/client";
 import { Schema } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract.ts";
@@ -15,7 +15,7 @@ const portable = <S extends Schema.ConstraintDecoder<object>>(schema: S, json: J
 };
 
 /**
- * A gated Publish or Deploy waiting on a human, keyed by its tool call id. The payload names the pending Approval;
+ * A gated write waiting on a human, keyed by its tool call id. The payload names the pending Approval;
  * the sidebar draws the card from that row, never from the payload, and the server re-reads the row on resume
  * rather than trusting the client's empty response.
  */
@@ -37,7 +37,8 @@ export const approvalInterrupt = defineInterrupt({
 export type ToolOutcome<T = unknown> =
   | { ok: true; value: T; nothing_destroyed?: true }
   | { ok: false; refusal: StoreRefusal }
-  | { ok: false; cancelled: true };
+  | { ok: false; cancelled: true }
+  | ToolResult;
 
 export type DeployOutcome = ToolOutcome<Extract<ConfigWritten, { written: "deployment" }>>;
 

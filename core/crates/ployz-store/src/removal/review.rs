@@ -11,7 +11,7 @@
 //! deletes only those.
 
 use ployz_core::config::SavedEnvironmentIntent;
-use ployz_core::{DockerVolumeId, DockerVolumeName, Namespace, RpcError};
+use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, Namespace, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -94,52 +94,21 @@ pub(crate) fn review(
     observed: Option<&VolumeObservation>,
     accepted: &[VolumeName],
 ) -> Result<Vec<VolumeLoss>, RpcError> {
-    let names = || {
-        removed
-            .iter()
-            .map(|volume| &volume.name)
-            .collect::<Vec<_>>()
-    };
-    if let Some(unknown) = accepted.iter().find(|name| !names().contains(name)) {
+    let names: Vec<VolumeName> = removed.iter().map(|volume| volume.name.clone()).collect();
+    if let Some(unknown) = accepted.iter().find(|name| !names.contains(name)) {
         return Err(error::invalid(
             format!("This deletes no Volume named {unknown}"),
-            json!({ "valid_children": names() }),
+            json!({ "valid_children": names }),
         ));
     }
-    if removed.is_empty() {
-        return Ok(Vec::new());
-    }
-    let Some(observed) = observed.filter(|observed| {
-        removed
-            .iter()
-            .all(|volume| observed.sought.contains(&volume.docker_volume))
-    }) else {
-        return Err(error::unobserved(
-            "This removes deployed Volumes, and the Servers weren't checked for their data, \
-             so it refuses. Try again once the Servers can be reached",
-            json!({ "volumes": names() }),
-        ));
-    };
-    if !observed.unanswered.is_empty() {
+    let (losses, unanswered) = held(removed, observed)?;
+    if !unanswered.is_empty() {
         return Err(error::unobserved(
             "This removes deployed Volumes, and some Servers didn't answer whether they hold \
              their data, so it refuses. Try again once they answer",
-            json!({ "volumes": names(), "unanswered": observed.unanswered }),
+            json!({ "volumes": names, "unanswered": unanswered }),
         ));
     }
-    let losses: Vec<VolumeLoss> = removed
-        .into_iter()
-        .map(|volume| {
-            let mut deletes: Vec<DockerVolumeId> = observed
-                .held
-                .iter()
-                .filter(|held| held.name == volume.docker_volume)
-                .cloned()
-                .collect();
-            deletes.sort_by_key(ToString::to_string);
-            VolumeLoss { deletes, volume }
-        })
-        .collect();
     let lost: Vec<&VolumeLoss> = losses
         .iter()
         .filter(|loss| !loss.deletes.is_empty())
@@ -169,9 +138,45 @@ pub(crate) fn review(
     ))
 }
 
+/// Each of `removed` with the Docker Volumes the Servers hold of it, and the
+/// Servers that didn't answer. Refuses `unavailable` when nobody looked for one.
+pub(crate) fn held(
+    removed: Vec<RemovedVolume>,
+    observed: Option<&VolumeObservation>,
+) -> Result<(Vec<VolumeLoss>, Vec<MachineId>), RpcError> {
+    if removed.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let Some(observed) = observed.filter(|observed| {
+        removed
+            .iter()
+            .all(|volume| observed.sought.contains(&volume.docker_volume))
+    }) else {
+        return Err(error::unobserved(
+            "This removes deployed Volumes, and the Servers weren't checked for their data, \
+             so it refuses. Try again once the Servers can be reached",
+            json!({ "volumes": removed.iter().map(|volume| &volume.name).collect::<Vec<_>>() }),
+        ));
+    };
+    let losses = removed
+        .into_iter()
+        .map(|volume| {
+            let mut deletes: Vec<DockerVolumeId> = observed
+                .held
+                .iter()
+                .filter(|held| held.name == volume.docker_volume)
+                .cloned()
+                .collect();
+            deletes.sort_by_key(ToString::to_string);
+            VolumeLoss { deletes, volume }
+        })
+        .collect();
+    Ok((losses, observed.unanswered.clone()))
+}
+
 /// What a confirmation to delete `lost` binds: who, where, and each Docker Volume
 /// on each Server.
-fn digest(who: &Actor, environment: &EnvironmentId, lost: &[&VolumeLoss]) -> String {
+pub(crate) fn digest(who: &Actor, environment: &EnvironmentId, lost: &[&VolumeLoss]) -> String {
     let bound = json!({
         "organization": who.organization,
         "environment": environment,

@@ -184,10 +184,16 @@ pub(crate) fn reviewed_version() -> Arg {
         .help("Refuse unless this is still the reviewed version; a data-loss refusal names it")
 }
 
-/// A review's version is `REVISION:SAVED:TOKEN`, and a data-loss refusal's adds `:DIGEST`.
+/// A review's version is `REVISION:SAVED:TOKEN`, and a data-loss refusal's adds
+/// `:DIGEST`. A Project removal's is `PROJECT:DIGEST`.
 fn review_version(version: &str) -> Result<String, &'static str> {
     let parts: Vec<&str> = version.split(':').collect();
     match parts.as_slice() {
+        [project, digest]
+            if !digest.is_empty() && ployz_store::ProjectId::parse(*project).is_ok() =>
+        {
+            Ok(version.to_owned())
+        }
         [revision, saved, rest @ ..]
             if !rest.is_empty()
                 && revision.parse::<u64>().is_ok()
@@ -222,10 +228,18 @@ fn completion() -> Command {
 mod tests {
     #[test]
     fn expect_version_takes_a_review_or_refusal_version_only() {
-        for good in ["3:1:0.1", "3:0:0.12:ab12cd"] {
+        let project = "9a79b1a9-3c26-40dc-8cd0-3e5567c6daca:3764cac4355a8215";
+        for good in ["3:1:0.1", "3:0:0.12:ab12cd", project] {
             assert_eq!(super::review_version(good).as_deref(), Ok(good));
         }
-        for bad in ["garbage", "3:1", "3:1:", "x:1:0.1", "3:1:0.1:"] {
+        for bad in [
+            "garbage",
+            "3:1",
+            "3:1:",
+            "x:1:0.1",
+            "3:1:0.1:",
+            "shop:ab12cd",
+        ] {
             assert!(super::review_version(bad).is_err(), "{bad}");
         }
     }

@@ -30,7 +30,7 @@ export const simulated = (adapter: AnyTextAdapter, persona: Persona): Member => 
     open: async () => persona.opening,
     reply: async (said) => {
       messages.push({ role: "user", content: said });
-      const reply = await chat({ adapter, messages, systemPrompts: [brief(persona)], modelOptions: { temperature: 1 }, stream: false });
+      const { text: reply } = await chat({ adapter, messages, systemPrompts: [brief(persona)], modelOptions: { temperature: 1 }, stream: false });
       if (reply.includes(STOP)) return null;
       messages.push({ role: "assistant", content: reply });
       return reply;

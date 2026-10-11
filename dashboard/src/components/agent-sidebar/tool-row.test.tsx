@@ -66,6 +66,15 @@ it("gives a denial's reason, and a refusal's message", async () => {
   expect(screen.getByText("No service named api.")).toBeTruthy();
 });
 
+it("draws a Cloud run the agent started by its state and name", async () => {
+  const run = { at: "shop/production", run: "restart web", state: "done", reason: null, servers: [], kept: [], unanswered: [], next: { tool: "service_status", input: { service: "web" } } };
+  const outcome = toolOutcome(call("service_restart", { ok: true, value: run }), undefined);
+  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="service_restart" outcome={outcome} done />);
+  expect(screen.getByText("Done")).toBeTruthy();
+  expect(screen.getByText("restart web")).toBeTruthy();
+  expect(screen.getByText("shop/production")).toBeTruthy();
+});
+
 it("names any other call by its command", async () => {
   const outcome = toolOutcome(call("project_ls", [{ name: "shop" }]), undefined);
   await show(() => <ToolRow organizationSlug="acme" scope={scope} name="project_ls" outcome={outcome} done />);

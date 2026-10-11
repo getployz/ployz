@@ -156,4 +156,10 @@ another under **Default environment** in **Settings → Project**.
 You can't delete one that still has branches, or the default environment until you make another
 one the default.
 
+Deleting returns at once. The environment stays listed until every server that ran it has taken it
+off, and then it's gone. A server that's offline holds its part until it answers or you remove the
+server, and Ployz names the server it waits on. A volume whose copies Ployz couldn't all check is
+deleted only if you chose to delete every copy. Then a mirror of it made after the delete started
+goes too.
+
 **Next:** [give every pull request its own copy of your app](preview-environments.md).

@@ -181,3 +181,41 @@ async fn a_launch_or_initial_report_failure_settles_all_started_builds_and_keeps
         ["web", "worker"]
     );
 }
+
+#[test]
+fn a_failed_log_is_scrubbed_of_secret_and_machine_only_values_and_keeps_plain_ones() {
+    use ployz_store::tools::{LineCap, LogExcerpt, LogText, Withheld};
+    let web = ServiceName::parse("web").unwrap();
+    let env: BTreeMap<String, String> = [
+        ("DB_PASSWORD", "hunter2-long"),
+        ("LOG_LEVEL", "debug-verbose"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect();
+    let scrub = Scrub {
+        env: BTreeMap::from([(web.clone(), env.clone())]),
+        secret: BTreeMap::from([(web.clone(), ["DB_PASSWORD".to_owned()].into())]),
+    };
+    let mut machine = env;
+    machine.insert("IMAGE_ONLY".into(), "image-value-x".into());
+    let mut secrets = scrub.secrets(&web);
+    secrets.add_machine_env(Some(&machine));
+    let line = "login hunter2-long at debug-verbose via image-value-x\n".to_owned();
+    let LogText::Shown(excerpt) = LogExcerpt::scrub([line.clone()], &secrets, LineCap::default())
+    else {
+        panic!("a lowered Service has secret context");
+    };
+    assert_eq!(
+        excerpt.lines(),
+        ["login [secret DB_PASSWORD] at debug-verbose via [secret IMAGE_ONLY]"]
+    );
+    let mut unknown = scrub.secrets(&ServiceName::parse("api").unwrap());
+    unknown.add_machine_env(Some(&machine));
+    assert_eq!(
+        LogExcerpt::scrub([line], &unknown, LineCap::default()),
+        LogText::Withheld {
+            why: Withheld::NoSecretContext
+        }
+    );
+}

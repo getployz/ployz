@@ -384,6 +384,30 @@ async fn node_store_seams_refuse_malformed_input() {
 }
 
 #[tokio::test]
+async fn node_agent_asks_the_servers() {
+    let description = advertised_description();
+    let session = UnixSession::start().await;
+    let service = DiscoveryService::new(description.clone());
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(super::listing_container(
+            '1',
+            'a',
+            "web",
+            ployz_core::ContainerKind::ServiceContainer,
+            ployz_core::ContainerRuntimeObservation::Running {
+                health: ployz_core::HealthObservation::Healthy,
+            },
+        ));
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    session
+        .assert_sdk_script("node_agent.js", description.machine_id, &[])
+        .await;
+}
+
+#[tokio::test]
 async fn node_configs_round_trip_through_the_store() {
     UnixSession::start()
         .await

@@ -134,6 +134,22 @@ class Client {
     return withRpcError(this._inner.updateMachine(machine, update));
   }
 
+  agentAsk(query) {
+    return withRpcError(this._inner.agentAsk(query));
+  }
+
+  observeService(namespace, service) {
+    return withRpcError(this._inner.observeService(namespace, service));
+  }
+
+  stopContainer(machine, container) {
+    return withRpcError(this._inner.stopContainer(machine, container));
+  }
+
+  startContainer(machine, container) {
+    return withRpcError(this._inner.startContainer(machine, container));
+  }
+
   inspectContainer(machine, container) {
     return withRpcError(this._inner.inspectContainer(machine, container));
   }
@@ -374,6 +390,16 @@ module.exports = {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
   ployzVersion: () => native.ployzVersion(),
+  agentTools: () => native.agentTools(),
+  agentStart: (tool, input, place, callKey) => {
+    try { return native.agentStart(tool, input, place, callKey); } catch (error) { throwRpcError(error); }
+  },
+  agentResume: (state, answers) => {
+    try { return native.agentResume(state, answers); } catch (error) { throwRpcError(error); }
+  },
+  agentCloudCall: (call) => {
+    try { return native.agentCloudCall(call); } catch (error) { throwRpcError(error); }
+  },
   connect,
   Client,
   RpcError,

@@ -4,7 +4,7 @@
 use super::*;
 use crate::branch::{Guard, Move, NamedRow, SyncChanges, Synced, SyncedWhen, Take, Taken};
 use crate::id::SyncId;
-use crate::{SealingKey, deployment, teardown};
+use crate::{SealingKey, deployment};
 use ployz_core::config::redact_environment_intent;
 
 /// Sync a PR Environment's picked rows into one of its Destinations at the merge,
@@ -135,16 +135,7 @@ fn ready(tx: &mut dyn Tx, from: &Environment, pr: &PullRequest) -> Result<(), Rp
             json!({}),
         ));
     }
-    if pull_request::closing(tx, &from.summary.id)? {
-        return Err(error::conflict(
-            format!("{} is closing", from.summary.name),
-            json!({}),
-        ));
-    }
-    if let Some(removal) = teardown::removing(tx, &from.summary.id)? {
-        return Err(teardown::being_removed(from, &removal));
-    }
-    Ok(())
+    crate::removal::marked(tx, from)
 }
 
 /// Stage the picked hints (omitted: every one) of a landed Conditional Sync in its

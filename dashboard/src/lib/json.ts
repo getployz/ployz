@@ -74,3 +74,13 @@ export function projectJsonValue<T>(value: T): JsonValue | undefined {
   if (Option.isSome(primitive)) return primitive.value;
   return asRecord(value) ?? undefined;
 }
+
+/** `value` as JSON with every object's keys sorted, so equal values serialize alike. */
+export function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value instanceof Object) {
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}

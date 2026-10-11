@@ -48,7 +48,7 @@ pub enum DestructiveKind {
 }
 
 impl DestructiveEffect {
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         let name = &self.name;
         match self.kind {
             DestructiveKind::RemovesService => format!("remove Service {name}"),

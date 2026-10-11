@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Option } from "effect";
-import { volumeLoss } from "./store-volumes";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
@@ -19,7 +18,7 @@ import { Database } from "#/server/database.server";
 /** The check Ployz posts on a PR Environment's pull request. It never blocks a deploy; GitHub may require it to merge. */
 const PR_CHECK_NAME = "Ployz · ready to merge";
 
-/** What an observation left Cloud to do: runs to dispatch, Branches to take off the Servers, a check to publish. */
+/** What an observation left Cloud to do: runs to dispatch, Environments due to come off the Servers, a check to publish. */
 export type StoreOutcome = {
   deployments: ConfigDeploymentAdmittedEventData[];
   closing: { organizationId: string; environment: EnvironmentSummary }[];
@@ -93,27 +92,22 @@ export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
 });
 
 /**
- * Take each Branch the Store is closing off the Servers, admitted like any removal (and so handed to the worker): the
- * system closes it, so it accepts every Volume loss the Store asks about, bound to the version the Store gave. Resolves
- * to the removals admitted. One that can't be admitted now (a Deployment still running, Servers not answering) waits for
- * the next sweep.
+ * Take each Environment whose removal is due off the Servers, admitted like any Deployment (and so handed to the
+ * worker). Consent was given when the removal was asked for, so admitting asks for nothing more. Resolves to the
+ * removals admitted. One that can't be admitted now (a Deployment still running, Servers not answering) waits for the
+ * next sweep.
  */
 export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(function* (closing: StoreOutcome["closing"]) {
   const removals: string[] = [];
   for (const { organizationId, environment: summary } of closing) {
     const environment = { project: summary.project, environment: summary.name };
-    const admit = (accept: string[], version: string | null) => callStore(organizationId, null, {
+    const admitted = yield* callStore(organizationId, null, {
       operation: "write",
-      command: { command: "admit", admit: "remove", id: crypto.randomUUID(), environment, version, accept_volume_loss: accept },
-    });
-    const admitted = yield* Effect.gen(function* () {
-      const first = yield* admit([], null);
-      const asked = first.ok ? null : volumeLoss(first.refusal);
-      return asked ? yield* admit([...asked.accept], asked.version) : first;
+      command: { command: "admit", admit: "remove", id: crypto.randomUUID(), environment },
     }).pipe(Effect.option);
     const result = Option.getOrUndefined(admitted);
     if (result?.ok && result.value.written === "deployment") removals.push(result.value.id);
-    else yield* Effect.logWarning("A closing Branch's removal was not admitted; the next sweep retries it.", { organizationId, environment, result });
+    else yield* Effect.logWarning("A due removal was not admitted; the next sweep retries it.", { organizationId, environment, result });
   }
   return removals;
 });

@@ -42,7 +42,7 @@ type Outcome = {
 
 const restart = (server: string, container: string, stops = 1) =>
   ({ [`${server} stop_container ${container}`]: stops, [`${server} start_container ${container}`]: 1 });
-const removeTrial: ConfigCommand = { command: "remove_project", project: "trial" };
+const removeTrial: ConfigCommand = { command: "remove", project: "trial" };
 const trialGone = (everyCopy: ReadonlyArray<string>) => [turn("trial is deleted.", [call("project_remove", { project: "trial", every_copy: [...everyCopy] })])];
 const web3Waits = turn("trial's db has a copy on web-3, which did not answer. Bring web-3 back, or give up its copy with server_remove web-3.");
 const logs = (...lines: ReadonlyArray<string>) => [turn("Here are web's recent logs.",

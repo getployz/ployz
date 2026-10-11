@@ -322,3 +322,17 @@ pub(crate) fn page(
     });
     Ok((page, next))
 }
+
+/// The Servers Deployment `id` failed on, by name, sorted.
+pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
+    let stored = load(tx, id)?;
+    let mut servers: Vec<String> = super::rows::of_nodes(tx, &stored)?
+        .into_values()
+        .flatten()
+        .filter(|row| matches!(row.state, super::RowState::Failed { .. }))
+        .map(|row| row.server)
+        .collect();
+    servers.sort();
+    servers.dedup();
+    Ok(servers)
+}

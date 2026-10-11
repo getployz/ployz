@@ -36,8 +36,6 @@ pub(crate) mod volume;
 use catalog::{Approval::*, Runnable, cloud, internal, local};
 
 #[doc(hidden)]
-pub use catalog::commands_json;
-#[doc(hidden)]
 pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
@@ -529,7 +527,7 @@ mod tests {
                     service: QualifiedService::system_ingress(),
                     machine: failed,
                     server: "same-name".into(),
-                    lines: Vec::new(),
+                    log: None,
                 }],
                 ..Default::default()
             })

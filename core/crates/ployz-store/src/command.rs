@@ -12,7 +12,7 @@ pub use crate::config_item::{
     AttachConfig, ConfigFileSummary, ConfigMountAt, ConfigStaged, ConfigSummary, CreateConfig,
     DeleteConfig, DetachConfig, PutConfigFile, RemoveConfigFile, RenameConfig,
 };
-pub use crate::deployment::admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
+pub use crate::deployment::admit::{Admit, AdmitRemoval, Cancel, Deploy, Retry, ShutDown, Start};
 pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
     RenameProject,
@@ -249,7 +249,7 @@ commands! {
         => crate::deployment::start(tx, who, &c.deployment);
     /// Cancel a queued or running Deployment.
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
-        => crate::deployment::cancel(tx, who, &c.deployment);
+        => crate::removal::cancel(tx, who, &c.deployment);
     /// Give a Service a generated or custom public domain.
     AddDomain(crate::AddDomain) -> DomainAdded(crate::DomainAdded)
         => crate::domain::add_domain(tx, who, c, trusted);
@@ -291,14 +291,12 @@ commands! {
     /// Set the Setup Commands a Branch of an Environment runs once it is made.
     SetBranchSetup(crate::SetBranchSetup) -> BranchSetup(crate::EnvironmentsView)
         => crate::branch::set_branch_setup(tx, who, c);
-    /// Delete an Environment nothing of which runs on the Servers.
-    RemoveEnvironment(crate::RemoveEnvironment)
-        -> EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>)
-        => crate::teardown::remove(tx, who, c);
-    /// Delete a Project nothing of which runs on the Servers.
-    RemoveProject(crate::RemoveProject)
-        -> ProjectRemoved(crate::Teardown<crate::ProjectRemoved>)
-        => crate::teardown::remove_project(tx, who, c);
+    /// Remove an Environment or a Project: off the Servers, then out of the Store.
+    Remove(crate::Remove) -> Removal(crate::Removal)
+        => crate::removal::remove(tx, who, c, trusted);
+    /// Stop removing an Environment or a Project.
+    CancelRemoval(crate::CancelRemoval) -> RemovalCancelled(crate::RemovalCancelled)
+        => crate::removal::cancel_removal(tx, who, c);
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
         => crate::pull_request::set_plan(tx, who, c);
@@ -513,8 +511,8 @@ impl Written {
             | Self::BuildOrder(_)
             | Self::DefaultEnvironment(_)
             | Self::BranchSetup(_)
-            | Self::EnvironmentRemoved(_)
-            | Self::ProjectRemoved(_)
+            | Self::Removal(_)
+            | Self::RemovalCancelled(_)
             | Self::PrPlans(_) => None,
         }
     }
@@ -588,10 +586,10 @@ pub enum Written {
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.
     BranchSetup(crate::EnvironmentsView),
-    /// An Environment was deleted.
-    EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>),
-    /// A Project was deleted.
-    ProjectRemoved(crate::Teardown<crate::ProjectRemoved>),
+    /// Where a removal stands.
+    Removal(crate::Removal),
+    /// A removal stopped.
+    RemovalCancelled(crate::RemovalCancelled),
     /// A PR plan changed: the Project's PR plans after it.
     PrPlans(crate::PrPlansView),
     /// What each command of a Batch did.

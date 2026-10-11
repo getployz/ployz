@@ -19,7 +19,9 @@ const raw = asTestDouble<ConfigCommand>();
 
 /** Which removals query, if any, gathering evidence for `command` asks the Store. */
 const asked = (command: JsonObject) => Effect.gen(function* () {
-  const read = vi.fn(async (_query: ConfigQuery) => ({ view: "removals", volumes: [] }));
+  const read = vi.fn(async (query: ConfigQuery) => query.query === "environments"
+    ? { view: "environments", environments: [{ name: "production" }, { name: "staging" }] }
+    : { view: "removals", volumes: [] });
   const evidence = yield* gatherVolumeEvidence(ORGANIZATION, { operation: "write", command: raw(command) }, asTestDouble<StoreRead>()(read));
   expect(evidence).toBeUndefined();
   return read.mock.calls.map(([query]) => query);
@@ -40,6 +42,18 @@ it.live("a Publish gathers what the Servers hold of the Volumes it removes, as a
     expect(yield* gathered({ command: "admit", admit: "deploy", environment: staging, services: [] })).toEqual(removals(staging, false));
     expect(yield* gathered({ command: "admit", admit: "remove", environment: staging })).toEqual(removals(staging, true));
     expect(yield* gathered({ command: "admit", admit: "deploy", environment: staging, services: ["web"] })).toEqual([]);
+  }));
+
+it.live("a removal gathers for each Environment it takes off, and a shutdown for its own", () =>
+  Effect.gen(function* () {
+    const services = yield* cloud();
+    const gathered = (command: JsonObject) => asked(command).pipe(Effect.provide(services));
+    const removing = (environment: string) => ({ query: "removals", environment: { project: "shop", environment }, remove: true });
+
+    expect(yield* gathered({ command: "remove", project: "shop", environment: "staging" })).toEqual([removing("staging")]);
+    expect(yield* gathered({ command: "remove", project: "shop" }))
+      .toEqual([{ query: "environments", project: "shop" }, removing("production"), removing("staging")]);
+    expect(yield* gathered({ command: "admit", admit: "shut_down", environment: staging })).toEqual([removing("staging")]);
   }));
 
 it.live("a Publish naming no Environment gathers for the default one, and a malformed one gathers nothing", () =>

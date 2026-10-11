@@ -2,10 +2,13 @@
 //! Every change is staged in Working State until a Deploy ships it.
 
 use clap::{ArgMatches, Command};
+use ployz_core::config::ReviewLifecycleKind;
 use ployz_store::{
-    CreateGitService, CreateService, RemoveService, RenameService, ServiceLineageId, ServiceQuery,
-    ServiceStaged, ServicesQuery,
+    CreateGitService, CreateService, DomainRow, DomainsQuery, EnvironmentQuery, RemoveService,
+    RenameService, ServiceLineageId, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
+    SettingPath, SettingRow,
 };
+use serde::Serialize;
 
 use super::super::store::{self, Next};
 use super::super::{Error, leaf_matches};
@@ -119,14 +122,37 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// Show one Service: its identity, Settings and staged changes.
+/// Show one Service: its identity, every Setting with its default, its domains and
+/// staged changes.
 pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let query = ServiceQuery {
-        environment: store::environment(matches)?,
-        service: service_name(matches, "service")?,
+    let environment = store::environment(matches)?;
+    let name = service_name(matches, "service")?;
+    let store = store::store(root)?;
+    let view = store.read(&ServiceQuery {
+        environment: environment.clone(),
+        service: name.clone(),
+    })?;
+    // A Service staged for removal is gone from Working State: it shows what is
+    // deployed, with no Settings or domains left to edit.
+    let (settings, domains) = if view.service.change == Some(ReviewLifecycleKind::Delete) {
+        (Vec::new(), Vec::new())
+    } else {
+        let settings = store
+            .read(&EnvironmentQuery {
+                environment: environment.clone(),
+                path: Some(SettingPath::parse(name.as_str())?),
+                all: false,
+            })?
+            .settings;
+        let domains = store
+            .read(&DomainsQuery {
+                environment,
+                service: Some(name),
+            })?
+            .domains;
+        (settings, domains)
     };
-    let view = store::store(root)?.read(&query)?;
     let service = &view.service.service;
     let mut record = Fields::new()
         .field("service", &service.name)
@@ -135,21 +161,37 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     if let Some(change) = &view.service.change {
         record.push("next deploy", store::word(change));
     }
-    for (setting, value) in &view.values {
-        record.push(setting.to_string(), value);
+    let prefix = format!("{}.", service.name);
+    for row in &settings {
+        let path = row.path.to_string();
+        let setting = path.strip_prefix(&prefix).unwrap_or(&path).to_owned();
+        record.push(setting, store::valued(row));
     }
+    record.push(
+        "domains",
+        store::domain_list(&domains, service.name.as_str()),
+    );
     for change in &view.changes {
-        record.push(
-            "staged",
-            format_args!(
-                "{}: {} → {}",
-                change.path,
-                store::shown(&change.before),
-                store::shown(&change.after)
-            ),
-        );
+        for line in store::changed(change) {
+            record.push("staged", line);
+        }
     }
-    crate::ui::fields(&view, &record)
+    let inspected = Inspected {
+        view: &view,
+        settings: &settings,
+        domains: &domains,
+    };
+    crate::ui::fields(&inspected, &record)
+}
+
+/// `service inspect`'s result: the Service, every Setting with its default, and its
+/// domains.
+#[derive(Serialize)]
+struct Inspected<'view> {
+    #[serde(flatten)]
+    view: &'view ServiceView,
+    settings: &'view [SettingRow],
+    domains: &'view [DomainRow],
 }
 
 /// Rename a Service in Working State.

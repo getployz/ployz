@@ -1,13 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { DeploymentStatus } from "@ployz/sdk";
+import type { DeploymentStatus, RunState } from "@ployz/sdk";
 import type { ToolCallPart, ToolResultPart } from "@tanstack/ai-client";
 import { Option, Schema } from "effect";
 import { CircleCheckIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
-import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel } from "#/modules/config-store/store-deployments";
+import { type DeploymentLight, deploymentStatusIcons, deploymentStatusLabel, deploysLabel } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
 import { formatDuration } from "#/utils/relative-time";
@@ -30,6 +30,24 @@ const Deployed = Schema.Struct({
   }),
   nothing_destroyed: Schema.optional(Schema.Literal(true)),
 });
+const RUN_STATES = {
+  accepted: { light: "queued", label: "Queued" },
+  running: { light: "deploying", label: "Running" },
+  done: { light: "deployed", label: "Done" },
+  failed: { light: "failed", label: "Failed" },
+  unknown: { light: "unknown", label: "Unknown" },
+  superseded: { light: "cancelled", label: "Superseded" },
+} as const satisfies Record<RunState, { light: DeploymentLight; label: string }>;
+
+const Ran = Schema.Struct({
+  ok: Schema.Literal(true),
+  value: Schema.Struct({
+    at: Schema.String,
+    run: Schema.String,
+    state: Schema.Literals(["accepted", "running", "done", "failed", "unknown", "superseded"] satisfies readonly RunState[]),
+  }),
+});
+const isRan = Schema.is(Ran);
 const Refused = Schema.Struct({
   ok: Schema.Literal(false),
   refusal: Schema.Struct({
@@ -39,9 +57,10 @@ const Refused = Schema.Struct({
   }),
 });
 const Cancelled = Schema.Struct({ ok: Schema.Literal(false), cancelled: Schema.Literal(true) });
-const Outcome = Schema.Union([Deployed, Refused, Cancelled]);
+const Outcome = Schema.Union([Deployed, Ran, Refused, Cancelled]);
 type Outcome = typeof Outcome.Type;
 type Deployment = typeof Deployed.Type["value"];
+type Run = typeof Ran.Type["value"];
 
 /** A tool's answer as the sidebar draws it: the call's own output, or the result part's JSON text after a reload. */
 export function toolOutcome(call: ToolCallPart, result: ToolResultPart | undefined): Option.Option<Outcome> {
@@ -51,7 +70,7 @@ export function toolOutcome(call: ToolCallPart, result: ToolResultPart | undefin
 }
 
 /**
- * One tool call, compact: a Deployment it started as a Run card, a denial with its reason, a refusal with its message,
+ * One tool call, compact: a Deployment or a Cloud run it started as a Run card, a denial with its reason, a refusal with its message,
  * anything else as its command.
  */
 export function ToolRow({ organizationSlug, scope, name, outcome, done }: {
@@ -71,6 +90,7 @@ export function ToolRow({ organizationSlug, scope, name, outcome, done }: {
     );
   }
   const answer = outcome.value;
+  if (isRan(answer)) return <OperationCard run={answer.value} />;
   if ("value" in answer) {
     return (
       <div className="flex flex-col gap-1">
@@ -112,6 +132,17 @@ export function RunCard({ organizationSlug, scope, deployment }: { organizationS
         {deploysLabel(shown) && <span className="text-muted-foreground"> · {deploysLabel(shown)}</span>}
       </span>
       {ran && <span className="text-muted-foreground tabular-nums">{ran}</span>}
+    </div>
+  );
+}
+
+export function OperationCard({ run }: { run: Run }) {
+  const { light, label } = RUN_STATES[run.state];
+  return (
+    <div className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs [&_svg]:size-4 [&_svg]:shrink-0">
+      <DeploymentStatusIcon status={light} />
+      <span className="min-w-0 flex-1 truncate"><span className="font-medium">{label}</span>{" · "}<span>{run.run}</span></span>
+      <span className="text-muted-foreground">{run.at}</span>
     </div>
   );
 }

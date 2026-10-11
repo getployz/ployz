@@ -8,6 +8,7 @@ export type RefusalCode =
   | "no_writer"
   | "two_writers"
   | "volume_switching"
+  | "handed"
   | "stale_slot"
   | "second_mirror"
   | "invalid"
@@ -18,7 +19,8 @@ export type RefusalCode =
 /** Where a Move continues from the copies it finds; every step after `handover` is past the point of no return. */
 export type MoveStart = "rounds" | "handover" | "accept" | "promote" | "start" | "close" | "undo";
 
-export type Refusal = { readonly code: RefusalCode; readonly message: string };
+/** `to` names the Server a handed-over Volume went to, where a Move continues. */
+export type Refusal = { readonly code: RefusalCode; readonly message: string; readonly to?: string };
 
 export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly declare: boolean } }
@@ -165,7 +167,10 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     const holder = guid === null ? undefined : answered.find((member) => member !== source && holds(member, guid));
     const handedTo = (server: string) => `${name} is handed to ${server}; volume move ${name} --to ${server} again continues from there`;
     if (input.kind === "release") {
-      if (roleOf(source) === "handed") return refuse("volume_switching", holder === undefined ? `${name} is handed off` : handedTo(holder.machine.name));
+      if (roleOf(source) === "handed") {
+        if (holder === undefined) return refuse("handed", `${name} is handed off`);
+        return { ok: false, refusal: { code: "handed", message: handedTo(holder.machine.name), to: holder.machine.name } };
+      }
       return { ok: true, phase: { kind: "release", source, mirror: holder ?? mirrors.find(isFinal) ?? null, thaw: true } };
     }
     if (input.kind === "move") {

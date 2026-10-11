@@ -12,3 +12,5 @@ export * from "#/modules/server-upgrade/tables";
 export * from "#/modules/volume-run/tables";
 export * from "#/modules/approvals/tables";
 export * from "#/modules/agent/tables";
+export * from "#/modules/operations/tables";
+export * from "#/modules/service-act/tables";

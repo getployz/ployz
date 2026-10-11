@@ -135,11 +135,13 @@ export const requestMachineRemoveAttempt = Effect.fn(
   confirmDataLoss: DataLossIdentity[];
   noReset?: boolean;
   approvalId?: string | null;
+  id?: string;
 }) {
   const { drizzle } = yield* Database;
   const [attempt] = yield* drizzle
     .insert(schemaMachineRemoveAttempt)
     .values({
+      id: input.id,
       organizationId: input.organizationId,
       requestedByUserId: input.requestedByUserId,
       machineId: input.machineId,
@@ -186,19 +188,27 @@ export const machineRemoveAttemptConsuming = Effect.fn(
   return attempt?.id ?? null;
 });
 
-export const abandonPendingMachineRemoveAttempt = Effect.fn(
-  "MachineRemovalRepository.abandonPending",
-)(function* (attemptId: string) {
+/**
+ * Marks the run's one ask of the Server to leave, right before it goes. False when it went already: a retry then
+ * can't know what the Server did, so it never asks again.
+ */
+export const markMachineRemoveSent = Effect.fn(
+  "MachineRemovalRepository.markSent",
+)(function* (input: { attemptId: string; inngestRunId: string }) {
   const { drizzle } = yield* Database;
-  yield* drizzle
-    .delete(schemaMachineRemoveAttempt)
+  const marked = yield* drizzle
+    .update(schemaMachineRemoveAttempt)
+    .set({ removeSentAt: new Date() })
     .where(
       and(
-        eq(schemaMachineRemoveAttempt.id, attemptId),
-        eq(schemaMachineRemoveAttempt.state, "pending"),
-        isNull(schemaMachineRemoveAttempt.inngestRunId),
+        eq(schemaMachineRemoveAttempt.id, input.attemptId),
+        eq(schemaMachineRemoveAttempt.state, "running"),
+        eq(schemaMachineRemoveAttempt.inngestRunId, input.inngestRunId),
+        isNull(schemaMachineRemoveAttempt.removeSentAt),
       ),
-    );
+    )
+    .returning({ id: schemaMachineRemoveAttempt.id });
+  return marked.length > 0;
 });
 
 export const claimMachineRemoveAttempt = Effect.fn(

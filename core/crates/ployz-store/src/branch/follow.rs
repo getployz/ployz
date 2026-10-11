@@ -41,8 +41,9 @@ pub(crate) fn follow(
     lineages: &BTreeSet<String>,
 ) -> Result<(), RpcError> {
     let branches = tx.query(
-        "SELECT environment_id, organization_id FROM config_environment_branch \
-         WHERE parent_id = ?1 AND closing = 0 ORDER BY environment_id",
+        "SELECT environment_id, organization_id FROM config_environment_branch b \
+         WHERE parent_id = ?1 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
+         WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY environment_id",
         &[parent.as_str().into()],
     )?;
     if branches.is_empty() || lineages.is_empty() {
@@ -51,7 +52,13 @@ pub(crate) fn follow(
     let parent = scope::load_by_id(tx, parent)?;
     for row in &branches {
         let branch = row.parse::<EnvironmentId>(0, "Branch")?;
-        if crate::teardown::removing(tx, &branch)?.is_some() {
+        let shut_down = crate::removal::latest(tx, &branch)?.is_some_and(|removal| {
+            !matches!(
+                removal.status,
+                crate::DeploymentStatus::Failed | crate::DeploymentStatus::Cancelled
+            )
+        });
+        if shut_down || crate::removal::mark::naming(tx, &branch)?.is_some() {
             continue;
         }
         let who = Actor::system(row.parse(1, "Branch")?);

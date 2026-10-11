@@ -53,8 +53,7 @@ ployz login --wait
 
 ## 4. Add the Ployz tools
 
-`ployz mcp` serves the Cloud commands as MCP tools. Register it with the agent you are running
-in:
+`ployz mcp` serves the Ployz tools over MCP. Register it with the agent you are running in:
 
 ```sh
 claude mcp add -s user ployz -- ployz mcp

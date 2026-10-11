@@ -26,16 +26,16 @@ const asking = (said: string, history: ModelMessage[]) => stubScript([...history
 
 describe("the scripted model accepting Volume loss", () => {
   it("retries the refused Publish in its own Project and Environment at the version the Store named", () => {
-    const history = exchange("publish", { project: "shop", env: "staging" }, loss("9:1:0.1:abc"));
+    const history = exchange("publish", { project: "shop", environment: "staging" }, loss("9:1:0.1:abc"));
     expect(asking("publish, accepting the volume loss", history)).toEqual({ calls: [{ tool: "publish", input: {
-      project: "shop", env: "staging", accept_volume_loss: ["data"], version: "9:1:0.1:abc",
+      project: "shop", environment: "staging", accept_volume_loss: ["data"], version: "9:1:0.1:abc",
     } }] });
   });
 
-  it("retries a Deploy with expect_version, not version", () => {
+  it("retries a Deploy at the version the Store named", () => {
     const history = exchange("deploy", {}, loss("4:2:0.1:def"));
     expect(asking("deploy, accepting the volume loss", history)).toEqual({ calls: [{ tool: "deploy", input: {
-      accept_volume_loss: ["data"], expect_version: "4:2:0.1:def",
+      accept_volume_loss: ["data"], version: "4:2:0.1:def",
     } }] });
   });
 
@@ -45,19 +45,19 @@ describe("the scripted model accepting Volume loss", () => {
       ...exchange("deploy", {}, loss("9:1:0.1:deploy")),
     ];
     expect(asking("publish, accepting the volume loss", history)).toMatchObject({ calls: [{ tool: "publish", input: { version: "9:1:0.1:publish" } }] });
-    expect(asking("deploy, accepting the volume loss", history)).toMatchObject({ calls: [{ tool: "deploy", input: { expect_version: "9:1:0.1:deploy" } }] });
+    expect(asking("deploy, accepting the volume loss", history)).toMatchObject({ calls: [{ tool: "deploy", input: { version: "9:1:0.1:deploy" } }] });
   });
 
   it("keeps each Environment's refusal to that Environment", () => {
     const history = [
-      ...exchange("publish", { env: "staging" }, loss("1:1:0.1:staging")),
-      ...exchange("publish", { env: "production" }, loss("2:1:0.1:production")),
+      ...exchange("publish", { environment: "staging" }, loss("1:1:0.1:staging")),
+      ...exchange("publish", { environment: "production" }, loss("2:1:0.1:production")),
     ];
-    expect(asking("publish --env staging, accepting the volume loss", history))
-      .toMatchObject({ calls: [{ tool: "publish", input: { env: "staging", version: "1:1:0.1:staging" } }] });
+    expect(asking("publish --environment staging, accepting the volume loss", history))
+      .toMatchObject({ calls: [{ tool: "publish", input: { environment: "staging", version: "1:1:0.1:staging" } }] });
     expect(asking("publish, accepting the volume loss", history))
-      .toMatchObject({ calls: [{ tool: "publish", input: { env: "production", version: "2:1:0.1:production" } }] });
-    expect(asking("publish --env preview, accepting the volume loss", history)).toHaveProperty("text");
+      .toMatchObject({ calls: [{ tool: "publish", input: { environment: "production", version: "2:1:0.1:production" } }] });
+    expect(asking("publish --environment preview, accepting the volume loss", history)).toHaveProperty("text");
   });
 
   it("revives no refusal past a denial or a cancellation, or one a later result of that action answered", () => {

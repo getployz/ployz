@@ -55,7 +55,9 @@ badges what won't move: **Skipped** when no project owns it, which draining leav
 and **Stays** when the last drain left it because its data is on the server. Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts and is healthy before the old container is removed.
-Pre-deploy commands don't run again, and nothing is deployed. Drains in one organization run one
+Pre-deploy commands don't run again, and nothing is deployed. If a global service runs on no other
+server, the drain would remove it, so it waits for your approval in the
+[Ployz agent](../account/agent-sidebar.md) panel first and starts once you approve. Drains in one organization run one
 at a time: a second one reads **Queued · Waiting on web-1**. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
 list as it leaves the server. You can leave the page while one runs.
@@ -81,8 +83,8 @@ reads **Drain again**. Turning services back on doesn't move anything back.
 
 From the CLI, `ployz server drain web-2` does the same and prints the report. If anything stayed or
 failed, it exits non-zero. When you're signed in, Ployz Cloud runs the drain, as it does for the
-button, and waits for approval first when your organization
-[asks before destructive actions](../account/organizations.md#ask-before-destructive-actions).
+button, and waits for approval first when a global service would run on no other server (see
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 The CLI stops waiting after 30 minutes and says so; the drain keeps running in Ployz Cloud. Add
 `--context` to drain from your computer instead.
 
@@ -201,8 +203,9 @@ any `ployz` command on the server starts Ployz again through it. Your services, 
 the private network and the server's place in the cluster keep running until the server reboots or
 you remove it.
 
-When your organization [asks before destructive actions](../account/organizations.md#ask-before-destructive-actions),
-`ployz server rm` waits for that approval before it removes the server. One approval removes the
+`ployz server rm` always waits for an approval (see
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first))
+before it removes the server. One approval removes the
 server once, and approving a removal that keeps the server's data doesn't approve one that resets it.
 
 Unlike `drain`, `upgrade` and `clean`, removing a server Ployz Cloud manages always goes through
@@ -229,8 +232,7 @@ ployz server clean --namespace my-app-staging --confirm my-app-staging
 When you're signed in, Ployz Cloud does the removal. You still type the name to confirm, and the
 confirmation names each volume as the approval does: by the services that used it and its server. Cloud
 refuses anything an environment owns, including one an environment took over while the removal
-waited, and it asks before it stops services or deletes volume data when your organization
-[asks before destructive actions](../account/organizations.md#ask-before-destructive-actions). The
+waited, and it asks before it stops services or deletes volume data (see [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)). The
 CLI stops waiting after 30 minutes and says so; the removal keeps running in Ployz Cloud. Add
 `--context` to clean up from your computer instead.
 

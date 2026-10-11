@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
@@ -64,14 +64,22 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   }
 });
 
+/** The Deployments a write admitted: one admitted or started, those an automation admitted, or a removal's first ones. */
+function admittedBy(written: ConfigWritten): DeploymentSummary[] {
+  switch (written.written) {
+    case "deployment": return [written];
+    case "automated": return written.admitted.map((auto) => auto.deployment);
+    case "removal": return written.removal === "removing" ? written.left.flatMap((left) => left.deployment ?? []) : [];
+    default: return [];
+  }
+}
+
 /**
- * The Deployments a write admitted, for Cloud's worker: one admitted or started, or those an automation admitted. A
- * removal with nothing on a Server applied at admission: no worker runs it.
+ * The Deployments a write admitted, for Cloud's worker. A removal with nothing on a Server applied at admission: no
+ * worker runs it.
  */
 export function admittedEvents(organizationId: string, written: ConfigWritten): ConfigDeploymentAdmittedEventData[] {
-  const summaries = written.written === "deployment" ? [written]
-    : written.written === "automated" ? written.admitted.map((auto) => auto.deployment) : [];
-  return summaries.filter((summary) => summary.status !== "applied")
+  return admittedBy(written).filter((summary) => summary.status !== "applied")
     .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id }));
 }
 
@@ -163,7 +171,8 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
   // An admission carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
-  const servers = call.operation === "write" && call.command.command === "admit" ? yield* countOrganizationMachines(organizationId) : undefined;
+  const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "remove");
+  const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
   if (servers !== undefined) trusted.servers = servers;
@@ -180,15 +189,15 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
   }
-  // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
-  if (command.command === "admit" || command.command === "start") {
+  // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked, as do a removal's first ones.
+  if (command.command === "admit" || command.command === "start" || command.command === "remove") {
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
-  // A closing Branch whose removal applied at admission (nothing on a Server) goes now: no worker will sweep after it.
-  if (command.command === "admit" && command.admit === "remove" && command.close === true
-    && written.written === "deployment" && written.status === "applied") {
-    yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
-  }
+  // A removal that applied at admission (nothing on a Server) is deleted by the next sweep, and admits what is due
+  // after it: no worker will ask for that sweep, so ask now.
+  const removed = written.written === "deployment" ? written.remove && written.status === "applied"
+    : written.written === "removal" && written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied");
+  if (removed) yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
   yield* requestChecks(organizationId, written.checks);
 });
 

@@ -1,3 +1,4 @@
+import { InngestTestEngine, mockCtx } from "@inngest/test";
 import type { ConfigCommand, ConfigStore, ConfigTrusted, EnvironmentRef } from "@ployz/sdk";
 import type { AnyTextAdapter, StreamChunk } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
@@ -7,7 +8,9 @@ import { vi } from "vitest";
 import { agentChat } from "#/modules/agent/agent-chat.server";
 import { agentPersistence } from "#/modules/agent/persistence.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmittedEvent, serviceActRequestedEvent } from "#/modules/inngest/events";
+import { createActService } from "#/modules/service-act/service-act.inngest";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import type { Caller } from "#/modules/identity/actor";
@@ -21,7 +24,7 @@ export const ORGANIZATION = "00000000-0000-4000-8000-0000000e7a01";
 const PROJECT = "00000000-0000-4000-8000-0000000e7a02";
 export const ENVIRONMENTS = ["production", "staging"] as const;
 export type EnvironmentName = (typeof ENVIRONMENTS)[number];
-const ENVIRONMENT_IDS = {
+export const ENVIRONMENT_IDS = {
   production: "00000000-0000-4000-8000-0000000e7a03",
   staging: "00000000-0000-4000-8000-0000000e7a04",
 } satisfies Record<EnvironmentName, string>;
@@ -67,12 +70,6 @@ const environmentCommands = (environment: EnvironmentName): ConfigCommand[] => {
   ];
 };
 
-/**
- * Organization acme with Project app: production and staging each run web (nginx:1.27, generated domain web), db
- * (postgres:17 on Volume pgdata) and worker (acme/worker). Staging's Deployments 1 to 3 applied its Saved revision and
- * Deployment 4 failed. Inngest records what Cloud would hand its worker, and a Deployment admitted later applies at once.
- * With `fleet`, Cloud reaches the fake fleet of machines.json, that scenario applied.
- */
 export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: FleetScenario) {
   const inngest = new Inngest({ id: "agent-eval" });
   const dispatched: unknown[] = [];
@@ -81,12 +78,21 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
     dispatched.push(payload);
     for (const event of [payload].flat()) {
       if (event.name === configDeploymentAdmittedEvent) await settle(event.data.deploymentId);
+      if (event.name === serviceActRequestedEvent) {
+        await new InngestTestEngine({
+          function: createActService(new Inngest({ id: "agent-eval-act" }), runEffect),
+          events: [event],
+          transformCtx: (ctx) => ({ ...mockCtx(ctx), runId: `run-${event.data.actId}` }),
+        }).execute();
+      }
     }
     return { ids: [] };
   });
   const fleet = scenario === undefined ? null : yield* startFleet(scenario);
   const services = yield* Layer.build(yield* storeTestCloud({ inngest, fleet }));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
+  // SAFETY: the fixture's services provide everything an Inngest function's effects need.
+  const runEffect = makeInngestEffectRunner(<A, E>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(provided(effect))) as typeof runInngestEffect;
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   yield* provided(enrollStoreServer(ORGANIZATION));
   yield* provided(Effect.gen(function* () {

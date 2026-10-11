@@ -7,7 +7,9 @@
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
 //! requestMachineUpgrade / inspectMachineUpgrade /
 //! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
-//! destroyCluster / close, and the Config Store's openConfigStore / read / write.
+//! destroyCluster / close, the Config Store's openConfigStore / read / write, and the
+//! agent tools' agentTools / agentStart / agentResume / agentAsk.
+pub mod agent;
 pub mod config_store;
 
 use napi::bindgen_prelude::*;

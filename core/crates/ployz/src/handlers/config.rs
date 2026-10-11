@@ -4,15 +4,19 @@
 //! (`--secret`) or an env file, and reads show it as `{"secret": true}`.
 //!
 //! `get` narrows by depth: the whole Environment shows what differs from a default
-//! (`--all` adds the rest), `get SERVICE` shows every Setting plus the `values`
-//! object that `set SERVICE --patch` takes back.
+//! (`--all` adds the rest), `get SERVICE` shows every Setting and its domains plus
+//! the `values` object that `set SERVICE --patch` takes back.
 
 use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use std::collections::BTreeSet;
+
 use ployz_store::{
-    Change, Edit, EnvironmentQuery, HoldSecret, Instead, PullRequestNumber, Revision, SettingPath,
+    Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView,
+    HoldSecret, Instead, NodeName, PullRequestNumber, Revision, SettingPath, SettingRow,
     TypedAddresses,
 };
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
@@ -105,35 +109,112 @@ pub(super) fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> 
 
 pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let query = EnvironmentQuery {
-        environment: environment(matches)?,
-        path: matches
-            .get_one::<String>("path")
-            .map(|path| SettingPath::parse(path))
-            .transpose()?,
-        all: matches.get_flag("all"),
+    let raw = matches.get_one::<String>("path");
+    let path = raw.map(|path| SettingPath::parse(path)).transpose()?;
+    let all = matches.get_flag("all");
+    let store = store(root)?;
+    let environment = environment(matches)?;
+    // Domains are no Setting: `get` reads them beside a Service's or the Environment's
+    // Settings, and never beside one Setting.
+    let (service, every) = match raw.map(|raw| NodeName::parse(raw)) {
+        None => (Some(None), all),
+        Some(Ok(NodeName::Service(service))) => (Some(Some(service)), true),
+        Some(_) => (None, false),
     };
-    let view = store(root)?.read(&query)?;
-    crate::ui::finish(&view, || {
+    let read = || -> Result<_, Error> {
+        let domains = service
+            .clone()
+            .map(|service| {
+                store.read(&DomainsQuery {
+                    environment: environment.clone(),
+                    service,
+                })
+            })
+            .transpose()?;
+        let view = store.read(&EnvironmentQuery {
+            environment: environment.clone(),
+            path: path.clone(),
+            all,
+        })?;
+        Ok((view, domains))
+    };
+    // Two reads: an edit between them would mix two revisions, so read again once.
+    let mut read_at = read()?;
+    if torn(&read_at) {
+        read_at = read()?;
+        if torn(&read_at) {
+            return Err(Error::conflict(
+                "Working State changed while get read it; run get again",
+            ));
+        }
+    }
+    let (view, domains) = read_at;
+    let domains = domains.map(|domains| domains.domains);
+    let lines = got(
+        &view.settings,
+        domains.as_deref().unwrap_or_default(),
+        every,
+    );
+    let got = Got {
+        view: &view,
+        domains: domains.as_deref(),
+    };
+    crate::ui::finish(&got, || {
         if view.settings.is_empty() {
             ui::note(format_args!(
                 "No Services in {}/{} yet.",
                 view.environment.project, view.environment.name
             ));
         }
-        for row in &view.settings {
-            let default = if row.value == row.default {
-                " (default)"
-            } else {
-                ""
-            };
-            crate::ui::stream(format_args!(
-                "{} = {}{default}",
-                row.path,
-                display_value(&row.value)
-            ));
+        for line in &lines {
+            crate::ui::stream(line);
         }
     })
+}
+
+/// Whether the domains were read at another revision than the Settings.
+fn torn((view, domains): &(EnvironmentView, Option<DomainsView>)) -> bool {
+    domains
+        .as_ref()
+        .is_some_and(|domains| domains.environment.revision != view.environment.revision)
+}
+
+/// `get`'s result: the Settings read, and the domains of the Services it covers;
+/// none when it read one Setting.
+#[derive(Serialize)]
+struct Got<'view> {
+    #[serde(flatten)]
+    view: &'view EnvironmentView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domains: Option<&'view [DomainRow]>,
+}
+
+/// Each Service's Settings, then its `SERVICE.domains` line. With `every`, a
+/// Service without domains still gets one, reading `-`.
+fn got(settings: &[SettingRow], domains: &[DomainRow], every: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut shown = BTreeSet::new();
+    for rows in settings.chunk_by(|one, next| one.path.node() == next.path.node()) {
+        lines.extend(
+            rows.iter()
+                .map(|row| format!("{} = {}", row.path, super::store::valued(row))),
+        );
+        if let Some(NodeName::Service(service)) = rows.first().map(|row| row.path.node()) {
+            let listed = super::store::domain_list(domains, service.as_str());
+            if every || listed != "-" {
+                lines.push(format!("{service}.domains = {listed}"));
+            }
+            shown.insert(service);
+        }
+    }
+    for row in domains {
+        let service = &row.domain.service;
+        if shown.insert(service.clone()) {
+            let listed = super::store::domain_list(domains, service.as_str());
+            lines.push(format!("{service}.domains = {listed}"));
+        }
+    }
+    lines
 }
 
 pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
@@ -483,18 +564,71 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
     }
 }
 
-/// A Setting value as a person reads it: escaped text, anything else as JSON.
-fn display_value(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.escape_debug().to_string(),
-        Value::Null => "-".to_owned(),
-        Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => value.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(path: &str, value: Value, default: Value) -> SettingRow {
+        serde_json::from_value(json!({
+            "path": path, "value": value, "default": default, "apply": "staged",
+        }))
+        .unwrap()
+    }
+
+    fn domain(service: &str, prefix: &str, port: Option<u16>) -> DomainRow {
+        serde_json::from_value(json!({
+            "service": service, "kind": "generated", "prefix": prefix,
+            "hostname": format!("{prefix}.acme.ployz.app"), "port": port,
+            "status": "ready", "reason": null, "action": null,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn get_marks_defaults_and_shows_domains_beside_their_service() {
+        let settings = [
+            row("web.replicas", json!(3), json!(1)),
+            row("web.restartPolicy", json!("always"), json!("always")),
+            row("volumes.data.name", json!("data"), Value::Null),
+            row("worker.replicas", json!(1), json!(1)),
+        ];
+        let domains = [
+            domain("web", "shop", Some(3000)),
+            domain("api", "api", None),
+        ];
+        assert_eq!(
+            got(&settings, &domains, true),
+            [
+                "web.replicas = 3 (default 1)",
+                "web.restartPolicy = always (default)",
+                "web.domains = shop.acme.ployz.app (port 3000)",
+                "volumes.data.name = data",
+                "worker.replicas = 1 (default)",
+                "worker.domains = -",
+                "api.domains = api.acme.ployz.app",
+            ]
+        );
+        let changed = got(&settings[3..], &[], false);
+        assert_eq!(changed, ["worker.replicas = 1 (default)"]);
+    }
+
+    #[test]
+    fn domains_read_at_another_revision_than_the_settings_are_torn() {
+        let at = |revision: u64| {
+            json!({
+                "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "project": "shop",
+                "name": "production", "revision": revision,
+            })
+        };
+        let view: EnvironmentView =
+            serde_json::from_value(json!({ "environment": at(3), "settings": [] })).unwrap();
+        let domains = |revision| -> DomainsView {
+            serde_json::from_value(json!({ "environment": at(revision), "domains": [] })).unwrap()
+        };
+        assert!(!torn(&(view.clone(), None)));
+        assert!(!torn(&(view.clone(), Some(domains(3)))));
+        assert!(torn(&(view, Some(domains(4)))));
+    }
 
     #[test]
     fn a_path_set_twice_is_named() {

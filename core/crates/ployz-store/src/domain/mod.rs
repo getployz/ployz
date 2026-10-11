@@ -25,8 +25,10 @@ use crate::settings::SettingPath;
 use crate::storage::Tx;
 use crate::{Actor, Trusted};
 
+mod change;
 mod status;
 
+pub use change::{DomainChange, DomainEdit};
 use status::row;
 
 /// What Cloud observed of the Organization's public traffic, passed in-process with a

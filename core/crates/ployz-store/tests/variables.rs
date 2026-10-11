@@ -397,6 +397,15 @@ fn claim_unseals(store: &ConfigStore, id: &DeploymentId) {
     let api = environment_of(&claimed, "api");
     assert_eq!(api["DATABASE_URL"], format!("postgres://{SECRET}@db/app"));
     assert_eq!(api["WEB"], "web.internal");
+    // The runner scrubs failed logs of exactly the values that are or reference a secret.
+    let secret_keys = |service: &str| {
+        claimed.secret_env[&ServiceName::parse(service).unwrap()]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(secret_keys("web"), ["PASSWORD"]);
+    assert_eq!(secret_keys("api"), ["DATABASE_URL"]);
     // A Service waits for the Services its variables reference.
     let api = ServiceName::parse("api").unwrap();
     assert_eq!(

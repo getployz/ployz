@@ -682,12 +682,9 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
                 super::store::word(&change.lifecycle)
             ));
             for row in &change.settings {
-                crate::ui::stream(format_args!(
-                    "  {}: {} → {}",
-                    row.path,
-                    super::store::shown(&row.before),
-                    super::store::shown(&row.after)
-                ));
+                for line in super::store::changed(row) {
+                    crate::ui::stream(format_args!("  {line}"));
+                }
             }
             super::review::restarts(change);
         }
@@ -857,25 +854,6 @@ fn refused<'a>(
 /// `ployz deployment show N` in this command's Project and Environment.
 pub(super) fn show_hint(matches: &ArgMatches, number: u64) -> String {
     next(matches, &["deployment", "show", &number.to_string()])
-}
-
-/// `ployz deployment show N` for Deployment `id` of `project`, in its own Environment.
-pub(super) fn show_hint_in(store: &Store, project: &str, id: &DeploymentId) -> String {
-    numbered(store, id).map_or_else(
-        || id_hint(id),
-        |(number, environment)| {
-            shell_words::join([
-                "ployz",
-                "deployment",
-                "show",
-                &number.to_string(),
-                "--project",
-                project,
-                "--env",
-                &environment,
-            ])
-        },
-    )
 }
 
 /// Deployment `id`'s number and Environment, when the Store can still say them.

@@ -1,4 +1,4 @@
-import type { ConfigStore, DrainReport, DrainScope } from "@ployz/sdk";
+import type { ConfigStore, DrainReport, DrainScope, RuntimeWatchView } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
@@ -23,12 +23,26 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const organizationId = "00000000-0000-4000-8000-000000000d01";
 const userId = "00000000-0000-4000-8000-000000000d02";
 const actor = { userId };
+const caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session" as const, id: "session-1" } };
 const machineId = "a".repeat(32);
 const otherMachineId = "b".repeat(32);
 const requestId = "00000000-0000-4000-8000-0000000000a1";
 const secondTab = "00000000-0000-4000-8000-0000000000a2";
 const web1 = { id: "1".repeat(32), name: "web-1" };
 const web2 = { id: machineId, name: "web-2" };
+
+/** The cluster a Drain plans from: web-2 runs one owned Service, which moves; nothing is destroyed. */
+const frameOf = (mode: "replicated" | "global") => asTestDouble<RuntimeWatchView>()({
+  machines: [{ machine: web1 }, { machine: web2 }, { machine: { id: otherMachineId, name: "web-3" } }],
+  services: [{
+    identity: "shop-production/api",
+    service_id: "api",
+    containers: [{
+      kind: "service_container", machine_id: machineId, runtime: { state: "running" }, created_at_unix_nanos: 1,
+      resolved_spec: { mode: { mode }, volumes: [], mounts: [] },
+    }],
+  }],
+});
 
 const inngest = new Inngest({ id: "server-drain-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -61,6 +75,8 @@ describe("drain-server", () => {
   /** What the Engine answers a Drain with. */
   let drainAnswer: () => Effect.Effect<DrainReport, PloyzSdkError>;
   let updates: unknown[][];
+  /** What the Engine shows Cloud of the cluster when a Drain plans. */
+  let frame: RuntimeWatchView;
 
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient | CloudStore>) =>
     harness.runEffect(operation.pipe(
@@ -78,12 +94,13 @@ describe("drain-server", () => {
             return drainAnswer();
           },
           updateMachine: (...args: unknown[]) => Effect.sync(() => void updates.push(args)),
+          watchFirstFrame: () => Effect.succeed(frame),
         }) }),
       }),
     ))) as typeof runInngestEffect;
 
   const request = (id = requestId, machine = machineId) =>
-    runEffect(requestServerDrain(actor, { organizationSlug: "acme", machineId: machine, requestId: id }));
+    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id }));
   /** One run of the Drain. The test engine mints a run ID per step execution; Inngest keeps one per run. */
   const drain = (attemptId = requestId, machine = machineId, runId = "run-drain") => new InngestTestEngine({
     function: createDrainServer(new Inngest({ id: "test" }), runEffect),
@@ -123,13 +140,14 @@ describe("drain-server", () => {
 
   beforeEach(async () => {
     namespaces = ["shop-production"];
+    frame = frameOf("replicated");
     drainCalls = [];
     drainAnswer = () => Effect.succeed(partialReport);
     updates = [];
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
     await harness.pool.query(`
-      truncate table organization, "user" cascade;
+      truncate table organization, "user", operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
       insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
       insert into member (id, organization_id, user_id, role, created_at)
@@ -143,48 +161,39 @@ describe("drain-server", () => {
       name: "server/drain.requested",
       data: { attemptId: requestId, organizationId, machineId },
     };
-    expect(await request()).toEqual({ attemptId: requestId, state: "pending", requestedAt: expect.any(String) });
+    expect(await request()).toEqual({ drain: { attemptId: requestId, state: "pending", requestedAt: expect.any(String) } });
     expect(send.mock.calls).toEqual([[event]]);
 
-    expect(await request(secondTab)).toMatchObject({ attemptId: requestId, state: "pending" });
+    expect(await request(secondTab)).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
     await claim(requestId, "run-1");
-    expect(await request(secondTab)).toMatchObject({ attemptId: requestId, state: "running" });
-    expect(await request()).toMatchObject({ attemptId: requestId, state: "running" });
+    expect(await request(secondTab)).toMatchObject({ drain: { attemptId: requestId, state: "running" } });
+    expect(await request()).toMatchObject({ drain: { attemptId: requestId, state: "running" } });
     expect(send.mock.calls).toEqual([[event]]);
     expect((await rows()).map(({ id }) => id)).toEqual([requestId]);
 
-    expect(await request(secondTab, otherMachineId)).toMatchObject({ attemptId: secondTab, state: "pending" });
+    expect(await request(secondTab, otherMachineId)).toMatchObject({ drain: { attemptId: secondTab, state: "pending" } });
   });
 
-  it("sends the same event again when the same request finds its row unbound, and not once a run bound it", async () => {
+  it("sends its event once: the same request again answers the row and leaves resending to the outbox", async () => {
     await request();
-    expect(await request()).toMatchObject({ attemptId: requestId, state: "pending" });
-    expect(send.mock.calls.map(([event]) => event)).toEqual([
-      expect.objectContaining({ id: `server-drain-${requestId}` }),
-      expect.objectContaining({ id: `server-drain-${requestId}` }),
-    ]);
-
-    await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
-    expect(await request()).toMatchObject({ attemptId: requestId, state: "pending" });
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(await request()).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
+    expect(send.mock.calls).toEqual([[expect.objectContaining({ id: `server-drain-${requestId}` })]]);
   });
 
-  it("fails the unbound pending row when its event can't be sent, so Drain is offered again", async () => {
+  it("keeps the pending row and its unsent event when the send fails, so the sweep starts it", async () => {
     send.mockRejectedValueOnce(new Error("inngest unavailable"));
-    await expect(request()).rejects.toThrow();
-    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", refusal_message: null, inngest_run_id: null }]);
-    expect(await latest()).toEqual({ [machineId]: { attemptId: requestId, state: "failed", endedAt: expect.any(String), endCode: "not_started" } });
-
-    expect(await request(secondTab)).toMatchObject({ attemptId: secondTab, state: "pending" });
+    expect(await request()).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
+    expect((await harness.pool.query("select event_id, sent_at from operation_outbox")).rows)
+      .toEqual([{ event_id: `server-drain-${requestId}`, sent_at: null }]);
   });
 
-  it("asks the Engine once for the owned Namespaces and stores its partial report as the result", async () => {
+  it("asks the Engine once for the services its plan names and stores its partial report as the result", async () => {
     await request();
     const output = await drain();
 
     expect(output.error).toBeUndefined();
     expect(output.result).toEqual({ attemptId: requestId, state: "finished" });
-    expect(drainCalls).toEqual([[machineId, { scope: "owned", namespaces: ["shop-production"] }]]);
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
     expect(await latest()).toEqual({
       [machineId]: { attemptId: requestId, state: "finished", endedAt: expect.any(String), report: partialReport },
     });
@@ -195,6 +204,7 @@ describe("drain-server", () => {
 
   it("drains only the services a CLI request previewed, not every owned Namespace", async () => {
     const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: requestId,
       machineId,
       targets: ["shop-production/api", "shop-production/db"],
       approvalId: null,
@@ -204,36 +214,56 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api", "shop-production/db"] }]]);
   });
 
-  it("a dashboard Drain never asks: it records no approval and drains every owned Namespace", async () => {
+  it("a dashboard Drain that destroys nothing records no approval and drains only the services it planned", async () => {
     await request();
     await drain();
 
     expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
     expect((await harness.pool.query(`select targets, approval_id from server_drain_attempt`)).rows)
-      .toEqual([{ targets: null, approval_id: null }]);
-    expect(drainCalls).toEqual([[machineId, { scope: "owned", namespaces: ["shop-production"] }]]);
+      .toEqual([{ targets: ["shop-production/api"], approval_id: null }]);
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+  });
+
+  it("a dashboard Drain that retires the last copy of a Global asks a human, and runs once with the approval", async () => {
+    frame = frameOf("global");
+    const asked = await request();
+    if (!("asking" in asked)) return expect.fail(`the Drain ran without asking: ${JSON.stringify(asked)}`);
+    expect(await rows()).toEqual([]);
+    expect(send).not.toHaveBeenCalled();
+    const approvals = await harness.pool.query(`select id, status, command from operation_approvals`);
+    expect(approvals.rows).toEqual([{ id: asked.asking.approvalId, status: "pending", command: "drain" }]);
+
+    expect(await runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId, requestId })))
+      .toMatchObject({ asking: { approvalId: asked.asking.approvalId } });
+    expect(await rows()).toEqual([]);
+
+    await harness.pool.query(`update operation_approvals set status = 'approved', decided_at = now() where id = $1`, [asked.asking.approvalId]);
+    const approved = { organizationSlug: "acme", machineId, requestId, approvalId: asked.asking.approvalId };
+    expect(await runEffect(requestServerDrain(caller, approved))).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
+    expect(await runEffect(requestServerDrain(caller, approved))).toMatchObject({ drain: { attemptId: requestId } });
+    expect((await harness.pool.query(`select approval_id from server_drain_attempt`)).rows).toEqual([{ approval_id: asked.asking.approvalId }]);
   });
 
   it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
     const approvalId = "00000000-0000-4000-8000-0000000000b1";
-    const cli = () => runEffect(requestCliServerDrain({ organizationId, userId }, {
-      machineId, targets: ["shop-production/api"], approvalId,
+    const cli = (attemptId: string) => runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId, machineId, targets: ["shop-production/api"], approvalId,
     }));
-    const attemptId = await cli();
+    const attemptId = await cli(requestId);
     await drain(attemptId);
 
-    expect(await cli()).toBe(attemptId);
+    expect(await cli(secondTab)).toBe(attemptId);
     expect((await rows()).map(({ id }) => id)).toEqual([attemptId]);
     expect(drainCalls).toHaveLength(1);
   });
 
-  it("passes an empty Namespace list as owned, so the Engine selects nothing rather than everything", async () => {
+  it("passes a plan with nothing owned as no services, so the Engine selects nothing rather than everything", async () => {
     namespaces = [];
     drainAnswer = () => Effect.succeed({ ...partialReport, services: [], stopped: null });
     await request();
     await drain();
 
-    expect(drainCalls).toEqual([[machineId, { scope: "owned", namespaces: [] }]]);
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: [] }]]);
     expect(await rows()).toMatchObject([{ state: "finished" }]);
   });
 

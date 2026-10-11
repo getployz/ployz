@@ -5,7 +5,7 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The Server and Namespace operations the CLI runs through Cloud that may wait for a human. Upgrade never does. */
-export type OperationVerb = "drain" | "clean" | "remove";
+export type OperationVerb = "drain" | "clean" | "remove" | "release" | "remove_mirror";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
@@ -18,28 +18,13 @@ export type ApprovalReview =
   | { effects: DestructiveEffect[]; diff: DiffView }
   | { effects: DestructiveEffect[]; operation: OperationReview };
 
-const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
 /** What an approval asks about, as verb and name: "Deploy production", "Publish production" or "Drain fra-1". */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
   return { verb: command === "publish" ? "Publish" : "Deploy", name: review.diff.environment.name };
 }
-
-/** The Organization's settings row as the Org Store reads it. No row reads as the defaults. */
-export type OrganizationSettingsRow = { id: string; askBeforeDestructive: boolean };
-
-/** An Organization without a settings row asks before destructive actions. */
-export const DEFAULT_ORGANIZATION_SETTINGS = { askBeforeDestructive: true } satisfies Omit<OrganizationSettingsRow, "id">;
-
-export function organizationSettings(rows: readonly OrganizationSettingsRow[]) {
-  return rows[0] ?? DEFAULT_ORGANIZATION_SETTINGS;
-}
-
-export const SetOrganizationSettingsInput = Schema.Struct({
-  organizationSlug: Schema.String,
-  askBeforeDestructive: Schema.Boolean,
-});
 
 /** The writes the Store reviews for destruction: Publish, and a manual Deploy. Nothing else waits for a human. */
 export function asksApproval(command: ConfigCommand) {

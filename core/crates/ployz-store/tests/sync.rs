@@ -807,7 +807,9 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     assert_eq!(
         refused.details["next"],
-        json!("ployz env keep --off --project shop --env fix-web")
+        json!({"tool": "keep_branch", "input": {
+            "environment": {"project": "shop", "environment": "fix-web"}, "kept": false
+        }})
     );
     // Refused before anything landed.
     assert_eq!(

@@ -1,14 +1,16 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { EventType, type StreamChunk } from "@tanstack/ai/client";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
 import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
-import { ArrowUpIcon, SquarePenIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronRightIcon, SquareIcon, SquarePenIcon, XIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader } from "#/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "#/components/ui/input-group";
 import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
@@ -67,7 +69,13 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
   const [connection] = useState(() => fetchServerSentEvents(`/api/agent/${encodeURIComponent(organizationSlug)}/chat`));
   // useChat hands new forwardedProps to its client on every change of identity.
   const forwardedProps = useMemo(() => ({ page }), [page]);
-  const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps });
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const onChunk = (chunk: StreamChunk) => {
+    if (chunk.type !== EventType.RUN_ERROR) return;
+    const wait = chunk.metadata?.tanstack?.retryAfterMs;
+    setRetryAt(wait === undefined ? null : Date.now() + wait);
+  };
+  const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps, onChunk });
   const bound = chat.interrupts.flatMap((interrupt) =>
     interrupt.kind === "generic" && "definitionId" in interrupt && interrupt.definitionId === approvalInterrupt.id && interrupt.payload
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
@@ -112,7 +120,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
                 <Turn organizationSlug={organizationSlug} scope={scope} message={message} asked={asked} bound={bound} />
               </MessageScrollerItem>
             ))}
-            {chat.status === "submitted" && (
+            {chat.isLoading && !replying(chat.messages) && (
               <MessageScrollerItem>
                 <Message>
                   <Marker role="status">
@@ -130,9 +138,10 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
                     <Button size="sm" variant="outline" onClick={onNewChat}>New chat</Button>
                   </div>
                 ) : (
-                  <Message>
-                    <Bubble variant="destructive"><BubbleContent role="alert">{chat.error.message}</BubbleContent></Bubble>
-                  </Message>
+                  <Failed message={chat.error.message} retryAt={retryAt} onRetry={() => {
+                    setRetryAt(null);
+                    void chat.reload();
+                  }} />
                 )}
               </MessageScrollerItem>
             )}
@@ -140,8 +149,33 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
         </MessageScrollerViewport>
         <MessageScrollerButton />
       </MessageScroller>
-      <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} />
+      <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
     </MessageScrollerProvider>
+  );
+}
+
+/** Seconds left until `at`, ticking down to 0. */
+function useSecondsUntil(at: number | null) {
+  const [now, setNow] = useState(Date.now);
+  const left = at === null ? 0 : Math.ceil((at - now) / 1000);
+  useEffect(() => {
+    if (at === null || left <= 0) return;
+    const tick = setTimeout(() => setNow(Date.now()), at - now - (left - 1) * 1000);
+    return () => clearTimeout(tick);
+  }, [at, now, left]);
+  return Math.max(0, left);
+}
+
+/** A reply that failed. Retry waits as long as a rate-limited model asked. */
+function Failed({ message, retryAt, onRetry }: { message: string; retryAt: number | null; onRetry: () => void }) {
+  const wait = useSecondsUntil(retryAt);
+  return (
+    <Message>
+      <MessageContent>
+        <Bubble variant="destructive"><BubbleContent role="alert">{message}</BubbleContent></Bubble>
+        <Button size="sm" variant="outline" className="self-start" disabled={wait > 0} onClick={onRetry}>{wait > 0 ? `Retry in ${wait}s` : "Retry"}</Button>
+      </MessageContent>
+    </Message>
   );
 }
 
@@ -150,6 +184,15 @@ const markdownComponents: Components = {
   table: ({ node: _node, ...props }) => <div className="typeset-scroll"><table {...props} /></div>,
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
 };
+
+type Part = UIMessage["parts"][number];
+
+const shows = (part: Part) =>
+  part.type === "tool-call" || ((part.type === "text" || part.type === "thinking") && part.content.trim() !== "");
+
+/** Whether the reply to the latest message shows anything yet; until it does, the Thinking marker stands in for it. */
+const replying = (messages: readonly UIMessage[]) =>
+  messages.slice(messages.map(({ role }) => role).lastIndexOf("user") + 1).some(({ parts }) => parts.some(shows));
 
 type Bound = { key: string; approvalId: string; interrupt: { canResolve: boolean; status: string; resolveInterrupt: (response: Record<string, never>) => void } };
 
@@ -177,8 +220,19 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
     <Message>
       <MessageContent>
         {message.parts.map((part, index) => {
+          if (!shows(part)) return null;
+          if (part.type === "thinking") {
+            return (
+              <Collapsible key={index}>
+                <CollapsibleTrigger render={<Button type="button" variant="ghost" size="sm" className="group self-start text-muted-foreground" />}>
+                  Thinking
+                  <ChevronRightIcon data-icon="inline-end" className="transition-transform group-data-[panel-open]:rotate-90" />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="whitespace-pre-wrap px-2 text-sm text-muted-foreground">{part.content}</CollapsibleContent>
+              </Collapsible>
+            );
+          }
           if (part.type === "text") {
-            if (!part.content.trim()) return null;
             return (
               <Bubble key={index} variant="ghost">
                 <BubbleContent className="typeset typeset-chat">
@@ -211,7 +265,7 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
   );
 }
 
-function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string) => void }) {
+function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (text: string) => void; onStop: () => void }) {
   const [draft, setDraft] = useState("");
   const { scrollToEnd } = useMessageScroller();
   const send = (event?: FormEvent) => {
@@ -232,10 +286,17 @@ function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string) => v
         <InputGroupTextarea aria-label="Message the agent" placeholder="Ask about your servers…" rows={1} value={draft}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} className="max-h-40 min-h-9" />
         <InputGroupAddon align="block-end">
-          <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={busy || !draft.trim()}>
-            <ArrowUpIcon />
-            <span className="sr-only">Send</span>
-          </InputGroupButton>
+          {busy ? (
+            <InputGroupButton type="button" size="icon-sm" variant="default" className="ml-auto" onClick={onStop}>
+              <SquareIcon className="fill-current" />
+              <span className="sr-only">Stop</span>
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={!draft.trim()}>
+              <ArrowUpIcon />
+              <span className="sr-only">Send</span>
+            </InputGroupButton>
+          )}
         </InputGroupAddon>
       </InputGroup>
     </form>

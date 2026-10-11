@@ -1,58 +1,58 @@
 import type { ConfigCommand, ConfigWritten, EnvironmentListing, JsonValue } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { storeEnvironmentTree, teardownStep } from "./store-workspace";
+import { asTestDouble } from "#/lib/test-double";
+import { removeTarget, storeEnvironmentTree } from "./store-workspace";
 import { StoreRefused } from "./store.contract";
 
 const refused = (code: string, details: JsonValue) => new StoreRefused({ code, message: code, details });
+
+const removed = asTestDouble<ConfigWritten>()({ written: "removal", removal: "removed", residuals: [] });
 
 /** A Store that answers each command in turn, recording what it was sent. */
 function store(...answers: Array<ConfigWritten | StoreRefused>) {
   const sent: ConfigCommand[] = [];
   const commit = (command: ConfigCommand) => {
     sent.push(command);
-    const answer = answers.shift() ?? admitted;
+    const answer = answers.shift() ?? removed;
     return answer instanceof StoreRefused ? Promise.reject(answer) : Promise.resolve(answer);
   };
   return { sent, commit };
 }
 
-const admitted = { written: "deployment" } as ConfigWritten;
-const removed = { written: "environment_removed", teardown: "removed" } as ConfigWritten;
-const onServers = (teardown: "waiting" | "needs_removal") =>
-  ({ written: "project_removed", teardown, environment: "staging", deployment: "d1" }) as ConfigWritten;
+const shop = { project: "shop", environment: null };
+const none = { accept: {}, version: null, everyCopy: {} };
 
-it("deletes at once what never ran on the Servers", async () => {
+it("deletes in one remove, which the Store finishes on its own", async () => {
   const { sent, commit } = store(removed);
-  expect(await teardownStep(commit, { project: "shop", environment: "staging" }, {})).toEqual({ done: true });
-  expect(sent).toEqual([{ command: "remove_environment", environment: { project: "shop", environment: "staging" } }]);
+  expect(await removeTarget(commit, { project: "shop", environment: "staging" }, none)).toEqual({ sent: removed });
+  expect(sent).toEqual([{ command: "remove", project: "shop", environment: "staging", version: null, accept_volume_loss: {}, every_copy: {} }]);
 });
 
-it("takes an Environment still on the Servers off them first, accepting only its own Volumes' loss", async () => {
-  const { sent, commit } = store(onServers("needs_removal"));
-  const step = await teardownStep(commit, { project: "shop", environment: null }, { staging: ["pg"], production: ["files"] });
-  expect(sent[0]).toEqual({ command: "remove_project", project: "shop" });
-  expect(sent[1]).toMatchObject({ command: "admit", admit: "remove", environment: { project: "shop", environment: "staging" }, accept_volume_loss: ["pg"] });
-  expect(step).toEqual({ done: false, environment: "staging", deployment: (sent[1] as { id: string }).id, admitted: true });
+it("sends the version the Store reviewed back at once when it loses exactly what the user accepted", async () => {
+  const { sent, commit } = store(refused("confirmation_required", { version: "p:1", accept: { staging: ["pg"] } }), removed);
+  const answer = await removeTarget(commit, shop, { ...none, accept: { staging: ["pg"], production: [] } });
+  expect(answer).toEqual({ sent: removed });
+  expect(sent[1]).toMatchObject({ command: "remove", project: "shop", version: "p:1", accept_volume_loss: { staging: ["pg"] } });
 });
 
-it("waits on a Deployment that hasn't ended rather than admitting another", async () => {
-  const { sent, commit } = store(onServers("waiting"));
-  expect(await teardownStep(commit, { project: "shop", environment: "staging" }, {}))
-    .toEqual({ done: false, environment: "staging", deployment: "d1", admitted: false });
+it("asks the user again when the Store loses Volumes they didn't see", async () => {
+  const { sent, commit } = store(refused("confirmation_required", { version: "p:2", accept: { staging: ["pg", "cache"] } }));
+  const answer = await removeTarget(commit, shop, { ...none, accept: { staging: ["pg"] } });
+  expect(answer).toEqual({ ask: { accept: { staging: ["pg", "cache"] }, version: "p:2", everyCopy: {} }, waitingOn: [] });
   expect(sent).toHaveLength(1);
 });
 
-it("closes one Environment it takes off the Servers, and a Branch the Store already deleted is done", async () => {
-  const { sent, commit } = store({ ...onServers("needs_removal"), written: "environment_removed" } as ConfigWritten, admitted, refused("not_found", null));
-  const target = { project: "shop", environment: "staging" };
-  await teardownStep(commit, target, {});
-  expect(sent[1]).toMatchObject({ command: "admit", admit: "remove", close: true });
-  expect(await teardownStep(commit, target, {})).toEqual({ done: true });
+it("asks before giving up every copy a Server that didn't answer may hold", async () => {
+  const waiting = { server: "m1", why: "It didn't answer", fix: { server_remove: { server: "m1" } } };
+  const offer = { tool: "remove", input: { project: "shop", accept_volume_loss: { staging: ["pg"] }, every_copy: { staging: ["pg"] }, version: "p:3" } };
+  const { commit } = store(refused("unavailable", { waiting_on: [waiting], every_copy: offer }));
+  expect(await removeTarget(commit, shop, none))
+    .toEqual({ ask: { accept: { staging: ["pg"] }, version: "p:3", everyCopy: { staging: ["pg"] } }, waitingOn: [{ server: "m1", why: "It didn't answer" }] });
 });
 
-it("passes any refusal on", async () => {
-  const { commit } = store(refused("conflict", { next: "ployz env default staging" }));
-  await expect(teardownStep(commit, { project: "shop", environment: "production" }, {})).rejects.toThrow("conflict");
+it("passes any other refusal on", async () => {
+  const { commit } = store(refused("unsupported", { branches: ["fix"] }));
+  await expect(removeTarget(commit, { project: "shop", environment: "production" }, none)).rejects.toThrow("unsupported");
 });
 
 it("lists each Branch right under its Parent", () => {

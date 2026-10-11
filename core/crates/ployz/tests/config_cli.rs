@@ -17,8 +17,8 @@ use ployz_core::RpcError;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
-    ConfigStore, DomainEvidence, Hostname, OrganizationId, Principal, RunnerId, SealingKey,
-    Trusted, Written,
+    ConfigStore, DomainEvidence, Hostname, OrganizationId, Principal, Removal, RunnerId,
+    SealingKey, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -222,8 +222,10 @@ fn serve(
         (Some(who), "/api/config/write") => {
             let command: StoreCommand = serde_json::from_slice(&body).unwrap();
             let written = store.write_trusted(&who, &command, &evidence());
-            if let (StoreCommand::Admit(_) | StoreCommand::Start(_), Ok(written)) =
-                (&command, &written)
+            if let (
+                StoreCommand::Admit(_) | StoreCommand::Start(_) | StoreCommand::Remove(_),
+                Ok(written),
+            ) = (&command, &written)
             {
                 worker(store, written);
             }
@@ -739,6 +741,8 @@ fn an_agent_creates_and_edits_an_image_service() {
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
             12
         );
+        // Read beside a Service, its domains show even when it has none.
+        assert_eq!(got.get("domains"), Some(&json!([])));
         assert_eq!(
             got.pointer("/settings/8"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
@@ -758,6 +762,7 @@ fn an_agent_creates_and_edits_an_image_service() {
         ok(store, &["unset", "web.replicas"]);
         let got = ok(store, &["get", "web.replicas"]);
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
+        assert_eq!(got.get("domains"), None);
 
         // Healthcheck and Private DNS set and unset like any Setting.
         let value = |path: &str| ok(store, &["get", path])["settings"][0]["value"].clone();
@@ -867,6 +872,34 @@ fn an_agent_adds_lists_renames_and_removes_services() {
                 .len(),
             1
         );
+    }
+}
+
+#[test]
+fn a_deployed_service_staged_for_removal_still_inspects() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        applied(store, "production");
+        ok(store, &["service", "rm", "web"]);
+
+        let inspected = ok(store, &["service", "inspect", "web"]);
+        assert_eq!(inspected["change"], json!("delete"), "{inspected}");
+        assert_eq!(inspected["values"]["image"], json!("nginx:1"));
+        assert_eq!(inspected["settings"], json!([]));
+        assert_eq!(inspected["domains"], json!([]));
     }
 }
 
@@ -988,7 +1021,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
             store,
             &["env", "rm", "production", "--confirm", "shop/production"],
         );
-        assert_eq!(default["code"], json!("conflict"));
+        assert_eq!(default["code"], json!("unsupported"));
         assert_eq!(
             default["details"]["next"],
             json!("ployz env default ENV --project shop")
@@ -1002,40 +1035,30 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
             &["env", "rm", "production", "--confirm", "shop/production"],
         );
         assert_eq!(removed["environment"]["name"], json!("production"));
-        assert_eq!(removed["deployment"], json!(null));
+        assert_eq!(removed["removal"], json!("removed"));
+        assert_eq!(removed["deployments"], json!([]));
         let listed = ok(store, &["env", "ls"]);
         assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
     }
 }
 
 #[test]
-fn a_project_removal_reports_applied_environments_before_a_later_refusal() {
-    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
-        let Written::Deployment(admitted) = written else {
-            return;
-        };
-        // Keep the second authored Deployment queued, so production refuses removal.
-        if admitted.number == 2 && !admitted.remove {
-            return;
-        }
+fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud() {
+    fn succeed(store: &std::sync::Arc<ConfigStore>, id: &ployz_store::DeploymentId) {
         let runner = RunnerId::parse("successful-worker").unwrap();
-        let claimed = store.claim(&admitted.id, &runner).unwrap();
+        let claimed = store.claim(id, &runner).unwrap();
         let preview = serde_json::from_value(json!({
             "namespace": claimed.intent.namespace, "operations": [],
             "warnings": [], "would_remove": [], "preserved_volumes": []
         }))
         .unwrap();
         store
-            .record(
-                &admitted.id,
-                &runner,
-                ployz_store::RunEvidence::Prepared(preview),
-            )
+            .record(id, &runner, ployz_store::RunEvidence::Prepared(preview))
             .unwrap();
         let outcome = serde_json::from_value(json!({"type": "success", "completed": []})).unwrap();
         store
             .record(
-                &admitted.id,
+                id,
                 &runner,
                 ployz_store::RunEvidence::Executed {
                     progress: Vec::new(),
@@ -1044,6 +1067,19 @@ fn a_project_removal_reports_applied_environments_before_a_later_refusal() {
                 },
             )
             .unwrap();
+    }
+    fn worker(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            // Keep the second authored Deployment queued, so production can't come off yet.
+            if admitted.number != 2 || admitted.remove {
+                succeed(store, &admitted.id);
+            }
+        }
+        if let Written::Removal(Removal::Removing { left, .. }) = written {
+            for deployment in left.iter().filter_map(|left| left.deployment.as_ref()) {
+                succeed(store, &deployment.id);
+            }
+        }
     }
     let cloud = Target::Cloud {
         url: fake_cloud_with_dispatch(worker),
@@ -1068,28 +1104,45 @@ fn a_project_removal_reports_applied_environments_before_a_later_refusal() {
     }
     ok(&cloud, &["set", "web.cpuLimit=0.2", "--env", "production"]);
     ok(&cloud, &["deploy", "--env", "production", "--detach"]);
-    let (exit, result) = ployz(
-        Some(&cloud),
-        &["project", "rm", "shop", "--confirm", "shop"],
+
+    // What ran is destructive to remove: the typed name, then the version it reviewed.
+    let asked = error(&cloud, &["project", "rm", "shop", "--confirm", "shop"]);
+    assert_eq!(asked["code"], "confirmation_required", "{asked}");
+    let version = asked["details"]["version"].as_str().unwrap();
+    assert_eq!(
+        asked["details"]["retry"],
+        json!(format!(
+            "ployz project rm shop --confirm shop --expect-version {version}"
+        ))
     );
-    assert_eq!(exit, Some(3), "{result}");
-    assert_eq!(result["applied"].as_array().unwrap().len(), 1);
-    assert_eq!(result["applied"][0]["status"], "applied");
-    assert_eq!(result["applied"][0]["remove"], true);
-    assert_eq!(result["follow_up_error"]["code"], "conflict");
-    assert!(
-        result["follow_up_error"]["details"]["next"]
-            .as_str()
-            .unwrap()
-            .contains("deployment show")
+    let removed = ok(
+        &cloud,
+        &[
+            "project",
+            "rm",
+            "shop",
+            "--confirm",
+            "shop",
+            "--expect-version",
+            version,
+        ],
     );
-    let listed = ok(&cloud, &["deployment", "ls", "--env", "before-root"]);
-    assert_eq!(listed["deployments"][0]["id"], result["applied"][0]["id"]);
-    assert_eq!(listed["deployments"][0]["status"], "applied");
-    // Retrying now refuses before new progress and keeps the ordinary error contract.
-    let refused = error(&cloud, &["project", "rm", "shop", "--confirm", "shop"]);
-    assert_eq!(refused["code"], "conflict");
-    assert_eq!(refused["details"], result["follow_up_error"]["details"]);
+    assert_eq!(removed["removal"], "removing", "{removed}");
+    assert_eq!(
+        removed["deployments"].as_array().unwrap().len(),
+        1,
+        "{removed}"
+    );
+    assert_eq!(removed["deployments"][0]["status"], "applied");
+    assert_eq!(removed["deployments"][0]["remove"], true);
+    let production = removed["left"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|left| left["environment"]["name"] == "production")
+        .unwrap();
+    assert_eq!(production["deployment"], json!(null), "{removed}");
+    // Cloud finishes it: the Project stays listed until production comes off.
     assert_eq!(
         ok(&cloud, &["project", "ls"])["projects"]
             .as_array()
@@ -1137,7 +1190,8 @@ fn an_agent_lists_and_removes_a_project_without_servers() {
         // Nothing of it ever ran, so it goes at once, with no Server.
         let removed = ok(store, &["project", "rm", "shop", "--confirm", "shop"]);
         assert_eq!(removed["project"]["name"], json!("shop"));
-        assert_eq!(removed["environments"], json!(["staging", "production"]));
+        assert_eq!(removed["environments"], json!(["production", "staging"]));
+        assert_eq!(removed["removal"], json!("removed"));
         assert_eq!(removed["deployments"], json!([]));
         let listed = ok(store, &["project", "ls"]);
         assert_eq!(listed["projects"].as_array().unwrap().len(), 1);

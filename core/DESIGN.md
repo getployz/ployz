@@ -123,9 +123,22 @@ runs again on its own. A retry reads every copy live and continues from what the
 disks show. A Cluster with no operator to drive it keeps its Volumes where they
 are.
 
-**Red flags:** controllers, persisted desired state, durable workflows other than a
-requested Volume Run, cluster-wide reconcilers, any behavior that continues after
-its command returns.
+A removal is the one persisted intent the Store keeps. `remove` marks an
+Environment or a Project. The Store admits its removal Deployments through
+`due()`, and admits a failed one again only on new evidence or a member's retry,
+until nothing of it runs or a member cancels. A removal with nothing new to try
+is reported stalled with its reason, never retried on a timer. Servers Ployz does
+not own can be gone for days, so removal cannot finish inside one command. Branch
+closing was the first case.
+
+A requested operation that Cloud steps (drain, upgrade, cleanup, server removal,
+a Service restart, start or stop) is a bounded command, not a durable workflow.
+It is admitted once per request key through the outbox, writes a receipt per leg,
+never resends an uncertain leg, and never runs again on its own.
+
+**Red flags:** controllers, persisted desired state other than a removal mark,
+durable workflows other than a requested Volume Run, cluster-wide reconcilers, any
+behavior that continues after its command returns other than a removal finishing.
 
 ## 4. Partial results are outcomes
 

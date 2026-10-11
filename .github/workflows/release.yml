@@ -66,8 +66,31 @@ jobs:
     with:
       release-tag: ${{ inputs.tag || github.ref_name }}
 
+  agent-eval:
+    needs: [tag]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Refuse a release commit whose nightly or dispatched agent eval failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          conclusions=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow agent-eval.yml --commit "$RELEASE_SHA" \
+            --json event,conclusion --jq '.[] | select(.event != "pull_request") | .conclusion')
+          if grep -qx success <<<"$conclusions"; then exit 0; fi
+          if grep -qxE 'failure|timed_out|cancelled|stale|startup_failure|action_required' <<<"$conclusions"; then
+            echo "::error::the agent eval on $RELEASE_SHA did not pass; see agent-eval.yml's run for its blockers"
+            exit 1
+          fi
+          echo "::warning::no finished agent eval (agent-eval.yml) on $RELEASE_SHA; releasing without it"
+
   publish:
-    needs: [tag, artifacts, cloud]
+    needs: [tag, artifacts, cloud, agent-eval]
     runs-on: ubuntu-latest
     permissions:
       contents: write

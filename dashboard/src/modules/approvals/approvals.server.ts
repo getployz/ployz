@@ -3,44 +3,23 @@ import { createHash } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, JsonValue } from "@ployz/sdk";
 import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
+import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
   type ApprovalReview,
   approvalSubject,
-  DEFAULT_ORGANIZATION_SETTINGS,
   type OperationVerb,
-  type SetOrganizationSettingsInput,
 } from "#/modules/approvals/approvals";
-import { operationApprovals, organizationSettings } from "#/modules/approvals/tables";
+import { operationApprovals } from "#/modules/approvals/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { Actor, Caller } from "#/modules/identity/actor";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import type { Caller } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
 type ApprovalRow = typeof operationApprovals.$inferSelect;
-
-export const askBeforeDestructive = Effect.fn("Approvals.askBeforeDestructive")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ ask: organizationSettings.askBeforeDestructive }).from(organizationSettings)
-    .where(eq(organizationSettings.organizationId, organizationId));
-  return row?.ask ?? DEFAULT_ORGANIZATION_SETTINGS.askBeforeDestructive;
-});
-
-export const setOrganizationSettings = Effect.fn("Approvals.setOrganizationSettings")(function* (
-  actor: Actor,
-  { organizationSlug, ...settings }: typeof SetOrganizationSettingsInput.Type,
-) {
-  const { id: organizationId } = yield* requireInfrastructureOrganization(actor, organizationSlug);
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.insert(organizationSettings).values({ organizationId, ...settings })
-    .onConflictDoUpdate({ target: organizationSettings.organizationId, set: { ...settings, updatedAt: new Date() } })
-    .returning({ id: organizationSettings.organizationId, askBeforeDestructive: organizationSettings.askBeforeDestructive });
-  return row ?? { id: organizationId, ...settings };
-});
 
 /** An approval as the CLI reads it. */
 function approvalView(row: ApprovalRow) {
@@ -146,30 +125,19 @@ export function operationDigest({ verb, preview, effects }: Pick<OperationAsked,
   return `${verb}:${createHash("sha256").update(canonicalJson({ preview, effects })).digest("hex")}`;
 }
 
-function canonicalJson(value: JsonValue): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value instanceof Object) {
-    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** "the request to deploy production": a denial names what was asked, never the approval's ID. */
 const denied = (row: ApprovalRow) => {
   const { verb, name } = approvalSubject(row.command, row.review);
   return `the request to ${verb.toLowerCase()} ${name}`;
 };
 
-type Trusted = { ok: true; approval: Approval } | { ok: false; refusal: StoreRefusal };
+type Trusted = { ok: true; approval: Exclude<Approval, "not_required"> } | { ok: false; refusal: StoreRefusal };
 
 export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   organizationId: string,
   approvalId: string | null,
 ): Effect.fn.Return<Trusted, never, Database> {
-  if (approvalId === null) {
-    return { ok: true, approval: (yield* askBeforeDestructive(organizationId).pipe(Effect.orDie)) ? "required" : "not_required" };
-  }
+  if (approvalId === null) return { ok: true, approval: "required" };
   const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
     return {
@@ -251,7 +219,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>` or `namespace:<name>`. */
+  /** `server:<machine id>`, `namespace:<name>` or `volume:<volume id>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -286,7 +254,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   }), staleOperation(asked.verb, digest));
   return {
     code: "approval_required",
-    message: `A human must approve this ${asked.verb} of ${asked.name} before it runs.`,
+    message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
     details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation },
   } satisfies StoreRefusal;
 });
@@ -300,7 +268,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
 ): Effect.fn.Return<Gated, never, Database> {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
-  if (asked.effects.length === 0 || trusted.approval === "not_required") return { ok: true, approvalId: null };
+  if (asked.effects.length === 0) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };

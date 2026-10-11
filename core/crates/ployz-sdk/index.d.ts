@@ -246,6 +246,17 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 export declare function connect(options: ConnectOptions): Promise<Client>;
 /** The ployz version every fingerprint covers; a GitHub runner installs exactly this one. */
 export declare function ployzVersion(): string;
+/** A call's state between steps. Keep it and hand it back unchanged; only the step machine reads it. */
+export type AgentState = { readonly __brand: "AgentState" };
+export type AgentTurn = { step: import("./generated/payloads").Step; state: AgentState };
+/** What a model is told: the instructions and every tool. */
+export declare function agentTools(): { instructions: string; tools: import("./generated/payloads").ToolDef[] };
+/** Start `tool` at `place`. `callKey` is the transport's ID for this call, stable across retries. */
+export declare function agentStart(tool: string, input: unknown, place: import("./generated/payloads").Place, callKey: string): AgentTurn;
+/** Resume a call with the answers to its last step, in order. */
+export declare function agentResume(state: AgentState, answers: import("./generated/payloads").Answer[]): AgentTurn;
+/** Decode what `ployz mcp` hands Cloud in full; throws `invalid_argument` naming what is malformed. */
+export declare function agentCloudCall(call: unknown): { ask: import("./generated/payloads").CloudQuery } | { act: import("./generated/payloads").Act };
 export declare function applyAll(
   namespace: Namespace,
   specs: readonly RequestedServiceSpec[],
@@ -310,6 +321,17 @@ export declare class Client {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
+  /** Answer a CloudQuery from this session's Servers; ones that did not answer are named in `seen.unanswered`. */
+  agentAsk(query: import("./generated/payloads").CloudQuery): Promise<import("./generated/payloads").ServersAnswer | import("./generated/payloads").ContainersAnswer>;
+  /** Every Container of `service` in `namespace`, and the Servers that did not answer. */
+  observeService(namespace: string, service: string): Promise<{
+    copies: { server: string; machine: string; container: string; state: import("./generated/payloads").ContainerState }[];
+    unanswered: string[];
+  }>;
+  /** Stop one Container. A rejection with `unavailable` means the stop may have happened. */
+  stopContainer(machine: string, container: string): Promise<void>;
+  /** Start one Container. */
+  startContainer(machine: string, container: string): Promise<void>;
   /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
   inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**

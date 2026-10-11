@@ -9,9 +9,11 @@
 //! `updated_at`. Opening makes the PR Environment and deploys it; renaming the head
 //! branch retracks it; closing closes it, unless the plan keeps it.
 //!
-//! Closing a Branch, for its pull request or for sitting idle a week, marks it
-//! `closing`. Cloud admits its removal from the Servers (`Admit { remove }`, with
-//! the runtime evidence it gathers) and the sweep deletes it once that applied.
+//! Closing a Branch, for its pull request or for sitting idle a week, removes it
+//! as the Store ([`crate::removal::close`]): Cloud admits its removal from the
+//! Servers under the mark (`Admit::Remove`) and the sweep deletes it once that
+//! applied. Cancelling that removal leaves the Branch be until it is reopened or
+//! pushed to.
 
 mod checks;
 mod plan;
@@ -31,14 +33,14 @@ use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
 use crate::branch::{self, CreateBranch, SetupCommand};
-use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
+use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
 use crate::project::ProjectSummary;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
 use crate::storage::Tx;
-use crate::{Actor, Trusted, review, teardown};
+use crate::{Actor, Trusted, review};
 
 /// A Branch closes after this long without a Deployment.
 const IDLE: i64 = 7 * 24 * 60 * 60;
@@ -261,7 +263,7 @@ fn open_in(
         "SELECT p.number, e.name FROM config_pr_environment p \
          JOIN config_environment e ON e.id = p.environment_id \
          JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE e.project_id = ?1 AND p.repository_id = ?2 AND b.closing = 0 ORDER BY p.number",
+         WHERE e.project_id = ?1 AND p.repository_id = ?2 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY p.number",
         &[project.as_str().into(), repository_id.into()],
     )?;
     let mut open = Vec::new();
@@ -356,20 +358,15 @@ pub(crate) fn project_checks(
          JOIN config_environment e ON e.id = p.environment_id \
          JOIN config_environment s ON s.project_id = e.project_id \
          JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE s.id = ?1 AND b.closing = 0 ORDER BY p.repository_id, p.number",
+         WHERE s.id = ?1 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m WHERE m.environment_id = b.environment_id AND m.state = 'removing') ORDER BY p.repository_id, p.number",
         &[environment.as_str().into()],
     )?;
     rows.iter().map(pull_request_ref).collect()
 }
 
-/// Whether the Store is closing this Branch: nothing deploys it on push.
+/// Whether this Branch is being removed: nothing deploys it on push.
 pub(crate) fn closing(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<bool, RpcError> {
-    Ok(!tx
-        .query(
-            "SELECT environment_id FROM config_environment_branch WHERE environment_id = ?1 AND closing = 1",
-            &[id.as_str().into()],
-        )?
-        .is_empty())
+    Ok(crate::removal::mark::naming(tx, id)?.is_some())
 }
 
 pub(crate) fn pull_request(
@@ -432,10 +429,15 @@ pub(crate) fn pull_request(
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close {
-                close(tx, who, environment, &mut automated)?;
+                let because = crate::removal::mark::Closed::PullRequest;
+                crate::removal::close(tx, who, environment, because, &mut automated)?;
             }
         }
     } else {
+        for (environment, _) in &current {
+            let target = crate::removal::Target::Environment(environment.clone());
+            crate::removal::mark::clear_tombstone(tx, &target)?;
+        }
         open(tx, who, (event, trusted), &current, &mut automated)?;
     }
     let has_environments = !current.is_empty() || !automated.admitted.is_empty();
@@ -477,7 +479,7 @@ fn current(
         "SELECT p.environment_id, e.project_id FROM config_pr_environment p \
          JOIN config_environment e ON e.id = p.environment_id \
          JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND p.number = ?3 AND b.closing = 0 \
+         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND p.number = ?3 AND NOT EXISTS (SELECT 1 FROM config_removal_mark m WHERE m.environment_id = b.environment_id AND m.state = 'removing') \
          ORDER BY p.environment_id",
         &[
             who.organization.as_str().into(),
@@ -740,99 +742,24 @@ fn retrack(
     Ok(())
 }
 
-/// Start closing a Branch: stop what it is deploying, then remove it as far as
-/// nothing needs the Servers.
-pub(crate) fn close(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    id: &EnvironmentId,
-    automated: &mut Automated,
-) -> Result<(), RpcError> {
-    scope::lock_id(tx, who, id)?;
-    mark_closing(tx, id)?;
-    // At most one Deployment of an Environment is in flight: a new one supersedes a queued one.
-    if let Some(running) = deployment::in_flight(tx, id)?
-        && matches!(
-            running.status,
-            DeploymentStatus::Queued | DeploymentStatus::Running
-        )
-    {
-        deployment::cancel(tx, who, &running.id)?;
-    }
-    settle(tx, who, id, automated)
-}
-
-/// Mark Branch `id` closing: nothing deploys it on push, and the sweep deletes it
-/// once nothing of it can run on the Servers. No-op for an Environment that isn't a Branch.
-pub(crate) fn mark_closing(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<(), RpcError> {
-    tx.execute(
-        "UPDATE config_environment_branch SET closing = 1 WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?;
-    Ok(())
-}
-
-/// Move a closing Branch on: delete it once nothing of it can run on the Servers,
-/// else ask Cloud to admit its removal, unless one is under way.
-fn settle(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    id: &EnvironmentId,
-    automated: &mut Automated,
-) -> Result<(), RpcError> {
-    let environment = scope::lock_id(tx, who, id)?;
-    if deployment::in_flight(tx, id)?.is_some() {
-        return Ok(());
-    }
-    let skip = |automated: &mut Automated, error: RpcError| {
-        automated.skipped.push(Skipped {
-            environment: id.clone(),
-            reason: error.message,
-        });
-    };
-    if let Err(error) = teardown::guard(tx, &environment) {
-        skip(automated, error);
-        return Ok(());
-    }
-    match teardown::on_servers(tx, id)? {
-        None => {}
-        Some(ran) if ran.remove && ran.status == DeploymentStatus::Unknown => {
-            skip(
-                automated,
-                error::conflict(
-                    format!(
-                        "Nobody knows whether removing {} ran: remove it by hand",
-                        environment.summary.name
-                    ),
-                    json!({}),
-                ),
-            );
-            return Ok(());
-        }
-        Some(_) => {
-            automated.closing.push(environment.summary);
-            return Ok(());
-        }
-    }
-    teardown::purge(tx, id)?;
-    automated.removed.push(environment.summary);
-    Ok(())
-}
-
-/// What the idle rule reads of each Branch: `environment_id`, kept, closing, its
-/// latest admission (-1 for none), its Branches and whether it is a Default.
-const IDLE_FACTS: &str = "SELECT b.environment_id, b.kept, b.closing, \
+/// What the idle rule reads of each Branch: `environment_id`, kept, whether a
+/// removal names it (or a cancelled one did), its latest admission (-1 for none),
+/// its Branches and whether it is a Default.
+const IDLE_FACTS: &str = "SELECT b.environment_id, b.kept, \
+     (SELECT COUNT(*) FROM config_removal_mark m WHERE (m.environment_id = b.environment_id AND m.state <> 'removed') \
+      OR (m.state = 'removing' AND m.project_id = (SELECT e.project_id FROM config_environment e WHERE e.id = b.environment_id))), \
      (SELECT COALESCE(MAX(d.admitted), -1) FROM config_deployment d WHERE d.environment_id = b.environment_id), \
      (SELECT COUNT(*) FROM config_environment_branch c WHERE c.parent_id = b.environment_id), \
      (SELECT COUNT(*) FROM config_project p WHERE p.default_environment_id = b.environment_id) \
      FROM config_environment_branch b";
 
 /// When the sweep closes a Branch for sitting idle, from an [`IDLE_FACTS`] row: a
-/// week after its latest Deployment. Never when it is kept, closing already, never
+/// week after its latest Deployment. Never when it is kept, being removed or its
+/// removal was cancelled, never
 /// deployed, a Parent or the Default Environment.
 fn idle_close(row: &crate::storage::Row) -> Result<Option<i64>, RpcError> {
-    let (kept, closing, admitted) = (row.int(1)?, row.int(2)?, row.int(3)?);
-    let held = kept != 0 || closing != 0 || admitted < 0 || row.int(4)? != 0 || row.int(5)? != 0;
+    let (kept, marked, admitted) = (row.int(1)?, row.int(2)?, row.int(3)?);
+    let held = kept != 0 || marked != 0 || admitted < 0 || row.int(4)? != 0 || row.int(5)? != 0;
     Ok((!held).then_some(admitted + IDLE))
 }
 
@@ -845,23 +772,22 @@ pub(crate) fn closes_at(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<i6
     rows.first().map_or(Ok(None), idle_close)
 }
 
+/// Move every removal on, then close each Branch idle past its deadline.
 pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Automated, RpcError> {
     let rows = tx.query(
         &format!("{IDLE_FACTS} WHERE b.organization_id = ?1 ORDER BY b.environment_id"),
         &[who.organization.as_str().into()],
     )?;
-    let mut automated = Automated::default();
-    for row in rows {
-        let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
-        if row.int(2)? != 0 {
-            settle(tx, who, &id, &mut automated)?;
-            continue;
-        }
-        if idle_close(&row)?.is_some_and(|at| sweep.now >= at) {
-            close(tx, who, &id, &mut automated)?;
-        }
-    }
-    Ok(automated)
+    let idle = rows
+        .iter()
+        .map(|row| {
+            Ok((
+                row.parse::<EnvironmentId>(0, "Environment ID")?,
+                idle_close(row)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, RpcError>>()?;
+    crate::removal::sweep(tx, who, sweep.now, &idle)
 }
 
 fn validate(event: &PullRequest) -> Result<(), RpcError> {
