@@ -52,7 +52,10 @@ impl LastHealthCheck {
     /// Keeps only the first non-blank line of `output`, cut to a length a reason can quote.
     #[must_use]
     pub fn exited(code: i64, output: &str) -> Self {
-        Self::Exited { code, output: check_output_line(output) }
+        Self::Exited {
+            code,
+            output: check_output_line(output),
+        }
     }
 }
 
