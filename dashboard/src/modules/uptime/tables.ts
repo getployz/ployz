@@ -42,6 +42,8 @@ export const uptimeCheck = pgTable(
     // node_id): a trigger the Store open attaches deletes it with that row, environment deletes included.
     environmentId: text("environment_id").notNull(),
     serviceId: text("service_id").notNull(),
+    // When a deploy or Check now last asked for a probe. Writing it leaves revision alone, so it never closes an incident.
+    probeRequestedAt: timestamptz("probe_requested_at"),
     createdAt,
     updatedAt,
   },
@@ -133,7 +135,7 @@ export const uptimeResult = pgTable(
     organizationId: uuid("organization_id").notNull(),
     region: text("region").notNull(),
     scheduledAt: timestamptz("scheduled_at").notNull(),
-    kind: text("kind").notNull().$type<"routine" | "confirm" | "recheck">(),
+    kind: text("kind").notNull().$type<"routine" | "confirm" | "recheck" | "triggered">(),
     startLagMs: integer("start_lag_ms").notNull(),
     verdict: text("verdict").notNull().$type<"pass" | "fail" | "inconclusive">(),
     // 0 when there was no HTTP response.
@@ -159,7 +161,7 @@ export const uptimeResult = pgTable(
       foreignColumns: [uptimeCheck.id, uptimeCheck.organizationId],
     }).onDelete("cascade"),
     index("uptime_result_scheduled_brin").using("brin", table.scheduledAt),
-    check("uptime_result_kind_check", sql`${table.kind} in ('routine', 'confirm', 'recheck')`),
+    check("uptime_result_kind_check", sql`${table.kind} in ('routine', 'confirm', 'recheck', 'triggered')`),
     check("uptime_result_verdict_check", sql`${table.verdict} in ('pass', 'fail', 'inconclusive')`),
     check("uptime_result_phase_check", sql`${table.failedPhase} in ('none', 'dns', 'connect', 'tls', 'request')`),
   ],

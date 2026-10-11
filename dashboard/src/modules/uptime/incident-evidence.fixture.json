@@ -37,6 +37,16 @@
         "error": null,
         "remoteIp": "2001:db8::1",
         "at": "2024-02-29T12:34:56.789Z"
+      },
+      {
+        "region": "us-east",
+        "kind": "triggered",
+        "verdict": "pass",
+        "status": 204,
+        "failedPhase": null,
+        "error": null,
+        "remoteIp": null,
+        "at": "2024-02-29T12:35:00.000Z"
       }
     ]
   }
