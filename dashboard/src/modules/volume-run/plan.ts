@@ -1,4 +1,4 @@
-import type { SnapshotGuid } from "@ployz/sdk";
+import type { Snapshot, SnapshotGuid } from "@ployz/sdk";
 import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
@@ -13,6 +13,8 @@ export type RefusalCode =
   | "invalid"
   | "no_pool"
   | "no_mirror"
+  | "no_copy"
+  | "another_copy"
   | "confirm_required";
 
 /** Where a Move continues from the copies it finds; every step after `handover` is past the point of no return. */
@@ -36,6 +38,8 @@ export type Planned =
       };
     }
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly source: AnsweredMember; readonly mirror: AnsweredMember | null; readonly thaw: boolean } }
+  | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
+  | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: false; readonly refusal: Refusal };
 
 type Phase = Extract<Planned, { ok: true }>["phase"];
@@ -68,6 +72,10 @@ export function participantsOf(phase: Phase): readonly AnsweredMember[] {
       return [...(phase.thaw ? [phase.source] : []), ...(phase.mirror === null ? [] : [phase.mirror])];
     case "delete_mirror":
       return [...phase.destroy, ...(phase.forget === null ? [] : [phase.forget]), ...phase.forgetLease];
+    case "restore":
+      return [phase.from];
+    case "demote":
+      return [phase.old];
   }
 }
 
@@ -159,6 +167,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   }
 
   if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
+  if (input.kind === "restore") return planRestore(name, input.args.from, answered);
   const [source] = switching;
   if (source !== undefined && switching.length === 1) {
     const guid = frozenGuid(source);
@@ -180,6 +189,10 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       const start = holder === target && target.view.copy?.kind === "slot" ? "handover" : "undo";
       return { ok: true, phase: { kind: "move", writer: source, target, start, guid, declare: false } };
     }
+  }
+  if (roots.length > 1) {
+    const old = oldCopy(roots);
+    if (old !== null) return { ok: true, phase: { kind: "demote", ...old } };
   }
   if (roots.length > 1) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
   if (switching.length > 0) return midRun();
@@ -207,4 +220,40 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const declare = roleOf(target) !== "mirror";
   if (input.kind === "move") return { ok: true, phase: { kind: "move", writer, target, start: "rounds", guid: null, declare } };
   return { ok: true, phase: { kind: "mirror", writer, target, declare } };
+}
+
+/** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
+function planRestore(name: string, from: string, answered: readonly AnsweredMember[]): Planned {
+  const source = answered.find((member) => member.machine.name === from);
+  if (source === undefined) return refuse("invalid", `${from} is not a Server of this cluster`);
+  const copy = source.view.copy;
+  if (copy === null) return refuse("no_copy", `${from} holds no copy of ${name}`);
+  if (roleOf(source) === "writer" && !copy.readonly) return refuse("invalid", `${name}'s writer is already on ${from}`);
+  const others = answered.filter((member) => member !== source && member.view.copy !== null);
+  if (others.length > 0) {
+    const servers = others.map((member) => member.machine.name).join(", ");
+    return refuse(
+      "another_copy",
+      `${name} also has copies on ${servers}; Restore needs ${copyName(name, from)} to be the only copy, so remove the others with server rm or volume mirror rm first`,
+    );
+  }
+  // A slot holds the data as of its newest snapshot; a root holds every write, so restoring it loses none.
+  return { ok: true, phase: { kind: "restore", from: source, lostAfter: copy.kind === "slot" ? copy.newest : null } };
+}
+
+/**
+ * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root whose lease record
+ * is lower is old. A read-only root ranks below every writable one whatever its record: a demote cut short left it so,
+ * and only a writable root can be the writer. Writable roots whose records tie, or two without one, leave no way to
+ * tell, so neither is old.
+ */
+function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
+  if (roots.some((root) => roleOf(root) !== "writer")) return null;
+  const writable = (root: AnsweredMember) => root.view.copy?.readonly === false;
+  const leaseOf = (root: AnsweredMember) => root.view.lease?.lease ?? 0;
+  const above = (a: AnsweredMember, b: AnsweredMember) => Number(writable(a)) - Number(writable(b)) || leaseOf(a) - leaseOf(b);
+  const [writer, ...rest] = [...roots].sort((a, b) => above(b, a));
+  const old = rest.at(-1);
+  if (writer === undefined || old === undefined || !writable(writer) || above(writer, old) === 0) return null;
+  return { old, writer };
 }

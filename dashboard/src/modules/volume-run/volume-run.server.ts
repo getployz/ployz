@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, Namespace, ResolvedServiceSpec, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, lt, max, sql } from "drizzle-orm";
+import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -21,6 +21,7 @@ import {
   managementAddress,
   type Member,
   parseDockerVolumeName,
+  type ServiceSpec,
   VOLUME_RUN_MESSAGE_LIMIT,
   VOLUME_RUN_RUNNING_CHECK_MS,
   VOLUME_RUN_UNCLAIMED_LIMIT_MS,
@@ -317,7 +318,7 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
 };
 
-export type Holder = { readonly containerId: ContainerId; readonly namespace: Namespace; readonly redactedSpec: ResolvedServiceSpec };
+export type Holder = ServiceSpec & { readonly containerId: ContainerId };
 
 /** The one Service container on the writer that mounts this Volume: Freeze stops it, Thaw restarts it, and Start rebuilds it on the target. */
 export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
@@ -334,6 +335,31 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
     return { ok: false, refusal: { code: "invalid", message: `${ctx.volumeName} has ${found} on ${writer.name}; a move needs exactly one` } } as const;
   }
   return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec } } as const;
+}, Effect.scoped);
+
+/** Restore registers the Volume with the spec of the newest Service container that mounts it, stopped ones included. */
+export const findSpec = Effect.fn("VolumeRun.findSpec")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  const newest = frame.containers
+    .filter((container) =>
+      container.kind === "service_container"
+      && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume))
+    .reduce<(typeof frame.containers)[number] | undefined>(
+      (found, container) => found === undefined || container.created_at_unix_nanos > found.created_at_unix_nanos ? container : found,
+      undefined,
+    );
+  if (newest !== undefined) return { ok: true, spec: { namespace: newest.namespace, redactedSpec: newest.resolved_spec } satisfies ServiceSpec } as const;
+  const { drizzle } = yield* Database;
+  const [kept] = yield* drizzle.select({ spec: volumeRun.serviceSpec }).from(volumeRun)
+    .where(and(eq(volumeRun.volumeId, ctx.volumeId), isNotNull(volumeRun.serviceSpec)))
+    .orderBy(desc(volumeRun.createdAt))
+    .limit(1);
+  if (kept?.spec === null || kept?.spec === undefined) {
+    return { ok: false, refusal: { code: "invalid", message: `no Service container mounts ${ctx.volumeName}, and no earlier run saw one; Restore takes its spec from one` } } as const;
+  }
+  return { ok: true, spec: kept.spec } as const;
 }, Effect.scoped);
 
 export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunContext, inngestRunId: string, from: MachineRef, holder: Holder, to: MachineRef) {
@@ -401,6 +427,7 @@ export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   ctx: RunContext,
   inngestRunId: string,
   participants: readonly AnsweredMember[],
+  spec: ServiceSpec | null,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const { drizzle } = yield* Database;
@@ -408,7 +435,7 @@ export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
   yield* drizzle.update(volumeRun)
-    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, updatedAt: new Date() })
+    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, serviceSpec: spec ?? undefined, updatedAt: new Date() })
     .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease)));
   const row = yield* readRow(ctx.id);
   const lease = row?.lease;
