@@ -1928,14 +1928,21 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
             used.pointer("/details/variables"),
             Some(&json!(["web.UPSTREAM"]))
         );
-        let next = used.pointer("/details/next").and_then(Value::as_str).unwrap();
+        let next = used
+            .pointer("/details/next")
+            .and_then(Value::as_str)
+            .unwrap();
         assert!(
             next.starts_with(
                 "ployz set web.env.PUBLIC_API_URL --rename API_URL --update-references"
             ),
             "{next}"
         );
-        let alone = failed(store, &["set", "web.env.LOG_LEVEL", "--update-references"], 2);
+        let alone = failed(
+            store,
+            &["set", "web.env.LOG_LEVEL", "--update-references"],
+            2,
+        );
         assert_eq!(alone.get("code"), Some(&json!("invalid_argument")));
         let switched = ok(
             store,

@@ -692,7 +692,10 @@ fn referenced(store: &ConfigStore) {
             ("web.env.API_URL", json!("https://api")),
             ("api.env.API_URL", json!("https://own")),
             ("web.env.UPSTREAM", json!("${{ API_URL }}/v1")),
-            ("worker.env.BACKEND", json!("${{ web.API_URL }} ${{ api.API_URL }}")),
+            (
+                "worker.env.BACKEND",
+                json!("${{ web.API_URL }} ${{ api.API_URL }}"),
+            ),
             ("worker.env.LITERAL", json!("$${{ web.API_URL }} API_URL")),
             ("api.env.SELF", json!("${{ API_URL }}")),
             ("web.env.TOKEN", json!({ "secret": "${{ API_URL }}" })),
@@ -718,8 +721,16 @@ fn a_referenced_variable_is_renamed_only_with_its_references() {
         next.starts_with("ployz set web.env.API_URL --rename PUBLIC_API_URL --update-references"),
         "{next}"
     );
-    assert!(refused.message.contains("worker.BACKEND"), "{}", refused.message);
-    assert_eq!(get(&store, None), before, "a refused rename changes nothing");
+    assert!(
+        refused.message.contains("worker.BACKEND"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(
+        get(&store, None),
+        before,
+        "a refused rename changes nothing"
+    );
 
     let edited = rename_with(&store, &[], "web.env.API_URL", "PUBLIC_API_URL", true).unwrap();
     assert_eq!(
@@ -731,7 +742,10 @@ fn a_referenced_variable_is_renamed_only_with_its_references() {
             "worker.env.BACKEND"
         ]
     );
-    assert_eq!(value(&store, "web.env.UPSTREAM"), json!("${{ PUBLIC_API_URL }}/v1"));
+    assert_eq!(
+        value(&store, "web.env.UPSTREAM"),
+        json!("${{ PUBLIC_API_URL }}/v1")
+    );
     assert_eq!(
         value(&store, "worker.env.BACKEND"),
         json!("${{ web.PUBLIC_API_URL }} ${{ api.API_URL }}")
@@ -753,7 +767,10 @@ fn a_referenced_variable_is_renamed_only_with_its_references() {
     let claimed = store
         .claim(&id, &RunnerId::parse("runner").unwrap())
         .unwrap();
-    assert_eq!(environment_of(&claimed, "web")["UPSTREAM"], "https://api/v1");
+    assert_eq!(
+        environment_of(&claimed, "web")["UPSTREAM"],
+        "https://api/v1"
+    );
     assert_eq!(
         environment_of(&claimed, "worker")["BACKEND"],
         "https://api https://own"
@@ -780,8 +797,14 @@ fn a_referenced_secret_is_renamed_and_stays_sealed() {
         ["web.env.API_TOKEN", "web.env.TOKEN", "api.env.AUTH"]
     );
     assert!(!json!(edited).to_string().contains("s3cr3t"));
-    assert_eq!(value(&store, "web.env.API_TOKEN"), json!({ "secret": true }));
-    assert_eq!(value(&store, "api.env.AUTH"), json!("Bearer ${{ web.API_TOKEN }}"));
+    assert_eq!(
+        value(&store, "web.env.API_TOKEN"),
+        json!({ "secret": true })
+    );
+    assert_eq!(
+        value(&store, "api.env.AUTH"),
+        json!("Bearer ${{ web.API_TOKEN }}")
+    );
     let id = admit(&store, 1).unwrap();
     let claimed = store
         .claim(&id, &RunnerId::parse("runner").unwrap())
