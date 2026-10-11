@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, JsonValue } from "@ployz/sdk";
 import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
+import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
@@ -146,15 +147,6 @@ export function operationDigest({ verb, preview, effects }: Pick<OperationAsked,
   return `${verb}:${createHash("sha256").update(canonicalJson({ preview, effects })).digest("hex")}`;
 }
 
-function canonicalJson(value: JsonValue): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value instanceof Object) {
-    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** "the request to deploy production": a denial names what was asked, never the approval's ID. */
 const denied = (row: ApprovalRow) => {
   const { verb, name } = approvalSubject(row.command, row.review);
@@ -251,7 +243,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>` or `namespace:<name>`. */
+  /** `server:<machine id>`, `namespace:<name>` or `volume:<volume id>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -286,7 +278,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   }), staleOperation(asked.verb, digest));
   return {
     code: "approval_required",
-    message: `A human must approve this ${asked.verb} of ${asked.name} before it runs.`,
+    message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
     details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation },
   } satisfies StoreRefusal;
 });

@@ -129,7 +129,7 @@ describe("drain-server", () => {
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
     await harness.pool.query(`
-      truncate table organization, "user" cascade;
+      truncate table organization, "user", operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
       insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
       insert into member (id, organization_id, user_id, role, created_at)
@@ -156,26 +156,17 @@ describe("drain-server", () => {
     expect(await request(secondTab, otherMachineId)).toMatchObject({ attemptId: secondTab, state: "pending" });
   });
 
-  it("sends the same event again when the same request finds its row unbound, and not once a run bound it", async () => {
+  it("sends its event once: the same request again answers the row and leaves resending to the outbox", async () => {
     await request();
     expect(await request()).toMatchObject({ attemptId: requestId, state: "pending" });
-    expect(send.mock.calls.map(([event]) => event)).toEqual([
-      expect.objectContaining({ id: `server-drain-${requestId}` }),
-      expect.objectContaining({ id: `server-drain-${requestId}` }),
-    ]);
-
-    await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
-    expect(await request()).toMatchObject({ attemptId: requestId, state: "pending" });
-    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls).toEqual([[expect.objectContaining({ id: `server-drain-${requestId}` })]]);
   });
 
-  it("fails the unbound pending row when its event can't be sent, so Drain is offered again", async () => {
+  it("keeps the pending row and its unsent event when the send fails, so the sweep starts it", async () => {
     send.mockRejectedValueOnce(new Error("inngest unavailable"));
-    await expect(request()).rejects.toThrow();
-    expect(await rows()).toMatchObject([{ state: "failed", end_code: "not_started", refusal_message: null, inngest_run_id: null }]);
-    expect(await latest()).toEqual({ [machineId]: { attemptId: requestId, state: "failed", endedAt: expect.any(String), endCode: "not_started" } });
-
-    expect(await request(secondTab)).toMatchObject({ attemptId: secondTab, state: "pending" });
+    expect(await request()).toMatchObject({ attemptId: requestId, state: "pending" });
+    expect((await harness.pool.query("select event_id, sent_at from operation_outbox")).rows)
+      .toEqual([{ event_id: `server-drain-${requestId}`, sent_at: null }]);
   });
 
   it("asks the Engine once for the owned Namespaces and stores its partial report as the result", async () => {
@@ -195,6 +186,7 @@ describe("drain-server", () => {
 
   it("drains only the services a CLI request previewed, not every owned Namespace", async () => {
     const attemptId = await runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: requestId,
       machineId,
       targets: ["shop-production/api", "shop-production/db"],
       approvalId: null,
@@ -216,13 +208,13 @@ describe("drain-server", () => {
 
   it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
     const approvalId = "00000000-0000-4000-8000-0000000000b1";
-    const cli = () => runEffect(requestCliServerDrain({ organizationId, userId }, {
-      machineId, targets: ["shop-production/api"], approvalId,
+    const cli = (attemptId: string) => runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId, machineId, targets: ["shop-production/api"], approvalId,
     }));
-    const attemptId = await cli();
+    const attemptId = await cli(requestId);
     await drain(attemptId);
 
-    expect(await cli()).toBe(attemptId);
+    expect(await cli(secondTab)).toBe(attemptId);
     expect((await rows()).map(({ id }) => id)).toEqual([attemptId]);
     expect(drainCalls).toHaveLength(1);
   });

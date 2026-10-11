@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit, Fiber, Option, Result } from "effect";
+import { Effect, Result } from "effect";
 import {
   afterAll,
   beforeAll,
@@ -12,13 +12,13 @@ import {
   type PostgresTestHarness,
   startPostgresTestHarness,
 } from "#/test/postgres";
-import { InngestClient, InngestEventSendError } from "#/modules/inngest/client";
+import { InngestClient } from "#/modules/inngest/client";
 import {
   cancelMachineRemoveAttemptActivity,
   completeMachineRemoveAttemptActivity,
-  dispatchMachineRemoveRequested,
   failOwnedMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
+  startMachineRemove,
 } from "#/modules/machines/machine-removal.server";
 import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { Conflict } from "#/server/public-error";
@@ -55,7 +55,7 @@ describe("machine removal durable ownership", () => {
 
   beforeEach(async () => {
     await harness.pool.query(`
-      truncate table machine_remove_attempt, "user", organization cascade;
+      truncate table machine_remove_attempt, operation_outbox, "user", organization cascade;
       insert into organization (id, name, slug)
       values ('${organizationId}', 'Remove', 'remove');
       insert into "user" (id, email, name)
@@ -63,64 +63,26 @@ describe("machine removal durable ownership", () => {
     `);
   });
 
-  it("deletes only the unowned pending row when post-commit dispatch fails", async () => {
-    const attempt = await request(harness, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  it("keeps the attempt and its unsent event when delivery after commit fails", async () => {
     const failingInngest = asTestDouble<Inngest>()({
       send: async () => {
         throw new Error("Inngest unavailable");
       },
     });
 
-    const exit = await runEffect(
-      dispatchMachineRemoveRequested(attempt.id).pipe(
-        Effect.provideService(InngestClient, failingInngest),
-        Effect.exit,
-      ),
+    const attempt = await runEffect(
+      startMachineRemove({
+        organizationId,
+        requestedByUserId: userId,
+        machineId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        confirmDataLoss: [],
+      }).pipe(Effect.provideService(InngestClient, failingInngest)),
     );
 
-    expect(Exit.isFailure(exit)).toBe(true);
-    if (Exit.isFailure(exit)) {
-      const failure = Cause.findErrorOption(exit.cause);
-      expect(
-        Option.isSome(failure) && failure.value instanceof InngestEventSendError,
-      ).toBe(true);
-    }
-    const rows = await harness.pool.query(
-      "select id from machine_remove_attempt where id = $1",
-      [attempt.id],
-    );
-    expect(rows.rowCount).toBe(0);
-  });
-
-  it("deletes the unowned pending row when post-commit dispatch is interrupted", async () => {
-    const attempt = await request(harness, "cccccccccccccccccccccccccccccccc");
-    let startedResolve: () => void = () => undefined;
-    const started = new Promise<void>((resolve) => {
-      startedResolve = resolve;
-    });
-    const hangingInngest = asTestDouble<Inngest>()({
-      send: () => {
-        startedResolve();
-        return new Promise(() => undefined);
-      },
-    });
-
-    await runEffect(
-      Effect.gen(function* () {
-        const fiber = yield* dispatchMachineRemoveRequested(attempt.id).pipe(
-          Effect.provideService(InngestClient, hangingInngest),
-          Effect.forkChild,
-        );
-        yield* Effect.promise(() => started);
-        yield* Fiber.interrupt(fiber);
-      }),
-    );
-
-    const rows = await harness.pool.query(
-      "select id from machine_remove_attempt where id = $1",
-      [attempt.id],
-    );
-    expect(rows.rowCount).toBe(0);
+    const rows = await harness.pool.query("select state from machine_remove_attempt where id = $1", [attempt.id]);
+    expect(rows.rows).toEqual([{ state: "pending" }]);
+    const outbox = await harness.pool.query("select event_id, sent_at from operation_outbox");
+    expect(outbox.rows).toEqual([{ event_id: `machine-remove-${attempt.id}`, sent_at: null }]);
   });
 
   it("rejects a second active remove for the same organization machine as Conflict", async () => {

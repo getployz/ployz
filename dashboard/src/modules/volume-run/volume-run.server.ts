@@ -1,22 +1,26 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, Namespace, ResolvedServiceSpec, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
+import type { ContainerId, CopyObservation, DestructiveEffect, EnvironmentRef, MachineId, MachineName, Namespace, ResolvedServiceSpec, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
+import type { OperationAsked } from "#/modules/approvals/approvals.server";
+import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import { type InngestRunStatus, sendInngestEvent } from "#/modules/inngest/client";
+import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent } from "#/modules/inngest/events";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import type { Refusal } from "#/modules/volume-run/plan";
+import { type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
   ACTIVE_VOLUME_RUN_STATES,
   type AnsweredMember,
   type AnyVolumeRunArgs,
+  copyName,
   dockerVolumeName,
   managementAddress,
   type Member,
@@ -34,6 +38,7 @@ import { NotFound } from "#/server/public-error";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 type VolumeRunRow = typeof volumeRun.$inferSelect;
+type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
 
 /** Plain JSON: Inngest memoizes step output as JSON. */
 export type RunContext = {
@@ -90,20 +95,13 @@ const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message:
 export const volumeBusyMessage = (row: Pick<VolumeRunRow, "id" | "kind" | "state">) =>
   `VolumeBusy: run ${row.id} (${row.kind}) is ${row.state}; volume runs ${row.id} shows it`;
 
-const dispatch = Effect.fn("VolumeRun.dispatch")(function* (row: VolumeRunRow) {
-  const { drizzle } = yield* Database;
-  yield* sendInngestEvent(createVolumeRunRequestedEvent({
+const enqueueRun = (row: VolumeRunRow) =>
+  enqueueEvent(createVolumeRunRequestedEvent({
     organizationId: row.organizationId,
     environment: row.environmentId,
     volumeId: row.volumeId,
     runId: row.id,
-  })).pipe(
-    Effect.catch(() =>
-      drizzle.update(volumeRun)
-        .set(ended("not_started", "the run could not be started; request it again"))
-        .where(and(eq(volumeRun.id, row.id), eq(volumeRun.state, "requested"), isNull(volumeRun.inngestRunId)))),
-  );
-});
+  }));
 
 const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   const { drizzle } = yield* Database;
@@ -111,7 +109,9 @@ const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   return row;
 });
 
-const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
+type ResolvedVolume = Effect.Success<ReturnType<typeof resolveVolume>>;
+
+export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   organizationId: string,
   environment: EnvironmentRef,
   volumeId: string,
@@ -130,13 +130,104 @@ const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   };
 });
 
+const refusalCode = {
+  unanswered: "unavailable",
+  confirm_required: "confirmation_required",
+  invalid: "invalid_argument",
+  no_pool: "invalid_argument",
+  no_writer: "conflict",
+  two_writers: "conflict",
+  volume_switching: "conflict",
+  handed: "conflict",
+  stale_slot: "conflict",
+  second_mirror: "conflict",
+  no_mirror: "conflict",
+} satisfies Record<RefusalCode, string>;
+
+const deletesCopy = (volume: ResolvedVolume, member: AnsweredMember): DestructiveEffect => ({
+  kind: "deletes_volume",
+  name: copyName(volume.volumeName, member.machine.name),
+  node: `${member.machine.id}/${volume.dockerVolume}`,
+  path: `volumes/${member.machine.id}/${volume.dockerVolume}`,
+});
+
+/** The copies a phase deletes with no other copy left: a Mirror Remove with no writer, or a Release that discards the handed copy. */
+function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase): DestructiveEffect[] {
+  switch (phase.kind) {
+    case "delete_mirror":
+      return phase.forget === null ? phase.destroy.map((member) => deletesCopy(volume, member)) : [];
+    case "release":
+      return phase.thaw && phase.mirror !== null ? [deletesCopy(volume, phase.mirror)] : [];
+    case "mirror":
+    case "sync":
+    case "move":
+      return [];
+  }
+}
+
+const VERBS = {
+  release: "release",
+  delete_mirror: "remove_mirror",
+  mirror: null,
+  sync: null,
+  move: null,
+} satisfies Record<VolumeRunKind, OperationVerb | null>;
+
+export type VolumeRunPlan =
+  | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null }
+  | { readonly ok: false; readonly refusal: StoreRefusal };
+
+/**
+ * A requested run planned against the copies the Servers hold now, so a refusal reaches the caller before any row
+ * exists. The run plans again when it starts, since the copies may move in between.
+ */
+export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
+  organizationId: string,
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
+) {
+  const volume = yield* resolveVolume(organizationId, input.environment, input.volumeId);
+  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume).pipe(Effect.option);
+  if (Option.isNone(members)) {
+    return { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } satisfies VolumeRunPlan;
+  }
+  const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
+  if (!planned.ok) {
+    const { code, message, to } = planned.refusal;
+    const details = to === undefined ? null : { move_to: to };
+    return { ok: false, refusal: { code: refusalCode[code], message, details } } satisfies VolumeRunPlan;
+  }
+  const verb = VERBS[input.kind];
+  const effects = phaseEffects(volume, planned.phase);
+  const asked: OperationAsked | null = verb === null ? null : {
+    subject: `volume:${input.volumeId}`,
+    verb,
+    name: volume.volumeName,
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node) },
+    effects,
+  };
+  return { ok: true, volume, asked } satisfies VolumeRunPlan;
+});
+
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
+  id: string = crypto.randomUUID(),
+) {
+  const database = yield* Database;
+  const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
+  return yield* database.transaction(insertRun(caller, input, volume, id));
+});
+
+/** Writes the run under `id` with its outbox event, or refuses with the run already active on the Volume. */
+export const insertRun = Effect.fn("VolumeRun.insert")(function* (
+  caller: { readonly userId: string | null; readonly organizationId: string },
+  input: { readonly volumeId: string } & VolumeRunInput,
+  volume: ResolvedVolume,
+  id: string,
 ) {
   const { drizzle } = yield* Database;
-  const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
   const [inserted] = yield* drizzle.insert(volumeRun).values({
+    id,
     organizationId: caller.organizationId,
     environmentId: volume.environmentId,
     volumeId: input.volumeId,
@@ -155,9 +246,8 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
       : { code: "conflict", message: volumeBusyMessage(active), details: { run: volumeRunView(active) } };
     return { ok: false, refusal } as const;
   }
-  yield* dispatch(inserted);
-  const row = yield* readRow(inserted.id);
-  return { ok: true, run: volumeRunView(row ?? inserted) } as const;
+  yield* enqueueRun(inserted);
+  return { ok: true, run: volumeRunView(inserted) } as const;
 });
 
 export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizationId: string, volumeId: string) {
@@ -373,12 +463,17 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
-  const session = yield* openSession(ctx.organizationId);
+  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume);
+});
+
+/** Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer. */
+export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string) {
+  const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   return yield* Effect.forEach(managed, ({ machine, storage }) =>
-    session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: ctx.dockerVolume } }).pipe(
+    session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.option,
       Effect.map((view): Member => {
@@ -511,13 +606,15 @@ export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(func
   organizationId: string,
   observe: CopyObserver = observeOrganizationCopies,
 ) {
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
   const names = yield* findOrphanSlots(organizationId, observe);
   const started: string[] = [];
   for (const name of names) {
     const parsed = parseDockerVolumeName(name);
     if (parsed === null) continue;
-    const [row] = yield* drizzle.insert(volumeRun).values({
+    const row = yield* database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [inserted] = yield* drizzle.insert(volumeRun).values({
       organizationId,
       environmentId: parsed.namespace,
       volumeId: parsed.volumeId,
@@ -528,8 +625,10 @@ export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(func
       orphan: true,
       requestedByUserId: null,
     }).onConflictDoNothing().returning();
+      if (inserted !== undefined) yield* enqueueRun(inserted);
+      return inserted;
+    }));
     if (row === undefined) continue;
-    yield* dispatch(row);
     started.push(row.id);
   }
   return started;

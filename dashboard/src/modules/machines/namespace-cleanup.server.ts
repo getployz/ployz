@@ -3,7 +3,6 @@ import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Schedule } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { sendInngestEvent } from "#/modules/inngest/client";
 import { createNamespaceCleanupRequestedEvent, type NamespaceCleanupRequestedEventData } from "#/modules/inngest/events";
 import {
   CLEANUP_END_CODES,
@@ -14,6 +13,7 @@ import {
   type CleanupState,
 } from "#/modules/machines/namespace-cleanup";
 import { namespaceCleanup } from "#/modules/machines/tables";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -95,27 +95,26 @@ const endedSaying = (code: "refused" | "incomplete", message: string) => ({
   endedAt: new Date(),
 }) as const;
 
-const dispatch = Effect.fn("NamespaceCleanup.dispatch")(function* (row: CleanupRow) {
-  const { drizzle } = yield* Database;
-  yield* sendInngestEvent(createNamespaceCleanupRequestedEvent({ cleanupId: row.id, organizationId: row.organizationId })).pipe(
-    Effect.tapError(() =>
-      drizzle.update(namespaceCleanup)
-        .set(ended("not_started"))
-        .where(and(eq(namespaceCleanup.id, row.id), eq(namespaceCleanup.state, "pending"), isNull(namespaceCleanup.inngestRunId)))),
-  );
-});
+/** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
+const enqueueCleanup = (row: CleanupRow) =>
+  enqueueEvent(createNamespaceCleanupRequestedEvent({ cleanupId: row.id, organizationId: row.organizationId }));
 
 /**
- * A clean the signed-in CLI asked for, deleting exactly the Volumes it previewed. A retry carrying the approval this
- * clean consumed answers its row; a request while another clean of the Namespace is active answers that one.
+ * A clean the signed-in CLI asked for, deleting exactly the Volumes it previewed, under the attempt its request admits.
+ * Answers the clean that consumed the same approval, or the one already active on the Namespace, instead of a second.
  */
 export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
-  input: { readonly namespace: string; readonly confirmDataLoss: readonly DataLossIdentity[]; readonly approvalId: string | null },
+  input: {
+    readonly attemptId: string;
+    readonly namespace: string;
+    readonly confirmDataLoss: readonly DataLossIdentity[];
+    readonly approvalId: string | null;
+  },
 ) {
   const { drizzle } = yield* Database;
   const [inserted] = yield* drizzle.insert(namespaceCleanup).values({
-    id: crypto.randomUUID(),
+    id: input.attemptId,
     organizationId: caller.organizationId,
     namespace: input.namespace,
     requestedByUserId: caller.userId,
@@ -123,7 +122,7 @@ export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(fun
     confirmDataLoss: [...input.confirmDataLoss],
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
-    yield* dispatch(inserted);
+    yield* enqueueCleanup(inserted);
     return inserted.id;
   }
   const consumed = input.approvalId === null ? [] : yield* drizzle.select().from(namespaceCleanup).where(and(
@@ -136,7 +135,6 @@ export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(fun
     inArray(namespaceCleanup.state, ACTIVE_STATES),
   )).limit(1);
   if (active === undefined) return yield* new Conflict({ userFacing: true, message: "A clean of this namespace just ended. Try again." });
-  if (active.state === "pending" && active.inngestRunId === null) yield* dispatch(active);
   return active.id;
 });
 

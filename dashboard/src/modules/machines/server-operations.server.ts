@@ -243,6 +243,9 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
         const frame = yield* observe(organizationId);
         return frame.machines.some(({ machine }) => machine.id === key) ? stored : null;
       }
+      case "release":
+      case "remove_mirror":
+        return stored;
     }
   });
   return fresh.pipe(Effect.orElseSucceed(() => stored));

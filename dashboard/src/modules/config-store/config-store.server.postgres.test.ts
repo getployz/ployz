@@ -23,7 +23,13 @@ import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
-import { releaseServerActivity, removeMachineActivity } from "#/modules/machines/machine-removal.server";
+import {
+  completeMachineRemoveAttemptActivity,
+  prepareMachineRemoveAttemptActivity,
+  releaseServerActivity,
+  removeMachineActivity,
+} from "#/modules/machines/machine-removal.server";
+import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -327,12 +333,23 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
+        const userId = (yield* resolveCaller(new Headers({ cookie: alice }))).userId;
+        let runs = 0;
         const removeServer = (server: string, noReset: boolean) => Effect.gen(function* () {
           const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
-          const removed = yield* Effect.scoped(removeMachineActivity(removal));
+          const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: userId });
+          const inngestRunId = `run-${++runs}`;
+          yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
+          const removed = yield* Effect.scoped(removeMachineActivity({ ...removal, id: attempt.id, inngestRunId }));
           assert.strictEqual(removed.kind, "removed");
           if (removed.kind !== "removed") return assert.fail("not removed");
           const release = yield* releaseServerActivity({ ...removal, ...removed });
+          yield* completeMachineRemoveAttemptActivity({
+            attemptId: attempt.id,
+            inngestRunId,
+            completion: { state: "succeeded", result: { resetWarning: removed.resetWarning, release } },
+            now: new Date(),
+          });
           return { removed, release };
         }).pipe(Effect.provideService(OrganizationRuntime, runtime));
         const remove = removeServer(machineId, false);

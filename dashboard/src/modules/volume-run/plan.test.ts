@@ -141,7 +141,7 @@ describe("plan_from_copies_table", () => {
     ["release a frozen writer not sent yet", release, [member("a", "switching"), member("b", "behind")], "release a thaw mirror none"],
     ["release a stopping writer", release, [member("a", "stopping"), member("b", "mirror")], "release a thaw mirror none"],
     ["release a thawing writer", release, [member("a", "thawing")], "release a thaw mirror none"],
-    ["release after handover", release, [member("a", "handed"), member("b", "stale")], "refuse volume_switching"],
+    ["release after handover", release, [member("a", "handed"), member("b", "stale")], "refuse handed"],
     ["release with a Server unanswered", release, [member("a", "switching"), member("b", "unanswered")], "refuse unanswered"],
     ["release with no writer", release, [member("b", "mirror")], "refuse no_writer"],
   ])("%s", (_, input, members, expected) => {
@@ -158,7 +158,7 @@ describe("plan_from_copies_table", () => {
   it("names the Server a handed Volume continues on", () => {
     expect(planFromCopies(release, [member("fsn-1", "handed"), member("fsn-2", "stale")])).toEqual({
       ok: false,
-      refusal: { code: "volume_switching", message: "data is handed to fsn-2; volume move data --to fsn-2 again continues from there" },
+      refusal: { code: "handed", message: "data is handed to fsn-2; volume move data --to fsn-2 again continues from there", to: "fsn-2" },
     });
   });
 

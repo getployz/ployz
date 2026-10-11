@@ -183,7 +183,7 @@ type Reply = {
   readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
 };
 
-type As = { readonly cookie?: string; readonly bearer?: string; readonly approval?: string };
+type As = { readonly cookie?: string; readonly bearer?: string; readonly approval?: string; readonly key?: string };
 
 type CliBody = JsonObject;
 
@@ -192,6 +192,7 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   if (as.cookie !== undefined) headers.set("cookie", as.cookie);
   if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);
   if (as.approval !== undefined) headers.set("x-ployz-approval", as.approval);
+  if (as.key !== undefined) headers.set("x-ployz-request-key", as.key);
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
   const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
@@ -748,9 +749,7 @@ it.live(
         assert.deepStrictEqual((yield* cli("GET", `namespace-cleanups/${cleanupId}`, alice)).json, { state: "pending" });
         const again = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, approval: approvalId });
         assert.strictEqual(again.json.id, cleanupId);
-        assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [
-          `namespace-cleanup-${cleanupId}`, `namespace-cleanup-${cleanupId}`,
-        ]);
+        assert.deepStrictEqual(sent.mock.calls.map(([event]) => (event as { id?: string }).id), [`namespace-cleanup-${cleanupId}`]);
         assert.strictEqual((yield* cli("GET", "namespace-cleanups/not-a-uuid", alice)).json.error?.code, "not_found");
 
         const removal = yield* cli("DELETE", `servers/${fra1}`, alice, { no_reset: true });
@@ -1006,6 +1005,33 @@ for (const operation of operations) {
 }
 
 it.live(
+  "a request key admits one operation: a replay answers its attempt, another request under it conflicts, a malformed one refuses",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-request-key-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf({ destroys: false, namespace: "left-behind" }), inngest });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const keyed = { ...alice, key: "clean-left-behind-1" };
+
+        const first = yield* cli("POST", "namespaces/left-behind/clean", keyed);
+        assert.strictEqual(first.status, 202, first.text);
+        const replayed = yield* cli("POST", "namespaces/left-behind/clean", keyed);
+        assert.deepStrictEqual([replayed.status, replayed.json.id], [202, first.json.id]);
+        assert.lengthOf(sent.mock.calls, 1);
+
+        const other = yield* cli("POST", "namespaces/elsewhere/clean", keyed);
+        assert.deepStrictEqual([other.status, other.json.error?.code], [409, "conflict"]);
+        const malformed = yield* cli("POST", "namespaces/left-behind/clean", { ...alice, key: "short" });
+        assert.deepStrictEqual([malformed.status, malformed.json.error?.code], [422, "invalid_argument"]);
+        assert.lengthOf(sent.mock.calls, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "with asking off, an operation naming a pending approval still waits on it, and one naming none runs",
   () =>
     Effect.gen(function* () {
@@ -1035,7 +1061,8 @@ it.live(
         plan.destroys = true;
         const unnamed = yield* cli(clean.method, clean.path, alice);
         assert.strictEqual(unnamed.status, 202, unnamed.text);
-        assert.lengthOf(sent.mock.calls, 2);
+        assert.strictEqual(unnamed.json.id, emptied.json.id);
+        assert.lengthOf(sent.mock.calls, 1);
 
         const approvals = yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status }).from(operationApprovals);
         assert.sameDeepMembers(approvals, [{ id: removalId, status: "pending" }, { id: cleanId, status: "pending" }]);

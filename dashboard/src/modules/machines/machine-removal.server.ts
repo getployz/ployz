@@ -1,8 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import type { LocalMachineRemoved, MachineId } from "@ployz/sdk";
-import { Data, Effect, Exit } from "effect";
-import { sendInngestEvent } from "#/modules/inngest/client";
+import { Data, Effect } from "effect";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
 import {
@@ -20,14 +19,16 @@ import type {
   ServerRelease,
 } from "#/modules/machines/machine-removal";
 import {
-  abandonPendingMachineRemoveAttempt,
   claimMachineRemoveAttempt,
   completeMachineRemoveAttempt,
   loadAuthorizedMachineRemoveAttempt,
   loadMachineRemoveAttempt,
   loadMachineRemoveAttemptByRun,
+  markMachineRemoveSent,
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
@@ -85,11 +86,14 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
   completeMachineRemoveAttempt(input));
 
 /**
- * Resets the Server under Cloud's own connection. The pairing generation Cloud reached it through comes back with the
- * outcome, as the witness `releaseServerActivity` checks before it lets go of anything.
+ * Resets the Server under Cloud's own connection, asking it at most once per attempt: a retry after the ask went
+ * answers `lost`, since the Server may be reset already. The pairing generation Cloud reached it through comes back
+ * with the outcome, as the witness `releaseServerActivity` checks before it lets go of anything.
  */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
-  function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss" | "noReset">) {
+  function* (attempt: Pick<MachineRemoveAttemptContext, "id" | "organizationId" | "machineId" | "confirmDataLoss" | "noReset"> & {
+    readonly inngestRunId: string;
+  }) {
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(attempt.organizationId);
@@ -98,6 +102,9 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
         operation: "open organization runtime",
         cause: session,
       });
+    }
+    if (!(yield* markMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId }))) {
+      return { kind: "lost" } as const;
     }
     const machine = asMachineId(attempt.machineId);
     const outcome = yield* asRemoveMachineOutcome(attempt.noReset
@@ -241,18 +248,6 @@ export const loadMachineDataLoss = Effect.fn("MachineRemoval.loadDataLoss")(
   },
 );
 
-export const dispatchMachineRemoveRequested = Effect.fn(
-  "MachineRemoval.dispatchRequested",
-)(function* (attemptId: string) {
-  yield* sendInngestEvent(createMachineRemoveRequestedEvent({ attemptId })).pipe(
-    Effect.onExit((exit) =>
-      Exit.isSuccess(exit)
-        ? Effect.void
-        : abandonPendingMachineRemoveAttempt(attemptId),
-    ),
-  );
-});
-
 export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
   function* (actor: Actor, input: EnqueueMachineRemoveInput) {
     const organization = yield* requireInfrastructureOrganization(
@@ -268,12 +263,18 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
   },
 );
 
-/** Start the one durable removal of a Server, the dashboard's and `ployz server rm`'s alike; both follow its attempt. */
+/**
+ * Start the one durable removal of a Server, the dashboard's and `ployz server rm`'s alike; both follow its attempt.
+ * The attempt and its run's event commit together.
+ */
 export const startMachineRemove = Effect.fn("MachineRemoval.start")(
   function* (input: Parameters<typeof requestMachineRemoveAttempt>[0]) {
-    const requested = yield* requestMachineRemoveAttempt(input);
-    yield* dispatchMachineRemoveRequested(requested.id);
-    return requested;
+    const { transaction } = yield* Database;
+    return yield* transaction(Effect.gen(function* () {
+      const requested = yield* requestMachineRemoveAttempt(input);
+      yield* enqueueEvent(createMachineRemoveRequestedEvent({ attemptId: requested.id }));
+      return requested;
+    }));
   },
 );
 

@@ -55,8 +55,8 @@ describe("clean-namespace", () => {
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (approvalId: string | null = null) =>
-    runEffect(requestNamespaceCleanup(caller, { namespace: "left-behind", confirmDataLoss: [data, cache], approvalId }));
+  const request = (approvalId: string | null = null, attemptId: string = crypto.randomUUID()) =>
+    runEffect(requestNamespaceCleanup(caller, { attemptId, namespace: "left-behind", confirmDataLoss: [data, cache], approvalId }));
   const clean = (cleanupId: string, runId = "run-clean") => new InngestTestEngine({
     function: createCleanNamespace(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "namespace/cleanup.requested", data: { cleanupId, organizationId } }],
@@ -91,7 +91,7 @@ describe("clean-namespace", () => {
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
     await harness.pool.query(`
-      truncate table organization, "user" cascade;
+      truncate table organization, "user", operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
       insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
     `);

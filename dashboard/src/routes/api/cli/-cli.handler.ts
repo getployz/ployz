@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
-import { decideApproval, gateOperation } from "#/modules/approvals/approvals.server";
+import { decideApproval } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -19,18 +19,19 @@ import {
 import { refusal } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
-import { loadAuthorizedMachineRemoveAttempt, machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
-import { startMachineRemove } from "#/modules/machines/machine-removal.server";
+import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
-import { readCliNamespaceCleanup, requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
-import { readCliServerDrain, requestCliServerDrain } from "#/modules/machines/server-drain.server";
-import { freshApproval, freshOperationDigest, planClean, planDrain, planRemove } from "#/modules/machines/server-operations.server";
-import { readCliServerUpgrade, requestCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
+import { readCliNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
+import { readCliServerDrain } from "#/modules/machines/server-drain.server";
+import { freshApproval, freshOperationDigest, planClean } from "#/modules/machines/server-operations.server";
+import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
+import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
+import { cleanNamespace, drainServer, removeServer, runVolume, upgradeServer } from "#/modules/operations/operations.server";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { getVolumeRun, listVolumeRuns, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
@@ -89,6 +90,19 @@ const approvalHeader = (request: Request) => request.headers.get("x-ployz-approv
 
 const accepted = (id: string) => Response.json({ id }, { status: 202 });
 
+/** The request key and approval an operation call carries. */
+const operationCall = (request: Request) => {
+  const key = requestKeyOf(request.headers.get(REQUEST_KEY_HEADER));
+  return Effect.succeed(key.ok
+    ? { ok: true, key: key.key, approvalId: approvalHeader(request) } as const
+    : { ok: false, refused: key } as const);
+};
+
+const admitted = <A>(admission: Admission | null, reply: (id: string) => A) => {
+  if (admission === null) return noSuchServer();
+  return admission.ok ? reply(admission.id) : refusal(admission.refusal);
+};
+
 const serverIdOf = (id: string | undefined) => {
   const machineId = decodeURIComponent(id ?? "");
   return Schema.is(rustMachineIdSchema)(machineId) ? machineId : null;
@@ -144,26 +158,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const machineId = serverIdOf(id);
       if (machineId === null) return noSuchServer();
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
-      const noReset = "no_reset" in input;
-      const approval = approvalHeader(request);
-      const consumed = Schema.is(Uuid)(approval)
-        ? yield* machineRemoveAttemptConsuming(caller.organization.id, approval, machineId, noReset)
-        : null;
-      if (consumed !== null) return { id: consumed };
-      const plan = yield* planRemove(caller.organization.id, machineId, noReset ? null : input.confirm_data_loss.confirmed);
-      if (plan === null) return noSuchServer();
-      const gated = yield* gateOperation(caller, approval, plan);
-      if (!gated.ok) return refusal(gated.refusal);
-      const started = yield* startMachineRemove({
-        organizationId: caller.organization.id,
-        requestedByUserId: caller.userId,
-        machineId,
-        approvalId: gated.approvalId,
-        ...("no_reset" in input
-          ? { confirmDataLoss: [], noReset: true }
-          : { confirmDataLoss: [...input.confirm_data_loss.confirmed] }),
-      });
-      return { id: started.id };
+      const call = yield* operationCall(request);
+      if (!call.ok) return refusal(call.refused.refusal);
+      const confirmed = "no_reset" in input ? null : input.confirm_data_loss.confirmed;
+      return admitted(yield* removeServer(caller, machineId, confirmed, call), (id) => ({ id }));
     }
     case "GET server-removals/:id": {
       const attempt = Schema.is(Uuid)(id)
@@ -175,11 +173,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST servers/:id/drain": {
       const machineId = serverIdOf(id);
       if (machineId === null) return noSuchServer();
-      const plan = yield* planDrain(caller.organization.id, machineId);
-      if (plan === null) return noSuchServer();
-      const gated = yield* gateOperation(caller, approvalHeader(request), plan);
-      if (!gated.ok) return refusal(gated.refusal);
-      return accepted(yield* requestCliServerDrain(forgetter(caller), { machineId, targets: plan.targets, approvalId: gated.approvalId }));
+      const call = yield* operationCall(request);
+      if (!call.ok) return refusal(call.refused.refusal);
+      return admitted(yield* drainServer(caller, machineId, call), accepted);
     }
     case "GET server-drains/:id": {
       const drain = Schema.is(Uuid)(id) ? yield* readCliServerDrain(caller.organization.id, id) : null;
@@ -189,8 +185,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const machineId = serverIdOf(id);
       if (machineId === null) return noSuchServer();
       const input = yield* decodeBody(UpgradeServer, request, "An upgrade takes at most the Release Channel it names.");
-      const requested = yield* requestCliServerUpgrade(forgetter(caller), { machineId, channel: input.channel });
-      return requested.ok ? accepted(requested.id) : refusal(requested.refusal);
+      const call = yield* operationCall(request);
+      if (!call.ok) return refusal(call.refused.refusal);
+      return admitted(yield* upgradeServer(caller, { machineId, channel: input.channel }, call), accepted);
     }
     case "GET server-upgrades/:id":
       if (!isUpgradeAttemptId(id)) return missingRefusal("No such upgrade.");
@@ -201,15 +198,9 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { namespace, volumes: plan.doomed.map(({ identity, label }) => ({ ...identity.id, label })) };
     }
     case "POST namespaces/:id/clean": {
-      const namespace = decodeURIComponent(id ?? "");
-      const plan = yield* planClean(caller.organization.id, namespace);
-      const gated = yield* gateOperation(caller, approvalHeader(request), plan);
-      if (!gated.ok) return refusal(gated.refusal);
-      return accepted(yield* requestNamespaceCleanup(forgetter(caller), {
-        namespace,
-        confirmDataLoss: plan.doomed.map(({ identity }) => identity),
-        approvalId: gated.approvalId,
-      }));
+      const call = yield* operationCall(request);
+      if (!call.ok) return refusal(call.refused.refusal);
+      return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call), accepted);
     }
     case "GET namespace-cleanups/:id": {
       const cleanup = Schema.is(Uuid)(id) ? yield* readCliNamespaceCleanup(caller.organization.id, id) : null;
@@ -266,14 +257,13 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "POST volumes/:id/runs": {
       const body = yield* decodeBody(NewVolumeRun, request, "A volume run takes its environment and what to run.");
-      return yield* requestVolumeRun(forgetter(caller), {
-        volumeId: id ?? "",
-        environment: body.environment,
-        ...volumeRunInput(body),
-      }).pipe(
-        Effect.map((requested) => requested.ok ? { run: requested.run } : refusal(requested.refusal)),
-        Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
-      );
+      const call = yield* operationCall(request);
+      if (!call.ok) return refusal(call.refused.refusal);
+      const input = { volumeId: id ?? "", environment: body.environment, ...volumeRunInput(body) };
+      return yield* Effect.gen(function* () {
+        const run = yield* runVolume(caller, input, call);
+        return run.ok ? { run: yield* getVolumeRun(caller.organization.id, run.id) } : refusal(run.refusal);
+      }).pipe(Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))));
     }
     case "GET volumes/:id/runs":
       return { runs: yield* listVolumeRuns(caller.organization.id, id ?? "") };

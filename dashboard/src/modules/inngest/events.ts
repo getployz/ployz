@@ -343,6 +343,11 @@ export function createServerUpgradeRequestedEvent(data: ServerUpgradeRequestedEv
   return { name: serverUpgradeRequestedEvent, data } as const;
 }
 
+/** Keyed by the CLI's attempt: sending it again for the same request runs nothing new. */
+export function createCliServerUpgradeRequestedEvent(data: ServerUpgradeRequestedEventData & { readonly attemptId: string }) {
+  return { id: `server-upgrade-${data.attemptId}`, name: serverUpgradeRequestedEvent, data } as const;
+}
+
 /** Keyed by the run's row: sending it again for the same request runs nothing new. */
 export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData) {
   return { id: `volume-run-${data.runId}`, name: volumeRunRequestedEvent, data } as const;
@@ -521,6 +526,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createMachineRemoveRequestedEvent>
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createServerUpgradeRequestedEvent>
+  | ReturnType<typeof createCliServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>

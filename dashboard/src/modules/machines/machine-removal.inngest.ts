@@ -87,8 +87,26 @@ export async function executeProcessMachineRemove({
 
   const attempt = prepared.attempt;
   const removed = await step.run("remove-machine", () =>
-    runInngestEffect(Effect.scoped(removeMachineActivity(attempt))),
+    runInngestEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }))),
   );
+
+  if (removed.kind === "lost") {
+    await step.run("complete-lost", () =>
+      runInngestEffect(
+        completeMachineRemoveAttemptActivity({
+          attemptId,
+          inngestRunId: runId,
+          completion: {
+            state: "failed",
+            failureCode: "lost",
+            failureMessage: "Cloud lost track of the removal after asking the Server; it may be reset already.",
+          },
+          now: new Date(),
+        }),
+      ),
+    );
+    return { attemptId, status: "lost" as const };
+  }
 
   if (removed.kind === "missing_identities") {
     await step.run("complete-missing-identities", () =>

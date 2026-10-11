@@ -5,7 +5,7 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The Server and Namespace operations the CLI runs through Cloud that may wait for a human. Upgrade never does. */
-export type OperationVerb = "drain" | "clean" | "remove";
+export type OperationVerb = "drain" | "clean" | "remove" | "release" | "remove_mirror";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
@@ -18,7 +18,7 @@ export type ApprovalReview =
   | { effects: DestructiveEffect[]; diff: DiffView }
   | { effects: DestructiveEffect[]; operation: OperationReview };
 
-const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
 /** What an approval asks about, as verb and name: "Deploy production", "Publish production" or "Drain fra-1". */
 export function approvalSubject(command: string, review: ApprovalReview) {
