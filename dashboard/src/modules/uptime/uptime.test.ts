@@ -89,6 +89,29 @@ describe("incidentWindow", () => {
       expect(window.from).toBeLessThanOrEqual(opened);
     }
   });
+
+  it("keeps a 20-minute incident 12 days old centred on it", () => {
+    const to = Date.parse(at);
+    const opened = to - 12 * DAY;
+    const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
+    expect(window).toEqual({ from: opened - 3 * DAY + 6 * HOUR, to: opened + 3 * DAY + 6 * HOUR, stepMs: 6 * HOUR });
+  });
+
+  it("stays inside the 90 days for an incident in their oldest days", () => {
+    const to = Date.parse(at);
+    const opened = to - 89 * DAY;
+    const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
+    expect(window.from).toBe(to - 90 * DAY);
+    expect(window.to).toBeLessThanOrEqual(to);
+    expect(window.from).toBeLessThanOrEqual(opened);
+    expect(window.to).toBeGreaterThanOrEqual(opened + 20 * 60_000);
+  });
+
+  it("shows all 90 days for an open incident 30 days long", () => {
+    const to = Date.parse(at);
+    const window = incidentWindow(incident([observation({ status: 502 })], new Date(to - 30 * DAY).toISOString()), to);
+    expect(window).toEqual({ from: to - 90 * DAY, to, stepMs: 18 * HOUR });
+  });
 });
 
 describe("checkSeries", () => {
