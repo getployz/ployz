@@ -6,6 +6,9 @@ description: "Every field in a service's Settings: what it does, its default, an
 Open a service on the canvas, then click **Settings**. Your changes are staged until you
 [deploy](../deploy/deployments.md), except the few marked **Takes effect at once**.
 
+From the CLI, `ployz get web` prints each setting with its value and default, then the
+service's domains. `ployz explain web` lists every setting a service takes, with its default.
+
 ## Source
 
 A repository service shows **Repository** through **Watch paths**, an image service shows
