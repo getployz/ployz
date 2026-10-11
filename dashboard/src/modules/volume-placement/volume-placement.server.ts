@@ -28,6 +28,7 @@ const view = (row: Row): PlacementRow => ({
 const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
 const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check the Deploy that took this Volume. Try again.", details: null };
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
+const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belongs to another Environment.", details: null };
 const STAGING: StoreRefusal = { code: "conflict", message: "This restore is still being staged. Try again in a minute.", details: null };
 /** How long a restore's row may wait on its Store write; past it, the write was lost and the row can go. */
 const STAGING_MS = 60_000;
@@ -160,9 +161,10 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
   const { drizzle } = yield* Database;
   const seed = current.staged?.seed;
   if (seed !== undefined) {
-    const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
-    const restored = volumes.find((volume) => volume.id === volumeId);
-    const source = volumes.find((volume) => volume.id === seed.sourceVolumeId);
+    const read = yield* readStore(organizationId, { query: "volumes", environment });
+    if (read.environment.id !== current.environmentId) return { ok: false, refusal: ELSEWHERE } satisfies PlacementDiscard;
+    const restored = read.volumes.find((volume) => volume.id === volumeId);
+    const source = read.volumes.find((volume) => volume.id === seed.sourceVolumeId);
     if (restored === undefined && Date.now() - current.createdAt.getTime() < STAGING_MS) {
       return { ok: false, refusal: STAGING } satisfies PlacementDiscard;
     }

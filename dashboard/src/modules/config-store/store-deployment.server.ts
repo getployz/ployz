@@ -95,13 +95,16 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
     // Its Deployment was replaced, cancelled or ended, another runner owns it, or this one lost track of it.
     Effect.catchIf(refusedWith("conflict"), (refused) => Effect.succeed({ nothingToRun: refused.message })),
     Effect.ensuring(released(store, data.organizationId, data.deploymentId)),
-    // Its outcome may move a PR check.
-    Effect.tap(() => storeTry(() => store.checks(data.environmentId)).pipe(
-      Effect.flatMap((pulls) => requestChecks(data.organizationId, pulls)),
-      Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { data, error })),
-    )),
+    Effect.tap(() => recheck(store, data.organizationId, data.environmentId)),
   );
 });
+
+/** A Deployment's outcome may move a PR check. */
+const recheck = (store: ConfigStore, organizationId: string, environmentId: string) =>
+  storeTry(() => store.checks(environmentId)).pipe(
+    Effect.flatMap((pulls) => requestChecks(organizationId, pulls)),
+    Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { organizationId, environmentId, error })),
+  );
 
 /** Delete the Deployment's upload if it has ended; a failure leaves it for the next run or upload to find. */
 const released = (store: ConfigStore, organizationId: string, deploymentId: string) =>
@@ -126,12 +129,13 @@ const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
 
 /** Run `runId` could not move the Deployment's Volumes: the Store records it failed with `failure`, before it claims it. */
 export const failStoreDeploymentStorage = Effect.fn("StoreDeployment.failStorage")(function* (
-  organizationId: string, deploymentId: string, runId: string, failure: string,
+  organizationId: string, environmentId: string, deploymentId: string, runId: string, failure: string,
 ) {
   const store = yield* cloudStore;
   const failed = yield* failUnclaimed(store, organizationId, deploymentId, runId, failure, failure).pipe(
     Effect.ensuring(released(store, organizationId, deploymentId)),
   );
+  yield* recheck(store, organizationId, environmentId);
   yield* releasePlacementClaims(organizationId, deploymentId);
   yield* forgetStoreDeploymentRun(runId);
   return failed;

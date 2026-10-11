@@ -124,7 +124,7 @@ it.live(
       // A run that gave up moving its Volumes fails the Deployment and returns them to staged.
       yield* write({ command: "admit", admit: "deploy", id: UNSTORED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* claim(UNSTORED);
-      expect(yield* failStoreDeploymentStorage(ORGANIZATION, UNSTORED, "storage-run", "data: web-2 did not answer").pipe(Effect.provide(services)))
+      expect(yield* failStoreDeploymentStorage(ORGANIZATION, ENVIRONMENT, UNSTORED, "storage-run", "data: web-2 did not answer").pipe(Effect.provide(services)))
         .toEqual({ failed: UNSTORED });
       expect(yield* claimOn(UNSTORED)).toBeNull();
 
