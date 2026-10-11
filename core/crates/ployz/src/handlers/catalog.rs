@@ -5,7 +5,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use ployz_core::ServiceName;
 use ployz_store::catalog::{self, Explained};
-use ployz_store::{EnvironmentQuery, NodeName};
+use ployz_store::{EnvironmentQuery, NodeName, SettingPath};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -343,7 +343,9 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     let path = leaf_matches(root)
         .get_one::<String>("path")
         .expect("path is required");
-    if let Ok(NodeName::Service(service)) = NodeName::parse(path) {
+    // The canonical path, so `WEB` names Service `web` as `SettingPath` reads it.
+    let node = SettingPath::parse(path).map(|path| NodeName::parse(&path.to_string()));
+    if let Ok(Ok(NodeName::Service(service))) = node {
         let listing = listing(&service)?;
         return ui::list(&listing, &listing.table());
     }
@@ -399,7 +401,8 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
 struct Listing {
     service: ServiceName,
     settings: Vec<Listed>,
-    domains: String,
+    /// No Setting: `ployz domain add` sets them.
+    domains: Listed,
 }
 
 #[derive(Serialize)]
@@ -430,8 +433,14 @@ fn listing(service: &ServiceName) -> Result<Listing, Error> {
             applies: text(one, "x-ployz-apply"),
         })
         .collect();
+    let add = shell_words::join(["ployz", "domain", "add", service.as_str()]);
     Ok(Listing {
-        domains: shell_words::join(["ployz", "domain", "add", service.as_str()]),
+        domains: Listed {
+            path: format!("{service}.domains"),
+            title: format!("Domains, set with `{add}`"),
+            default: None,
+            applies: "staged".to_owned(),
+        },
         service: service.clone(),
         settings,
     })
@@ -440,7 +449,7 @@ fn listing(service: &ServiceName) -> Result<Listing, Error> {
 impl Listing {
     fn table(&self) -> Table {
         let mut table = Table::new(["SETTING", "DEFAULT", "APPLIES", "TITLE"], "No Settings.");
-        for one in &self.settings {
+        for one in self.settings.iter().chain([&self.domains]) {
             table.row([
                 one.path.clone(),
                 one.default
@@ -450,12 +459,6 @@ impl Listing {
                 one.title.clone(),
             ]);
         }
-        table.row([
-            format!("{}.domains", self.service),
-            "-".to_owned(),
-            "staged".to_owned(),
-            format!("Domains, set with `{}`", self.domains),
-        ]);
         table
     }
 }
@@ -564,6 +567,16 @@ mod tests {
         assert!(human.contains("web.domains"), "{human}");
         assert!(human.contains("ployz domain add web"), "{human}");
         assert!(!human.contains("managedHostnames"), "{human}");
+        let json = serde_json::to_value(&listing).unwrap();
+        assert_eq!(
+            json.get("domains"),
+            Some(&serde_json::json!({
+                "path": "web.domains",
+                "title": "Domains, set with `ployz domain add web`",
+                "default": null,
+                "applies": "staged",
+            }))
+        );
     }
 
     #[test]
