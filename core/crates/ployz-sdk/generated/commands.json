@@ -2500,6 +2500,71 @@
     "args": []
   },
   {
+    "command": "metrics",
+    "about": "Show CPU, memory, network and disk for a Service or a Server",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Service name"
+      },
+      {
+        "name": "--server",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "A Server's own totals instead of a Service"
+      },
+      {
+        "name": "--since",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "1h",
+        "trailing": false,
+        "help": "Range start: 10m, 2h, 7d or an RFC 3339 timestamp"
+      }
+    ]
+  },
+  {
     "command": "org build-order",
     "about": "Show or set which Builders build Git Services, in turn",
     "json": true,
