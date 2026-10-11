@@ -213,7 +213,6 @@ async fn logs_stream_the_fixture_lines_and_honor_tail() {
                 container_id: container_id("app-staging-web-1"),
                 tail,
                 follow: false,
-                before_nanos: None,
                 since_unix_seconds: None,
             })
             .await
