@@ -108,16 +108,28 @@ fn passing() -> Evidence {
             probes: 2,
             spacing: Duration::from_secs(30),
         },
-        observations: vec![EvidenceItem {
-            region: Region::parse("eu-west").unwrap(),
-            kind: ProbeKind::Recheck,
-            verdict: Verdict::Pass,
-            status: Some(200),
-            failed_phase: None,
-            error: None,
-            remote_ip: Some("2001:db8::1".parse().unwrap()),
-            at: UnixMs(1_709_210_096_789),
-        }],
+        observations: vec![
+            EvidenceItem {
+                region: Region::parse("eu-west").unwrap(),
+                kind: ProbeKind::Recheck,
+                verdict: Verdict::Pass,
+                status: Some(200),
+                failed_phase: None,
+                error: None,
+                remote_ip: Some("2001:db8::1".parse().unwrap()),
+                at: UnixMs(1_709_210_096_789),
+            },
+            EvidenceItem {
+                region: Region::parse("us-east").unwrap(),
+                kind: ProbeKind::Triggered,
+                verdict: Verdict::Pass,
+                status: Some(204),
+                failed_phase: None,
+                error: None,
+                remote_ip: None,
+                at: UnixMs(1_709_210_100_000),
+            },
+        ],
     }
 }
 

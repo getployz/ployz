@@ -76,7 +76,7 @@ async function createCheck(organizationId = acme, environmentId = randomUUID()) 
 type Check = Awaited<ReturnType<typeof createCheck>>;
 
 function result(check: Check, region: string, scheduledAt: string, verdict: "pass" | "fail" | "inconclusive",
-  totalMs: number, kind: "routine" | "confirm" | "recheck" = "routine", status = verdict === "pass" ? 200 : 0) {
+  totalMs: number, kind: "routine" | "confirm" | "recheck" | "triggered" = "routine", status = verdict === "pass" ? 200 : 0) {
   return harness.pool.query(
     `insert into uptime_result (check_id, organization_id, region, scheduled_at, kind, start_lag_ms, verdict, status,
        failed_phase, error, detail, dns_ms, connect_ms, tls_ms, ttfb_ms, total_ms, agent)
@@ -221,13 +221,14 @@ describe("uptime percentages", () => {
     expect((await summary(check, ago(30 * DAY + 2 * HOUR), ago(30 * DAY - 15 * MINUTE))).uptime).toBe(10 / 11);
   });
 
-  it("count routine probes only", async () => {
+  it("count routine and triggered probes, never confirms or rechecks", async () => {
     const check = await createCheck();
     await result(check, "eu-west", ago(20 * MINUTE), "fail", 9000);
     await result(check, "eu-west", ago(10 * MINUTE), "pass", 120);
     await result(check, "eu-west", ago(8 * MINUTE), "fail", 9000, "confirm");
     await result(check, "eu-west", ago(7 * MINUTE), "fail", 9000, "recheck");
-    for (const from of ["5m", ...RANGES]) expect((await summary(check, from)).uptime).toBe(1 / 2);
+    await result(check, "eu-west", ago(4 * MINUTE), "pass", 110, "triggered");
+    for (const from of ["5m", ...RANGES]) expect((await summary(check, from)).uptime).toBe(2 / 3);
   });
 
   it("leave inconclusive probes out, and are null when no probe counted", async () => {
@@ -245,12 +246,14 @@ describe("uptime chart", () => {
   const brief = (points: readonly UptimePoint[]) =>
     points.map(({ at, region, probes, medianMs }) => ({ at, region, probes, medianMs }));
 
-  it("draws the last day from raw routine probes, one probe a point, a failure in the class and words its probe gave", async () => {
+  it("draws the last day from raw routine and triggered probes, one probe a point, a failure in the class and words its probe gave", async () => {
     const check = await createCheck();
     await result(check, "us-east", ago(2 * HOUR), "fail", 9000);
     await result(check, "eu-west", ago(2 * HOUR), "pass", 140);
     await result(check, "eu-west", ago(HOUR), "inconclusive", 0);
     await result(check, "eu-west", ago(HOUR - 1000), "fail", 9000, "confirm");
+    await result(check, "eu-west", ago(HOUR - 2000), "pass", 9000, "recheck");
+    await result(check, "us-east", ago(HOUR - 3000), "pass", 150, "triggered");
     await result(check, "eu-west", ago(30 * 60_000), "fail", 400, "routine", 503);
     await result(check, "eu-west", ago(25 * HOUR), "pass", 99);
     await hourly(check, "eu-west", hourAgo(2), 1, 0, 0, 555);
@@ -260,6 +263,7 @@ describe("uptime chart", () => {
       { at: ago(2 * HOUR), region: "eu-west", probes: 1, medianMs: 140 },
       { at: ago(2 * HOUR), region: "us-east", probes: 1, medianMs: null },
       { at: ago(HOUR), region: "eu-west", probes: 0, medianMs: null },
+      { at: ago(HOUR - 3000), region: "us-east", probes: 1, medianMs: 150 },
       { at: ago(30 * 60_000), region: "eu-west", probes: 1, medianMs: null },
     ]);
     expect(points[0]).toMatchObject({ maxMs: 140, phaseMsSum: { dns: 1, connect: 2, tls: 3, ttfb: 134 }, lastError: null });
@@ -267,7 +271,7 @@ describe("uptime chart", () => {
       maxMs: null, phaseMsSum: { dns: 0, connect: 0, tls: 0, ttfb: 0 }, failures: tally(FAILURE_CLASSES, (cls) => cls === "connect" ? 1 : 0),
       lastError: { at: ago(2 * HOUR), cls: "connect", text: "Connect · refused by peer" },
     });
-    expect(points[3]).toMatchObject({ failures: { status: 1 }, lastError: { cls: "status", text: "503" } });
+    expect(points[4]).toMatchObject({ failures: { status: 1 }, lastError: { cls: "status", text: "503" } });
   });
 
   it("draws 7d from the hourly rows, then raw probes after the last rolled-up hour", async () => {
