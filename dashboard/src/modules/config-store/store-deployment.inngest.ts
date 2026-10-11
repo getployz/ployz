@@ -45,15 +45,18 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
-      // A failed Deployment can still have advanced Applied State, so the checks follow it either way.
-      await step.run("sync-uptime", () => runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId)));
+      const applied = "ran" in ran && ran.ran.status === "applied";
+      // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
+      // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
+      await step.run("sync-uptime", () =>
+        runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId, applied ? event.data.deploymentId : undefined)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
       // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned.
-      if ("ran" in ran && ran.ran.status === "applied") {
+      if (applied) {
         await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphanSlots(event.data.organizationId)));
       }
       // A closed Branch whose removal applied goes now, without its closer coming back for it.
-      if ("ran" in ran && ran.ran.remove && ran.ran.status === "applied") {
+      if (applied && ran.ran.remove) {
         await followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect);
       }
       return ran;

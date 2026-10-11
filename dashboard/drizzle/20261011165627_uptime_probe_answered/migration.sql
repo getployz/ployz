@@ -1,0 +1,1 @@
+ALTER TABLE "uptime_check" ADD COLUMN "probe_answered_at" timestamp with time zone;

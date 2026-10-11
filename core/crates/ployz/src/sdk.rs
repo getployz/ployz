@@ -30,6 +30,7 @@ mod build;
 mod deploy;
 mod github_build;
 mod logs;
+mod metrics;
 mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
@@ -55,6 +56,7 @@ pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
 };
+pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,
