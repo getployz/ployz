@@ -87,9 +87,8 @@ pub struct MetricMarker {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub namespace: Option<String>,
+    /// The Service's Namespace and name, which is how history selects it.
+    pub service: QualifiedService,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deployment_id: Option<String>,
@@ -433,7 +432,7 @@ mod tests {
             machine_id: sample.machine_id,
             container_id: sample.container_id,
             service_id: sample.service_id.unwrap(),
-            namespace: None,
+            service: sample.service.unwrap(),
             deployment_id: Some("d1".into()),
             replica: "web-1".into(),
             ts: 7,
@@ -448,6 +447,7 @@ mod tests {
                 "machine_id": "a".repeat(32),
                 "container_id": "b".repeat(64),
                 "service_id": "c".repeat(32),
+                "service": "prod/web",
                 "deployment_id": "d1",
                 "replica": "web-1",
                 "ts": 7,

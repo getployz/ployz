@@ -454,7 +454,7 @@ mod tests {
             machine_id: MachineId::parse("a".repeat(32)).unwrap(),
             container_id: ContainerId::parse("1".repeat(64)).unwrap(),
             service_id: service(1),
-            namespace: Some("prod".into()),
+            service: qualified(1),
             deployment_id: Some(deployment(1)),
             replica: "cache-1".into(),
             ts,

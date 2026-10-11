@@ -18,7 +18,7 @@ use bollard::{
 use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
 use ployz_core::{
-    ContainerId, MachineId, Namespace, ServiceId,
+    ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
     metrics::{MarkerKind, MetricMarker},
 };
 use serde::{Deserialize, Serialize};
@@ -1297,6 +1297,10 @@ fn marker(
     let meta = container_meta(&labelled).filter(|meta| meta.kind == ContainerKind::Service)?;
     let attributes = labelled.config.and_then(|config| config.labels)?;
     let service_id = ServiceId::parse(attributes.get(LABEL_SERVICE_ID)?.clone()).ok()?;
+    let service = QualifiedService::new(
+        Namespace::parse(meta.namespace.as_deref()?).ok()?,
+        ServiceName::parse(meta.service.as_deref()?).ok()?,
+    );
     let kind = match message.action.as_deref()? {
         "oom" => MarkerKind::Oom,
         "die" => {
@@ -1314,7 +1318,7 @@ fn marker(
         machine_id,
         container_id: id,
         service_id,
-        namespace: meta.namespace,
+        service,
         deployment_id: meta.deployment,
         replica: meta.replica,
         ts: message.time_nano.unwrap_or_else(now_nanos),
@@ -2718,6 +2722,7 @@ mod tests {
                 .filter_map(|row| match row {
                     Row::Marker(marker) => {
                         assert_eq!(marker.service_id.as_str(), SERVICE_ID);
+                        assert_eq!(marker.service.to_string(), "default/web");
                         assert_eq!(marker.replica, "web-1");
                         assert_eq!(marker.deployment_id.as_deref(), Some("d1"));
                         Some((marker.ts, marker.kind))
