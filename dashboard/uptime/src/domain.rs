@@ -145,6 +145,40 @@ pub struct ProbeKey {
     pub kind: ProbeKind,
 }
 
+/// A probe target, from `uptime_check.url`. The checker never derives a hostname; it only probes
+/// the one the row names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Target {
+    pub scheme: Scheme,
+    pub host: Host,
+    pub port: u16,
+    pub path_and_query: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Scheme {
+    Http,
+    Https,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Host {
+    Name(String),
+    /// Still vetted like a resolved answer before any dial.
+    Ip(IpAddr),
+}
+
+/// One unit of work for an agent.
+#[derive(Clone, Debug)]
+pub struct Job {
+    pub key: ProbeKey,
+    pub target: Arc<Target>,
+    pub timeout: Duration,
+    /// Which vetted address to dial, as an index mod the answer count. The control plane rotates
+    /// it per slot, so a hostname behind several ingress Machines gets each of them probed.
+    pub address: u32,
+}
+
 /// What an agent saw. Nothing here is interpreted: no verdict, no cause.
 #[derive(Clone, Debug)]
 pub struct Observation {

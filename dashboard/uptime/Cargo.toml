@@ -9,9 +9,23 @@ publish = false
 [workspace]
 
 [dependencies]
+bytes = "1.12.1"
+http = "1.4.0"
+http-body-util = "0.1.5"
+hyper = { version = "1.11.0", features = ["client", "http1"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
 ployz-core = { path = "../../core/crates/ployz-core" }
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["macros", "net", "sync", "time"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 uuid = { version = "1.24.0", features = ["v7"] }
+webpki-roots = "1.0.9"
+x509-parser = "0.18.1"
+
+[dev-dependencies]
+rcgen = { version = "0.14.6", default-features = false, features = ["crypto", "pem", "ring"] }
+tokio = { version = "1.53.1", features = ["io-util", "rt"] }
 
 [lints.rust]
 unsafe_code = "forbid"

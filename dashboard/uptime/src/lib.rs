@@ -2,5 +2,6 @@
 //! records what each region saw. The control plane owns state and incidents; regional agents only
 //! probe.
 
+pub mod agent;
 pub mod control;
 pub mod domain;
