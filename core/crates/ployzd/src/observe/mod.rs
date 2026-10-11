@@ -57,6 +57,11 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     let listener = bind_socket(&run_dir.join(SOCKET_FILE))?;
     tracing::info!(store = %store.path().display(), "holding Ployz container logs");
     tokio::spawn(serve::serve(listener, store.clone()));
+    // The harvester's startup cleanup deletes raw hours older than a day, so
+    // a long downtime's hours are folded into rollups before it runs.
+    if let Err(error) = metrics::rollup::fold_pending(&store, std::time::SystemTime::now()) {
+        tracing::warn!(%error, "cannot fold metric hours");
+    }
     tokio::spawn(metrics::sampler::run(
         docker.clone(),
         store.clone(),
