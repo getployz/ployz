@@ -109,14 +109,16 @@ pub(super) fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> 
 
 pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let raw = matches.get_one::<String>("path");
-    let path = raw.map(|path| SettingPath::parse(path)).transpose()?;
+    let path = matches
+        .get_one::<String>("path")
+        .map(|path| SettingPath::parse(path))
+        .transpose()?;
     let all = matches.get_flag("all");
     let store = store(root)?;
     let environment = environment(matches)?;
     // Domains are no Setting: `get` reads them beside a Service's or the Environment's
     // Settings, and never beside one Setting.
-    let (service, every) = match raw.map(|raw| NodeName::parse(raw)) {
+    let (service, every) = match path.as_ref().map(|path| NodeName::parse(&path.to_string())) {
         None => (Some(None), all),
         Some(Ok(NodeName::Service(service))) => (Some(Some(service)), true),
         Some(_) => (None, false),
@@ -138,17 +140,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         })?;
         Ok((view, domains))
     };
-    // Two reads: an edit between them would mix two revisions, so read again once.
-    let mut read_at = read()?;
-    if torn(&read_at) {
-        read_at = read()?;
-        if torn(&read_at) {
-            return Err(Error::conflict(
-                "Working State changed while get read it; run get again",
-            ));
-        }
-    }
-    let (view, domains) = read_at;
+    let (view, domains) = super::store::at_one_revision("get", read, torn)?;
     let domains = domains.map(|domains| domains.domains);
     let lines = got(
         &view.settings,
@@ -172,11 +164,12 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Whether the domains were read at another revision than the Settings.
+/// Whether the domains were read in another Environment or at another revision than
+/// the Settings. Without `--env` each read resolves the Default Environment itself.
 fn torn((view, domains): &(EnvironmentView, Option<DomainsView>)) -> bool {
     domains
         .as_ref()
-        .is_some_and(|domains| domains.environment.revision != view.environment.revision)
+        .is_some_and(|domains| domains.environment != view.environment)
 }
 
 /// `get`'s result: the Settings read, and the domains of the Services it covers;
@@ -613,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn domains_read_at_another_revision_than_the_settings_are_torn() {
+    fn domains_read_in_another_environment_or_revision_than_the_settings_are_torn() {
         let at = |revision: u64| {
             json!({
                 "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "project": "shop",
@@ -627,7 +620,11 @@ mod tests {
         };
         assert!(!torn(&(view.clone(), None)));
         assert!(!torn(&(view.clone(), Some(domains(3)))));
-        assert!(torn(&(view, Some(domains(4)))));
+        assert!(torn(&(view.clone(), Some(domains(4)))));
+        let mut elsewhere = domains(3);
+        elsewhere.environment.id =
+            ployz_store::EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap();
+        assert!(torn(&(view, Some(elsewhere))));
     }
 
     #[test]

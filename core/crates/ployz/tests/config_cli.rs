@@ -743,6 +743,8 @@ fn an_agent_creates_and_edits_an_image_service() {
         );
         // Read beside a Service, its domains show even when it has none.
         assert_eq!(got.get("domains"), Some(&json!([])));
+        // Service names are lowercase, so `WEB` reads Service `web` with its domains.
+        assert_eq!(ok(store, &["get", "WEB"]).get("domains"), Some(&json!([])));
         assert_eq!(
             got.pointer("/settings/8"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
@@ -2132,6 +2134,11 @@ fn the_catalog_describes_settings_without_a_store() {
         explained.pointer("/schema/x-ployz-apply"),
         Some(&json!("staged"))
     );
+
+    let (code, listed) = ployz(None, &["explain", "WEB"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(listed.get("service"), Some(&json!("web")));
+    assert_eq!(listed.pointer("/domains/path"), Some(&json!("web.domains")));
 
     let (code, json) = ployz(None, &["explain", "web.restart_policy"]);
     assert_eq!(code, Some(2));
