@@ -2,6 +2,8 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 use crate::handlers;
 
+pub(crate) mod metrics;
+
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
     pub const BUILD_GRANT: &str = "PLOYZ_BUILD_GRANT";
@@ -59,6 +61,7 @@ pub fn command() -> Command {
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::operator::logs_command())
         .subcommand(handlers::mcp::command())
+        .subcommand(handlers::metrics::command())
         .subcommand(handlers::account::org_command())
         .subcommand(handlers::server::command())
         .subcommand(handlers::service::command())
@@ -197,6 +200,12 @@ fn review_version(version: &str) -> Result<String, &'static str> {
         }
         _ => Err("Use the version ployz diff --json or a refusal gave, such as 3:1:0.1"),
     }
+}
+
+pub(crate) fn approval() -> Arg {
+    value("approval", None).value_name("ID").help(
+        "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it",
+    )
 }
 
 pub(crate) fn volume_acceptance() -> Arg {

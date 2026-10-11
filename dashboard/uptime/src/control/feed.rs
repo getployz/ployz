@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use crate::control::pg::{Pg, PgError, column};
 use crate::domain::{
-    BadExpect, BadInterval, BadTarget, Check, CheckId, Expect, IncidentId, Interval, OrgId,
-    Revision, Target, UnixMs,
+    BadExpect, BadInterval, BadTarget, Check, CheckId, Expect, IncidentId, Interval,
+    MAX_TIMEOUT_MS, OrgId, Revision, Target, UnixMs,
 };
 
 const PAGE: i64 = 10_000;
@@ -310,7 +310,7 @@ fn parse(row: &Row) -> Result<Parsed, PgError> {
         let interval = Interval::parse(u32::try_from(interval).unwrap_or(0))?;
         let timeout = u64::try_from(timeout_ms)
             .ok()
-            .filter(|ms| (1000..=30_000).contains(ms))
+            .filter(|ms| (1000..=MAX_TIMEOUT_MS).contains(ms))
             .map(Duration::from_millis)
             .filter(|t| *t < interval.as_duration())
             .ok_or(BadRow::Timeout(timeout_ms))?;

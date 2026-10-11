@@ -3,7 +3,8 @@
   "dialect": "postgres",
   "id": "d93d91e3-e4ec-4b3c-a0ec-fa822590137d",
   "prevIds": [
-    "f39c6cc3-5be3-4e96-9ee9-8cb7f1c0bf66"
+    "bb9544ca-6cb5-4bcc-a45f-8f30f05e5e39",
+    "cc8c0dd9-59a6-4165-ac88-ca95ac7239c1"
   ],
   "ddl": [
     {
@@ -6867,6 +6868,896 @@
       "entityType": "checks",
       "schema": "public",
       "table": "uptime_result_hourly"
+    },
+    {
+      "columns": [
+        "decided_by_user_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "entityType": "fks",
+      "name": "operation_approvals_decided_by_user_id_user_id_fkey",
+      "nameExplicit": false,
+      "onDelete": "SET NULL",
+      "onUpdate": "NO ACTION",
+      "schema": "public",
+      "schemaTo": "public",
+      "table": "operation_approvals",
+      "tableTo": "user"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "entityType": "pks",
+      "name": "namespace_cleanup_pkey",
+      "nameExplicit": false,
+      "schema": "public",
+      "table": "namespace_cleanup"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "entityType": "pks",
+      "name": "operation_approvals_pkey",
+      "nameExplicit": false,
+      "schema": "public",
+      "table": "operation_approvals"
+    },
+    {
+      "columns": [
+        "organization_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "entityType": "fks",
+      "name": "namespace_cleanup_organization_id_organization_id_fkey",
+      "nameExplicit": false,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION",
+      "schema": "public",
+      "schemaTo": "public",
+      "table": "namespace_cleanup",
+      "tableTo": "organization"
+    },
+    {
+      "columns": [
+        "organization_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "entityType": "fks",
+      "name": "operation_approvals_organization_id_organization_id_fkey",
+      "nameExplicit": false,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION",
+      "schema": "public",
+      "schemaTo": "public",
+      "table": "operation_approvals",
+      "tableTo": "organization"
+    },
+    {
+      "columns": [
+        "organization_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "entityType": "fks",
+      "name": "organization_settings_organization_id_organization_id_fkey",
+      "nameExplicit": false,
+      "onDelete": "CASCADE",
+      "onUpdate": "NO ACTION",
+      "schema": "public",
+      "schemaTo": "public",
+      "table": "organization_settings",
+      "tableTo": "organization"
+    },
+    {
+      "columns": [
+        "organization_id"
+      ],
+      "entityType": "pks",
+      "name": "organization_settings_pkey",
+      "nameExplicit": false,
+      "schema": "public",
+      "table": "organization_settings"
+    },
+    {
+      "columns": [
+        "requested_by_user_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "entityType": "fks",
+      "name": "namespace_cleanup_requested_by_user_id_user_id_fkey",
+      "nameExplicit": false,
+      "onDelete": "SET NULL",
+      "onUpdate": "NO ACTION",
+      "schema": "public",
+      "schemaTo": "public",
+      "table": "namespace_cleanup",
+      "tableTo": "user"
+    },
+    {
+      "columns": [
+        "requested_by_user_id"
+      ],
+      "columnsTo": [
+        "id"
+      ],
+      "entityType": "fks",
+      "name": "operation_approvals_requested_by_user_id_user_id_fkey",
+      "nameExplicit": false,
+      "onDelete": "SET NULL",
+      "onUpdate": "NO ACTION",
+      "schema": "public",
+      "schemaTo": "public",
+      "table": "operation_approvals",
+      "tableTo": "user"
+    },
+    {
+      "columns": [
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "approval_id"
+        }
+      ],
+      "concurrently": false,
+      "entityType": "indexes",
+      "isUnique": true,
+      "method": "btree",
+      "name": "machine_remove_attempt_approval_uidx",
+      "nameExplicit": true,
+      "schema": "public",
+      "table": "machine_remove_attempt",
+      "where": "\"approval_id\" is not null",
+      "with": ""
+    },
+    {
+      "columns": [
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "approval_id"
+        }
+      ],
+      "concurrently": false,
+      "entityType": "indexes",
+      "isUnique": true,
+      "method": "btree",
+      "name": "namespace_cleanup_approval_uidx",
+      "nameExplicit": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "where": "\"approval_id\" is not null",
+      "with": ""
+    },
+    {
+      "columns": [
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "approval_id"
+        }
+      ],
+      "concurrently": false,
+      "entityType": "indexes",
+      "isUnique": true,
+      "method": "btree",
+      "name": "server_drain_attempt_approval_uidx",
+      "nameExplicit": true,
+      "schema": "public",
+      "table": "server_drain_attempt",
+      "where": "\"approval_id\" is not null",
+      "with": ""
+    },
+    {
+      "columns": [
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "inngest_run_id"
+        }
+      ],
+      "concurrently": false,
+      "entityType": "indexes",
+      "isUnique": true,
+      "method": "btree",
+      "name": "namespace_cleanup_run_uidx",
+      "nameExplicit": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "where": "\"inngest_run_id\" is not null",
+      "with": ""
+    },
+    {
+      "columns": [
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "organization_id"
+        },
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "digest"
+        }
+      ],
+      "concurrently": false,
+      "entityType": "indexes",
+      "isUnique": true,
+      "method": "btree",
+      "name": "operation_approvals_one_pending_idx",
+      "nameExplicit": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "where": "\"status\" = 'pending'",
+      "with": ""
+    },
+    {
+      "columns": [
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "organization_id"
+        },
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "namespace"
+        }
+      ],
+      "concurrently": false,
+      "entityType": "indexes",
+      "isUnique": true,
+      "method": "btree",
+      "name": "namespace_cleanup_one_active_idx",
+      "nameExplicit": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "where": "\"state\" in ('pending', 'running')",
+      "with": ""
+    },
+    {
+      "columns": [
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "organization_id"
+        },
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "subject"
+        },
+        {
+          "asc": true,
+          "isExpression": false,
+          "nullsFirst": false,
+          "opclass": null,
+          "value": "status"
+        }
+      ],
+      "concurrently": false,
+      "entityType": "indexes",
+      "isUnique": false,
+      "method": "btree",
+      "name": "operation_approvals_subject_idx",
+      "nameExplicit": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "where": null,
+      "with": ""
+    },
+    {
+      "default": "'pending'",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "notNull": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": "'pending'",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": "gen_random_uuid()",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": "now()",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": "now()",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "notNull": true,
+      "schema": "public",
+      "table": "organization_settings",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": "now()",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "requested_at",
+      "notNull": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": "now()",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": "now()",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "notNull": true,
+      "schema": "public",
+      "table": "organization_settings",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": "true",
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "ask_before_destructive",
+      "notNull": true,
+      "schema": "public",
+      "table": "organization_settings",
+      "type": "boolean",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "approval_id",
+      "notNull": false,
+      "schema": "public",
+      "table": "machine_remove_attempt",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "approval_id",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "approval_id",
+      "notNull": false,
+      "schema": "public",
+      "table": "server_drain_attempt",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "command",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "confirm_data_loss",
+      "notNull": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "jsonb",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "credential_id",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "credential_kind",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "decided_at",
+      "notNull": false,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "decided_by_user_id",
+      "notNull": false,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "digest",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "end_code",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "end_message",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "ended_at",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "notNull": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "inngest_run_id",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "namespace",
+      "notNull": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "notNull": true,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "notNull": true,
+      "schema": "public",
+      "table": "organization_settings",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "probe_answered_at",
+      "notNull": false,
+      "schema": "public",
+      "table": "uptime_check",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "notNull": false,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "requested_by_user_id",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "requested_by_user_id",
+      "notNull": false,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "uuid",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "review",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "jsonb",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "timestamp with time zone",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "subject",
+      "notNull": true,
+      "schema": "public",
+      "table": "operation_approvals",
+      "type": "text",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "targets",
+      "notNull": false,
+      "schema": "public",
+      "table": "server_drain_attempt",
+      "type": "jsonb",
+      "typeSchema": null
+    },
+    {
+      "default": null,
+      "dimensions": 0,
+      "entityType": "columns",
+      "generated": null,
+      "identity": null,
+      "name": "volumes",
+      "notNull": false,
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "type": "jsonb",
+      "typeSchema": null
+    },
+    {
+      "entityType": "checks",
+      "name": "namespace_cleanup_confirm_data_loss_check",
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "value": "jsonb_typeof(\"confirm_data_loss\") = 'array'"
+    },
+    {
+      "entityType": "checks",
+      "name": "namespace_cleanup_end_code_check",
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "value": "\"end_code\" is null or (\"end_code\", \"state\") in (('refused','failed'),('incomplete','failed'),('not_started','failed'),('cancelled','cancelled'),('interrupted','unknown'),('lost','unknown'))"
+    },
+    {
+      "entityType": "checks",
+      "name": "namespace_cleanup_end_message_check",
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "value": "(\"end_code\" is not distinct from 'refused' or \"end_code\" is not distinct from 'incomplete') = (\"end_message\" is not null)\n        and (\"end_message\" is null or length(\"end_message\") between 1 and 1024)"
+    },
+    {
+      "entityType": "checks",
+      "name": "namespace_cleanup_namespace_check",
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "value": "length(\"namespace\") between 1 and 255 and \"namespace\" !~ '[[:cntrl:]]'"
+    },
+    {
+      "entityType": "checks",
+      "name": "namespace_cleanup_run_check",
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "value": "\"inngest_run_id\" is null or length(\"inngest_run_id\") between 1 and 255"
+    },
+    {
+      "entityType": "checks",
+      "name": "namespace_cleanup_state_check",
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "value": "\"state\" in ('pending','running','finished','failed','cancelled','unknown')"
+    },
+    {
+      "entityType": "checks",
+      "name": "namespace_cleanup_state_shape_check",
+      "schema": "public",
+      "table": "namespace_cleanup",
+      "value": "(\n        (\"state\" = 'pending'\n          and \"started_at\" is null and \"ended_at\" is null and \"volumes\" is null and \"end_code\" is null)\n        or (\"state\" = 'running' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is null and \"volumes\" is null and \"end_code\" is null)\n        or (\"state\" = 'finished' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null\n          and jsonb_typeof(\"volumes\") = 'array' and \"end_code\" is null)\n        or (\"state\" in ('failed', 'cancelled')\n          and \"ended_at\" is not null and \"volumes\" is null and \"end_code\" is not null)\n        or (\"state\" = 'unknown' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null and \"volumes\" is null\n          and \"end_code\" is not null)\n      )"
+    },
+    {
+      "entityType": "checks",
+      "name": "operation_approvals_credential_kind_check",
+      "schema": "public",
+      "table": "operation_approvals",
+      "value": "\"credential_kind\" in ('session', 'token')"
+    },
+    {
+      "entityType": "checks",
+      "name": "operation_approvals_decided_check",
+      "schema": "public",
+      "table": "operation_approvals",
+      "value": "(\"status\" in ('approved', 'denied')) = (\"decided_at\" is not null)"
+    },
+    {
+      "entityType": "checks",
+      "name": "operation_approvals_reason_check",
+      "schema": "public",
+      "table": "operation_approvals",
+      "value": "\"reason\" is null or \"status\" = 'denied'"
+    },
+    {
+      "entityType": "checks",
+      "name": "operation_approvals_status_check",
+      "schema": "public",
+      "table": "operation_approvals",
+      "value": "\"status\" in ('pending','approved','denied','superseded')"
+    },
+    {
+      "entityType": "checks",
+      "name": "server_drain_attempt_targets_check",
+      "schema": "public",
+      "table": "server_drain_attempt",
+      "value": "\"targets\" is null or jsonb_typeof(\"targets\") = 'array'"
+    },
+    {
+      "entityType": "tables",
+      "isRlsEnabled": false,
+      "name": "namespace_cleanup",
+      "schema": "public"
+    },
+    {
+      "entityType": "tables",
+      "isRlsEnabled": false,
+      "name": "operation_approvals",
+      "schema": "public"
+    },
+    {
+      "entityType": "tables",
+      "isRlsEnabled": false,
+      "name": "organization_settings",
+      "schema": "public"
     }
   ],
   "renames": []
