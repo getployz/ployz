@@ -4,7 +4,9 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyTitle } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
-import { lossTime, type PlacementRow, type RestorePoint, restorePoints } from "#/modules/volume-placement/volume-placement";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { runsPlacement } from "#/modules/volume-placement/daemon-release";
+import { lossTime, observePlacement, type PlacementRow, type RestorePoint, restorePoints } from "#/modules/volume-placement/volume-placement";
 import { useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import type { Member } from "#/modules/volume-run/volume-run";
@@ -25,8 +27,13 @@ export function StoreVolumeBackups({ organizationSlug, environment, volume, remo
   const members = useVolumeMembers(organizationSlug, environment, volume.id).data;
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   const { restore, pending } = useStageRestore(organizationSlug, environment, volume);
+  const machines = useRuntimeLens(organizationSlug).machines;
+  // The Primary's Server seeds the new Volume, so Restore waits for its daemon to have SeedVolume.
+  const primary = members === undefined ? null : observePlacement(members).primary;
+  const seeds = primary !== null && machines.some((machine) => machine.id === primary.id && runsPlacement(machine.daemonVersion));
   return <>
-    {managed ? <VolumeRestorePoints volume={volume} members={members} rows={rows} disabled={pending} restore={restore} onAddMirror={onAddMirror} /> : (
+    {managed ? <VolumeRestorePoints volume={volume} members={members} rows={rows} disabled={pending}
+      restore={seeds ? restore : null} onAddMirror={onAddMirror} /> : (
       <SettingsSection id="restore-points" title="Restore points">
         <Empty variant="placeholder">
           <EmptyDescription>{removing ? "Removed on next deploy." : volume.deployed ? "Managed volumes only." : "Deploy first."}</EmptyDescription>
@@ -49,7 +56,8 @@ export function VolumeRestorePoints({ volume, members, rows, disabled, restore, 
   members: readonly Member[] | undefined;
   rows: readonly PlacementRow[];
   disabled: boolean;
-  restore: (point: RestorePoint) => void;
+  /** Null when the Primary's daemon can't seed: points still list, without Restore. */
+  restore: ((point: RestorePoint) => void) | null;
   onAddMirror: () => void;
 }) {
   if (members === undefined) {
@@ -83,7 +91,7 @@ export function VolumeRestorePoints({ volume, members, rows, disabled, restore, 
               <ItemDescription><RelativeTime date={point.at} /> · {point.server.name}</ItemDescription>
             </ItemContent>
             <ItemActions>
-              {staged ? <span className="text-sm text-muted-foreground">Staged</span> : (
+              {staged ? <span className="text-sm text-muted-foreground">Staged</span> : restore === null ? null : (
                 <Button variant="outline" size="sm" disabled={locked} onClick={() => restore(point)}
                   className="opacity-0 transition-opacity group-focus-within/point:opacity-100 group-hover/point:opacity-100 focus-visible:opacity-100 disabled:opacity-0">
                   Restore

@@ -25,10 +25,10 @@ const seedRow = (guid: string, when: Date): PlacementRow => ({
 });
 const ownRow = (deploymentId: string | null): PlacementRow => ({ volumeId: "v1", environmentId: "e1", mirrors: [id("b")], staged: null, deploymentId });
 
-function points(members: Member[] | undefined, rows: PlacementRow[] = []) {
+function points(members: Member[] | undefined, rows: PlacementRow[] = [], seeds = true) {
   const restore = vi.fn<(point: RestorePoint) => void>();
   const onAddMirror = vi.fn();
-  render(<VolumeRestorePoints volume={volume} members={members} rows={rows} disabled={false} restore={restore} onAddMirror={onAddMirror} />);
+  render(<VolumeRestorePoints volume={volume} members={members} rows={rows} disabled={false} restore={seeds ? restore : null} onAddMirror={onAddMirror} />);
   return { restore, onAddMirror };
 }
 const rows = () => within(screen.getByRole("list", { name: "Restore points" })).getAllByRole("listitem");
@@ -61,6 +61,12 @@ describe("VolumeRestorePoints", () => {
     const { restore } = points([member("a", "writer"), mirrorAt("b", "20", when)]);
     fireEvent.click(firstRow().getByRole("button", { name: "Restore" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "20", at: when, server: expect.objectContaining({ name: "b" }) }));
+  });
+
+  it("lists points without Restore while the Primary's daemon lacks SeedVolume", () => {
+    points([member("a", "writer"), mirrorAt("b", "20", at("2026-10-10T10:27:00Z"))], [], false);
+    expect(rows()).toHaveLength(1);
+    expect(firstRow().queryByRole("button", { name: "Restore" })).toBeNull();
   });
 
   it("marks a point whose restore is staged, without a second Restore", () => {

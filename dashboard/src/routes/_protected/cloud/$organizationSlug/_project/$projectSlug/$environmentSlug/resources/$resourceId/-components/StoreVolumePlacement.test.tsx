@@ -22,10 +22,10 @@ const mirrorAsOf = (server: string, when: Date): Member => {
   return { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: { name: "s", guid: "12", created_unix_seconds: when.getTime() / 1000 } } } };
 };
 
-function panel(members: Member[], placement: PlacementRow | null, running: VolumeRunView | null = null) {
+function panel(members: Member[], placement: PlacementRow | null, running: VolumeRunView | null = null, accepting = members.map((entry) => entry.machine.id)) {
   const stage = vi.fn();
   render(<VolumePlacementPanel volume={{ id: "v1", name: "data", mounts: [{ service: "postgres" }] }} members={members} row={placement} running={running}
-    accepting={members.map((entry) => entry.machine.id)} disabled={false} stage={stage} />);
+    accepting={accepting} disabled={false} stage={stage} />);
   return stage;
 }
 const primary = () => screen.getByRole("combobox", { name: "Primary" });
@@ -116,6 +116,12 @@ describe("VolumePlacementPanel", () => {
     expect(chips("Mirrors")).toEqual(["web-2:live"]);
     fireEvent.click(screen.getByRole("button", { name: "Use mirror" }));
     expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
+  });
+
+  it("keeps Use mirror hidden while the mirror's daemon lacks the volume verbs", () => {
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36))], row(["web-2"]), null, [id("web-1")]);
+    expect(screen.getByRole("alert").textContent).toBe("web-1 is not answeringChanges after 10:36 lost");
+    expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
   });
 
   it("shows the run under way, and drops the staged colours and edits while a Deploy runs the move", () => {

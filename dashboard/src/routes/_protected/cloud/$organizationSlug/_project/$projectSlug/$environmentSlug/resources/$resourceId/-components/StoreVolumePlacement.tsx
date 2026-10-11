@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { placementServers } from "#/modules/volume-placement/daemon-release";
 import {
   appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
   placementChanges, type PlacementItem, placementForm, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
@@ -40,7 +41,7 @@ export function StoreVolumePlacement({ organizationSlug, environment, volume }: 
       <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>
     </SettingsSection>;
   }
-  const accepting = new Set(lens.machines.filter((machine) => machine.acceptsServices).map((machine) => machine.id));
+  const accepting = placementServers(lens.machines);
   return <VolumePlacementPanel volume={volume} members={members} row={row} running={running} disabled={pending}
     accepting={members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id)} stage={stage} />;
 }
@@ -60,7 +61,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
   members: readonly Member[];
   row: PlacementRow | null;
   running: VolumeRunView | null;
-  /** Servers that accept Services: the only ones a move or a mirror may name. */
+  /** Servers that accept Services and run the volume verbs: the only ones a move or a mirror may name. */
   accepting: readonly MachineId[];
   disabled: boolean;
   stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
@@ -93,7 +94,9 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
     {offer ? <Alert variant="destructive">
       <AlertTitle>{offer.down.name} is not answering</AlertTitle>
       <AlertDescription>{offer.lostAfter ? `Changes after ${lossTime(offer.lostAfter)} lost` : "Recent changes lost"}</AlertDescription>
-      <AlertAction><Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button></AlertAction>
+      {accepting.includes(offer.mirror.id) ? <AlertAction>
+        <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
+      </AlertAction> : null}
     </Alert> : null}
     {running || deploying ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
       <Spinner role="presentation" aria-hidden="true" />

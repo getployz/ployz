@@ -10,6 +10,7 @@ import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/
 import { cn } from "#/lib/utils";
 import { requireView, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { placementServers } from "#/modules/volume-placement/daemon-release";
 import { mirrorPanel, type MirrorPanel, type Placement, type PlacementVolume } from "#/modules/volume-placement/volume-placement";
 import { useStagePlacement } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -46,7 +47,7 @@ function MirrorDrawerData({ params, environment, volume, server }: {
   if (members === undefined) {
     return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
   }
-  const accepting = new Set(lens.machines.filter((machine) => machine.acceptsServices).map((machine) => machine.id));
+  const accepting = placementServers(lens.machines);
   const panel = mirrorPanel(volume, members, row, server,
     members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id));
   // A stale link, or the mirror went with a Deploy or a discard while open.

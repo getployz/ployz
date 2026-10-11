@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { listNames } from "#/lib/plural";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { placementServers } from "#/modules/volume-placement/daemon-release";
 import { stageOffServerServerFn } from "#/modules/volume-placement/volume-placement.functions";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
 import { drainView, type DrainView } from "./server-drain-view";
@@ -62,7 +63,7 @@ export function useServerDrain(
         toast.error(toErrorMessage(error, `Could not drain ${server.name}`));
       },
     );
-    const accepting = machines.filter((machine) => machine.acceptsServices && machine.id !== server.id).map((machine) => machine.id);
+    const accepting = [...placementServers(machines)].filter((id) => id !== server.id);
     stageOffServerServerFn({ data: { organizationSlug, server: server.id, accepting } }).then(
       ({ stuck }) => {
         if (stuck.length > 0) toast.error(`${listNames(stuck)} ${stuck.length === 1 ? "has" : "have"} nowhere to move`);
