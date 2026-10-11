@@ -18,12 +18,40 @@ account menu.
 In the sidebar, click **Organization** for its settings:
 
 - **General**: your organization's **Domain**, which your services' free addresses live under.
-  It appears with your first deploy. Below it, **Forget all servers** is for when your servers
-  were deleted.
+  It appears with your first deploy. Below it, **Ask before destructive actions** (see below),
+  and **Forget all servers** for when your servers were deleted.
 - **Builds**: where builds run. See [Where builds run](../builds/where-builds-run.md).
 - **Billing**: your plan.
 
 ![Organization → General: the domain and the Danger section](../images/organization-general.png)
+
+## Ask before destructive actions
+
+A coding agent working through the CLI can publish or deploy a change that removes a running
+service, deletes a volume and its data, detaches a volume from a service, or removes a domain.
+With **Ask before destructive actions** on, Ployz refuses that command with `approval_required`,
+naming what it would remove and the approval it opened for you. It's on for every organization
+unless you turn it off.
+
+Waiting for your answer and then retrying is coming to the CLI. Until then the command stops
+there.
+
+- Only `ployz publish` and `ployz deploy` ask, and only when the change removes something that's
+  running. Rolling out a new image or changing variables never asks.
+- What you do in the dashboard never asks. Neither do settings edits.
+- If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
+  again about the new one.
+- An approval covers one publish. A later publish that still carries a removal that hasn't
+  deployed yet asks again.
+
+To turn it off, go to **Organization → General** and switch off **Ask before destructive
+actions**. Turning it off stops new questions only. A retry of a command you denied is still
+denied, and a retry of one still waiting for your answer still waits.
+
+This keeps a well-behaved agent from deleting something by mistake. It doesn't stop one that's
+trying to get around it: anything that holds your login or token can approve its own request.
+Keep tokens you give an agent short-lived, and keep
+[backups](../services/databases.md#back-up-a-database) of data you can't lose.
 
 ## Billing
 

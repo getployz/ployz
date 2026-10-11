@@ -1,6 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
+import { ApprovalDecision } from "#/modules/approvals/approvals";
+import { decideApproval, getApproval } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -82,7 +84,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
- * GitHub connections), and removing a Server Cloud manages, through the dashboard's durable removal, or forgetting deleted ones (Forget Servers). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections), and removing a Server Cloud manages, through the dashboard's durable removal, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -192,6 +194,18 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         Effect.map((run) => ({ run })),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );
+    case "GET approvals/:id":
+      return yield* getApproval(caller.organization.id, id ?? "").pipe(
+        Effect.map((approval) => ({ approval })),
+        Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
+      );
+    case "POST approvals/:id": {
+      const decision = yield* decodeBody(ApprovalDecision, request, "An approval takes `approve` with the digest you reviewed, or `reject`.");
+      return yield* decideApproval(caller, id ?? "", decision).pipe(
+        Effect.map((decided) => decided.ok ? { approval: decided.approval } : refusal(decided.refusal)),
+        Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
+      );
+    }
     default:
       return yield* new NotFound({ message: "Not found." });
   }

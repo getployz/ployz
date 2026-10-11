@@ -15,6 +15,7 @@ import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server
 import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { operationApprovals } from "#/modules/approvals/tables";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
@@ -130,6 +131,7 @@ type Reply = {
   readonly disconnected?: { readonly id: number; readonly account: string };
   readonly uninstall_url?: string;
   readonly organization?: string;
+  readonly approval?: { readonly id: string; readonly status: string; readonly digest: string };
   readonly error?: { readonly code: string; readonly message: string; readonly details: { readonly next?: string } };
   readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
 };
@@ -568,6 +570,41 @@ it.live(
         assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationSlug: bob.organization.slug }), 403);
         assert.strictEqual(yield* enroll({}, { organizationSlug: alice.organization.slug }), 401);
         assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug, extra: true }), 422);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "the CLI reads and decides only its own Organization's approvals, and only for the plan they ask about",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        // Asked about Environment `production` of a Project the Store has no more: its plan moved on.
+        const [row] = yield* drizzle.insert(operationApprovals).values({
+          organizationId: alice.organization.id, environmentId: "00000000-0000-4000-8000-000000001301",
+          credentialKind: "session", credentialId: "device", command: "publish", digest: "7:abc",
+          review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({
+            effects: [], diff: { version: "7", environment: { id: "00000000-0000-4000-8000-000000001301", project: "gone", name: "production" } },
+          }),
+        }).returning({ id: operationApprovals.id });
+        const id = row?.id ?? assert.fail("no approval");
+
+        assert.strictEqual((yield* cli("GET", `approvals/${id}`, bob)).status, 404);
+        assert.strictEqual((yield* cli("POST", `approvals/${id}`, bob, { reject: {} })).status, 404);
+        assert.strictEqual((yield* cli("GET", "approvals/not-a-uuid", alice)).status, 404);
+        assert.strictEqual((yield* cli("POST", `approvals/${id}`, alice, { approve: "yes" })).status, 422);
+
+        const read = yield* cli("GET", `approvals/${id}`, alice);
+        assert.strictEqual(read.status, 200);
+        assert.deepInclude(read.json.approval, { id, status: "superseded", digest: "7:abc" });
+        const approved = yield* cli("POST", `approvals/${id}`, alice, { approve: { digest: "7:abc" } });
+        assert.strictEqual(approved.status, 409);
+        assert.strictEqual(approved.json.error?.code, "conflict");
       }).pipe(Effect.provide(layer));
     }),
   60_000,
