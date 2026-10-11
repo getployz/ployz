@@ -247,6 +247,18 @@ demand and never copies them (bet 7). A value a Machine could not read is a
 named gap, never zero. A Cloud copy of metrics, such as a paid
 long-term store, breaks this rule and needs its own amendment here first.
 
+```mermaid
+flowchart LR
+  subgraph Machine
+    S[Sampler, every 10 s] --> R[Raw hours, 24 h]
+    R -- fold each closed hour --> U[5 minute Rollups, 90 days]
+    H[Harvester events] --> M[Markers]
+    M --> U
+    R & U --> Q[History query on observe.sock]
+  end
+  C[Cloud or CLI] -- on demand, via the daemon --> Q
+```
+
 **Red flags:**
 
 - A Machine deciding by reading another Machine's records. A replicated
