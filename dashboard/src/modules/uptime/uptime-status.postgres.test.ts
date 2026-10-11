@@ -190,6 +190,15 @@ describe("uptime percentages", () => {
     expect((await summary(check, from, until)).uptime).toBe(1);
   });
 
+  it("count raw probes from the raw retention cutoff when Until falls before the next hour", async () => {
+    const check = await createCheck();
+    await hourly(check, "eu-west", hourAgo(30 * 24 + 1), 10, 0, 0);
+    await hourly(check, "eu-west", hourAgo(30 * 24), 10, 10, 0);
+    await result(check, "eu-west", ago(30 * DAY - 10 * MINUTE), "fail", 9000);
+
+    expect((await summary(check, ago(30 * DAY + 2 * HOUR), ago(30 * DAY - 15 * MINUTE))).uptime).toBe(10 / 11);
+  });
+
   it("count routine probes only", async () => {
     const check = await createCheck();
     await result(check, "eu-west", ago(20 * MINUTE), "fail", 9000);

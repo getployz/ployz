@@ -91,9 +91,11 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .limit(1);
   const status = open !== undefined ? "unreachable" : probed === undefined ? "pending" : "up";
 
-  // Raw probes count where raw retention reaches; the hourly rollup counts the whole hours before that and before `to`.
+  // The hourly rollup counts the whole hours that end before raw retention's next hour and by `to`; raw probes count the rest.
   const rawFrom = since("raw", checked.from);
   const split = rawFrom.getTime() === checked.from ? rawFrom : new Date(Math.ceil(rawFrom.getTime() / HOUR_MS) * HOUR_MS);
+  const hoursEnd = Math.floor(Math.min(split.getTime(), checked.to) / HOUR_MS) * HOUR_MS;
+  const rawStart = new Date(Math.max(rawFrom.getTime(), hoursEnd));
   const [hourly] = split.getTime() === checked.from ? [] : yield* drizzle
     .select({
       passing: sql<number | null>`sum(${uptimeResultHourly.probes} - ${uptimeResultHourly.failures})`.mapWith(Number),
@@ -103,7 +105,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     .where(and(
       of(uptimeResultHourly),
       gte(uptimeResultHourly.hour, since("hourly", checked.from)),
-      lte(uptimeResultHourly.hour, new Date(Math.min(split.getTime(), checked.to) - HOUR_MS)),
+      lte(uptimeResultHourly.hour, new Date(hoursEnd - HOUR_MS)),
     ));
   const [raw] = yield* drizzle
     .select({
@@ -111,7 +113,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
       counted: sql<number>`count(*) FILTER (WHERE ${uptimeResult.verdict} IN ('pass', 'fail'))`.mapWith(Number),
     })
     .from(uptimeResult)
-    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), between(uptimeResult.scheduledAt, split, to)));
+    .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), between(uptimeResult.scheduledAt, rawStart, to)));
   const counted = (hourly?.counted ?? 0) + (raw?.counted ?? 0);
   const uptime = counted === 0 ? null : ((hourly?.passing ?? 0) + (raw?.passing ?? 0)) / counted;
 
