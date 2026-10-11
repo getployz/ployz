@@ -2518,7 +2518,7 @@
         "default": "100",
         "short": "n",
         "trailing": false,
-        "help": "Lines from the end of each Container's log; all for everything"
+        "help": "Lines from the end of the log; all for everything"
       },
       {
         "name": "--until",
@@ -2572,7 +2572,7 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "Only the running containers this Deployment created, in its Environment"
+        "help": "Only the containers this Deployment created, in its Environment, running or not"
       },
       {
         "name": "--build",
@@ -3358,7 +3358,7 @@
         "default": "100",
         "short": "n",
         "trailing": false,
-        "help": "Lines from the end of each Container's log; all for everything"
+        "help": "Lines from the end of the log; all for everything"
       },
       {
         "name": "--until",
