@@ -135,6 +135,7 @@ async fn sample_every_interval(
     let mut ticks = interval(INTERVAL);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut folded: Option<SegmentName> = None;
+    let mut ledger = VolumeLedger::default();
     loop {
         ticks.tick().await;
         refresh(&docker, &roots, &mut tracked).await;
@@ -146,20 +147,36 @@ async fn sample_every_interval(
         folded = hour;
         let slow = *slow.borrow();
         let tick = tokio::task::spawn_blocking(move || {
-            let gone = tick(&roots, &store, &data_dir, &containers, slow, ts);
+            let gone = tick(
+                &roots,
+                &store,
+                &data_dir,
+                &containers,
+                slow,
+                ts,
+                &mut ledger,
+            );
             if fold && let Err(error) = rollup::fold_pending(&store, SystemTime::now()) {
                 tracing::warn!(%error, "cannot fold metric hours");
             }
-            gone
+            (gone, ledger)
         });
         match tick.await {
-            Ok(Ok(gone)) => {
+            Ok((Ok(gone), kept)) => {
+                ledger = kept;
                 for id in gone {
                     tracked.remove(&id);
                 }
             }
-            Ok(Err(error)) => tracing::warn!(%error, "cannot append metric rows"),
-            Err(error) => tracing::warn!(%error, "metric sample task failed"),
+            Ok((Err(error), kept)) => {
+                ledger = kept;
+                tracing::warn!(%error, "cannot append metric rows");
+            }
+            Err(error) => {
+                // Volume totals restart from zero, which the rates read as a reset.
+                ledger = VolumeLedger::default();
+                tracing::warn!(%error, "metric sample task failed");
+            }
         }
     }
 }
@@ -291,12 +308,21 @@ fn tick(
     containers: &[Tracked],
     slow: SlowReading,
     ts: i64,
+    ledger: &mut VolumeLedger,
 ) -> io::Result<Vec<ContainerId>> {
     let Some(machine_id) = machine_id(data_dir) else {
         tracing::debug!("no Machine id yet; skipping the metric sample");
         return Ok(Vec::new());
     };
-    let (rows, gone) = sample(roots, store.path(), slow, machine_id, ts, containers);
+    let (rows, gone) = sample(
+        roots,
+        store.path(),
+        slow,
+        machine_id,
+        ts,
+        containers,
+        ledger,
+    );
     segment::append(store, &rows)?;
     Ok(gone)
 }
@@ -318,13 +344,14 @@ fn sample(
     machine_id: MachineId,
     ts: i64,
     containers: &[Tracked],
+    ledger: &mut VolumeLedger,
 ) -> (Vec<Row>, Vec<ContainerId>) {
     // A pid that exited, or was reused by another process, no longer names
     // the container's cgroup.
     let (live, gone): (Vec<&Tracked>, Vec<&Tracked>) = containers.iter().partition(|container| {
         cgroup_path(&roots.proc, container.pid).as_deref() == Some(container.cgroup.as_str())
     });
-    let volume_io = volume_io(&zfs_io::read(&roots.zfs_kstat), &live);
+    ledger.book(zfs_io::read(&roots.zfs_kstat), &live);
     let mut rows = Vec::with_capacity(live.len() + 1);
     for container in live {
         let dir = roots.cgroup.join(container.cgroup.trim_start_matches('/'));
@@ -338,7 +365,7 @@ fn sample(
             container,
             &counters,
             net,
-            volume_io.get(&container.id).copied(),
+            ledger.booked.get(&container.id).copied(),
         )));
     }
     let host = host::read_host(&roots.proc, &[store]);
@@ -352,6 +379,46 @@ fn sample(
         rows,
         gone.into_iter().map(|container| container.id).collect(),
     )
+}
+
+/// Volume bytes as each container's own running total. A kstat counts from
+/// its dataset's mount, so booking it whole would jump whenever another
+/// replica takes a Volume over or a kstat misses a tick. Only the growth
+/// between two readings of a dataset is booked.
+#[derive(Debug, Default)]
+struct VolumeLedger {
+    seen: HashMap<String, DatasetIo>,
+    booked: HashMap<ContainerId, DatasetIo>,
+}
+
+impl VolumeLedger {
+    fn book(&mut self, datasets: BTreeMap<String, DatasetIo>, live: &[&Tracked]) {
+        let grown: BTreeMap<String, DatasetIo> = datasets
+            .into_iter()
+            .map(|(dataset, now)| {
+                let grown = self.seen.insert(dataset.clone(), now).map_or_else(
+                    DatasetIo::default,
+                    |last| DatasetIo {
+                        read_bytes: growth(last.read_bytes, now.read_bytes),
+                        write_bytes: growth(last.write_bytes, now.write_bytes),
+                    },
+                );
+                (dataset, grown)
+            })
+            .collect();
+        for (container, io) in volume_io(&grown, live) {
+            let total = self.booked.entry(container).or_default();
+            total.read_bytes = total.read_bytes.saturating_add(io.read_bytes);
+            total.write_bytes = total.write_bytes.saturating_add(io.write_bytes);
+        }
+        self.booked
+            .retain(|id, _| live.iter().any(|container| container.id == *id));
+    }
+}
+
+/// A counter below its last reading restarted, as a remount resets it.
+fn growth(last: u64, now: u64) -> u64 {
+    now.checked_sub(last).unwrap_or(now)
 }
 
 /// Each Volume's ZFS bytes, booked once per Service on the lowest container
@@ -492,7 +559,7 @@ mod tests {
         metrics::{MetricRange, MetricSample, MetricScope},
     };
 
-    use super::{Labels, Roots, SlowReading, Tracked, cgroup_path, sample, tick};
+    use super::{Labels, Roots, SlowReading, Tracked, VolumeLedger, cgroup_path, sample, tick};
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
         network::WireGuardPrivateKey,
@@ -686,6 +753,7 @@ Inter-|   Receive                                                |  Transmit
             &containers,
             SlowReading::default(),
             T0,
+            &mut VolumeLedger::default(),
         )
         .unwrap();
         assert!(gone.is_empty());
@@ -698,6 +766,7 @@ Inter-|   Receive                                                |  Transmit
             &containers,
             SlowReading::default(),
             T0 + 10 * SEC,
+            &mut VolumeLedger::default(),
         )
         .unwrap();
         assert_eq!(gone, vec![api.id]);
@@ -786,6 +855,7 @@ Inter-|   Receive                                                |  Transmit
             machine(),
             T0,
             std::slice::from_ref(&web),
+            &mut VolumeLedger::default(),
         );
         assert_eq!(gone, vec![web.id]);
         assert!(matches!(rows.as_slice(), [Row::Host(_)]));
@@ -808,6 +878,7 @@ Inter-|   Receive                                                |  Transmit
             machine(),
             T0,
             &[web],
+            &mut VolumeLedger::default(),
         );
         assert!(gone.is_empty());
         let Some(Row::Container(row)) = rows.first() else {
@@ -898,6 +969,7 @@ Inter-|   Receive                                                |  Transmit
             machine(),
             T0,
             &[tracked],
+            &mut VolumeLedger::default(),
         );
         let Some(Row::Container(row)) = rows.first() else {
             panic!("the first row is the container's");
@@ -923,6 +995,7 @@ Inter-|   Receive                                                |  Transmit
             &[web],
             SlowReading::default(),
             T0,
+            &mut VolumeLedger::default(),
         )
         .unwrap();
         assert!(gone.is_empty());
@@ -961,6 +1034,24 @@ Inter-|   Receive                                                |  Transmit
         io
     }
 
+    fn sample_at(
+        fixture: &Fixture,
+        ts: i64,
+        containers: &[Tracked],
+        ledger: &mut VolumeLedger,
+    ) -> Vec<(ContainerId, Option<u64>, Option<u64>)> {
+        let (rows, _) = sample(
+            &fixture.roots,
+            &fixture.dir.0,
+            SlowReading::default(),
+            machine(),
+            ts,
+            containers,
+            ledger,
+        );
+        io_by_container(&rows)
+    }
+
     #[test]
     fn a_volume_shared_by_two_replicas_is_booked_once_and_slots_are_left_out() {
         let fixture = Fixture::new();
@@ -974,20 +1065,16 @@ Inter-|   Receive                                                |  Transmit
         fixture.objset(0x36, "ployz/ployz/prod_db", 1000, 5000);
         fixture.objset(0x37, "ployz/ployz-mirror/prod_cache", 70, 70);
         fixture.objset(0x38, "ployz/ployz-mirror/prod_cache/fs", 80, 80);
+        let containers = [second.clone(), first.clone(), other.clone()];
+        let mut ledger = VolumeLedger::default();
+        sample_at(&fixture, T0, &containers, &mut ledger);
 
-        let (rows, _) = sample(
-            &fixture.roots,
-            &fixture.dir.0,
-            SlowReading::default(),
-            machine(),
-            T0,
-            &[second.clone(), first.clone(), other.clone()],
-        );
-
+        fixture.objset(0x36, "ployz/ployz/prod_db", 1100, 5300);
+        fixture.objset(0x37, "ployz/ployz-mirror/prod_cache", 90, 90);
         assert_eq!(
-            io_by_container(&rows),
+            sample_at(&fixture, T0 + 10 * SEC, &containers, &mut ledger),
             [
-                (first.id, Some(7 + 1000), Some(9 + 5000)),
+                (first.id, Some(7 + 100), Some(9 + 300)),
                 (second.id, Some(7), Some(9)),
                 (other.id, Some(7), Some(9)),
             ],
@@ -1008,20 +1095,68 @@ Inter-|   Receive                                                |  Transmit
             .cgroup
             .join(api.cgroup.trim_start_matches('/'));
         fs::remove_file(dir.join("io.stat")).unwrap();
+        let containers = [web.clone(), api.clone()];
+        let mut ledger = VolumeLedger::default();
+        sample_at(&fixture, T0, &containers, &mut ledger);
 
-        let (rows, _) = sample(
-            &fixture.roots,
-            &fixture.dir.0,
-            SlowReading::default(),
-            machine(),
-            T0,
-            &[web.clone(), api.clone()],
-        );
-
+        fixture.objset(0x36, "ployz/ployz/shared", 15, 30);
         assert_eq!(
-            io_by_container(&rows),
-            [(web.id, Some(17), Some(29)), (api.id, Some(10), Some(20)),],
+            sample_at(&fixture, T0 + 10 * SEC, &containers, &mut ledger),
+            [
+                (web.id, Some(7 + 5), Some(9 + 10)),
+                (api.id, Some(5), Some(10))
+            ],
             "Volume bytes stand alone when the cgroup counter is missing"
+        );
+    }
+
+    #[test]
+    fn a_replica_taking_a_volume_over_books_only_what_follows() {
+        let fixture = Fixture::new();
+        let mut first = fixture.start(1);
+        let mut second = fixture.start(2);
+        second.labels.service_id = first.labels.service_id;
+        first.volumes = vec![volume("prod_db")];
+        second.volumes = vec![volume("prod_db")];
+        let containers = [first.clone(), second.clone()];
+        let mut ledger = VolumeLedger::default();
+        fixture.objset(0x36, "ployz/ployz/prod_db", 1000, 5000);
+        sample_at(&fixture, T0, &containers, &mut ledger);
+        fixture.objset(0x36, "ployz/ployz/prod_db", 1100, 5100);
+        sample_at(&fixture, T0 + 10 * SEC, &containers, &mut ledger);
+
+        fixture.stop(&first);
+        fixture.objset(0x36, "ployz/ployz/prod_db", 1200, 5200);
+        assert_eq!(
+            sample_at(&fixture, T0 + 20 * SEC, &containers, &mut ledger),
+            [(second.id, Some(7 + 100), Some(9 + 100))],
+            "the new owner gains the growth, not the Volume's whole history"
+        );
+    }
+
+    #[test]
+    fn a_kstat_missing_for_a_tick_books_no_spike() {
+        let fixture = Fixture::new();
+        let mut web = fixture.start(1);
+        web.volumes = vec![volume("prod_db")];
+        let containers = [web.clone()];
+        let mut ledger = VolumeLedger::default();
+        fixture.objset(0x36, "ployz/ployz/prod_db", 1000, 5000);
+        let first = sample_at(&fixture, T0, &containers, &mut ledger);
+
+        fs::remove_file(fixture.roots.zfs_kstat.join("ployz/objset-0x36")).unwrap();
+        let missing = sample_at(&fixture, T0 + 10 * SEC, &containers, &mut ledger);
+
+        fixture.objset(0x36, "ployz/ployz/prod_db", 1050, 5050);
+        let back = sample_at(&fixture, T0 + 20 * SEC, &containers, &mut ledger);
+        assert_eq!(
+            [first, missing, back],
+            [
+                [(web.id, Some(7), Some(9))],
+                [(web.id, Some(7), Some(9))],
+                [(web.id, Some(7 + 50), Some(9 + 50))],
+            ],
+            "the counter never drops and then leaps by the Volume's total"
         );
     }
 }
