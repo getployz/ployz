@@ -30,8 +30,6 @@ const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check 
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
 const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belongs to another Environment.", details: null };
 const STAGING: StoreRefusal = { code: "conflict", message: "This restore is still being staged. Try again in a minute.", details: null };
-/** How long a restore's row may wait on its Store write; past it, the write was lost and the row can go. */
-const STAGING_MS = 60_000;
 
 /** Every Volume placement in the organization: one row per Volume the dashboard has a record for. */
 export const listPlacements = Effect.fn("VolumePlacement.list")(function* (organizationId: string) {
@@ -165,9 +163,8 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
     if (read.environment.id !== current.environmentId) return { ok: false, refusal: ELSEWHERE } satisfies PlacementDiscard;
     const restored = read.volumes.find((volume) => volume.id === volumeId);
     const source = read.volumes.find((volume) => volume.id === seed.sourceVolumeId);
-    if (restored === undefined && Date.now() - current.createdAt.getTime() < STAGING_MS) {
-      return { ok: false, refusal: STAGING } satisfies PlacementDiscard;
-    }
+    // Its Store write may still commit, and needs the row when it does. No page offers a row without its Volume.
+    if (restored === undefined) return { ok: false, refusal: STAGING } satisfies PlacementDiscard;
     const commands: BatchCommand[] = restored?.change !== "create" ? [] : [
       { command: "discard", environment, path: `volumes.${restored.name}`, version: null },
       ...restored.mounts

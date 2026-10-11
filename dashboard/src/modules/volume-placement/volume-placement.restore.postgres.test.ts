@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import type { ConfigStore, CreateVolume, Mount } from "@ployz/sdk";
 import { Effect } from "effect";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { lossTime, type PlacementRow } from "#/modules/volume-placement/volume-placement";
@@ -103,13 +103,15 @@ it.live("writes the restore's row before its Store write, so a Deploy admitted r
     .toMatchObject([{ volumeId: staged.placement.volumeId, deploymentId: deployment }]);
 }));
 
-it.live("refuses to discard a restore whose Store write hasn't committed, so the seed outlives the write", () => Effect.gen(function* () {
+it.live("refuses to discard a restore whose Store write hasn't committed, however long it has waited", () => Effect.gen(function* () {
   const { services, store } = yield* deployedShop();
   let refused = "";
   const write: ConfigStore["write"] = async (organizationId, command, trusted, principal) => {
     if (command.command === "batch" && command.commands.some((step) => step.command === "create_volume")) {
       const [row] = await Effect.runPromise(listPlacements(ORGANIZATION).pipe(Effect.provide(services)));
+      const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
       const discarded = await Effect.runPromise(discardPlacement(ORGANIZATION, null, row?.volumeId ?? "", shop).pipe(Effect.provide(services)));
+      later.mockRestore();
       refused = discarded.ok ? "" : discarded.refusal.message;
     }
     return store.write(organizationId, command, trusted, principal);
