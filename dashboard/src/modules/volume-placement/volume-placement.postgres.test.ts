@@ -1,11 +1,21 @@
 import type { ConfigStore, MachineId } from "@ployz/sdk";
-import { Effect } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
+import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { GithubApi } from "#/modules/github/github-observation.api";
+import { InngestClient } from "#/modules/inngest/client";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { discardPlacement, listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
+import type { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { testConfigEnvironment } from "#/test/config-environment";
+import { fakeGithubApi } from "#/test/fake-github";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+
+type StoreWrites = AppConfig | GithubApi | InngestClient | OrganizationRuntime | SecretEncryption;
 
 const organizationId = "00000000-0000-4000-8000-000000000f01";
 const volumeId = "vol1";
@@ -16,7 +26,12 @@ describe("volume placement", () => {
   let harness: PostgresTestHarness;
   let inFlight: boolean;
 
-  const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore>) => harness.runEffect(operation.pipe(
+  // A placement with no restore staged never writes the Store; its writer's services only fill the type.
+  const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>) => harness.runEffect(operation.pipe(
+    Effect.provide(AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), DATABASE_URL: "postgres://unused@localhost/unused" } }))))),
+    Effect.provideService(GithubApi, fakeGithubApi().service),
+    Effect.provideService(InngestClient, new Inngest({ id: "volume-placement-test" })),
+    Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("no Cluster") }),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
         read: async (_: string, query: { query: string }) => {
@@ -52,7 +67,7 @@ describe("volume placement", () => {
     await stage("web-2");
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
     expect((await run(listPlacements(organizationId)))[0]?.deploymentId).toBe("dep-1");
-    expect(await run(discardPlacement(organizationId, volumeId))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
+    expect(await run(discardPlacement(organizationId, null, volumeId, environment))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await stage("web-3")).toMatchObject({ ok: false });
     expect((await run(listPlacements(organizationId)))[0]?.staged?.primary).toBe(web("web-2"));
   });
@@ -61,12 +76,12 @@ describe("volume placement", () => {
     await stage("web-2");
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
     inFlight = false;
-    expect(await run(discardPlacement(organizationId, volumeId))).toMatchObject({ ok: true, placement: { staged: null, deploymentId: null } });
+    expect(await run(discardPlacement(organizationId, null, volumeId, environment))).toMatchObject({ ok: true, placement: { staged: null, deploymentId: null } });
   });
 
   it("stamps only Volumes with something staged in that Environment", async () => {
     await stage("web-2");
-    await run(discardPlacement(organizationId, volumeId));
+    await run(discardPlacement(organizationId, null, volumeId, environment));
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
     expect((await run(listPlacements(organizationId)))[0]?.deploymentId).toBeNull();
   });

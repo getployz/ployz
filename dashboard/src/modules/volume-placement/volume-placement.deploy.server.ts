@@ -71,13 +71,17 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
   const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
-  for (const row of rows) {
+  // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
+  const ordered = [...rows].sort((a, b) => Number(b.staged?.seed !== undefined) - Number(a.staged?.seed !== undefined));
+  for (const row of ordered) {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     if (volume === undefined) {
       yield* settle(row.volumeId, { staged: null, deploymentId: null });
       continue;
     }
-    const busy = (yield* listActiveVolumeRuns(organizationId)).find((run) => run.volume_id === row.volumeId);
+    // A restore's run belongs to its source, the Volume it copies from.
+    const runsOn = row.staged?.seed?.sourceVolumeId ?? row.volumeId;
+    const busy = (yield* listActiveVolumeRuns(organizationId)).find((run) => run.volume_id === runsOn);
     if (busy !== undefined) return { kind: "wait", wait: { runId: busy.id, volumeId: row.volumeId, mirrors: null } } satisfies PlacementAdvance;
     const placement = rowView(row);
     const members = yield* inspect(organizationId, environment, row.volumeId);
@@ -86,7 +90,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
       yield* settle(row.volumeId, { staged: null, deploymentId: null });
       continue;
     }
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: row.volumeId, environment, ...step.run });
+    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run });
     if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, mirrors: step.mirrors } } satisfies PlacementAdvance;
     yield* release(organizationId, deploymentId);
     return { kind: "failed", message: `${volume.name}: ${requested.refusal.message}` } satisfies PlacementAdvance;

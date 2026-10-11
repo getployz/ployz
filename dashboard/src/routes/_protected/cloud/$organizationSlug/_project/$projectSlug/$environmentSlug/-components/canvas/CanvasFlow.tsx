@@ -29,6 +29,7 @@ import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-deployments";
+import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -218,7 +219,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
   const storage = useStorageSteps(params.organizationSlug);
   const storeGroups = changeGroups(diff, store.services.map(({ service }) => service));
-  const groups = [...storeGroups, ...placements.groups];
+  const groups = mergeRestoreGroups(storeGroups, placements.groups);
   const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath);
   return (
     <>
