@@ -41,7 +41,7 @@ pub enum RowState {
 }
 
 impl RowState {
-    const fn finished(&self) -> bool {
+    pub(crate) const fn finished(&self) -> bool {
         matches!(
             self,
             Self::Completed | Self::Failed { .. } | Self::NotAttempted | Self::Unknown

@@ -1,5 +1,8 @@
 //! Tools on Deployments: follow one to its end, cancel one.
 
+use std::collections::BTreeMap;
+
+use ployz_core::MachineId;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -9,8 +12,8 @@ use super::refusal::{Call, Refusal};
 use super::release::place;
 use crate::catalog::NODE_NAME;
 use crate::{
-    Cancel, DeploymentView, DeploymentsQuery, EnvironmentName, EnvironmentRef, NodeOutcome,
-    NumberedDeploymentQuery, Outcome, ProjectName, RowState,
+    Cancel, DeployedNode, DeploymentView, DeploymentsQuery, EnvironmentName, EnvironmentRef,
+    NodeOutcome, NumberedDeploymentQuery, Outcome, ProjectName, RowState,
 };
 
 /// The Deployment `number` names, or the latest when it names none.
@@ -70,9 +73,54 @@ fn node(node: &NodeOutcome) -> Value {
         object.insert("server".into(), server.into());
         object.insert("reason".into(), reason.as_str().into());
         object.insert("step".into(), json!(step));
-        object.insert("log".into(), json!(log));
+        object.insert("excerpt".into(), json!(log));
     }
     shown
+}
+
+/// How far a running Deployment got: the phase its first busy row is in, and
+/// how many of its Servers finished every row.
+fn progress(view: &DeploymentView) -> Value {
+    let rows = || view.nodes.iter().flat_map(|node| &node.rows);
+    let phase = rows().find_map(|row| match &row.state {
+        RowState::Running { phase } => Some(*phase),
+        RowState::Pending
+        | RowState::Completed
+        | RowState::Failed { .. }
+        | RowState::NotAttempted
+        | RowState::Unknown => None,
+    });
+    let mut servers = BTreeMap::<&MachineId, bool>::new();
+    for row in rows() {
+        let done = servers.entry(&row.machine_id).or_insert(true);
+        *done &= row.state.finished();
+    }
+    json!({
+        "phase": phase,
+        "servers_done": servers.values().filter(|done| **done).count(),
+        "servers_total": servers.len(),
+    })
+}
+
+/// `service_logs` for the first Service whose work failed, at this Deployment.
+fn failed_logs(view: &DeploymentView, call: &Call) -> Option<Call> {
+    let service = view.nodes.iter().find_map(|node| match &node.node {
+        DeployedNode::Service { name, .. }
+            if node
+                .rows
+                .iter()
+                .any(|row| matches!(row.state, RowState::Failed { .. })) =>
+        {
+            Some(name)
+        }
+        DeployedNode::Service { .. }
+        | DeployedNode::Volume { .. }
+        | DeployedNode::Config { .. } => None,
+    })?;
+    let mut input = place(call);
+    input.insert("service".into(), json!(service));
+    input.insert("deployment".into(), view.deployment.number.into());
+    Some(Call::new("service_logs", Value::Object(input)))
 }
 
 fn show(view: &DeploymentView) -> Value {
@@ -134,14 +182,20 @@ impl Tool for DeploymentShow {
             attempt += 1;
         }
         let mut shown = show(&view);
-        if let (true, Value::Object(object)) = (view.deployment.in_flight, &mut shown) {
+        let Value::Object(object) = &mut shown else {
+            return Ok(shown);
+        };
+        if view.deployment.in_flight {
             let mut input = place(cx.call());
             input.insert("deployment".into(), view.deployment.number.into());
             input.insert("wait_seconds".into(), 120.into());
+            object.insert("progress".into(), progress(&view));
             object.insert(
                 "next".into(),
                 json!(Call::new(Self::NAME, Value::Object(input))),
             );
+        } else if let Some(logs) = failed_logs(&view, cx.call()) {
+            object.insert("next".into(), json!(logs));
         }
         Ok(shown)
     }
