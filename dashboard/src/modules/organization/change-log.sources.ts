@@ -50,7 +50,6 @@ export const changeSources = {
   server_drain_attempt: { key: ["id"] },
   namespace_cleanup: { key: ["id"] },
   organization_server_upgrades: { key: ["organization_id"] },
-  organization_settings: { key: ["organization_id"] },
   operation_approvals: { key: ["id"] },
   ...storeChangeSources,
 } satisfies Record<string, { organizationColumn?: string; key: readonly string[] }>;

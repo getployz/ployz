@@ -9,39 +9,17 @@ import {
   type ApprovalDecision,
   type ApprovalReview,
   approvalSubject,
-  DEFAULT_ORGANIZATION_SETTINGS,
   type OperationVerb,
-  type SetOrganizationSettingsInput,
 } from "#/modules/approvals/approvals";
-import { operationApprovals, organizationSettings } from "#/modules/approvals/tables";
+import { operationApprovals } from "#/modules/approvals/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { Actor, Caller } from "#/modules/identity/actor";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import type { Caller } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
 type ApprovalRow = typeof operationApprovals.$inferSelect;
-
-export const askBeforeDestructive = Effect.fn("Approvals.askBeforeDestructive")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ ask: organizationSettings.askBeforeDestructive }).from(organizationSettings)
-    .where(eq(organizationSettings.organizationId, organizationId));
-  return row?.ask ?? DEFAULT_ORGANIZATION_SETTINGS.askBeforeDestructive;
-});
-
-export const setOrganizationSettings = Effect.fn("Approvals.setOrganizationSettings")(function* (
-  actor: Actor,
-  { organizationSlug, ...settings }: typeof SetOrganizationSettingsInput.Type,
-) {
-  const { id: organizationId } = yield* requireInfrastructureOrganization(actor, organizationSlug);
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.insert(organizationSettings).values({ organizationId, ...settings })
-    .onConflictDoUpdate({ target: organizationSettings.organizationId, set: { ...settings, updatedAt: new Date() } })
-    .returning({ id: organizationSettings.organizationId, askBeforeDestructive: organizationSettings.askBeforeDestructive });
-  return row ?? { id: organizationId, ...settings };
-});
 
 /** An approval as the CLI reads it. */
 function approvalView(row: ApprovalRow) {
@@ -153,15 +131,13 @@ const denied = (row: ApprovalRow) => {
   return `the request to ${verb.toLowerCase()} ${name}`;
 };
 
-type Trusted = { ok: true; approval: Approval } | { ok: false; refusal: StoreRefusal };
+type Trusted = { ok: true; approval: Exclude<Approval, "not_required"> } | { ok: false; refusal: StoreRefusal };
 
 export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   organizationId: string,
   approvalId: string | null,
 ): Effect.fn.Return<Trusted, never, Database> {
-  if (approvalId === null) {
-    return { ok: true, approval: (yield* askBeforeDestructive(organizationId).pipe(Effect.orDie)) ? "required" : "not_required" };
-  }
+  if (approvalId === null) return { ok: true, approval: "required" };
   const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
     return {
@@ -292,7 +268,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
 ): Effect.fn.Return<Gated, never, Database> {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
-  if (asked.effects.length === 0 || trusted.approval === "not_required") return { ok: true, approvalId: null };
+  if (asked.effects.length === 0) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };

@@ -26,21 +26,6 @@ export function approvalSubject(command: string, review: ApprovalReview) {
   return { verb: command === "publish" ? "Publish" : "Deploy", name: review.diff.environment.name };
 }
 
-/** The Organization's settings row as the Org Store reads it. No row reads as the defaults. */
-export type OrganizationSettingsRow = { id: string; askBeforeDestructive: boolean };
-
-/** An Organization without a settings row asks before destructive actions. */
-export const DEFAULT_ORGANIZATION_SETTINGS = { askBeforeDestructive: true } satisfies Omit<OrganizationSettingsRow, "id">;
-
-export function organizationSettings(rows: readonly OrganizationSettingsRow[]) {
-  return rows[0] ?? DEFAULT_ORGANIZATION_SETTINGS;
-}
-
-export const SetOrganizationSettingsInput = Schema.Struct({
-  organizationSlug: Schema.String,
-  askBeforeDestructive: Schema.Boolean,
-});
-
 /** The writes the Store reviews for destruction: Publish, and a manual Deploy. Nothing else waits for a human. */
 export function asksApproval(command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy");

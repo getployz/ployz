@@ -8,7 +8,7 @@ import { expect, vi } from "vitest";
 import { agentChat, KEEPALIVE_MS } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
-import { type ApprovalView, decideApproval, getApproval, pendingApprovals, setOrganizationSettings } from "#/modules/approvals/approvals.server";
+import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
@@ -322,9 +322,9 @@ it.live("two approved Deploys create two Deployments, and a retry of the second 
     expect([...yield* deployments].sort()).toEqual([...deployed].sort());
   }), 15_000);
 
-it.live("a resume after the Deploy committed and its process died deploys nothing more, even once the Organization stops asking", () =>
+it.live("a resume after the Deploy committed and its process died deploys nothing more", () =>
   Effect.gen(function* () {
-    const { provided, store, userId, caller, say, waiting, answer, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { provided, store, caller, say, waiting, answer, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
     yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
@@ -336,7 +336,6 @@ it.live("a resume after the Deploy committed and its process died deploys nothin
     });
     expect((yield* answer(interruptId, "resolved").pipe(Effect.exit))._tag).toBe("Failure");
     const [deployed] = yield* deployments;
-    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
 
     const again = yield* answer(interruptId, "resolved");
     expect(again.errors).toEqual([]);
@@ -366,15 +365,18 @@ const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeo
   return { writes, entered, release: () => release() };
 };
 
+/** A Service to Deploy that destroys nothing, so the Deploy runs without waiting on a human. */
+const addCache = { command: "create_service", id: "00000000-0000-4000-8000-0000000a6105", environment: here, name: "cache", image: "redis:7" } as const;
+
 const sendAs = ({ provided, caller }: Effect.Success<ReturnType<typeof sidebar>>, runId: string, threadId = THREAD) =>
   provided(agentChat(caller, { messages: [{ role: "user", content: "deploy" }], threadId, runId })).pipe(Effect.flatMap(drain));
 
 for (const status of ["completed", "aborted", "failed"] as const) {
   it.live(`a request repeating the id of a ${status} run replays that run and deploys nothing more`, () =>
     Effect.gen(function* () {
-      const harness = yield* sidebar({ removeWeb: true });
-      const { provided, userId, persistence, watchWrites, deployments } = harness;
-      yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+      const harness = yield* sidebar({ removeWeb: false });
+      const { write, persistence, watchWrites, deployments } = harness;
+      yield* write(addCache);
       expect((yield* sendAs(harness, "run-once")).said).toBe("Done.");
       const deployed = yield* deployments;
       expect(deployed).toHaveLength(1);
@@ -410,9 +412,9 @@ it.live("a request repeating the id of a run that waits on a human shows the sam
 
 it.live("a request repeating the id of a run still answering is refused, and only that run deploys", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
-    const { provided, userId, deployments } = harness;
-    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+    const harness = yield* sidebar({ removeWeb: false });
+    const { write, deployments } = harness;
+    yield* write(addCache);
     const gate = blockFirstAdmit(harness);
     const first = Effect.runPromise(sendAs(harness, "run-busy"));
     try {
@@ -441,9 +443,9 @@ it.live("a request naming another conversation's run is refused and runs nothing
 
 it.live("a message whose request ends before it streams leaves no run behind, so sending it again answers it", () =>
   Effect.gen(function* () {
-    const harness = yield* sidebar({ removeWeb: true });
-    const { provided, caller, userId, persistence, deployments } = harness;
-    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
+    const harness = yield* sidebar({ removeWeb: false });
+    const { provided, caller, write, persistence, deployments } = harness;
+    yield* write(addCache);
     yield* provided(agentChat(caller, { messages: [{ role: "user", content: "deploy" }], threadId: THREAD, runId: "run-dropped" }));
     expect(yield* Effect.promise(() => persistence.stores.runs.get("run-dropped"))).toBeNull();
 
@@ -987,12 +989,11 @@ it.live("a denied Deploy never reaches the Store, and the agent quotes the reaso
   }));
 
 for (const command of ["deploy", "publish"]) {
-  it.live(`a ${command} the human denied stays denied after the Organization stops asking`, () =>
+  it.live(`a ${command} the human denied writes nothing when its run resumes`, () =>
     Effect.gen(function* () {
       const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
       const approval = yield* waitingApproval(yield* say(command), pending);
       yield* provided(decideApproval(caller, approval.id, { reject: { reason: "web still serves traffic" } }));
-      yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
       const writes = watchWrites();
       const resumed = yield* resume("resolved");
       expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied" } }]);
@@ -1001,25 +1002,10 @@ for (const command of ["deploy", "publish"]) {
     }), 15_000);
 }
 
-it.live("a cancelled approval is denied after the Organization stops asking, and a retry under it deploys nothing", () =>
+it.live("a resume whose approval is still pending asks again under it", () =>
   Effect.gen(function* () {
-    const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
+    const { say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
     const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
-    const writes = watchWrites();
-    const resumed = yield* resume("cancelled");
-    expect(resumed.results).toEqual([{ ok: false, cancelled: true }]);
-    expect(writes).not.toHaveBeenCalled();
-    expect((yield* provided(getApproval(ORGANIZATION, approval.id))).status).toBe("denied");
-    expect(yield* pending).toEqual([]);
-    expect(yield* deployments).toEqual([]);
-  }));
-
-it.live("a resume whose approval is still pending asks again under it after the Organization stops asking", () =>
-  Effect.gen(function* () {
-    const { provided, caller, say, resume, watchWrites, pending, deployments } = yield* sidebar({ removeWeb: true });
-    const approval = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
     const writes = watchWrites();
     const resumed = yield* resume("resolved");
     expect(resumed.results).toEqual([]);
@@ -1067,31 +1053,6 @@ it.live("a plan that moved while it waited asks again under a new approval", () 
     const fresh = yield* waitingApproval(resumed, pending);
     expect(fresh.id).not.toBe(stale.id);
     expect((yield* provided(getApproval(ORGANIZATION, stale.id))).status).toBe("approved");
-  }));
-
-it.live("a plan that moved while it waited asks again even after the Organization stops asking", () =>
-  Effect.gen(function* () {
-    const { provided, caller, write, say, resume, pending, deployments } = yield* sidebar({ removeWeb: true });
-    const stale = yield* waitingApproval(yield* say("deploy"), pending);
-    yield* provided(decideApproval(caller, stale.id, { approve: { digest: stale.digest } }));
-    yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6104", environment: here, name: "cache", image: "redis:7" });
-    yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: false }));
-
-    const resumed = yield* resume("resolved");
-    expect(resumed.results).toEqual([]);
-    expect((yield* waitingApproval(resumed, pending)).id).not.toBe(stale.id);
-    expect(yield* deployments).toEqual([]);
-  }));
-
-it.live("an Organization that doesn't ask deploys the destructive plan without an interrupt", () =>
-  Effect.gen(function* () {
-    const { provided, userId, say, pending } = yield* sidebar({ removeWeb: true });
-    yield* provided(setOrganizationSettings({ userId }, { organizationSlug: "shop", askBeforeDestructive: false }));
-    const answered = yield* say("deploy");
-    expect(answered.interrupts).toEqual([]);
-    expect(answered.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
-    expect(answered.results[0]).not.toHaveProperty("nothing_destroyed");
-    expect(yield* pending).toEqual([]);
   }));
 
 it.live("a Deploy that destroys nothing runs without an interrupt", () =>

@@ -1,18 +1,9 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus, DEFAULT_ORGANIZATION_SETTINGS } from "#/modules/approvals/approvals";
-
-/** The Organization's settings. No row reads as the defaults. */
-export const organizationSettings = pgTable("organization_settings", {
-  organizationId: uuid("organization_id").primaryKey()
-    .references(() => organization.id, { onDelete: "cascade" }),
-  askBeforeDestructive: boolean("ask_before_destructive").default(DEFAULT_ORGANIZATION_SETTINGS.askBeforeDestructive).notNull(),
-  createdAt,
-  updatedAt,
-});
+import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus } from "#/modules/approvals/approvals";
 
 /** One destructive CLI write or Server operation a human must approve, by the digest of exactly what it destroys. */
 export const operationApprovals = pgTable(
