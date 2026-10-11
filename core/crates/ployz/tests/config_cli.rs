@@ -902,6 +902,14 @@ fn a_deployed_service_staged_for_removal_still_inspects() {
         assert_eq!(inspected["values"]["image"], json!("nginx:1"));
         assert_eq!(inspected["settings"], json!([]));
         assert_eq!(inspected["domains"], json!([]));
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["service", "inspect", "web"])
+            .output()
+            .unwrap();
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert!(human.contains("nginx:1"), "{human}");
     }
 }
 
@@ -963,6 +971,14 @@ fn an_agent_adds_checks_and_removes_domains() {
         );
         let usage = failed(store, &["domain", "add", "web", "not a host"], 2);
         assert!(!usage["message"].as_str().unwrap().contains("not a host"));
+        let staged = ok(store, &["diff"]);
+        assert!(
+            staged["domains"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({ "path": "web.domains", "change": "added app.example.com" })),
+            "{staged}"
+        );
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];

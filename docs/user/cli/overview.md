@@ -61,7 +61,8 @@ For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as yo
 stage changes in your Projects, review, publish and deploy them, and show Services, Servers
 and Volumes. Ployz Cloud does not support `service_logs` yet; read logs on the
 [Logs page](../observe/logs.md). The agent can resend a call after a lost reply without running
-it twice.
+it twice. Each call acts where the agent's directory is linked when the call starts, so after
+`ployz link` or `ployz org use` the next call follows it.
 
 Some things are not tools. Run these yourself in a terminal:
 
@@ -88,7 +89,9 @@ remove and asks you to approve it in the Ployz Cloud sidebar, then calls the too
 that approval.
 
 `ployz mcp` stops a call that runs for more than 30 minutes. A deployment or Volume run it
-started keeps going in Cloud, and the error names the tool that shows where it stands.
+started keeps going in Cloud, and the error names the tool that shows where it stands. A call
+stopped while Cloud had not yet answered its change says the change may have landed, and the
+agent can resend it without running it twice.
 
 ## Deploy a directory
 

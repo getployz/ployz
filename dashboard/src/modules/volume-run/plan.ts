@@ -1,5 +1,5 @@
 import type { SnapshotGuid } from "@ployz/sdk";
-import { type AnsweredMember, copyName, type Member, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
 
@@ -125,6 +125,9 @@ function handedStart(target: AnsweredMember): MoveStart {
 
 const isFinal = (member: AnsweredMember) => member.view.copy?.kind === "slot" && member.view.copy.mirror.phase === "final";
 
+const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =>
+  machine === undefined ? member.machine.name === to : member.machine.id === machine;
+
 const refuse = (code: RefusalCode, message: string): Planned => ({ ok: false, refusal: { code, message } });
 
 /** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
@@ -175,7 +178,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     }
     if (input.kind === "move") {
       const { to } = input.args;
-      const target = answered.find((member) => member.machine.name === to);
+      const target = answered.find((member) => isDestination(input.args, member));
       if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
       if (roleOf(source) === "handed") {
         if (holder === undefined) return refuse("invalid", `no Server holds the snapshot ${named(source)} handed over`);
@@ -203,10 +206,10 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   }
 
   const { to } = input.args;
-  if (writer.machine.name === to) return refuse("invalid", `${name}'s writer is already on ${to}`);
-  const elsewhere = mirrors.find((member) => member.machine.name !== to);
+  if (isDestination(input.args, writer)) return refuse("invalid", `${name}'s writer is already on ${to}`);
+  const elsewhere = mirrors.find((member) => !isDestination(input.args, member));
   if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
-  const target = answered.find((member) => member.machine.name === to);
+  const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
   if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
   const declare = roleOf(target) !== "mirror";

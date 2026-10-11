@@ -6,7 +6,7 @@ import { createServiceActRequestedEvent, type ServiceActRequestedEventData } fro
 import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { type PloyzSdkError, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
   type ActiveServiceActState,
   alreadyThere,
@@ -19,6 +19,7 @@ import {
   type ServiceActBefore,
   type ServiceActLeg,
   type ServiceActState,
+  takes,
 } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
@@ -42,7 +43,7 @@ export const operationOf = (row: ActRow): Operation => ({
   reason: row.reason,
   servers: row.legs.map(legOf),
   kept: [],
-  unanswered: row.before?.unanswered ?? [],
+  unanswered: row.before?.unanswered.map(({ name }) => name) ?? [],
 });
 
 export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
@@ -124,7 +125,7 @@ export const claimServiceAct = Effect.fn("ServiceAct.claim")(function* (request:
   const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
   if (session.status !== "connected") return yield* new ServiceActUnreachable({ cause: session.status });
   const before: ServiceActBefore = yield* session.connected.observeService(row.namespace, row.runtime);
-  const legs = legsOf(before, row.only);
+  const legs = legsOf(before, row.only, row.verb);
   const [claimed] = yield* drizzle.update(serviceAct).set({ state: "running", before, legs, startedAt: new Date() })
     .where(and(owned(request, runId), eq(serviceAct.state, "accepted"))).returning();
   if (claimed === undefined) return { kind: "settled", state: (yield* readAct(request.actId)).state } satisfies ClaimedAct;
@@ -154,7 +155,7 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
     });
   const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
   for (const leg of legs) {
-    if (leg.server !== server || leg[side] !== null && leg[side] !== "sent") continue;
+    if (leg.server !== server || !takes(leg, side) || leg[side] !== null && leg[side] !== "sent") continue;
     if (leg[side] === "sent") {
       if (!(yield* write(leg, "unknown", `${server} didn't answer.`))) return legs;
       continue;
@@ -168,9 +169,12 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
       continue;
     }
     if (!(yield* write(leg, "sent"))) return legs;
-    const call = side === "stop" ? session.connected.stopContainer : session.connected.startContainer;
-    const [step, reason] = yield* call(leg.machine, leg.container).pipe(
-      Effect.map(() => ["done", leg.reason] as const),
+    const sent: Effect.Effect<readonly [LegStep, string | null], PloyzSdkError> = side === "stop"
+      ? session.connected.stopContainer(leg.machine, leg.container).pipe(Effect.as(["done", leg.reason] as const))
+      : session.connected.startContainer(leg.machine, leg.container).pipe(
+        Effect.map((serving) => serving ? ["done", leg.reason] as const : ["unknown", `${server} started it, but it isn't serving.`] as const),
+      );
+    const [step, reason] = yield* sent.pipe(
       Effect.catch((error) => Effect.succeed(rpcErrorCode(error) === "unavailable"
         ? ["unknown", `${server} didn't answer.`] as const
         : ["failed", `${server} couldn't ${side} it.`] as const)),

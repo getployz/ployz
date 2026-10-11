@@ -151,6 +151,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         Ok((view, Some((settings, domains))))
     };
     let (view, rest) = store::at_one_revision("service inspect", read, torn)?;
+    let removed = rest.is_none();
     let (settings, domains) = rest.map_or_else(Default::default, |(settings, domains)| {
         (settings.settings, domains.domains)
     });
@@ -167,6 +168,11 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         let path = row.path.to_string();
         let setting = path.strip_prefix(&prefix).unwrap_or(&path).to_owned();
         record.push(setting, store::valued(row));
+    }
+    if removed {
+        for (setting, value) in &view.values {
+            record.push(setting.clone(), store::plain(value));
+        }
     }
     record.push(
         "domains",
