@@ -4,6 +4,7 @@
 mod act;
 pub mod cloud;
 mod config;
+mod copies;
 mod deployment;
 mod domain;
 mod environment;
@@ -62,12 +63,17 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<server::ServerShow>(),
     entry::<runtime::ServiceState>(),
     entry::<runtime::ServiceLogs>(),
+    entry::<copies::VolumeShow>(),
     entry::<runtime::ServiceRestart>(),
     entry::<runtime::ServiceStart>(),
     entry::<runtime::ServiceStop>(),
     entry::<server::ServerDrain>(),
     entry::<server::ServerUpgrade>(),
     entry::<server::ServerClean>(),
+    entry::<copies::VolumeMirror>(),
+    entry::<copies::VolumeMirrorRemove>(),
+    entry::<copies::VolumeMove>(),
+    entry::<copies::VolumeRelease>(),
     entry::<server::ServerRemove>(),
 ];
 
