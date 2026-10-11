@@ -91,7 +91,11 @@ fn contract(key: &str) -> Value {
             .join("../src/modules/uptime/incident-evidence.fixture.json"),
     )
     .unwrap();
-    serde_json::from_str::<Value>(&text).unwrap()[key].clone()
+    serde_json::from_str::<Value>(&text)
+        .unwrap()
+        .get(key)
+        .cloned()
+        .expect("the fixture has every evidence key")
 }
 
 fn failing_json() -> Value {
