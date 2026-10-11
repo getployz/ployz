@@ -127,7 +127,7 @@ pub fn run(store: &ConfigStore, id: &ployz_store::DeploymentId) -> serde_json::V
         .collect();
     let operation = |index: usize| {
         json!({"type": "remove_container", "machine_id": "a".repeat(32),
-               "container_id": format!("{index:x}").repeat(64)})
+               "container_id": format!("{index:064x}")})
     };
     let preview: ployz_core::DeployPreview = serde_json::from_value(json!({
         "namespace": claimed.intent.namespace,

@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
-import type { DrainScope } from "@ployz/sdk";
+import type { DrainReport, DrainScope, QualifiedService } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schedule, Schema } from "effect";
+import type { MachineId } from "#/db/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
@@ -131,6 +132,75 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ac
   return yield* latestDrainOf(inserted);
 });
 
+/**
+ * A Drain the signed-in CLI asked for, of exactly the services it previewed. A retry carrying the approval this
+ * Drain consumed answers its row; a request while another Drain is active on the Server answers that one.
+ */
+export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(function* (
+  caller: { readonly organizationId: string; readonly userId: string },
+  input: { readonly machineId: MachineId; readonly targets: readonly QualifiedService[]; readonly approvalId: string | null },
+) {
+  const { drizzle } = yield* Database;
+  const [inserted] = yield* drizzle.insert(serverDrainAttempt).values({
+    id: crypto.randomUUID(),
+    organizationId: caller.organizationId,
+    machineId: input.machineId,
+    requestedByUserId: caller.userId,
+    targets: [...input.targets],
+    approvalId: input.approvalId,
+  }).onConflictDoNothing().returning();
+  if (inserted !== undefined) {
+    yield* dispatch(inserted);
+    return inserted.id;
+  }
+  const consumed = input.approvalId === null ? [] : yield* drizzle.select().from(serverDrainAttempt).where(and(
+    eq(serverDrainAttempt.organizationId, caller.organizationId),
+    eq(serverDrainAttempt.approvalId, input.approvalId),
+  ));
+  const [active] = consumed.length > 0 ? consumed : yield* drizzle.select().from(serverDrainAttempt).where(and(
+    eq(serverDrainAttempt.organizationId, caller.organizationId),
+    eq(serverDrainAttempt.machineId, input.machineId),
+    inArray(serverDrainAttempt.state, ACTIVE_STATES),
+  )).limit(1);
+  if (active === undefined) return yield* new Conflict({ userFacing: true, message: "A drain on this server just ended. Try again." });
+  if (active.state === "pending" && active.inngestRunId === null) yield* dispatch(active);
+  return active.id;
+});
+
+const CLI_END_MESSAGES = {
+  not_started: "The drain never started.",
+  cancelled: "The drain was cancelled before it started.",
+  interrupted: "The drain was cancelled while it ran; some services may have moved.",
+  lost: "Cloud lost track of the drain; some services may have moved.",
+} as const satisfies Record<DrainEndCodeWithoutMessage, string>;
+
+export type CliServerDrain =
+  | { readonly state: "pending" | "running" }
+  | { readonly state: "finished"; readonly report: DrainReport }
+  | { readonly state: "ended"; readonly code: DrainEndCode; readonly message: string };
+
+/** One Drain in the caller's Organization as the CLI polls it. */
+export const readCliServerDrain = Effect.fn("ServerDrain.readCli")(function* (organizationId: string, attemptId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select().from(serverDrainAttempt)
+    .where(and(eq(serverDrainAttempt.organizationId, organizationId), eq(serverDrainAttempt.id, attemptId)));
+  if (row === undefined) return null;
+  const drain = yield* latestDrainOf(row);
+  switch (drain.state) {
+    case "pending":
+    case "running":
+      return { state: drain.state } satisfies CliServerDrain;
+    case "finished":
+      return { state: "finished", report: drain.report } satisfies CliServerDrain;
+    default:
+      return {
+        state: "ended",
+        code: drain.endCode,
+        message: drain.endCode === "refused" ? drain.refusalMessage : CLI_END_MESSAGES[drain.endCode],
+      } satisfies CliServerDrain;
+  }
+});
+
 /** Each Server's latest Drain in the Organization, keyed by Machine ID. */
 export const listLatestServerDrains = Effect.fn("ServerDrain.listLatest")(function* (
   actor: Actor,
@@ -222,9 +292,12 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
     return yield* stateOf(request.attemptId);
   }
   if (current.state !== "pending") return current;
-  // Before the claim: a Config Store or cluster Cloud can't reach leaves the row pending for the retry. The Drain
-  // selects only the Namespaces the Organization's Environments own; Containers no Project owns stay.
-  const scope: DrainScope = { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) };
+  const [row] = yield* drizzle.select({ targets: serverDrainAttempt.targets }).from(serverDrainAttempt)
+    .where(eq(serverDrainAttempt.id, request.attemptId));
+  const targets = row?.targets ?? null;
+  const scope: DrainScope = targets === null
+    ? { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) }
+    : { scope: "services", services: targets };
   const session = yield* openSession(request.organizationId);
   const [claimed] = yield* drizzle.update(serverDrainAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"))).returning({ id: serverDrainAttempt.id });

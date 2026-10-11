@@ -132,7 +132,8 @@ async fn every_line_through_six_rotations_and_removal_is_stored_exactly_once() {
     let harvester = tokio::spawn({
         let docker_root = docker_root.clone();
         let store = store.clone();
-        async move { Harvester::run(client, &docker_root, store).await }
+        let data_dir = test_root.0.clone();
+        async move { Harvester::run(client, &docker_root, store, data_dir).await }
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
 
