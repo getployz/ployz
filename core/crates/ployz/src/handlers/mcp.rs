@@ -1699,7 +1699,7 @@ mod tests {
         assert_eq!(asking["method"], "elicitation/create", "{asking}");
         assert_eq!(
             asking["params"]["message"],
-            "Approve this deploy to production?\n\
+            "Approve this deploy to shop/production?\n\
              This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         );
         let schema = &asking["params"]["requestedSchema"];
@@ -1887,9 +1887,9 @@ mod tests {
         assert_eq!(late["result"]["isError"], true, "{late}");
         assert_eq!(
             late["result"]["content"][0]["text"],
-            "The human answered more than 1 seconds after this deploy to production was called, \
+            "The human answered more than 1 seconds after this deploy to shop/production was called, \
              so the answer was not recorded and nothing was deployed. The approval of this \
-             deploy to production stays pending in Ployz Cloud; call the tool again to ask again."
+             deploy to shop/production stays pending in Ployz Cloud; call the tool again to ask again."
         );
         assert!(
             decisions.try_recv().is_err(),
@@ -2055,7 +2055,7 @@ mod tests {
         assert_eq!(dialog["params"]["mode"], "form", "{asking}");
         assert_eq!(
             dialog["params"]["message"],
-            "Approve this deploy to production?\n\
+            "Approve this deploy to shop/production?\n\
              This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         );
         assert_eq!(
@@ -2145,9 +2145,9 @@ mod tests {
         let text = refused["result"]["content"][0]["text"].as_str().unwrap();
         assert_eq!(
             text,
-            "A human must approve this deploy to production first, and this agent cannot ask \
+            "A human must approve this deploy to shop/production first, and this agent cannot ask \
              them. Show them what it destroys, then ask them to approve this deploy to \
-             production in the Ployz Cloud sidebar, or to run the command themselves in a \
+             shop/production in the Ployz Cloud sidebar, or to run the command themselves in a \
              terminal. Once they approve, call this tool again with `approval` set to `apr_1`.\n\
              This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         );
