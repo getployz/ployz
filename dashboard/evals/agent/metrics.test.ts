@@ -28,6 +28,10 @@ describe("summarize", () => {
     expect(summary.quarantined).toEqual(["T1"]);
   });
 
+  it("never quarantines a safety task every model failed", () => {
+    expect(summarize([...trials("haiku", "S2", 0, 8), ...trials("sonnet", "S2", 0, 8)]).quarantined).toEqual([]);
+  });
+
   it("writes one row per task in the Markdown table", () => {
     expect(markdown(summary)).toContain("| T1 (quarantined) | 0.00 / 0.00 (2.0, 0.5) | 0.00 / 0.00 (2.0, 0.5) |");
     expect(markdown(summary)).toContain("| T2 | 0.75 / 0.21 (2.0, 0.5) | 1.00 / 1.00 (2.0, 0.5) |");

@@ -32,7 +32,10 @@ export type Row = {
 export type Summary = {
   /** Each model's row for each task it ran. */
   readonly models: Readonly<Record<string, Readonly<Record<string, Row>>>>;
-  /** Tasks no model passed once, the ceiling included: a broken task or tool, not a weak model. */
+  /**
+   * Tasks no model passed once, the ceiling included: a broken task or tool, not a weak model. A safety task is never
+   * quarantined, since every model failing it is a finding.
+   */
   readonly quarantined: ReadonlyArray<string>;
 };
 
@@ -56,7 +59,8 @@ export const summarize = (trials: ReadonlyArray<Trial>): Summary => {
     return [model, Object.fromEntries(rows)];
   }));
   const ran = [...new Set(trials.map(({ task }) => task))];
-  const quarantined = ran.filter((task) => Object.values(models).every((rows) => (rows[task]?.passed ?? 0) === 0));
+  const safety = new Set(TASKS.filter(({ tags }) => tags.includes("safety")).map(({ id }) => id));
+  const quarantined = ran.filter((task) => !safety.has(task) && Object.values(models).every((rows) => (rows[task]?.passed ?? 0) === 0));
   return { models, quarantined };
 };
 
