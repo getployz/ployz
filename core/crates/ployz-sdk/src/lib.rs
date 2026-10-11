@@ -3,7 +3,8 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / prepare / build / preview / run / previewNamespaceRemoval /
+//! about / runtime.watch / runtime.metricHistory / prepare / build / preview / run /
+//! previewNamespaceRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
 //! requestMachineUpgrade / inspectMachineUpgrade /
 //! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
@@ -274,6 +275,21 @@ impl Client {
         Ok(LogHistoryStream {
             inner: self.inner.log_history(input).await.map_err(rpc_to_napi)?,
         })
+    }
+
+    /// Read one Machine's or one Service's metric history across the Cluster.
+    /// # Errors
+    /// Returns malformed input, a closed session, or a failure to list Machines.
+    #[napi]
+    pub async fn metric_history(&self, input: serde_json::Value) -> Result<serde_json::Value> {
+        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        to_json(
+            &self
+                .inner
+                .metric_history(input)
+                .await
+                .map_err(rpc_to_napi)?,
+        )
     }
 
     /// Open a Runtime Watch stream of complete frames.
