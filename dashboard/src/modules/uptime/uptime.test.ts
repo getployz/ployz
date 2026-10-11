@@ -143,6 +143,12 @@ describe("checkSeries", () => {
     expect(steps(window)).toEqual([2 * minute, 5 * minute]);
   });
 
+  it("counts a point exactly at Until in the last step", () => {
+    const minute = 60_000;
+    const window = { from: 0, to: 10 * minute, stepMs: 5 * minute };
+    expect(checkSeries([{ at: new Date(10 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([null, 100]);
+  });
+
   it("draws one step for a range shorter than a step between round steps", () => {
     const minute = 60_000;
     const window = { from: minute, to: 4 * minute, stepMs: 5 * minute };

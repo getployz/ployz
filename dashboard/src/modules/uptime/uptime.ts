@@ -89,8 +89,12 @@ export function incidentRange(incident: UptimeIncidentEntry, now: number): Range
   return { from: to - length, to };
 }
 
-/** The step a time falls in; the first step starts at `from`, so a range's partial first step is not lost. */
-const stepAt = (window: TimeWindow, at: number) => Math.max(window.from, Math.floor(at / window.stepMs) * window.stepMs);
+/**
+ * The step a time falls in. The first step starts at `from`, so a range's partial first step is not lost, and a time at
+ * `to` falls in the last step, since reads include it.
+ */
+const stepAt = (window: TimeWindow, at: number) =>
+  Math.max(window.from, Math.floor(Math.min(at, window.to - 1) / window.stepMs) * window.stepMs);
 
 /** The start of each step in a window: `from`, then each round step after it. */
 export function steps(window: TimeWindow): number[] {

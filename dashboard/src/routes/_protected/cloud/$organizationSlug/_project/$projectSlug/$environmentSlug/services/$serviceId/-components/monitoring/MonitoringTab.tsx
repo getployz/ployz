@@ -170,10 +170,6 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
   const window = chartWindow(resolveRange(charted, now), now, (uptime?.check.intervalSeconds ?? 60) * 1000);
   const times = steps(window);
   const metrics = PREVIEW_METRICS ? previewMetrics(incidents, window, now) : [];
-  const bands = incidents.flatMap((incident) => {
-    const span = incidentSpan(incident, now);
-    return span.to > window.from && span.from < window.to ? [{ id: incident.id, ...span }] : [];
-  });
   const deploys = deployments.flatMap((deployment) => {
     const ended = admission(deployment).ended?.getTime();
     const touched = deployment.services.length === 0 || deployment.services.includes(service.name);
@@ -182,19 +178,27 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
   const share = uptimePercent(uptime?.uptime ?? null);
   const open = openIncident(incidents);
   const wrongPath = uptime ? wrongPathIncident(uptime) : null;
-  const pick = (at: number) => {
-    const incident = incidents.find((candidate) => {
-      const span = incidentSpan(candidate, now);
-      return at >= span.from - window.stepMs && at <= span.to;
-    });
-    setPicked(incident ? { incident, ...pointer.current } : null);
-  };
   const zoomTo = (incident: UptimeIncidentEntry) => {
     const shown = incidentRange(incident, now);
     setPicked(null);
     setZoom({ incident, range: { from: instantEdge(shown.from), to: shown.to >= now ? "now" : instantEdge(shown.to) } });
   };
-  const chart = { times, bands, deploys, from: window.from, to: window.to, cursor, onPick: pick };
+  // A chart frame shows the incidents of the read it draws: a zoom reads its own range.
+  const frame = (shownIncidents: readonly UptimeIncidentEntry[]): ChartFrame => ({
+    times, deploys, from: window.from, to: window.to, cursor,
+    bands: shownIncidents.flatMap((incident) => {
+      const span = incidentSpan(incident, now);
+      return span.to > window.from && span.from < window.to ? [{ id: incident.id, ...span }] : [];
+    }),
+    onPick: (at) => {
+      const incident = shownIncidents.find((candidate) => {
+        const span = incidentSpan(candidate, now);
+        return at >= span.from - window.stepMs && at <= span.to;
+      });
+      setPicked(incident ? { incident, ...pointer.current } : null);
+    },
+  });
+  const chart = frame(incidents);
   const column = (key: keyof (typeof metrics)[number]) => metrics.map((row) => row[key]);
   const requests = average(metrics.map((row) => row.ok + row.errors));
   return (
@@ -237,7 +241,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
               <Suspense fallback={<MetricChart id="response" title="Response time" format={formatMs} {...chart} value="" series={[]} />}>
                 <ResponseTime scope={scope} serviceId={service.id} range={charted} window={window}
                   pending={state === "pending" ? `First check within ${formatSpan(uptime.check.intervalSeconds * 1000)}` : null}
-                  edge={PREVIEW_METRICS ? column("edgeMs") : null} chart={chart} />
+                  edge={PREVIEW_METRICS ? column("edgeMs") : null} frame={frame} />
               </Suspense>
             </CatchBoundary>
           )}
@@ -286,7 +290,7 @@ type ChartFrame = {
  * The check's response time, averaged across regions. A zoom reads its own range, and keeps the old line, dimmed, until
  * that read lands.
  */
-function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }: {
+function ResponseTime({ scope, serviceId, range, window, pending, edge, frame }: {
   scope: UptimeScope;
   serviceId: string;
   range: UptimeRange;
@@ -294,17 +298,18 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }:
   /** The value while the check has no result yet. */
   pending: string | null;
   edge: readonly (number | null)[] | null;
-  chart: ChartFrame;
+  frame: (incidents: readonly UptimeIncidentEntry[]) => ChartFrame;
 }) {
   const shown = useDeferredValue(range);
-  const check = checkSeries(useServiceUptime(scope, serviceId, shown).data?.points ?? [], window);
+  const { data } = useServiceUptime(scope, serviceId, shown);
+  const check = checkSeries(data?.points ?? [], window);
   const checkMs = average(check);
   const series: MetricSeries[] = [
     ...(edge ? [{ label: "Edge", color: "var(--chart-1)", values: edge }] : []),
     { label: "Check", color: "var(--chart-2)", values: check },
   ];
   return (
-    <MetricChart id="response" title="Response time" format={formatMs} {...chart} dimmed={shown !== range}
+    <MetricChart id="response" title="Response time" format={formatMs} {...frame(data?.incidents ?? [])} dimmed={shown !== range}
       value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series} />
   );
 }
