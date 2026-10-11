@@ -109,7 +109,6 @@ fn caddy_container(image: String) -> ServiceContainerSpec {
         open_stdin: false,
         privileged: false,
         pid_mode: None,
-        log_driver: None,
         resources: ContainerResources::default(),
         stop_timeout_secs: None,
         sysctls: BTreeMap::new(),

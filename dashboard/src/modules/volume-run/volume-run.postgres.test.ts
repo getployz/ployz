@@ -966,6 +966,7 @@ describe("volume runs", () => {
         { id: "record-run", handler: () => undefined },
         { id: "plan-builds", handler: () => [] },
         { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status, remove: false } }) },
+        { id: "sync-uptime", handler: () => undefined },
         { id: "forget-run", handler: () => undefined },
       ],
     }).execute();

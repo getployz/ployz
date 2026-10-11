@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use ployz_core::OpaquePayload;
 use tonic::{
     Request, Response, Status,
@@ -55,6 +55,50 @@ where
             )
         }
     });
+    connected_client(service).await
+}
+
+pub(crate) async fn rpc_stream_client<F, Fut, S>(
+    rpc: F,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+)
+where
+    F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<S>, Status>> + Send + 'static,
+    S: Stream<Item = Result<OpaquePayload, Status>> + Send + 'static,
+{
+    let rpc = tower::service_fn(rpc);
+    let service = tower::service_fn(move |request: http::Request<tonic::body::Body>| {
+        let rpc = rpc.clone();
+        async move {
+            Ok::<_, Infallible>(
+                tonic::server::Grpc::new(ProstCodec::default())
+                    .server_streaming(rpc, request)
+                    .await,
+            )
+        }
+    });
+    connected_client(service).await
+}
+
+async fn connected_client<S>(
+    service: S,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+)
+where
+    S: tower::Service<
+            http::Request<tonic::body::Body>,
+            Response = http::Response<tonic::body::Body>,
+            Error = Infallible,
+        > + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+{
     // Both peers run inside Tokio; clock advancement cannot outrun socket I/O.
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
     let incoming =
