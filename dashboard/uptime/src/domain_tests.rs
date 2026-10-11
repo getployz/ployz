@@ -32,6 +32,13 @@ fn target_parse_accepts_what_crud_allows_and_refuses_the_rest() {
             "/",
         ),
         (
+            "https://example.com:/",
+            Scheme::Https,
+            name("example.com"),
+            443,
+            "/",
+        ),
+        (
             "https://example.com:80/",
             Scheme::Https,
             name("example.com"),
@@ -69,6 +76,8 @@ fn target_parse_accepts_what_crud_allows_and_refuses_the_rest() {
     let long = format!("https://example.com/{}", "a".repeat(2048));
     for url in [
         "https://example.com:8443/",
+        "https://example.com:65536/",
+        "http://example.com:99999999/",
         "https://user:pw@example.com/",
         "https://example.com/#top",
         "ftp://example.com/",

@@ -194,9 +194,12 @@ impl Target {
         if authority.as_str().contains('@') {
             return Err(bad("has userinfo"));
         }
+        // port_u16 is None for a port that overflows u16 as well as for no port, so the text decides.
+        let port_text = &authority.as_str()[authority.host().len()..];
         let port = match (authority.port_u16(), scheme) {
             (Some(port @ (80 | 443)), _) => port,
             (Some(_), _) => return Err(bad("uses a port other than 80 or 443")),
+            (None, _) if port_text.len() > 1 => return Err(bad("has an invalid port")),
             (None, Scheme::Http) => 80,
             (None, Scheme::Https) => 443,
         };
