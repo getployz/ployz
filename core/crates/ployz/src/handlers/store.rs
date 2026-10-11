@@ -707,6 +707,31 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
         .collect()
 }
 
+/// A staged domain change as JSON reports it, beside the raw row storing it as
+/// `managedHostnames` or `routes`: `{"path": "web.domains", "change": "added shop"}`.
+#[derive(serde::Serialize)]
+pub(crate) struct DomainLine {
+    path: String,
+    change: String,
+}
+
+/// Every domain change among `rows`, as [`changed`] reads them to people.
+pub(crate) fn domain_changes<'a>(
+    rows: impl IntoIterator<Item = &'a ployz_core::config::ServiceSettingChange>,
+) -> Vec<DomainLine> {
+    rows.into_iter()
+        .filter_map(|row| {
+            let domains = ployz_store::DomainChange::of(row)?;
+            let service = row.path.split('.').next().unwrap_or_default();
+            Some(domains.into_iter().map(move |domain| DomainLine {
+                path: format!("{service}.domains"),
+                change: domain.to_string(),
+            }))
+        })
+        .flatten()
+        .collect()
+}
+
 /// A Setting's value as `get` and `inspect` show it, marked when it is the default
 /// and followed by the default when it is not: `3 (default 1)`.
 pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {

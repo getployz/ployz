@@ -187,6 +187,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         view: &view,
         settings: &settings,
         domains: &domains,
+        domain_changes: store::domain_changes(&view.changes),
     };
     crate::ui::fields(&inspected, &record)
 }
@@ -208,6 +209,9 @@ struct Inspected<'view> {
     view: &'view ServiceView,
     settings: &'view [SettingRow],
     domains: &'view [DomainRow],
+    /// Each staged domain change as people read it; `changes` stores it as `managedHostnames` or `routes`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    domain_changes: Vec<store::DomainLine>,
 }
 
 /// Rename a Service in Working State.
