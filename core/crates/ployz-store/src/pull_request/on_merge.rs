@@ -503,7 +503,8 @@ pub(crate) struct Merging<'a> {
 /// Land what PR Environment `from`'s pull request lands in each Destination, one
 /// Saved revision each, and deploy the Services it changed there. A Destination
 /// that can't take it is skipped and keeps what it had; returns whether every one
-/// took it. What didn't land, or landed but didn't deploy, goes in `unlanded`. The
+/// took it, and false when there is none: a merge into a branch nothing deploys
+/// lands nowhere, so the PR Environment keeps what it holds. What didn't land, or landed but didn't deploy, goes in `unlanded`. The
 /// caller holds the locks.
 pub(crate) fn land(
     tx: &mut dyn Tx,
@@ -514,7 +515,7 @@ pub(crate) fn land(
 ) -> Result<bool, RpcError> {
     let from = scope::load_by_id(tx, from)?;
     let (pull_request, landings) = landings(tx, who, &from)?;
-    let mut all = true;
+    let mut all = !landings.is_empty();
     for landing in landings {
         let into = landing.into.summary.clone();
         let landed = storage::attempt(tx, |tx| {

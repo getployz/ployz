@@ -940,6 +940,39 @@ fn what_landed_waits_for_ci_with_the_push() {
 }
 
 #[test]
+fn a_merge_into_a_branch_nothing_deploys_keeps_the_preview() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    pull(&store, &who, "release", "2026-09-29T10:00:01Z");
+    let automated = system(
+        &store,
+        &who,
+        &SystemEvent::PullRequest(PullRequest {
+            repository_id: backend::repo_id(11),
+            number: backend::pr_number(5),
+            title: "Add search".into(),
+            author: "ada".into(),
+            bot: false,
+            head_branch: backend::git_branch("search"),
+            head: backend::sha(HEAD),
+            target_branch: backend::git_branch("release"),
+            commits: 1,
+            open: false,
+            merge_commit: Some(backend::sha(MERGE)),
+            target_head: None,
+            updated: ployz_store::GithubTimestamp::parse("2026-09-29T11:00:00Z").unwrap(),
+        }),
+    );
+    // Nothing landed its change anywhere, so the preview holding it stays.
+    assert!(
+        automated.closing.is_empty() && automated.removed.is_empty(),
+        "{automated:?}"
+    );
+    assert_eq!(listed_merged(&store, &who), Some(true));
+    assert_eq!(value(&store, &who, "pr-5", "web.env.A"), Some(json!("2")));
+}
+
+#[test]
 fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
     let (store, who) = shop();
     // A rides naming api, which stays here.
