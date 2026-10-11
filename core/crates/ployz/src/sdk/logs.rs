@@ -9,7 +9,10 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use super::{Session, invalid_argument};
-use crate::connect::ConnectError;
+use crate::connect::{Client, ConnectError};
+use ployz_core::InspectContainerRequest;
+use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
+use std::time::Duration;
 
 /// One Machine-local log read. History reads include a complete timestamp boundary.
 #[derive(Clone, Debug, Deserialize)]
@@ -154,6 +157,72 @@ fn decode_record(payload: &OpaquePayload) -> Result<Option<ContainerLogRecord>, 
         channel,
         message,
     }))
+}
+
+/// How long reading a failed Container's tail may take, its env included.
+const TAIL_READ: Duration = Duration::from_secs(5);
+/// The lines Docker returns: more than are kept, so a secret spanning lines is whole
+/// when it is redacted, before the cut.
+const TAIL_FETCH: i32 = 200;
+/// The lines a failed row keeps.
+const TAIL_KEEP: u16 = 10;
+
+/// The last lines of failed Container `container` on `machine`, scrubbed of
+/// `secrets` and of the env its Machine reports. The env is read here and never
+/// leaves. Without it the lines are withheld; unread, they are unanswered.
+pub(crate) async fn failed_tail(
+    client: &Client,
+    machine: MachineId,
+    container: ContainerId,
+    mut secrets: SecretSet,
+) -> LogText {
+    let target = MachineTarget::from(&machine);
+    let read = async {
+        let env = client
+            .invoke::<op::InspectContainer>(
+                InspectContainerRequest {
+                    container_id: container,
+                },
+                &target,
+                Some(TAIL_READ),
+            )
+            .await
+            .ok()
+            .and_then(|details| details.environment);
+        secrets.add_machine_env(env.as_ref());
+        let request = op::ContainerLogs::into_request(ContainerLogsRequest {
+            container_id: container,
+            options: LogsOptions {
+                tail: TAIL_FETCH,
+                follow: false,
+                since_unix_seconds: None,
+                until_unix_seconds: None,
+            },
+        })
+        .encode()
+        .ok()?;
+        let mut stream = client.container_logs_stream(&target, request).await.ok()?;
+        let mut frames = Vec::new();
+        while let Some(payload) = stream.message().await.ok()? {
+            match LogEntry::decode(&payload).ok()?.body {
+                LogBody::Stdout(bytes) | LogBody::Stderr(bytes) => {
+                    frames.push(String::from_utf8_lossy(&bytes).into_owned());
+                }
+                LogBody::Heartbeat | LogBody::Error(_) => {}
+            }
+        }
+        Some(frames)
+    };
+    match tokio::time::timeout(TAIL_READ, read).await {
+        Ok(Some(frames)) => LogExcerpt::scrub(
+            frames,
+            &secrets,
+            LineCap::new(TAIL_KEEP).unwrap_or_default(),
+        ),
+        Ok(None) | Err(_) => LogText::Withheld {
+            why: Withheld::Unanswered,
+        },
+    }
 }
 
 #[cfg(test)]

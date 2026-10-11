@@ -51,6 +51,7 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 
 /// Cancellable Image Build whose progress is retained until read, within a byte budget.
 pub type RunningBuild = Running<BuildOutcome>;
+pub(crate) use logs::failed_tail;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,

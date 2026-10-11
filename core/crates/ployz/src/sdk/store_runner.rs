@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
-use ployz_store::tools::{LogText, Withheld};
+use ployz_store::tools::SecretSet;
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
     DeploymentStatus, DeploymentSummary, Failure, RowState, RowTracker, RunEvidence, RunnerId,
@@ -208,6 +208,41 @@ pub async fn observe_copies(
     observed
 }
 
+/// Each Service's environment and which of its keys hold a secret: what its failed
+/// Container's log is scrubbed of.
+struct Scrub {
+    env: BTreeMap<ServiceName, BTreeMap<String, String>>,
+    secret: BTreeMap<ServiceName, std::collections::BTreeSet<String>>,
+}
+
+impl Scrub {
+    fn new(claimed: &Claimed) -> Self {
+        Self {
+            env: claimed
+                .intent
+                .target
+                .iter()
+                .map(|spec| (spec.name.clone(), spec.container.environment.clone()))
+                .collect(),
+            secret: claimed.secret_env.clone(),
+        }
+    }
+
+    /// `service`'s secret values, and its plain ones, which its Machine's env may
+    /// repeat. A Service the claim did not lower has no secret context.
+    fn secrets(&self, service: &ServiceName) -> SecretSet {
+        let Some(env) = self.env.get(service) else {
+            return SecretSet::unknown();
+        };
+        let keys = self.secret.get(service);
+        let (secrets, plain): (Vec<_>, Vec<_>) = env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .partition(|(key, _)| keys.is_some_and(|keys| keys.contains(key)));
+        SecretSet::from_store(secrets, plain)
+    }
+}
+
 struct Run {
     store: Arc<ConfigStore>,
     deployment: DeploymentId,
@@ -223,6 +258,7 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
+        let scrub = Scrub::new(&claimed);
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -260,7 +296,9 @@ impl Run {
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
         let outcome = self
-            .renewing(self.executing(&running), || running.abort())
+            .renewing(self.executing(session, &running, &scrub), || {
+                running.abort()
+            })
             .await;
         match outcome {
             Ok((outcome, progress)) => {
@@ -472,7 +510,9 @@ impl Run {
     /// stays so if this runner is lost before the outcome.
     async fn executing(
         &self,
+        session: &Session,
         running: &super::RunningDeploy,
+        scrub: &Scrub,
     ) -> Result<
         (
             DeployOutcome<ployz_core::ExecutionError>,
@@ -488,10 +528,12 @@ impl Run {
                 continue;
             };
             for mut row in tracker.changes(&rows) {
-                if let RowState::Failed { log: Some(log), .. } = &mut row.state {
-                    *log = LogText::Withheld {
-                        why: Withheld::NoSecretContext,
-                    };
+                let container = tracker.container(&row);
+                if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
+                    (&mut row.state, container, session.client())
+                {
+                    let secrets = scrub.secrets(&row.service);
+                    *log = super::failed_tail(&client, row.machine, container, secrets).await;
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }

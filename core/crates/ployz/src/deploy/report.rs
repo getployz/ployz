@@ -1,15 +1,17 @@
 //! Direct execution evidence, grouped by the same RowTracker the Store uses.
 
 use crate::{
+    connect::Client,
     failure::Failure,
     ui::progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
     Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+    ReplacementCompensation, RequestedServiceSpec, RestartAttempt, RpcError, RpcErrorCode,
+    ServiceName, StopAttempt,
 };
-use ployz_store::tools::{LogText, Withheld};
+use ployz_store::tools::SecretSet;
 use ployz_store::{RowState, RowTracker, ServerProgress};
 use std::collections::BTreeMap;
 use std::time::SystemTime;
@@ -111,19 +113,38 @@ impl Direct {
         }
     }
 
-    pub(super) fn tails(&self) -> Vec<LogTail> {
-        self.rows
+    /// Each failed row's scrubbed Container tail. Every value of `requested`'s
+    /// environment counts as a secret: a direct apply has no Store to say otherwise.
+    pub(super) async fn tails(
+        &self,
+        client: &Client,
+        requested: &RequestedServiceSpec,
+    ) -> Vec<LogTail> {
+        let mut tails = Vec::new();
+        for (row, _) in self
+            .rows
             .values()
             .filter(|(row, _)| matches!(row.state, RowState::Failed { .. }))
-            .map(|(row, _)| LogTail {
+        {
+            let log = match self.tracker.container(row) {
+                None => None,
+                Some(container) => {
+                    let secrets = if row.service == requested.name {
+                        SecretSet::from_store(requested.container.environment.clone(), [])
+                    } else {
+                        SecretSet::unknown()
+                    };
+                    Some(crate::sdk::failed_tail(client, row.machine, container, secrets).await)
+                }
+            };
+            tails.push(LogTail {
                 service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
                 machine: row.machine,
                 server: row.server.clone(),
-                log: self.tracker.container(row).map(|_| LogText::Withheld {
-                    why: Withheld::NoSecretContext,
-                }),
-            })
-            .collect()
+                log,
+            });
+        }
+        tails
     }
 }
 

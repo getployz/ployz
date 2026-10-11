@@ -79,7 +79,7 @@ pub(crate) async fn apply_requested(
             }
         }
     };
-    let tails = evidence.tails();
+    let tails = evidence.tails(client, requested).await;
     progress.finish(
         evidence.frame(),
         if signal.is_cancelled() {
