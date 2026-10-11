@@ -78,3 +78,17 @@ export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organization
     }
   }));
 });
+
+/**
+ * Sync every Environment that has an applied Service. Deployments sync their own Environment, so this is for the
+ * Services applied before uptime checks existed. Each sync is idempotent, so running it again changes nothing.
+ */
+export const backfillUptimeChecks = Effect.fn("Uptime.backfill")(function* () {
+  const { drizzle } = yield* Database;
+  const environments = yield* drizzle.execute<{ organizationId: string; environmentId: string }>(sql`
+    select distinct organization_id as "organizationId", environment_id as "environmentId"
+    from config_applied where node_type = 'service'
+  `, "objects");
+  for (const { organizationId, environmentId } of environments) yield* syncUptimeChecks(organizationId, environmentId);
+  return environments.length;
+});

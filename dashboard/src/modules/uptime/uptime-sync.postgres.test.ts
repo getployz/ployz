@@ -8,8 +8,9 @@ import { Inngest } from "inngest";
 import { expect } from "vitest";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { configDeploymentAdmittedEvent, uptimeBackfillRequestedEvent } from "#/modules/inngest/events";
 import { controlPlaneStatements } from "#/modules/uptime/incident-fence";
+import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { Database } from "#/server/database.server";
@@ -78,7 +79,15 @@ const setup = Effect.fn(function* () {
       ]
       : [],
   }).execute());
-  return { query, apply, sync, checks, deliver };
+  const backfill = createUptimeMaintenanceFunctions(new Inngest({ id: "uptime-backfill-test" }), (program) =>
+    Effect.runPromise(program.pipe(Effect.provide(services)))).find(({ opts }) => opts.id === "uptime-backfill");
+  if (backfill === undefined) throw new Error("no uptime-backfill function");
+  /** One run of the backfill, as an operator sends it once after rollout. */
+  const runBackfill = Effect.promise(() => new InngestTestEngine({
+    function: backfill,
+    events: [{ name: uptimeBackfillRequestedEvent, data: {} }],
+  }).execute());
+  return { query, apply, sync, checks, deliver, runBackfill };
 });
 
 const none: Healthcheck = { type: "none" };
@@ -181,5 +190,17 @@ it.live("a retried delivery converges on one check", () => Effect.gen(function* 
   yield* deliver(true);
   yield* deliver(true);
   expect(first).toHaveLength(1);
+  expect(yield* checks).toEqual(first);
+}));
+
+// A Service applied before the uptime rollout has no Deployment to trigger its sync.
+it.live("the backfill gives a Service applied before rollout its check, and a second run changes nothing", () => Effect.gen(function* () {
+  const { apply, checks, runBackfill } = yield* setup();
+  yield* apply({ prefixes: ["web-shop"], healthcheck: http("/healthz") });
+  expect(yield* checks).toEqual([]);
+  yield* runBackfill;
+  const first = yield* checks;
+  expect(first).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/healthz`, revision: 1 })]);
+  yield* runBackfill;
   expect(yield* checks).toEqual(first);
 }));

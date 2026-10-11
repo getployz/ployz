@@ -1,7 +1,9 @@
 import type { Effect } from "effect";
 import type { PloyzInngest } from "#/modules/inngest/client";
+import { uptimeBackfillRequestedEventType } from "#/modules/inngest/events";
 import { prunedKinds, pruneUptimeBatch, rollupUptime } from "#/modules/uptime/maintenance.server";
 import { PRUNE_BATCH_ROWS } from "#/modules/uptime/retention";
+import { backfillUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import type { Database } from "#/server/database.server";
 import { runInngestEffect } from "#/server/run.server";
 
@@ -45,7 +47,20 @@ const createPruneUptime = (inngest: PloyzInngest, runEffect: UptimeEffectRunner)
     },
   );
 
+/** On request, once after rollout: give Services applied before uptime checks existed their checks. */
+const createBackfillUptime = (inngest: PloyzInngest, runEffect: UptimeEffectRunner) =>
+  inngest.createFunction(
+    {
+      id: "uptime-backfill",
+      retries: 3,
+      triggers: [{ event: uptimeBackfillRequestedEventType }],
+      concurrency: [{ limit: 1 }],
+    },
+    async ({ step }) => step.run("sync-every-environment", () => runEffect(backfillUptimeChecks())),
+  );
+
 export const createUptimeMaintenanceFunctions = (inngest: PloyzInngest, runEffect: UptimeEffectRunner = runInngestEffect) => [
   createRollupUptime(inngest, runEffect),
   createPruneUptime(inngest, runEffect),
+  createBackfillUptime(inngest, runEffect),
 ];

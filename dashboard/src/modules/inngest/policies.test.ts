@@ -81,6 +81,7 @@ describe("Inngest function policies", () => {
       { id: "schedule-server-upgrades", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "uptime-rollup", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "uptime-prune", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "uptime-backfill", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 
