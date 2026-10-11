@@ -46,6 +46,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
 import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
+import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
 import { usePrefetchServiceUptime } from "#/modules/uptime/uptime.queries";
 import { MonitoringTab } from "./monitoring/MonitoringTab";
 
@@ -112,7 +113,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const volumes = effectiveVolumes(requireView(views[3]).volumes, services, settings);
   const namespace = views[4].ok ? views[4].value.namespace : null;
   const writer = useStoreWriter(organizationSlug);
-  const { tab, range = "24h" } = useSearch({ from: SERVICE_ROUTE_FROM });
+  const { tab, from = DEFAULT_RANGE.from, to = DEFAULT_RANGE.to } = useSearch({ from: SERVICE_ROUTE_FROM });
+  const range = { from, to };
   const prefetchUptime = usePrefetchServiceUptime({ organizationSlug, environmentId }, params.serviceId);
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
@@ -224,7 +226,10 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto w-full max-w-2xl">
                 <MonitoringTab organizationSlug={organizationSlug} service={service} range={range}
-                  onRange={(next) => void navigate({ search: (prev) => ({ ...prev, range: next === "24h" ? undefined : next }), replace: true })}
+                  onRange={(next) => {
+                    const fallback = next.from === DEFAULT_RANGE.from && next.to === DEFAULT_RANGE.to;
+                    void navigate({ search: (prev) => ({ ...prev, from: fallback ? undefined : next.from, to: fallback ? undefined : next.to }), replace: true });
+                  }}
                   addDomain={(
                     <Button variant="outline" size="sm" nativeButton={false}
                       render={<Link to={SERVICE_ROUTE_TO} params={params} search={(prev) => ({ ...prev, tab: "settings" as const })} hash="settings-networking" replace />}>

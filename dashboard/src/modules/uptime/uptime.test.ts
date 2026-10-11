@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  barCount, causeText, checkSeries, checkState, formatSpan, historyBars, incidentWindow, observationText, rangeCovering, steps, unreachableHost,
+  causeText, chartWindow, checkSeries, checkState, formatSpan, historyBars, incidentRange, observationText, steps, unreachableHost,
   uptimePercent, wrongPathIncident,
 } from "./uptime";
-import type { IncidentObservation, ServiceUptime, UptimeIncidentEntry } from "./uptime-status";
+import { pointSource } from "./uptime-range";
+import type { IncidentObservation, ServiceUptime, UptimeCheckResult, UptimeIncidentEntry } from "./uptime-status";
 
 const at = "2026-10-11T00:00:00.000Z";
 const HOUR = 3_600_000;
@@ -18,6 +19,7 @@ const uptime = (patch: Partial<ServiceUptime>): ServiceUptime => ({
   status: "up",
   uptime: null,
   points: [],
+  checks: null,
   incidents: [],
   ...patch,
 });
@@ -82,52 +84,42 @@ describe("uptimePercent", () => {
   });
 });
 
-describe("rangeCovering", () => {
-  it("picks the shortest range that reaches the zoom's start", () => {
-    const to = Date.parse(at);
-    expect(rangeCovering(to - 3 * HOUR, to)).toBe("24h");
-    expect(rangeCovering(to - 2 * DAY, to)).toBe("7d");
-    expect(rangeCovering(to - 30 * DAY, to)).toBe("90d");
-    expect(rangeCovering(to - 200 * DAY, to)).toBe("90d");
+describe("incidentRange", () => {
+  const to = Date.parse(at);
+  const closed = (opened: number, minutes: number) =>
+    incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + minutes * 60_000).toISOString());
+
+  it("centres a short incident in three hours", () => {
+    const opened = to - 12 * DAY;
+    expect(incidentRange(closed(opened, 20), to)).toEqual({ from: opened - 80 * 60_000, to: opened + 100 * 60_000 });
+  });
+
+  it("shows five times a long incident and never runs past now", () => {
+    expect(incidentRange(incident([observation({ status: 502 })], new Date(to - 30 * DAY).toISOString()), to))
+      .toEqual({ from: to - 150 * DAY, to });
+  });
+
+  it("draws an unbroken line from the points the server reads for it, however old the incident", () => {
+    for (const age of [2 * HOUR, 3 * DAY, 12 * DAY, 80 * DAY]) {
+      const range = incidentRange(closed(to - age, 20), to);
+      const stepMs = { raw: 5 * 60_000, hourly: HOUR, sixHourly: 6 * HOUR }[pointSource(range, to)];
+      const window = chartWindow(range, to, 5 * 60_000);
+      const series = steps({ ...range, stepMs }).map((step) => ({ at: new Date(step).toISOString(), region: "ams", ms: 100 }));
+      const line = checkSeries(series, window);
+      expect(line.length).toBeGreaterThanOrEqual(3);
+      expect(line).not.toContain(null);
+    }
   });
 });
 
-describe("incidentWindow", () => {
-  it("draws an unbroken line from the series its zoom reads, however old the incident", () => {
+describe("chartWindow", () => {
+  it("cuts a range into at most 288 round steps, never finer than its points", () => {
     const to = Date.parse(at);
-    for (const age of [2 * HOUR, 3 * DAY, 12 * DAY, 80 * DAY]) {
-      const opened = to - age;
-      const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
-      const stepMs = { "24h": 5 * 60_000, "7d": HOUR, "90d": 6 * HOUR }[rangeCovering(window.from, to)];
-      const series = steps({ ...window, stepMs }).map((step) => ({ at: new Date(step).toISOString(), region: "ams", ms: 100 }));
-      const line = checkSeries(series, window);
-      expect(line.length).toBeGreaterThanOrEqual(12);
-      expect(line).not.toContain(null);
-      expect(window.from).toBeLessThanOrEqual(opened);
-    }
-  });
-
-  it("keeps a 20-minute incident 12 days old centred on it", () => {
-    const to = Date.parse(at);
-    const opened = to - 12 * DAY;
-    const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
-    expect(window).toEqual({ from: opened - 3 * DAY + 6 * HOUR, to: opened + 3 * DAY + 6 * HOUR, stepMs: 6 * HOUR });
-  });
-
-  it("stays inside the 90 days for an incident in their oldest days", () => {
-    const to = Date.parse(at);
-    const opened = to - 89 * DAY;
-    const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
-    expect(window.from).toBe(to - 90 * DAY);
-    expect(window.to).toBeLessThanOrEqual(to);
-    expect(window.from).toBeLessThanOrEqual(opened);
-    expect(window.to).toBeGreaterThanOrEqual(opened + 20 * 60_000);
-  });
-
-  it("shows all 90 days for an open incident 30 days long", () => {
-    const to = Date.parse(at);
-    const window = incidentWindow(incident([observation({ status: 502 })], new Date(to - 30 * DAY).toISOString()), to);
-    expect(window).toEqual({ from: to - 90 * DAY, to, stepMs: 18 * HOUR });
+    expect(chartWindow({ from: to - 15 * 60_000, to }, to, 60_000).stepMs).toBe(60_000);
+    expect(chartWindow({ from: to - 15 * 60_000, to }, to, 300_000).stepMs).toBe(300_000);
+    expect(chartWindow({ from: to - DAY, to }, to, 60_000).stepMs).toBe(5 * 60_000);
+    expect(chartWindow({ from: to - 7 * DAY, to }, to, 60_000).stepMs).toBe(HOUR);
+    expect(chartWindow({ from: to - 30 * DAY, to }, to, 60_000).stepMs).toBe(6 * HOUR);
   });
 });
 
@@ -146,27 +138,35 @@ describe("checkSeries", () => {
 
 describe("historyBars", () => {
   const to = Date.parse(at);
+  const result = (minutesAgo: number, patch: Partial<UptimeCheckResult> = {}): UptimeCheckResult => ({
+    at: new Date(to - minutesAgo * 60_000).toISOString(), region: "ams", kind: "routine", verdict: "pass", status: 200, ms: 120, ...patch,
+  });
 
-  it("marks each bar an incident touched, including one still open, as checked", () => {
+  it("draws one bar per result of any kind, toned by its verdict", () => {
+    const open = incident([observation({ status: 502 })], new Date(to - 10 * 60_000).toISOString());
+    const checks = [result(20), result(10, { verdict: "fail", status: 502 }), result(9, { kind: "confirm", verdict: "fail", status: 0 }), result(5, { verdict: "inconclusive" })];
+    const bars = historyBars({ from: to - HOUR, to }, uptime({ checks, incidents: [open] }));
+    expect(bars.map((bar) => [bar.start, bar.tone, bar.incidents.length, bar.result?.kind])).toEqual([
+      [to - 20 * 60_000, "up", 0, "routine"],
+      [to - 10 * 60_000, "down", 1, "routine"],
+      [to - 9 * 60_000, "down", 1, "confirm"],
+      [to - 5 * 60_000, "none", 1, "routine"],
+    ]);
+  });
+
+  it("cuts a window without results into spans, red where an incident touched, green where a point fell", () => {
     const open = incident([observation({ status: 502 })], new Date(to - 2 * HOUR - 1).toISOString());
-    const bars = historyBars("24h", to, { points: [], incidents: [open] });
-    expect(bars.map((bar) => [bar.checked, bar.incidents.length]).slice(-4)).toEqual([[false, 0], [true, 1], [true, 1], [true, 1]]);
-  });
-
-  it("marks the bar of each point as checked", () => {
     const points = [{ at: new Date(to - 3 * HOUR + 1).toISOString(), region: "ams", ms: null }];
-    const bars = historyBars("7d", to, { points, incidents: [] });
-    expect(bars.flatMap((bar, index) => bar.checked ? [index] : [])).toEqual([41]);
-    expect(bars[41]?.start).toBe(to - 4 * HOUR);
+    const bars = historyBars({ from: to - DAY, to }, uptime({ points, checks: [], incidents: [open] }));
+    expect(bars).toHaveLength(48);
+    expect(bars.slice(-7).map((bar) => bar.tone)).toEqual(["none", "up", "down", "down", "down", "down", "down"]);
+    expect(bars.at(-6)?.start).toBe(to - 3 * HOUR);
   });
 
-  it("draws a grey bar per step of the range for a Service without a check", () => {
-    for (const [range, count] of [["24h", 24], ["7d", 42], ["90d", 90]] as const) {
-      const bars = historyBars(range, to + HOUR / 2, null);
-      expect(barCount(range)).toBe(count);
-      expect(bars).toHaveLength(count);
-      expect(bars.every((bar) => !bar.checked)).toBe(true);
-    }
+  it("draws grey spans for a Service without a check", () => {
+    const bars = historyBars({ from: to - 30 * 60_000, to }, null);
+    expect(bars).toHaveLength(6);
+    expect(bars.every((bar) => bar.tone === "none" && bar.result === null)).toBe(true);
   });
 });
 
