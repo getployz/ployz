@@ -203,7 +203,13 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
                 arrives,
             } => {
                 // A removal lands as one: an Edit never brings the row back.
-                let edited = stored.contains_key(&row.id) && row.from != Cell::Absent;
+                // An Edit sealed for the other secrecy is dropped, so a secret
+                // never lands as plain text nor a plain value as a secret.
+                let secret = row.from.is_secret() || row.into.is_secret();
+                let edited = stored
+                    .get(&row.id)
+                    .is_some_and(|edit| matches!(edit, SealedCell::Secret(_)) == secret)
+                    && row.from != Cell::Absent;
                 let ride = if edited { Ride::Edited } else { Ride::Rides };
                 (ride, *conflict, *arrives)
             }

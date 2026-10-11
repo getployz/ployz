@@ -707,6 +707,58 @@ fn the_merge_lands_edits_and_not_set_secrets_and_leaves_what_stays() {
 }
 
 #[test]
+fn an_edit_of_a_plain_variable_the_preview_made_secret_never_lands_in_plain_text() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.NEW", json!("2"))]);
+    store
+        .write(&who, &merge_value("web.env.NEW", Some("prod-token")))
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.NEW", json!({ "secret": "test-token" }))],
+    );
+
+    // The Edit was for a plain value: the secret lands Not set, as unedited.
+    let new = row(&store, &who, "web.env.NEW");
+    assert_eq!(
+        (new.lands, new.ride),
+        (json!({ "secret": false }), Ride::Rides)
+    );
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.NEW"),
+        Some(json!({ "secret": false }))
+    );
+}
+
+#[test]
+fn an_edit_of_a_secret_the_preview_made_plain_lands_the_preview_value() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.NEW", json!({ "secret": "test-token" }))],
+    );
+    store
+        .write(&who, &merge_value("web.env.NEW", Some("prod-token")))
+        .unwrap();
+    // A secret never turns plain in place: the preview unsets it, then sets it.
+    unset(&store, &who, "pr-5", "web.env.NEW");
+    set(&store, &who, "pr-5", &[("web.env.NEW", json!("2"))]);
+
+    let new = row(&store, &who, "web.env.NEW");
+    assert_eq!((new.lands, new.ride), (json!("2"), Ride::Rides));
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.NEW"),
+        Some(json!("2"))
+    );
+}
+
+#[test]
 fn the_merge_lands_once_whatever_order_its_events_come_in() {
     let (store, who) = shop();
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
