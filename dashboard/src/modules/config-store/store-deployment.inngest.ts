@@ -45,10 +45,8 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
-      // Only an applied Deployment moves the checks: a failed one leaves them as they were.
-      if ("ran" in ran && ran.ran.status === "applied") {
-        await step.run("sync-uptime", () => runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId)));
-      }
+      // A failed Deployment can still have advanced Applied State, so the checks follow it either way.
+      await step.run("sync-uptime", () => runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId)));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
       // An applied Deployment can drop a Volume or an Environment, leaving its mirrors orphaned.
       if ("ran" in ran && ran.ran.status === "applied") {

@@ -160,16 +160,16 @@ it.live("a deleted Environment deletes its checks, with no sync", () => Effect.g
   expect(yield* checks).toEqual([]);
 }));
 
-it.live("a failed Deployment leaves the check as it was", () => Effect.gen(function* () {
+// A failed Deployment can still advance Applied State for the nodes it reached before failing.
+it.live("a failed Deployment still moves the check to what applied", () => Effect.gen(function* () {
   const { apply, sync, checks, deliver } = yield* setup();
   yield* apply({ prefixes: ["web-shop"], healthcheck: none });
   yield* sync;
-  const before = yield* checks;
   yield* apply({ prefixes: ["web-shop"], healthcheck: http("/up") });
   // No Server is enrolled, so the real runner fails the Deployment.
   const run = yield* deliver(false);
   expect(run.result).toMatchObject({ ran: { id: DEPLOYED, status: "failed" } });
-  expect(yield* checks).toEqual(before);
+  expect(yield* checks).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/up`, revision: 2 })]);
 }));
 
 // The function's concurrency key runs one delivery per Environment at a time, so a retry follows the first.
