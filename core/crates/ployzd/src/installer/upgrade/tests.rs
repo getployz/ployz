@@ -23,8 +23,7 @@ const WORKER_CASE: &str = "PLOYZ_UPGRADE_WORKER_CASE";
 /// systemd for one fake daemon. `restart` starts whatever `bin/ployzd` is installed as a new
 /// main process, whose `/proc` entry links that executable as the kernel's would. A version
 /// with a `broken-<version>` marker never becomes active; one with `crashing-<version>` runs
-/// under a new main PID whenever asked. A volume plugin unit is active only while an
-/// `active-<unit>` marker exists.
+/// under a new main PID whenever asked.
 const SYSTEMCTL: &str = r#"root="$PLOYZ_INSTALLER_CONTRACT_ROOT"
 echo "$*" >> "$root/systemctl.log"
 start() {
@@ -39,13 +38,34 @@ start() {
 version=none
 if [ -f "$root/running-version" ]; then read -r version < "$root/running-version"; fi
 case "$1" in
-  restart) start ;;
+  restart)
+    case "$2" in
+      ployz-observe.service) /bin/touch "$root/active-$2" ;;
+      *) start ;;
+    esac ;;
+  enable)
+    if [ "$2" = --now ] && [ "$3" = ployz-observe.service ]; then
+      /bin/touch "$root/active-$3" "$root/enabled-$3"
+    fi ;;
+  stop|disable)
+    if [ -e "$root/observer-not-loaded" ]; then echo unit not loaded >&2; exit 5; fi
+    if [ "$1" = stop ]; then /bin/rm -f "$root/active-$2"; else /bin/rm -f "$root/enabled-$2"; fi ;;
   is-active)
     case "$3" in
-      ployz-volume-plugin.*) [ -e "$root/active-$3" ] || exit 3 ;;
+      ployz-volume-plugin.*|ployz-observe.*) [ -e "$root/active-$3" ] || exit 3 ;;
       *) if [ -e "$root/broken-$version" ]; then exit 3; fi ;;
     esac ;;
   show)
+if [ "$2" = --property=UnitFileState ]; then
+  if [ -e "$root/observer-snapshot-error" ]; then echo manager unavailable >&2; exit 1; fi
+  if [ -e "$root/observer-not-loaded" ]; then exit 0; fi
+  if [ -e "$root/enabled-ployz-observe.service" ]; then echo enabled; else echo disabled; fi
+  exit 0
+fi
+if [ "$2" = --property=LoadState ]; then
+  if [ -e "$root/observer-not-loaded" ]; then echo not-found; else echo loaded; fi
+  exit 0
+fi
 if [ -e "$root/crashing-$version" ]; then start; fi
 read -r pid < "$root/main-pid"; echo "$pid" ;;
 esac"#;
@@ -315,6 +335,11 @@ async fn upgrade_worker_contract() {
         "succeeded",
         "readiness-restored",
         "soak-restored",
+        "observer-snapshot-error",
+        "observer-not-loaded-restored",
+        "observer-inactive-disabled-restored",
+        "observer-inactive-enabled-restored",
+        "observer-active-disabled-restored",
         "restore-failed",
         "before-activation",
         "already-installed",
@@ -356,6 +381,21 @@ async fn run_worker_case(root: &Path, case: &str) {
             mark("broken-1.2.3");
             mark("active-ployz-volume-plugin.socket");
             mark("active-ployz-volume-plugin.service");
+            mark("active-ployz-observe.service");
+        }
+        "observer-snapshot-error" => mark("observer-snapshot-error"),
+        "observer-not-loaded-restored" => {
+            mark("observer-not-loaded");
+            fs::write(&paths.systemd_dir, "blocked").unwrap();
+        }
+        "observer-inactive-disabled-restored" => mark("broken-1.2.3"),
+        "observer-inactive-enabled-restored" => {
+            mark("broken-1.2.3");
+            mark("enabled-ployz-observe.service");
+        }
+        "observer-active-disabled-restored" => {
+            mark("broken-1.2.3");
+            mark("active-ployz-observe.service");
         }
         "other-line" => mark("broken-1.2.3"),
         "soak-restored" => mark("crashing-1.2.3"),
@@ -422,10 +462,12 @@ async fn run_worker_case(root: &Path, case: &str) {
     let started = [
         "restart ployz.socket ployz.service",
         "try-restart ployz-volume-plugin.service",
+        "try-restart ployz-observe.service",
     ];
     let restored = [
         "restart ployz.socket ployz.service",
         "try-restart ployz-volume-plugin.service",
+        "try-restart ployz-observe.service",
         "reset-failed ployz.socket ployz.service",
         "restart ployz.socket ployz.service",
     ];
@@ -448,12 +490,15 @@ async fn run_worker_case(root: &Path, case: &str) {
                 [
                     "restart ployz.socket ployz.service",
                     "try-restart ployz-volume-plugin.service",
+                    "try-restart ployz-observe.service",
                     "reset-failed ployz.socket ployz.service",
                     "reset-failed ployz-volume-plugin.socket",
                     "reset-failed ployz-volume-plugin.service",
+                    "reset-failed ployz-observe.service",
                     "restart ployz.socket ployz.service",
                     "restart ployz-volume-plugin.socket",
                     "restart ployz-volume-plugin.service",
+                    "restart ployz-observe.service",
                 ]
             );
         }
@@ -468,6 +513,55 @@ async fn run_worker_case(root: &Path, case: &str) {
             ));
             assert_eq!(installed, before);
             assert_eq!(transitions(root), restored);
+        }
+        "observer-snapshot-error" => {
+            assert_eq!(
+                outcome,
+                MachineUpgradeOutcome::Failed {
+                    stage: MachineUpgradeStage::Preparing,
+                    error: "check observer enablement: manager unavailable".into(),
+                }
+            );
+            assert_eq!(installed, before);
+            assert!(transitions(root).is_empty());
+            assert!(!root.join("active-ployz-observe.service").exists());
+            assert!(!root.join("enabled-ployz-observe.service").exists());
+        }
+        "observer-not-loaded-restored" => {
+            assert!(matches!(
+                outcome,
+                MachineUpgradeOutcome::Failed {
+                    stage: MachineUpgradeStage::Activating,
+                    ref error,
+                } if error.starts_with("create systemd unit directory:")
+                    && error.ends_with("; restored 1.2.2")
+            ));
+            assert_eq!(installed, before);
+            assert_eq!(
+                transitions(root),
+                [
+                    "reset-failed ployz.socket ployz.service",
+                    "restart ployz.socket ployz.service",
+                ]
+            );
+            assert!(!root.join("active-ployz-observe.service").exists());
+            assert!(!root.join("enabled-ployz-observe.service").exists());
+        }
+        "observer-inactive-disabled-restored"
+        | "observer-inactive-enabled-restored"
+        | "observer-active-disabled-restored" => {
+            assert_eq!(outcome, failed(&format!("{unready}; restored 1.2.2")));
+            assert_eq!(installed, before);
+            assert_eq!(
+                root.join("active-ployz-observe.service").exists(),
+                case == "observer-active-disabled-restored",
+                "compensation must restore the observer's active state"
+            );
+            assert_eq!(
+                root.join("enabled-ployz-observe.service").exists(),
+                case == "observer-inactive-enabled-restored",
+                "compensation must restore the observer's enabled state"
+            );
         }
         "restore-failed" => {
             assert_eq!(
