@@ -1495,6 +1495,42 @@ fn a_push_without_a_head_keeps_what_landed() {
 }
 
 #[test]
+fn a_new_git_service_from_the_merged_repository_lands_tracking_the_target_branch() {
+    let (store, who) = shop();
+    system(&store, &who, &push(None, HEAD, None));
+    // The preview adds worker from its own repository, built from another branch.
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse(uuid(8)).unwrap(),
+                environment: at("pr-5"),
+                name: ServiceName::parse("worker").unwrap(),
+                repository: backend::repo_name("acme/web"),
+                branch: Some(backend::git_branch("release")),
+            },
+            &vouched(),
+        )
+        .unwrap();
+    save(&store, &who, "pr-5");
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "worker.branch"),
+        Some(json!("main"))
+    );
+    // The merge push deploys it, and so does the next push to main.
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(deployed(&pushed), [["web", "worker"]]);
+    let later = system(
+        &store,
+        &who,
+        &push(Some(MERGE), LATER, Some(&["README.md"])),
+    );
+    assert_eq!(deployed(&later), [["web", "worker"]]);
+}
+
+#[test]
 fn merges_from_two_branches_into_one_environment_each_deploy() {
     let (store, who) = shop_with(|store, who| {
         store

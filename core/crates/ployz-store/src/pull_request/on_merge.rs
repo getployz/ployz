@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use ployz_core::config::{
     Arrives, At, Cell, Cells, PRIVATE_DOMAIN_KEY, Plan, RowId, SERVICE_NAME_KEY,
-    SavedEnvironmentIntent, SavedVariableValue, SealedCell, Setting, ValuePart, ValuePartOwner,
-    Verdict, Why, marks_on,
+    SavedEnvironmentIntent, SavedVariableValue, SealedCell, ServiceGitBranch, ServiceSource,
+    Setting, ValuePart, ValuePartOwner, Verdict, Why, marks_on,
 };
 use serde_json::Value;
 
@@ -518,7 +518,7 @@ pub(crate) fn land(
     for landing in landings {
         let into = landing.into.summary.clone();
         let landed = storage::attempt(tx, |tx| {
-            land_one(tx, who, &from, landing, pull_request.number)
+            land_one(tx, who, &from, landing, (&pull_request, merge.target))
         });
         match landed {
             Ok(services) if services.is_empty() => {}
@@ -571,13 +571,15 @@ pub(crate) fn land(
 
 /// Land `landing` in its Destination: Saved State takes every riding row, and
 /// Working State each one it still holds as Saved did, so an edit staged there
-/// stays and wins at the next Save. Returns the IDs of the Services it changed.
+/// stays and wins at the next Save. A Git Service it introduces from the merged
+/// repository lands tracking the branch it merged into. Returns the IDs of the
+/// Services it changed.
 fn land_one(
     tx: &mut dyn Tx,
     who: &Actor,
     from: &Environment,
     landing: Landing,
-    number: PullRequestNumber,
+    (pull_request, target): (&PullRequestRef, &BranchName),
 ) -> Result<Vec<String>, RpcError> {
     let picks = landing.riding();
     let edited: BTreeSet<RowId> = landing
@@ -597,7 +599,26 @@ fn land_one(
     let into = destination.summary.id.clone();
     let mut values = edits(tx, &from.summary.id, &into)?;
     values.retain(|row, _| edited.contains(row));
-    let applied = plan.apply(&picks, &values).map_err(config)?;
+    let mut applied = plan.apply(&picks, &values).map_err(config)?;
+    let arriving: BTreeSet<&str> = picks
+        .iter()
+        .filter(|pick| *pick.at() == At::Node)
+        .map(RowId::lineage)
+        .collect();
+    for service in &mut applied.next.services {
+        if let ServiceSource::Git {
+            repository_id,
+            branch,
+            ..
+        } = &mut service.config.source
+            && *repository_id == pull_request.repository_id.get()
+            && arriving.contains(service.lineage_id.as_str())
+        {
+            *branch = ServiceGitBranch::Connected {
+                name: target.to_string(),
+            };
+        }
+    }
     let latest = review::latest_saved(tx, &into)?;
     let old = latest
         .as_ref()
@@ -615,17 +636,12 @@ fn land_one(
         &into,
         saved.clone(),
         latest.as_ref(),
-        Some(&format!("Merged #{number}")),
+        Some(&format!("Merged #{}", pull_request.number)),
     )?;
 
     // Working: the nodes arriving as Saved has them, so their IDs match; then each
     // row Working State holds as Saved did, with the variables Saved gained under
     // Saved's IDs.
-    let arriving: BTreeSet<&str> = picks
-        .iter()
-        .filter(|pick| *pick.at() == At::Node)
-        .map(RowId::lineage)
-        .collect();
     let mut working = destination.working.clone();
     working.services.extend(
         saved
