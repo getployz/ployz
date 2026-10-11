@@ -172,6 +172,10 @@ that needs an approval asks the same way in a terminal. Without one it waits for
 Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
+`ployz env rm` and `ployz project rm` take what runs off your servers and wait for it. If a server
+doesn't answer, the command returns with the environment still being removed and names the server.
+Ployz finishes on its own once the server answers or you remove it with `ployz server rm`.
+
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it
 when you pipe the output. A piped list stays plain tab-separated text either way. Put `--color` before `--`, and before the command `ployz exec` runs;

@@ -97,7 +97,8 @@ your repository's branch protection rules.
 A preview you're not testing can come off your servers and keep its settings.
 
 1. Open the preview and open the Sync button's ▾ menu.
-2. Click **Shut down until the next push**. If it has data, type `my-app/pr-142` to confirm.
+2. Click **Shut down until the next push**. If it has data, type `my-app/pr-142` to confirm. A
+   preview with no data shuts down without asking.
 
 Its services stop and its own data is deleted. Its settings, synced changes and pull request stay.
 The next push brings it back, or click **Deploy pr-142**. It starts fresh: its databases start
