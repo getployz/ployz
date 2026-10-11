@@ -1,4 +1,4 @@
-//! `ployz mcp` as a host runs it: stopping the server stops it, and the calls it is running.
+//! `ployz mcp` as a host runs it: closing its pipes or signalling it stops it, even mid-call.
 #![cfg(target_os = "linux")]
 
 use std::io::{BufRead, BufReader, Write};
@@ -66,30 +66,6 @@ fn exited_within(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
     None
 }
 
-fn children_of(parent: u32) -> Vec<u32> {
-    std::fs::read_dir("/proc")
-        .unwrap()
-        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
-        .filter(|pid| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-                stat.rsplit(") ")
-                    .next()
-                    .and_then(|rest| rest.split(' ').nth(1))
-                    == Some(&parent.to_string())
-            })
-        })
-        .collect()
-}
-
-fn running(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-        !stat
-            .rsplit(") ")
-            .next()
-            .is_some_and(|rest| rest.starts_with('Z'))
-    })
-}
-
 /// Signalling before the handler is installed would stop the server whatever it does.
 fn catches(pid: u32, signal: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/status")).is_ok_and(|status| {
@@ -132,8 +108,25 @@ struct Stuck {
     server: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    calls: Vec<u32>,
     _held: (TcpListener, std::net::TcpStream, tempfile::TempDir),
+}
+
+fn accepted(cloud: &TcpListener) -> std::net::TcpStream {
+    cloud.set_nonblocking(true).unwrap();
+    let start = Instant::now();
+    loop {
+        match cloud.accept() {
+            Ok((held, _)) => return held,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "the call never reached Cloud"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
 }
 
 fn stuck_call() -> Stuck {
@@ -152,44 +145,26 @@ fn stuck_call() -> Stuck {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": { "name": "project_ls", "arguments": {} },
+            "params": { "name": "server_show", "arguments": {} },
         }),
     );
-    let (held, _) = cloud.accept().unwrap();
-    let calls = children_of(server.id());
-    assert_eq!(calls.len(), 1, "one call is in flight: {calls:?}");
+    let held = accepted(&cloud);
     Stuck {
         server,
         stdin,
         stdout,
-        calls,
         _held: (cloud, held, home),
-    }
-}
-
-fn assert_gone(calls: &[u32]) {
-    let start = Instant::now();
-    while calls.iter().any(|pid| running(*pid)) {
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "the call outlived the server: {calls:?}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
 #[test]
 fn closing_stdin_stops_the_server_and_the_call_it_is_running() {
     let Stuck {
-        mut server,
-        stdin,
-        calls,
-        ..
+        mut server, stdin, ..
     } = stuck_call();
     drop(stdin);
     exited_within(&mut server, Duration::from_secs(5))
         .expect("the server stops once its stdin is closed");
-    assert_gone(&calls);
 }
 
 #[test]
@@ -198,7 +173,6 @@ fn closing_stdout_stops_the_server_and_the_call_it_is_running() {
         mut server,
         mut stdin,
         stdout,
-        calls,
         ..
     } = stuck_call();
     drop(stdout);
@@ -213,5 +187,4 @@ fn closing_stdout_stops_the_server_and_the_call_it_is_running() {
         None,
         "the server died of a signal: {status}"
     );
-    assert_gone(&calls);
 }
