@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use super::domain::row;
 use super::environment::{REPOSITORY, source};
 use super::machine::{Cx, Stop, Tool, at, written};
-use super::refusal::{Call, Refusal, not_setting, not_setting_sentence};
+use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
 use super::schema;
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
 use crate::{
@@ -16,8 +16,8 @@ use crate::{
     EnvironmentName, ProjectName, RemoveService, RenameService, RepositoryName, ServiceQuery,
     ServicesQuery, SettingPath, Written,
 };
-use ployz_core::ServiceName;
 use ployz_core::config::ReviewLifecycleKind;
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -204,6 +204,9 @@ pub(crate) struct ServiceUpdate {
     #[serde(default)]
     #[schemars(schema_with = "rename_schema")]
     rename_env: Map<String, Value>,
+    /// With rename_env, also switch the variables that reference a renamed one to its new name.
+    #[serde(default)]
+    update_references: bool,
     /// Write only if the place is still at this revision. Omit unless you just read it.
     #[serde(default)]
     expect_revision: Option<u64>,
@@ -298,6 +301,7 @@ impl Tool for ServiceUpdate {
                 changes,
             },
             self.expect_revision,
+            refuse_referenced_rename,
         )?;
         let name = self.service.as_str();
         let paths = |paths: &[SettingPath]| {
@@ -366,7 +370,7 @@ impl ServiceUpdate {
             changes.push(Change::Rename {
                 path: path(&format!("rename_env.{from}"), &format!("env.{from}"))?,
                 to: to.to_owned(),
-                update_references: false,
+                update_references: self.update_references,
             });
         }
         if changes.is_empty() {
@@ -374,6 +378,28 @@ impl ServiceUpdate {
         }
         Ok(changes)
     }
+}
+
+/// A rename the variables referencing it block, retried with `update_references`.
+fn refuse_referenced_rename(mut error: RpcError, call: &Call, writes: Writes) -> Refusal {
+    let referrers = match error.code == RpcErrorCode::Conflict {
+        true => error.details.get("variables").cloned(),
+        false => None,
+    };
+    let Some(referrers) = referrers else {
+        return from_store(error, call, writes);
+    };
+    // The Store's next is the CLI form of the retry below.
+    if let Value::Object(details) = &mut error.details {
+        details.remove("next");
+    }
+    let mut retry = call.input.clone();
+    if let Value::Object(fields) = &mut retry {
+        fields.insert("update_references".into(), true.into());
+    }
+    from_store(error, call, writes)
+        .with_detail("variables", referrers)
+        .with_retry(Call::new(&call.tool, retry))
 }
 
 /// `value` without its null fields.

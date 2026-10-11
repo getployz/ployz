@@ -862,3 +862,78 @@ fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
         })
     );
 }
+
+#[test]
+fn renaming_a_referenced_variable_asks_to_update_its_references() {
+    let store = shop();
+    for (name, env) in [
+        ("web", json!({ "API_URL": "http://web:8080" })),
+        ("worker", json!({ "UPSTREAM": "${{ web.API_URL }}/jobs" })),
+    ] {
+        call(
+            &store,
+            "service_add",
+            json!({ "name": name, "image": "traefik/whoami" }),
+            &format!("add-{name}"),
+        )
+        .ok();
+        call(
+            &store,
+            "service_update",
+            json!({ "service": name, "set": { "env": env } }),
+            &format!("env-{name}"),
+        )
+        .ok();
+    }
+
+    let read = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "web" }),
+        "read-1",
+    )
+    .ok();
+    let rename = json!({
+        "service": "web",
+        "rename_env": { "API_URL": "PUBLIC_API_URL" },
+        "expect_revision": read["revision"],
+    });
+    let refused = drive(
+        &store,
+        StoreAt::Cloud,
+        "service_update",
+        rename.clone(),
+        "rename-1",
+        &mut no_cloud,
+    )
+    .refused();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.writes, Writes::None);
+    assert!(refused.message.contains("worker.UPSTREAM"), "{refused:?}");
+    assert_eq!(refused.details["variables"], json!(["worker.UPSTREAM"]));
+    assert_eq!(refused.fix(), None, "the agent retries; no human acts");
+    let mut retry = rename;
+    retry["update_references"] = json!(true);
+    assert_eq!(refused.retry, Call::new("service_update", retry.clone()));
+
+    call(&store, "service_update", retry, "rename-2").ok();
+    let web = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "web" }),
+        "web-1",
+    )
+    .ok();
+    assert_eq!(web["env"], json!({ "PUBLIC_API_URL": "http://web:8080" }));
+    let worker = call(
+        &store,
+        "service_inspect",
+        json!({ "service": "worker" }),
+        "worker-1",
+    )
+    .ok();
+    assert_eq!(
+        worker["env"],
+        json!({ "UPSTREAM": "${{ web.PUBLIC_API_URL }}/jobs" })
+    );
+}

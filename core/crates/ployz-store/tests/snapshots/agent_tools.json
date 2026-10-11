@@ -675,6 +675,10 @@
             },
             "type": "array",
             "uniqueItems": true
+          },
+          "update_references": {
+            "description": "With rename_env, also switch the variables that reference a renamed one to its new name.",
+            "type": "boolean"
           }
         },
         "required": [

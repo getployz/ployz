@@ -316,20 +316,21 @@ impl Cx<'_> {
     }
 
     /// The call's one write, refused as stale when the Store finds the
-    /// Environment moved past `expect`.
+    /// Environment moved past `expect`, and any other refusal read by `refuse`.
     pub(crate) fn write_expecting<C: Tell>(
         &mut self,
         command: &C,
         expect: Option<u64>,
+        refuse: impl FnOnce(RpcError, &Call, Writes) -> Refusal,
     ) -> Result<C::Written, Stop> {
-        match self.write(command) {
-            Err(Stop::Refuse(refusal))
-                if expect.is_some() && refusal.code == RpcErrorCode::Conflict =>
-            {
-                Err(stale(&self.call))
+        self.write_with(command, |error, call, writes| {
+            let moved =
+                error.code == RpcErrorCode::Conflict && error.details.get("revision").is_some();
+            match expect.is_some() && moved {
+                true => stale_refusal(call),
+                false => refuse(error, call, writes),
             }
-            other => other,
-        }
+        })
     }
 
     /// The call's one write: `commands` applied together, only while the
@@ -345,7 +346,7 @@ impl Cx<'_> {
             commands,
             expect: expect.map(Revision),
         };
-        self.write_expecting(&batch, expect)
+        self.write_expecting(&batch, expect, from_store)
             .map(|batched| batched.results)
     }
 
@@ -434,6 +435,10 @@ fn writes_of(error: &RpcError) -> Writes {
 
 /// `conflict` for a write whose `expect_revision` no longer holds: read again.
 pub(crate) fn stale(call: &Call) -> Stop {
+    stale_refusal(call).into()
+}
+
+fn stale_refusal(call: &Call) -> Refusal {
     let mut next = Map::new();
     for key in ["project", "environment", "service"] {
         if let Some(value) = call.input.get(key) {
@@ -446,7 +451,6 @@ pub(crate) fn stale(call: &Call) -> Stop {
     };
     Refusal::conflict("The Environment changed since you read it; read it again before writing")
         .with_next(Call::new(tool, next.into()))
-        .into()
 }
 
 /// The one result a batch wrote that `pick` takes, the last when several do.
