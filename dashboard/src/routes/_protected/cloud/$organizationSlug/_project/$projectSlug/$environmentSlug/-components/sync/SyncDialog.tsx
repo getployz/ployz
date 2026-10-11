@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import type { EnvironmentRef, NeverSyncedRow, RowId, SyncRow, Synced } from "@ployz/sdk";
 import { ArrowRightIcon, ChevronDownIcon, HardDriveIcon, PackageIcon, PinIcon, PinOffIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
@@ -6,6 +6,7 @@ import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Input } from "#/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
@@ -16,20 +17,25 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 
 /**
- * The one review of a Sync: each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
+ * The one review of a Sync, "Make into match from": each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
  * a change stays out this time and can be marked Never sync; the footer lists what is never synced, with undo.
  * Nothing deploys: the changes become `into`'s changes to deploy. A secret `into` lacks arrives Not set: its row takes
- * `into`'s own value. Monochrome: pink stays for staged intent and Deploy.
+ * `into`'s own value. Monochrome: pink stays for staged intent and Deploy. With `places`, `into` is a picker over them.
  */
-export function SyncDialog({ organizationSlug, from, into, closable, onClose, onSynced }: {
+export function SyncDialog({ organizationSlug, from, into: first, places = [], closable, onClose, onSynced }: {
   organizationSlug: string; from: EnvironmentRef; into: string;
-  /** Offer to close `from` once synced: a Branch that isn't kept, into its Parent. */
-  closable: boolean;
+  /** The places the user can pick `into` from. */
+  places?: readonly string[];
+  /** Offer to close `from` once synced into there: a Branch that isn't kept, into its Parent. */
+  closable: (into: string) => boolean;
   onClose: () => void;
-  /** How many changes synced, and the Sync: what Undo passes. */
-  onSynced: (changes: number, synced: Synced) => void;
+  /** Where it synced, how many changes, and the Sync: what Undo passes. */
+  onSynced: (into: string, changes: number, synced: Synced) => void;
 }) {
   const writer = useStoreWriter(organizationSlug);
+  const [into, setInto] = useState(first);
+  // The open review stays up while the picked place's loads.
+  const [, startTransition] = useTransition();
   const view = useStoreView(organizationSlug, syncQuery(from, into));
   // Rows the user flipped from their default: a flip survives a refetch until its row changes.
   const [flips, setFlips] = useState<Flips>(new Map());
@@ -63,7 +69,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
       written = await writer.commit({
         command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, id: syncId, close_after: closable && closeAfter,
+        values: typed, version: view.value.version, id: syncId, close_after: closable(into) && closeAfter,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.
@@ -71,7 +77,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
       setPending(false);
       return;
     }
-    if (written.written === "synced") onSynced(picked.length, written);
+    if (written.written === "synced") onSynced(into, picked.length, written);
   }
 
   const neverSynced = view.ok ? view.value.never_synced : [];
@@ -79,10 +85,18 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Sync to {into}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            Make {places.length > 1 ? (
+              <NativeSelect size="sm" aria-label="Place to sync into" value={into} onChange={(event) => {
+                const picked = event.target.value;
+                startTransition(() => { setInto(picked); setFlips(new Map()); setValues({}); });
+              }}>
+                {places.map((place) => <NativeSelectOption key={place} value={place}>{place}</NativeSelectOption>)}
+              </NativeSelect>
+            ) : into} match {name}
+          </DialogTitle>
           <DialogDescription>
-            {!view.ok ? view.refusal.message : rows.length === 0 ? `Nothing to sync: ${into} has every change from ${name}.`
-              : `These changes from ${name} become ${into}'s changes to deploy.`}
+            {!view.ok ? view.refusal.message : rows.length === 0 ? "Already the same." : `These become ${into}'s changes to deploy.`}
           </DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
@@ -111,7 +125,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
             }} />)}
           </ul>
         ) : null}
-        {closable && rows.length ? (
+        {closable(into) && rows.length ? (
           <label className="flex shrink-0 items-center gap-3 border-t pt-4">
             <Checkbox checked={closeAfter} onCheckedChange={setCloseAfter} />
             Close {name} after syncing

@@ -52,9 +52,9 @@ const synced = { ok: true, value: {
 } };
 const pr142 = { repository_id: 1, number: 142 };
 
-function open({ branch = branchView(), sync = syncView(), environments = [
+function open({ at = "fix-api", branch = branchView(), sync = syncView(), environments = [
   listing("production", { default: true }), listing("fix-api", { parent: "production" }), listing("staging"), listing("demo"),
-] }: { branch?: BranchView; sync?: SyncView; environments?: EnvironmentListing[] } = {}) {
+] }: { at?: string; branch?: BranchView; sync?: SyncView; environments?: EnvironmentListing[] } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
@@ -88,7 +88,7 @@ function open({ branch = branchView(), sync = syncView(), environments = [
   const canvas = createRoute({ getParentRoute: () => environment, path: "/", component: () => null });
   const router = createRouter({
     routeTree: root.addChildren([protectedRoute.addChildren([organization.addChildren([projectGroup.addChildren([environment.addChildren([canvas])])])])]),
-    history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/fix-api"] }),
+    history: createMemoryHistory({ initialEntries: [`/cloud/acme/shop/${at}`] }),
   });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   return { router, write, commands, success, store, queryClient };
@@ -100,14 +100,25 @@ async function menu() {
 }
 
 async function dialog() {
-  fireEvent.click(await screen.findByRole("button", { name: "Sync to production · 3" }));
-  return within(await screen.findByRole("dialog", { name: "Sync to production" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Sync · 3" }));
+  return within(await screen.findByRole("dialog", { name: /match fix-api$/u }));
+}
+
+/** The open dialog, made to sync into `place` instead. */
+async function pick(place: string) {
+  const sync = await dialog();
+  fireEvent.change(sync.getByRole("combobox", { name: "Place to sync into" }), { target: { value: place } });
+  await waitFor(() => expect(sync.getByRole<HTMLSelectElement>("combobox", { name: "Place to sync into" }).value).toBe(place));
+  return sync;
 }
 
 it("says what a Sync into the Parent carries, and opens the dialog into the Parent", async () => {
   open();
   const sync = await dialog();
-  expect(sync.getByText("These changes from fix-api become production's changes to deploy.")).toBeTruthy();
+  // Any other place of the Project can be picked instead.
+  expect(sync.getAllByRole("option").map((option) => option.textContent)).toEqual(["production", "staging", "demo"]);
+  expect(sync.getByRole<HTMLSelectElement>("combobox", { name: "Place to sync into" }).value).toBe("production");
+  expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   const changes = within(sync.getByRole("region", { name: "api" })).getAllByRole("listitem").map((item) => item.textContent);
   expect(changes).toEqual([
     "Sourceshop/api:1.8shop/api:1.9",
@@ -122,7 +133,7 @@ it("says what a Sync into the Parent carries, and opens the dialog into the Pare
 
 it("reads In sync once nothing is left to sync", async () => {
   open({ branch: branchView({ to_parent: 0 }) });
-  expect(await screen.findByRole("button", { name: "In sync with production" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "In sync" })).toBeTruthy();
 });
 
 it("shows a shutdown under way, and Off, ahead of the count", async () => {
@@ -137,12 +148,10 @@ it("shows a shutdown under way, and Off, ahead of the count", async () => {
   expect(items.getByRole("menuitem", { name: "Deploy fix-api" })).toBeTruthy();
 });
 
-it("syncs to every other Environment from its menu, and holds Keep, Closes in and Close", async () => {
+it("holds Keep, Closes in and Close in its menu", async () => {
   const app = open();
   const items = await menu();
-  expect(items.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-    "Sync to production3 changes", "Sync to staging", "Sync to demo", "Close fix-api…",
-  ]);
+  expect(items.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Close fix-api…"]);
   expect(items.getByRole("menuitemcheckbox", { name: /^Keep fix-api\s*Closes in 5 days$/u })).toBeTruthy();
   fireEvent.click(items.getByRole("menuitemcheckbox", { name: /Keep fix-api/u }));
   await waitFor(() => expect(app.commands()).toEqual([{ command: "keep_branch", environment: fixApi, kept: true }]));
@@ -150,10 +159,10 @@ it("syncs to every other Environment from its menu, and holds Keep, Closes in an
   expect(items.queryByRole("menuitem", { name: /Shut down/u })).toBeNull();
 });
 
-it("syncs sideways from the menu, without offering to close the Branch", async () => {
+it("syncs sideways from the picker, without offering to close the Branch", async () => {
   open();
-  fireEvent.click((await menu()).getByRole("menuitem", { name: "Sync to staging" }));
-  const sync = within(await screen.findByRole("dialog", { name: "Sync to staging" }));
+  const sync = await pick("staging");
+  expect(sync.getByText("These become staging's changes to deploy.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
 });
 
@@ -209,7 +218,7 @@ it("keeps a kept Branch open after syncing: no Close checkbox", async () => {
 it("syncs a PR Environment into production now and opens production, with no Close", async () => {
   const app = open({ branch: branchView({ pull_request: pr142 }) });
   const sync = await dialog();
-  expect(sync.getByText("These changes from fix-api become production's changes to deploy.")).toBeTruthy();
+  expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   // A PR Environment closes with its pull request.
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   fireEvent.change(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
@@ -224,13 +233,13 @@ it("syncs a PR Environment into production now and opens production, with no Clo
   expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });
 
-it("syncs a PR Environment into another Environment now, from the menu that shuts it down", async () => {
+it("syncs a PR Environment into another Environment now, and its menu shuts it down", async () => {
   const app = open({ branch: branchView({ pull_request: pr142 }) });
   const items = await menu();
   expect(items.getByRole("menuitem", { name: "Shut down until the next push" })).toBeTruthy();
-  fireEvent.click(items.getByRole("menuitem", { name: "Sync to staging" }));
-  const sync = within(await screen.findByRole("dialog", { name: "Sync to staging" }));
-  expect(sync.getByText("These changes from fix-api become staging's changes to deploy.")).toBeTruthy();
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  const sync = await pick("staging");
   fireEvent.change(sync.getByLabelText("Set staging's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/staging"));
@@ -254,4 +263,19 @@ it("shows the fresh rows when the review went stale, and stays open", async () =
   expect(await sync.findByRole("button", { name: "Sync 1 change" })).toBeTruthy();
   expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/fix-api");
   expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("syncs from an Environment that isn't a Branch with Sync alone, picking any other place", async () => {
+  const app = open({ at: "production" });
+  fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
+  expect(screen.queryByRole("button", { name: "More sync actions" })).toBeNull();
+  const sync = within(await screen.findByRole("dialog", { name: /match production$/u }));
+  expect(sync.getAllByRole("option").map((option) => option.textContent)).toEqual(["fix-api", "staging", "demo"]);
+  fireEvent.change(sync.getByRole("combobox", { name: "Place to sync into" }), { target: { value: "staging" } });
+  expect(await sync.findByText("These become staging's changes to deploy.")).toBeTruthy();
+  fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
+  await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/staging"));
+  expect(app.commands()[0]).toMatchObject({
+    command: "sync", from: { project: "shop", environment: "production" }, into: { project: "shop", environment: "staging" }, close_after: false,
+  });
 });

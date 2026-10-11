@@ -1,7 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { Schema } from "effect";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigItemView, ConfigListing, ConfigsView, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
+  EnvironmentView, MergeRow, NodeChange, OnMerge, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
@@ -174,6 +175,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         // SAFETY: the dashboard names a row only by the RowId a read gave.
         return { ...view, never_synced: command.off ? kept : [...kept, ...command.rows as RowId[]] };
       });
+      // Excluded, a row stays in the PR Environment at its merge; Included, it rides again, as it is there.
+      await views<OnMerge>("on_merge", command.environment, (view) => ({ ...view, destinations: view.destinations.map((into) => ({
+        ...into, rows: into.rows.map((row): MergeRow => !rows.has(row.row) || row.ride === "production_keeps" ? row
+          : command.off ? { ...row, ride: "rides", lands: landsAsIs(row) } : { ...row, ride: "excluded", lands: row.preview }),
+      })) }));
       // A Sync from or into it offers a newly marked row no more; an unmarked row loses this Environment's mark, and
       // with no mark left, waits for the Store to offer it again.
       // ponytail: a Parent's mark doesn't keep a row from its own direct Branch; that Sync shows it marked until the Store answers.
@@ -198,6 +204,18 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           ],
         };
       });
+      return;
+    }
+    case "set_merge_value": {
+      // An Edit lands its value at the merge, a secret's sealed; taken back, the row lands as the PR Environment has it.
+      const { value } = command;
+      const into = command.into?.environment ?? null;
+      await views<OnMerge>("on_merge", command.environment, (view) => ({ ...view, destinations: view.destinations.map((destination) =>
+        into !== null && destination.name !== into ? destination : { ...destination, rows: destination.rows.map((row): MergeRow => {
+          if (row.row !== command.row) return row;
+          if (value === undefined || value === null) return { ...row, ride: "rides", lands: landsAsIs(row) };
+          return { ...row, ride: "edited", lands: secret(row.preview) || secret(row.production) ? { secret: true } : value };
+        }) }) }));
       return;
     }
     case "keep_branch":
@@ -275,4 +293,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     default:
       return;
   }
+}
+
+const secret = Schema.is(Schema.Struct({ secret: Schema.Boolean }));
+
+/** What a row lands as the PR Environment has it: a secret travels only by name, so one production lacks lands Not set. */
+function landsAsIs(row: MergeRow): MergeRow["lands"] {
+  return secret(row.preview) && !secret(row.production) ? { secret: false } : row.preview;
 }

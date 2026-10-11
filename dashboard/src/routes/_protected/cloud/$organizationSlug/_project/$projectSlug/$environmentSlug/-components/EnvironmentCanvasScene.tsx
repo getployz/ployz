@@ -28,6 +28,7 @@ import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { notSetVariables } from "#/modules/config-store/store-variables";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
@@ -112,6 +113,7 @@ function CanvasWithData() {
         desiredReplicas: isReplicaCount(replicas) ? replicas : null,
         trays: trays.get(service.id) ?? [],
         configTrays: configs.trays.get(service.id) ?? [],
+        notSet: notSetVariables(serviceSettingRows(settings, service.name), changes),
       };
     }),
     volumes: volumes.volumes,

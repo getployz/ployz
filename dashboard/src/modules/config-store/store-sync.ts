@@ -83,7 +83,7 @@ export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" 
   if (removal?.in_flight) return say(shuts ? "Shutting down" : "Closing");
   if (removal?.status === "applied") return say(shuts ? "Off" : "Closing");
   if (removal) return say(shuts ? "Shutdown failed" : "Closing failed");
-  return changes > 0 ? say(`Sync to ${into}`, changes) : say(`In sync with ${into}`);
+  return changes > 0 ? say("Sync", changes) : say("In sync");
 }
 
 const DAY = 24 * 60 * 60;

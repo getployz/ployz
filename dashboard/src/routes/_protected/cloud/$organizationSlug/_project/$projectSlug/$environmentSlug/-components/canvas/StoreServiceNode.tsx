@@ -1,6 +1,7 @@
 import { use } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { Link, useLoaderData, useParams } from "@tanstack/react-router";
+import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
+import { LockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
@@ -24,7 +25,7 @@ import { useRuntimeService } from "#/providers/runtime-provider";
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
  * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, selected, compact = false, className }:
+export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, notSet, selected, compact = false, className }:
   StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
@@ -43,6 +44,19 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{service.name}</CardTitle>;
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
   const chipBadge = <DeployChip light={light} chip={chip} />;
+  const navigate = useNavigate();
+  // A secret it has no value for: deploys skip it, so the card says so and opens its variables.
+  const [unset] = notSet;
+  const notSetChip = unset === undefined ? null : (
+    <span role="link" className="flex shrink-0 items-center gap-1 text-xs text-warning hover:underline"
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id }, search: { tab: "variables" } });
+      }}>
+      <LockIcon className="size-3" />{unset} not set
+    </span>
+  );
 
   return (
     <ServiceContextMenu serviceId={service.id} onDelete={remove}>
@@ -73,7 +87,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
                 {chipBadge}
               </div>
             </CardHeader>
-            <CardContent><StatusLine status={status} issues={issues} /></CardContent>
+            <CardContent className="flex items-center justify-between gap-2"><StatusLine status={status} issues={issues} />{notSetChip}</CardContent>
           </>}
         </Card>
       </Link>

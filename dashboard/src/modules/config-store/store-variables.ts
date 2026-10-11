@@ -35,6 +35,12 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
   }).sort((a, b) => a.key.localeCompare(b.key));
 }
 
+/** The keys of a Service's secrets without a value that nothing staged sets: deploys skip them until they are set. */
+export function notSetVariables(rows: ReadonlyMap<string, SettingRow>, changes: ReadonlyMap<string, unknown>) {
+  return serviceVariables(rows, "", changes)
+    .flatMap((variable) => variable.value.type === "sealed" && variable.value.notSet && !variable.changed ? [variable.key] : []);
+}
+
 /**
  * The variables panel's writer over the Store: each write is one optimistic edit of `SERVICE.env.KEY` (and its
  * `.exported`), the one place those paths are spelled.

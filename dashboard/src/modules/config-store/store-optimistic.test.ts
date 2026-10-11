@@ -1,8 +1,9 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
+import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, MergeRow, OnMerge, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
+import { onMergeQuery } from "./store-pull-requests";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, syncQuery } from "./store-view.queries";
 
 const ref = { project: "shop", environment: "production" };
@@ -195,6 +196,52 @@ it("takes an unmarked row's mark out of a Sync at once, dropping a row left with
   expect(read<SyncView>(query)?.never_synced).toEqual([marked("B", ["production"]), marked("C", ["fix-api"])]);
 });
 
+
+describe("the On merge list", () => {
+  const pr = { project: "shop", environment: "pr-146" };
+  const merging = (name: string, production: MergeRow["production"], preview: MergeRow["preview"]): MergeRow => ({
+    row: `w:variables.${name}` as RowId, node: "web", kind: "service", name: `env.${name}`, production, preview,
+    lands: preview, ride: "rides", conflict: false, requires: null,
+  });
+  function listed() {
+    const queryClient = new QueryClient();
+    const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, onMergeQuery(pr)).queryKey;
+    queryClient.setQueryData<unknown>(key, { ok: true, value: {
+      environment: { ...environment, name: "pr-146" }, pull_request: { repository_id: 1, number: 146 },
+      destinations: [{ name: "production", rows: [merging("CACHE_TTL", "30", "60"), merging("TOKEN", null, { secret: true })] }],
+    } satisfies OnMerge });
+    const rows = () => queryClient.getQueryData<{ value: OnMerge }>(key)?.value.destinations[0]?.rows
+      .map(({ name, ride, lands }) => ({ name, ride, lands }));
+    return { queryClient, rows };
+  }
+
+  it("excludes a row at once, landing nothing, and includes it again as the PR Environment has it", async () => {
+    const { queryClient, rows } = listed();
+    const cache = "w:variables.CACHE_TTL";
+    await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: pr, rows: [cache] });
+    expect(rows()?.[0]).toEqual({ name: "env.CACHE_TTL", ride: "excluded", lands: "60" });
+    await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: pr, rows: [cache], off: true });
+    expect(rows()?.[0]).toEqual({ name: "env.CACHE_TTL", ride: "rides", lands: "60" });
+  });
+
+  it("lands an Edit's value at once, a secret's sealed, and taken back lands the PR Environment's", async () => {
+    const { queryClient, rows } = listed();
+    const into = { project: "shop", environment: "production" };
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.CACHE_TTL", value: "45" });
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.TOKEN", value: "tok" });
+    expect(rows()).toEqual([
+      { name: "env.CACHE_TTL", ride: "edited", lands: "45" },
+      { name: "env.TOKEN", ride: "edited", lands: { secret: true } },
+    ]);
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.CACHE_TTL" });
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.TOKEN" });
+    // Production lacks the secret: it lands Not set.
+    expect(rows()).toEqual([
+      { name: "env.CACHE_TTL", ride: "rides", lands: "60" },
+      { name: "env.TOKEN", ride: "rides", lands: { secret: false } },
+    ]);
+  });
+});
 
 it("removes only the named Config file from both the listing and open item", async () => {
   const queryClient = new QueryClient();

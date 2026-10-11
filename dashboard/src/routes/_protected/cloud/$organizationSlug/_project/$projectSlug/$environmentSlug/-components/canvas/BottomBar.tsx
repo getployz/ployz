@@ -41,7 +41,7 @@ type BottomBarProps = {
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
-  /** Details' notes: where changes came from, and merged pull requests' and the Parent's values. */
+  /** Details' notes: where changes came from, and the Parent's deployed values. */
   notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "originFor" | "after">;
   /** Details' Included list: the sources Syncs included here, with Include newer changes and Remove. */
   proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer">;

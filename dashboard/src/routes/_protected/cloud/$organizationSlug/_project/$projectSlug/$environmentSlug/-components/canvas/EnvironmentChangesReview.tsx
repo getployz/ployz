@@ -32,13 +32,13 @@ export type EnvironmentChangesReviewProps = {
   admitting?: boolean;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
-  /** A change's second line: a merged pull request's or the Parent's value, with Use. */
+  /** A change's second line: the Parent's deployed value, with Use theirs. */
   noteFor?: (row: ChangeRow) => ReactNode;
   /** Never sync for a change that arrived from another Environment: marks it and discards it. */
   neverSyncFor?: (row: ChangeRow) => (() => void) | undefined;
   /** Where the changes in a Sync row (a setting's, or a node's) came from; none for this Environment's own edits. */
   originFor?: (row: RowId) => ChangeOrigin | undefined;
-  /** Lists after the changes: merged pull requests' and the Parent's values no change shows. */
+  /** Lists after the changes: the Parent's deployed values no change shows. */
   after?: ReactNode;
   /** The sources Syncs included in this draft. */
   included?: readonly Included[];

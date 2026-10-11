@@ -41,7 +41,7 @@ describe("Config Store nodes", () => {
   const configs = configTrays(listings, [config("sentry", [{ service: "web", dir: "/etc/sentry" }]), config("spare", [])], diff);
   const store = {
     services: listings.map((service) => ({ service, domains: [], changeCount: 0, runtimeIdentity: null, desiredReplicas: null,
-      trays: trays.get(service.id) ?? [], configTrays: configs.trays.get(service.id) ?? [] })),
+      trays: trays.get(service.id) ?? [], configTrays: configs.trays.get(service.id) ?? [], notSet: [] })),
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,
   };

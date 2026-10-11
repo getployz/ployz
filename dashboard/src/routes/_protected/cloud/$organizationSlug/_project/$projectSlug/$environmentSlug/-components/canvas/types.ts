@@ -19,6 +19,8 @@ export type StoreCanvasService = {
   trays: MountedVolume[];
   /** The Configs it mounts, as trays under its card, above its Volumes. */
   configTrays: MountedConfig[];
+  /** Its secrets without a value, none staged: deploys skip them until they are set. */
+  notSet: string[];
 };
 
 /**

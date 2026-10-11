@@ -230,8 +230,8 @@ to_parent: number,
  */
 closes_at: number | null,
 /**
- * The pull request it is the PR Environment of; its Sync into a Destination
- * waits for the merge.
+ * The pull request it is the PR Environment of: its merge lands what the On
+ * merge list shows.
  */
 pull_request: PullRequestRef | null, };
 

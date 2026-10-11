@@ -62,13 +62,14 @@ Try a change in staging first, like a new variable that turns on a feature:
 ![A branch's canvas, with the Sync button at the top right](../images/branch-canvas.png)
 
 Production doesn't change. The Sync button at the top right of staging's canvas now reads
-**Sync to production · 1**.
+**Sync · 1**: one change a sync into production would carry.
 
 ## Sync the change to production
 
 Syncing stages staging's changes in production, like a draft. It never deploys them.
 
-1. On staging's canvas, click **Sync to production**.
+1. On staging's canvas, click **Sync**. The dialog reads "Make production match staging". To sync
+   into another environment of the project, pick it in the title.
 2. Check each change, production's value against staging's. Untick one to leave it out; it's
    offered again next time.
 3. Click **Sync 1 change**. A toast offers **Undo**; production's canvas opens with the change
@@ -78,9 +79,10 @@ Syncing stages staging's changes in production, like a draft. It never deploys t
 Sync never moves data or deletes anything in production. Replicas, CPU and memory limits, domains
 and the Git branch stay as each environment has them. A change marked **Changed in production**
 replaces production's value when you sync it. A secret's value never syncs: one staging added
-arrives in production **Not set**, in its variables and in **Changes**. Production still deploys:
-the deploy skips that variable, and any variable that references it, and warns. To set it as you
-sync, type production's value in the secret's row of the dialog.
+arrives in production **Not set**, in its variables, in **Changes**, and as `TOKEN not set` on the
+service's card. Production still deploys: the deploy skips that variable, and any variable that
+references it, and warns. To set it as you sync, type production's value in the secret's row of
+the dialog.
 
 To keep a setting out of every sync, like a variable each environment sets its own way, click
 **Never sync** beside it in the dialog, or in the variable's ⋮ menu.
@@ -177,8 +179,9 @@ to take it.
 
 ### Sync to another environment
 
-The Sync button's ▾ menu also syncs into any other environment of the project, like a branch next
-to staging. What staging only got from production is left out unless you tick it.
+Click **Sync**, then pick the environment in the dialog's title, "Make [production ▾] match
+staging". Any other environment of the project works, like a branch next to staging. Sync works on
+the default environment too, into any other place. What staging only got from production is left out unless you tick it.
 
 ### Change the default environment
 

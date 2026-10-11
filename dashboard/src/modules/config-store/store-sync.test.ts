@@ -79,8 +79,8 @@ describe("the Sync button", () => {
       { label: "Shutdown failed", count: null },
       { label: "Off", count: null },
       { label: "Closing", count: null },
-      { label: "Sync to production", count: 4 },
-      { label: "In sync with production", count: null },
+      { label: "Sync", count: 4 },
+      { label: "In sync", count: null },
     ]);
     // Where its Sync goes, and what that carries, whatever it says.
     expect(syncButtonState(pr, removal("applied", false))).toMatchObject({ into: "production", changes: 4 });

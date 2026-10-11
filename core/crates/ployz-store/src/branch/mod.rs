@@ -457,8 +457,8 @@ pub struct BranchView {
     /// closing already.
     #[ts(type = "number | null")]
     pub closes_at: Option<i64>,
-    /// The pull request it is the PR Environment of; its Sync into a Destination
-    /// waits for the merge.
+    /// The pull request it is the PR Environment of: its merge lands what the On
+    /// merge list shows.
     pub pull_request: Option<crate::PullRequestRef>,
 }
 

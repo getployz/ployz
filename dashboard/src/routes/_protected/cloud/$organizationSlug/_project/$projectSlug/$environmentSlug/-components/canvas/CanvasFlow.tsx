@@ -33,6 +33,7 @@ import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
+import { OnMergeButton } from "../sync/OnMerge";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
@@ -154,6 +155,7 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <Suspense fallback={null}><OnMergeButton /></Suspense>
         <Button nativeButton={false} className="pointer-events-auto" variant="outline" render={<Link to={ENVIRONMENT_HISTORY_ROUTE_TO} params={params} />}><HistoryIcon />History</Button>
         <SyncButton />
         <CanvasFinder nodes={findableNodes} />
@@ -246,7 +248,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
       {including === null ? null : (
         <Suspense fallback={null}>
           <SyncDialog organizationSlug={params.organizationSlug} from={{ project: ref.project, environment: including }}
-            into={diff.environment.name} closable={false} onClose={() => setIncluding(null)} onSynced={() => setIncluding(null)} />
+            into={diff.environment.name} closable={() => false} onClose={() => setIncluding(null)} onSynced={() => setIncluding(null)} />
         </Suspense>
       )}
     </>

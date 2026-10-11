@@ -17,8 +17,7 @@ import type { CommittedViews, StoreResult, StoreViewOf } from "./store.contract"
  */
 const refreshedBy = {
   environment: ["store_environment"],
-  // Included pull requests carry their readiness.
-  diff: ["store_environment", "store_deployment", "store_pull_request"],
+  diff: ["store_environment", "store_deployment"],
   history: ["store_environment"],
   history_preview: ["store_environment", "store_deployment"],
   plan: ["store_environment", "store_deployment"],

@@ -1,7 +1,7 @@
 import { Suspense, useState } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { BranchView, EnvironmentListing, EnvironmentRef, SyncId, Synced } from "@ployz/sdk";
+import type { BranchView, EnvironmentListing, EnvironmentRef, Synced } from "@ployz/sdk";
 import { ChevronDownIcon, GitBranchIcon } from "lucide-react";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
@@ -25,23 +25,64 @@ import { useLeaveWhenClosed, useStoreBranchClose } from "./branch-close";
 import { SyncDialog } from "./SyncDialog";
 
 /**
- * A Branch's one control, at the canvas's top right: it says what a Sync into its Parent carries and opens the Sync
- * dialog; ▾ syncs anywhere else in the Project and holds Keep, Shut down and Close. Elsewhere it isn't there.
+ * Sync, at the canvas's top right: it opens the one Sync dialog, which makes a picked place match this one. On a
+ * Branch it says what a Sync into its Parent carries and picks the Parent first, and ▾ holds Keep, Shut down and Close.
  */
 export function SyncButton() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const [branch, listing] = useStoreViews(params.organizationSlug, [branchQuery(store), environmentsQuery(params.projectSlug)] as const);
   useLeaveWhenClosed(params, branch);
-  if (!branch.ok) return null;
-  return <BranchSync params={params} store={store} branch={branch.value} environments={requireView(listing).environments} />;
+  const environments = requireView(listing).environments;
+  if (!branch.ok) return <RootSync params={params} store={store} environments={environments} />;
+  return <BranchSync params={params} store={store} branch={branch.value} environments={environments} />;
+}
+
+/** Every other Environment of the Project, in tree order: where a Sync from `name` can go. */
+function placesFrom(environments: readonly EnvironmentListing[], name: string) {
+  return storeEnvironmentTree(environments).map(({ environment }) => environment.name).filter((other) => other !== name);
+}
+
+/** Lands on where the Sync went, and Undo there takes its changes back out. */
+function useSynced(params: EnvironmentRouteParams, from: string) {
+  const writer = useStoreWriter(params.organizationSlug);
+  const navigate = useNavigate();
+  return (to: string, changes: number, sync: Synced) => {
+    const action = { label: "Undo", onClick: () => void writer.commit({ command: "undo_sync", sync: sync.sync }) };
+    void navigate(getDashboardDestination({ kind: "environment", ...params, environmentSlug: to }, "architecture"));
+    toast.success(`Synced ${plural(changes, "change")} from ${from}`, { action });
+  };
+}
+
+/** An Environment that isn't a Branch: Sync alone, with no ▾, picking the first other place. */
+function RootSync({ params, store, environments }: {
+  params: EnvironmentRouteParams; store: EnvironmentRef; environments: readonly EnvironmentListing[];
+}) {
+  const [into, setInto] = useState<string | null>(null);
+  const name = store.environment ?? "";
+  const places = placesFrom(environments, name);
+  const synced = useSynced(params, name);
+  const [first] = places;
+  if (first === undefined) return null;
+  return (
+    <>
+      <Button variant="outline" className="pointer-events-auto" onClick={() => setInto(first)}>
+        <GitBranchIcon data-icon="inline-start" />Sync
+      </Button>
+      {into === null ? null : (
+        <Suspense fallback={null}>
+          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into} places={places} closable={() => false}
+            onClose={() => setInto(null)} onSynced={(to, changes, sync) => { setInto(null); synced(to, changes, sync); }} />
+        </Suspense>
+      )}
+    </>
+  );
 }
 
 function BranchSync({ params, store, branch, environments }: {
   params: EnvironmentRouteParams; store: EnvironmentRef; branch: BranchView; environments: readonly EnvironmentListing[];
 }) {
   const writer = useStoreWriter(params.organizationSlug);
-  const navigate = useNavigate();
   const scope = useCollectionScope();
   const closing = useStoreBranchClose(params, store, branch);
   // Where the open dialog syncs to.
@@ -56,18 +97,8 @@ function BranchSync({ params, store, branch, environments }: {
   useCachedStoreView(params.organizationSlug, syncQuery(store, state.into));
   // The Store closes a Branch only once its own Branches are gone.
   const children = environments.filter((environment) => environment.parent === name).map((environment) => environment.name);
-  const others = storeEnvironmentTree(environments).map(({ environment }) => environment.name)
-    .filter((other) => other !== name && other !== state.into);
   const shuttable = branch.pull_request !== null;
-  // Takes the synced changes back out of the receiver, and the next Sync offers them again.
-  const undo = (sync: SyncId) => writer.commit({ command: "undo_sync", sync });
-
-  function synced(to: string, changes: number, sync: Synced) {
-    setInto(null);
-    const action = { label: "Undo", onClick: () => void undo(sync.sync) };
-    void navigate(getDashboardDestination({ kind: "environment", ...params, environmentSlug: to }, "architecture"));
-    toast.success(`Synced ${plural(changes, "change")} from ${name}`, { action });
-  }
+  const synced = useSynced(params, name);
 
   return (
     <>
@@ -84,14 +115,6 @@ function BranchSync({ params, store, branch, environments }: {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-auto min-w-56">
             <DropdownMenuGroup>
-              <DropdownMenuItem onClick={() => setInto(state.into)}>
-                Sync to {state.into}
-                {state.changes ? <span className="ml-auto pl-4 text-muted-foreground">{plural(state.changes, "change")}</span> : null}
-              </DropdownMenuItem>
-              {others.map((other) => <DropdownMenuItem key={other} onClick={() => setInto(other)}>Sync to {other}</DropdownMenuItem>)}
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
               <DropdownMenuCheckboxItem checked={branch.kept}
                 onCheckedChange={(kept) => void writer.commit({ command: "keep_branch", environment: store, kept })}>
                 Keep {name}
@@ -107,6 +130,9 @@ function BranchSync({ params, store, branch, environments }: {
                   Shut down until the next push
                 </DropdownMenuItem>
               ) : null}
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
               <DropdownMenuItem variant="destructive" disabled={Boolean(me?.default) || removal?.in_flight === true || children.length > 0}
                 title={me?.default ? `${name} is the project's default` : children.length ? `Close its branches first: ${children.join(", ")}` : undefined}
                 onClick={() => setAsking(true)}>
@@ -118,11 +144,11 @@ function BranchSync({ params, store, branch, environments }: {
       </ButtonGroup>
       {into === null ? null : (
         <Suspense fallback={null}>
-          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into}
+          <SyncDialog organizationSlug={params.organizationSlug} from={store} into={into} places={placesFrom(environments, name)}
             // Closing after syncs only a Branch that isn't kept, and only into its Parent; a PR Environment closes
             // with its pull request.
-            closable={into === branch.parent && !branch.kept && !me?.default && !shuttable}
-            onClose={() => setInto(null)} onSynced={(changes, sync) => synced(into, changes, sync)} />
+            closable={(to) => to === branch.parent && !branch.kept && !me?.default && !shuttable}
+            onClose={() => setInto(null)} onSynced={(to, changes, sync) => { setInto(null); synced(to, changes, sync); }} />
         </Suspense>
       )}
       {closing.dialog}

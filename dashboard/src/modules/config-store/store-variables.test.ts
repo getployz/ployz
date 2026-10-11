@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { EnvironmentView, RowId } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
-import { serviceVariables } from "./store-variables";
+import { notSetVariables, serviceVariables } from "./store-variables";
 import { withPendingChanges } from "./store-view.queries";
 
 const view: EnvironmentView = {
@@ -53,6 +53,12 @@ it("says which secret is Not set, and keeping it keeps it so", () => {
     .toEqual([{ key: "TOKEN", notSet: true }]);
   expect(needs(withPendingChanges(valueless, [{ op: "set", path: "web.env.TOKEN", value: { secret: "s3cret" } }])))
     .toEqual([{ key: "TOKEN", notSet: false }]);
+});
+
+it("names the secrets a deploy skips, until a change to them is staged", () => {
+  const valueless = { ...view, settings: [...view.settings, { path: "web.env.TOKEN", value: { secret: false }, default: null, apply: "staged" as const }] };
+  expect(notSetVariables(serviceSettingRows(valueless, "web"), new Map())).toEqual(["TOKEN"]);
+  expect(notSetVariables(serviceSettingRows(valueless, "web"), new Map([["env.TOKEN", {}]]))).toEqual([]);
 });
 
 it("marks the variables their Environment never syncs, by their rows", () => {

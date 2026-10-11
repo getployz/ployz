@@ -47,21 +47,21 @@ function open({ view = syncView(), closable = true } = {}) {
   render(
     <QueryClientProvider client={queryClient}>
       <Suspense fallback={null}>
-        <SyncDialog organizationSlug="acme" from={fixApi} into="production" closable={closable} onClose={() => {}} onSynced={() => {}} />
+        <SyncDialog organizationSlug="acme" from={fixApi} into="production" closable={() => closable} onClose={() => {}} onSynced={() => {}} />
       </Suspense>
     </QueryClientProvider>,
   );
   return { write, queryClient };
 }
 
-const dialog = async () => within(await screen.findByRole("dialog", { name: "Sync to production" }));
+const dialog = async () => within(await screen.findByRole("dialog", { name: "Make production match fix-api" }));
 const section = (sync: Awaited<ReturnType<typeof dialog>>, name: string) =>
   within(sync.getByRole("region", { name })).getAllByRole("listitem").map((item) => item.textContent);
 
 it("shows each change with at most one badge, Secret ahead of Changed, and a value field only on a secret", async () => {
   open();
   const sync = await dialog();
-  expect(sync.getByText("These changes from fix-api become production's changes to deploy.")).toBeTruthy();
+  expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   expect(section(sync, "api")).toEqual(["LOG_LEVELChanged in productionwarndebug", "TOKENSecret"]);
   expect(section(sync, "worker")).toEqual(["ServiceNew", "MODENewfast", "KEYSecret"]);
   expect(sync.getAllByLabelText(/^Set production's value of/u).map((field) => field.getAttribute("aria-label"))).toEqual([
@@ -96,7 +96,7 @@ it("lists what is never synced from the footer, and offers to close the Branch a
 it("syncs a PR Environment into production now, with production's value for a secret and no Close", async () => {
   const { write } = open({ closable: false, view: syncView({ rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: {} })] }) });
   const sync = await dialog();
-  expect(sync.getByText("These changes from fix-api become production's changes to deploy.")).toBeTruthy();
+  expect(sync.getByText("These become production's changes to deploy.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "s3cret" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 1 change" }));

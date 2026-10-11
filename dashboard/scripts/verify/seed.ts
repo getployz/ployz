@@ -13,6 +13,8 @@
 //   #142        merged into main
 //   #143        closed
 //   #144        retargeted to dev and merged there
+//   #146        open: its On merge list lands API_URL and CACHE_TTL (over production's own change since), excludes
+//               LOG_LEVEL, and lands TOKEN Not set
 // A fake Server is paired so the Store admits Deploys; nothing answers it. VERIFY_REAL_SERVERS=1 leaves pairing to the
 // real Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and
 // opens no PR Environment, before a Server joins.
@@ -202,6 +204,25 @@ const seed = Effect.gen(function* () {
     yield* observe("blog #144 retargets", pullRequest(144, 1, { target_branch: "dev" }));
     yield* observe("blog #144 merges into dev", pullRequest(144, 2, { open: false, target_branch: "dev", merge_commit: "5".repeat(40) }));
 
+    // #146: production's values, then the pull request, then production moves on under it.
+    const production = (label: string, changes: Change[]) => Effect.gen(function* () {
+      yield* write(`blog production ${label}`, { command: "edit", environment: blog("production"), expect: null, changes });
+      yield* write(`blog production ${label} publish`, { command: "publish", environment: blog("production"), version: null });
+    });
+    yield* production("values", [
+      { op: "set", path: "web.env.API_URL", value: "http://a" },
+      { op: "set", path: "web.env.CACHE_TTL", value: "30" },
+      { op: "set", path: "web.env.LOG_LEVEL", value: "info" },
+    ]);
+    yield* observe("blog #146 opens", pullRequest(146, 0));
+    yield* production("CACHE_TTL", [{ op: "set", path: "web.env.CACHE_TTL", value: "45" }]);
+    yield* write("blog pr-146 edits", { command: "edit", environment: blog("pr-146"), expect: null, changes: [
+      { op: "set", path: "web.env.API_URL", value: "http://b" },
+      { op: "set", path: "web.env.CACHE_TTL", value: "60" },
+      { op: "set", path: "web.env.LOG_LEVEL", value: "debug" },
+      { op: "set", path: "web.env.TOKEN", value: { secret: "preview-token" } },
+    ] });
+    yield* write("blog pr-146 excludes LOG_LEVEL", { command: "never_sync", environment: blog("pr-146"), rows: ["web.env.LOG_LEVEL"] });
   }
 
   return { organizationSlug, cookie, cliToken, writes, skipped };
