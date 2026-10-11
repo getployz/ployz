@@ -42,3 +42,22 @@ fn generated_catalog_matches_checked_in_file() {
         path.display()
     );
 }
+
+/// `ployz-sdk/generated/commands.json` is the command catalog with each command's approval
+/// group, the tool list `ployz mcp` serves. Regenerate with the same `PLOYZ_WRITE_SDK_PAYLOADS=1` run.
+#[test]
+fn generated_commands_match_checked_in_file() {
+    let generated = ployz::handlers::commands_json();
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ployz-sdk/generated/commands.json");
+    if env::var_os("PLOYZ_WRITE_SDK_PAYLOADS").is_some() {
+        fs::write(&path, &generated).expect("write commands.json");
+        return;
+    }
+    let checked_in = fs::read_to_string(&path).expect("read commands.json");
+    assert!(
+        checked_in == generated,
+        "{} is stale; run `PLOYZ_WRITE_SDK_PAYLOADS=1 cargo test -p ployz --test sdk_payloads`",
+        path.display()
+    );
+}
