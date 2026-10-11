@@ -42,7 +42,7 @@ minute.
 ## See older metrics
 
 For the last 24 hours you get every 10 second reading. After that Ployz keeps a 5 minute summary
-for each service and deployment, so longer ranges show fewer, broader points. How far back the
+for each service, deployment and server, so longer ranges show fewer, broader points. How far back the
 summaries reach depends on the disk space Ployz keeps for logs and metrics. See
 [Good to know](#good-to-know).
 
