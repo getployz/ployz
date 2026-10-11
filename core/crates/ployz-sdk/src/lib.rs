@@ -207,7 +207,7 @@ impl Client {
     /// Returns invalid input, transport failures or Register domain errors.
     #[napi]
     pub async fn register(&self, assignment: serde_json::Value) -> Result<serde_json::Value> {
-        let assignment = serde_json::from_value(assignment).map_err(invalid_argument)?;
+        let assignment = ployz_core::decode::decode(&assignment).map_err(invalid_argument)?;
         to_json(
             &self
                 .inner
@@ -226,7 +226,7 @@ impl Client {
         &self,
         request: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let request = serde_json::from_value(request).map_err(invalid_argument)?;
+        let request = ployz_core::decode::decode(&request).map_err(invalid_argument)?;
         to_json(
             &self
                 .inner
@@ -253,7 +253,7 @@ impl Client {
     /// Returns malformed input and Machine transport failures.
     #[napi]
     pub async fn container_logs(&self, input: serde_json::Value) -> Result<ContainerLogStream> {
-        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        let input = ployz_core::decode::decode(&input).map_err(invalid_argument)?;
         Ok(ContainerLogStream {
             inner: self
                 .inner
@@ -292,7 +292,7 @@ impl Client {
     /// Rejects malformed input or closed sessions.
     #[napi]
     pub fn prepare(&self, input: serde_json::Value) -> Result<PreparationHandle> {
-        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        let input = ployz_core::decode::decode(&input).map_err(invalid_argument)?;
         Ok(PreparationHandle {
             inner: self.inner.prepare(input).map_err(rpc_to_napi)?,
         })
@@ -308,7 +308,7 @@ impl Client {
         input: serde_json::Value,
         start_within_ms: Option<u32>,
     ) -> Result<BuildHandle> {
-        let input = serde_json::from_value(input).map_err(invalid_argument)?;
+        let input = ployz_core::decode::decode(&input).map_err(invalid_argument)?;
         let start_within = start_within_ms.map(|ms| std::time::Duration::from_millis(ms.into()));
         Ok(BuildHandle {
             inner: self.inner.build(input, start_within).map_err(rpc_to_napi)?,
@@ -325,7 +325,7 @@ impl Client {
     /// [`DeployIntent`](ployz_core::DeployIntent) data, the session is closed, or planning fails.
     #[napi]
     pub async fn preview(&self, intent: serde_json::Value) -> Result<DeployPreviewHandle> {
-        let intent = serde_json::from_value(intent).map_err(invalid_argument)?;
+        let intent = ployz_core::decode::decode(&intent).map_err(invalid_argument)?;
         let inner = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
     }
@@ -364,7 +364,7 @@ impl Client {
     #[napi]
     pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
         let request: RemoveVolumesRequest =
-            serde_json::from_value(request).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&request).map_err(invalid_argument)?;
         let result = self
             .inner
             .remove_volumes(request)
@@ -382,7 +382,7 @@ impl Client {
     #[napi]
     pub async fn prune_images(&self, targets: serde_json::Value) -> Result<serde_json::Value> {
         let targets: Vec<ployz_core::PruneTarget> =
-            serde_json::from_value(targets).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&targets).map_err(invalid_argument)?;
         let report = self
             .inner
             .prune_images(&targets)
@@ -428,7 +428,7 @@ impl Client {
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&confirm_data_loss).map_err(invalid_argument)?;
         let removed = self
             .inner
             .remove_machine(&machine, &confirm_data_loss)
@@ -452,7 +452,7 @@ impl Client {
         scope: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let scope: ployz::drain::DrainScope =
-            serde_json::from_value(scope).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&scope).map_err(invalid_argument)?;
         let report = self
             .inner
             .drain_machine(&machine, &scope)
@@ -547,7 +547,7 @@ impl Client {
         update: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let update: ployz_core::MachineUpdate =
-            serde_json::from_value(update).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&update).map_err(invalid_argument)?;
         let updated = self
             .inner
             .update_machine(&machine, update)
@@ -564,7 +564,7 @@ impl Client {
         request: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let request: ployz_core::RequestMachineUpgradeRequest =
-            serde_json::from_value(request).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&request).map_err(invalid_argument)?;
         let attempt = self
             .inner
             .request_machine_upgrade(&machine, request)
@@ -582,7 +582,7 @@ impl Client {
         request: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let request: ployz_core::InspectMachineUpgradeRequest =
-            serde_json::from_value(request).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&request).map_err(invalid_argument)?;
         let attempt = self
             .inner
             .inspect_machine_upgrade(&machine, request)
@@ -635,7 +635,7 @@ impl Client {
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&confirm_data_loss).map_err(invalid_argument)?;
         let outcome = self
             .inner
             .destroy_namespace(&namespace, &confirm_data_loss, volume_fate(destroy_volumes))
@@ -679,7 +679,7 @@ impl Client {
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
+            ployz_core::decode::decode(&confirm_data_loss).map_err(invalid_argument)?;
         let teardown = self
             .inner
             .destroy_cluster(&confirm_data_loss)
@@ -859,10 +859,10 @@ pub fn allocate_enrollment(
     snapshot: serde_json::Value,
     saved: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let request = serde_json::from_value(request).map_err(invalid_argument)?;
-    let snapshot = serde_json::from_value(snapshot).map_err(invalid_argument)?;
+    let request = ployz_core::decode::decode(&request).map_err(invalid_argument)?;
+    let snapshot = ployz_core::decode::decode(&snapshot).map_err(invalid_argument)?;
     let saved: Vec<ployz_core::EnrollmentAssignment> =
-        serde_json::from_value(saved).map_err(invalid_argument)?;
+        ployz_core::decode::decode(&saved).map_err(invalid_argument)?;
     let assignment =
         ployz_core::allocate_enrollment(&request, &snapshot, &saved).map_err(|error| {
             rpc_to_napi(ployz_core::RpcError {

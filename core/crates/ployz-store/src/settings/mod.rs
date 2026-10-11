@@ -596,7 +596,7 @@ impl ServiceSetting {
         self,
         value: Value,
     ) -> Result<T, RpcError> {
-        serde_json::from_value(value).map_err(|_| self.invalid("invalid value"))
+        ployz_core::decode::decode(&value).map_err(|error| self.invalid(&error.to_string()))
     }
 
     /// A refused value: what this Setting expects and an example, never the value sent.

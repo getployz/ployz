@@ -2,6 +2,7 @@
 
 pub mod config;
 mod container_metadata;
+pub mod decode;
 pub mod domain;
 mod enrollment;
 pub mod error_chain;

@@ -79,6 +79,36 @@ macro_rules! queries {
             $($(#[doc = $doc])* $variant(view_type!($answer $(, $unbox)?)),)*
         }
 
+        impl Query {
+            /// Decode a query a caller sent.
+            ///
+            /// # Errors
+            /// Where it does not fit, inside its payload too, and what fits there;
+            /// never a value it holds.
+            pub fn decode(mut value: Value) -> Result<Self, ployz_core::decode::DecodeError> {
+                use ployz_core::decode::decode;
+                if let Ok(decoded) = Self::deserialize(&value) {
+                    return Ok(decoded);
+                }
+                // serde buffers an internally tagged payload and loses the path inside it,
+                // so a refused payload is decoded again on its own.
+                #[derive(Deserialize)]
+                #[serde(tag = "query", rename_all = "snake_case")]
+                enum Tag {
+                    $($variant(serde::de::IgnoredAny),)*
+                }
+                let Ok(tag) = Tag::deserialize(&value) else {
+                    return decode(&value);
+                };
+                if let Value::Object(fields) = &mut value {
+                    fields.remove("query");
+                }
+                match tag {
+                    $(Tag::$variant(_) => decode(&value).map(Self::$variant),)*
+                }
+            }
+        }
+
         impl Ask for Query {
             type View = View;
 
