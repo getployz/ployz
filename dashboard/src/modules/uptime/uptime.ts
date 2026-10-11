@@ -1,12 +1,11 @@
+import { type PointSource, pointSource, type RangeWindow } from "./uptime-range";
 import {
   type EnvironmentUptimeCheck,
   type IncidentObservation,
   type ServiceUptime,
-  UPTIME_RANGES,
-  UPTIME_RANGE_MS,
+  type UptimeCheckResult,
   type UptimeIncidentEntry,
   type UptimePoint,
-  type UptimeRange,
   type UptimeStatus,
 } from "./uptime-status";
 
@@ -53,52 +52,55 @@ export function wrongPathIncident(uptime: ServiceUptime): UptimeIncidentEntry | 
   return open && failure && failure.status >= 400 && failure.status < 500 && neverPassed ? open : null;
 }
 
-const HOUR_MS = 3_600_000;
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
-const FIVE_MINUTES = 5 * 60_000;
 
 /** A stretch of time cut into equal steps; every chart on the tab shares one, so a single cursor lines them up. */
 export type TimeWindow = { readonly from: number; readonly to: number; readonly stepMs: number };
 
-/** Each range's step matches its series: a 5-minute probe, an hour, 6 hours. */
-const RANGE_STEP_MS = { "24h": FIVE_MINUTES, "7d": HOUR_MS, "90d": 6 * HOUR_MS } satisfies Record<UptimeRange, number>;
+const STEPS_MS = [MINUTE_MS, 5 * MINUTE_MS, 15 * MINUTE_MS, 30 * MINUTE_MS, HOUR_MS, 3 * HOUR_MS, 6 * HOUR_MS, 12 * HOUR_MS, DAY_MS];
 
-export const rangeWindow = (to: number, range: UptimeRange): TimeWindow =>
-  ({ from: to - UPTIME_RANGE_MS[range], to, stepMs: RANGE_STEP_MS[range] });
+/** The first round step of at least `ms`, or whole days past the last. */
+const roundStep = (ms: number) => STEPS_MS.find((step) => step >= ms) ?? Math.ceil(ms / DAY_MS) * DAY_MS;
 
-/** The shortest range that reaches back to `from`, so a zoom reads the finest series that covers it. */
-export const rangeCovering = (from: number, to: number): UptimeRange =>
-  UPTIME_RANGES.find((range) => to - UPTIME_RANGE_MS[range] <= from) ?? "90d";
+/** The finest step each source's points fill: a probe interval, an hour, 6 hours. */
+const SOURCE_STEP_MS = { raw: 0, hourly: HOUR_MS, sixHourly: 6 * HOUR_MS } satisfies Record<PointSource, number>;
+
+/**
+ * `window` cut into at most 288 round steps, never finer than the points the server reads for it fill, or the line would
+ * break between them.
+ */
+export function chartWindow(window: RangeWindow, now: number, intervalMs: number): TimeWindow {
+  const source = pointSource(window, now);
+  const floor = source === "raw" ? intervalMs : SOURCE_STEP_MS[source];
+  return { ...window, stepMs: roundStep(Math.max(floor, (window.to - window.from) / 288)) };
+}
 
 /** An incident's span; an open one runs to `to`. */
 export const incidentSpan = (incident: UptimeIncidentEntry, to: number) =>
   ({ from: Date.parse(incident.openedAt), to: incident.closedAt === null ? to : Date.parse(incident.closedAt) });
 
-/**
- * The window a zoomed incident shows: five times its length, at least three hours and 24 steps, centred on it and never
- * past `to`. Its steps are never finer than the series `rangeCovering` reads for it, or the line would break between points.
- * When no range reaches back that far, it fits inside the 90 days, as close to the incident as it gets.
- */
-export function incidentWindow(incident: UptimeIncidentEntry, to: number): TimeWindow {
-  const span = incidentSpan(incident, to);
-  const windowFor = (range: UptimeRange, maxLength = Infinity): TimeWindow => {
-    const base = RANGE_STEP_MS[range];
-    const length = Math.min(maxLength, Math.max(3 * HOUR_MS, (span.to - span.from) * 5, 24 * base));
-    const stepMs = Math.ceil(length / 144 / base) * base;
-    const end = Math.min(to, Math.ceil(((span.from + span.to) / 2 + length / 2) / stepMs) * stepMs);
-    return { from: end - length, to: end, stepMs };
-  };
-  const covered = UPTIME_RANGES.find((range) => to - UPTIME_RANGE_MS[range] <= windowFor(range).from);
-  if (covered) return windowFor(covered);
-  const window = windowFor("90d", UPTIME_RANGE_MS["90d"]);
-  const from = Math.max(window.from, to - UPTIME_RANGE_MS["90d"]);
-  return { ...window, from, to: from + window.to - window.from };
+/** The window a zoomed incident shows: five times its length and at least three hours, centred on it and never past `now`. */
+export function incidentRange(incident: UptimeIncidentEntry, now: number): RangeWindow {
+  const span = incidentSpan(incident, now);
+  const length = Math.max(3 * HOUR_MS, (span.to - span.from) * 5);
+  const to = Math.min(now, Math.ceil((span.from + span.to + length) / 2 / MINUTE_MS) * MINUTE_MS);
+  return { from: to - length, to };
 }
 
-/** The start of each step in a window. */
+/**
+ * The step a time falls in. The first step starts at `from`, so a range's partial first step is not lost, and a time at
+ * `to` falls in the last step, since reads include it.
+ */
+const stepAt = (window: TimeWindow, at: number) =>
+  Math.max(window.from, Math.floor(Math.min(at, window.to - 1) / window.stepMs) * window.stepMs);
+
+/** The start of each step in a window: `from`, then each round step after it. */
 export function steps(window: TimeWindow): number[] {
   const first = Math.ceil(window.from / window.stepMs) * window.stepMs;
-  return Array.from({ length: Math.max(0, Math.ceil((window.to - first) / window.stepMs)) }, (_, index) => first + index * window.stepMs);
+  const round = Array.from({ length: Math.max(0, Math.ceil((window.to - first) / window.stepMs)) }, (_, index) => first + index * window.stepMs);
+  return first > window.from && window.from < window.to ? [window.from, ...round] : round;
 }
 
 /** Response time at each step: the mean of every region's points in it. Null where none passed, so the line breaks. */
@@ -106,7 +108,7 @@ export function checkSeries(points: readonly UptimePoint[], window: TimeWindow):
   const buckets = new Map<number, { count: number; sum: number }>();
   for (const point of points) {
     if (point.ms === null) continue;
-    const step = Math.floor(Date.parse(point.at) / window.stepMs) * window.stepMs;
+    const step = stepAt(window, Date.parse(point.at));
     const bucket = buckets.get(step) ?? { count: 0, sum: 0 };
     buckets.set(step, { count: bucket.count + 1, sum: bucket.sum + point.ms });
   }
@@ -116,24 +118,45 @@ export function checkSeries(points: readonly UptimePoint[], window: TimeWindow):
   });
 }
 
-/** Each range's history bar: an hour, 4 hours, a UTC day. */
-const BAR_MS = { "24h": HOUR_MS, "7d": 4 * HOUR_MS, "90d": DAY_MS } satisfies Record<UptimeRange, number>;
+/**
+ * One bar of the history strip: a check result, or a span of time. `tone` is red for a failed result or a span an
+ * incident touched, green for a passed result or a checked span, grey otherwise.
+ */
+export type HistoryBar = {
+  readonly start: number;
+  /** When the bar's span ends; a result's bar ends where it starts. */
+  readonly end: number;
+  readonly tone: "up" | "down" | "none";
+  readonly result: UptimeCheckResult | null;
+  readonly incidents: readonly UptimeIncidentEntry[];
+};
 
-export const barCount = (range: UptimeRange) => UPTIME_RANGE_MS[range] / BAR_MS[range];
+/** A span bar is at least 5 minutes and the strip at most 90 of them. */
+export const barMs = (window: RangeWindow) => roundStep(Math.max(5 * MINUTE_MS, (window.to - window.from) / 90));
 
-/** One bar of the history strip: the incidents that touched it, and whether the check ran in it. */
-export type HistoryBar = { readonly start: number; readonly incidents: readonly UptimeIncidentEntry[]; readonly checked: boolean };
-
-/** `range` up to `to` in bars, oldest first. A bar is checked when a point or an incident falls in it. */
-export function historyBars(range: UptimeRange, to: number, uptime: Pick<ServiceUptime, "points" | "incidents"> | null): HistoryBar[] {
-  const stepMs = BAR_MS[range];
-  const probed = new Set(uptime?.points.map((point) => Math.floor(Date.parse(point.at) / stepMs) * stepMs));
-  return steps({ from: to - UPTIME_RANGE_MS[range], to, stepMs }).map((start) => {
-    const incidents = (uptime?.incidents ?? []).filter((incident) => {
-      const span = incidentSpan(incident, to);
-      return span.from < start + stepMs && span.to > start;
+/**
+ * The check window as bars, oldest first: one per result when the server sent them, else spans of `barMs`. A span is
+ * checked when a point or an incident falls in it.
+ */
+export function historyBars(window: RangeWindow, uptime: Pick<ServiceUptime, "points" | "checks" | "incidents"> | null): HistoryBar[] {
+  const spans = (uptime?.incidents ?? []).map((incident) => ({ incident, ...incidentSpan(incident, window.to) }));
+  const touching = (overlaps: (span: { from: number; to: number }) => boolean) =>
+    spans.flatMap((span) => overlaps(span) ? [span.incident] : []);
+  if (uptime?.checks?.length) {
+    return uptime.checks.map((result) => {
+      const at = Date.parse(result.at);
+      const tone = result.verdict === "pass" ? "up" : result.verdict === "fail" ? "down" : "none";
+      return { start: at, end: at, tone, result, incidents: touching((span) => span.from <= at && span.to >= at) };
     });
-    return { start, incidents, checked: probed.has(start) || incidents.length > 0 };
+  }
+  const spanned = { ...window, stepMs: barMs(window) };
+  const probed = new Set(uptime?.points.map((point) => stepAt(spanned, Date.parse(point.at))));
+  const starts = steps(spanned);
+  return starts.map((start, index) => {
+    const end = starts[index + 1] ?? window.to;
+    const touched = touching((span) => span.from < end && span.to > start);
+    const tone = touched.length > 0 ? "down" : probed.has(start) ? "up" : "none";
+    return { start, end, tone, result: null, incidents: touched };
   });
 }
 
