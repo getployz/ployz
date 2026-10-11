@@ -741,6 +741,8 @@ fn an_agent_creates_and_edits_an_image_service() {
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
             12
         );
+        // Read beside a Service, its domains show even when it has none.
+        assert_eq!(got.get("domains"), Some(&json!([])));
         assert_eq!(
             got.pointer("/settings/8"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
@@ -760,6 +762,7 @@ fn an_agent_creates_and_edits_an_image_service() {
         ok(store, &["unset", "web.replicas"]);
         let got = ok(store, &["get", "web.replicas"]);
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
+        assert_eq!(got.get("domains"), None);
 
         // Healthcheck and Private DNS set and unset like any Setting.
         let value = |path: &str| ok(store, &["get", path])["settings"][0]["value"].clone();

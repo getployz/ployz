@@ -119,19 +119,23 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             .map(|view| view.domains)
     };
     let (domains, every) = match raw.map(|raw| NodeName::parse(raw)) {
-        None => (domains(None)?, all),
-        Some(Ok(NodeName::Service(service))) => (domains(Some(service))?, true),
-        Some(_) => (Vec::new(), false),
+        None => (Some(domains(None)?), all),
+        Some(Ok(NodeName::Service(service))) => (Some(domains(Some(service))?), true),
+        Some(_) => (None, false),
     };
     let view = store.read(&EnvironmentQuery {
         environment,
         path,
         all,
     })?;
-    let lines = got(&view.settings, &domains, every);
+    let lines = got(
+        &view.settings,
+        domains.as_deref().unwrap_or_default(),
+        every,
+    );
     let got = Got {
         view: &view,
-        domains: &domains,
+        domains: domains.as_deref(),
     };
     crate::ui::finish(&got, || {
         if view.settings.is_empty() {
@@ -146,13 +150,14 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// `get`'s result: the Settings read, and the domains of the Services it covers.
+/// `get`'s result: the Settings read, and the domains of the Services it covers;
+/// none when it read one Setting.
 #[derive(Serialize)]
 struct Got<'view> {
     #[serde(flatten)]
     view: &'view EnvironmentView,
-    #[serde(skip_serializing_if = "<[_]>::is_empty")]
-    domains: &'view [DomainRow],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domains: Option<&'view [DomainRow]>,
 }
 
 /// Each Service's Settings, then its `SERVICE.domains` line. With `every`, a
