@@ -28,7 +28,9 @@ use std::{
 use nix::fcntl::OFlag;
 use ployz_core::{
     QualifiedService, ServiceId,
-    metrics::{HostPoint, MetricPoints, MetricRange, MetricSample, MetricScope, ServicePoint},
+    metrics::{
+        HostPoint, MetricMarker, MetricPoints, MetricRange, MetricSample, MetricScope, ServicePoint,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +54,7 @@ type DeploymentKey = (ServiceId, QualifiedService, Option<String>);
 pub enum Row {
     Service(DeploymentPoint),
     Host(HostPoint),
+    Marker(MetricMarker),
 }
 
 /// Every container of one Deployment of a Service, summed over 5 minutes.
@@ -69,6 +72,7 @@ impl Stamped for Row {
         match self {
             Self::Service(service) => service.point.ts,
             Self::Host(point) => point.ts,
+            Self::Marker(marker) => marker.ts,
         }
     }
 }
@@ -151,6 +155,7 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
         ..range
     };
     let mut hosts = Vec::new();
+    let mut markers = Vec::new();
     let mut services: BTreeMap<DeploymentKey, Vec<MetricSample>> = BTreeMap::new();
     segment::scan(&store.raw_metrics(), lead_in, |row| match row {
         segment::Row::Host(sample) => hosts.push(sample),
@@ -160,6 +165,11 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
                     .entry((service_id, service, sample.deployment_id.clone()))
                     .or_default()
                     .push(sample);
+            }
+        }
+        segment::Row::Marker(marker) => {
+            if marker.ts >= range.since_nanos {
+                markers.push(marker);
             }
         }
     })?;
@@ -181,6 +191,7 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
             }));
         }
     }
+    rows.extend(markers.into_iter().map(Row::Marker));
     write_rollup(store, hour, &rows)
 }
 
@@ -243,12 +254,14 @@ mod tests {
     use ployz_core::{
         ContainerId, MachineId, QualifiedService, ServiceId,
         metrics::{
-            CpuJiffies, HostMemory, HostSample, InterfaceBytes, MetricRange, MetricSample,
-            MetricScope,
+            CpuJiffies, HostMemory, HostSample, InterfaceBytes, MarkerKind, MetricMarker,
+            MetricRange, MetricSample, MetricScope,
         },
     };
 
-    use super::{DeploymentPoint, Rolled, STEP_NANOS, fold_hour, fold_pending, read};
+    use super::{
+        self as rollup, DeploymentPoint, Rolled, STEP_NANOS, fold_hour, fold_pending, read,
+    };
     use crate::{
         observe::{
             layout::{SegmentName, StoreRoot},
@@ -432,6 +445,45 @@ mod tests {
         let mut want = vec![Some(2_000_000.0); 4];
         want.extend([Some(1_000_000.0); 8]);
         assert_eq!(cpu, want);
+    }
+
+    #[test]
+    fn markers_of_the_hour_outlive_its_raw_rows() {
+        let (_dir, store) = store();
+        let marker = |ts: i64, kind: MarkerKind| MetricMarker {
+            machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+            container_id: ContainerId::parse("1".repeat(64)).unwrap(),
+            service_id: service(1),
+            namespace: Some("prod".into()),
+            deployment_id: Some(deployment(1)),
+            replica: "cache-1".into(),
+            ts,
+            kind,
+        };
+        let before = marker(T0 - SEC, MarkerKind::Oom);
+        let oom = marker(T0 + 600 * SEC, MarkerKind::Oom);
+        let exit = marker(
+            T0 + 600 * SEC + 1,
+            MarkerKind::Exit {
+                exit_code: Some(137),
+            },
+        );
+        let rows: Vec<Row> = [&before, &oom, &exit]
+            .into_iter()
+            .map(|m| Row::Marker(m.clone()))
+            .collect();
+        segment::append(&store, &rows).unwrap();
+        fold_hour(&store, hour(T0)).unwrap();
+        fs::remove_dir_all(store.raw_metrics()).unwrap();
+
+        let mut kept = Vec::new();
+        segment::scan(&store.rollup_metrics(), all(), |row| {
+            if let rollup::Row::Marker(m) = row {
+                kept.push(m);
+            }
+        })
+        .unwrap();
+        assert_eq!(kept, vec![oom, exit]);
     }
 
     #[test]
