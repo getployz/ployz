@@ -60,6 +60,10 @@ ployz set web.env.API_URL --rename PUBLIC_API_URL --update-references
 Without it, Ployz refuses to rename a referenced variable, lists the variables that use it, and
 prints the command to run with `--update-references`. Nothing changes until you run it.
 
+The [Ployz agent](../account/agent-sidebar.md) and `ployz mcp` can rename a referenced variable
+too. Ask them to rename it, and they update its references in the same change. Like any rename,
+it's staged until you deploy.
+
 Only references in this environment's variables switch. Text that only looks like a reference,
 such as an escaped `$${{ web.API_URL }}` or a sealed value, stays as it is. A Config file that
 references the variable still blocks the rename: change that file first.
