@@ -10,6 +10,7 @@ This file tracks the latest Ployz release. The installed CLI is the source of tr
 - `ployz --help` and `ployz COMMAND --help` list the commands and their flags.
 - `ployz schema --json` lists every command and Setting.
 - `ployz explain SERVICE.SETTING` describes one Setting, with an example.
+- `ployz mcp` serves the same Cloud commands as MCP tools. Register it with `claude mcp add -s user ployz -- ployz mcp` or `codex mcp add ployz -- ployz mcp`. A tool marked destructive can remove something live; confirm with the user first.
 
 ## Where commands act
 

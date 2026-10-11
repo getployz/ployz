@@ -1,5 +1,6 @@
 //! Cloud enrollment behind `ployz server add`, and `ployz cloud reset`.
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use std::{future::Future, time::Duration};
 
 use clap::{ArgMatches, Command};
@@ -717,9 +718,9 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "reset" => reset,
+        "reset" => cloud(Always, reset),
         _ => return None,
     })
 }

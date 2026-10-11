@@ -1,14 +1,14 @@
 //! `ployz schema` and `ployz explain`: the command tree and the settings catalog,
 //! which need no Store, and completion of Setting paths.
 
-use clap::{ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use ployz_store::EnvironmentQuery;
 use ployz_store::catalog::{self, Explained};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{Error, leaf_matches};
+use super::{Error, Handler, leaf_matches};
 use crate::cli::positional;
 use crate::ui::{self, Fields};
 
@@ -52,6 +52,60 @@ pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+/// Whether a call can destroy something live, and so whether it needs approval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Approval {
+    /// A read, or an edit that only stages Working State.
+    Never,
+    /// Destroys a live thing at once.
+    Always,
+    /// Destroys whatever the plan it approves destroys.
+    Depends,
+}
+
+/// Where a command can run: against Cloud, only on this device, or only inside Ployz.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Surface {
+    Cloud,
+    Local,
+    Internal,
+}
+
+/// A command's handler with its classification. Building one names both, so a new
+/// command cannot be added unclassified.
+#[derive(Clone, Copy)]
+pub(crate) struct Runnable {
+    pub run: Handler,
+    pub approval: Approval,
+    pub surface: Surface,
+}
+
+pub(crate) const fn cloud(approval: Approval, run: Handler) -> Runnable {
+    Runnable {
+        run,
+        approval,
+        surface: Surface::Cloud,
+    }
+}
+
+pub(crate) const fn local(approval: Approval, run: Handler) -> Runnable {
+    Runnable {
+        run,
+        approval,
+        surface: Surface::Local,
+    }
+}
+
+pub(crate) const fn internal(approval: Approval, run: Handler) -> Runnable {
+    Runnable {
+        run,
+        approval,
+        surface: Surface::Internal,
+    }
+}
+
 /// One runnable command, read from the command tree itself.
 #[derive(Serialize)]
 pub(crate) struct CommandEntry {
@@ -59,69 +113,228 @@ pub(crate) struct CommandEntry {
     pub about: String,
     /// Whether it prints a `--json` result.
     pub json: bool,
+    pub approval: Approval,
+    pub surface: Surface,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keeps_running: bool,
     pub args: Vec<ArgEntry>,
 }
 
 /// One argument: `--flag` or a positional `NAME`.
 #[derive(Serialize)]
 pub(crate) struct ArgEntry {
-    name: String,
-    required: bool,
+    pub name: String,
+    pub required: bool,
     /// Whether it takes a value; a flag without one is a switch.
-    value: bool,
+    pub value: bool,
+    #[serde(rename = "type")]
+    pub kind: ArgType,
+    pub multiple: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    help: Option<String>,
+    pub default: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short: Option<char>,
+    /// A positional's place, from 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    /// Takes every remaining word, `--flags` included.
+    pub trailing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    values: Vec<String>,
+    pub values: Vec<String>,
+    /// Arguments it cannot be given with.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<Stdin>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub keeps_running: bool,
 }
 
-/// Every visible leaf command in path order, with its own arguments; the global
-/// connection flags every command shares are left out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Stdin {
+    Only,
+    OnDash,
+    IfAbsent,
+}
+
+const STDIN: [(&str, &str, Stdin); 6] = [
+    ("config put", "--from", Stdin::IfAbsent),
+    ("env sync", "--value", Stdin::Only),
+    ("set", "--at-merge", Stdin::Only),
+    ("set", "--from-env-file", Stdin::OnDash),
+    ("set", "--patch", Stdin::OnDash),
+    ("set", "--secret", Stdin::Only),
+];
+
+const KEEPS_RUNNING_ARGS: [(&str, &str); 9] = [
+    ("github connect", "--wait"),
+    ("logs", "--follow"),
+    ("server add", "--wait"),
+    ("server logs", "--follow"),
+    ("volume mirror", "--wait"),
+    ("volume mirror rm", "--wait"),
+    ("volume move", "--wait"),
+    ("volume release", "--wait"),
+    ("volume sync", "--wait"),
+];
+
+const KEEPS_RUNNING_COMMANDS: [&str; 1] = ["service port-forward"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ArgType {
+    Boolean,
+    Integer,
+    String,
+}
+
+/// Every visible command with a handler, in path order, with its own arguments; the
+/// global connection flags every command shares are left out.
 pub(crate) fn commands() -> Vec<CommandEntry> {
     fn walk(command: &Command, parent: &str, out: &mut Vec<CommandEntry>) {
         for child in command
             .get_subcommands()
-            .filter(|child| !child.is_hide_set())
+            .filter(|child| !child.is_hide_set() && child.get_name() != "help")
         {
             let path = format!("{parent}{}", child.get_name());
-            if child.has_subcommands() {
-                walk(child, &format!("{path} "), out);
-                continue;
+            if let Some(runnable) = super::handler_for(&path) {
+                out.push(CommandEntry {
+                    json: !super::json_refused(&path),
+                    about: child
+                        .get_about()
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
+                    approval: runnable.approval,
+                    surface: runnable.surface,
+                    keeps_running: KEEPS_RUNNING_COMMANDS.contains(&path.as_str()),
+                    args: args(&path, child),
+                    command: path.clone(),
+                });
             }
-            let args = child
-                .get_arguments()
-                .filter(|arg| !arg.is_global_set() && !arg.is_hide_set())
-                .map(|arg| ArgEntry {
-                    name: arg.get_long().map_or_else(
-                        || arg.get_id().as_str().to_uppercase(),
-                        |long| format!("--{long}"),
-                    ),
-                    required: arg.is_required_set(),
-                    value: arg.get_action().takes_values(),
-                    help: arg.get_help().map(ToString::to_string),
-                    values: arg
-                        .get_possible_values()
-                        .iter()
-                        .filter(|value| !value.is_hide_set())
-                        .map(|value| value.get_name().to_owned())
-                        .collect(),
-                })
-                .collect();
-            out.push(CommandEntry {
-                json: super::handler_for(&path).is_some() && !super::json_refused(&path),
-                about: child
-                    .get_about()
-                    .map(ToString::to_string)
-                    .unwrap_or_default(),
-                command: path,
-                args,
-            });
+            walk(child, &format!("{path} "), out);
         }
     }
+    let mut root = crate::cli::command();
+    root.build();
     let mut out = Vec::new();
-    walk(&crate::cli::command(), "", &mut out);
+    walk(&root, "", &mut out);
     out.sort_by(|a, b| a.command.cmp(&b.command));
     out
+}
+
+/// The catalog the SDK ships, as `ployz-sdk/generated/commands.json` holds it.
+#[must_use]
+pub fn commands_json() -> String {
+    let json = serde_json::to_string_pretty(&commands()).expect("the catalog serializes");
+    format!("{json}\n")
+}
+
+fn args(path: &str, command: &Command) -> Vec<ArgEntry> {
+    let visible = |arg: &&Arg| {
+        !arg.is_global_set()
+            && !arg.is_hide_set()
+            && !matches!(
+                arg.get_action(),
+                ArgAction::Help | ArgAction::HelpShort | ArgAction::HelpLong | ArgAction::Version
+            )
+    };
+    let name = |arg: &Arg| {
+        arg.get_long().map_or_else(
+            || arg.get_id().as_str().to_uppercase(),
+            |long| format!("--{long}"),
+        )
+    };
+    let mut entries: Vec<ArgEntry> = command
+        .get_arguments()
+        .filter(visible)
+        .map(|arg| {
+            let value = arg.get_action().takes_values();
+            let own = name(arg);
+            ArgEntry {
+                stdin: STDIN
+                    .iter()
+                    .find(|(command, arg, _)| *command == path && *arg == own)
+                    .map(|(_, _, stdin)| *stdin),
+                keeps_running: KEEPS_RUNNING_ARGS.contains(&(path, own.as_str())),
+                name: own,
+                required: arg.is_required_set(),
+                value,
+                kind: arg_type(arg),
+                multiple: value
+                    && (matches!(arg.get_action(), ArgAction::Append)
+                        || arg.get_num_args().is_some_and(|n| n.max_values() > 1)),
+                default: value
+                    .then(|| arg.get_default_values().first())
+                    .flatten()
+                    .map(|default| default.to_string_lossy().into_owned()),
+                short: arg.get_short(),
+                index: arg.get_index(),
+                trailing: arg.is_trailing_var_arg_set(),
+                help: arg.get_help().map(ToString::to_string),
+                values: arg
+                    .get_possible_values()
+                    .iter()
+                    .filter(|value| !value.is_hide_set())
+                    .map(|value| value.get_name().to_owned())
+                    .collect(),
+                conflicts: command
+                    .get_arg_conflicts_with(arg)
+                    .into_iter()
+                    .filter(visible)
+                    .map(name)
+                    .collect(),
+            }
+        })
+        .collect();
+    // clap records a conflict on one side; either side refuses the other.
+    let pairs: Vec<(String, String)> = entries
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .conflicts
+                .iter()
+                .map(|other| (other.clone(), entry.name.clone()))
+        })
+        .collect();
+    for (of, with) in pairs {
+        if let Some(entry) = entries.iter_mut().find(|entry| entry.name == of)
+            && !entry.conflicts.contains(&with)
+        {
+            entry.conflicts.push(with);
+        }
+    }
+    entries
+}
+
+fn arg_type(arg: &Arg) -> ArgType {
+    use std::any::TypeId;
+    if !arg.get_action().takes_values() {
+        return if matches!(arg.get_action(), ArgAction::Count) {
+            ArgType::Integer
+        } else {
+            ArgType::Boolean
+        };
+    }
+    let parser = arg.get_value_parser().type_id();
+    let integers = [
+        TypeId::of::<u8>(),
+        TypeId::of::<u16>(),
+        TypeId::of::<u32>(),
+        TypeId::of::<u64>(),
+        TypeId::of::<usize>(),
+        TypeId::of::<i32>(),
+        TypeId::of::<i64>(),
+    ];
+    if parser == TypeId::of::<bool>() {
+        ArgType::Boolean
+    } else if integers.iter().any(|id| parser == *id) {
+        ArgType::Integer
+    } else {
+        ArgType::String
+    }
 }
 
 /// One Setting with a command that sets it.
@@ -253,6 +466,75 @@ fn stored_paths() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_that_asks_for_confirmation_is_not_never() {
+        let confirming = commands()
+            .into_iter()
+            .filter(|entry| {
+                entry.args.iter().any(|arg| {
+                    matches!(
+                        arg.name.as_str(),
+                        "--confirm" | "--yes" | "--accept-volume-loss"
+                    )
+                })
+            })
+            .filter(|entry| entry.approval == Approval::Never)
+            .map(|entry| entry.command)
+            .collect::<Vec<_>>();
+        assert!(
+            confirming.is_empty(),
+            "these ask for confirmation but are classified Never: {confirming:?}"
+        );
+    }
+
+    #[test]
+    fn every_argument_that_reads_stdin_is_marked() {
+        let unmarked: Vec<String> = commands()
+            .into_iter()
+            .flat_map(|entry| {
+                entry
+                    .args
+                    .into_iter()
+                    .filter(|arg| {
+                        arg.stdin.is_none()
+                            && arg
+                                .help
+                                .as_deref()
+                                .is_some_and(|help| help.contains("stdin"))
+                    })
+                    .map(move |arg| format!("{} {}", entry.command, arg.name))
+            })
+            .collect();
+        assert!(
+            unmarked.is_empty(),
+            "these read stdin unmarked: {unmarked:?}"
+        );
+    }
+
+    #[test]
+    fn every_marked_argument_and_command_exists() {
+        let entries = commands();
+        let exists = |command: &str, arg: &str| {
+            entries
+                .iter()
+                .any(|entry| entry.command == command && entry.args.iter().any(|a| a.name == arg))
+        };
+        for (command, arg, _) in STDIN {
+            assert!(exists(command, arg), "{command} {arg}");
+        }
+        for (command, arg) in KEEPS_RUNNING_ARGS {
+            assert!(exists(command, arg), "{command} {arg}");
+        }
+        for command in KEEPS_RUNNING_COMMANDS {
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry.command == command && entry.keeps_running),
+                "{command}"
+            );
+        }
+    }
 
     #[test]
     fn a_variable_reads_as_its_alternatives() {

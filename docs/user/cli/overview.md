@@ -39,13 +39,46 @@ Paste this into your coding agent, such as Claude Code or Codex:
 Set me up for Ployz: https://ployz.sh/agent.md
 ```
 
-The agent installs the CLI and the Ployz skill, then signs you in: it gives you a link and a
-code, and you click **Approve**. Restart or reload the agent afterwards so it loads the skill.
+The agent installs the CLI and the Ployz skill, signs you in, and registers the Ployz MCP tools.
+To sign in, it gives you a link and a code, and you click **Approve**. Restart or reload the
+agent afterwards so it loads the skill and the tools.
 From then on you can ask it to deploy, add a database or read logs. The skill points the agent
 to `ployz --help` and `ployz schema --json` for every command and setting.
 
 To set it up by hand, follow the steps in [ployz.sh/agent.md](https://ployz.sh/agent.md)
 yourself. Run step 2 again to update the skill.
+
+### Give the agent Ployz tools
+
+`ployz mcp` serves the Cloud commands to your agent as MCP tools. The setup prompt above
+registers it. To add it by hand for every project:
+
+```sh
+claude mcp add -s user ployz -- ployz mcp
+```
+
+For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
+`--json`, signed in as you, and returns its one result. Tools that can remove something live,
+such as `deploy` and `server rm`, are marked destructive. Whether the agent asks you before it
+runs one depends on the agent's own permission settings.
+
+Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
+Servers are added with `ployz server add` from a terminal, not through MCP, because it installs
+Ployz over SSH or on this computer. `exec` is interactive, and `service port-forward` stays open
+until you stop it. Run these yourself. The tools also leave out the arguments that read stdin
+and the ones that keep a command waiting, such as `logs --follow` and `volume sync --wait`.
+
+New secrets can't be added through MCP. `set SERVICE --from-env-file PATH` does replace the
+values of secrets the service already has, and they stay secret. To add a secret, run
+`ployz set web.env.KEY --secret` yourself.
+
+A tool call that runs for more than 30 minutes is stopped, along with the processes it started
+on this computer, except a process that detaches into a session of its own. Calls still running
+when the agent closes `ployz mcp` stop the same way. A deployment or volume run a call started
+keeps going in Cloud, and the tool's error names the command that shows where it stands, such as
+`ployz status`. When `ployz mcp` reaches Servers over SSH, through an SSH context or
+`--connect ssh://`, the shared SSH connection is one such process: it stays open for up to 10
+idle minutes so the next command reuses it.
 
 ## Deploy a directory
 

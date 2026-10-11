@@ -58,6 +58,7 @@ pub fn command() -> Command {
         .subcommand(handlers::login::login_command())
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::operator::logs_command())
+        .subcommand(handlers::mcp::command())
         .subcommand(handlers::account::org_command())
         .subcommand(handlers::server::command())
         .subcommand(handlers::service::command())
