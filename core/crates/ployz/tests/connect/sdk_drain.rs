@@ -101,3 +101,60 @@ async fn an_empty_owned_scope_turns_the_role_off_and_touches_nothing() {
         .unwrap_err();
     assert_eq!(closed.code, RpcErrorCode::Unavailable);
 }
+
+#[tokio::test]
+async fn a_services_scope_leaves_an_unlisted_service_in_place() {
+    let description = super::sdk::advertised_description();
+    let mut cordoned = machine('a', "one");
+    cordoned.machine.accepts_services = false;
+    let session = UnixSession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.machines = vec![cordoned];
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .extend([('c', "api"), ('d', "web")].map(|(hex, name)| {
+            super::listing_container(
+                hex,
+                hex,
+                name,
+                ContainerKind::ServiceContainer,
+                ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                },
+            )
+        }));
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = timeout(
+        Duration::from_secs(5),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
+    )
+    .await
+    .expect("connect must not hang")
+    .unwrap();
+
+    let api = QualifiedService::parse("app/api").unwrap();
+    let web = QualifiedService::parse("app/web").unwrap();
+    let report = client
+        .drain_machine(
+            "one",
+            &DrainScope::Services {
+                services: vec![api.clone()],
+            },
+        )
+        .await
+        .unwrap();
+    let [entry] = report.services.as_slice() else {
+        panic!("only the listed Service is handled: {report:?}");
+    };
+    assert_eq!(entry.service, api);
+    assert_eq!(
+        report.remaining,
+        Remaining::Observed {
+            services: vec![api, web.clone()],
+            unchosen: vec![web],
+        }
+    );
+    client.close().await;
+}

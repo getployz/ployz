@@ -10,6 +10,7 @@ pub use enrollment::*;
 mod host_config;
 mod log_level;
 mod machine_telemetry;
+pub mod metrics;
 pub mod namespace;
 mod ports;
 mod release;
