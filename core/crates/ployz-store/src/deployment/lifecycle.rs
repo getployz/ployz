@@ -111,7 +111,7 @@ pub(crate) fn forgettable(
     environment: &EnvironmentId,
     trusted: &crate::Trusted,
 ) -> Result<Option<Outcome>, RpcError> {
-    if crate::teardown::ran(tx, environment)?.is_none() {
+    if crate::removal::ran(tx, environment)?.is_none() {
         return Ok(Some(Outcome::NeverRan));
     }
     Ok(trusted.no_servers().then_some(Outcome::Forgotten))
@@ -207,7 +207,7 @@ pub(crate) fn retry(
     }
     if stored.summary.remove {
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
-        crate::teardown::guard_removal(tx, &environment)?;
+        crate::removal::guard_removal(tx, &environment)?;
     }
     let number = queue(tx, &stored.summary.environment_id)?;
     let admitted_at = now();

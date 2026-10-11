@@ -86,15 +86,17 @@ pub use pull_request::{
     PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
 };
 pub use query::*;
-pub use removal::{RemovedVolume, VolumeLoss, docker_volume};
+pub use removal::{
+    CancelRemoval, Due, DueQuery, Fix, Left, LeftStatus, Removal, RemovalCancelled, Remove,
+    RemovedVolume, Residual, VolumeLoss, Waiting, docker_volume,
+};
 pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
 pub use teardown::{
-    AppliedVolume, EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
-    OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
-    RemoveEnvironment, RemoveProject, SetDefaultEnvironment, Teardown,
+    AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
+    ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment,
 };
 pub use trusted::{Approval, Trusted, VolumeObservation};
 

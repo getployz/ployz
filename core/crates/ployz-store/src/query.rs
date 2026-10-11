@@ -217,6 +217,8 @@ queries! {
         => crate::teardown::environments(tx, who, q);
     /// The Organization's Projects.
     Projects(crate::ProjectsQuery) -> crate::ProjectsView => crate::teardown::projects(tx, who);
+    /// The Environments whose removal Deployment may be admitted now.
+    Due(crate::DueQuery) -> Vec<crate::Due> => crate::removal::due(tx, who);
     /// A Project's PR plans.
     PrPlans(crate::PrPlansQuery) -> crate::PrPlansView
         => crate::pull_request::plans(tx, who, q);

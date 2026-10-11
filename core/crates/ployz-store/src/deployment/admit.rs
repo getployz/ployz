@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::deployment::{self, DeploymentStatus, DeploymentSummary, UploadedSource};
+use crate::deployment::{self, DeploymentSummary, UploadedSource};
 use crate::domain;
 use crate::error;
 use crate::id::{DeploymentId, Hostname, VolumeName};
@@ -29,8 +29,10 @@ pub enum Admit {
     Deploy(Deploy),
     /// Ship again exactly what an ended Deployment froze.
     Retry(Retry),
-    /// Take an Environment off the Servers.
-    Remove(Removal),
+    /// Take an Environment off the Servers under the removal that names it.
+    Remove(AdmitRemoval),
+    /// Take an Environment off the Servers and keep it.
+    ShutDown(ShutDown),
 }
 
 impl Admit {
@@ -41,6 +43,7 @@ impl Admit {
             Self::Deploy(deploy) => &deploy.id,
             Self::Retry(retry) => &retry.id,
             Self::Remove(removal) => &removal.id,
+            Self::ShutDown(shut_down) => &shut_down.id,
         }
     }
 }
@@ -89,12 +92,21 @@ pub struct Retry {
     pub deployment: DeploymentId,
 }
 
-/// Remove an Environment from the Servers: ship it empty, deleting its deployed
-/// Volumes, without touching Working or Saved State. `RemoveEnvironment` then
-/// deletes it.
+/// Take an Environment off the Servers under the `remove` that marked it, or its
+/// Project: what that removal accepted is the consent, so nothing asks again.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct Removal {
+pub struct AdmitRemoval {
+    pub id: DeploymentId,
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+}
+
+/// Take an Environment off the Servers and keep it in the Store: ship it empty,
+/// deleting its deployed Volumes, without touching Working or Saved State.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ShutDown {
     pub id: DeploymentId,
     #[serde(default)]
     pub environment: EnvironmentRef,
@@ -102,16 +114,10 @@ pub struct Removal {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub version: Option<String>,
-    /// As [`Deploy::accept_volume_loss`].
+    /// As [`Deploy::accept_volume_loss`]. Naming any asks a human first.
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
-    /// Close a Branch: once this removal applied, the Store's sweep deletes it
-    /// without its admitter coming back. Ignored for an Environment that isn't a
-    /// Branch; a client that deletes it itself leaves it unset.
-    #[serde(default)]
-    #[ts(as = "Option<bool>", optional)]
-    pub close: bool,
 }
 
 /// Cancel a Deployment: a queued one never runs, and a running one stops.
@@ -149,7 +155,8 @@ pub(crate) fn admit(
             trusted.runnable()?;
             Ok(retried)
         }
-        Admit::Remove(removal) => self::removal(tx, who, removal, trusted),
+        Admit::Remove(removal) => crate::removal::admit(tx, who, removal, trusted),
+        Admit::ShutDown(shut_down) => crate::removal::shut_down(tx, who, shut_down, trusted),
         Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
     }
 }
@@ -235,6 +242,7 @@ fn deploy(
 ) -> Result<DeploymentSummary, RpcError> {
     trusted.runnable()?;
     let environment = scope::lock(tx, who, &admit.environment)?;
+    crate::removal::marked(tx, &environment)?;
     // Cloud reserves the Cluster Domain before admitting a generated domain.
     let cluster_domain = trusted
         .domains
@@ -297,71 +305,3 @@ fn deploy(
     )
 }
 
-/// Queue the Deployment that removes an Environment from the Servers: the empty
-/// Environment against everything Applied State holds, under the same destructive
-/// review as any Deploy. A running Deployment must end first, so the removal's
-/// targets are everything that ran. When nothing of it ever ran, or no Server is
-/// left, it applies at once ([`deployment::forgettable`]): no runner, no review.
-fn removal(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    admit: &Removal,
-    trusted: &Trusted,
-) -> Result<DeploymentSummary, RpcError> {
-    let environment = scope::lock(tx, who, &admit.environment)?;
-    crate::teardown::guard_removal(tx, &environment)?;
-    let id = &environment.summary.id;
-    if let Some(running) = deployment::in_flight(tx, id)?.filter(|deployment| {
-        matches!(
-            deployment.status,
-            DeploymentStatus::Running | DeploymentStatus::Cancelling
-        )
-    }) {
-        return Err(error::conflict(
-            format!(
-                "Deployment #{} is running: wait for it or cancel it before removing {}",
-                running.number, environment.summary.name
-            ),
-            json!({ "deployment": running.id }),
-        ));
-    }
-    let forget = deployment::forgettable(tx, id, trusted)?;
-    let review = review::review(tx, &environment)?;
-    review::check(&review, admit.version.as_deref())?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let empty = crate::scope::empty(&environment.working.environment_slug);
-    let losses = match forget {
-        Some(_) => Vec::new(),
-        None => review::destructive(
-            who,
-            &review,
-            (&empty, &namespace, review::Shipping::Deploy(&[])),
-            (admit.version.as_deref(), &admit.accept_volume_loss),
-            trusted.volumes.as_ref(),
-        )?,
-    };
-    let frozen = deployment::freeze(
-        id,
-        &empty,
-        &review.head.applied,
-        &[],
-        namespace,
-        None,
-        &losses,
-    )?;
-    let admitted = deployment::admit(
-        tx,
-        who,
-        (&admit.id, &[], None, None),
-        id,
-        deployment::NOTHING,
-        &frozen,
-    )?;
-    if admit.close {
-        crate::pull_request::mark_closing(tx, id)?;
-    }
-    if let Some(outcome) = forget {
-        return deployment::forget(tx, &admitted.id, outcome);
-    }
-    Ok(admitted)
-}

@@ -8,11 +8,11 @@
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, AuthorizedRepository, Automated, BranchHead, Change, CreateBranch,
+    Actor, Admit, AdmitRemoval, CancelRemoval, DueQuery, AuthorizedRepository, Automated, BranchHead, Change, CreateBranch,
     CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DeploymentStatus, Edit,
     EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery, OrganizationId,
-    PrPlansQuery, ProjectId, ProjectName, PullRequest, PullRequestQuery, Removal, RunEvidence,
-    RunnerId, ServiceLineageId, SetPrPlan, SettingPath, SetupCommand, Sweep, SystemEvent, Trusted,
+    PrPlansQuery, ProjectId, ProjectName, PullRequest, PullRequestQuery, RunEvidence,
+    RunnerId, ServiceLineageId, SetPrPlan, SettingPath, SetupCommand, ShutDown, Sweep, SystemEvent, Trusted,
     Written,
 };
 use serde_json::json;
@@ -211,17 +211,33 @@ fn run(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {
         .unwrap();
 }
 
+/// Admit the removal Deployment the Store's close marked `environment` for, as Cloud does.
 fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
     let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
     store
         .write_trusted(
             who,
-            &Admit::Remove(Removal {
+            &Admit::Remove(AdmitRemoval {
+                id: id.clone(),
+                environment: at(environment),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    id
+}
+
+/// Take `environment` off the Servers and keep it.
+fn shut_down(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
+    let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            who,
+            &Admit::ShutDown(ShutDown {
                 id: id.clone(),
                 environment: at(environment),
                 version: None,
                 accept_volume_loss: Vec::new(),
-                close: false,
             }),
             &Trusted::default(),
         )
@@ -502,6 +518,41 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
 }
 
 #[test]
+fn a_cancelled_close_stays_cancelled_until_the_pull_request_reopens() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    assert_eq!(
+        pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"))
+            .closing
+            .len(),
+        1
+    );
+    store
+        .write(
+            &who,
+            &CancelRemoval {
+                project: ProjectName::parse("shop").unwrap(),
+                environment: Some(EnvironmentName::parse("pr-5").unwrap()),
+            },
+        )
+        .unwrap();
+
+    // Neither a repeated close nor the idle close brings the removal back.
+    let again = pull(&store, &who, facts(false, "2026-09-29T12:00:00Z"));
+    assert!(again.closing.is_empty(), "{again:?}");
+    let idle = sweep(&store, &who, now() + 8 * DAY);
+    assert!(idle.closing.is_empty(), "{idle:?}");
+    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
+
+    // Reopened and closed again, it goes.
+    pull(&store, &who, facts(true, "2026-09-29T13:00:00Z"));
+    let closed = pull(&store, &who, facts(false, "2026-09-29T14:00:00Z"));
+    assert_eq!(closed.closing.len(), 1, "{closed:?}");
+}
+
+#[test]
 fn a_kept_open_pull_request_stays_and_a_push_brings_a_shut_down_one_back() {
     let (store, who) = shop();
     plan(
@@ -516,8 +567,12 @@ fn a_kept_open_pull_request_stays_and_a_push_brings_a_shut_down_one_back() {
     run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
     // Shut down: removed from the Servers, every row kept; a push turns it back on,
     // all of it.
-    let off = remove(&store, &who, "pr-5");
+    let off = shut_down(&store, &who, "pr-5");
     run(&store, &off, &[]);
+    assert!(
+        store.read(&who, &DueQuery {}).unwrap().is_empty(),
+        "a shutdown marks nothing"
+    );
     let pushed = observe(
         &store,
         &who,

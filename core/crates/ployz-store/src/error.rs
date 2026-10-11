@@ -121,3 +121,7 @@ pub(crate) fn approval_required(message: impl Into<String>, details: Value) -> R
 pub(crate) fn unobserved(message: impl Into<String>, details: Value) -> RpcError {
     error(RpcErrorCode::Unavailable, message, details)
 }
+
+pub(crate) fn unsupported(message: impl Into<String>, details: Value) -> RpcError {
+    error(RpcErrorCode::Unsupported, message, details)
+}

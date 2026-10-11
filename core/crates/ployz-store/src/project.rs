@@ -129,6 +129,7 @@ pub(crate) fn create_environment(
     create: &CreateEnvironment,
 ) -> Result<EnvironmentCreated, RpcError> {
     let project = scope::project(tx, who, create.project.as_ref())?;
+    crate::removal::project_marked(tx, &project.id, &project.name)?;
     let taken = tx.query(
         "SELECT id FROM config_environment WHERE project_id = ?1 AND name = ?2",
         &[project.id.as_str().into(), create.name.as_str().into()],

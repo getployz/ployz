@@ -8,9 +8,7 @@ pub(crate) fn create_branch(
     create: &CreateBranch,
 ) -> Result<Branched, RpcError> {
     let parent = scope::lock(tx, who, &create.from)?;
-    if let Some(removal) = crate::teardown::removing(tx, &parent.summary.id)? {
-        return Err(crate::teardown::being_removed(&parent, &removal));
-    }
+    crate::removal::marked(tx, &parent)?;
     let project = scope::project(tx, who, Some(&parent.summary.project))?;
     let taken = tx.query(
         "SELECT id FROM config_environment WHERE project_id = ?1 AND name = ?2",
@@ -325,6 +323,7 @@ pub(crate) fn keep_branch(
     keep: &KeepBranch,
 ) -> Result<Branched, RpcError> {
     let branch = scope::lock(tx, who, &keep.environment)?;
+    crate::removal::marked(tx, &branch)?;
     let row = branch_row(tx, &branch)?;
     if row.kept != keep.kept {
         tx.execute(

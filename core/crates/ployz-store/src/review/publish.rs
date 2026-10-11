@@ -90,6 +90,7 @@ pub(crate) fn publish(
     trusted: &Trusted,
 ) -> Result<Published, RpcError> {
     let environment = scope::lock(tx, who, &publish.environment)?;
+    crate::removal::marked(tx, &environment)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, publish.version.as_deref())?;
     if review.saved.is_none()

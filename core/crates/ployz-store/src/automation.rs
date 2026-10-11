@@ -457,17 +457,24 @@ fn admit(
             .iter()
             .try_for_each(|sync| crate::conditional_sync::land(tx, who, sync, environment))
     };
-    // Closing, or being removed: a push leaves it be. A shut-down PR Environment
-    // (its removal applied) comes back on: the push deploys all of it again.
-    let removing = crate::teardown::removing(tx, id)?;
-    let shut_down = removing
+    // Being removed: a push leaves it be. A shut-down PR Environment (its removal
+    // applied) comes back on: the push deploys all of it again.
+    let removal = crate::removal::latest(tx, id)?.filter(|removal| {
+        !matches!(
+            removal.status,
+            DeploymentStatus::Failed | DeploymentStatus::Cancelled
+        )
+    });
+    let shut_down = removal
         .as_ref()
         .is_some_and(|removal| removal.status == DeploymentStatus::Applied)
         && crate::pull_request::of(tx, id)?.is_some();
-    if crate::pull_request::closing(tx, id)? || (removing.is_some() && !shut_down) {
+    if crate::removal::mark::naming(tx, id)?.is_some() || (removal.is_some() && !shut_down) {
         land(tx, &mut environment)?;
         return Ok(None);
     }
+    // A push brings back a Branch whose removal someone cancelled.
+    crate::removal::mark::clear_tombstone(tx, &crate::removal::Target::Environment(id.clone()))?;
     let Some(saved) = review::latest_saved(tx, id)? else {
         land(tx, &mut environment)?;
         return Ok(None);
