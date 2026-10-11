@@ -214,8 +214,8 @@ impl Default for ServiceBucket {
 
 impl ServiceBucket {
     /// Adds `sample`, which is no older than any sample added before, and the
-    /// interval from its container's previous sample.
-    fn add(&mut self, prev: &MetricSample, sample: &MetricSample) {
+    /// interval from its container's previous reading.
+    fn add(&mut self, prev: Reading, sample: &MetricSample) {
         if self.tick.is_some_and(|tick| tick.ts != sample.ts) {
             self.close_tick();
         }
@@ -237,7 +237,7 @@ impl ServiceBucket {
         for ((delta, before), after) in self
             .rates
             .iter_mut()
-            .zip(counters(prev))
+            .zip(prev.counters)
             .zip(counters(sample))
         {
             delta.add(before, after, prev.ts, sample.ts);
@@ -269,42 +269,88 @@ impl ServiceBucket {
     }
 }
 
-/// Sums every container in `samples` into one point per bucket.
-///
-/// `samples` are one Service's, in any order. A sample before the range only
-/// seeds the first rate of its container.
-pub(crate) fn service_history(samples: &[MetricSample], buckets: Buckets) -> MetricHistoryReply {
-    let mut sorted: Vec<&MetricSample> = samples.iter().collect();
-    // Stable sort is linear on the time-ordered rows a store returns.
-    sorted.sort_by_key(|sample| sample.ts);
+/// The counters of a container's last sample, all a rate needs from it.
+#[derive(Clone, Copy)]
+struct Reading {
+    ts: i64,
+    counters: [Option<u64>; COUNTERS],
+}
 
-    let mut table: Vec<Option<ServiceBucket>> = Vec::new();
-    table.resize_with(buckets.len, || None);
-    let mut prevs: BTreeMap<ContainerId, &MetricSample> = BTreeMap::new();
-    for sample in sorted {
-        // A container's first sample is its own predecessor: an empty interval.
-        let prev = prevs.insert(sample.container_id, sample).unwrap_or(sample);
-        if let Some(slot) = buckets
-            .index(sample.ts)
-            .and_then(|index| table.get_mut(index))
-        {
-            slot.get_or_insert_with(ServiceBucket::default)
-                .add(prev, sample);
+impl Reading {
+    fn of(sample: &MetricSample) -> Self {
+        Self {
+            ts: sample.ts,
+            counters: counters(sample),
+        }
+    }
+}
+
+/// Sums one Service's containers into one point per bucket, fed a batch at a
+/// time so a caller holds one batch of samples, not the whole range.
+pub(crate) struct ServiceFold {
+    buckets: Buckets,
+    table: Vec<Option<ServiceBucket>>,
+    prevs: BTreeMap<ContainerId, Reading>,
+}
+
+impl ServiceFold {
+    pub(crate) fn new(buckets: Buckets) -> Self {
+        let mut table = Vec::new();
+        table.resize_with(buckets.len, || None);
+        Self {
+            buckets,
+            table,
+            prevs: BTreeMap::new(),
         }
     }
 
-    let gaps = buckets.gaps(&table);
-    let points = table
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, bucket)| Some(bucket?.into_point(buckets.start(index))))
-        .collect();
-    MetricHistoryReply {
-        points: MetricPoints::Service(points),
-        step_nanos: buckets.step,
-        gaps,
-        markers: Vec::new(),
+    /// Adds `samples`, in any order, each no older than every sample of the
+    /// batches added before. A sample before the range only seeds the first
+    /// rate of its container.
+    pub(crate) fn add(&mut self, samples: &[MetricSample]) {
+        let mut sorted: Vec<&MetricSample> = samples.iter().collect();
+        // Stable sort is linear on the time-ordered rows a store returns.
+        sorted.sort_by_key(|sample| sample.ts);
+        for sample in sorted {
+            // A container's first sample is its own predecessor: an empty interval.
+            let prev = self
+                .prevs
+                .insert(sample.container_id, Reading::of(sample))
+                .unwrap_or_else(|| Reading::of(sample));
+            if let Some(slot) = self
+                .buckets
+                .index(sample.ts)
+                .and_then(|index| self.table.get_mut(index))
+            {
+                slot.get_or_insert_with(ServiceBucket::default)
+                    .add(prev, sample);
+            }
+        }
     }
+
+    pub(crate) fn finish(self) -> MetricHistoryReply {
+        let Self { buckets, table, .. } = self;
+        let gaps = buckets.gaps(&table);
+        let points = table
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, bucket)| Some(bucket?.into_point(buckets.start(index))))
+            .collect();
+        MetricHistoryReply {
+            points: MetricPoints::Service(points),
+            step_nanos: buckets.step,
+            gaps,
+            markers: Vec::new(),
+        }
+    }
+}
+
+/// Sums every container in `samples`, one Service's in any order, into one
+/// point per bucket.
+pub(crate) fn service_history(samples: &[MetricSample], buckets: Buckets) -> MetricHistoryReply {
+    let mut fold = ServiceFold::new(buckets);
+    fold.add(samples);
+    fold.finish()
 }
 
 /// One bucket of host totals.

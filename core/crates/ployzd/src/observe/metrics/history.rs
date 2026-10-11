@@ -132,23 +132,47 @@ pub(crate) fn timed_out(request: &MetricHistoryRequest, now: i64) -> MetricHisto
     }
 }
 
+/// Reads `range` from raw segments one hour at a time.
+///
+/// A Service's samples fold into the bucket table hour by hour, and each
+/// hour's are dropped before the next is read. Peak memory is one hour of
+/// samples plus the table, however wide the range. A Machine's host samples
+/// are one per tick, so its hours are kept and folded at the end.
 fn raw(
     store: &StoreRoot,
     range: MetricRange,
     scope: &MetricScope,
     buckets: Buckets,
 ) -> io::Result<MetricHistoryReply> {
-    let lead_in = MetricRange {
-        since_nanos: range.since_nanos.saturating_sub(LEAD_IN),
-        ..range
+    let since = range.since_nanos.saturating_sub(LEAD_IN);
+    let mut hosts = Vec::new();
+    let mut fold = rate::ServiceFold::new(buckets);
+    let mut markers = Vec::new();
+    let mut hour = since - since.rem_euclid(HOUR_NANOS);
+    while hour < range.until_nanos {
+        let next = hour.saturating_add(HOUR_NANOS);
+        let within = MetricRange {
+            since_nanos: since.max(hour),
+            until_nanos: range.until_nanos.min(next),
+        };
+        let (selected, found) = segment::read(store, within, scope)?;
+        match selected {
+            Selected::Machine(samples) => hosts.extend(samples),
+            Selected::Service(samples) => fold.add(&samples),
+        }
+        markers.extend(
+            found
+                .into_iter()
+                .filter(|marker| marker.ts >= range.since_nanos),
+        );
+        markers = newest(markers);
+        hour = next;
+    }
+    let mut reply = match scope {
+        MetricScope::Machine => rate::machine_history(&hosts, buckets),
+        MetricScope::Service { .. } => fold.finish(),
     };
-    let (selected, mut markers) = segment::read(store, lead_in, scope)?;
-    markers.retain(|marker| marker.ts >= range.since_nanos);
-    let mut reply = match selected {
-        Selected::Machine(samples) => rate::machine_history(&samples, buckets),
-        Selected::Service(samples) => rate::service_history(&samples, buckets),
-    };
-    reply.markers = newest(markers);
+    reply.markers = markers;
     Ok(reply)
 }
 
@@ -597,6 +621,31 @@ pub(crate) mod tests {
             assert!(near(point.rx, 30.0), "{point:?}");
             assert_eq!(point.mem_bytes, Some(200));
             assert_eq!(point.mem_limit, Some(2_000));
+        }
+    }
+
+    #[test]
+    fn a_raw_service_range_keeps_its_rates_across_hour_seams() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + 3 * HOUR, |ts| {
+            vec![
+                container(1, Some(1), 1, ts, 10),
+                container(2, Some(1), 1, ts, 20),
+            ]
+        });
+
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        let asked = request(scope, T0 + 30 * MIN, T0 + 3 * HOUR, Some(STEP_NANOS));
+        let reply = history(&store, &asked, T0 + 3 * HOUR).unwrap();
+
+        assert_eq!(reply.gaps, []);
+        let points = service_points(&reply);
+        assert_eq!(points.len(), 30);
+        for point in points {
+            assert!(near(point.cpu_usec, 30.0), "{point:?}");
+            assert_eq!(point.mem_bytes, Some(200));
         }
     }
 
