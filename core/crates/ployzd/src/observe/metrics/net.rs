@@ -23,17 +23,24 @@ pub struct NetCounters {
 /// unreadable.
 pub fn read_net_dev(proc_root: &Path, pid: u32) -> Option<NetCounters> {
     let text = fs::read_to_string(proc_root.join(pid.to_string()).join("net/dev")).ok()?;
-    Some(total(&text))
+    total(&text)
 }
 
-fn total(text: &str) -> NetCounters {
-    host::parse_net_dev(text)
+/// A row that does not parse would shrink the total and fake a counter
+/// reset, so it makes the whole reading a gap.
+fn total(text: &str) -> Option<NetCounters> {
+    let interfaces = host::parse_net_dev(text);
+    if interfaces.len() != text.lines().filter(|line| line.contains(':')).count() {
+        return None;
+    }
+    let total = interfaces
         .iter()
         .filter(|interface| interface.name != LOOPBACK)
         .fold(NetCounters::default(), |sum, interface| NetCounters {
             rx: sum.rx + interface.rx,
             tx: sum.tx + interface.tx,
-        })
+        });
+    Some(total)
 }
 
 #[cfg(test)]
@@ -53,11 +60,22 @@ ployz-wg:    1000     10    0    0    0     0          0         0     2000     
 ";
         assert_eq!(
             total(text),
-            NetCounters {
+            Some(NetCounters {
                 rx: 12_345_679_901,
                 tx: 2400,
-            }
+            })
         );
+    }
+
+    #[test]
+    fn a_malformed_interface_row_makes_the_reading_a_gap() {
+        let text = "\
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+ployz-wg:    1000     10    0    0    0     0          0         0     2000      20    0    0    0     0       0          0
+  eth0:12345678901   40    0    0
+";
+        assert_eq!(total(text), None);
     }
 
     #[test]
