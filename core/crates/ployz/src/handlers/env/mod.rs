@@ -134,11 +134,11 @@ pub(crate) fn command() -> Command {
                          deploys is staged in it, but where the Branch changed a setting \
                          too, or discarded the Parent's change, the Parent's value is a \
                          hint `ployz diff` lists; --take PARENT stages it. With --at-merge, \
-                         from a PR Environment into one of its Destinations, it is an offer: \
-                         include it in the Destination's Changes after the pull request \
+                         from a PR Environment into one of its Destinations, it is queued: \
+                         apply it in the Destination's Changes once the pull request \
                          merges. A secret the receiver lacks arrives without its value unless \
                          --value gives it one. --undo SYNC undoes a Sync while what it staged \
-                         is undeployed and unchanged, or withdraws its offer. Example: ployz env \
+                         is undeployed and unchanged, or withdraws a queued one. Example: ployz env \
                          sync --to --env fix-api --skip api.env.DEBUG --close",
                     ),
             )
@@ -177,18 +177,18 @@ pub(crate) fn command() -> Command {
             .arg(switch("plan", None).help("List the changes and the version; sync nothing"))
             .arg(
                 switch("close", None)
-                    .help("Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to")
+                    .help("Close the Branch once its changes landed in its Parent; refused for a kept Branch, for any other --to, and before a PR Environment's pull request merges (\"#N isn't merged: its Sync is queued, so sync without --close\")")
                     .conflicts_with("plan"),
             )
             .arg(
                 switch("at-merge", None)
-                    .help("Offer the changes to --to, to include in its Changes after the pull request merges; the default from a PR Environment into a Destination")
+                    .help("Queue the changes for --to, to apply in its Changes once the pull request merges; the default from a PR Environment into a Destination")
                     .conflicts_with("close"),
             )
             .arg(
                 value("undo", None)
                     .value_name("SYNC")
-                    .help("Undo the Sync a sync printed, or withdraw its offer")
+                    .help("Undo the Sync a sync printed, or withdraw a queued one")
                     .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close", "at-merge"]),
             )
             .arg(

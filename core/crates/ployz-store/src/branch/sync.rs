@@ -465,7 +465,7 @@ fn target(
             if close_after {
                 return Err(error::invalid(
                     format!(
-                        "#{} isn't merged: its Sync is offered, so sync without close_after",
+                        "#{} isn't merged: its Sync is queued, so sync without close_after",
                         pr.number
                     ),
                     next,

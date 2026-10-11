@@ -78,7 +78,8 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
           ) : null}
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-          {included.length ? <IncludedList {...props} included={included} /> : null}
+          <IncludedList {...props} title="Queued" included={included.filter((item) => item.offered)} />
+          <IncludedList {...props} title="Included" included={included.filter((item) => !item.offered)} />
           {staged ? <ChangeGroups {...props} /> : null}
           {after ? <div className="flex flex-col gap-3">{after}</div> : null}
         </div>
@@ -168,13 +169,17 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
 }
 
 /**
- * Each source a Sync included, with Remove and, once it changed, Include newer changes in its ⋯; a pull request's says
- * whether it merged. An offer has Include, which asks here for the value of each secret the draft lacks.
+ * One section of sources: Queued holds the offers a Merge-menu Sync left, each with Apply, which asks here for the value
+ * of each secret the draft lacks; Included holds each source a Sync included, with Include newer changes in its ⋯ once
+ * it changed. Each has Remove, and a pull request's says whether it merged. Nothing renders for no sources.
  */
-function IncludedList({ included, onRemoveIncluded, onIncludeNewer, onInclude }: Pick<EnvironmentChangesReviewProps, "onRemoveIncluded" | "onIncludeNewer" | "onInclude"> & { included: readonly Included[] }) {
+function IncludedList({ title, included, onRemoveIncluded, onIncludeNewer, onInclude }: Pick<EnvironmentChangesReviewProps, "onRemoveIncluded" | "onIncludeNewer" | "onInclude"> & {
+  title: "Queued" | "Included"; included: readonly Included[];
+}) {
+  if (!included.length) return null;
   return (
-    <section aria-label="Included">
-      <h3 className="font-medium">Included</h3>
+    <section aria-label={title}>
+      <h3 className="font-medium">{title}</h3>
       <ul>
         {included.map((item) => <IncludedItem key={item.proposal} item={item} onRemove={onRemoveIncluded}
           onIncludeNewer={onIncludeNewer} onInclude={onInclude} />)}
@@ -188,7 +193,7 @@ function IncludedItem({ item, onRemove, onIncludeNewer, onInclude }: {
   onInclude?: EnvironmentChangesReviewProps["onInclude"];
 }) {
   const { source } = item;
-  // Secrets the last Include named as needing a value, and the values typed for them: sent with the Include, never shown back.
+  // Secrets the last Apply named as needing a value, and the values typed for them: sent with the Apply, never shown back.
   const [needed, setNeeded] = useState<readonly string[]>([]);
   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [pending, setPending] = useState(false);
@@ -208,7 +213,7 @@ function IncludedItem({ item, onRemove, onIncludeNewer, onInclude }: {
         <p className="flex min-w-0 items-center gap-2">
           <span className="truncate">{source.name} · {plural(item.changes, "change")}</span>
           {source.kind === "pull_request" && item.readiness ? (
-            <Badge variant={item.readiness === "ready" ? "secondary" : "outline"}>{readinessLabel(item.readiness, source.number)}</Badge>
+            <Badge variant={item.readiness === "ready" ? "secondary" : "outline"}>{readinessLabel(item.readiness, source.number, item.merged_into)}</Badge>
           ) : null}
         </p>
         {item.newer ? <p className="text-muted-foreground">{source.name} changed since</p> : null}

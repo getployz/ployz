@@ -949,6 +949,15 @@ pub(crate) fn readiness(
     into: &EnvironmentId,
     pr: &PullRequestRef,
 ) -> Result<Readiness, RpcError> {
+    Ok(standing(tx, into, pr)?.0)
+}
+
+/// As [`readiness`], with the branch `pr` merged into once it did.
+pub(crate) fn standing(
+    tx: &mut dyn Tx,
+    into: &EnvironmentId,
+    pr: &PullRequestRef,
+) -> Result<(Readiness, Option<BranchName>), RpcError> {
     let rows = tx.query(
         "SELECT p.facts, p.merged FROM config_pull_request p \
          JOIN config_environment e ON e.organization_id = p.organization_id \
@@ -960,21 +969,23 @@ pub(crate) fn readiness(
         ],
     )?;
     let Some(row) = rows.first() else {
-        return Ok(Readiness::Open);
+        return Ok((Readiness::Open, None));
     };
     if let Some(merged) = row.optional_text(1)? {
         let merged: Merged =
             serde_json::from_str(merged).map_err(|_| error::corrupt("pull request"))?;
         let project = scope::project_of(tx, into)?.id;
         let destinations = destinations_of(tx, &project, pr.repository_id, &merged.into)?;
-        return Ok(match destinations.contains(into) {
+        let readiness = match destinations.contains(into) {
             true => Readiness::Ready,
             false => Readiness::Elsewhere,
-        });
+        };
+        return Ok((readiness, Some(merged.into)));
     }
     let facts: PullRequest = row.json(0, "pull request")?;
-    Ok(match facts.open {
+    let readiness = match facts.open {
         true => Readiness::Open,
         false => Readiness::Closed,
-    })
+    };
+    Ok((readiness, None))
 }

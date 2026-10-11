@@ -128,7 +128,7 @@ it("keeps the offers in view under a queued Deployment", async () => {
   const shown = await bar();
   expect(shown.getByText("Queued · Deployment #2")).toBeTruthy();
   expect(shown.getByText("PR #5, PR #6")).toBeTruthy();
-  expect(shown.getByText("Offered")).toBeTruthy();
+  expect(shown.getByText("Queued")).toBeTruthy();
 });
 
 it("hides while nothing is staged or running, and while the only Deployment's page is open", async () => {

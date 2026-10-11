@@ -86,7 +86,7 @@ describe("the Sync button", () => {
     expect(syncButtonState(pr, removal("applied", false))).toMatchObject({ into: "production", changes: 4 });
   });
 
-  it("reads a PR Environment's Destination: Offered once its Sync is offered there, after Off", () => {
+  it("reads a PR Environment's Destination: Queued once its Sync is queued there, after Off", () => {
     const pr = { parent: "staging", to_parent: 1, pull_request: { repository_id: 1, number: 142 } };
     const merge = { number: 142, into: "production", changes: 3, standing: null };
     const off = asTestDouble<DeploymentSummary>()({ status: "applied", in_flight: false });
@@ -96,7 +96,7 @@ describe("the Sync button", () => {
       syncButtonState(pr, off, { ...merge, standing: "cs-1" }),
     ]).toEqual([
       { label: "Sync to production", into: "production", changes: 3, count: 3 },
-      { label: "Offered", into: "production", changes: 3, count: null },
+      { label: "Queued", into: "production", changes: 3, count: null },
       { label: "Off", into: "production", changes: 3, count: null },
     ]);
   });

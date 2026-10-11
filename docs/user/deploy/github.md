@@ -122,8 +122,8 @@ workspace, leave the root directory at `/`. Set a
 - **Only the service's Git branch deploys.** Pull requests can get their own
   [preview environments](../environments/preview-environments.md) instead.
 - **Merging a pull request never changes your settings.** Its code deploys like any push. Setting
-  changes synced from its preview only become **Ready** in production's **Changes**, and you save
+  changes synced from its preview only become **Merged** in production's **Changes**, and you save
   or deploy them yourself. See
-  [Offer changes to production for after the merge](../environments/preview-environments.md#offer-changes-to-production-for-after-the-merge).
+  [Queue changes for production until the merge](../environments/preview-environments.md#queue-changes-for-production-until-the-merge).
 
 Next: [give your app its variables](../services/variables.md).

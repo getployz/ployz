@@ -224,7 +224,7 @@ it("keeps a kept Branch open after syncing: no Close checkbox", async () => {
 it("syncs a PR Environment into its Destination at the merge, staying put, and Undo withdraws it", async () => {
   const app = open({ branch: branchView({ pull_request: pr142 }), sync: syncView({ at_merge: 142 }), pullRequest: pullRequestView(false) });
   const sync = await dialog();
-  expect(sync.getByText("production can include these after #142 merges.")).toBeTruthy();
+  expect(sync.getByText("Production can apply these once #142 merges.")).toBeTruthy();
   // A PR Environment closes with its pull request.
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   fireEvent.change(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
@@ -237,16 +237,16 @@ it("syncs a PR Environment into its Destination at the merge, staying put, and U
     values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
   });
   expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/fix-api");
-  expect(app.success.mock.calls.at(0)?.[0]).toBe("Offered to production");
+  expect(app.success.mock.calls.at(0)?.[0]).toBe("Queued for production");
   // SAFETY: the Sync button's toast action is a label and a click, never a node.
   const action = app.success.mock.calls.at(0)?.[1]?.action as Action | undefined;
   action?.onClick(asTestDouble<MouseEvent<HTMLButtonElement>>()({}));
   await waitFor(() => expect(app.commands()[1]).toEqual({ command: "undo_sync", sync: "sync-1" }));
 });
 
-it("reads Offered once its Sync is offered, with the GitHub check and Undo in its menu", async () => {
+it("reads Queued once its Sync is queued, with the GitHub check and Undo in its menu", async () => {
   const app = open({ branch: branchView({ pull_request: pr142 }), pullRequest: pullRequestView(true) });
-  expect(await screen.findByRole("button", { name: "Offered" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Queued" })).toBeTruthy();
   const items = await menu();
   expect(items.getByText("Ready to merge on GitHub")).toBeTruthy();
   expect(items.getByText("3 changes go live with this PR")).toBeTruthy();

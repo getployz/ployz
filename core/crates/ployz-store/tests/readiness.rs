@@ -822,6 +822,10 @@ fn a_sync_now_into_a_destination_is_offered_while_the_pr_is_unmerged() {
         .write(&db.who, &Command::Sync(request))
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused.message,
+        "#5 isn't merged: its Sync is queued, so sync without close_after"
+    );
     assert_eq!(db.production(), after);
 }
 
@@ -1051,7 +1055,14 @@ fn readiness_follows_whether_and_where_the_pr_merged() {
     let proposal = offer(&db);
     include(&db, &proposal, &[]).unwrap();
     let readiness = |db: &Db| included(db)[0].readiness;
+    let merged_into = |db: &Db| {
+        included(db)[0]
+            .merged_into
+            .as_ref()
+            .map(ToString::to_string)
+    };
     assert_eq!(readiness(&db), Some(Readiness::Open));
+    assert_eq!(merged_into(&db), None);
     observe(&db, facts(false, None, "main", 2));
     assert_eq!(readiness(&db), Some(Readiness::Closed));
     let refused = publish(&db, "production", Some(diff(&db).version)).unwrap_err();
@@ -1064,6 +1075,7 @@ fn readiness_follows_whether_and_where_the_pr_merged() {
     // Retargeted to dev, which production doesn't deploy, and merged there.
     observe(&db, facts(false, Some(MERGE), "dev", 4));
     assert_eq!(readiness(&db), Some(Readiness::Elsewhere));
+    assert_eq!(merged_into(&db).as_deref(), Some("dev"));
     let refused = publish(&db, "production", Some(diff(&db).version)).unwrap_err();
     assert_eq!(
         refused.message,

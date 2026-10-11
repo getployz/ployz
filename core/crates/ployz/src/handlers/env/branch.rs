@@ -332,7 +332,7 @@ fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
         match &synced.when {
             SyncedWhen::AtMerge { conditional_sync } => {
                 crate::ui::stream(format_args!(
-                    "Offered to {into}: include it in Changes after PR #{} merges.",
+                    "Queued for {into}: apply it in Changes once PR #{} merges.",
                     conditional_sync.pull_request,
                 ));
                 crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));

@@ -45,8 +45,8 @@ type BottomBarProps = {
   /** Details' notes: where changes came from, and merged pull requests' and the Parent's values. */
   notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "originFor" | "after">;
   /**
-   * Details' Included list: the sources Syncs included here, with Remove and Include newer changes, and the offers a
-   * Merge-menu Sync left, with Include. Save and Deploy wait on an included pull request that isn't ready.
+   * Details' Queued and Included lists: the offers a Merge-menu Sync left, with Apply, and the sources Syncs included
+   * here, with Include newer changes; each with Remove. Save and Deploy wait on an included pull request that isn't ready.
    */
   proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer" | "onInclude">;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */

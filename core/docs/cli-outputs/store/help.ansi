@@ -288,9 +288,9 @@ Options:
       --value <ROW>            Give a secret the receiver lacks its value, read as one line of stdin per --value, in order; repeatable
       --version <version>      Refuse unless this is still the version --plan showed
       --plan                   List the changes and the version; sync nothing
-      --close                  Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to
-      --at-merge               Offer the changes to --to, to include in its Changes after the pull request merges; the default from a PR Environment into a Destination
-      --undo <SYNC>            Undo the Sync a sync printed, or withdraw its offer
+      --close                  Close the Branch once its changes landed in its Parent; refused for a kept Branch, for any other --to, and before a PR Environment's pull request merges ("#N isn't merged: its Sync is queued, so sync without --close")
+      --at-merge               Queue the changes for --to, to apply in its Changes once the pull request merges; the default from a PR Environment into a Destination
+      --undo <SYNC>            Undo the Sync a sync printed, or withdraw a queued one
       --take <PARENT>          Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them
   -h, --help                   Print help (see more with '--help')
 

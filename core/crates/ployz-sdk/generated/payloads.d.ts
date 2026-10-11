@@ -1889,7 +1889,11 @@ offered: boolean,
  * For a pull request's: whether it merged into a branch this Environment deploys.
  * Save and Deploy wait for every included one to be `ready`.
  */
-readiness?: Readiness, };
+readiness?: Readiness,
+/**
+ * For a pull request's, once it merged: the branch it merged into.
+ */
+merged_into?: BranchName, };
 
 export type IncomingChange = {
 /**

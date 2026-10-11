@@ -7,7 +7,7 @@
 
 use super::pair::{self, Arrival, Which};
 use super::*;
-use crate::id::{ProposalId, RepositoryId};
+use crate::id::{BranchName, ProposalId, RepositoryId};
 use crate::pull_request::PullRequestRef;
 use crate::storage::Param;
 
@@ -61,6 +61,10 @@ pub struct Included {
     #[serde(default)]
     #[ts(optional)]
     pub readiness: Option<crate::pull_request::Readiness>,
+    /// For a pull request's, once it merged: the branch it merged into.
+    #[serde(default)]
+    #[ts(optional)]
+    pub merged_into: Option<BranchName>,
 }
 
 /// Where an included proposal came from.
@@ -969,20 +973,23 @@ pub(crate) fn included(
                 Some(offer) => offer.stored.picks.len(),
                 None => usize::try_from(row.int(7)?).map_err(|_| error::corrupt("proposal"))?,
             };
-            let readiness = match &source {
+            let (readiness, merged_into) = match &source {
                 ProposalSource::PullRequest {
                     repository_id,
                     number,
                     ..
-                } => Some(crate::pull_request::readiness(
-                    tx,
-                    environment,
-                    &PullRequestRef {
-                        repository_id: *repository_id,
-                        number: *number,
-                    },
-                )?),
-                ProposalSource::Environment { .. } => None,
+                } => {
+                    let (readiness, merged_into) = crate::pull_request::standing(
+                        tx,
+                        environment,
+                        &PullRequestRef {
+                            repository_id: *repository_id,
+                            number: *number,
+                        },
+                    )?;
+                    (Some(readiness), merged_into)
+                }
+                ProposalSource::Environment { .. } => (None, None),
             };
             Included {
                 proposal,
@@ -993,6 +1000,7 @@ pub(crate) fn included(
                 sync: row.parse(4, "proposal")?,
                 offered: offer.is_some(),
                 readiness,
+                merged_into,
             }
         });
     }
