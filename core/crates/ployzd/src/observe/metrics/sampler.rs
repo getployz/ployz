@@ -17,7 +17,7 @@ use bollard::{
     Docker, models::ContainerInspectResponse, query_parameters::ListContainersOptionsBuilder,
 };
 use ployz_core::{
-    ContainerId, MachineId, QualifiedService, ServiceId,
+    ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
     metrics::{CpuJiffies, HostMemory, HostSample, InterfaceBytes, MetricSample},
 };
 use tokio::time::{MissedTickBehavior, interval, timeout};
@@ -76,6 +76,7 @@ struct Tracked {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Labels {
+    /// Both present for a Service's container, both absent for a system one.
     service_id: Option<ServiceId>,
     service: Option<QualifiedService>,
     deployment_id: Option<String>,
@@ -178,13 +179,26 @@ fn track(
         .and_then(|config| config.labels.as_ref())
         .and_then(|labels| labels.get(LABEL_SERVICE_ID))
         .and_then(|label| ServiceId::parse(label.clone()).ok());
+    let service = meta.namespace.as_deref().zip(meta.service.as_deref());
+    let service = service.and_then(|(namespace, name)| {
+        Some(QualifiedService::new(
+            Namespace::parse(namespace).ok()?,
+            ServiceName::parse(name).ok()?,
+        ))
+    });
+    // A row names its Service both ways or neither, so a half-labelled
+    // container is booked like a system one.
+    let (service_id, service) = match (service_id, service) {
+        (Some(id), Some(service)) => (Some(id), Some(service)),
+        _ => (None, None),
+    };
     Some(Tracked {
         id,
         pid,
         cgroup: cgroup_path(proc_root, pid)?,
         labels: Labels {
             service_id,
-            service: None,
+            service,
             deployment_id: meta.deployment,
             replica: meta.replica,
         },
@@ -616,6 +630,53 @@ Inter-|   Receive                                                |  Transmit
         assert_eq!(row.cpu_usec, Some(10));
         assert_eq!((row.io_r, row.io_w), (None, None));
         assert_eq!((row.rx, row.tx), (None, None));
+    }
+
+    #[test]
+    fn a_service_container_is_keyed_by_name_as_well_as_id() {
+        use crate::docker::{LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID, LABEL_SERVICE_NAME};
+        use bollard::models::{ContainerConfig, ContainerInspectResponse, ContainerState};
+
+        let fixture = Fixture::new();
+        let web = fixture.start(1);
+        let inspect = |labels: &[(&str, String)]| ContainerInspectResponse {
+            config: Some(ContainerConfig {
+                labels: Some(
+                    labels
+                        .iter()
+                        .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+            state: Some(ContainerState {
+                pid: Some(i64::from(web.pid)),
+                running: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let labelled = inspect(&[
+            (LABEL_MANAGED, String::new()),
+            (LABEL_SERVICE_ID, service(1).to_string()),
+            (LABEL_NAMESPACE, "default".to_owned()),
+            (LABEL_SERVICE_NAME, "web-1".to_owned()),
+        ]);
+        let tracked = super::track(&fixture.roots.proc, web.id, &labelled).unwrap();
+        assert_eq!(tracked.labels.service_id, Some(service(1)));
+        assert_eq!(tracked.labels.service, Some(qualified(1)));
+
+        let half = inspect(&[
+            (LABEL_MANAGED, String::new()),
+            (LABEL_SERVICE_ID, service(1).to_string()),
+        ]);
+        let tracked = super::track(&fixture.roots.proc, web.id, &half).unwrap();
+        assert_eq!(
+            (tracked.labels.service_id, tracked.labels.service),
+            (None, None),
+            "a container without a Service name is booked like a system one"
+        );
     }
 
     #[test]
