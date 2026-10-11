@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { and, eq, isNotNull } from "drizzle-orm";
-import { Effect, Option } from "effect";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { Effect } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { mountChange } from "#/modules/config-store/store-volumes";
@@ -26,6 +26,7 @@ const view = (row: Row): PlacementRow => ({
 });
 
 const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
+const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check the Deploy that took this Volume. Try again.", details: null };
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
 
 /** Every Volume placement in the organization: one row per Volume the dashboard has a record for. */
@@ -42,12 +43,18 @@ const readRow = Effect.fn("VolumePlacement.readRow")(function* (organizationId: 
   return row;
 });
 
-/** Whether the Deploy that took this row's staged placement is still running it. An ended or unreadable one is not. */
-const deploying = Effect.fn("VolumePlacement.deploying")(function* (organizationId: string, row: Row | undefined) {
-  if (row === undefined || row.deploymentId === null) return false;
-  const found = yield* readStore(organizationId, { query: "deployment", id: row.deploymentId }).pipe(Effect.option);
-  return Option.isSome(found) && found.value.in_flight;
+/** Why the row can't change: the Deploy that took it still runs it, or the Store can't say whether it does. */
+const claimed = Effect.fn("VolumePlacement.claimed")(function* (organizationId: string, row: Row | undefined) {
+  if (row === undefined || row.deploymentId === null) return null;
+  return yield* readStore(organizationId, { query: "deployment", id: row.deploymentId }).pipe(
+    Effect.map((deployment) => deployment.in_flight ? DEPLOYING : null),
+    Effect.catchTag("StoreRefused", () => Effect.succeed(UNCHECKED)),
+  );
 });
+
+/** The row still has the claim it was checked with: a Deploy admitted since then stamped it, and keeps it. */
+const unclaimedSince = (row: Row | undefined) =>
+  row?.deploymentId == null ? isNull(volumePlacement.deploymentId) : eq(volumePlacement.deploymentId, row.deploymentId);
 
 /**
  * Stage `staged` (null: nothing) as the Volume's placement for the next Deploy. The first write records `mirrors`, the
@@ -58,7 +65,8 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
   input: { readonly environment: EnvironmentRef; readonly volumeId: string; readonly staged: Placement | null; readonly mirrors: readonly MachineId[] },
 ) {
   const current = yield* readRow(organizationId, input.volumeId);
-  if (yield* deploying(organizationId, current)) return { ok: false, refusal: DEPLOYING } satisfies PlacementWrite;
+  const refusal = yield* claimed(organizationId, current);
+  if (refusal !== null) return { ok: false, refusal } satisfies PlacementWrite;
   if (current?.staged?.seed !== undefined) return { ok: false, refusal: RESTORING } satisfies PlacementWrite;
   const { environmentId } = yield* resolveVolume(organizationId, input.environment, input.volumeId);
   const { drizzle } = yield* Database;
@@ -71,9 +79,12 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
   }).onConflictDoUpdate({
     target: volumePlacement.volumeId,
     set: { staged: input.staged, deploymentId: null, updatedAt: new Date() },
-    setWhere: eq(volumePlacement.organizationId, organizationId),
+    setWhere: and(eq(volumePlacement.organizationId, organizationId), unclaimedSince(current)),
   }).returning();
-  if (row === undefined) return { ok: false, refusal: { code: "conflict", message: "This Volume belongs to another organization.", details: null } } satisfies PlacementWrite;
+  if (row === undefined) {
+    if ((yield* readRow(organizationId, input.volumeId)) !== undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementWrite;
+    return { ok: false, refusal: { code: "conflict", message: "This Volume belongs to another organization.", details: null } } satisfies PlacementWrite;
+  }
   return { ok: true, placement: view(row) } satisfies PlacementWrite;
 });
 
@@ -140,7 +151,9 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
 ) {
   const current = yield* readRow(organizationId, volumeId);
   if (current === undefined) return { ok: true, placement: null } satisfies PlacementDiscard;
-  if (yield* deploying(organizationId, current)) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
+  const refusal = yield* claimed(organizationId, current);
+  if (refusal !== null) return { ok: false, refusal } satisfies PlacementDiscard;
+  const unchanged = and(eq(volumePlacement.volumeId, current.volumeId), unclaimedSince(current));
   const { drizzle } = yield* Database;
   const seed = current.staged?.seed;
   if (seed !== undefined) {
@@ -157,14 +170,16 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
       const written = yield* callStore(organizationId, userId, { operation: "write", command: { command: "batch", environment, commands } });
       if (!written.ok) return { ok: false, refusal: written.refusal } satisfies PlacementDiscard;
     }
-    yield* drizzle.delete(volumePlacement).where(eq(volumePlacement.volumeId, current.volumeId));
+    const [deleted] = yield* drizzle.delete(volumePlacement).where(unchanged).returning();
+    if (deleted === undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
     return { ok: true, placement: null } satisfies PlacementDiscard;
   }
   const [row] = yield* drizzle.update(volumePlacement)
     .set({ staged: null, deploymentId: null, updatedAt: new Date() })
-    .where(eq(volumePlacement.volumeId, current.volumeId))
+    .where(unchanged)
     .returning();
-  return { ok: true, placement: row === undefined ? null : view(row) } satisfies PlacementDiscard;
+  if (row === undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
+  return { ok: true, placement: view(row) } satisfies PlacementDiscard;
 });
 
 /** Deploy `deploymentId` takes every placement staged in its Environment. */
