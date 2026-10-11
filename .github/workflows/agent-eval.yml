@@ -80,7 +80,8 @@ jobs:
           run=$(gh run list --workflow agent-eval.yml --commit "$(git rev-list -n 1 "$tag")" --status success \
             --json databaseId,event --jq '[.[] | select(.event != "pull_request")][0].databaseId // empty')
           [ -n "$run" ] || { echo "::warning::no passing agent eval for $tag; pass^1 drops go unchecked"; exit 0; }
-          gh run download "$run" --name agent-eval-results --dir "$RUNNER_TEMP/last"
+          gh run download "$run" --name agent-eval-results --dir "$RUNNER_TEMP/last" \
+            || { echo "::warning::the agent eval results for $tag have expired; pass^1 drops go unchecked"; exit 0; }
           echo "PLOYZ_EVAL_LAST=$RUNNER_TEMP/last/summary.json" >> "$GITHUB_ENV"
       - name: Tier 2, live trials
         env:
