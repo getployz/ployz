@@ -119,15 +119,17 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
-    /// Start Container `container` on `machine`.
+    /// Start Container `container` on `machine`. True once it serves; false when it
+    /// started but was not seen serving within the bounded wait.
     ///
     /// # Errors
     /// Returns the Machine's refusal, or the transport's error when it did not answer.
     #[napi]
-    pub async fn start_container(&self, machine: String, container: String) -> Result<()> {
+    pub async fn start_container(&self, machine: String, container: String) -> Result<bool> {
         let (machine, container) = ids(&machine, &container)?;
         ployz::sdk::agent::start_one(&self.inner, machine, container)
             .await
+            .map(|started| started == ployz::sdk::agent::Started::Serving)
             .map_err(rpc_to_napi)
     }
 }

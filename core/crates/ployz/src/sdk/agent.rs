@@ -12,10 +12,12 @@ use ployz_store::tools::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Disk, Health, ServerReport, ServerState,
     ServersAnswer,
 };
-use ployz_store::tools::{CloudQuery, Freshness, ServerName, Source, Timestamp};
+use ployz_store::tools::{CloudQuery, Freshness, ServerName, ServerRef, Source, Timestamp};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use super::Session;
+use crate::cluster::ContainerObservationCondition;
 use crate::connect::TARGET_RPC_TIMEOUT;
 use crate::operator::DEPLOYMENT_LABEL;
 
@@ -178,19 +180,21 @@ async fn containers(
 }
 
 /// One Container of a Service as its Server reports it: what an act stops and starts.
-#[derive(Clone, Debug, serde::Serialize)]
+/// A hook Container is stopped with its Service but never started.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ServiceCopy {
     pub server: ServerName,
     pub machine: MachineId,
     pub container: ContainerId,
     pub state: ContainerState,
+    pub hook: bool,
 }
 
-/// Every Container of one Service, and the Servers that did not say.
+/// Every Container of one Service, and the Servers that did not say, by ID so a rename can't hide one.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ServiceCopies {
     pub copies: Vec<ServiceCopy>,
-    pub unanswered: Vec<ServerName>,
+    pub unanswered: Vec<ServerRef>,
 }
 
 /// The Containers of `service` in `namespace` on every Server that answers.
@@ -222,32 +226,51 @@ pub async fn observe_service(
                 .iter()
                 .map(|machine| (machine.machine.id, &machine.machine.name))
                 .collect();
-            let copies = live
-                .containers
-                .successes
-                .iter()
-                .flat_map(|success| &success.value)
-                .filter(|container| {
-                    container.kind == ContainerKind::ServiceContainer
-                        && &container.namespace == namespace
-                        && container.service_name() == service
-                })
-                .filter_map(|container| {
-                    let server = names.get(&container.machine_id)?;
-                    Some(ServiceCopy {
-                        server: (*server).clone(),
-                        machine: container.machine_id,
-                        container: container.container_id,
-                        state: report(container, server).state,
-                    })
-                })
-                .collect();
+            let copies = copies_of(
+                live.containers
+                    .successes
+                    .iter()
+                    .flat_map(|success| &success.value),
+                &names,
+                namespace,
+                service,
+            );
             Ok(ServiceCopies {
                 copies,
-                unanswered: seen(&machines, &unanswered).unanswered,
+                unanswered: machines
+                    .iter()
+                    .filter(|machine| unanswered.contains(&machine.machine.id))
+                    .map(|machine| ServerRef {
+                        machine: machine.machine.id,
+                        name: machine.machine.name.clone(),
+                    })
+                    .collect(),
             })
         })
         .await
+}
+
+fn copies_of<'a>(
+    containers: impl Iterator<Item = &'a ContainerObservation>,
+    names: &BTreeMap<MachineId, &ServerName>,
+    namespace: &Namespace,
+    service: &ServiceName,
+) -> Vec<ServiceCopy> {
+    containers
+        .filter(|container| {
+            &container.namespace == namespace && container.service_name() == service
+        })
+        .filter_map(|container| {
+            let server = names.get(&container.machine_id)?;
+            Some(ServiceCopy {
+                server: (*server).clone(),
+                machine: container.machine_id,
+                container: container.container_id,
+                state: report(container, server).state,
+                hook: container.kind == ContainerKind::PreDeployHook,
+            })
+        })
+        .collect()
 }
 
 /// Stop Container `container` on `machine`. An answer is the Machine's; a lost one is
@@ -275,7 +298,16 @@ pub async fn stop_one(
         .await
 }
 
-/// Start Container `container` on `machine`.
+/// What a committed start reached within the bounded wait `ployz service start` uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Started {
+    /// The Container serves traffic, or no Machine can report whether it does.
+    Serving,
+    /// The Container started but was not seen serving before the wait ended.
+    Unconfirmed,
+}
+
+/// Start Container `container` on `machine` and wait, bounded, until it serves.
 ///
 /// # Errors
 /// Returns the Machine's refusal, or the transport's error when it did not answer.
@@ -283,7 +315,7 @@ pub async fn start_one(
     session: &Session,
     machine: MachineId,
     container: ContainerId,
-) -> Result<(), RpcError> {
+) -> Result<Started, RpcError> {
     let client = session.client()?;
     session
         .until_closed(async {
@@ -295,8 +327,20 @@ pub async fn start_one(
                     &MachineTarget::from(&machine),
                     Some(TARGET_RPC_TIMEOUT),
                 )
-                .await
-                .map(|_| ())
+                .await?;
+            Ok(
+                match client
+                    .wait_for_container_observations(
+                        &[container],
+                        ContainerObservationCondition::Serving,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                {
+                    Ok(()) => Started::Serving,
+                    Err(_) => Started::Unconfirmed,
+                },
+            )
         })
         .await
 }
@@ -388,3 +432,7 @@ fn unsupported(message: &str) -> RpcError {
         cause: Vec::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "agent_tests.rs"]
+mod tests;
