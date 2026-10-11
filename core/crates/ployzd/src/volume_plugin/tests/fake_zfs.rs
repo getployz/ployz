@@ -67,7 +67,12 @@ check_property() {{
 prop() {{
   check_property "$2"
   f='{props}'/"$1/$2"
-  if [ -e "$f" ]; then cat "$f"; else printf '%s\n' "$3"; fi
+  # A write truncates before it fills, so a concurrent read can catch the file empty; no property is.
+  if [ -e "$f" ]; then
+    value=$(cat "$f")
+    while [ -z "$value" ]; do sleep 0.01; value=$(cat "$f"); done
+    printf '%s\n' "$value"
+  else printf '%s\n' "$3"; fi
 }}
 exists() {{
   case "$1" in
