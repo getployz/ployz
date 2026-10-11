@@ -330,3 +330,6 @@ client.volumeSwitch("one" as MachineTarget, { command: "begin_round", payload: {
 // @ts-expect-error hand_over is not a Volume switch command
 client.volumeSwitch("one" as MachineTarget, { command: "hand_over", payload: { switch: switchArgs, name: "data" } });
 import("../index").then((sdk) => sdk.observeCopies([]) satisfies Promise<import("../generated/payloads").CopyObservation>);
+client.runtime.metricHistory({ subject: { kind: "service", service: "prod/web" as import("../generated/payloads").QualifiedService }, since_nanos: "0", until_nanos: "60000000000" }) satisfies Promise<import("../generated/payloads").MetricHistory>;
+// @ts-expect-error nanosecond bounds cross as decimal strings
+client.runtime.metricHistory({ subject: { kind: "machine", machine_id: "m" as MachineId }, since_nanos: 0, until_nanos: 1 });

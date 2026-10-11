@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::detect::{Ctx, Health, Input, Outage, RoundId, Step, step};
 use super::feed::{CheckRow, FeedEvent, OpenIncident};
-use super::incidents::{IncidentOp, IncidentWriter, Submit, Written};
+use super::incidents::{IncidentOp, IncidentWriter, ProbeAnswered, Submit, Written};
 use super::results::Results;
 use super::schedule::{
     ConfirmBudget, Liveness, SeenBatches, drop_after, next_slot, ranked, region_for, slot_index,
@@ -75,7 +75,15 @@ struct Entry {
     health: Health,
     writes_in_flight: u32,
     /// The last `probe_requested_at` seen, acted on or not.
-    probe_request: Option<UnixMs>,
+    probe_request: Option<ProbeRequest>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProbeRequest {
+    at: UnixMs,
+    /// The round whose end answers the request. None once answered, or when it was too old to
+    /// act on and so is never answered.
+    awaiting: Option<RoundId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -324,6 +332,7 @@ impl Engine {
             self.drop_urgent(id);
         }
         self.act(step, &check, now);
+        self.settle(id);
         if let Some(at) = after
             && before != after
         {
@@ -589,6 +598,9 @@ impl Engine {
         let now = UnixMs::now();
         let id = row.check.id;
         let requested = row.probe_requested;
+        // A request whose round a revision reset cancels: nothing judged it, so it is driven
+        // again below against the new config.
+        let mut cut_off = None;
         let adopt = |open: &OpenIncident| Input::Adopted {
             incident: open.id,
             revision: open.revision,
@@ -613,6 +625,11 @@ impl Engine {
                 }
             }
             Some(entry) if entry.check.revision != row.check.revision => {
+                if let Some(request) = &mut entry.probe_request
+                    && request.awaiting.take().is_some()
+                {
+                    cut_off = Some(request.at);
+                }
                 entry.check = row.check;
                 entry.generation += 1;
                 entry.since = now;
@@ -637,15 +654,54 @@ impl Engine {
             Some(_) => {}
         }
         // After any revision reset, so a deploy that moved the URL probes the new one.
-        if let Some(entry) = self.entries.get_mut(&id)
-            && requested > entry.probe_request
-        {
-            entry.probe_request = requested;
-            if let Some(at) = requested
-                && now.since(at) <= TRIGGER_FRESH
-            {
-                self.drive(id, Input::Triggered, now);
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return;
+        };
+        let newer = requested.filter(|&at| entry.probe_request.is_none_or(|seen| seen.at < at));
+        let Some(at) = newer.or(cut_off) else { return };
+        entry.probe_request = Some(ProbeRequest { at, awaiting: None });
+        if now.since(at) > TRIGGER_FRESH {
+            return;
+        }
+        self.drive(id, Input::Triggered, now);
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return;
+        };
+        // The triggered round, or the round already out that the request joined.
+        match answering_round(&entry.health) {
+            Some(round) => {
+                entry.probe_request = Some(ProbeRequest {
+                    at,
+                    awaiting: Some(round),
+                });
             }
+            None => self.answer(id, at),
+        }
+    }
+
+    /// Answers the pending probe request once the round it waits on is over.
+    fn settle(&mut self, id: CheckId) {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return;
+        };
+        let Some(request) = &mut entry.probe_request else {
+            return;
+        };
+        let Some(round) = request.awaiting else {
+            return;
+        };
+        if answering_round(&entry.health) == Some(round) {
+            return;
+        }
+        request.awaiting = None;
+        let at = request.at;
+        self.answer(id, at);
+    }
+
+    fn answer(&self, check: CheckId, requested: UnixMs) {
+        let answered = ProbeAnswered { check, requested };
+        if self.deps.writer.answer(answered) == Submit::Full {
+            tracing::warn!(check = %check.0, "incident queue full; probe answer dropped");
         }
     }
 
@@ -774,6 +830,19 @@ fn round_out(health: &Health) -> Option<RoundId> {
         | Health::Unreachable(Outage {
             round: Some(round), ..
         }) => Some(round.id),
+        Health::Reachable | Health::Unreachable(_) => None,
+    }
+}
+
+/// The round a probe request made now would wait on: any round while Suspect, since a triggered
+/// round joins a confirm round already out, and only a triggered round while Unreachable, since one
+/// replaces a recheck round.
+fn answering_round(health: &Health) -> Option<RoundId> {
+    match health {
+        Health::Suspect(round) => Some(round.id),
+        Health::Unreachable(Outage {
+            round: Some(round), ..
+        }) if round.kind == ProbeKind::Triggered => Some(round.id),
         Health::Reachable | Health::Unreachable(_) => None,
     }
 }
