@@ -376,7 +376,8 @@ fn write_certificate_errors(output: &mut String, sites: &[IngressSite]) {
 }
 
 /// A matcherless `handle` runs after the path handles, unlike a bare `redir`, which Caddy orders first.
-const REDIRECT_TO_HTTPS: &str = "\thandle {\n\t\tredir https://{host}{uri} 308\n\t}\n";
+/// Browsers cache a 308 forever by default; a short max-age lets a later http route take over.
+const REDIRECT_TO_HTTPS: &str = "\thandle {\n\t\theader cache-control \"max-age=300\"\n\t\tredir https://{host}{uri} 308\n\t}\n";
 
 /// Proxies to `endpoints`, or answers `NOT_RUNNING` when there are none.
 fn proxy(endpoints: &[IngressEndpoint]) -> String {
