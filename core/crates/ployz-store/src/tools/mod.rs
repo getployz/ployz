@@ -1,6 +1,8 @@
 //! The tools an agent runs Ployz through: a catalog, and a step machine that
 //! plans each call as Store and Cloud reads and at most one write. No IO.
 
+mod act;
+pub mod cloud;
 mod config;
 mod deployment;
 mod domain;
@@ -11,6 +13,7 @@ mod machine;
 mod refusal;
 mod release;
 mod schema;
+mod server;
 mod service;
 pub mod status;
 mod step;
@@ -55,6 +58,11 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<environment::EnvironmentSetup>(),
     entry::<github::GithubLs>(),
     entry::<github::GithubConnect>(),
+    entry::<server::ServerShow>(),
+    entry::<server::ServerDrain>(),
+    entry::<server::ServerUpgrade>(),
+    entry::<server::ServerClean>(),
+    entry::<server::ServerRemove>(),
 ];
 
 /// What a model is told: every tool's name, description and schemas.

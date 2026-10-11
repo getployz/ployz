@@ -10,9 +10,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use super::cloud::Operation;
 use super::refusal::{Call, Refusal, ToolResult, Writes, from_store};
 use super::schema;
-use super::step::{Ask, AttemptId, Gate, RequestKey, Step, Write, WriteSlot};
+use super::step::{
+    Act, Action, Ask, AttemptId, BodyDigest, Fix, Gate, RequestKey, Step, Write, WriteSlot,
+};
 use crate::{
     Batch, BatchCommand, Command, EnvironmentName, EnvironmentRef, EnvironmentSummary, ProjectName,
     Query, Revision, ServicesQuery, Tell, View, Written,
@@ -208,6 +211,16 @@ impl Cx<'_> {
 
     /// The call's one write: a Store command.
     pub(crate) fn write<C: Tell>(&mut self, command: &C) -> Result<C::Written, Stop> {
+        self.write_with(command, from_store)
+    }
+
+    /// The call's one write, a Store refusal read by `refuse` instead of
+    /// [`from_store`], for a refusal whose details the tool reshapes.
+    pub(crate) fn write_with<C: Tell>(
+        &mut self,
+        command: &C,
+        refuse: impl FnOnce(RpcError, &Call, Writes) -> Refusal,
+    ) -> Result<C::Written, Stop> {
         let Some(slot) = self.slot.take() else {
             return Err(Refusal::internal("A call writes at most once").into());
         };
@@ -222,16 +235,52 @@ impl Cx<'_> {
             .next()
             .ok_or_else(|| Refusal::internal("A write came back without an answer"))?;
         let value = answer.map_err(|error| {
-            let writes = match error.details.get("writes").and_then(Value::as_str) {
-                Some("unknown") => Writes::Unknown,
-                Some("committed") => Writes::Committed,
-                _ => Writes::None,
-            };
-            from_store(error, &self.call, writes)
+            let writes = writes_of(&error);
+            refuse(error, &self.call, writes)
         })?;
         let written = serde_json::from_value::<Written>(value)
             .map_err(|_| Refusal::internal("The Config Store answered in an unknown shape"))?;
         C::written(written).map_err(|error| from_store(error, &self.call, Writes::Committed).into())
+    }
+
+    /// Refuse a call only Cloud can run before it reads anything.
+    pub(crate) fn cloud_only(&self) -> Result<(), Stop> {
+        match self.is_local() {
+            true => Err(Refusal::not_here(self.local_next.clone()).into()),
+            false => Ok(()),
+        }
+    }
+
+    /// The call's one write: an operation Cloud runs on Servers, keyed so a
+    /// retry with the same key returns the same run. A refusal names `subject`,
+    /// the read that shows what happened.
+    pub(crate) fn act(
+        &mut self,
+        action: Action,
+        given: Option<RequestKey>,
+        subject: Call,
+    ) -> Result<Operation, Stop> {
+        self.cloud_only()?;
+        let Some(slot) = self.slot.take() else {
+            return Err(Refusal::internal("A call writes at most once").into());
+        };
+        self.steps += 1;
+        let Some(answers) = self.recorded(Kind::Write)? else {
+            let key = self.request_key(given);
+            let act = Act {
+                attempt: AttemptId::derive(&self.call.tool, &key),
+                digest: BodyDigest::of(&self.call.tool, &self.call.input),
+                action,
+            };
+            return self.next_step(slot.spend(Write::Act(act)), Kind::Write);
+        };
+        let answer = answers
+            .into_iter()
+            .next()
+            .ok_or_else(|| Refusal::internal("A write came back without an answer"))?;
+        let value = answer.map_err(|error| refused_act(error, &self.call, subject))?;
+        serde_json::from_value(value)
+            .map_err(|_| Refusal::internal("Ployz Cloud answered in an unknown shape").into())
     }
 
     /// Wait the next backoff (1, 2, 4, then 10 s) within `wait_seconds`, then read
@@ -350,6 +399,36 @@ pub(crate) fn store<Q: crate::Ask>(query: &Q) -> Result<Ask, Stop> {
     serde_json::from_value::<Query>(query.to_query())
         .map(Ask::Store)
         .map_err(|_| Refusal::internal("A query did not encode").into())
+}
+
+/// A refused act: what it wrote, the run it met, and the read that shows the
+/// subject now.
+fn refused_act(error: RpcError, call: &Call, subject: Call) -> Stop {
+    let writes = writes_of(&error);
+    let kept = ["run", "move_to"].map(|key| (key, error.details.get(key).cloned()));
+    let fix = error
+        .details
+        .get("fix")
+        .and_then(|fix| serde_json::from_value::<Fix>(fix.clone()).ok());
+    let mut refusal = from_store(error, call, writes).with_next(subject);
+    for (key, value) in kept {
+        if let Some(value) = value {
+            refusal = refusal.with_detail(key, value);
+        }
+    }
+    if let Some(fix) = fix {
+        refusal = refusal.with_fix(&fix);
+    }
+    refusal.into()
+}
+
+/// What a refused write says it wrote.
+fn writes_of(error: &RpcError) -> Writes {
+    match error.details.get("writes").and_then(Value::as_str) {
+        Some("unknown") => Writes::Unknown,
+        Some("committed") => Writes::Committed,
+        _ => Writes::None,
+    }
 }
 
 /// `conflict` for a write whose `expect_revision` no longer holds: read again.

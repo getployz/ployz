@@ -113,7 +113,7 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    fn new(code: RpcErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: RpcErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -181,7 +181,12 @@ impl Refusal {
         self
     }
 
-    fn with_fix(mut self, fix: &Fix) -> Self {
+    pub(crate) fn with_fix(self, fix: &Fix) -> Self {
+        self.with_detail("fix", json!(fix))
+    }
+
+    /// `details.<key>` set to `value`.
+    pub(crate) fn with_detail(mut self, key: &str, value: Value) -> Self {
         let mut details = match self.details {
             Value::Object(details) => details,
             Value::Null
@@ -190,7 +195,7 @@ impl Refusal {
             | Value::String(_)
             | Value::Array(_) => Map::new(),
         };
-        details.insert("fix".into(), json!(fix));
+        details.insert(key.into(), value);
         self.details = details.into();
         self
     }
