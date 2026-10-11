@@ -60,6 +60,11 @@ pub(crate) fn set_command() -> Command {
                 .help("Rename the variable SERVICE.env.KEY to NAME; its value moves with it, and a secret stays sealed"),
         )
         .arg(
+            switch("update-references", None)
+                .requires("rename")
+                .help("With --rename: switch the variables that reference it to the new name too"),
+        )
+        .arg(
             value("at-merge", None)
                 .value_name("PR")
                 .requires("secret")
@@ -190,6 +195,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             vec![Change::Rename {
                 path: SettingPath::parse(&path)?,
                 to: to.clone(),
+                update_references: matches.get_flag("update-references"),
             }],
         );
     }
@@ -399,7 +405,7 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
 
 /// Why an edit that changed nothing had nothing to change.
 fn unchanged(changes: &[Change]) -> String {
-    if let [Change::Rename { path, to }] = changes {
+    if let [Change::Rename { path, to, .. }] = changes {
         return format!("{path} is already named {to}");
     }
     let paths = changes

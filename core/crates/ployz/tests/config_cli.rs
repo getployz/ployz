@@ -1918,6 +1918,48 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
         );
         assert_eq!(clash.get("code"), Some(&json!("conflict")));
 
+        ok(store, &["set", "web.env.UPSTREAM=${{ PUBLIC_API_URL }}/v1"]);
+        let used = error(
+            store,
+            &["set", "web.env.PUBLIC_API_URL", "--rename", "API_URL"],
+        );
+        assert_eq!(used.get("code"), Some(&json!("conflict")));
+        assert_eq!(
+            used.pointer("/details/variables"),
+            Some(&json!(["web.UPSTREAM"]))
+        );
+        let next = used.pointer("/details/next").and_then(Value::as_str).unwrap();
+        assert!(
+            next.starts_with(
+                "ployz set web.env.PUBLIC_API_URL --rename API_URL --update-references"
+            ),
+            "{next}"
+        );
+        let alone = failed(store, &["set", "web.env.LOG_LEVEL", "--update-references"], 2);
+        assert_eq!(alone.get("code"), Some(&json!("invalid_argument")));
+        let switched = ok(
+            store,
+            &[
+                "set",
+                "web.env.PUBLIC_API_URL",
+                "--rename",
+                "API_URL",
+                "--update-references",
+            ],
+        );
+        assert_eq!(
+            switched.get("staged"),
+            Some(&json!([
+                "web.env.API_URL",
+                "web.env.PUBLIC_API_URL",
+                "web.env.UPSTREAM"
+            ]))
+        );
+        assert_eq!(
+            ok(store, &["get", "web.env.UPSTREAM"])["settings"][0]["value"],
+            json!("${{ API_URL }}/v1")
+        );
+
         for patch in [r#"{"memLimit": null}"#, "not json"] {
             let refused = failed(store, &["set", "web", "--patch", patch], 2);
             assert_eq!(

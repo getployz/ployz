@@ -4179,6 +4179,15 @@
         ]
       },
       {
+        "name": "--update-references",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "With --rename: switch the variables that reference it to the new name too"
+      },
+      {
         "name": "--at-merge",
         "required": false,
         "value": true,

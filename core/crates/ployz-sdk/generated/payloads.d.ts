@@ -391,7 +391,13 @@ path: SettingPath,
 /**
  * Its new name.
  */
-to: string, };
+to: string,
+/**
+ * Switch the variables of this Environment that reference it to the new
+ * name in the same edit. Without it, a referenced variable refuses with
+ * `conflict`, naming them.
+ */
+update_references?: boolean, };
 
 export type ChangeKind = "add" | "update" | "remove";
 
