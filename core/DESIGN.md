@@ -239,7 +239,7 @@ it. Deployment and Container selectors distinguish that output by their identiti
 
 Metrics follow the same rule. Each Machine samples only its own Containers and
 itself, every 10 seconds, and keeps raw Metric Samples for 24 hours and 5 minute
-Rollups per Service and Deployment for 90 days. Logs and metrics share one disk
+Rollups per Service and Deployment, and for the Machine itself, for 90 days. Logs and metrics share one disk
 budget, so both go sooner, oldest hour first, when the Observe Store passes its
 size cap or the disk its free floor. A removed Container's history stays under
 its Service until its Rollups expire. Cloud reads metrics through the daemon on
