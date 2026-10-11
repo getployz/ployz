@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { FollowHint, PrPlan, RowId } from "@ployz/sdk";
-import { hintNotes, planSummary } from "./store-pull-requests";
+import type { FollowHint, OnMergeCheck, PrPlan, PullRequestView, RowId } from "@ployz/sdk";
+import { hintNotes, planSummary, storePrCheckRun } from "./store-pull-requests";
 
 const plan: PrPlan = {
   repository: "acme/web", repository_id: 11, installation_id: 7, enabled: true, start_from: "production",
@@ -22,5 +22,42 @@ describe("hintNotes", () => {
     const notes = hintNotes([hint("startCommand"), hint("env.KEY")], new Set(["w:startCommand" as RowId]));
     expect(notes.at("w:startCommand" as RowId).map((note) => note.name)).toEqual(["startCommand"]);
     expect(notes.rest.map((note) => note.name)).toEqual(["env.KEY"]);
+  });
+});
+
+describe("storePrCheckRun", () => {
+  const view = (check: OnMergeCheck | null): PullRequestView => ({
+    pull_request: {
+      repository_id: 42, number: 146, title: "Add search", author: "ada", bot: false, head_branch: "search", head: "a".repeat(40),
+      target_branch: "main", commits: 1, open: true, merge_commit: null, updated: "2026-10-11T10:00:00Z",
+    },
+    environments: [{
+      environment: { id: "e1", project: "shop", name: "pr-146", revision: 3 },
+      deployment: null, destinations: [],
+    }],
+    check,
+  });
+  const lands: OnMergeCheck = { conclusion: "success", title: "1 config change", summary: "- `web · A`: 1 → 2" };
+  const missing: OnMergeCheck = { conclusion: "neutral", title: "1 config change · TOKEN not set", summary: "- `web · TOKEN`: not set" };
+
+  it("posts what the merge lands, linking the On merge panel", () => {
+    expect(storePrCheckRun([{ slug: "acme", view: view(lands) }], "https://ployz.test/")).toEqual({
+      headSha: "a".repeat(40),
+      name: "Ployz · ready to merge",
+      conclusion: "success",
+      detailsUrl: "https://ployz.test/cloud/acme/shop/pr-146?panel=on-merge",
+      title: "1 config change",
+      summary: "- `web · A`: 1 → 2\n\n[View in Ployz](https://ployz.test/cloud/acme/shop/pr-146?panel=on-merge)",
+    });
+  });
+
+  it("reads neutral when any Organization's word is neutral, and joins their words", () => {
+    const run = storePrCheckRun([{ slug: "acme", view: view(lands) }, { slug: "beta", view: view(missing) }], "https://ployz.test/");
+    expect(run).toMatchObject({ conclusion: "neutral", title: "1 config change; 1 config change · TOKEN not set" });
+  });
+
+  it("posts nothing when no Store has a word", () => {
+    expect(storePrCheckRun([{ slug: "acme", view: view(null) }], "https://ployz.test/")).toBeNull();
+    expect(storePrCheckRun([], "https://ployz.test/")).toBeNull();
   });
 });

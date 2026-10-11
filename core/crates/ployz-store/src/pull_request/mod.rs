@@ -183,11 +183,9 @@ pub struct PullRequestView {
     pub pull_request: Option<PullRequest>,
     /// Its PR Environments, one per Project, not being closed.
     pub environments: Vec<PrEnvironment>,
-    /// Ready to merge: nothing waits to be synced into an Environment that deploys
-    /// its target branch.
-    pub passing: bool,
-    /// Why, in a few words.
-    pub reason: String,
+    /// What its GitHub check says; none when it says nothing: closed, merged with
+    /// everything landed, or without PR Environments.
+    pub check: Option<OnMergeCheck>,
 }
 
 /// One PR Environment.
@@ -196,17 +194,26 @@ pub struct PrEnvironment {
     pub environment: EnvironmentSummary,
     /// Its latest Deployment.
     pub deployment: Option<DeploymentSummary>,
-    /// Where its merge lands: each Environment that deploys the target branch.
-    pub destinations: Vec<Destination>,
+    /// What its merge lands in each Environment that deploys the target branch.
+    pub destinations: Vec<OnMergeInto>,
 }
 
-/// An Environment a PR Environment's changes go live in at the merge.
+/// A pull request's GitHub check: what its merge lands, never blocking it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct Destination {
-    /// The Environment.
-    pub name: EnvironmentName,
-    /// The changes a Sync there would hold: the Sync view's ticked rows.
-    pub changes: usize,
+pub struct OnMergeCheck {
+    pub conclusion: OnMergeConclusion,
+    pub title: String,
+    /// Markdown, one line per row.
+    pub summary: String,
+}
+
+/// How the check reads on GitHub: neutral when a secret lands Not set, a row lands
+/// over the Destination's own change, or the merge didn't land.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum OnMergeConclusion {
+    Success,
+    Neutral,
 }
 
 /// A plan as stored, by Environment ID and Service lineage.

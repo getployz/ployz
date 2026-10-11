@@ -1203,16 +1203,6 @@ export type DeploymentsView = { environment: EnvironmentSummary, deployments: Ar
  */
 next_cursor: string | null, };
 
-export type Destination = {
-/**
- * The Environment.
- */
-name: EnvironmentName,
-/**
- * The changes a Sync there would hold: the Sync view's ticked rows.
- */
-changes: number, };
-
 export type DetachConfig = {
 /**
  * The Environment they are in.
@@ -2398,6 +2388,14 @@ pull_request: PullRequestRef,
  */
 destinations: Array<OnMergeInto>, };
 
+export type OnMergeCheck = { conclusion: OnMergeConclusion, title: string,
+/**
+ * Markdown, one line per row.
+ */
+summary: string, };
+
+export type OnMergeConclusion = "success" | "neutral";
+
 export type OnMergeInto = {
 /**
  * The Destination.
@@ -2556,9 +2554,9 @@ export type PrEnvironment = { environment: EnvironmentSummary,
  */
 deployment: DeploymentSummary | null,
 /**
- * Where its merge lands: each Environment that deploys the target branch.
+ * What its merge lands in each Environment that deploys the target branch.
  */
-destinations: Array<Destination>, };
+destinations: Array<OnMergeInto>, };
 
 export type PrPlan = { repository: RepositoryName, repository_id: RepositoryId,
 /**
@@ -2774,14 +2772,10 @@ pull_request: PullRequest | null,
  */
 environments: Array<PrEnvironment>,
 /**
- * Ready to merge: nothing waits to be synced into an Environment that deploys
- * its target branch.
+ * What its GitHub check says; none when it says nothing: closed, merged with
+ * everything landed, or without PR Environments.
  */
-passing: boolean,
-/**
- * Why, in a few words.
- */
-reason: string, };
+check: OnMergeCheck | null, };
 
 export type PutConfigFile = {
 /**

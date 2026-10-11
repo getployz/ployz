@@ -382,9 +382,12 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         view.environments[0].destinations[0].name.to_string(),
         "production"
     );
-    // Tracking the head branch is its own; nothing waits to be saved.
-    assert!(view.passing, "{view:?}");
-    assert_eq!(view.reason, "No changes for production");
+    // Tracking the head branch is its own; nothing lands.
+    assert_eq!(
+        view.check.as_ref().map(|check| check.title.as_str()),
+        Some("No config changes"),
+        "{view:?}"
+    );
     store
         .write(
             &who,
@@ -407,8 +410,10 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
             },
         )
         .unwrap();
-    assert!(view.passing);
-    assert_eq!(view.reason, "1 change goes live with this PR");
+    assert_eq!(
+        view.check.map(|check| check.title),
+        Some("1 config change".to_owned())
+    );
 }
 
 #[test]
@@ -796,8 +801,12 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
     let destinations = &view.environments[0].destinations;
     assert_eq!(destinations.len(), 1);
     assert_eq!(destinations[0].name.as_str(), "qa");
-    assert_eq!(destinations[0].changes, review.rows.len());
-    assert_eq!(view.reason, "1 change goes live with this PR");
+    let landing: Vec<String> = destinations[0]
+        .rows
+        .iter()
+        .map(|row| row.at.to_string())
+        .collect();
+    assert_eq!(landing, rows);
 }
 
 /// Run `sql` on the database at `url`, beside the Store.

@@ -73,8 +73,9 @@ production when you want them live. From the CLI, `ployz env sync --to productio
 preview does the same. A secret the preview added arrives in production **Not set** unless you
 type production's value in its row of the dialog.
 
-Ployz also posts a **Ployz · ready to merge** check on the pull request. It never blocks a merge:
-it says what goes live with the pull request, like `3 changes go live with this PR`.
+Ployz also posts a **Ployz · ready to merge** check on the pull request. It lists what the merge
+lands, like `3 config changes · TOKEN not set`, and is green, or neutral when a secret is Not set
+or production changed the same setting. It never fails, so it never blocks a merge.
 
 ## Shut down a preview
 

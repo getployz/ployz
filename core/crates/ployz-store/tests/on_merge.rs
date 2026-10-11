@@ -14,9 +14,10 @@ use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, ConfigStore,
     CreateGitService, CreateProject, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentName,
     EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, HistoryAction, HistoryPreviewQuery,
-    HistoryQuery, MergeRow, NeverSync, OnMerge, OnMergeQuery, OrganizationId, ProjectId,
-    ProjectName, Publish, PullRequest, Ride, SavedRevision, ServiceLineageId, SetMergeValue,
-    SetPrPlan, SettingPath, StageHistory, SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
+    HistoryQuery, MergeRow, NeverSync, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeQuery,
+    OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery, Ride,
+    SavedRevision, ServiceLineageId, SetMergeValue, SetPrPlan, SettingPath, StageHistory,
+    SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -867,6 +868,12 @@ fn a_merge_production_cant_take_lands_nothing_and_keeps_the_preview() {
     );
     assert!(automated.closing.is_empty() && automated.removed.is_empty());
     assert!(preview_listed(&store, &who));
+    let stuck = check(&store, &who).unwrap();
+    assert_eq!(
+        (stuck.conclusion, stuck.title.as_str()),
+        (OnMergeConclusion::Neutral, "Didn't land in production")
+    );
+    assert!(stuck.summary.contains("`web · A`"), "{stuck:?}");
 }
 
 #[test]
@@ -912,4 +919,97 @@ fn a_kept_preview_has_nothing_left_on_merge_once_it_landed() {
             .all(|destination| destination.rows.is_empty()),
         "{on_merge:?}"
     );
+    assert_eq!(check(&store, &who), None);
+}
+
+/// What pull request #5's check says.
+fn check(store: &ConfigStore, who: &Actor) -> Option<OnMergeCheck> {
+    store
+        .read(
+            who,
+            &PullRequestQuery {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+            },
+        )
+        .unwrap()
+        .check
+}
+
+#[test]
+fn the_check_says_what_lands_and_reads_neutral_over_a_conflict_or_a_missing_secret() {
+    let (store, who) = shop();
+    assert_eq!(
+        check(&store, &who),
+        Some(OnMergeCheck {
+            conclusion: OnMergeConclusion::Success,
+            title: "No config changes".into(),
+            summary: "No config changes.".into(),
+        })
+    );
+
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[("web.env.A", json!("2")), ("web.env.B", json!("new"))],
+    );
+    unset(&store, &who, "pr-5", "web.env.C");
+    assert_eq!(
+        check(&store, &who),
+        Some(OnMergeCheck {
+            conclusion: OnMergeConclusion::Success,
+            title: "3 config changes".into(),
+            summary: "- `web · A`: 1 → 2\n- `web · B`: new → new\n- `web · C`: 1 → removed".into(),
+        })
+    );
+
+    // production changed A since: the merge lands over it, said apart.
+    set(&store, &who, "production", &[("web.env.A", json!("3"))]);
+    save(&store, &who, "production");
+    let conflict = check(&store, &who).unwrap();
+    assert_eq!(conflict.conclusion, OnMergeConclusion::Neutral);
+    assert!(
+        conflict.summary.contains(
+            "### Changed in production\n\n- `web · A`: production 3 → 2\n\n\
+             The merge sets these. Undo in Ployz History reverts it."
+        ),
+        "{conflict:?}"
+    );
+}
+
+#[test]
+fn the_check_names_a_missing_secret_without_its_value_and_what_stays_here() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("web.env.TOKEN", json!({ "secret": "test-token" })),
+            ("web.env.D", json!("2")),
+        ],
+    );
+    exclude(&store, &who, "web.env.D", false);
+    let missing = check(&store, &who).unwrap();
+    assert_eq!(
+        missing,
+        OnMergeCheck {
+            conclusion: OnMergeConclusion::Neutral,
+            title: "1 config change · TOKEN not set".into(),
+            summary: "- `web · TOKEN`: not set\n\n### Stays in pr-5\n\n- `web · D`: 1 → 2".into(),
+        }
+    );
+
+    // An Edit gives it a value, which the check never shows.
+    store
+        .write(&who, &merge_value("web.env.TOKEN", Some("prod-token")))
+        .unwrap();
+    let edited = check(&store, &who).unwrap();
+    assert_eq!(
+        (edited.conclusion, edited.title.as_str()),
+        (OnMergeConclusion::Success, "1 config change")
+    );
+    assert!(edited.summary.contains("`web · TOKEN`: set"), "{edited:?}");
+    assert!(!format!("{edited:?}").contains("prod-token"));
 }

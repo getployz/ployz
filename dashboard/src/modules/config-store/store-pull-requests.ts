@@ -1,5 +1,5 @@
 import type {
-  NamedRow, PrPlan, PrPlansQuery, PullRequestQuery, PullRequestRef, RowId,
+  NamedRow, PrPlan, PrPlansQuery, PullRequestQuery, PullRequestRef, PullRequestView, RowId,
 } from "@ployz/sdk";
 import { listNames } from "#/lib/plural";
 
@@ -31,5 +31,30 @@ export function hintNotes<Hint extends NamedRow>(hints: readonly Hint[], rows: R
   return {
     at: (row: RowId | null) => hints.filter((hint) => hint.row === row),
     rest: hints.filter((hint) => !rows.has(hint.row)),
+  };
+}
+
+/** The check Ployz posts on a PR Environment's pull request: what its merge lands. Never failing, so it never blocks a merge. */
+export const PR_CHECK_NAME = "Ployz · ready to merge";
+
+/**
+ * The check run the Store's views of one pull request say to post, if any. Each Organization's Store says what the
+ * merge lands (or, once merged, what didn't); several Organizations' words join into the one check, neutral if any is.
+ */
+export function storePrCheckRun(views: readonly { slug: string; view: PullRequestView }[], appUrl: string) {
+  const saying = views.flatMap(({ slug, view }) =>
+    view.check && view.pull_request ? [{ slug, view, check: view.check, head: view.pull_request.head }] : []);
+  const [first] = saying;
+  if (!first) return null;
+  const environment = first.view.environments[0]?.environment;
+  const details = new URL(`cloud/${first.slug}/${environment?.project ?? ""}/${environment?.name ?? ""}`, appUrl);
+  details.searchParams.set("panel", "on-merge");
+  return {
+    headSha: first.head,
+    name: PR_CHECK_NAME,
+    conclusion: saying.some(({ check }) => check.conclusion === "neutral") ? "neutral" as const : "success" as const,
+    detailsUrl: details.href,
+    title: saying.map(({ check }) => check.title).join("; "),
+    summary: `${saying.map(({ check }) => check.summary).join("\n\n")}\n\n[View in Ployz](${details.href})`,
   };
 }
