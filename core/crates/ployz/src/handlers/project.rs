@@ -1,6 +1,7 @@
 //! `ployz project`: Projects in the Config Store. `rm` removes a Project through
 //! the same teardown path as `env rm`, one Environment at a time.
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
@@ -55,12 +56,12 @@ pub(crate) fn command() -> Command {
         ))
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "new" => new,
-        "ls" => ls,
-        "rename" => rename,
-        "rm" => rm,
+        "new" => cloud(Never, new),
+        "ls" => cloud(Never, ls),
+        "rename" => cloud(Never, rename),
+        "rm" => cloud(Always, rm),
         _ => return None,
     })
 }

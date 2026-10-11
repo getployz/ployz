@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::task::JoinHandle;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
@@ -18,7 +19,7 @@ use crate::control::engine::Tempo;
 use crate::control::plane::ControlPlane;
 use crate::control::test_pg;
 use crate::domain::{AgentName, Region};
-use crate::run::{self, Shutdown};
+use crate::run::{self, Fatal, Shutdown, Trigger};
 
 const STEP: Duration = Duration::from_secs(30);
 
@@ -64,6 +65,58 @@ async fn until(what: &str, mut check: impl AsyncFnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("{what} did not happen within {STEP:?}");
+}
+
+/// The whole checker in `all` mode as the control role, probing loopback `port`.
+async fn checker(
+    pg: &test_pg::Postgres,
+    admin: &Client,
+    port: u16,
+) -> (Trigger, JoinHandle<Result<(), Fatal>>) {
+    let crypto = Arc::new(rustls::crypto::ring::default_provider());
+    let (trigger, shutdown) = Shutdown::new();
+    let (plane_stop, plane_shutdown) = Shutdown::new();
+    let region = Region::parse("local").unwrap();
+    let control_url = pg
+        .role(admin, "uptime_control", include_str!("../control-role.sql"))
+        .await;
+    let config = ControlConfig {
+        database_url: Secret::new(&control_url),
+        regions: vec![RegionConfig {
+            region: region.clone(),
+            name: None,
+        }],
+        agent_token: None,
+        listen: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+    };
+    let plane = ControlPlane::start_with(
+        config,
+        crypto.clone(),
+        plane_shutdown,
+        Tempo { divisor: 30 },
+    )
+    .await
+    .unwrap();
+    let mut prober =
+        Prober::new(ProbeConfig::default(), crypto, AgentName("local".into())).unwrap();
+    prober.loopback_ok = true;
+    prober.loopback_port = Some(port);
+    let agent_run = AgentRun {
+        max_inflight: 64,
+        flush_every: Duration::from_millis(100),
+        flush_at: 50,
+        max_unacked: 1_000,
+    };
+    let listen: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let all = tokio::spawn(run::all(
+        plane,
+        plane_stop,
+        Arc::new(prober),
+        agent_run,
+        listen,
+        shutdown,
+    ));
+    (trigger, all)
 }
 
 async fn count(admin: &Client, sql: &str, id: Uuid) -> i64 {
@@ -123,53 +176,7 @@ async fn an_outage_opens_one_incident_recovers_and_survives_a_config_edit() {
     let status = Arc::new(AtomicU16::new(200));
     let port = responder(status.clone(), Duration::ZERO, Arc::default()).await;
 
-    let crypto = Arc::new(rustls::crypto::ring::default_provider());
-    let (trigger, shutdown) = Shutdown::new();
-    let (plane_stop, plane_shutdown) = Shutdown::new();
-    let region = Region::parse("local").unwrap();
-    let control_url = pg
-        .role(
-            &admin,
-            "uptime_control",
-            include_str!("../control-role.sql"),
-        )
-        .await;
-    let config = ControlConfig {
-        database_url: Secret::new(&control_url),
-        regions: vec![RegionConfig {
-            region: region.clone(),
-            name: None,
-        }],
-        agent_token: None,
-        listen: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-    };
-    let plane = ControlPlane::start_with(
-        config,
-        crypto.clone(),
-        plane_shutdown,
-        Tempo { divisor: 30 },
-    )
-    .await
-    .unwrap();
-    let mut prober =
-        Prober::new(ProbeConfig::default(), crypto, AgentName("local".into())).unwrap();
-    prober.loopback_ok = true;
-    prober.loopback_port = Some(port);
-    let agent_run = AgentRun {
-        max_inflight: 64,
-        flush_every: Duration::from_millis(100),
-        flush_at: 50,
-        max_unacked: 1_000,
-    };
-    let listen: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let all = tokio::spawn(run::all(
-        plane,
-        plane_stop,
-        Arc::new(prober),
-        agent_run,
-        listen,
-        shutdown,
-    ));
+    let (trigger, all) = checker(&pg, &admin, port).await;
 
     until("routine results landing", async || {
         count(&admin, RESULTS, check).await >= 2
@@ -279,53 +286,7 @@ async fn a_probe_still_in_flight_at_shutdown_is_written_before_all_mode_exits() 
     let hold = Duration::from_secs(8);
     let port = responder(Arc::new(AtomicU16::new(200)), hold, requests.clone()).await;
 
-    let crypto = Arc::new(rustls::crypto::ring::default_provider());
-    let (trigger, shutdown) = Shutdown::new();
-    let (plane_stop, plane_shutdown) = Shutdown::new();
-    let region = Region::parse("local").unwrap();
-    let control_url = pg
-        .role(
-            &admin,
-            "uptime_control",
-            include_str!("../control-role.sql"),
-        )
-        .await;
-    let config = ControlConfig {
-        database_url: Secret::new(&control_url),
-        regions: vec![RegionConfig {
-            region: region.clone(),
-            name: None,
-        }],
-        agent_token: None,
-        listen: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
-    };
-    let plane = ControlPlane::start_with(
-        config,
-        crypto.clone(),
-        plane_shutdown,
-        Tempo { divisor: 30 },
-    )
-    .await
-    .unwrap();
-    let mut prober =
-        Prober::new(ProbeConfig::default(), crypto, AgentName("local".into())).unwrap();
-    prober.loopback_ok = true;
-    prober.loopback_port = Some(port);
-    let agent_run = AgentRun {
-        max_inflight: 64,
-        flush_every: Duration::from_millis(100),
-        flush_at: 50,
-        max_unacked: 1_000,
-    };
-    let listen: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let all = tokio::spawn(run::all(
-        plane,
-        plane_stop,
-        Arc::new(prober),
-        agent_run,
-        listen,
-        shutdown,
-    ));
+    let (trigger, all) = checker(&pg, &admin, port).await;
 
     until("a probe reaching the target", async || {
         requests.load(Ordering::SeqCst) >= 1
@@ -341,6 +302,74 @@ async fn a_probe_still_in_flight_at_shutdown_is_written_before_all_mode_exits() 
     assert!(
         count(&admin, RESULTS, check).await >= 1,
         "the in-flight probe's result was lost at shutdown"
+    );
+    drop(pg);
+}
+
+const REQUEST_PROBE: &str = "UPDATE uptime_check SET probe_requested_at = now() WHERE id = $1";
+
+/// The interval is an hour (two minutes at this tempo) and rechecks wait a minute, so within one
+/// step only a requested probe can open or close.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_requested_probe_opens_and_closes_without_waiting_for_the_schedule() {
+    let (pg, admin) = test_pg::postgres().await;
+    let org = test_pg::org(&admin).await;
+    let check = test_pg::check(&admin, org, "http://127.0.0.1/").await;
+    admin
+        .execute(
+            "UPDATE uptime_check SET interval_seconds = 3600, timeout_ms = 1000 WHERE id = $1",
+            &[&check],
+        )
+        .await
+        .unwrap();
+    let status = Arc::new(AtomicU16::new(500));
+    let port = responder(status.clone(), Duration::ZERO, Arc::default()).await;
+    let (trigger, all) = checker(&pg, &admin, port).await;
+
+    admin.execute(REQUEST_PROBE, &[&check]).await.unwrap();
+    until("a requested probe opening an incident", async || {
+        count(&admin, OPEN_INCIDENTS, check).await == 1
+    })
+    .await;
+
+    status.store(200, Ordering::SeqCst);
+    admin.execute(REQUEST_PROBE, &[&check]).await.unwrap();
+    until("a requested probe closing it", async || {
+        count(&admin, OPEN_INCIDENTS, check).await == 0
+    })
+    .await;
+    assert_eq!(
+        closed_kinds(&admin, check).await,
+        vec!["observed".to_owned()]
+    );
+    let closed_by: Vec<String> = admin
+        .query(
+            "SELECT o->>'kind' FROM uptime_incident, \
+             jsonb_array_elements(closed_by->'observations') o WHERE check_id = $1",
+            &[&check],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(closed_by, ["triggered", "triggered"]);
+
+    trigger.fire();
+    tokio::time::timeout(Duration::from_secs(35), all)
+        .await
+        .expect("all mode did not stop within 35 s")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        count(
+            &admin,
+            "SELECT count(*) FROM uptime_result WHERE check_id = $1 AND kind = 'triggered'",
+            check
+        )
+        .await,
+        4,
+        "two pairs of spaced probes, all written"
     );
     drop(pg);
 }
