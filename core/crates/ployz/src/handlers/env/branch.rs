@@ -70,12 +70,9 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if let Some(sync) = matches.get_one::<String>("undo") {
         return undo(root, sync);
     }
-    // Omitted, the Store decides: at the merge from a PR Environment into a Destination.
-    let when = match (matches.get_flag("at-merge"), matches.get_flag("close")) {
-        (true, _) => Some(When::AtMerge),
-        (false, true) => Some(When::Now { close_after: true }),
-        (false, false) => None,
-    };
+    let when = matches
+        .get_flag("close")
+        .then_some(When::Now { close_after: true });
     let query = match named("from")? {
         Some(from) => SyncQuery {
             from,
@@ -234,20 +231,16 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
     })
 }
 
-/// `env sync --to [ENV]` or `env sync --from ENV`, and `--at-merge`, as given.
+/// `env sync --to [ENV]` or `env sync --from ENV`, as given.
 fn sync_words(matches: &ArgMatches) -> Vec<&str> {
-    let mut words = match matches.get_one::<String>("from") {
+    match matches.get_one::<String>("from") {
         Some(from) => vec!["env", "sync", "--from", from.as_str()],
         None => {
             let mut words = vec!["env", "sync", "--to"];
             words.extend(matches.get_one::<String>("to").map(String::as_str));
             words
         }
-    };
-    if matches.get_flag("at-merge") {
-        words.push("--at-merge");
     }
-    words
 }
 
 fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<(), Error> {

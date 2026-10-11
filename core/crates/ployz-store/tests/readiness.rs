@@ -14,13 +14,13 @@
 use ployz_core::RpcErrorCode;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
-    Actor, Admit, AuthorizedRepository, BranchQuery, Change, Command, ConditionalSyncState,
-    ConfigStore, CreateBranch, CreateGitService, CreateProject, Deploy, DeploymentId, DiffQuery,
-    DiffView, Discard, DiscardTarget, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
-    IncludeProposal, Included, OrganizationId, ProjectId, ProjectName, ProposalId,
-    ProposalIncluded, Publish, PullRequest, PullRequestQuery, Readiness, RemoveProposal, RowId,
-    SecretRow, ServiceLineageId, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView,
-    SyncedWhen, SystemEvent, Trusted, UndoSync, When, Written,
+    Actor, Admit, AuthorizedRepository, Change, Command, ConditionalSyncState, ConfigStore,
+    CreateBranch, CreateGitService, CreateProject, Deploy, DeploymentId, DiffQuery, DiffView,
+    Discard, DiscardTarget, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, IncludeProposal,
+    Included, OrganizationId, ProjectId, ProjectName, ProposalId, ProposalIncluded, Publish,
+    PullRequest, PullRequestQuery, Readiness, RemoveProposal, RowId, SecretRow, ServiceLineageId,
+    SetPrPlan, SettingPath, SyncChanges, SyncQuery, SyncView, SyncedWhen, SystemEvent, Trusted,
+    UndoSync, When, Written,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -315,9 +315,10 @@ fn observe(db: &Db, facts: PullRequest) -> ployz_store::Automated {
     automated
 }
 
-/// What a Sync from `pr-5` carries into `into`, omitted its only Destination.
+/// What a Sync from `pr-5` at the merge carries into `into`, omitted its only
+/// Destination.
 fn offered(db: &Db, into: Option<&str>) -> SyncView {
-    read_sync(db, into, None)
+    read_sync(db, into, Some(When::AtMerge))
 }
 
 /// What a Sync from `pr-5` into `into` carries now.
@@ -786,49 +787,6 @@ fn a_merge_menu_sync_refreshes_an_included_pr_now() {
     assert_eq!((listed.len(), listed[0].offered), (1, false));
 }
 
-/// A Sync now from pr-5 into production, which #5 hasn't merged into, is offered
-/// as a Merge-menu Sync is, replacing the offer: the draft, its version and its
-/// History are as they were. It can't close pr-5.
-#[test]
-fn a_sync_now_into_a_destination_is_offered_while_the_pr_is_unmerged() {
-    let db = shop();
-    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
-    let offered_first = offer(&db);
-    set(&db, "pr-5", &[("web.env.MODE", json!("slow"))]);
-    let (before, version) = (db.production(), diff(&db).version);
-    let review = offered_now(&db, "production");
-    assert_eq!(review.at_merge, Some(backend::pr_number(5)));
-    let mut request = sync(&review);
-    request.when = Some(When::Now { close_after: false });
-    let synced = synced(&db, &request);
-    let SyncedWhen::AtMerge { conditional_sync } = &synced.when else {
-        panic!("a Sync now of an unmerged PR into its Destination offers")
-    };
-    assert_eq!(names(&conditional_sync.rows), ["web.env.MODE"]);
-    let after = db.production();
-    assert_eq!(after.len(), before.len());
-    assert_eq!(after[..3], before[..3]);
-    assert_eq!(after[4..], before[4..]);
-    assert_eq!(diff(&db).version, version);
-    assert!(env(&db, "production").get("MODE").is_none());
-    let listed = included(&db);
-    assert_eq!((listed.len(), listed[0].offered), (1, true));
-    assert_ne!(listed[0].proposal, offered_first);
-    assert_eq!(listed[0].proposal, proposal_of(&synced));
-
-    request.when = Some(When::Now { close_after: true });
-    let refused = db
-        .store
-        .write(&db.who, &Command::Sync(request))
-        .unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
-    assert_eq!(
-        refused.message,
-        "#5 isn't merged: its Sync is queued, so sync without close_after"
-    );
-    assert_eq!(db.production(), after);
-}
-
 /// Once #5 merged into what production deploys, a Sync now from pr-5, kept open by
 /// its plan, lands in the draft directly, which Save then takes.
 #[test]
@@ -1198,24 +1156,6 @@ fn discarding_the_whole_draft_keeps_offers() {
 }
 
 #[test]
-fn a_pr_environment_syncs_into_an_environment_its_merge_doesnt_reach_now() {
-    let db = shop();
-    // staging is made from production, which deploys main: it isn't a Destination.
-    branch(&db, "staging");
-    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
-    let review = offered(&db, Some("staging"));
-    assert_eq!(review.at_merge, None);
-    let synced = synced(&db, &sync(&review));
-    let SyncedWhen::Now { staged, .. } = synced.when else {
-        panic!("a Sync into staging stages now")
-    };
-    assert_eq!(names(&staged), ["web"]);
-    assert_eq!(env(&db, "staging")["MODE"], json!("fast"));
-    // It is still waiting to go to production.
-    assert_eq!(check(&db), (false, "1 change to sync in Ployz".into()));
-}
-
-#[test]
 fn a_follow_into_the_pr_environment_leaves_its_offer_standing() {
     let db = shop();
     set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
@@ -1350,34 +1290,5 @@ fn a_follow_into_the_pr_environment_marks_its_included_proposal_newer() {
     assert_eq!(
         (after.included[0].proposal.clone(), after.included[0].newer),
         (proposal, true)
-    );
-}
-
-#[test]
-fn a_pr_environment_syncs_into_its_parent_now_and_into_its_destination_at_the_merge() {
-    // pr-5 is a Branch of staging, which the merge doesn't reach.
-    let db = shop_from("staging");
-    set(&db, "pr-5", &[("web.env.MODE", json!("fast"))]);
-    let to_parent = db
-        .store
-        .read(
-            &db.who,
-            &BranchQuery {
-                environment: at("pr-5"),
-            },
-        )
-        .unwrap()
-        .to_parent;
-    assert_eq!(to_parent, 1);
-    let into_parent = offered(&db, Some("staging"));
-    assert_eq!(into_parent.at_merge, None);
-    let synced = synced(&db, &sync(&into_parent));
-    assert!(matches!(synced.when, SyncedWhen::Now { .. }));
-    assert_eq!(env(&db, "staging")["MODE"], json!("fast"));
-    // Unnamed, the Sync is into production, at the merge.
-    let review = offered(&db, None);
-    assert_eq!(
-        (review.into.name.as_str(), review.at_merge),
-        ("production", Some(backend::pr_number(5)))
     );
 }

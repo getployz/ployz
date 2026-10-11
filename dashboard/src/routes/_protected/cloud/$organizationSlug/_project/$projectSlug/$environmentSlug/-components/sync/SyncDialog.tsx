@@ -10,7 +10,6 @@ import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
-import { includeAfterMerge } from "#/modules/config-store/store-offers";
 import { flipRow, flipsMoved, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -19,8 +18,7 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 /**
  * The one review of a Sync: each change `from` would put in `into` as one row, ticked as the Store suggests. Unticked,
  * a change stays out this time and can be marked Never sync; the footer lists what is never synced, with undo.
- * Nothing deploys: the changes become `into`'s changes to deploy, or, from a PR Environment into its Destination, go
- * offered there to include after the pull request merges. A secret `into` lacks arrives by name only: its row takes
+ * Nothing deploys: the changes become `into`'s changes to deploy. A secret `into` lacks arrives Not set: its row takes
  * `into`'s own value. Monochrome: pink stays for staged intent and Deploy.
  */
 export function SyncDialog({ organizationSlug, from, into, closable, onClose, onSynced }: {
@@ -28,7 +26,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   /** Offer to close `from` once synced: a Branch that isn't kept, into its Parent. */
   closable: boolean;
   onClose: () => void;
-  /** How many changes synced, and the Sync: what Undo passes, and the offer for one at the merge. */
+  /** How many changes synced, and the Sync: what Undo passes. */
   onSynced: (changes: number, synced: Synced) => void;
 }) {
   const writer = useStoreWriter(organizationSlug);
@@ -45,9 +43,6 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
   const [listing, setListing] = useState(false);
   const name = from.environment ?? "";
   const rows = view.ok ? view.value.rows : [];
-  const atMerge = view.ok ? view.value.at_merge : null;
-  // A PR Environment closes with its pull request.
-  const closing = closable && atMerge === null;
   const picked = syncPicks(rows, flips);
   const pickedRows = new Set(picked.map((row) => row.row));
   const neverSync = (environment: string, row: RowId, off: boolean) =>
@@ -57,7 +52,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
     if (!view.ok) return;
     setPending(true);
     setStale(false);
-    // A value lands with the Sync, in one transaction, or with the offer for its Include.
+    // A value lands with the Sync, in one transaction.
     const typed: Record<RowId, string> = {};
     for (const row of picked) {
       const value = values[row.row];
@@ -66,10 +61,9 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
     let written;
     try {
       // Awaited: the page opens the receiver once it holds the changes, and a stale review stays open, refetched.
-      // The Store decides when it lands, as the review read it; only closing after says now.
       written = await writer.commit({
         command: "sync", from, into: { project: from.project, environment: into }, picks: [...pickedRows],
-        values: typed, version: view.value.version, id: syncId, when: closing && closeAfter ? { kind: "now", close_after: true } : null,
+        values: typed, version: view.value.version, id: syncId, when: closable && closeAfter ? { kind: "now", close_after: true } : null,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
       // Any other refusal is the writer's toast.
@@ -88,7 +82,6 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
           <DialogTitle>Sync to {into}</DialogTitle>
           <DialogDescription>
             {!view.ok ? view.refusal.message : rows.length === 0 ? `Nothing to sync: ${into} has every change from ${name}.`
-              : atMerge !== null ? includeAfterMerge(into, atMerge)
               : `These changes from ${name} become ${into}'s changes to deploy.`}
           </DialogDescription>
         </DialogHeader>
@@ -118,7 +111,7 @@ export function SyncDialog({ organizationSlug, from, into, closable, onClose, on
             }} />)}
           </ul>
         ) : null}
-        {closing && rows.length ? (
+        {closable && rows.length ? (
           <label className="flex shrink-0 items-center gap-3 border-t pt-4">
             <Checkbox checked={closeAfter} onCheckedChange={setCloseAfter} />
             Close {name} after syncing

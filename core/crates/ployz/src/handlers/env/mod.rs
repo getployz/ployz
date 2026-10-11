@@ -133,12 +133,9 @@ pub(crate) fn command() -> Command {
                          picked. A Branch follows its Parent on its own: what the Parent \
                          deploys is staged in it, but where the Branch changed a setting \
                          too, or discarded the Parent's change, the Parent's value is a \
-                         hint `ployz diff` lists; --take PARENT stages it. With --at-merge, \
-                         from a PR Environment into one of its Destinations, it is queued: \
-                         apply it in the Destination's Changes once the pull request \
-                         merges. A secret the receiver lacks arrives without its value unless \
-                         --value gives it one. --undo SYNC undoes a Sync while what it staged \
-                         is undeployed and unchanged, or withdraws a queued one. Example: ployz env \
+                         hint `ployz diff` lists; --take PARENT stages it. A secret the receiver \
+                         lacks arrives Not set unless --value gives it one. --undo SYNC undoes \
+                         a Sync while what it staged is undeployed and unchanged. Example: ployz env \
                          sync --to --env fix-api --skip api.env.DEBUG --close",
                     ),
             )
@@ -148,7 +145,7 @@ pub(crate) fn command() -> Command {
                     .num_args(0..=1)
                     .required_unless_present_any(["from", "take", "undo"])
                     .conflicts_with("from")
-                    .help("Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination"),
+                    .help("Sync into ENV; with no value, the Branch's Parent"),
             )
             .arg(
                 value("from", None)
@@ -177,25 +174,20 @@ pub(crate) fn command() -> Command {
             .arg(switch("plan", None).help("List the changes and the version; sync nothing"))
             .arg(
                 switch("close", None)
-                    .help("Close the Branch once its changes landed in its Parent; refused for a kept Branch, for any other --to, and before a PR Environment's pull request merges (\"#N isn't merged: its Sync is queued, so sync without --close\")")
+                    .help("Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to")
                     .conflicts_with("plan"),
-            )
-            .arg(
-                switch("at-merge", None)
-                    .help("Queue the changes for --to, to apply in its Changes once the pull request merges; the default from a PR Environment into a Destination")
-                    .conflicts_with("close"),
             )
             .arg(
                 value("undo", None)
                     .value_name("SYNC")
-                    .help("Undo the Sync a sync printed, or withdraw a queued one")
-                    .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close", "at-merge"]),
+                    .help("Undo the Sync a sync printed")
+                    .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close"]),
             )
             .arg(
                 value("take", None)
                     .value_name("PARENT")
                     .help("Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them")
-                    .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo", "at-merge"]),
+                    .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo"]),
             ),
         )
         .subcommand(

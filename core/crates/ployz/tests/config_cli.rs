@@ -813,12 +813,7 @@ fn an_agent_branches_an_environment_without_servers() {
         assert_eq!(unkept["branch"]["kept"], json!(false));
         assert!(unkept.get("next").is_none());
 
-        // Syncs at a merge are a PR Environment's; a take names the Parent, not an id.
-        let at_merge = error(
-            store,
-            &["env", "sync", "--to", "--env", "fix-web", "--at-merge"],
-        );
-        assert_eq!(at_merge["code"], json!("invalid_argument"));
+        // A take names the Parent, not an id.
         failed(
             store,
             &["env", "sync", "--undo", "sync", "--only", "web.image"],
@@ -2891,7 +2886,7 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
 /// Only the in-process Store: Cloud reports the pull request, which the test does
 /// here through the Store itself.
 #[test]
-fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
+fn a_sync_from_a_pr_environment_stages_in_production_now() {
     let store = Target::Local(tempfile::tempdir().unwrap());
     let Target::Local(dir) = &store else {
         unreachable!("a local Store")
@@ -2967,62 +2962,28 @@ fn an_agent_syncs_a_pr_environment_at_its_merge_and_withdraws_it() {
         "pr-token\n",
     );
     assert_eq!(code, Some(0), "{set}");
-    // From a PR Environment, --to with no value is its only Destination, at the merge.
+    // From a PR Environment, --to with no value is its Parent, and the Sync stages now.
     let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
     assert_eq!(
         (&plan["into"]["name"], &plan["at_merge"]),
-        (&json!("production"), &json!(5))
+        (&json!("production"), &Value::Null)
     );
     assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
-    // Asked for, --at-merge stays in the command the plan offers next.
-    let plan = ok(
-        &store,
-        &[
-            "env",
-            "sync",
-            "--to",
-            "--at-merge",
-            "--plan",
-            "--env",
-            "pr-5",
-        ],
-    );
-    assert!(
-        plan["next"].as_str().unwrap().contains(" --at-merge "),
-        "{plan}"
-    );
     let synced = ok(&store, &["env", "sync", "--to", "--env", "pr-5"]);
-    let conditional_sync = &synced["when"]["conditional_sync"];
     assert_eq!(
-        (&synced["when"]["kind"], &conditional_sync["state"]),
-        (&json!("at_merge"), &json!("standing"))
+        synced["when"],
+        json!({ "kind": "now", "staged": ["web"], "closing": false })
     );
     assert_eq!(
-        labels(&conditional_sync["rows"]),
-        ["web.env.MODE", "web.env.TOKEN"]
+        ok(&store, &["get", "web.env.MODE", "--env", "production"])["settings"][0]["value"],
+        json!("fast")
     );
-    assert!(synced.get("next").is_none());
 
     let sync = synced["sync"].as_str().unwrap();
     let undone = ok(&store, &["env", "sync", "--undo", sync]);
     assert_eq!(undone["into"]["name"], json!("production"));
-    let plan = ok(
-        &store,
-        &[
-            "env",
-            "sync",
-            "--to",
-            "--at-merge",
-            "--plan",
-            "--env",
-            "pr-5",
-        ],
-    );
+    let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
     assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
-    failed(&store, &["env", "sync", "--undo", sync, "--only", "web"], 2);
-    // Only a PR Environment syncs at a merge.
-    let refused = error(&store, &["env", "sync", "--to", "pr-5", "--at-merge"]);
-    assert_eq!(refused["code"], json!("invalid_argument"));
 }
 
 #[test]

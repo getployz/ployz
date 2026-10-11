@@ -18,10 +18,6 @@ export const SET_VALUE = "Set value";
 /** The Sync toast for a Merge-menu Sync. */
 export const offeredTo = (into: string) => `Queued for ${into}`;
 
-/** The Sync dialog's line for a Merge-menu Sync: it starts the sentence, so the Destination's name does too. */
-export const includeAfterMerge = (into: string, number: number) =>
-  `${into.charAt(0).toUpperCase()}${into.slice(1)} can apply these once #${number} merges.`;
-
 /** Why Save and Deploy wait: an included pull request that isn't ready. */
 export const needs = (number: number) => `Waiting for #${number}`;
 

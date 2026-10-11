@@ -57,7 +57,7 @@ Open previews are listed under **Open now** in the panel, and in the environment
 the environment they start from. Each one is a [branch](environments.md) of that environment, so
 you change, sync and close it like any other branch.
 
-## Queue changes for production until the merge
+## Sync changes to production
 
 Code reaches production through Git. Setting changes made in the preview, like a new variable or
 a new service, don't. Sync them:
@@ -65,46 +65,13 @@ a new service, don't. Sync them:
 1. Open the preview. The Sync button at the top right of the canvas reads **Sync to production ·
    3**. Click it.
 2. Check each change, as for any [sync](environments.md#sync-the-change-to-production). The dialog
-   says "Production can apply these once #142 merges."
+   says "These changes from pr-142 become production's changes to deploy."
 3. Click **Sync 3 changes**.
 
-Production doesn't change yet: the changes are **queued** there. The toast says **Queued for
-production**, the preview's button reads **Queued**, and production's bottom bar shows **PR #142 ·
-Queued**. From the CLI, `ployz env sync --to production` from the preview prints the same: "Queued
-for production: apply it in Changes once PR #142 merges." A sync that asks to land now, like the
-SDK's `when: now`, is queued the same way until #142 merges into a branch production deploys, and
-`--close` is refused until then: `#142 isn't merged: its Sync is queued, so sync without --close`.
-
-To apply the changes, open production's bottom bar and click **Details**. **Queued** lists
-`pr-142 · 3 changes` with **Apply**. Click it, and the changes move to **Included** as production's
-changes to save or deploy. Each pull request's row says where it stands:
-
-| Label | Meaning |
-|---|---|
-| **Waiting for #142** | The pull request is still open. |
-| **Merged** | It merged into a branch production deploys. |
-| **Closed** | It closed without merging. |
-| **Merged into release** | It merged into `release`, a branch production doesn't deploy. |
-
-**Save** and **Deploy** wait until every included pull request is **Merged**: they're turned off
-and say **Waiting for #142**. Remove a row that won't get there to save the rest. `ployz env
-publish` and `ployz deploy` refuse the same way, with `#142 isn't merged: Remove it to save the
-rest.`
-
-- **Changed the preview again?** Sync again. Before you click **Apply**, the new sync replaces
-  the queued one. After, it updates production's changes at once.
-- **Changed your mind?** Click **Undo** in the toast, or **Undo sync to production** in the Sync
-  button's ▾ menu. In production, **Remove** in the row's ⋮ menu drops it too, in one click.
-  Closing the pull request or changing its base branch keeps it queued: the row then reads
-  **Closed** or **Merged into** the other branch.
-- **Production changed the same setting meanwhile?** **Apply** keeps production's value for that
-  setting. Its **Details** show the pull request's value, "PR #142: …", with **Use** to take it.
-- **Added a secret?** Its value stays in the preview. Type production's value in the secret's row
-  of the Sync dialog, and it is queued with the changes. If you didn't, **Apply** asks for it: type
-  it into **Set value** and click **Apply** again. A value is never shown back, only **Value set**.
-
-The changes go to the environment that deploys the pull request's base branch, which may not be
-the one the preview started from. Where several do, pick one from the Sync button's ▾ menu.
+The changes become production's changes to deploy now, before the pull request merges. Deploy
+production when you want them live. From the CLI, `ployz env sync --to production` from the
+preview does the same. A secret the preview added arrives in production **Not set** unless you
+type production's value in its row of the dialog.
 
 Ployz also posts a **Ployz · ready to merge** check on the pull request, and the Sync button's ▾
 menu shows it. It asks for action, like `3 changes to sync in Ployz`, while the preview has

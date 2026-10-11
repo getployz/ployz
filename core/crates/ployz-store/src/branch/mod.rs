@@ -137,16 +137,14 @@ pub enum HintSource {
     Parent(EnvironmentName),
 }
 
-/// When a Sync's changes land. Omitted: at the merge from a PR Environment into one
-/// of its Destinations, else now.
+/// When a Sync's changes land. Omitted: now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum When {
-    /// Staged in the receiver now; offered, as [`When::AtMerge`], from a PR Environment
-    /// into one of its Destinations its pull request hasn't merged into.
+    /// Staged in the receiver now.
     Now {
         /// Close the Branch once its changes landed in its Parent: refused for a
-        /// kept Branch, for a Sync into anything but its Parent, and for one offered.
+        /// kept Branch, and for a Sync into anything but its Parent.
         #[serde(default)]
         #[ts(as = "Option<bool>", optional)]
         close_after: bool,

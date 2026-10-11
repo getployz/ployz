@@ -3757,14 +3757,12 @@ export type SyncChanges = {
  */
 from: EnvironmentRef,
 /**
- * Where they land, in the same Project; omitted, a PR Environment's only
- * Destination at the merge, else the sender's Parent.
+ * Where they land, in the same Project; omitted, the sender's Parent, or at the
+ * merge a PR Environment's only Destination.
  */
 into?: EnvironmentRef | null,
 /**
- * When they land; omitted, at the merge from a PR Environment into one of its
- * Destinations, else now. Now into a Destination the pull request hasn't merged
- * into is at the merge too.
+ * When they land; omitted, now.
  */
 when?: When | null,
 /**
@@ -4253,7 +4251,7 @@ export type WarmRequest = { switch: Switch, name: DockerVolumeName, };
 export type When = { "kind": "now",
 /**
  * Close the Branch once its changes landed in its Parent: refused for a
- * kept Branch, for a Sync into anything but its Parent, and for one offered.
+ * kept Branch, and for a Sync into anything but its Parent.
  */
 close_after?: boolean, } | { "kind": "at_merge" };
 

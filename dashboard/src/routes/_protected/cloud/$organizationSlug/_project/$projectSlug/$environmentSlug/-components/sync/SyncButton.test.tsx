@@ -221,27 +221,22 @@ it("keeps a kept Branch open after syncing: no Close checkbox", async () => {
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
 });
 
-it("syncs a PR Environment into its Destination at the merge, staying put, and Undo withdraws it", async () => {
-  const app = open({ branch: branchView({ pull_request: pr142 }), sync: syncView({ at_merge: 142 }), pullRequest: pullRequestView(false) });
+it("syncs a PR Environment into production now and opens production, with no Close", async () => {
+  const app = open({ branch: branchView({ pull_request: pr142 }), pullRequest: pullRequestView(false) });
   const sync = await dialog();
-  expect(sync.getByText("Production can apply these once #142 merges.")).toBeTruthy();
+  expect(sync.getByText("These changes from fix-api become production's changes to deploy.")).toBeTruthy();
   // A PR Environment closes with its pull request.
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
   fireEvent.change(sync.getByLabelText("Set production's value of STRIPE_WEBHOOK_SECRET"), { target: { value: "whsec" } });
   fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
   await waitFor(() => expect(app.success).toHaveBeenCalled());
-  // The value goes with the offer, for its Include.
   const production = { project: "shop", environment: "production" };
   expect(app.commands()[0]).toMatchObject({
     command: "sync", from: fixApi, into: production, when: null,
     values: { "a:env.STRIPE_WEBHOOK_SECRET": "whsec" },
   });
-  expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/fix-api");
-  expect(app.success.mock.calls.at(0)?.[0]).toBe("Queued for production");
-  // SAFETY: the Sync button's toast action is a label and a click, never a node.
-  const action = app.success.mock.calls.at(0)?.[1]?.action as Action | undefined;
-  action?.onClick(asTestDouble<MouseEvent<HTMLButtonElement>>()({}));
-  await waitFor(() => expect(app.commands()[1]).toEqual({ command: "undo_sync", sync: "sync-1" }));
+  expect(app.router.state.location.pathname).toBe("/cloud/acme/shop/production");
+  expect(app.success.mock.calls.at(0)?.[0]).toBe("Synced 4 changes from fix-api");
 });
 
 it("reads Queued once its Sync is queued, with the GitHub check and Undo in its menu", async () => {

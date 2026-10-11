@@ -93,12 +93,17 @@ it("lists what is never synced from the footer, and offers to close the Branch a
   expect(list.getByText(/api, marked in fix-api/u)).toBeTruthy();
 });
 
-it("says a Sync at the merge is for its Destination to include after, offers no Close, and asks for a value", async () => {
-  open({ view: syncView({ at_merge: 142, rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: {} })] }) });
+it("syncs a PR Environment into production now, with production's value for a secret and no Close", async () => {
+  const { write } = open({ closable: false, view: syncView({ rows: [row("a:variables.TOKEN", "api", "env.TOKEN", { secret: {} })] }) });
   const sync = await dialog();
-  expect(sync.getByText("Production can apply these once #142 merges.")).toBeTruthy();
+  expect(sync.getByText("These changes from fix-api become production's changes to deploy.")).toBeTruthy();
   expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
-  expect(sync.getByLabelText("Set production's value of TOKEN").getAttribute("placeholder")).toBe("Set production's value");
+  fireEvent.change(sync.getByLabelText("Set production's value of TOKEN"), { target: { value: "s3cret" } });
+  fireEvent.click(sync.getByRole("button", { name: "Sync 1 change" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  expect(write.mock.calls[0]![0].data.command).toMatchObject({
+    command: "sync", into: { environment: "production" }, values: { "a:variables.TOKEN": "s3cret" }, when: null,
+  });
 });
 
 it("holds a row another source's included change holds: unticked, Included with that source, no Never sync", async () => {
