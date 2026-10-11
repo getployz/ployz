@@ -1,0 +1,43 @@
+{
+  "openedBy": {
+    "quorum": { "distinctRegions": 2 },
+    "observations": [
+      {
+        "region": "eu-west",
+        "kind": "confirm",
+        "verdict": "fail",
+        "status": 0,
+        "failedPhase": "connect",
+        "error": "connection_refused",
+        "remoteIp": "203.0.113.7",
+        "at": "2024-02-29T12:34:56.789Z"
+      },
+      {
+        "region": "us-east",
+        "kind": "routine",
+        "verdict": "fail",
+        "status": 503,
+        "failedPhase": null,
+        "error": null,
+        "remoteIp": null,
+        "at": "2000-02-29T00:00:00.123Z"
+      }
+    ]
+  },
+  "observedClosedBy": {
+    "kind": "observed",
+    "quorum": { "oneRegion": { "probes": 2, "spacingMs": 30000 } },
+    "observations": [
+      {
+        "region": "eu-west",
+        "kind": "recheck",
+        "verdict": "pass",
+        "status": 200,
+        "failedPhase": null,
+        "error": null,
+        "remoteIp": "2001:db8::1",
+        "at": "2024-02-29T12:34:56.789Z"
+      }
+    ]
+  }
+}

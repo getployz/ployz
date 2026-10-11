@@ -84,22 +84,18 @@ fn failing() -> Evidence {
     }
 }
 
+/// The JSON the dashboard parses, shared with uptime-status.postgres.test.ts. Tests here prove the statements write it.
+fn contract(key: &str) -> Value {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/modules/uptime/incident-evidence.fixture.json"),
+    )
+    .unwrap();
+    serde_json::from_str::<Value>(&text).unwrap()[key].clone()
+}
+
 fn failing_json() -> Value {
-    json!({
-        "quorum": { "distinctRegions": 2 },
-        "observations": [
-            {
-                "region": "eu-west", "kind": "confirm", "verdict": "fail", "status": 0,
-                "failedPhase": "connect", "error": "connection_refused",
-                "remoteIp": "203.0.113.7", "at": "2024-02-29T12:34:56.789Z",
-            },
-            {
-                "region": "us-east", "kind": "routine", "verdict": "fail", "status": 503,
-                "failedPhase": null, "error": null, "remoteIp": null,
-                "at": "2000-02-29T00:00:00.123Z",
-            },
-        ],
-    })
+    contract("openedBy")
 }
 
 fn passing() -> Evidence {
@@ -310,15 +306,7 @@ async fn a_close_applies_once_with_one_resolved_alert() {
         .await
         .unwrap();
     assert_eq!(row.get::<_, i64>(0), closing.at.0);
-    let observed = json!({
-        "kind": "observed",
-        "quorum": { "oneRegion": { "probes": 2, "spacingMs": 30_000 } },
-        "observations": [{
-            "region": "eu-west", "kind": "recheck", "verdict": "pass", "status": 200,
-            "failedPhase": null, "error": null, "remoteIp": "2001:db8::1",
-            "at": "2024-02-29T12:34:56.789Z",
-        }],
-    });
+    let observed = contract("observedClosedBy");
     assert_eq!(row.get::<_, Value>(1), observed);
     let resolved = alerts(&f.admin, opened.incident).await;
     let kinds: Vec<&str> = resolved.iter().map(|(kind, _)| kind.as_str()).collect();
