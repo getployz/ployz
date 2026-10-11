@@ -2,7 +2,9 @@ import "@tanstack/react-start/server-only";
 import { sql, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
+import { failureClassSql, failureColumn, failureColumns, failureTextSql } from "./failure-sql.server";
 import { PRUNE_BATCH_ROWS, type Retained, retentionCutoff } from "./retention";
+import { FAILURE_CLASSES } from "./uptime-status";
 
 const HOUR_MS = 3_600_000;
 
@@ -16,32 +18,47 @@ export function rollupHours(now: Date): readonly [Date, Date] {
 }
 
 /**
- * Recompute one hour of uptime_result_hourly from raw ROUTINE probes, per (check, region). It overwrites the bucket,
+ * Recompute one hour of uptime_result_hourly from raw routine and triggered probes, per (check, region). It overwrites the bucket,
  * so a rerun writes the same values. `probes` is pass plus fail. Inconclusive is counted apart and never fails. The
- * timings are over passing probes only, and the percentiles are null when none passed.
+ * timings are over passing probes only, and the median is null when none passed. Each failure counts once, in its
+ * class, and the newest is kept as `last_error`.
  */
 const rollupHourStatement = (hour: Date) => sql`
   WITH probes AS (
-    SELECT DISTINCT ON (check_id, region, scheduled_at, kind) check_id, organization_id, region, verdict, total_ms
+    SELECT DISTINCT ON (check_id, region, scheduled_at, kind) check_id, organization_id, region, scheduled_at, verdict,
+           status, detail, total_ms, dns_ms, connect_ms, tls_ms, ttfb_ms,
+           CASE WHEN verdict = 'fail' THEN ${failureClassSql} END AS cls
     FROM uptime_result
-    WHERE kind = 'routine' AND scheduled_at >= ${hour.toISOString()}::timestamptz
+    WHERE kind IN ('routine', 'triggered') AND scheduled_at >= ${hour.toISOString()}::timestamptz
       AND scheduled_at < ${hour.toISOString()}::timestamptz + interval '1 hour'
-    ORDER BY check_id, region, scheduled_at, kind)
+    ORDER BY check_id, region, scheduled_at, kind),
+  newest_failure AS (
+    SELECT DISTINCT ON (check_id, region) check_id, region, cls, ${failureTextSql(sql`cls`)} AS text, scheduled_at AS at
+    FROM probes WHERE cls IS NOT NULL
+    ORDER BY check_id, region, scheduled_at DESC)
   INSERT INTO uptime_result_hourly AS h (check_id, organization_id, region, hour, probes, failures, inconclusive,
-                                         pass_ms_sum, pass_ms_max, pass_ms_p50, pass_ms_p95)
-  SELECT check_id, organization_id, region, ${hour.toISOString()}::timestamptz,
+                                         pass_ms_sum, pass_ms_max, pass_ms_p50,
+                                         dns_ms_sum, connect_ms_sum, tls_ms_sum, ttfb_ms_sum, ${failureColumns},
+                                         last_error, last_error_class, last_error_at)
+  SELECT p.check_id, p.organization_id, p.region, ${hour.toISOString()}::timestamptz,
          count(*) FILTER (WHERE verdict <> 'inconclusive'), count(*) FILTER (WHERE verdict = 'fail'),
          count(*) FILTER (WHERE verdict = 'inconclusive'),
          coalesce(sum(total_ms) FILTER (WHERE verdict = 'pass'), 0),
          coalesce(max(total_ms) FILTER (WHERE verdict = 'pass'), 0),
-         (percentile_cont(0.5)  WITHIN GROUP (ORDER BY total_ms) FILTER (WHERE verdict = 'pass'))::int,
-         (percentile_cont(0.95) WITHIN GROUP (ORDER BY total_ms) FILTER (WHERE verdict = 'pass'))::int
-  FROM probes
-  GROUP BY check_id, organization_id, region
+         (percentile_cont(0.5) WITHIN GROUP (ORDER BY total_ms) FILTER (WHERE verdict = 'pass'))::int,
+         coalesce(sum(dns_ms) FILTER (WHERE verdict = 'pass'), 0), coalesce(sum(connect_ms) FILTER (WHERE verdict = 'pass'), 0),
+         coalesce(sum(tls_ms) FILTER (WHERE verdict = 'pass'), 0), coalesce(sum(ttfb_ms) FILTER (WHERE verdict = 'pass'), 0),
+         ${sql.join(FAILURE_CLASSES.map((cls) => sql`count(*) FILTER (WHERE p.cls = ${cls})`), sql`, `)},
+         f.text, f.cls, f.at
+  FROM probes p LEFT JOIN newest_failure f ON f.check_id = p.check_id AND f.region = p.region
+  GROUP BY p.check_id, p.organization_id, p.region, f.text, f.cls, f.at
   ON CONFLICT (check_id, region, hour) DO UPDATE SET
     probes = excluded.probes, failures = excluded.failures, inconclusive = excluded.inconclusive,
-    pass_ms_sum = excluded.pass_ms_sum, pass_ms_max = excluded.pass_ms_max,
-    pass_ms_p50 = excluded.pass_ms_p50, pass_ms_p95 = excluded.pass_ms_p95`;
+    pass_ms_sum = excluded.pass_ms_sum, pass_ms_max = excluded.pass_ms_max, pass_ms_p50 = excluded.pass_ms_p50,
+    dns_ms_sum = excluded.dns_ms_sum, connect_ms_sum = excluded.connect_ms_sum, tls_ms_sum = excluded.tls_ms_sum,
+    ttfb_ms_sum = excluded.ttfb_ms_sum,
+    ${sql.raw(FAILURE_CLASSES.map((cls) => `${failureColumn(cls)} = excluded.${failureColumn(cls)}`).join(", "))},
+    last_error = excluded.last_error, last_error_class = excluded.last_error_class, last_error_at = excluded.last_error_at`;
 
 /** `uptime-rollup`: recompute the two closed hours before `now`, one statement each. */
 export const rollupUptime = Effect.fn("Uptime.rollup")(function* (now: Date) {

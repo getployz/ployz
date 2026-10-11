@@ -108,16 +108,28 @@ fn passing() -> Evidence {
             probes: 2,
             spacing: Duration::from_secs(30),
         },
-        observations: vec![EvidenceItem {
-            region: Region::parse("eu-west").unwrap(),
-            kind: ProbeKind::Recheck,
-            verdict: Verdict::Pass,
-            status: Some(200),
-            failed_phase: None,
-            error: None,
-            remote_ip: Some("2001:db8::1".parse().unwrap()),
-            at: UnixMs(1_709_210_096_789),
-        }],
+        observations: vec![
+            EvidenceItem {
+                region: Region::parse("eu-west").unwrap(),
+                kind: ProbeKind::Recheck,
+                verdict: Verdict::Pass,
+                status: Some(200),
+                failed_phase: None,
+                error: None,
+                remote_ip: Some("2001:db8::1".parse().unwrap()),
+                at: UnixMs(1_709_210_096_789),
+            },
+            EvidenceItem {
+                region: Region::parse("us-east").unwrap(),
+                kind: ProbeKind::Triggered,
+                verdict: Verdict::Pass,
+                status: Some(204),
+                failed_phase: None,
+                error: None,
+                remote_ip: None,
+                at: UnixMs(1_709_210_100_000),
+            },
+        ],
     }
 }
 
@@ -438,6 +450,99 @@ async fn a_full_queue_refuses_at_once() {
         writer.submit(open(&f.check, 1, now_minus(60))),
         Submit::Full
     );
+}
+
+async fn answered_row(admin: &Client, check: CheckId) -> (Option<SystemTime>, i32, SystemTime) {
+    let row = admin
+        .query_one(
+            "SELECT probe_answered_at, revision, updated_at FROM uptime_check WHERE id = $1",
+            &[&check.0],
+        )
+        .await
+        .unwrap();
+    (row.get(0), row.get(1), row.get(2))
+}
+
+/// Catches an answer that moves back when an older one lands late, or that bumps the revision and
+/// so resets the check it answers. The open behind the answers proves they ran: the queue is FIFO.
+#[tokio::test]
+async fn an_answer_records_the_newest_request_and_leaves_the_check_alone() {
+    let f = fixture().await;
+    let (writer, mut reports) = writer(f.pg.pg().await);
+    let (_, revision, updated_at) = answered_row(&f.admin, f.check.id).await;
+    let newer = now_minus(10);
+    let older = now_minus(20);
+    for requested in [newer, older] {
+        let answered = ProbeAnswered {
+            check: f.check.id,
+            requested,
+        };
+        assert_eq!(writer.answer(answered), Submit::Queued);
+    }
+    assert_eq!(
+        writer.submit(open(&f.check, 1, now_minus(5))),
+        Submit::Queued
+    );
+    assert!(written(&mut reports).await.applied);
+    assert_eq!(
+        answered_row(&f.admin, f.check.id).await,
+        (Some(newer.to_system_time()), revision, updated_at)
+    );
+}
+
+/// Catches a missing grant breaking the plane: before the owner runs the GRANT, an answer is
+/// refused and incident writes behind it still apply.
+#[tokio::test]
+async fn an_answer_the_role_may_not_write_is_dropped_and_incidents_still_apply() {
+    let f = fixture().await;
+    let grants = include_str!("../../control-role.sql").replace(", probe_answered_at", "");
+    let url = f.pg.role(&f.admin, "uptime_control", &grants).await;
+    let (writer, mut reports) = writer(connect(&url).await);
+    let answered = ProbeAnswered {
+        check: f.check.id,
+        requested: now_minus(10),
+    };
+    assert_eq!(writer.answer(answered), Submit::Queued);
+    assert_eq!(
+        writer.submit(open(&f.check, 1, now_minus(5))),
+        Submit::Queued
+    );
+    assert!(written(&mut reports).await.applied);
+    assert_eq!(answered_row(&f.admin, f.check.id).await.0, None);
+}
+
+/// Catches an answer that retries a held lock forever at the head of the queue: one older than the
+/// dashboard shows is dropped at its first lock timeout, while a fresh one waits the lock out.
+#[tokio::test]
+async fn an_answer_blocked_past_its_showing_is_dropped_and_a_fresh_one_waits() {
+    let f = fixture().await;
+    let (writer, mut reports) = writer(f.pg.pg().await);
+    let (stale, fresh) = (now_minus(90), now_minus(1));
+    for (requested, want) in [(stale, None), (fresh, Some(fresh.to_system_time()))] {
+        f.admin
+            .batch_execute(&format!(
+                "BEGIN; SELECT 1 FROM uptime_check WHERE id = '{}' FOR UPDATE",
+                f.check.id.0
+            ))
+            .await
+            .unwrap();
+        let answered = ProbeAnswered {
+            check: f.check.id,
+            requested,
+        };
+        assert_eq!(writer.answer(answered), Submit::Queued);
+        // Past the writer's one-second lock_timeout, so its first attempt has failed.
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        f.admin.batch_execute("COMMIT").await.unwrap();
+        let open = open(&f.check, 1, now_minus(5));
+        assert_eq!(writer.submit(open), Submit::Queued);
+        written(&mut reports).await;
+        assert_eq!(
+            answered_row(&f.admin, f.check.id).await.0,
+            want,
+            "requested {requested:?}"
+        );
+    }
 }
 
 /// Catches the Rust statements drifting from the TS copies the dashboard's Postgres test proves.
