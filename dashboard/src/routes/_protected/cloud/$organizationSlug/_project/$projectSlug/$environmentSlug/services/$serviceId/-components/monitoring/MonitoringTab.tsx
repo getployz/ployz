@@ -17,8 +17,8 @@ import { LIMITS, previewMetrics } from "#/modules/uptime/metrics-preview";
 import {
   causeText,
   chartWindow,
-  checkSeries,
   checkState,
+  checkSteps,
   formatMs,
   formatSpan,
   historyBars,
@@ -40,6 +40,7 @@ import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-rout
 import { useTimeZone } from "#/utils/time-zone";
 import { atFormat, MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
 import { RangePicker } from "./RangePicker";
+import { ResponseTooltip } from "./ResponseTooltip";
 
 type MonitoringProps = {
   organizationSlug: string;
@@ -287,8 +288,8 @@ type ChartFrame = {
 };
 
 /**
- * The check's response time, averaged across regions. A zoom reads its own range, and keeps the old line, dimmed, until
- * that read lands.
+ * The check's response time, the median across regions, with each region's on hover. A zoom reads its own range, and
+ * keeps the old line, dimmed, until that read lands.
  */
 function ResponseTime({ scope, serviceId, range, window, pending, edge, frame }: {
   scope: UptimeScope;
@@ -302,15 +303,23 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, frame }:
 }) {
   const shown = useDeferredValue(range);
   const { data } = useServiceUptime(scope, serviceId, shown);
-  const check = checkSeries(data?.points ?? [], window);
+  const checked = checkSteps(data?.points ?? [], window);
+  const check = checked.map((step) => step.medianMs);
   const checkMs = average(check);
+  const byAt = new Map(checked.map((step, index) => [step.at, index]));
   const series: MetricSeries[] = [
     ...(edge ? [{ label: "Edge", color: "var(--chart-1)", values: edge }] : []),
     { label: "Check", color: "var(--chart-2)", values: check },
   ];
   return (
     <MetricChart id="response" title="Response time" format={formatMs} {...frame(data?.incidents ?? [])} dimmed={shown !== range}
-      value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series} />
+      value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series}
+      focusAt={checked.flatMap((step) => step.medianMs === null && step.regions.length > 0 ? [step.at] : [])}
+      renderTooltip={(at) => {
+        const index = byAt.get(at);
+        const step = index === undefined ? undefined : checked[index];
+        return step ? <ResponseTooltip step={step} end={checked[(index ?? 0) + 1]?.at ?? window.to} edgeMs={edge?.[index ?? -1] ?? null} /> : null;
+      }} />
   );
 }
 

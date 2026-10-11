@@ -1,15 +1,17 @@
 // Seeds uptime for the verify stack's `shop/production`, one Service per Monitoring tab state, without a checker.
 // up.sh runs it after seed.ts. To rerun from dashboard/: set -a; . .verify/run/env; set +a; node scripts/verify/runner.mjs /scripts/verify/seed-uptime.ts
-//   web       Up: 90 days of results, one closed 502 incident 12 days ago
+//   web       Up: 90 days of results, one closed 502 incident 12 days ago, an expired certificate in sin 3 days ago,
+//             and a stray TLS or timeout failure every few hours, so every range's tooltip has failures to show
 //   api       Unreachable: an open 502 incident from 18 minutes ago
 //   worker    Checking: a check with no results yet
 //   postgres  Not checked: no check
 // Each run replaces these checks wholesale (results and incidents cascade), so running it again converges.
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { Effect } from "effect";
+import { rollupUptime } from "#/modules/uptime/maintenance.server";
 import type { IncidentObservation } from "#/modules/uptime/uptime-status";
-import { uptimeCheck, uptimeIncident, uptimeResult, uptimeResultHourly } from "#/modules/uptime/tables";
+import { uptimeCheck, uptimeIncident, uptimeResult } from "#/modules/uptime/tables";
 import { Database } from "#/server/database.server";
 import { AppRuntime } from "#/server/runtime.server";
 
@@ -17,10 +19,16 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const INTERVAL = 5 * MINUTE;
-const REGIONS = ["eu-west", "us-east"] as const;
+const REGIONS = ["ams", "iad", "sin"] as const;
+/** Each region's DNS, connect and TLS time: further from the origin, slower handshakes. */
+const HANDSHAKES = [[4, 18, 31], [6, 40, 62], [9, 118, 170]] as const;
 
 /** A steady, repeatable response time around `base` ms. */
 const latency = (base: number, at: number, region: number) => Math.round(base + 40 * Math.sin(at / (7 * HOUR) + region) + (at / INTERVAL % 7) * 3);
+
+type Probe = Pick<typeof uptimeResult.$inferInsert, "verdict" | "status" | "failedPhase" | "error" | "detail">;
+const EXPIRED: Probe = { verdict: "fail", status: 0, failedPhase: "tls", error: "other", detail: "invalid peer certificate: Expired" };
+const TIMEOUT: Probe = { verdict: "fail", status: 0, failedPhase: "request", error: "timed_out", detail: "operation timed out" };
 
 const observation = (region: string, at: number, verdict: "pass" | "fail", status: number): IncidentObservation =>
   ({ region, kind: verdict === "fail" ? "confirm" : "recheck", verdict, status, failedPhase: null, error: null, remoteIp: "203.0.113.7", at: new Date(at).toISOString() });
@@ -59,53 +67,51 @@ const seed = Effect.gen(function* () {
   }))).returning({ id: uptimeCheck.id, name: uptimeCheck.name });
   const checkId = (slug: string) => checks.find((check) => check.name === slug)?.id ?? "";
 
-  /** Every result from `from` to now, failing with `status` inside `down`, plus its hourly roll-up. */
-  const history = (slug: string, from: number, base: number, down: { from: number; to: number; status: number }) =>
+  /**
+   * Every result from `from` to now, failing with `status` inside `down` and with `fail`'s probe wherever it gives one,
+   * rolled up by the real rollup. Raw rows older than a day go once rolled up, as retention would leave them.
+   */
+  const history = (slug: string, from: number, base: number, down: { from: number; to: number; status: number },
+    fail: (at: number, region: number) => Probe | null = () => null) =>
     Effect.gen(function* () {
       const id = checkId(slug);
       const raw: (typeof uptimeResult.$inferInsert)[] = [];
-      const hourly = new Map<string, typeof uptimeResultHourly.$inferInsert & { ms: number[] }>();
       for (let at = from; at < now; at += INTERVAL) {
         for (const [index, region] of REGIONS.entries()) {
-          const failing = at >= down.from && at < down.to;
-          const ms = failing ? 1_931 : latency(base, at, index);
-          const hour = Math.floor(at / HOUR) * HOUR;
-          const key = `${region}:${hour}`;
-          const row = hourly.get(key) ?? {
-            checkId: id, organizationId, region, hour: new Date(hour), probes: 0, failures: 0, inconclusive: 0,
-            passMsSum: 0, passMsMax: 0, ms: [],
-          };
-          row.probes += 1;
-          if (failing) row.failures += 1;
-          else row.ms.push(ms);
-          hourly.set(key, row);
-          if (at >= now - DAY) {
-            raw.push({
-              checkId: id, organizationId, region, scheduledAt: new Date(at), kind: "routine", startLagMs: 12,
-              verdict: failing ? "fail" : "pass", status: failing ? down.status : 200, failedPhase: "none", error: "",
-              detail: "", dnsMs: 4, connectMs: 18, tlsMs: 31, ttfbMs: ms - 8, totalMs: ms, remoteIp: "203.0.113.7",
-              agent: `verify-${region}`,
-            });
-          }
+          const [dnsMs, connectMs, tlsMs] = HANDSHAKES[index] ?? [0, 0, 0];
+          const ms = latency(base, at, index) + connectMs + tlsMs;
+          const failed = at >= down.from && at < down.to
+            ? { verdict: "fail", status: down.status, failedPhase: "none", error: "", detail: "" } satisfies Probe
+            : fail(at, index);
+          const timing = failed?.failedPhase === "tls" ? { dnsMs, connectMs, tlsMs: 4, ttfbMs: 0, totalMs: dnsMs + connectMs + 4 }
+            : failed?.error === "timed_out" ? { dnsMs, connectMs, tlsMs, ttfbMs: 0, totalMs: 10_000 }
+            : { dnsMs, connectMs, tlsMs, ttfbMs: ms - dnsMs - connectMs - tlsMs, totalMs: failed ? 1_931 : ms };
+          raw.push({
+            checkId: id, organizationId, region, scheduledAt: new Date(at), kind: "routine", startLagMs: 12,
+            ...(failed ?? { verdict: "pass", status: 200, failedPhase: "none", error: "", detail: "" }), ...timing,
+            remoteIp: "203.0.113.7", agent: `verify-${region}`,
+          });
         }
       }
-      const rollup = [...hourly.values()].map(({ ms, ...row }) => {
-        const sorted = [...ms].sort((a, b) => a - b);
-        const at = (q: number) => sorted.length === 0 ? null : sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? null;
-        return { ...row, passMsSum: ms.reduce((sum, value) => sum + value, 0), passMsMax: sorted.at(-1) ?? 0, passMsP50: at(0.5), passMsP95: at(0.95) };
-      });
-      for (let index = 0; index < rollup.length; index += 1000) yield* drizzle.insert(uptimeResultHourly).values(rollup.slice(index, index + 1000));
       for (let index = 0; index < raw.length; index += 1000) yield* drizzle.insert(uptimeResult).values(raw.slice(index, index + 1000));
+      for (let hour = Math.floor(from / HOUR) * HOUR; hour < now; hour += 2 * HOUR) yield* rollupUptime(new Date(hour + 2 * HOUR));
+      yield* drizzle.delete(uptimeResult).where(and(eq(uptimeResult.checkId, id), lt(uptimeResult.scheduledAt, new Date(now - DAY))));
     });
 
   const closedFrom = now - 12 * DAY - 6 * HOUR;
   const closedTo = closedFrom + 20 * MINUTE;
-  yield* history("web", now - 90 * DAY, 140, { from: closedFrom, to: closedTo, status: 502 });
+  const expiredFrom = now - 3 * DAY - 5 * HOUR;
+  yield* history("web", now - 90 * DAY, 140, { from: closedFrom, to: closedTo, status: 502 }, (at, region) => {
+    const probe = at / INTERVAL;
+    if (region === 2 && at >= expiredFrom && at < expiredFrom + 4 * HOUR) return EXPIRED;
+    if (region === 2 && probe % 37 === 0) return EXPIRED;
+    return region === 1 && probe % 53 === 0 ? TIMEOUT : null;
+  });
   yield* drizzle.insert(uptimeIncident).values({
     id: randomUUID(), organizationId, checkId: checkId("web"), checkRevision: 1,
     openedAt: new Date(closedFrom), closedAt: new Date(closedTo),
     openedBy: { quorum: { distinctRegions: 2 }, observations: REGIONS.map((region) => observation(region, closedFrom, "fail", 502)) },
-    closedBy: { kind: "observed", quorum: { oneRegion: { probes: 2, spacingMs: 30_000 } }, observations: [observation("eu-west", closedTo, "pass", 200)] },
+    closedBy: { kind: "observed", quorum: { oneRegion: { probes: 2, spacingMs: 30_000 } }, observations: [observation("ams", closedTo, "pass", 200)] },
   });
 
   const openFrom = now - 18 * MINUTE;

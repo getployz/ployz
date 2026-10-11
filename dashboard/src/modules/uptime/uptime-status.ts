@@ -60,12 +60,37 @@ export type EnvironmentUptimeCheck = {
 export type UptimeStatus = "pending" | "up" | "unreachable";
 
 /**
- * One point of the latency chart. Up to a day back it is one probe of any kind: `ms` is its total time when it passed
- * and null when it failed or was inconclusive. Up to 7 days it is one region's hour: `ms` is the median total time of
- * its passing routine probes. Longer, it is one region's 6 hours: the hourly medians averaged by passing probes. Null
- * when none passed.
+ * Why a failing probe failed. The first that matches wins, in this order, so every failing probe lands in exactly one:
+ * an HTTP status, a timeout, a refused connection, the phase it broke in, anything else. `failureClassSql` mirrors it.
  */
-export type UptimePoint = { readonly at: string; readonly region: string; readonly ms: number | null };
+export const FAILURE_CLASSES = ["status", "timeout", "refused", "dns", "connect", "tls", "other"] as const;
+export type FailureClass = (typeof FAILURE_CLASSES)[number];
+export type FailureCounts = Readonly<Record<FailureClass, number>>;
+
+/** Each class in one word. A status failure reads as its code instead. */
+export const FAILURE_WORDS = {
+  timeout: "Timeout", refused: "Refused", dns: "DNS", connect: "Connect", tls: "TLS", other: "Error",
+} as const satisfies Record<Exclude<FailureClass, "status">, string>;
+
+export const PHASES = ["dns", "connect", "tls", "ttfb"] as const;
+export type Phase = (typeof PHASES)[number];
+
+/**
+ * One region's probes over one stretch of the latency chart, as `pointSource` picks for the range: one routine probe
+ * for a range up to a day within raw retention, an hour up to 7 days, 6 hours longer.
+ * `probes` is pass plus fail, never inconclusive. `medianMs`, `maxMs` and `phaseMsSum` are over passing probes only,
+ * and the first two are null when none passed. `lastError` is the newest failure. `mergePoints` folds two into one.
+ */
+export type UptimePoint = {
+  readonly at: string;
+  readonly region: string;
+  readonly probes: number;
+  readonly failures: FailureCounts;
+  readonly medianMs: number | null;
+  readonly maxMs: number | null;
+  readonly phaseMsSum: Readonly<Record<Phase, number>>;
+  readonly lastError: { readonly at: string; readonly cls: FailureClass; readonly text: string } | null;
+};
 
 /** One probe result of any kind, as a bar of the history strip. `status` is 0 when there was no HTTP response. */
 export type UptimeCheckResult = {

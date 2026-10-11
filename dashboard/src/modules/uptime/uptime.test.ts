@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  causeText, chartWindow, checkSeries, checkState, formatSpan, historyBars, incidentRange, observationText, steps, unreachableHost,
-  uptimePercent, wrongPathIncident,
+  causeText, chartWindow, checkState, checkSteps, failureClass, formatSpan, historyBars, incidentRange, mergePoints,
+  observationText, steps, tally, unreachableHost, uptimePercent, wrongPathIncident,
 } from "./uptime";
 import { pointSource } from "./uptime-range";
-import type { IncidentObservation, ServiceUptime, UptimeCheckResult, UptimeIncidentEntry } from "./uptime-status";
+import {
+  FAILURE_CLASSES, type FailureClass, type IncidentObservation, PHASES, type ServiceUptime, type UptimeCheckResult,
+  type UptimeIncidentEntry, type UptimePoint,
+} from "./uptime-status";
 
 const at = "2026-10-11T00:00:00.000Z";
 const HOUR = 3_600_000;
@@ -14,6 +17,17 @@ const observation = (patch: Partial<IncidentObservation>): IncidentObservation =
 });
 const incident = (observations: IncidentObservation[], openedAt = at, closedAt: string | null = null): UptimeIncidentEntry =>
   ({ id: "inc", openedAt, closedAt, observations });
+/** One probe: passing in `ms` split evenly over the phases, or failing in `failed`. */
+const probe = (region: string, at: number, ms: number | null, failed: FailureClass | null = null): UptimePoint => ({
+  at: new Date(at).toISOString(),
+  region,
+  probes: 1,
+  failures: tally(FAILURE_CLASSES, (cls) => cls === failed ? 1 : 0),
+  medianMs: ms,
+  maxMs: ms,
+  phaseMsSum: tally(PHASES, () => (ms ?? 0) / 4),
+  lastError: failed === null ? null : { at: new Date(at).toISOString(), cls: failed, text: failed },
+});
 const uptime = (patch: Partial<ServiceUptime>): ServiceUptime => ({
   check: { id: "chk", url: "https://acme.com/health", intervalSeconds: 300 },
   status: "up",
@@ -32,6 +46,23 @@ describe("observationText", () => {
     expect(observationText(observation({ error: "other", failedPhase: "dns" }))).toBe("DNS");
     expect(observationText(observation({ failedPhase: "tls" }))).toBe("TLS");
     expect(observationText(observation({ error: "other", failedPhase: "request" }))).toBe("Error");
+  });
+});
+
+describe("failureClass", () => {
+  it("puts every failing probe in exactly one class, the HTTP status first", () => {
+    const seen = new Set<FailureClass>();
+    for (const status of [0, 503]) {
+      for (const error of [null, "connection_refused", "timed_out", "other"] as const) {
+        for (const failedPhase of [null, "dns", "connect", "tls", "request"] as const) {
+          const cls = failureClass({ status, error, failedPhase });
+          if (status !== 0) expect(cls).toBe("status");
+          seen.add(cls);
+        }
+      }
+    }
+    expect([...seen].sort()).toEqual([...FAILURE_CLASSES].sort());
+    expect(failureClass({ status: 503, error: null, failedPhase: null })).toBe("status");
   });
 });
 
@@ -104,8 +135,8 @@ describe("incidentRange", () => {
       const range = incidentRange(closed(to - age, 20), to);
       const stepMs = { raw: 5 * 60_000, hourly: HOUR, sixHourly: 6 * HOUR }[pointSource(range, to)];
       const window = chartWindow(range, to, 5 * 60_000);
-      const series = steps({ ...range, stepMs }).map((step) => ({ at: new Date(step).toISOString(), region: "ams", ms: 100 }));
-      const line = checkSeries(series, window);
+      const series = steps({ ...range, stepMs }).map((step) => probe("ams", step, 100));
+      const line = checkSteps(series, window).map((step) => step.medianMs);
       expect(line.length).toBeGreaterThanOrEqual(3);
       expect(line).not.toContain(null);
     }
@@ -124,35 +155,72 @@ describe("chartWindow", () => {
   });
 });
 
-describe("checkSeries", () => {
-  it("averages every region's passing points per step and breaks where none passed", () => {
+describe("mergePoints", () => {
+  it("adds counts and phase sums, keeps the larger max and the newer error, and averages medians by passing probes", () => {
+    const hour = { ...probe("ams", 0, 100), probes: 4, medianMs: 100, maxMs: 300, phaseMsSum: tally(PHASES, () => 10),
+      failures: tally(FAILURE_CLASSES, (cls) => cls === "tls" ? 1 : 0),
+      lastError: { at: new Date(60_000).toISOString(), cls: "tls" as const, text: "TLS · expired" } };
+    const later = { ...probe("ams", HOUR, 200), probes: 2, maxMs: 250,
+      failures: tally(FAILURE_CLASSES, (cls) => cls === "status" ? 1 : 0),
+      lastError: { at: new Date(HOUR + 60_000).toISOString(), cls: "status" as const, text: "503" } };
+    expect(mergePoints(hour, later)).toEqual({
+      at: hour.at,
+      region: "ams",
+      probes: 6,
+      failures: tally(FAILURE_CLASSES, (cls) => cls === "tls" || cls === "status" ? 1 : 0),
+      medianMs: (100 * 3 + 200 * 1) / 4,
+      maxMs: 300,
+      phaseMsSum: tally(PHASES, () => 60),
+      lastError: later.lastError,
+    });
+    expect(mergePoints(later, hour).lastError).toEqual(later.lastError);
+  });
+
+  it("has no median or max when no probe passed", () => {
+    const merged = mergePoints(probe("ams", 0, null, "timeout"), probe("ams", 1, null, "dns"));
+    expect(merged).toMatchObject({ probes: 2, medianMs: null, maxMs: null, lastError: { cls: "dns" } });
+    expect(mergePoints(merged, probe("ams", 2, 80)).medianMs).toBe(80);
+  });
+});
+
+describe("checkSteps", () => {
+  it("merges each region's probes per step and breaks the line where none passed", () => {
     const minute = 60_000;
     const window = { from: 0, to: 15 * minute, stepMs: 5 * minute };
     const points = [
-      { at: new Date(0).toISOString(), region: "ams", ms: 100 },
-      { at: new Date(minute).toISOString(), region: "sjc", ms: 200 },
-      { at: new Date(5 * minute).toISOString(), region: "ams", ms: null },
+      probe("sjc", minute, 300),
+      probe("ams", 0, 100),
+      probe("ams", 2 * minute, 200),
+      probe("ams", 5 * minute, null, "tls"),
+      { ...probe("ams", 10 * minute, null), probes: 0 },
     ];
-    expect(checkSeries(points, window)).toEqual([150, null, null]);
+    const [first, second, third] = checkSteps(points, window);
+    expect(first?.regions.map((point) => [point.region, point.at, point.probes, point.medianMs, point.maxMs])).toEqual([
+      ["ams", new Date(0).toISOString(), 2, 150, 200],
+      ["sjc", new Date(0).toISOString(), 1, 300, 300],
+    ]);
+    expect(first?.medianMs).toBe(200);
+    expect(second).toMatchObject({ medianMs: null, regions: [{ region: "ams", probes: 1, failures: { tls: 1 } }] });
+    expect(third).toEqual({ at: 10 * minute, regions: [], medianMs: null });
   });
 
   it("counts a point before the first step in that step", () => {
     const minute = 60_000;
     const window = { from: 2 * minute, to: 7 * minute, stepMs: 5 * minute };
-    expect(checkSeries([{ at: new Date(3 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([100, null]);
+    expect(checkSteps([probe("ams", 3 * minute, 100)], window).map((step) => step.medianMs)).toEqual([100, null]);
     expect(steps(window)).toEqual([2 * minute, 5 * minute]);
   });
 
   it("counts a point exactly at Until in the last step", () => {
     const minute = 60_000;
     const window = { from: 0, to: 10 * minute, stepMs: 5 * minute };
-    expect(checkSeries([{ at: new Date(10 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([null, 100]);
+    expect(checkSteps([probe("ams", 10 * minute, 100)], window).map((step) => step.medianMs)).toEqual([null, 100]);
   });
 
   it("draws one step for a range shorter than a step between round steps", () => {
     const minute = 60_000;
     const window = { from: minute, to: 4 * minute, stepMs: 5 * minute };
-    expect(checkSeries([{ at: new Date(2 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([100]);
+    expect(checkSteps([probe("ams", 2 * minute, 100)], window).map((step) => step.medianMs)).toEqual([100]);
   });
 });
 
@@ -176,7 +244,7 @@ describe("historyBars", () => {
 
   it("cuts a window without results into spans, red where an incident touched, green where a point fell", () => {
     const open = incident([observation({ status: 502 })], new Date(to - 2 * HOUR - 1).toISOString());
-    const points = [{ at: new Date(to - 3 * HOUR + 1).toISOString(), region: "ams", ms: null }];
+    const points = [probe("ams", to - 3 * HOUR + 1, null, "dns")];
     const bars = historyBars({ from: to - DAY, to }, uptime({ points, checks: [], incidents: [open] }));
     expect(bars).toHaveLength(48);
     expect(bars.slice(-7).map((bar) => bar.tone)).toEqual(["none", "up", "down", "down", "down", "down", "down"]);

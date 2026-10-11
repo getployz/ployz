@@ -1,7 +1,12 @@
 import { type PointSource, pointSource, type RangeWindow } from "./uptime-range";
 import {
   type EnvironmentUptimeCheck,
+  FAILURE_CLASSES,
+  FAILURE_WORDS,
+  type FailureClass,
+  type FailureCounts,
   type IncidentObservation,
+  PHASES,
   type ServiceUptime,
   type UptimeCheckResult,
   type UptimeIncidentEntry,
@@ -25,14 +30,19 @@ export function unreachableHost(checks: readonly EnvironmentUptimeCheck[], servi
 /** "99.98%": floored, so a failure never reads as 100%. Null when no probe counted. */
 export const uptimePercent = (fraction: number | null) => fraction === null ? null : `${Math.floor(fraction * 10_000) / 100}%`;
 
-const PHASE_WORDS = { dns: "DNS", connect: "Connect", tls: "TLS" } as const;
+/** The FAILURE_CLASSES a failing observation lands in. */
+export function failureClass(observation: Pick<IncidentObservation, "status" | "error" | "failedPhase">): FailureClass {
+  if (observation.status !== 0) return "status";
+  if (observation.error === "timed_out") return "timeout";
+  if (observation.error === "connection_refused") return "refused";
+  const phase = observation.failedPhase;
+  return phase === "dns" || phase === "connect" || phase === "tls" ? phase : "other";
+}
 
 /** An observation's answer in one word: "502", "Timeout", "Refused", "DNS". */
 export function observationText(observation: IncidentObservation): string {
-  if (observation.status !== 0) return String(observation.status);
-  if (observation.error === "timed_out") return "Timeout";
-  if (observation.error === "connection_refused") return "Refused";
-  return observation.failedPhase !== null && observation.failedPhase !== "request" ? PHASE_WORDS[observation.failedPhase] : "Error";
+  const cls = failureClass(observation);
+  return cls === "status" ? String(observation.status) : FAILURE_WORDS[cls];
 }
 
 /** An incident's cause: its first failing observation's answer. */
@@ -103,18 +113,55 @@ export function steps(window: TimeWindow): number[] {
   return first > window.from && window.from < window.to ? [window.from, ...round] : round;
 }
 
-/** Response time at each step: the mean of every region's points in it. Null where none passed, so the line breaks. */
-export function checkSeries(points: readonly UptimePoint[], window: TimeWindow): (number | null)[] {
-  const buckets = new Map<number, { count: number; sum: number }>();
+/** A number for each of `keys`. */
+export function tally<K extends string>(keys: readonly K[], value: (key: K) => number): Record<K, number> {
+  // SAFETY: the entries hold exactly one value for each of `keys`.
+  return Object.fromEntries(keys.map((key) => [key, value(key)])) as Record<K, number>;
+}
+
+export const failureTotal = (failures: FailureCounts) => FAILURE_CLASSES.reduce((sum, cls) => sum + failures[cls], 0);
+
+export const passes = (point: UptimePoint) => point.probes - failureTotal(point.failures);
+
+/**
+ * Two points of one region as one, keeping `a`'s `at`. Counts and phase sums add, the max is the larger, the median is
+ * the medians averaged by passing probes, and the newer error wins. The 90d read in uptime-status.server.ts mirrors it.
+ */
+export function mergePoints(a: UptimePoint, b: UptimePoint): UptimePoint {
+  const weightA = a.medianMs === null ? 0 : passes(a);
+  const weightB = b.medianMs === null ? 0 : passes(b);
+  const maxes = [a.maxMs, b.maxMs].filter((ms) => ms !== null);
+  const newer = a.lastError === null || (b.lastError !== null && Date.parse(b.lastError.at) > Date.parse(a.lastError.at));
+  return {
+    at: a.at,
+    region: a.region,
+    probes: a.probes + b.probes,
+    failures: tally(FAILURE_CLASSES, (cls) => a.failures[cls] + b.failures[cls]),
+    medianMs: weightA + weightB === 0 ? null : ((a.medianMs ?? 0) * weightA + (b.medianMs ?? 0) * weightB) / (weightA + weightB),
+    maxMs: maxes.length === 0 ? null : Math.max(...maxes),
+    phaseMsSum: tally(PHASES, (phase) => a.phaseMsSum[phase] + b.phaseMsSum[phase]),
+    lastError: newer ? b.lastError : a.lastError,
+  };
+}
+
+/** One step of the response time chart: each region with a counted probe, by name, and their median together. */
+export type UptimeStep = { readonly at: number; readonly regions: readonly UptimePoint[]; readonly medianMs: number | null };
+
+/** The window's steps, each region's points in it merged into one. The median is null where none passed, so the line breaks. */
+export function checkSteps(points: readonly UptimePoint[], window: TimeWindow): UptimeStep[] {
+  const byStep = new Map<number, Map<string, UptimePoint>>();
   for (const point of points) {
-    if (point.ms === null) continue;
+    if (point.probes === 0) continue;
     const step = stepAt(window, Date.parse(point.at));
-    const bucket = buckets.get(step) ?? { count: 0, sum: 0 };
-    buckets.set(step, { count: bucket.count + 1, sum: bucket.sum + point.ms });
+    const regions = byStep.get(step) ?? new Map<string, UptimePoint>();
+    const merged = regions.get(point.region);
+    regions.set(point.region, merged ? mergePoints(merged, point) : { ...point, at: new Date(step).toISOString() });
+    byStep.set(step, regions);
   }
-  return steps(window).map((step) => {
-    const bucket = buckets.get(step);
-    return bucket ? bucket.sum / bucket.count : null;
+  return steps(window).map((at) => {
+    const regions = [...(byStep.get(at)?.values() ?? [])].sort((a, b) => a.region.localeCompare(b.region));
+    const all = regions.length === 0 ? null : regions.reduce(mergePoints);
+    return { at, regions, medianMs: all?.medianMs ?? null };
   });
 }
 

@@ -5,6 +5,7 @@ import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { Database } from "#/server/database.server";
+import { failureClassSql, failureColumn, failureTextSql, phaseColumn } from "./failure-sql.server";
 import { clampSince, type UptimeSeries } from "./retention";
 import { uptimeCheck, uptimeIncident, uptimeResult, uptimeResultHourly } from "./tables";
 import {
@@ -13,9 +14,13 @@ import {
   type ReadEnvironmentUptimeInput,
   type ReadServiceUptimeInput,
   type ServiceUptime,
+  FAILURE_CLASSES,
+  type FailureClass,
+  PHASES,
   type UptimeCheckResult,
   type UptimePoint,
 } from "./uptime-status";
+import { tally } from "./uptime";
 import { checkWindow, MAX_CHECK_BARS, perCheck, type PointSource, pointSource, type RangeWindow, resolveRange } from "./uptime-range";
 
 const HOUR_MS = 3_600_000;
@@ -161,23 +166,46 @@ const readChecks = Effect.fn("Uptime.readChecks")(function* (of: ReturnType<type
   return rows.reverse().map((row): UptimeCheckResult => ({ ...row, at: row.at.toISOString() }));
 });
 
-/** Every routine probe between `from` and `to`, with its total time when it passed. */
+/** Every routine probe between `from` and `to`, each as its own point. */
 const readRawPoints = Effect.fn("Uptime.readRawPoints")(function* (of: ReturnType<typeof ofCheck>, from: Date, to: Date) {
   const { drizzle } = yield* Database;
+  const failed = sql`${uptimeResult.verdict} = 'fail'`;
   const rows = yield* drizzle
-    .select({ at: uptimeResult.scheduledAt, region: uptimeResult.region, verdict: uptimeResult.verdict,
-      totalMs: uptimeResult.totalMs })
+    .select({
+      at: uptimeResult.scheduledAt, region: uptimeResult.region, verdict: uptimeResult.verdict,
+      totalMs: uptimeResult.totalMs, dns: uptimeResult.dnsMs, connect: uptimeResult.connectMs, tls: uptimeResult.tlsMs,
+      ttfb: uptimeResult.ttfbMs,
+      cls: sql<FailureClass | null>`CASE WHEN ${failed} THEN ${failureClassSql} END`,
+      text: sql<string | null>`CASE WHEN ${failed} THEN ${failureTextSql(failureClassSql)} END`,
+    })
     .from(uptimeResult)
     .where(and(of(uptimeResult), eq(uptimeResult.kind, "routine"), between(uptimeResult.scheduledAt, from, to)))
     .orderBy(asc(uptimeResult.scheduledAt), asc(uptimeResult.region));
-  return rows.map((row): UptimePoint => ({
-    at: row.at.toISOString(), region: row.region, ms: row.verdict === "pass" ? row.totalMs : null,
-  }));
+  return rows.map((row): UptimePoint => {
+    const at = row.at.toISOString();
+    const passed = row.verdict === "pass";
+    return {
+      at,
+      region: row.region,
+      probes: row.verdict === "inconclusive" ? 0 : 1,
+      failures: tally(FAILURE_CLASSES, (cls) => row.cls === cls ? 1 : 0),
+      medianMs: passed ? row.totalMs : null,
+      maxMs: passed ? row.totalMs : null,
+      phaseMsSum: tally(PHASES, (phase) => passed ? row[phase] : 0),
+      lastError: row.cls === null || row.text === null ? null : { at, cls: row.cls, text: row.text },
+    };
+  });
 });
+
+type HourlyRow = Record<ReturnType<typeof failureColumn> | ReturnType<typeof phaseColumn> | "probes", number> & {
+  at: Date; region: string; medianMs: number | null; maxMs: number | null;
+  lastError: string | null; lastErrorClass: FailureClass | null; lastErrorAt: Date | null;
+};
 
 /**
  * The latency chart over `window`, ordered by `at`, then region. A rollup source reads the hourly rollup, then raw probes
- * from the first hour it has not rolled up, so a check's newest probes show before :05 of the next hour.
+ * from the first hour it has not rolled up, so a check's newest probes show before :05 of the next hour. A sixHourly
+ * source merges each region's hours into 6-hour points by `mergePoints`' rule.
  */
 const readPoints = Effect.fn("Uptime.readPoints")(function* (
   of: ReturnType<typeof ofCheck>,
@@ -195,31 +223,32 @@ const readPoints = Effect.fn("Uptime.readPoints")(function* (
   const tailFrom = new Date(Math.max((rolled?.hour?.getTime() ?? 0) + HOUR_MS, since("raw", window.from).getTime()));
   const tail = tailFrom > to ? [] : yield* readRawPoints(of, tailFrom, to);
   const hourlySince = since("hourly", Math.floor(window.from / HOUR_MS) * HOUR_MS);
-  const inWindow = and(of(uptimeResultHourly), between(uptimeResultHourly.hour, hourlySince, to));
-
-  if (source === "hourly") {
-    const rows = yield* drizzle
-      .select({ at: uptimeResultHourly.hour, region: uptimeResultHourly.region, ms: uptimeResultHourly.passMsP50 })
-      .from(uptimeResultHourly)
-      .where(inWindow)
-      .orderBy(asc(uptimeResultHourly.hour), asc(uptimeResultHourly.region));
-    return [...rows.map((row): UptimePoint => ({ ...row, at: row.at.toISOString() })), ...tail];
-  }
-
-  const passing = sql`(${uptimeResultHourly.probes} - ${uptimeResultHourly.failures})`;
-  const weighted = sql`${uptimeResultHourly.passMsP50} IS NOT NULL`;
-  const bucket = sql<Date>`to_timestamp(floor(extract(epoch from ${uptimeResultHourly.hour}) / 21600) * 21600)`
-    .mapWith(uptimeResultHourly.hour);
-  const rows = yield* drizzle
-    .select({
-      at: bucket,
-      region: uptimeResultHourly.region,
-      ms: sql<number | null>`round(sum(${uptimeResultHourly.passMsP50} * ${passing}) FILTER (WHERE ${weighted})
-        / nullif(sum(${passing}) FILTER (WHERE ${weighted}), 0))`.mapWith(Number),
-    })
-    .from(uptimeResultHourly)
-    .where(inWindow)
-    .groupBy(bucket, uptimeResultHourly.region)
-    .orderBy(asc(bucket), asc(uptimeResultHourly.region));
-  return [...rows.map((row): UptimePoint => ({ at: row.at.toISOString(), region: row.region, ms: row.ms })), ...tail];
+  const bucket = source === "hourly" ? sql`hour` : sql`to_timestamp(floor(extract(epoch from hour) / 21600) * 21600)`;
+  const weighted = sql`FILTER (WHERE pass_ms_p50 IS NOT NULL)`;
+  const newest = (column: string) =>
+    sql`(array_agg(${sql.raw(column)} ORDER BY last_error_at DESC) FILTER (WHERE last_error_at IS NOT NULL))[1]`;
+  const rows = yield* drizzle.execute<HourlyRow>(sql`
+    SELECT ${bucket} AS at, region, sum(probes)::int AS probes,
+           ${sql.join(FAILURE_CLASSES.map((cls) => sql`sum(${sql.raw(failureColumn(cls))})::int AS ${sql.raw(failureColumn(cls))}`), sql`, `)},
+           sum(pass_ms_p50::float8 * (probes - failures)) ${weighted} / nullif(sum(probes - failures) ${weighted}, 0) AS "medianMs",
+           max(pass_ms_max) FILTER (WHERE probes > failures) AS "maxMs",
+           ${sql.join(PHASES.map((phase) => sql`sum(${sql.raw(phaseColumn(phase))})::float8 AS ${sql.raw(phaseColumn(phase))}`), sql`, `)},
+           ${newest("last_error")} AS "lastError", ${newest("last_error_class")} AS "lastErrorClass",
+           max(last_error_at) AS "lastErrorAt"
+    FROM uptime_result_hourly
+    WHERE ${of(uptimeResultHourly)}
+      AND hour BETWEEN ${hourlySince.toISOString()}::timestamptz AND ${to.toISOString()}::timestamptz
+    GROUP BY 1, region
+    ORDER BY 1, region`, "objects");
+  return [...rows.map((row): UptimePoint => ({
+    at: new Date(row.at).toISOString(),
+    region: row.region,
+    probes: row.probes,
+    failures: tally(FAILURE_CLASSES, (cls) => row[failureColumn(cls)]),
+    medianMs: row.medianMs,
+    maxMs: row.maxMs,
+    phaseMsSum: tally(PHASES, (phase) => row[phaseColumn(phase)]),
+    lastError: row.lastError === null || row.lastErrorClass === null || row.lastErrorAt === null ? null
+      : { at: new Date(row.lastErrorAt).toISOString(), cls: row.lastErrorClass, text: row.lastError },
+  })), ...tail];
 });
