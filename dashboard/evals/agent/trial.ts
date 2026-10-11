@@ -49,9 +49,9 @@ export const grade = (task: Task, evidence: Evidence) => [
  * `MAX_TURNS` runs. A policy that never answers ends the trial at the first card.
  */
 export const runTrial = Effect.fn("Eval.trial")(function* (task: Task, agent: AnyTextAdapter, member: Member) {
-  const fixture = yield* evalFixture();
-  if (task.setup !== undefined) yield* task.setup(fixture.write);
-  const before = yield* fixture.provided(snapshot(fixture.store));
+  const fixture = yield* evalFixture(task.fleet);
+  if (task.setup !== undefined) yield* task.setup(fixture.write, fixture.fail);
+  const before = yield* fixture.provided(snapshot(fixture.store, yield* fixture.sources));
   const conversation = fixture.conversation(agent, `trial-${task.id}`);
   const transcript: Turn[] = [];
   const calls = new Map<string, Call>();
@@ -73,7 +73,8 @@ export const runTrial = Effect.fn("Eval.trial")(function* (task: Task, agent: An
     const reply = said;
     message = task.repeat === true && transcript.length === 1 ? opening : yield* Effect.promise(() => member.reply(reply));
   }
-  const after = yield* fixture.provided(snapshot(fixture.store));
+  if (fixture.fleet !== null) yield* Effect.forEach(task.afterTurn ?? [], fixture.fleet.control, { discard: true });
+  const after = yield* fixture.provided(snapshot(fixture.store, yield* fixture.sources));
   const evidence: Evidence = { before, after, transcript };
   return { ...evidence, failures: grade(task, evidence) } satisfies TrialResult;
 });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ConfigTrusted, MachineId } from "@ployz/sdk";
+import type { ConfigTrusted, Connection, MachineId } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
@@ -10,11 +10,13 @@ import { githubInstallation } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { organization } from "#/modules/organization/tables";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { PloyzLive } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
+import { noPairingChanges } from "#/test/organization-runtime";
 import { postgresTestDatabase } from "#/test/postgres";
 import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -23,7 +25,8 @@ import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret
 /**
  * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
  * (none by default), repository reads through it unless `repositories` stands in, no Cluster paired, a self-hosted
- * billing plan, and an Inngest client that sends nowhere. `env` overrides configuration.
+ * billing plan, and an Inngest client that sends nowhere. `env` overrides configuration. With `fleet`, every Organization
+ * is paired with the Machines those connections reach, dialed through the real SDK.
  */
 export const storeTestCloud = Effect.fn(function* (options: {
   readonly github?: GithubApiService;
@@ -31,7 +34,9 @@ export const storeTestCloud = Effect.fn(function* (options: {
   readonly polar?: PolarService;
   readonly inngest?: Inngest;
   readonly env?: Readonly<Record<string, string>>;
+  readonly fleet?: { readonly connections: ReadonlyArray<Connection> } | null;
 } = {}) {
+  const fleet = options.fleet;
   const cloud = yield* postgresTestDatabase;
   const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href, ...options.env };
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
@@ -48,8 +53,13 @@ export const storeTestCloud = Effect.fn(function* (options: {
       : Layer.succeed(GithubRepositories, options.repositories),
     Layer.succeed(Polar, options.polar ?? { mode: "self_hosted" }),
     Layer.succeed(InngestClient, options.inngest ?? new Inngest({ id: "store-test" })),
-    // No Cluster is paired: domains read as unobserved.
-    Layer.succeed(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
+    fleet == null
+      // No Cluster is paired: domains read as unobserved.
+      ? Layer.succeed(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) })
+      : makeOrganizationRuntimeLayer(
+        () => Effect.succeed({ kind: "ready", generation: "fleet", connections: [...fleet.connections] }),
+        noPairingChanges,
+      ).pipe(Layer.provide(PloyzLive)),
   );
 });
 

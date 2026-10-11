@@ -14,6 +14,8 @@ import type { Caller } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { type FleetScenario, startFleet } from "./fleet";
+import type { Sources } from "./snapshot";
 
 export const ORGANIZATION = "00000000-0000-4000-8000-0000000e7a01";
 const PROJECT = "00000000-0000-4000-8000-0000000e7a02";
@@ -69,8 +71,9 @@ const environmentCommands = (environment: EnvironmentName): ConfigCommand[] => {
  * Organization acme with Project app: production and staging each run web (nginx:1.27, generated domain web), db
  * (postgres:17 on Volume pgdata) and worker (acme/worker). Staging's Deployments 1 to 3 applied its Saved revision and
  * Deployment 4 failed. Inngest records what Cloud would hand its worker, and a Deployment admitted later applies at once.
+ * With `fleet`, Cloud reaches the fake fleet of machines.json, that scenario applied.
  */
-export const evalFixture = Effect.fn("Eval.fixture")(function* () {
+export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: FleetScenario) {
   const inngest = new Inngest({ id: "agent-eval" });
   const dispatched: unknown[] = [];
   let settle = (_deployment: string): Promise<void> => Promise.resolve();
@@ -81,7 +84,8 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* () {
     }
     return { ids: [] };
   });
-  const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+  const fleet = scenario === undefined ? null : yield* startFleet(scenario);
+  const services = yield* Layer.build(yield* storeTestCloud({ inngest, fleet }));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   yield* provided(enrollStoreServer(ORGANIZATION));
@@ -106,7 +110,18 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* () {
     else yield* provided(applied(deployment));
   }
   dispatched.length = 0;
-  settle = (deployment) => Effect.runPromise(provided(applied(deployment)));
+  const failing = new Set<string>();
+  settle = (deployment) => (failing.has(deployment) ? Promise.resolve() : Effect.runPromise(provided(applied(deployment))));
+  /** Staging's next Deployment, failed as its runner would record `failure`. */
+  const fail = Effect.fn(function* (failure: string) {
+    const deployment = id("staging", 35);
+    failing.add(deployment);
+    yield* write({ command: "admit", admit: "deploy", id: deployment, environment: environmentRef("staging"), services: [], version: null, accept_volume_loss: [] });
+    yield* Effect.promise(() => store.runDeployment(ORGANIZATION, deployment, "eval-runner", [], { failure }));
+  });
+  const sources: Effect.Effect<Sources> = Effect.gen(function* () {
+    return { dispatched: [...dispatched], ledger: fleet === null ? [] : yield* fleet.ledger };
+  });
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "acme" }, credential: { kind: "session", id: "session-eval" } };
   /** One sidebar thread of the fixture's member: each turn's stream, and the approval its last turn waits on. */
   const conversation = (model: AnyTextAdapter, thread: string) => {
@@ -130,7 +145,7 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* () {
     });
     return { say, answer, waiting };
   };
-  return { provided, store, write, caller, dispatched, conversation };
+  return { provided, store, write, fail, caller, dispatched, sources, fleet, conversation };
 });
 
 /** Deployment `deployment` finished: what it deployed is Applied State. */
