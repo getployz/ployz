@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::{
-    ContainerKind, ContainerObservation, ContainerRuntimeObservation, EnvironmentValues,
-    HealthObservation, MachineId, MachineObservation, MachineStorageObservation, Namespace,
-    RpcError, RpcErrorCode, ServiceName,
+    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    EnvironmentValues, HealthObservation, MachineId, MachineObservation, MachineTarget,
+    MachineStorageObservation, Namespace, RpcError, RpcErrorCode, ServiceName,
+    StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -15,6 +16,7 @@ use ployz_store::tools::{CloudQuery, Freshness, ServerName, Source, Timestamp};
 use serde_json::Value;
 
 use super::Session;
+use crate::connect::TARGET_RPC_TIMEOUT;
 use crate::operator::DEPLOYMENT_LABEL;
 
 /// Answer `query` from the Servers behind `session`. A Server that did not answer is
@@ -171,6 +173,130 @@ async fn containers(
                     .collect(),
                 seen: seen(&machines, &unanswered),
             })
+        })
+        .await
+}
+
+/// One Container of a Service as its Server reports it: what an act stops and starts.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ServiceCopy {
+    pub server: ServerName,
+    pub machine: MachineId,
+    pub container: ContainerId,
+    pub state: ContainerState,
+}
+
+/// Every Container of one Service, and the Servers that did not say.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ServiceCopies {
+    pub copies: Vec<ServiceCopy>,
+    pub unanswered: Vec<ServerName>,
+}
+
+/// The Containers of `service` in `namespace` on every Server that answers.
+///
+/// # Errors
+/// Returns the session's error when it is closed or the Servers cannot be listed.
+pub async fn observe_service(
+    session: &Session,
+    namespace: &Namespace,
+    service: &ServiceName,
+) -> Result<ServiceCopies, RpcError> {
+    let mut client = session.client()?;
+    session
+        .until_closed(async {
+            let machines = client.machines().await.map_err(RpcError::from)?;
+            let live = client
+                .live_services_from(&machines, EnvironmentValues::Redacted)
+                .await
+                .map_err(RpcError::from)?;
+            let mut unanswered = uninvited(&machines);
+            unanswered.extend(
+                live.containers
+                    .failures
+                    .iter()
+                    .map(|failure| failure.machine_id),
+            );
+            unanswered.extend(live.containers.omissions.iter().copied());
+            let names: BTreeMap<MachineId, &ServerName> = machines
+                .iter()
+                .map(|machine| (machine.machine.id, &machine.machine.name))
+                .collect();
+            let copies = live
+                .containers
+                .successes
+                .iter()
+                .flat_map(|success| &success.value)
+                .filter(|container| {
+                    container.kind == ContainerKind::ServiceContainer
+                        && &container.namespace == namespace
+                        && container.service_name() == service
+                })
+                .filter_map(|container| {
+                    let server = names.get(&container.machine_id)?;
+                    Some(ServiceCopy {
+                        server: (*server).clone(),
+                        machine: container.machine_id,
+                        container: container.container_id,
+                        state: report(container, server).state,
+                    })
+                })
+                .collect();
+            Ok(ServiceCopies {
+                copies,
+                unanswered: seen(&machines, &unanswered).unanswered,
+            })
+        })
+        .await
+}
+
+/// Stop Container `container` on `machine`. An answer is the Machine's; a lost one is
+/// the transport's error, and the stop may have happened.
+///
+/// # Errors
+/// Returns the Machine's refusal, or the transport's error when it did not answer.
+pub async fn stop_one(
+    session: &Session,
+    machine: MachineId,
+    container: ContainerId,
+) -> Result<(), RpcError> {
+    let client = session.client()?;
+    session
+        .until_closed(crate::ingress::stop_container(
+            &client,
+            &machine,
+            StopContainerRequest {
+                container_id: container,
+                signal: None,
+                grace_period_seconds: None,
+            },
+            None,
+        ))
+        .await
+}
+
+/// Start Container `container` on `machine`.
+///
+/// # Errors
+/// Returns the Machine's refusal, or the transport's error when it did not answer.
+pub async fn start_one(
+    session: &Session,
+    machine: MachineId,
+    container: ContainerId,
+) -> Result<(), RpcError> {
+    let client = session.client()?;
+    session
+        .until_closed(async {
+            client
+                .invoke::<op::StartContainer>(
+                    StartContainerRequest {
+                        container_id: container,
+                    },
+                    &MachineTarget::from(&machine),
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+                .await
+                .map(|_| ())
         })
         .await
 }

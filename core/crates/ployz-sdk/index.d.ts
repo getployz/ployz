@@ -321,6 +321,15 @@ export declare class Client {
   ): Promise<MachineUpdated>;
   /** Answer a CloudQuery from this session's Servers; ones that did not answer are named in `seen.unanswered`. */
   agentAsk(query: import("./generated/payloads").CloudQuery): Promise<import("./generated/payloads").ServersAnswer | import("./generated/payloads").ContainersAnswer>;
+  /** Every Container of `service` in `namespace`, and the Servers that did not answer. */
+  observeService(namespace: string, service: string): Promise<{
+    copies: { server: string; machine: string; container: string; state: import("./generated/payloads").ContainerState }[];
+    unanswered: string[];
+  }>;
+  /** Stop one Container. A rejection with `unavailable` means the stop may have happened. */
+  stopContainer(machine: string, container: string): Promise<void>;
+  /** Start one Container. */
+  startContainer(machine: string, container: string): Promise<void>;
   /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
   inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**

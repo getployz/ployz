@@ -138,6 +138,18 @@ class Client {
     return withRpcError(this._inner.agentAsk(query));
   }
 
+  observeService(namespace, service) {
+    return withRpcError(this._inner.observeService(namespace, service));
+  }
+
+  stopContainer(machine, container) {
+    return withRpcError(this._inner.stopContainer(machine, container));
+  }
+
+  startContainer(machine, container) {
+    return withRpcError(this._inner.startContainer(machine, container));
+  }
+
   inspectContainer(machine, container) {
     return withRpcError(this._inner.inspectContainer(machine, container));
   }

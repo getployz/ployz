@@ -1,5 +1,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use ployz_core::{ContainerId, MachineId, Namespace, ServiceName};
 use ployz_store::tools::{self, Answer, CloudQuery, Place};
 
 use crate::{Client, invalid_argument, rpc_to_napi, to_json};
@@ -68,4 +69,53 @@ impl Client {
             .await
             .map_err(rpc_to_napi)
     }
+
+    /// Every Container of `service` in `namespace`: `{ copies, unanswered }`.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed name, or the session's error.
+    #[napi]
+    pub async fn observe_service(
+        &self,
+        namespace: String,
+        service: String,
+    ) -> Result<serde_json::Value> {
+        let namespace = Namespace::parse(&namespace).map_err(invalid_argument)?;
+        let service = ServiceName::parse(&service).map_err(invalid_argument)?;
+        let copies = ployz::sdk::agent::observe_service(&self.inner, &namespace, &service)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&copies)
+    }
+
+    /// Stop Container `container` on `machine`.
+    ///
+    /// # Errors
+    /// Returns the Machine's refusal, or the transport's error when it did not answer.
+    #[napi]
+    pub async fn stop_container(&self, machine: String, container: String) -> Result<()> {
+        let (machine, container) = ids(&machine, &container)?;
+        ployz::sdk::agent::stop_one(&self.inner, machine, container)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
+    /// Start Container `container` on `machine`.
+    ///
+    /// # Errors
+    /// Returns the Machine's refusal, or the transport's error when it did not answer.
+    #[napi]
+    pub async fn start_container(&self, machine: String, container: String) -> Result<()> {
+        let (machine, container) = ids(&machine, &container)?;
+        ployz::sdk::agent::start_one(&self.inner, machine, container)
+            .await
+            .map_err(rpc_to_napi)
+    }
+}
+
+fn ids(machine: &str, container: &str) -> Result<(MachineId, ContainerId)> {
+    Ok((
+        MachineId::parse(machine).map_err(invalid_argument)?,
+        ContainerId::parse(container).map_err(invalid_argument)?,
+    ))
 }
