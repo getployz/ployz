@@ -69,6 +69,9 @@ struct Tracked {
     /// The `0::` path of the pid's cgroup, relative to the hierarchy root.
     cgroup: String,
     labels: Labels,
+    /// Shares the Machine's network namespace, whose `net/dev` holds every
+    /// interface on the Machine rather than the container's own traffic.
+    host_network: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,6 +188,11 @@ fn track(
             deployment_id: meta.deployment,
             replica: meta.replica,
         },
+        host_network: inspected
+            .host_config
+            .as_ref()
+            .and_then(|host| host.network_mode.as_deref())
+            == Some("host"),
     })
 }
 
@@ -242,7 +250,9 @@ fn sample(
         }
         let dir = roots.cgroup.join(container.cgroup.trim_start_matches('/'));
         let counters = cgroup::read_cgroup(&dir);
-        let net = net::read_net_dev(&roots.proc, container.pid);
+        let net = (!container.host_network)
+            .then(|| net::read_net_dev(&roots.proc, container.pid))
+            .flatten();
         rows.push(Row::Container(container_sample(
             machine_id, ts, container, &counters, net,
         )));
@@ -416,6 +426,7 @@ Inter-|   Receive                                                |  Transmit
                     deployment_id: Some(format!("deploy-{n}")),
                     replica: format!("web-{n}"),
                 },
+                host_network: false,
             }
         }
 
@@ -605,6 +616,44 @@ Inter-|   Receive                                                |  Transmit
         assert_eq!(row.cpu_usec, Some(10));
         assert_eq!((row.io_r, row.io_w), (None, None));
         assert_eq!((row.rx, row.tx), (None, None));
+    }
+
+    #[test]
+    fn a_host_network_container_books_no_network_bytes() {
+        use bollard::models::{
+            ContainerConfig, ContainerInspectResponse, ContainerState, HostConfig,
+        };
+
+        let fixture = Fixture::new();
+        let corrosion = fixture.start(1);
+        let inspected = ContainerInspectResponse {
+            config: Some(ContainerConfig {
+                labels: Some([(super::LABEL_SYSTEM_MANAGED.to_owned(), String::new())].into()),
+                ..Default::default()
+            }),
+            state: Some(ContainerState {
+                pid: Some(i64::from(corrosion.pid)),
+                running: Some(true),
+                ..Default::default()
+            }),
+            host_config: Some(HostConfig {
+                network_mode: Some("host".to_owned()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let tracked = super::track(&fixture.roots.proc, corrosion.id, &inspected).unwrap();
+
+        let (rows, _) = sample(&fixture.roots, machine(), T0, &[tracked]);
+        let Some(Row::Container(row)) = rows.first() else {
+            panic!("the first row is the container's");
+        };
+        assert_eq!(row.cpu_usec, Some(10));
+        assert_eq!(
+            (row.rx, row.tx),
+            (None, None),
+            "the Machine's interfaces are not the container's traffic"
+        );
     }
 
     #[test]
