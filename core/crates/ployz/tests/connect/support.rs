@@ -79,6 +79,7 @@ struct WatchHub {
 }
 
 type ContainerListOutcomes = BTreeMap<MachineId, VecDeque<Result<ContainerList, Status>>>;
+type MetricReplies = BTreeMap<MachineId, Result<ployz_core::metrics::MetricHistoryReply, Status>>;
 
 impl WatchHub {
     fn new() -> Self {
@@ -159,6 +160,9 @@ pub(super) struct DiscoveryService {
     pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
     pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
     pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
+    pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
+    pub(super) metric_requests:
+        Arc<Mutex<Vec<(MachineId, ployz_core::metrics::MetricHistoryRequest)>>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     pub(super) watch_accepts_gzip: Arc<AtomicBool>,
     watch: Arc<WatchHub>,
@@ -217,6 +221,8 @@ impl DiscoveryService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: Arc::new(Mutex::new(BTreeMap::new())),
             history_blocked: None,
+            metric_replies: Arc::default(),
+            metric_requests: Arc::default(),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch_accepts_gzip: Arc::new(AtomicBool::new(false)),
             watch: Arc::new(WatchHub::new()),
@@ -669,6 +675,32 @@ impl MachineRpc for DiscoveryService {
             .encode()
             .unwrap(),
         ))
+    }
+
+    async fn metric_history(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id = request
+            .metadata()
+            .get("machine")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| MachineId::parse(value).ok())
+            .ok_or_else(|| Status::invalid_argument("expected a Machine Target"))?;
+        let RpcRequestBody::MetricHistory(asked) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected metric_history"));
+        };
+        self.metric_requests
+            .lock()
+            .unwrap()
+            .push((machine_id, asked));
+        let reply = match self.metric_replies.lock().unwrap().get(&machine_id) {
+            Some(reply) => reply.clone()?,
+            None => return Err(Status::unimplemented("no metrics for this Machine")),
+        };
+        Ok(Response::new(RpcResponse::from(reply).encode().unwrap()))
     }
 
     async fn list_containers(

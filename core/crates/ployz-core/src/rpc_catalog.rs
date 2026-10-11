@@ -94,6 +94,7 @@ macro_rules! rpc_catalog {
                 EndBuildGrant: (end_build_grant, "EndBuildGrant", EndBuildGrantRequest, "end_build_grant", BuildGrantEnded, END_BUILD_GRANT_CAPABILITY, "ployz.build.grant.end.v1", Container),
                 GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
+                MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
                 Reset: (reset, "Reset", ResetRequest, "reset", ResetAccepted, RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1", Always),
             }
             server_streaming {

@@ -1,9 +1,10 @@
-//! The only Rust writer of `uptime_incident` and `uptime_alert`.
+//! The only Rust writer of `uptime_incident`, `uptime_alert` and `uptime_check.probe_answered_at`.
 //!
 //! The detector's `Step::Open` and `Step::Close` become [`IncidentOp`]s on a bounded queue. One
 //! task runs them in order, each as one fenced statement whose incident row and outbox row commit
 //! together, and reports every op's outcome as a [`Written`] so the engine can adopt what applied
-//! and re-derive what didn't.
+//! and re-derive what didn't. A [`ProbeAnswered`] rides the same queue, so it commits after the
+//! incident write of the round that answered it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,9 +16,12 @@ use tokio::time::sleep;
 use tokio_postgres::Transaction;
 use tokio_postgres::types::Type;
 
-use crate::control::detect::{Evidence, EvidenceItem, Step};
+use crate::control::detect::{Evidence, EvidenceItem, ROUND_GRACE, Step};
 use crate::control::pg::{Pg, PgError, column};
-use crate::domain::{Check, CheckId, IncidentId, OrgId, Quorum, Revision, UnixMs, http_error_str};
+use crate::domain::{
+    Check, CheckId, IncidentId, MAX_TIMEOUT_MS, ONE_REGION_SPACING, OrgId, Quorum, Revision,
+    UnixMs, http_error_str,
+};
 
 /// `controlPlaneStatements.open` in `dashboard/src/modules/uptime/incident-fence.ts`, verbatim
 /// up to whitespace. A test holds the two copies together.
@@ -58,8 +62,20 @@ pub const OBSERVED_CLOSE: &str = "
 const RECORDED: &str = "SELECT EXISTS (SELECT 1 FROM uptime_alert \
     WHERE incident_id = $1 AND kind = $2) AS recorded";
 
+/// Never moves back, and leaves `revision` alone so the change it logs reloads the check without
+/// resetting it. $1 the request answered, $2 check id.
+pub const ANSWER: &str = "UPDATE uptime_check SET probe_answered_at = $1 \
+    WHERE id = $2 AND (probe_answered_at IS NULL OR probe_answered_at < $1)";
+
 const BACKOFF_MIN: Duration = Duration::from_millis(200);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
+/// The longest `probeShownMs` in `dashboard/src/modules/uptime/uptime-status.server.ts`, the
+/// slowest round: one-region spacing, the longest timeout, then `ROUND_GRACE`. Past it the
+/// dashboard stops showing any request, so an answer still failing is dropped rather than left
+/// retrying ahead of every incident write in the queue.
+const ANSWER_GIVE_UP: Duration = ONE_REGION_SPACING
+    .saturating_add(Duration::from_millis(MAX_TIMEOUT_MS))
+    .saturating_add(ROUND_GRACE);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Transition {
@@ -126,6 +142,19 @@ impl IncidentOp {
     }
 }
 
+/// The checker has judged the probe requested at `requested`. Best effort: a refused write is
+/// logged and dropped, so a missing grant costs the dashboard's Checking state and nothing else.
+#[derive(Clone, Copy, Debug)]
+pub struct ProbeAnswered {
+    pub check: CheckId,
+    pub requested: UnixMs,
+}
+
+enum Write {
+    Incident(IncidentOp),
+    Answered(ProbeAnswered),
+}
+
 /// An op's outcome. `applied: false` means Postgres refused it (a stale revision, an incident
 /// already closed or already open) or it failed for good: the engine re-derives from Postgres.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -147,7 +176,7 @@ pub enum Submit {
 /// Postgres is unreachable or its schema is behind. Dropping the handle lets the task drain the
 /// queue and stop.
 pub struct IncidentWriter {
-    queue: mpsc::Sender<IncidentOp>,
+    queue: mpsc::Sender<Write>,
 }
 
 impl IncidentWriter {
@@ -155,9 +184,16 @@ impl IncidentWriter {
 
     #[must_use]
     pub fn spawn(pg: Pg, capacity: usize, written: mpsc::Sender<Written>) -> IncidentWriter {
-        let (queue, mut ops) = mpsc::channel::<IncidentOp>(capacity);
+        let (queue, mut ops) = mpsc::channel::<Write>(capacity);
         tokio::spawn(async move {
             while let Some(op) = ops.recv().await {
+                let op = match op {
+                    Write::Incident(op) => op,
+                    Write::Answered(answered) => {
+                        answer_until_settled(&pg, answered).await;
+                        continue;
+                    }
+                };
                 let applied = write_until_settled(&pg, &op).await;
                 let report = Written {
                     check: op.check,
@@ -175,9 +211,54 @@ impl IncidentWriter {
 
     #[must_use]
     pub fn submit(&self, op: IncidentOp) -> Submit {
-        match self.queue.try_send(op) {
+        self.send(Write::Incident(op))
+    }
+
+    #[must_use]
+    pub fn answer(&self, answered: ProbeAnswered) -> Submit {
+        self.send(Write::Answered(answered))
+    }
+
+    fn send(&self, write: Write) -> Submit {
+        match self.queue.try_send(write) {
             Ok(()) => Submit::Queued,
             Err(TrySendError::Full(_) | TrySendError::Closed(_)) => Submit::Full,
+        }
+    }
+}
+
+async fn answer_until_settled(pg: &Pg, answered: ProbeAnswered) {
+    let requested = answered.requested.to_system_time();
+    let mut backoff = BACKOFF_MIN;
+    loop {
+        let result = pg
+            .tx(async |tx| {
+                tx.query_typed(
+                    ANSWER,
+                    &[
+                        (&requested, Type::TIMESTAMPTZ),
+                        (&answered.check.0, Type::UUID),
+                    ],
+                )
+                .await?;
+                Ok(())
+            })
+            .await;
+        match result {
+            Ok(()) => return,
+            Err(PgError::Transient(error)) => {
+                if UnixMs::now().since(answered.requested) >= ANSWER_GIVE_UP {
+                    tracing::warn!(check = %answered.check.0, %error, "probe answer given up");
+                    return;
+                }
+                tracing::debug!(check = %answered.check.0, %error, "probe answer will retry");
+                sleep(backoff).await;
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+            }
+            Err(error @ (PgError::Fatal(_) | PgError::SchemaNotReady { .. })) => {
+                tracing::warn!(check = %answered.check.0, %error, "probe answer not written");
+                return;
+            }
         }
     }
 }

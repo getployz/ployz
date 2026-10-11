@@ -1,12 +1,18 @@
 //! Review, Publish and Discard through `read` and `write` only, on SQLite and on
 //! Postgres (see `backend`).
+#![expect(
+    clippy::indexing_slicing,
+    reason = "Fixed test fixtures use indexing; missing entries must fail the test."
+)]
 
 use ployz_core::config::{ReviewComparisonRole, ReviewLifecycleKind};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DiffQuery, DiffView,
-    Discard, Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount,
-    OrganizationId, ProjectId, ProjectName, Publish, Published, Revision, ServiceLineageId,
+    Actor, AddDomain, Admit, Approval, ApprovalDigest, Change, ConfigStore, CreateProject,
+    CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DestructiveEffect,
+    DestructiveKind, DiffQuery, DiffView, Discard, Discarded, Edit, EnvironmentId,
+    EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, ProjectId, ProjectName,
+    Publish, Published, RemoveDomain, RemoveService, RemoveVolume, Revision, ServiceLineageId,
     SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
@@ -89,6 +95,15 @@ fn value(store: &ConfigStore, who: &Actor, path: &str) -> Option<Value> {
 }
 
 fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Published, RpcError> {
+    publish_as(store, who, version, Approval::NotRequired)
+}
+
+fn publish_as(
+    store: &ConfigStore,
+    who: &Actor,
+    version: Option<&str>,
+    approval: Approval,
+) -> Result<Published, RpcError> {
     store.write_trusted(
         who,
         &Publish {
@@ -96,7 +111,10 @@ fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Pu
             version: version.map(Into::into),
             accept_volume_loss: Vec::new(),
         },
-        &Trusted::default(),
+        &Trusted {
+            approval,
+            ..Trusted::default()
+        },
     )
 }
 
@@ -509,4 +527,378 @@ fn a_compound_settings_row_discards_that_setting() {
     }
     assert!(diff(&store, &who).changes.is_empty());
     assert_eq!(value(&store, &who, "api.image"), Some(json!("caddy:2")));
+}
+
+const WEB: &str = "00000000-0000-4000-8000-000000000003";
+
+fn apply_all(store: &ConfigStore, who: &Actor, trusted: &Trusted) {
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .write_trusted(
+            who,
+            &Admit::Deploy(Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            trusted,
+        )
+        .unwrap();
+    backend::run(store, &id);
+}
+
+fn remove_service(store: &ConfigStore, who: &Actor, name: &str) {
+    store
+        .write(
+            who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse(name).unwrap(),
+            },
+        )
+        .unwrap();
+}
+
+fn mount_data(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &CreateVolume {
+                shared_writes: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+fn effects(store: &ConfigStore, who: &Actor) -> Vec<(DestructiveKind, String, String)> {
+    diff(store, who)
+        .effects
+        .into_iter()
+        .map(|effect| (effect.kind, effect.name, effect.path))
+        .collect()
+}
+
+#[test]
+fn removing_a_deployed_service_is_destructive_and_a_new_one_is_not() {
+    let (store, who) = shop();
+    remove_service(&store, &who, "api");
+    assert!(diff(&store, &who).effects.is_empty());
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    assert_eq!(
+        Vec::from_iter(diff(&store, &who).effects),
+        [DestructiveEffect {
+            kind: DestructiveKind::RemovesService,
+            name: "web".into(),
+            node: WEB.into(),
+            path: "web".into(),
+        }]
+    );
+}
+
+#[test]
+fn deleting_a_deployed_volume_is_destructive() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        effects(&store, &who),
+        [(
+            DestructiveKind::DeletesVolume,
+            "data".to_owned(),
+            "volumes.data".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn detaching_a_volume_from_a_deployed_service_is_destructive_and_keeps_its_data() {
+    let (store, who) = shop();
+    mount_data(&store, &who);
+    apply_all(&store, &who, &Trusted::default());
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("web.mounts.data").unwrap(),
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(diff(&store, &who).changes[0].data, Some(DataEffect::Kept));
+    assert_eq!(
+        effects(&store, &who),
+        [(
+            DestructiveKind::DetachesVolume,
+            "data".to_owned(),
+            "web.mounts.data".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn removing_a_deployed_domain_is_destructive() {
+    let (store, who) = shop();
+    store
+        .write_trusted(
+            &who,
+            &AddDomain {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                hostname: Some(Hostname::parse("app.example.com").unwrap()),
+                port: None,
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    apply_all(&store, &who, &Trusted::default());
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "app.example.com".into(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    let effects = effects(&store, &who);
+    assert_eq!(effects.len(), 1, "{effects:?}");
+    assert_eq!(effects[0].0, DestructiveKind::RemovesDomain);
+    assert_eq!(effects[0].1, "app.example.com");
+    assert!(effects[0].2.starts_with("web.routes."), "{effects:?}");
+    let refused = store
+        .write_trusted(
+            &who,
+            &Publish {
+                environment: EnvironmentRef::default(),
+                version: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                approval: Approval::Required,
+                ..Trusted::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused.message,
+        "A human must approve this first: remove domain app.example.com"
+    );
+}
+
+#[test]
+fn an_effect_from_a_cloud_that_names_nothing_still_reads() {
+    let effect: DestructiveEffect = serde_json::from_value(json!({
+        "kind": "removes_domain",
+        "node": WEB,
+        "path": "web.routes.e23290af-63ac-54c7-8368-5e4c6bcf804e",
+    }))
+    .unwrap();
+    assert_eq!(effect.kind, DestructiveKind::RemovesDomain);
+    assert_eq!(effect.name, "");
+}
+
+#[test]
+fn rolling_a_deployed_service_destroys_nothing_and_publishes_unasked() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    set(&store, &who, "web.image", json!("nginx:2"));
+    set(&store, &who, "web.env.MODE", json!("fast"));
+    set(&store, &who, "web.replicas", json!(3));
+    assert!(diff(&store, &who).effects.is_empty());
+    publish_as(&store, &who, None, Approval::Required).unwrap();
+}
+
+#[test]
+fn publishing_a_removal_waits_for_a_human_to_approve_exactly_it() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let refused = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(
+        refused.details["effects"],
+        json!([{"kind": "removes_service", "name": "web", "node": WEB, "path": "web"}])
+    );
+    assert!(
+        refused.message.contains("remove Service web"),
+        "{}",
+        refused.message
+    );
+    assert!(refused.details.get("retry").is_none());
+    let approval = refused.details["approval"].as_str().unwrap();
+    let version = diff(&store, &who).version;
+    assert!(approval.starts_with(&format!("{version}:")), "{approval}");
+    let approved = Approval::Approved(ApprovalDigest::parse(approval).unwrap());
+    publish_as(&store, &who, None, approved).unwrap();
+}
+
+#[test]
+fn an_approval_of_an_older_review_is_refused_with_the_fresh_one() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let first = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    let old = first.details["approval"].as_str().unwrap().to_owned();
+    set(&store, &who, "api.replicas", json!(2));
+    let stale = Approval::Approved(ApprovalDigest::parse(&old).unwrap());
+    let refused = publish_as(&store, &who, None, stale).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_ne!(refused.details["approval"], json!(old));
+    assert_eq!(
+        refused.details["diff"]["version"],
+        json!(diff(&store, &who).version)
+    );
+}
+
+#[test]
+fn a_published_removal_not_yet_deployed_asks_again_on_the_next_publication() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let first = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    let approved = Approval::Approved(
+        ApprovalDigest::parse(first.details["approval"].as_str().unwrap()).unwrap(),
+    );
+    publish_as(&store, &who, None, approved).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    let again = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    assert_eq!(again.details["effects"], first.details["effects"]);
+    assert_ne!(again.details["approval"], first.details["approval"]);
+}
+
+#[test]
+fn a_new_publication_asks_again_for_a_removal_still_queued() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let deploy = |approval| {
+        store.write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted {
+                approval,
+                ..Trusted::default()
+            },
+        )
+    };
+    let refused = deploy(Approval::Required).unwrap_err();
+    let digest = refused.details["approval"].as_str().unwrap();
+    deploy(Approval::Approved(ApprovalDigest::parse(digest).unwrap())).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    let again = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    assert_eq!(again.details["effects"], refused.details["effects"]);
+}
+
+#[test]
+fn with_approvals_switched_off_a_removal_publishes_unasked() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    assert!(!diff(&store, &who).effects.is_empty());
+    let published = publish_as(&store, &who, None, Approval::NotRequired).unwrap();
+    assert!(published.created);
+}
+
+#[test]
+#[ignore = "perf"]
+fn publish_review_perf() {
+    let store = ConfigStore::open("sqlite::memory:", backend::key()).unwrap();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(PROJECT).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
+            },
+        )
+        .unwrap();
+    for n in 0..200_u32 {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-1{n:011}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(format!("s{n}")).unwrap(),
+                    image: Some("nginx:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    apply_all(&store, &who, &Trusted::default());
+    let rounds = 200_u32;
+    let mut spent = std::time::Duration::ZERO;
+    for round in 0..rounds {
+        let changes = (0..50)
+            .map(|n| Change::Set {
+                path: SettingPath::parse(&format!("s{n}.replicas")).unwrap(),
+                value: json!(2 + round % 2),
+            })
+            .collect();
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes,
+                },
+            )
+            .unwrap();
+        let started = std::time::Instant::now();
+        store
+            .write_trusted(
+                &who,
+                &Publish {
+                    environment: EnvironmentRef::default(),
+                    version: None,
+                    accept_volume_loss: Vec::new(),
+                },
+                &Trusted::default(),
+            )
+            .unwrap();
+        spent += started.elapsed();
+    }
+    println!(
+        "publish (review + gate), 50 staged changes over 200 deployed Services: {} us mean over {rounds} publishes",
+        spent.as_micros() / u128::from(rounds)
+    );
 }
