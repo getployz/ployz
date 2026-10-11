@@ -73,7 +73,7 @@ function RegionRow({ point, slowest }: { point: UptimePoint; slowest: number }) 
         ) : (
           <span className="tabular-nums">
             {point.medianMs === null ? "–" : formatMs(point.medianMs)}
-            {single || point.maxMs === null ? null : <span className="text-muted-foreground"> · max {Math.round(point.maxMs)}</span>}
+            {single || point.maxMs === null ? null : <span className="text-muted-foreground"> · max {formatMs(point.maxMs)}</span>}
           </span>
         )}
       </div>
