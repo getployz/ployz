@@ -83,6 +83,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "login",
             "logout",
             "logs",
+            "mcp",
             "org",
             "org build-order",
             "org ls",

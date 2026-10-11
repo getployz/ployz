@@ -150,14 +150,18 @@ async fn boot(
     let writer_pg = connect(url, &crypto, "the incident writer").await?;
     let results_pg = connect(url, &crypto, "the result writer").await?;
     let feed_pg = connect(url, &crypto, "the check feed").await?;
+    tokio::spawn(super::region_names::write_until_done(
+        feed_pg.clone(),
+        config.regions.clone(),
+    ));
 
     let (written_tx, written_rx) = mpsc::channel(WRITTEN_QUEUE);
     let writer = IncidentWriter::spawn(writer_pg, IncidentWriter::QUEUE, written_tx);
     let results = Results::spawn(results_pg, results::Config::PRODUCTION);
     let (msgs, msgs_rx) = mpsc::channel(MSG_QUEUE);
     let (feed_cmds, cmds_rx) = mpsc::channel(2);
-    let wake: HashMap<Region, Arc<Notify>> = config
-        .regions
+    let regions = config.region_codes();
+    let wake: HashMap<Region, Arc<Notify>> = regions
         .iter()
         .map(|r| (r.clone(), Arc::new(Notify::new())))
         .collect();
@@ -170,7 +174,7 @@ async fn boot(
         feed_cmds,
         wake: wake.clone(),
     };
-    tokio::spawn(engine(config.regions.clone(), deps).run(msgs_rx, written_rx, stopped_tx));
+    tokio::spawn(engine(regions.clone(), deps).run(msgs_rx, written_rx, stopped_tx));
 
     match CheckFeed::load(feed_pg.clone()).await {
         Ok((feed, snapshot)) => {
@@ -199,7 +203,7 @@ async fn boot(
         wake,
         ready,
         stopped,
-        regions: config.regions,
+        regions,
     })
 }
 
