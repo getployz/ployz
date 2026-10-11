@@ -114,6 +114,13 @@ pub(crate) fn publish(
         (publish.version.as_deref(), &publish.accept_volume_loss),
         trusted.volumes.as_ref(),
     )?;
+    review::approve(
+        who,
+        &environment.summary.id,
+        &review,
+        &target,
+        &trusted.approval,
+    )?;
     let (saved, created) = review::publish(
         tx,
         who,

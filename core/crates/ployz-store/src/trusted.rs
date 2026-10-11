@@ -7,6 +7,7 @@ use ts_rs::TS;
 
 use crate::domain::DomainEvidence;
 use crate::git::AuthorizedRepository;
+use crate::id::ApprovalDigest;
 
 /// What Cloud checked for one write. Empty unless Cloud supplies it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -29,6 +30,25 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub servers: Option<u32>,
+    /// Whether a human must approve a publication that destroys something, and what they
+    /// approved.
+    #[serde(default)]
+    #[ts(as = "Option<Approval>", optional)]
+    pub approval: Approval,
+}
+
+/// Whether Cloud asks a human before a publication destroys something, and which
+/// destructive set a human approved. Cloud's evidence, never caller testimony.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Approval {
+    /// Nothing asks: the hidden local Store, or an Organization that doesn't require it.
+    #[default]
+    NotRequired,
+    /// A publication that destroys something refuses until a human approves it.
+    Required,
+    /// Cloud holds a human's approval of exactly this `version:digest`.
+    Approved(ApprovalDigest),
 }
 
 impl Trusted {

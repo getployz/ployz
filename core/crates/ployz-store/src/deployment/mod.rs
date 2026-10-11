@@ -44,7 +44,7 @@ use crate::id::{
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
-use crate::review::Head;
+use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx, name_of};

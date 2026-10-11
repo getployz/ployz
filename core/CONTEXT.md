@@ -298,7 +298,7 @@ One pure, serializable comparison from the latest queued or running Deployment's
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Environment Publication Review**:
-Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Publish and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
+Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. It carries that destructive set as Destructive Effects, each naming the node and the row it changes, and the Approval digest over them. Publish and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
 _Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
 
 **Saved State Command**:
@@ -384,8 +384,12 @@ The observer-relative plan-plus-warnings offered for confirmation before one Dep
 _Avoid_: persisted plan, cluster decision record
 
 **Destructive Change**:
-Removal of an existing Service or explicitly requested destruction of a Docker Volume, requiring operator approval. Ordinary Service updates, container replacements, and scaling changes do not require additional destructive confirmation.
+Removal of a Service, deletion or detachment of a Volume, or removal of a domain, each one that Applied State holds or the Deployment in flight puts in place. Each is one Destructive Effect. Ordinary Service updates, image rolls, variable changes, replica changes, container replacements, and Setting edits are not destructive; replicas stay 1–50, so no replica change stops a Service.
 _Avoid_: Every container replacement, implicit Volume deletion
+
+**Approval**:
+A human's assent to one exact destructive set, pinned as `version:digest`. The version pins the Working and Saved revisions and the Head reviewed; the digest hashes the Organization, the Environment, and the sorted Destructive Effects. Only Publish and a manual Deploy that publishes ask, and only when Cloud requires it as trusted evidence. Setting edits and Deploys of already-Saved State never ask. A removal not yet deployed asks again on every Publication that still carries it. A stale or different digest refuses with the fresh review. Approval is separate from Data Loss Confirmation, which still names each Volume whose data a Deploy deletes.
+_Avoid_: Confirmation flag, approval token, caller-asserted approval
 
 **Deploy Progress**:
 Live evidence of one in-flight Deploy: the current operation, the completed prefix, and health/hook waits. It is not Cluster Watch, not a workflow status, and not persisted.
