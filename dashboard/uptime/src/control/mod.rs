@@ -6,6 +6,7 @@ pub mod feed;
 pub mod incidents;
 pub mod pg;
 pub mod plane;
+pub mod region_names;
 pub mod results;
 pub(crate) mod schedule;
 #[cfg(test)]
