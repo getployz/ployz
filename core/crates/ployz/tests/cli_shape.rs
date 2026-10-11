@@ -288,11 +288,14 @@ fn server_upgrade_requires_explicit_targets_in_order() {
 
 /// Run the binary against an empty config home; returns (exit code, stdout JSON, stderr).
 fn run_json(args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
-    run_json_with(args, &[])
+    run_json_with::<&str>(args, &[])
 }
 
 /// [`run_json`] with extra environment variables.
-fn run_json_with(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, serde_json::Value, String) {
+fn run_json_with<V: AsRef<std::ffi::OsStr>>(
+    args: &[&str],
+    envs: &[(&str, V)],
+) -> (Option<i32>, serde_json::Value, String) {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
@@ -304,7 +307,7 @@ fn run_json_with(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, serde_js
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .env_remove("PLOYZ_STORE")
-        .envs(envs.iter().copied())
+        .envs(envs.iter().map(|(name, value)| (name, value)))
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -661,6 +664,27 @@ fn root_help_ends_with_the_catalog_pointer() {
         help.trim_end()
             .ends_with("`ployz explain SERVICE.SETTING` describes one Setting."),
         "{help}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_store_url_that_is_not_unicode_is_a_usage_error() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let store = std::ffi::OsStr::from_bytes(b"sqlite:/tmp/\xff.db");
+    let (code, json, stderr) =
+        run_json_with(&["project", "ls", "--json"], &[("PLOYZ_STORE", store)]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        json.pointer("/error/code"),
+        Some(&serde_json::json!("invalid_argument")),
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/message"),
+        Some(&serde_json::json!("PLOYZ_STORE must be valid Unicode")),
+        "{json}"
     );
 }
 
