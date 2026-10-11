@@ -146,21 +146,25 @@ it.live("a read tool answers straight from the Store", () =>
     expect(answered.said).toBe("Services: web.");
   }));
 
-it.live("a cloud tool's refusal reaches the model in the same envelope as the Store's", () =>
+it.live("a GitHub read the sidebar can't reach yet reaches the model as the tool's refusal", () =>
   Effect.gen(function* () {
     const { say } = yield* sidebar({ removeWeb: false });
-    const answered = yield* say("tree acme/nope");
+    const answered = yield* say("tree acme/web");
     expect(answered.interrupts).toEqual([]);
-    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
+    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "unavailable" } }]);
     expect(answered.said).toMatch(/^The Store refused: /);
   }));
 
-it.live("a store tool the agent mints ids for creates a Project", () =>
+it.live("a store tool the agent mints ids for creates a Service where the member is", () =>
   Effect.gen(function* () {
-    const { say } = yield* sidebar({ removeWeb: false });
-    const answered = yield* say("new project api");
+    const { say, store } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const answered = yield* say("add an nginx service called api", { page: architecture }, model);
     expect(answered.results).toMatchObject([{ ok: true }]);
     expect(answered.said).toBe("Done.");
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "shop", environment: "production" } }));
+    expect(JSON.stringify(listed)).toContain('"api"');
   }));
 
 const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };
@@ -1083,21 +1087,19 @@ it.live("shipping a new image stages it without asking, and its Deploy runs with
 
 const githubDeploy = [
   { name: "github_ls", input: {} },
-  { name: "github_tree", input: { repository: "acme/api" } },
-  { name: "github_tree", input: { repository: "acme/api", match: "**/Dockerfile" } },
-  { name: "github_cat", input: { repository: "acme/api", path: "Dockerfile" } },
-  { name: "github_cat", input: { repository: "acme/api", path: "package.json" } },
-  { name: "github_cat", input: { repository: "acme/api", path: "compose.yaml" } },
-  { name: "project_new", input: { name: "api" } },
-  { name: "env_new", input: { project: "api", name: "production" } },
-  { name: "service_add", input: { project: "api", env: "production", name: "api", repo: "acme/api" } },
-  { name: "config_add", input: { project: "api", env: "production", name: "env" } },
-  { name: "config_mount", input: { project: "api", env: "production", config: "env", service: "api", path: "/app/.env" } },
-  { name: "domain_add", input: { project: "api", env: "production", service: "api", domain: "api.acme.dev" } },
-  { name: "diff", input: { project: "api", env: "production" } },
-  { name: "publish", input: { project: "api", env: "production" } },
-  { name: "deploy", input: { project: "api", env: "production" } },
-  { name: "deployment_show", input: { project: "api", env: "production" } },
+  { name: "github_ls", input: { repository: "acme/api" } },
+  { name: "github_ls", input: { repository: "acme/api", match: "**/Dockerfile" } },
+  { name: "github_ls", input: { repository: "acme/api", path: "Dockerfile" } },
+  { name: "github_ls", input: { repository: "acme/api", path: "package.json" } },
+  { name: "github_ls", input: { repository: "acme/api", path: "compose.yaml" } },
+  { name: "environment_show", input: {} },
+  { name: "service_add", input: { name: "api", repository: "acme/api" } },
+  { name: "config_write", input: { config: "env", files: { ".env": "PORT=3000\n" }, service: "api", path: "/app" } },
+  { name: "domain_add", input: { service: "api", hostname: "api.acme.dev" } },
+  { name: "review", input: {} },
+  { name: "publish", input: {} },
+  { name: "deploy", input: {} },
+  { name: "deployment_show", input: {} },
 ];
 
 it.live("deploying a GitHub repository one call per turn finishes within the step limit", () =>
@@ -1114,7 +1116,7 @@ it.live("a turn that runs out of steps tells the member to say continue, and the
   Effect.gen(function* () {
     const { say, persistence } = yield* sidebar({ removeWeb: false });
     const model = fakeText();
-    model.setResponses(Array.from({ length: STEP_LIMIT + 5 }, () => ({ toolCalls: [{ name: "service_ls", input: {} }] })));
+    model.setResponses(Array.from({ length: STEP_LIMIT + 5 }, () => ({ toolCalls: [{ name: "environment_show", input: {} }] })));
     const stopped = yield* say("tidy up", {}, model);
     expect(model.state.callCount).toBe(STEP_LIMIT);
     expect(stopped.said).toBe(STEP_LIMIT_NOTE);
