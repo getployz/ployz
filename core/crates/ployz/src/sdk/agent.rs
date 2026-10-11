@@ -3,9 +3,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    EnvironmentValues, HealthObservation, MachineId, MachineObservation, MachineTarget,
-    MachineStorageObservation, Namespace, RpcError, RpcErrorCode, ServiceName,
-    StartContainerRequest, StopContainerRequest, op,
+    EnvironmentValues, HealthObservation, MachineId, MachineObservation, MachineStorageObservation,
+    MachineTarget, Namespace, RpcError, RpcErrorCode, ServiceName, StartContainerRequest,
+    StopContainerRequest, op,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
