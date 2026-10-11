@@ -89,9 +89,14 @@ export function incidentRange(incident: UptimeIncidentEntry, now: number): Range
   return { from: to - length, to };
 }
 
+const firstStep = (window: TimeWindow) => Math.ceil(window.from / window.stepMs) * window.stepMs;
+
+/** The step a time falls in; one before the first step joins it, so a range's partial first step is not lost. */
+const stepAt = (window: TimeWindow, at: number) => Math.max(firstStep(window), Math.floor(at / window.stepMs) * window.stepMs);
+
 /** The start of each step in a window. */
 export function steps(window: TimeWindow): number[] {
-  const first = Math.ceil(window.from / window.stepMs) * window.stepMs;
+  const first = firstStep(window);
   return Array.from({ length: Math.max(0, Math.ceil((window.to - first) / window.stepMs)) }, (_, index) => first + index * window.stepMs);
 }
 
@@ -100,7 +105,7 @@ export function checkSeries(points: readonly UptimePoint[], window: TimeWindow):
   const buckets = new Map<number, { count: number; sum: number }>();
   for (const point of points) {
     if (point.ms === null) continue;
-    const step = Math.floor(Date.parse(point.at) / window.stepMs) * window.stepMs;
+    const step = stepAt(window, Date.parse(point.at));
     const bucket = buckets.get(step) ?? { count: 0, sum: 0 };
     buckets.set(step, { count: bucket.count + 1, sum: bucket.sum + point.ms });
   }
@@ -141,11 +146,11 @@ export function historyBars(window: RangeWindow, uptime: Pick<ServiceUptime, "po
       return { start: at, end: at, tone, result, incidents: touching((span) => span.from <= at && span.to >= at) };
     });
   }
-  const stepMs = barMs(window);
-  const probed = new Set(uptime?.points.map((point) => Math.floor(Date.parse(point.at) / stepMs) * stepMs));
-  return steps({ ...window, stepMs }).map((start) => {
-    const end = Math.min(start + stepMs, window.to);
-    const touched = touching((span) => span.from < end && span.to > start);
+  const spanned = { ...window, stepMs: barMs(window) };
+  const probed = new Set(uptime?.points.map((point) => stepAt(spanned, Date.parse(point.at))));
+  return steps(spanned).map((start, index) => {
+    const end = Math.min(start + spanned.stepMs, window.to);
+    const touched = touching((span) => span.from < end && span.to > (index === 0 ? window.from : start));
     const tone = touched.length > 0 ? "down" : probed.has(start) ? "up" : "none";
     return { start, end, tone, result: null, incidents: touched };
   });

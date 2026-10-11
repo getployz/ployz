@@ -47,7 +47,8 @@ function RangeForm({ range, timeZone, onRange, onHover }: RangePickerProps & { t
     if (edges.to === null) return setError(`Can’t read “${to}”`);
     const window = resolveRange({ from: edges.from, to: edges.to }, now);
     if (window.from >= window.to) return setError("From must be before Until");
-    onRange({ from: edges.from, to: edges.to });
+    // Data stops at now, so an Until past it is now.
+    onRange({ from: edges.from, to: window.to >= now ? "now" : edges.to });
   };
   return (
     <FieldGroup>

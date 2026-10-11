@@ -135,6 +135,12 @@ describe("checkSeries", () => {
     ];
     expect(checkSeries(points, window)).toEqual([150, null, null]);
   });
+
+  it("counts a point before the first step in that step", () => {
+    const minute = 60_000;
+    const window = { from: 2 * minute, to: 7 * minute, stepMs: 5 * minute };
+    expect(checkSeries([{ at: new Date(3 * minute).toISOString(), region: "ams", ms: 100 }], window)).toEqual([100]);
+  });
 });
 
 describe("historyBars", () => {
