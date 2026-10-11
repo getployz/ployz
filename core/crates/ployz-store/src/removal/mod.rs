@@ -18,12 +18,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-pub(crate) use self::due::{admit, close, sweep};
 pub use self::due::{Due, DueQuery};
+pub(crate) use self::due::{admit, close, sweep};
 pub(crate) use self::due::{due, shut_down};
+use self::mark::{Accepted, Mark, State};
 pub use self::review::{RemovedVolume, VolumeLoss, docker_volume};
 pub(crate) use self::review::{removed, review, short_digest};
-use self::mark::{Accepted, Mark, State};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{
@@ -269,8 +269,7 @@ pub(crate) fn remove(
     let mut reviews = Vec::new();
     for environment in members {
         let id = environment.summary.id.clone();
-        if on_servers(tx, &id)?.is_none() || deployment::forgettable(tx, &id, trusted)?.is_some()
-        {
+        if on_servers(tx, &id)?.is_none() || deployment::forgettable(tx, &id, trusted)?.is_some() {
             continue;
         }
         let name = environment.summary.name.clone();
@@ -295,13 +294,18 @@ pub(crate) fn remove(
         )?);
     }
     refuse_unanswered(who, remove, &reviews, &target)?;
-    let version = version(who, &target, &reviews, |reviewed| reviewed.every_copy.clone());
+    let version = version(who, &target, &reviews, |reviewed| {
+        reviewed.every_copy.clone()
+    });
     confirm(remove, &reviews, &version)?;
     gate(
         who,
         &target,
         &version,
-        reviews.iter().flat_map(|reviewed| reviewed.effects.clone()).collect(),
+        reviews
+            .iter()
+            .flat_map(|reviewed| reviewed.effects.clone())
+            .collect(),
         &trusted.approval,
         || {
             let diffs: BTreeMap<&EnvironmentName, &crate::DiffView> = reviews
@@ -464,7 +468,10 @@ fn refuse_unanswered(
         .map(|reviewed| {
             (
                 &reviewed.environment.summary.name,
-                reviewed.lost().map(|loss| &loss.volume.name).collect::<Vec<_>>(),
+                reviewed
+                    .lost()
+                    .map(|loss| &loss.volume.name)
+                    .collect::<Vec<_>>(),
             )
         })
         .filter(|(_, lost)| !lost.is_empty())
@@ -495,7 +502,11 @@ fn version(
 ) -> String {
     match (target, reviews) {
         (Target::Environment(_), [reviewed]) => {
-            format!("{}:{}", reviewed.base, reviewed.binding(who, &every_copy(reviewed)))
+            format!(
+                "{}:{}",
+                reviewed.base,
+                reviewed.binding(who, &every_copy(reviewed))
+            )
         }
         (Target::Environment(id), _) => id.to_string(),
         (Target::Project(id), _) => {
@@ -536,22 +547,35 @@ fn confirm(remove: &Remove, reviews: &[Reviewed], version: &str) -> Result<(), R
     }
     let lost: BTreeMap<&EnvironmentName, Vec<&VolumeLoss>> = reviews
         .iter()
-        .map(|reviewed| (&reviewed.environment.summary.name, reviewed.lost().collect()))
+        .map(|reviewed| {
+            (
+                &reviewed.environment.summary.name,
+                reviewed.lost().collect(),
+            )
+        })
         .filter(|(_, lost): &(_, Vec<_>)| !lost.is_empty())
         .collect();
     let accept: BTreeMap<&EnvironmentName, Vec<&VolumeName>> = lost
         .iter()
         .map(|(name, lost)| (*name, lost.iter().map(|loss| &loss.volume.name).collect()))
         .collect();
-    let effects: BTreeSet<&DestructiveEffect> =
-        reviews.iter().flat_map(|reviewed| &reviewed.effects).collect();
+    let effects: BTreeSet<&DestructiveEffect> = reviews
+        .iter()
+        .flat_map(|reviewed| &reviewed.effects)
+        .collect();
     let deletes = effects
         .iter()
         .map(|effect| effect.describe())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>()
         .join(", ");
+    let ask = match lost.is_empty() {
+        true => "Pass the version to go ahead",
+        false => "Pass the version and accept each lost Volume by name to go ahead",
+    };
     Err(error::confirmation_required(
-        format!("This permanently {deletes}. Accept each lost Volume by name"),
+        format!("Removing this will {deletes}. {ask}"),
         json!({
             "volumes": lost,
             "accept": accept,
@@ -629,8 +653,7 @@ pub(crate) fn cancel_removal(
         ),
         None => Target::Project(project.id.clone()),
     };
-    let Some(mut mark) = mark::of(tx, &target)?.filter(|mark| mark.state == State::Removing)
-    else {
+    let Some(mut mark) = mark::of(tx, &target)?.filter(|mark| mark.state == State::Removing) else {
         return Err(error::conflict(
             format!(
                 "{} isn't being removed",

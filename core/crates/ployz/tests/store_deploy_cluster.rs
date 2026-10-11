@@ -225,7 +225,12 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         "--expect-version",
         version,
     ]);
-    assert_eq!(removed["deployment"]["remove"], json!(true), "{removed}");
+    assert_eq!(removed["removal"], json!("removed"), "{removed}");
+    assert_eq!(
+        removed["deployments"][0]["remove"],
+        json!(true),
+        "{removed}"
+    );
     wait_for_web(&mut client, &api_containers, 0).await;
     assert!(
         !held(&mut client, &cache).await,
@@ -249,7 +254,26 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         ployz(&["deploy", "--env", "fix"])["status"],
         json!("applied")
     );
-    let removed = ployz(&["project", "rm", "shop", "--confirm", "shop"]);
+    let (code, refused) = attempt(
+        address,
+        &store,
+        &["project", "rm", "shop", "--confirm", "shop"],
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "removing deployed Services asks first: {refused}"
+    );
+    let version = refused["error"]["details"]["version"].as_str().unwrap();
+    let removed = ployz(&[
+        "project",
+        "rm",
+        "shop",
+        "--confirm",
+        "shop",
+        "--expect-version",
+        version,
+    ]);
     assert_eq!(
         removed["environments"],
         json!(["fix", "production"]),

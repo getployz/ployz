@@ -7,8 +7,8 @@ use std::path::Path;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
-    OrganizationId, ProjectName, Publish, Published, RemovalsQuery, SealingKey, Tell, Trusted,
-    View, VolumeObservation, Written,
+    OrganizationId, ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey,
+    Sweep, SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -191,7 +191,9 @@ impl<'m> Store<'m> {
     /// Publish Working State. Locally this CLI observes Volume loss; Cloud gathers its own evidence.
     pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
         let volumes = match &self.backend {
-            Backend::Local(..) => self.observe(&publish.environment, false)?,
+            Backend::Local(..) => {
+                self.observe(std::slice::from_ref(&publish.environment), false)?
+            }
             Backend::Cloud(..) => None,
         };
         self.approved(
@@ -208,10 +210,13 @@ impl<'m> Store<'m> {
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
         let volumes = match (&self.backend, admit) {
             (Backend::Local(..), Admit::Deploy(deploy)) if deploy.services.is_empty() => {
-                self.observe(&deploy.environment, false)?
+                self.observe(std::slice::from_ref(&deploy.environment), false)?
             }
             (Backend::Local(..), Admit::Remove(removal)) => {
-                self.observe(&removal.environment, true)?
+                self.observe(std::slice::from_ref(&removal.environment), true)?
+            }
+            (Backend::Local(..), Admit::ShutDown(shut_down)) => {
+                self.observe(std::slice::from_ref(&shut_down.environment), true)?
             }
             _ => None,
         };
@@ -224,25 +229,58 @@ impl<'m> Store<'m> {
         )
     }
 
+    /// Remove an Environment or a Project. The in-process Store reviews Volume loss
+    /// against what this CLI observes of `members`' Volumes.
+    pub(crate) fn remove(
+        &self,
+        remove: &Remove,
+        members: &[EnvironmentRef],
+    ) -> Result<Removal, StoreCallError> {
+        let volumes = match &self.backend {
+            Backend::Local(..) => self.observe(members, true)?,
+            Backend::Cloud(..) => None,
+        };
+        self.approved(
+            remove,
+            &Trusted {
+                volumes,
+                ..Trusted::default()
+            },
+        )
+    }
+
+    /// Move every removal on in the in-process Store, as Cloud's sweep does there.
+    pub(crate) fn sweep(&self) -> Result<(), StoreCallError> {
+        match &self.backend {
+            Backend::Local(store, who) => sweep(store, who).map_err(StoreCallError::Refused),
+            Backend::Cloud(..) => Ok(()),
+        }
+    }
+
     /// Which Servers hold the data of the Volumes a Deploy (or a removal: `remove`)
-    /// deletes. A Cluster this can't reach leaves the evidence out, so the Store refuses.
+    /// of `environments` deletes. A Cluster this can't reach leaves the evidence out,
+    /// so the Store refuses.
     fn observe(
         &self,
-        environment: &EnvironmentRef,
+        environments: &[EnvironmentRef],
         remove: bool,
     ) -> Result<Option<VolumeObservation>, StoreCallError> {
-        let removals = self.backend.read(&RemovalsQuery {
-            environment: environment.clone(),
-            remove,
-        })?;
-        if removals.volumes.is_empty() {
+        let mut sought = Vec::new();
+        for environment in environments {
+            let removals = self.backend.read(&RemovalsQuery {
+                environment: environment.clone(),
+                remove,
+            })?;
+            sought.extend(
+                removals
+                    .volumes
+                    .into_iter()
+                    .map(|volume| volume.docker_volume),
+            );
+        }
+        if sought.is_empty() {
             return Ok(None);
         }
-        let sought = removals
-            .volumes
-            .into_iter()
-            .map(|volume| volume.docker_volume)
-            .collect();
         // Publish takes no `--context`; it reaches the Cluster `--connect` or the current context names.
         let context = self
             .matches
@@ -326,14 +364,12 @@ impl<'m> Store<'m> {
             } if error.code == RpcErrorCode::ConfirmationRequired => {
                 let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
                 let carried = self.carried();
-                let accept = error
-                    .details
-                    .get("accept")
-                    .and_then(serde_json::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(text)
-                    .collect();
+                let mut accept: Vec<String> = Vec::new();
+                for name in accepted_names(error.details.get("accept")) {
+                    if !accept.contains(&name) {
+                        accept.push(name);
+                    }
+                }
                 let version = error.details.get("version").and_then(text);
                 let retry = self.retry(Carried {
                     accept,
@@ -396,6 +432,39 @@ impl<'m> Store<'m> {
     }
 }
 
+/// The Volume names a refusal's `accept` lists: flat, or by Environment.
+fn accepted_names(accept: Option<&serde_json::Value>) -> Vec<String> {
+    let names = |list: &serde_json::Value| {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|name| name.as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    match accept {
+        Some(serde_json::Value::Object(by_environment)) => {
+            by_environment.values().flat_map(names).collect()
+        }
+        Some(list) => names(list),
+        None => Vec::new(),
+    }
+}
+
+fn sweep(store: &ConfigStore, who: &Actor) -> Result<(), ployz_core::RpcError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
+    store
+        .system(
+            &who.organization,
+            &SystemEvent::Sweep(Sweep { now }),
+            &Trusted::default(),
+        )
+        .map(drop)
+}
+
 struct Carried {
     accept: Vec<String>,
     version: Option<String>,
@@ -442,10 +511,10 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
             None => config.with_file_name("store.key"),
         };
         let key = SealingKey::from_file(&key)?;
-        return Ok(Some(Backend::Local(
-            std::sync::Arc::new(ConfigStore::open(&url, key)?),
-            actor,
-        )));
+        let store = ConfigStore::open(&url, key)?;
+        // Cloud sweeps on a clock; the in-process Store sweeps as each command starts.
+        sweep(&store, &actor).map_err(StoreCallError::Refused)?;
+        return Ok(Some(Backend::Local(std::sync::Arc::new(store), actor)));
     }
     let credentials = CredentialStore::beside(config);
     let runtime = runtime()?;

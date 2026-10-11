@@ -30,13 +30,15 @@ pub(crate) enum Accepted {
     Confirmed(BTreeSet<DockerVolumeId>),
     /// Every copy of these Volumes, wherever they turn up, unanswered Servers too.
     EveryCopy(BTreeSet<VolumeName>),
-    Everything { because: Closed },
+    Everything {
+        because: Closed,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Closed {
-    PrClosed,
+    PullRequest,
     Idle,
     /// The Branch synced into its Parent and is not kept.
     Synced,

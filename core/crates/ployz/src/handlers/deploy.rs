@@ -859,25 +859,6 @@ pub(super) fn show_hint(matches: &ArgMatches, number: u64) -> String {
     next(matches, &["deployment", "show", &number.to_string()])
 }
 
-/// `ployz deployment show N` for Deployment `id` of `project`, in its own Environment.
-pub(super) fn show_hint_in(store: &Store, project: &str, id: &DeploymentId) -> String {
-    numbered(store, id).map_or_else(
-        || id_hint(id),
-        |(number, environment)| {
-            shell_words::join([
-                "ployz",
-                "deployment",
-                "show",
-                &number.to_string(),
-                "--project",
-                project,
-                "--env",
-                &environment,
-            ])
-        },
-    )
-}
-
 /// Deployment `id`'s number and Environment, when the Store can still say them.
 fn numbered(store: &Store, id: &DeploymentId) -> Option<(u64, String)> {
     store

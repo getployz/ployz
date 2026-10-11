@@ -429,7 +429,7 @@ pub(crate) fn pull_request(
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close {
-                let because = crate::removal::mark::Closed::PrClosed;
+                let because = crate::removal::mark::Closed::PullRequest;
                 crate::removal::close(tx, who, environment, because, &mut automated)?;
             }
         }
@@ -780,7 +780,12 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
     )?;
     let idle = rows
         .iter()
-        .map(|row| Ok((row.parse::<EnvironmentId>(0, "Environment ID")?, idle_close(row)?)))
+        .map(|row| {
+            Ok((
+                row.parse::<EnvironmentId>(0, "Environment ID")?,
+                idle_close(row)?,
+            ))
+        })
         .collect::<Result<Vec<_>, RpcError>>()?;
     crate::removal::sweep(tx, who, sweep.now, &idle)
 }

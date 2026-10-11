@@ -41,7 +41,7 @@ pub struct Due {
 enum Standing {
     /// Nothing of it runs on the Servers.
     Gone,
-    InFlight(DeploymentSummary),
+    InFlight(Box<DeploymentSummary>),
     /// Its last removal may or may not have run.
     Unknown,
     /// Another Environment comes off first, or it can't come off on its own.
@@ -49,17 +49,13 @@ enum Standing {
     Due,
 }
 
-fn standing(
-    tx: &mut dyn Tx,
-    mark: &Mark,
-    environment: &Environment,
-) -> Result<Standing, RpcError> {
+fn standing(tx: &mut dyn Tx, mark: &Mark, environment: &Environment) -> Result<Standing, RpcError> {
     let id = &environment.summary.id;
     if on_servers(tx, id)?.is_none() {
         return Ok(Standing::Gone);
     }
     if let Some(running) = deployment::in_flight(tx, id)? {
-        return Ok(Standing::InFlight(running));
+        return Ok(Standing::InFlight(Box::new(running)));
     }
     if latest(tx, id)?.is_some_and(|latest| latest.status == DeploymentStatus::Unknown) {
         return Ok(Standing::Unknown);
@@ -144,7 +140,15 @@ pub(super) fn go_on(
         let environment = scope::lock_id(tx, who, &member)?;
         let (deployment, status, why) = match standing(tx, mark, &environment)? {
             Standing::Gone => continue,
-            Standing::InFlight(running) => (Some(running), LeftStatus::Removing, None),
+            Standing::InFlight(running) if running.remove => {
+                (Some(*running), LeftStatus::Removing, None)
+            }
+            // A Deployment someone authored goes first; the removal waits for it.
+            Standing::InFlight(running) => (
+                None,
+                LeftStatus::WaitingTurn,
+                Some(format!("Deployment #{} goes first", running.number)),
+            ),
             Standing::Unknown => (None, LeftStatus::Stalled, Some(unknown(&environment))),
             Standing::Blocked(error) => (None, LeftStatus::WaitingTurn, Some(error.message)),
             Standing::Due => {
@@ -331,9 +335,9 @@ pub(crate) fn admit(
 ) -> Result<DeploymentSummary, RpcError> {
     let environment = scope::lock(tx, who, &admit.environment)?;
     let summary = &environment.summary;
-    let Some(mut mark) = mark::naming(tx, &summary.id)?
-        .filter(|mark| !matches!(&mark.target, Target::Project(_)) || mark.members.contains(&summary.id))
-    else {
+    let Some(mut mark) = mark::naming(tx, &summary.id)?.filter(|mark| {
+        !matches!(&mark.target, Target::Project(_)) || mark.members.contains(&summary.id)
+    }) else {
         return Err(error::conflict(
             format!("{} isn't being removed", summary.name),
             json!({ "next": next("remove", json!({ "project": summary.project, "environment": summary.name })) }),
@@ -345,7 +349,14 @@ pub(crate) fn admit(
     if let Target::Environment(_) = mark.target {
         guard(tx, &environment)?;
     }
-    admit_member(tx, who, (&environment, &admit.id), &mut mark, trusted, false)
+    admit_member(
+        tx,
+        who,
+        (&environment, &admit.id),
+        &mut mark,
+        trusted,
+        false,
+    )
 }
 
 /// Queue the Deployment that takes one member of `mark` off the Servers. `retry`
@@ -449,7 +460,10 @@ fn stalled(
     };
     let fresh = unanswered(trusted);
     let changed = mark.evidence.get(id).is_some_and(|before| {
-        before.unanswered.iter().any(|server| !fresh.contains(server))
+        before
+            .unanswered
+            .iter()
+            .any(|server| !fresh.contains(server))
             || matches!((before.servers, trusted.servers), (Some(then), Some(now)) if now < then)
     });
     if mark.retried > failed.ended_at.unwrap_or(i64::MAX) || changed {

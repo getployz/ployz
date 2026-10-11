@@ -18,9 +18,9 @@ use ployz_store::{
     CreateBranch, CreateEnvironment, CreateProject, CreateService, CreateVolume, Deploy,
     DeploymentId, DeploymentStatus, DeploymentSummary, DueQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, EnvironmentsQuery, KeepBranch, LeftStatus, Mount, OrganizationId, ProjectId,
-    ProjectName, Publish, Removal, RemovalsQuery, Remove, RunEvidence, RunnerId,
-    ServiceLineageId, SetDefaultEnvironment, ShutDown, Sweep, SyncChanges, SystemEvent, Trusted,
-    VolumeId, VolumeName, VolumeObservation, Written,
+    ProjectName, Publish, Removal, RemovalsQuery, Remove, RunEvidence, RunnerId, ServiceLineageId,
+    SetDefaultEnvironment, ShutDown, Sweep, SyncChanges, SystemEvent, Trusted, VolumeId,
+    VolumeName, VolumeObservation, Written,
 };
 use serde_json::json;
 
@@ -409,7 +409,9 @@ fn sweep(store: &ConfigStore, who: &Actor) -> Automated {
     automated
 }
 
-fn names<'a>(environments: impl IntoIterator<Item = &'a ployz_store::EnvironmentSummary>) -> Vec<String> {
+fn names<'a>(
+    environments: impl IntoIterator<Item = &'a ployz_store::EnvironmentSummary>,
+) -> Vec<String> {
     let mut names: Vec<String> = environments
         .into_iter()
         .map(|environment| environment.name.to_string())
@@ -546,13 +548,13 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     assert_eq!(removals.volumes[0].docker_volume, held().name);
     let unobserved = refusal(store.write(&who, &accepting_data(Some("production"))));
     assert_eq!(unobserved.code, RpcErrorCode::Unavailable);
-    let unaccepted = refusal(store.write_trusted(
-        &who,
-        &request(Some("production")),
-        &observing(observed()),
-    ));
+    let unaccepted =
+        refusal(store.write_trusted(&who, &request(Some("production")), &observing(observed())));
     assert_eq!(unaccepted.code, RpcErrorCode::ConfirmationRequired);
-    assert_eq!(unaccepted.details["accept"], json!({"production": ["data"]}));
+    assert_eq!(
+        unaccepted.details["accept"],
+        json!({"production": ["data"]})
+    );
     assert!(due(&store, &who).is_empty(), "a refusal marks nothing");
 
     let removing = confirmed(
@@ -563,7 +565,10 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     )
     .unwrap();
     let first = taking_off(&removing, "production");
-    assert_eq!(left(removing), [("production".into(), LeftStatus::Removing)]);
+    assert_eq!(
+        left(removing),
+        [("production".into(), LeftStatus::Removing)]
+    );
 
     // Nothing builds on it, and it isn't gone until the removal applies.
     let branching = refusal(store.write(
@@ -584,10 +589,14 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     assert!(sweep(&store, &who).removed.is_empty());
 
     // Cancelled, the removal stops and it stays deployed.
-    store
-        .write(&who, &Cancel { deployment: first })
-        .unwrap();
-    let stopped = refusal(admit_removal(&store, &who, "production", 3, &observing(observed())));
+    store.write(&who, &Cancel { deployment: first }).unwrap();
+    let stopped = refusal(admit_removal(
+        &store,
+        &who,
+        "production",
+        3,
+        &observing(observed()),
+    ));
     assert!(stopped.message.contains("isn't being removed"));
 
     // Removed again, it goes as admitted.
@@ -630,7 +639,13 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     let parent = refusal(store.write(&who, &accepting_data(Some("production"))));
     assert_eq!(parent.code, RpcErrorCode::Unsupported);
     assert_eq!(parent.details["branches"], json!(["fix"]));
-    let unmarked = refusal(admit_removal(&store, &who, "production", 3, &Trusted::default()));
+    let unmarked = refusal(admit_removal(
+        &store,
+        &who,
+        "production",
+        3,
+        &Trusted::default(),
+    ));
     assert_eq!(unmarked.code, RpcErrorCode::Conflict);
     assert_eq!(unmarked.details["next"]["tool"], "remove");
 
@@ -638,7 +653,9 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     let removing = confirmed(&store, &who, request(Some("fix")), &Trusted::default()).unwrap();
     let lost = taking_off(&removing, "fix");
     prepare(&store, &lost, &["web"]);
-    store.record(&lost, &runner(), RunEvidence::Abandoned).unwrap();
+    store
+        .record(&lost, &runner(), RunEvidence::Abandoned)
+        .unwrap();
     let stalled = confirmed(&store, &who, request(Some("fix")), &Trusted::default()).unwrap();
     let Removal::Removing { left: fix, .. } = stalled else {
         panic!("removed");
@@ -648,9 +665,11 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     let swept = sweep(&store, &who);
     assert!(swept.closing.is_empty() && swept.removed.is_empty());
     assert_eq!(swept.skipped.len(), 1);
-    assert!(refusal(admit_removal(&store, &who, "fix", 4, &Trusted::default()))
-        .message
-        .contains("remove it by hand"));
+    assert!(
+        refusal(admit_removal(&store, &who, "fix", 4, &Trusted::default()))
+            .message
+            .contains("remove it by hand")
+    );
 
     // Taken off by hand, the sweep deletes it.
     shut_down(&store, &who, ("fix", 5), &[], &Trusted::default()).unwrap();
@@ -676,7 +695,10 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
         .read(&who, &ployz_store::ProjectsQuery {})
         .unwrap()
         .projects;
-    assert_eq!(listed_projects[0].default_environment.as_str(), "production");
+    assert_eq!(
+        listed_projects[0].default_environment.as_str(),
+        "production"
+    );
     let kept = refusal(store.remove_organization(&who));
     assert_eq!(kept.code, RpcErrorCode::Conflict);
     assert_eq!(
@@ -695,7 +717,13 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
             ("production".into(), LeftStatus::WaitingTurn),
         ]
     );
-    let parent = refusal(admit_removal(&store, &who, "production", 4, &observing(observed())));
+    let parent = refusal(admit_removal(
+        &store,
+        &who,
+        "production",
+        4,
+        &observing(observed()),
+    ));
     assert_eq!(parent.details["branches"], json!(["fix"]));
 
     // Cancelling one of its Deployments stops the whole removal, and leaves the Project whole.
@@ -1012,9 +1040,11 @@ fn a_failed_removal_goes_again_only_on_new_evidence_or_a_retry() {
     };
     admit_removal(&store, &who, "fix", 3, &one).unwrap();
     fail(&store, &id(3), &["web"]);
-    assert!(refusal(admit_removal(&store, &who, "fix", 4, &one))
-        .message
-        .contains("stalled"));
+    assert!(
+        refusal(admit_removal(&store, &who, "fix", 4, &one))
+            .message
+            .contains("stalled")
+    );
 
     // Its remover asks again: it goes again.
     let again = confirmed(&store, &who, request(Some("fix")), &one).unwrap();
@@ -1034,10 +1064,18 @@ fn a_shutdown_asks_approval_only_when_it_accepts_volume_loss() {
     run(&store, &fix.id, &["web"], Vec::new());
     assert!(due(&store, &who).is_empty());
 
-    let asked = refusal(shut_down(&store, &who, ("production", 4), &["data"], &required));
+    let asked = refusal(shut_down(
+        &store,
+        &who,
+        ("production", 4),
+        &["data"],
+        &required,
+    ));
     assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
     let approved = Trusted {
-        approval: Approval::Approved(serde_json::from_value(asked.details["approval"].clone()).unwrap()),
+        approval: Approval::Approved(
+            serde_json::from_value(asked.details["approval"].clone()).unwrap(),
+        ),
         ..observing(observed())
     };
     let shutdown = shut_down(&store, &who, ("production", 4), &["data"], &approved).unwrap();
@@ -1052,10 +1090,19 @@ fn a_default_waits_while_its_branch_removal_is_stalled() {
     fail(&store, &taking_off(&removing, "fix"), &["web"]);
 
     assert_eq!(due(&store, &who), [("fix".into(), vec!["a".repeat(32)])]);
-    let first = refusal(admit_removal(&store, &who, "production", 3, &observing(observed())));
+    let first = refusal(admit_removal(
+        &store,
+        &who,
+        "production",
+        3,
+        &observing(observed()),
+    ));
     assert_eq!(first.code, RpcErrorCode::Conflict);
     assert_eq!(first.details["branches"], json!(["fix"]));
-    assert_eq!(listed(&store, &who), ["fix<production", "production*", "staging"]);
+    assert_eq!(
+        listed(&store, &who),
+        ["fix<production", "production*", "staging"]
+    );
 }
 
 #[test]
@@ -1106,7 +1153,8 @@ fn remove_refuses_a_destructive_target_without_its_version() {
     ));
     assert_eq!(stale.code, RpcErrorCode::ConfirmationRequired);
     // Accepting the data isn't confirming it.
-    let unconfirmed = refusal(store.write_trusted(&who, &accepting_data(None), &observing(observed())));
+    let unconfirmed =
+        refusal(store.write_trusted(&who, &accepting_data(None), &observing(observed())));
     assert_eq!(unconfirmed.code, RpcErrorCode::ConfirmationRequired);
     assert!(due(&store, &who).is_empty(), "a refusal marks nothing");
     deploy(&store, &who, "fix", 3, &["web"]);
@@ -1142,7 +1190,13 @@ fn every_copy_refuses_a_lost_volume_it_did_not_name() {
         held: vec![docker('a', 5), docker('a', 9)],
         unanswered: Vec::new(),
     };
-    let refused = refusal(admit_removal(&store, &who, "production", 3, &observing(both)));
+    let refused = refusal(admit_removal(
+        &store,
+        &who,
+        "production",
+        3,
+        &observing(both),
+    ));
     assert_eq!(refused.code, RpcErrorCode::Conflict);
     assert_eq!(refused.details["volumes"], json!(["logs"]));
 }
@@ -1217,7 +1271,11 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
     let being_removed = |written: Result<serde_json::Value, RpcError>| {
         let refused = written.unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
-        assert!(refused.message.contains("being removed"), "{}", refused.message);
+        assert!(
+            refused.message.contains("being removed"),
+            "{}",
+            refused.message
+        );
         assert!(refused.details["next"]["tool"].is_string());
     };
     let write = |command: ployz_store::Command| {
@@ -1284,7 +1342,10 @@ fn a_project_removal_deletes_no_member_alone() {
     run(&store, &taking_off(&removing, "fix"), &["web"], Vec::new());
     let swept = sweep(&store, &who);
     assert!(swept.removed.is_empty());
-    assert_eq!(listed(&store, &who), ["fix<production", "production*", "staging"]);
+    assert_eq!(
+        listed(&store, &who),
+        ["fix<production", "production*", "staging"]
+    );
 
     admit_removal(&store, &who, "production", 3, &observing(observed())).unwrap();
     run(&store, &id(3), &["web", "db"], deleted(&[held()]));

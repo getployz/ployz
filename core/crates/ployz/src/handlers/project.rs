@@ -5,13 +5,13 @@ use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
-    CreateProject, DeploymentSummary, EnvironmentId, EnvironmentRef, ProjectId, ProjectName,
-    ProjectRemoved, RemoveProject, RenameProject,
+    CreateProject, EnvironmentId, EnvironmentName, EnvironmentRef, ProjectId, ProjectName,
+    RenameProject,
 };
 use serde_json::json;
 
 use super::store::{Store, mint, store};
-use super::teardown::{confirm, inventory, remove_all};
+use super::teardown::{self, Removed, confirm, inventory};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
 use crate::ui::{Hint, Table, Tree};
@@ -138,13 +138,14 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
 /// What `project rm` removed, and the Deployments that took it off the Servers.
 #[derive(serde::Serialize)]
 struct Removal<'a> {
+    project: serde_json::Value,
+    environments: &'a [EnvironmentName],
     #[serde(flatten)]
-    removed: &'a ProjectRemoved,
-    deployments: &'a [DeploymentSummary],
+    removed: &'a Removed,
 }
 
-/// Remove a Project: while the Store names an Environment of it that may still
-/// run, take that one off the Servers (as `env rm` does), then delete it all.
+/// Remove a Project: each Environment of it that may still run comes off the
+/// Servers first (Branches before their Parents), then the Store deletes it all.
 fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
@@ -152,14 +153,28 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     confirm(matches, name.as_str(), "Project", store.again(&[]), || {
         unconfirmed(&store, &name)
     })?;
-    let remove = RemoveProject {
-        project: name.clone(),
-    };
+    let listed = store.read(&ployz_store::ProjectsQuery {})?;
+    let environments = listed
+        .projects
+        .into_iter()
+        .find(|listing| listing.name == name)
+        .map(|listing| listing.environments)
+        .unwrap_or_default();
     let events = deploy::open_events(matches)?;
-    match remove_all(matches, &store, &remove, &name, events)? {
-        Some((removed, ran)) => finish(&removed, &ran),
-        None => Ok(()),
-    }
+    let Some(removed) = teardown::remove(matches, &store, (&name, None), events)? else {
+        return Ok(());
+    };
+    let removal = Removal {
+        project: json!({ "name": name }),
+        environments: &environments,
+        removed: &removed,
+    };
+    crate::ui::finish(&removal, || {
+        removed.say(&format!(
+            "Project {name} and its Environments ({})",
+            super::joined(&environments)
+        ));
+    })
 }
 
 /// Refuse an unconfirmed `project rm`, naming every Environment with what goes
@@ -207,31 +222,4 @@ fn unconfirmed(store: &Store, project: &ProjectName) -> Result<(Error, Tree), Er
     )
     .hint(Hint::Retry(retry));
     Ok((refusal, loss))
-}
-
-fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Error> {
-    let removal = Removal {
-        removed,
-        deployments: ran,
-    };
-    crate::ui::finish(&removal, || {
-        for deployment in ran {
-            if super::teardown::left_on_old_servers(deployment) {
-                crate::ui::stream(format_args!(
-                    "Left an Environment on old servers: no Server was left to take it off (Deployment #{}).",
-                    deployment.number
-                ));
-            } else {
-                crate::ui::stream(format_args!(
-                    "Took an Environment off the Servers (Deployment #{}).",
-                    deployment.number
-                ));
-            }
-        }
-        crate::ui::stream(format_args!(
-            "Removed Project {} and its Environments ({}).",
-            removed.project.name,
-            super::joined(&removed.environments)
-        ));
-    })
 }

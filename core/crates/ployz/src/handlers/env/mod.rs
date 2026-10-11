@@ -13,16 +13,15 @@ use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
-    CreateEnvironment, DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, NeverSync, RemoveEnvironment,
-    SetDefaultEnvironment,
+    CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentSummary,
+    EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment,
 };
 use serde_json::json;
 
 use super::config::expect;
 use super::deploy;
 use super::store::{self, mint, project, project_arg, store};
-use super::teardown::{Inventory, confirm, inventory, remove_all};
+use super::teardown::{self, Inventory, Removed, confirm, inventory};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::ui::{Hint, Tree};
@@ -419,12 +418,12 @@ fn environments(listed: &EnvironmentsView) -> crate::ui::Table {
     table
 }
 
-/// What `env rm` removed, and the Deployment that took it off the Servers.
+/// What `env rm` removed, and the Deployments that took it off the Servers.
 #[derive(serde::Serialize)]
 struct Removal<'a> {
+    environment: &'a EnvironmentSummary,
     #[serde(flatten)]
-    removed: &'a EnvironmentRemoved,
-    deployment: Option<&'a DeploymentSummary>,
+    removed: &'a Removed,
 }
 
 /// Remove an Environment in one path: if anything of it ran, a removal Deployment
@@ -445,16 +444,22 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
     // command finishes it once the removal applied, or queues it again.
     let store = store.args(["--confirm", typed.as_str()]);
-    let project = inventory.environment.project.clone();
+    let environment = inventory.environment.clone();
     confirm(matches, &typed, "Environment", store.again(&[]), || {
         Ok(unconfirmed(inventory, &store.again(&[])))
     })?;
-    let remove = RemoveEnvironment { environment: at };
     let events = deploy::open_events(matches)?;
-    match remove_all(matches, &store, &remove, &project, events)? {
-        Some((removed, ran)) => finish_removal(&removed, ran.last()),
-        None => Ok(()),
-    }
+    let target = (&environment.project, Some(&name));
+    let Some(removed) = teardown::remove(matches, &store, target, events)? else {
+        return Ok(());
+    };
+    crate::ui::finish(
+        &Removal {
+            environment: &environment,
+            removed: &removed,
+        },
+        || removed.say(&format!("Environment {typed}")),
+    )
 }
 
 /// Refuse an unconfirmed `env rm`, naming what goes and the exact retry; and
@@ -482,36 +487,6 @@ fn unconfirmed(inventory: Inventory, retry: &str) -> (Error, Tree) {
     )
     .hint(Hint::Retry(retry.to_owned()));
     (refusal, loss)
-}
-
-fn finish_removal(
-    removed: &EnvironmentRemoved,
-    deployment: Option<&DeploymentSummary>,
-) -> Result<(), Error> {
-    let removal = Removal {
-        removed,
-        deployment,
-    };
-    crate::ui::finish(&removal, || {
-        let environment = &removed.environment;
-        match deployment {
-            Some(deployment) if super::teardown::left_on_old_servers(deployment) => {
-                crate::ui::stream(format_args!(
-                    "Left {}/{} on old servers: no Server was left to take it off (Deployment #{}).",
-                    environment.project, environment.name, deployment.number
-                ))
-            }
-            Some(deployment) => crate::ui::stream(format_args!(
-                "Removed {}/{} from the Servers (Deployment #{}).",
-                environment.project, environment.name, deployment.number
-            )),
-            None => {}
-        }
-        crate::ui::stream(format_args!(
-            "Removed Environment {}/{}.",
-            environment.project, environment.name
-        ));
-    })
 }
 
 /// Nodes by name: `SERVICE`, or `volumes.VOLUME`.
