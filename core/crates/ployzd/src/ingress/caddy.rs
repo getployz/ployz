@@ -29,6 +29,8 @@ const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Set to any value to turn on Caddy's debug log: every upstream selection, failure and retry.
 pub(crate) const DEBUG_ENV: &str = "PLOYZ_INGRESS_DEBUG";
+/// Browsers get this page; other clients get JSON or plain text with the same code.
+const ERROR_PAGE: &str = include_str!("error_page.html");
 
 /// Failure while rendering or applying Caddy configuration.
 #[derive(Debug, Error)]
@@ -187,6 +189,7 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
         ""
     };
     let _ = write!(output, "{{\n{debug}\tauto_https off\n}}\n\n");
+    write_error_page(&mut output);
     let ingress_verify = verify_handle(INGRESS_VERIFY_PATH, local_machine);
     let hostname_verify = verify_handle(HOSTNAME_VERIFY_PATH, local_machine);
     let _ = write!(
@@ -194,14 +197,16 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
 {ingress_verify}{hostname_verify}\
-\trespond \"Not Found\" 404\n\
+\terror DOMAIN_NOT_FOUND 404\n\
+\timport error_page\n\
 \tlog\n\
 }}\n\
 \n\
 # Unknown hostnames over HTTPS: a wildcard certificate another site pins may cover them,\n\
 # and Caddy would answer an unmatched request 200 with an empty body.\n\
 https:// {{\n\
-\trespond \"Not Found\" 404\n\
+\terror DOMAIN_NOT_FOUND 404\n\
+\timport error_page\n\
 \tlog\n\
 }}\n\
 \n\
@@ -268,6 +273,62 @@ fn route_summary(projection: &IngressProjection) -> String {
     summary
 }
 
+/// The `error_page` snippet: one code per failure, negotiated as HTML, JSON or plain text.
+///
+/// Ployz's own errors carry their code as the message. Any proxy failure is `NO_RESPONSE`: a
+/// refused or timed-out dial is 502, then passive health empties the pool and the rest are 503.
+fn write_error_page(output: &mut String) {
+    output.push_str(
+        r##"(error_page) {
+	handle_errors {
+		map "{err.status_code} {err.message}" {ployz_error} {ployz_message} {ployz_docs} {
+			"503 NOT_RUNNING" NOT_RUNNING "The app isn't running." "#this-app-isnt-running"
+			"404 DOMAIN_NOT_FOUND" DOMAIN_NOT_FOUND "Nothing is deployed at this domain." "#nothing-is-deployed-here"
+			~^50[234] NO_RESPONSE "The app didn't respond." "#this-app-didnt-respond"
+			default INTERNAL_ERROR "Something went wrong." ""
+		}
+		header {
+			ployz-error {ployz_error}
+			ployz-request-id {http.request.uuid}
+			cache-control no-store
+		}
+		@not_running vars {ployz_error} NOT_RUNNING
+		header @not_running {
+			retry-after 10
+			refresh 10
+		}
+		log_append request_id {http.request.uuid}
+		@html header Accept *text/html*
+		handle @html {
+			header content-type "text/html; charset=utf-8"
+			respond <<ERROR_PAGE
+"##,
+    );
+    output.push_str(ERROR_PAGE);
+    output.push_str(
+        r##"ERROR_PAGE {err.status_code}
+		}
+		@json header Accept *json*
+		handle @json {
+			header content-type application/json
+			respond `{"error":{"status":{err.status_code},"code":"{ployz_error}","message":"{ployz_message}","request_id":"{http.request.uuid}","docs":"https://ployz.dev/docs/troubleshooting/app-not-reachable?utm_source=error-page&utm_medium=json&utm_campaign={ployz_error}&utm_content=docs{ployz_docs}"}}` {err.status_code}
+		}
+		handle {
+			header content-type "text/plain; charset=utf-8"
+			respond <<TEXT
+				{err.status_code} {ployz_error}: {ployz_message}
+				Request: {http.request.uuid}
+				https://ployz.dev/docs/troubleshooting/app-not-reachable?utm_source=error-page&utm_medium=text&utm_campaign={ployz_error}&utm_content=docs{ployz_docs}
+
+				TEXT {err.status_code}
+		}
+	}
+}
+
+"##,
+    );
+}
+
 /// A site handle that answers `path` with this Machine's id.
 fn verify_handle(path: &str, machine: &MachineId) -> String {
     format!("\thandle {path} {{\n\t\trespond \"{machine}\" 200\n\t}}\n")
@@ -316,7 +377,7 @@ fn write_site(
         })
         .unwrap_or_default();
     let proxy = if endpoints.is_empty() {
-        "\trespond \"Bad Gateway\" 502\n".to_owned()
+        "\terror NOT_RUNNING 503\n".to_owned()
     } else {
         format!(
             "\treverse_proxy {} {{\n\t\timport common_proxy\n\t}}\n\
@@ -330,7 +391,7 @@ fn write_site(
     };
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{directives}{handle}{proxy}\tlog\n}}\n"
+        "\n{protocol}://{hostname} {{\n{directives}{handle}{proxy}\timport error_page\n\tlog\n}}\n"
     );
 }
 

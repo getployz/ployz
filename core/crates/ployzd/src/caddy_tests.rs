@@ -105,7 +105,7 @@ fn automatic_sites_render_routes_and_health_endpoint() {
         &BTreeMap::new(),
     );
     assert!(caddyfile.contains("auto_https off"));
-    assert!(caddyfile.contains("respond \"Not Found\" 404"));
+    assert!(caddyfile.contains("error DOMAIN_NOT_FOUND 404"));
     assert!(caddyfile.contains("lb_retries 3"));
     assert!(caddyfile.contains("fail_duration 30s"));
     assert!(caddyfile.contains("max_fails 2"));
@@ -113,7 +113,7 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     // An unknown hostname a pinned wildcard covers gets 404 over HTTPS too, not an empty 200.
     assert_eq!(
         automatic_site_block(&caddyfile, "https://"),
-        "respond \"Not Found\" 404 log"
+        "error DOMAIN_NOT_FOUND 404 import error_page log"
     );
     let health = automatic_site_block(&caddyfile, "http://");
     let handler = automatic_site_block(&health, INGRESS_VERIFY_PATH);
@@ -127,11 +127,36 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     }
 }
 #[test]
+fn every_site_answers_failures_with_the_error_page() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+
+    let snippet = automatic_site_block(&caddyfile, "(error_page)");
+    for code in [
+        "NOT_RUNNING",
+        "DOMAIN_NOT_FOUND",
+        "NO_RESPONSE",
+        "INTERNAL_ERROR",
+    ] {
+        assert!(snippet.contains(code), "{code}");
+    }
+    for address in [
+        "http://",
+        "https://",
+        "http://empty.example.com",
+        "http://example.com",
+        "https://secure.example.com",
+    ] {
+        let site = automatic_site_block(&caddyfile, address);
+        assert!(site.ends_with("import error_page log"), "{address}: {site}");
+    }
+}
+
+#[test]
 fn shared_renderer_projection_drives_caddy() {
     let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
 
     assert!(caddyfile.contains("http://empty.example.com"));
-    assert!(caddyfile.contains("respond \"Bad Gateway\" 502"));
+    assert!(caddyfile.contains("error NOT_RUNNING 503"));
     assert!(
         caddyfile.contains("reverse_proxy 10.210.1.2:8080 10.210.2.2:8080"),
         "{caddyfile}"
@@ -564,7 +589,7 @@ fn pending_challenge_is_answered_on_the_http_site() {
         "/.well-known/acme-challenge/LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
     );
     assert!(challenge.contains("respond \"LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\" 200"));
-    assert!(site.contains("respond \"Bad Gateway\" 502"));
+    assert!(site.contains("error NOT_RUNNING 503"));
     assert!(!caddyfile.contains("https://secure.example.com"));
 }
 
@@ -716,7 +741,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_host_ports() {
     );
     assert!(caddyfile.contains(INGRESS_VERIFY_PATH));
     assert!(caddyfile.contains("http://missing.example"));
-    assert!(caddyfile.contains("respond \"Bad Gateway\" 502"));
+    assert!(caddyfile.contains("error NOT_RUNNING 503"));
     assert!(caddyfile.contains("http://web.opaque.ployz.example"));
     assert!(caddyfile.contains("reverse_proxy 10.210.1.9:8080"));
     assert!(
@@ -742,7 +767,7 @@ fn automatic_sites_keep_unreachable_hosts_and_omit_host_ports() {
 }
 
 #[test]
-fn published_hosts_without_healthy_replicas_return_bad_gateway() {
+fn published_hosts_without_healthy_replicas_answer_not_running() {
     let local = MachineId::parse("a".repeat(32)).unwrap();
     let healthy = observation(
         1,
@@ -786,10 +811,10 @@ fn published_hosts_without_healthy_replicas_return_bad_gateway() {
 
     let healthy = automatic_site_block(&caddyfile, "http://healthy.example");
     assert!(healthy.contains("reverse_proxy 10.210.1.2:80"));
-    assert!(!healthy.contains("502"));
+    assert!(!healthy.contains("NOT_RUNNING"));
     for hostname in ["stopped.example", "unhealthy.example"] {
         let site = automatic_site_block(&caddyfile, &format!("http://{hostname}"));
-        assert!(site.contains("respond \"Bad Gateway\" 502"), "{site}");
+        assert!(site.contains("error NOT_RUNNING 503"), "{site}");
         assert!(!site.contains("reverse_proxy"), "{site}");
     }
     assert!(!caddyfile.contains("unknown Host"));
