@@ -157,19 +157,19 @@ An Environment made from another, its Parent; see the core glossary. In Cloud, a
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch (always "Git branch")
 
 **PR Environment**:
-A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes reach its Destination only as an Offer; into any other Environment they sync now.
+A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes land in its Destination when the pull request merges, through its On merge list; see the core glossary. A Sync from it into any Environment stages now.
 _Avoid_: Preview, preview deployment, review app. Exception: the public site calls it a preview environment, the phrase its readers use.
 
-**Offer**:
-A PR Environment's changes synced for one Destination, waiting there until someone Includes them from Changes; see the core glossary. A merge never saves them: Save stays a person's act, and the merge only makes the pull request Ready. Syncing again replaces an offer, or updates the Destination's changes once included; Undo or Remove drops it. Closing the pull request or changing its target Git branch keeps it, and its row then reads Closed or Elsewhere.
-_Avoid_: Conditional Sync (the wire name, `ConditionalSync`/`at_merge`, stays), auto-promote, deferred deploy, merge queue, Conditional Save
+**Exclude**:
+On a PR Environment, Never sync reads Exclude: the row stays in the preview and leaves the On merge list, shown greyed with Include.
+_Avoid_: Keep here, skip, ignore
 
-**Readiness**:
-The label each pull request row carries in Changes: Awaits #N, Ready, Closed or Elsewhere; see the core glossary. While an included pull request isn't Ready, Save and Deploy wait and say Needs #N.
-_Avoid_: Merge status, check status
+**Not set**:
+A secret with no value in this Environment. Nothing blocks on it: deploys skip it and say so, and it is highlighted where it lives.
+_Avoid_: Needs a value, missing secret, blocked
 
 **Off**:
-An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch, its pull request and its Offers stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. It is Off once its shutdown has removed them; a shutdown that fails leaves it on, and Shut down runs again. Only PR Environments shut down, from the Sync button's menu at any time; undoing an Offer leaves one Off, and one whose pull request closes is removed as a running one is.
+An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch and its pull request stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. It is Off once its shutdown has removed them; a shutdown that fails leaves it on, and Shut down runs again. Only PR Environments shut down, from the Sync button's menu at any time; one whose pull request closes is removed as a running one is.
 _Avoid_: Paused, stopped, sleeping, scaled to zero
 
 **Cloud Deployment Stage**:

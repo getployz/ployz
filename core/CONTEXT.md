@@ -323,13 +323,13 @@ _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. Unless it is a Kept Branch, it may close once it syncs into its Parent, and closes on its own a week after its latest Deployment. Branching rules are pure authored-configuration rules, the same for every client.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch
 
-**Offer**:
-A PR Environment's Sync into one of its Destinations: its changes wait there, outside the Destination's changes, until someone there Includes them; a Sync from it into any other Environment stages now. It keeps what Include needs, sealed secrets included, so it outlives the PR Environment. A merge, close or retarget never saves it or drops it; it only changes the pull request's Readiness. Included, its changes are the Destination's changes to deploy, and Save and Deploy refuse until the pull request is Ready. On the wire it keeps the older name: `ConditionalSync`, `at_merge`.
-_Avoid_: Conditional Sync, approval, deferred sync, Conditional Save
+**On merge list**:
+The changes a PR Environment made since it started that go to its Destination when the pull request merges on GitHub. Every change joins unless Excluded, removals included; seals, Sizing and custom domains stay behind. A row can carry an Edit, the value the Destination gets instead of the preview's. A setting the Destination changed after the preview started still takes the preview's value. The list is derived from the PR Environment's Working State and the Destination's latest Saved State, never stored.
+_Avoid_: Offer, Conditional Sync, queue, approval
 
-**Readiness**:
-Where an offered or included pull request stands for the Environment it was synced into: Awaits (still open), Ready (merged into a Git branch that Environment deploys), Closed (closed without merging) or Elsewhere (merged into a Git branch it doesn't deploy). Only Ready lets Save and Deploy take its changes.
-_Avoid_: Merged, landed, mergeable
+**Merge landing**:
+The Saved revision "Merged #N" that a pull request's first merge writes into each Destination from its On merge list, and the deploy of what it changed. It happens once per pull request; Undo in History reverts it like any Saved revision.
+_Avoid_: Conditional Save, auto-promote, Apply
 
 **Parent**:
 The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.
@@ -360,7 +360,7 @@ Where a Branch syncs its changes by default: its Parent, or for a PR Environment
 _Avoid_: Target, sync target
 
 **Sync**:
-Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. Each Config file is one setting, so syncing a conflict replaces the whole file; lines never merge. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked.
+Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. Each Config file is one setting, so syncing a conflict replaces the whole file; lines never merge. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives Not set, and the receiver's deploys skip it until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked.
 _Avoid_: Save, push, promote, merge (a GitHub merge only), Publish
 
 **Follow**:
