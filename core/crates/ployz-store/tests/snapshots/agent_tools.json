@@ -317,7 +317,7 @@
                         "type": "object"
                       }
                     ],
-                    "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
+                    "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it. {\"value\": …, \"exported\": true} marks one other Services are meant to reference. Renaming one that other variables reference is refused, naming them, unless the rename updates references, which switches them to the new name in the same edit.",
                     "examples": [
                       "postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app",
                       {
