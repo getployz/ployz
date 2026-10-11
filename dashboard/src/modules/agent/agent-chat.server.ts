@@ -16,7 +16,7 @@ import {
   toolDefinition,
   uiMessagesToWire,
 } from "@tanstack/ai";
-import { type AnthropicTextProviderOptions, createAnthropicChat } from "@tanstack/ai-anthropic";
+import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } from "@tanstack/ai-anthropic";
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
@@ -314,12 +314,14 @@ const stepLimit = ({ stores }: Persistence) => {
   return { middleware, noted };
 };
 
-type AgentModel = { adapter: AnyTextAdapter; modelOptions?: AnthropicTextProviderOptions };
+const CLAUDE = "claude-sonnet-5-5";
+type AgentModel = { adapter: AnyTextAdapter; modelOptions?: AnthropicChatModelProviderOptionsByName[typeof CLAUDE] };
 const scripted = (script: ConstructorParameters<typeof ScriptedAdapter>[0]): AgentModel => ({ adapter: new ScriptedAdapter(script) });
 
 /**
  * The model the sidebar talks to: the scripted stub under `PLOYZ_AGENT_STUB=1`, Claude when Cloud has an Anthropic key.
- * Claude caches the prompt up to its last block, so a turn rereads the thread before it from cache.
+ * Claude caches the prompt up to its last block, so a turn rereads the thread before it from cache. It thinks as much as
+ * each turn needs and sends a summary of that thinking, which the sidebar shows; left at its default, Claude sends none.
  */
 const agentModel = Effect.gen(function* () {
   if ((yield* Config.option(Config.string("PLOYZ_AGENT_STUB"))).pipe(Option.contains("1"))) return scripted(stubScript);
@@ -327,8 +329,8 @@ const agentModel = Effect.gen(function* () {
   return Option.match(key, {
     onNone: () => scripted(notSetUpScript),
     onSome: (secret): AgentModel => ({
-      adapter: createAnthropicChat("claude-sonnet-5-5", Redacted.value(secret)),
-      modelOptions: { cache_control: { type: "ephemeral" } },
+      adapter: createAnthropicChat(CLAUDE, Redacted.value(secret)),
+      modelOptions: { cache_control: { type: "ephemeral" }, thinking: { type: "adaptive", display: "summarized" } },
     }),
   });
 }).pipe(Effect.orDie);

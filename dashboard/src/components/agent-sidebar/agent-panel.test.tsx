@@ -140,3 +140,62 @@ it("retries a failed reply once the wait the model's provider asked for has pass
   expect(posts[1]).toContain("list services");
   expect(screen.queryByRole("alert")).toBeNull();
 });
+
+it("keeps a reply's thinking folded under Thinking until the member opens it", () => {
+  const message = asTestDouble<UIMessage>()({
+    id: "m1",
+    role: "assistant",
+    parts: [{ type: "thinking", content: "The thread names two services." }, { type: "thinking", content: " " }, { type: "text", content: "Two services." }],
+  });
+  render(<QueryClientProvider client={new QueryClient()}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
+  expect(screen.getAllByRole("button", { name: "Thinking" })).toHaveLength(1);
+  expect(screen.queryByText("The thread names two services.")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Thinking" }));
+  expect(screen.getByText("The thread names two services.")).toBeDefined();
+  expect(screen.getByText("Two services.")).toBeDefined();
+});
+
+/** Opens the panel and sends a message whose reply streams only what `send` pushes. */
+const ask = async (text: string) => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  let send = (_chunk: JsonObject) => {};
+  vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
+    if (init?.method !== "POST") return Promise.resolve(Response.json({ messages: [] }));
+    const body = new ReadableStream({
+      start: (controller) => {
+        send = (chunk) => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ threadId: "thread-acme", timestamp: 0, ...chunk })}\n\n`));
+      },
+    });
+    return Promise.resolve(new Response(body, { headers: { "content-type": "text/event-stream" } }));
+  }));
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
+    onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: text } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await screen.findByRole("button", { name: "Stop" });
+  return (...chunks: ReadonlyArray<JsonObject>) => new Promise((resolve) => {
+    for (const chunk of chunks) send(chunk);
+    setTimeout(resolve, 50);
+  });
+};
+
+it("shows the Thinking marker until the reply's first thinking arrives", async () => {
+  const stream = await ask("count services");
+  await stream({ type: "RUN_STARTED", runId: "r1" }, { type: "REASONING_START", messageId: "t1" }, { type: "REASONING_MESSAGE_START", messageId: "t1", role: "reasoning" });
+  expect(screen.getByRole("status").textContent).toBe("Thinking…");
+  await stream({ type: "REASONING_MESSAGE_CONTENT", messageId: "t1", delta: "Two services, probably." });
+  expect(screen.getByRole("button", { name: "Thinking" })).toBeDefined();
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("keeps the Thinking marker through a reply that has started but has no words yet", async () => {
+  const stream = await ask("count services");
+  await stream({ type: "RUN_STARTED", runId: "r1" }, { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "\n\n" });
+  expect(screen.getByRole("status").textContent).toBe("Thinking…");
+  await stream({ type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "Two services." });
+  expect(screen.getByText("Two services.")).toBeDefined();
+  expect(screen.queryByRole("status")).toBeNull();
+});

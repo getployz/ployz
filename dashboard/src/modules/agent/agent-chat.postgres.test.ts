@@ -1197,3 +1197,34 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
     }));
     expect(JSON.stringify(captured)).not.toMatch(/count|services|two/i);
   }));
+
+it.live("Claude thinks as it sees fit and sends a summary of its thinking back", () =>
+  Effect.gen(function* () {
+    const { caller, provided } = yield* sidebar({ removeWeb: false });
+    const sent: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      sent.push(JSON.parse(String(init?.body)));
+      return Response.json({ type: "error", error: { type: "invalid_request_error", message: "test" } }, { status: 400 });
+    }));
+    const claude = ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ANTHROPIC_API_KEY: "sk-ant-test" } }));
+    yield* provided(agentChat(caller, { messages: [{ role: "user", content: "count services" }], threadId: THREAD, runId: "run-claude" })
+      .pipe(Effect.provide(claude))).pipe(Effect.flatMap(drain), Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())));
+
+    expect(sent).toEqual([expect.objectContaining({ thinking: { type: "adaptive", display: "summarized" } })]);
+  }));
+
+it.live("a reply's thinking is kept with the thread and comes back on reload, before its words", () =>
+  Effect.gen(function* () {
+    const { persistence, say } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ thinking: "The thread names two services.", text: "Two services." }]);
+    yield* say("count services", {}, model);
+
+    const { messages } = yield* Effect.promise(async () => {
+      const response = await reconstructChat(persistence, new Request(`http://cloud.test/api/agent/shop/chat?threadId=${THREAD}`));
+      return await response.json() as { messages: ReadonlyArray<{ role: string; parts: ReadonlyArray<{ type: string; content?: string }> }> };
+    });
+    expect(messages.filter(({ role }) => role === "assistant").flatMap(({ parts }) => parts)
+      .filter(({ type }) => type === "thinking" || type === "text").map(({ type, content }) => [type, content]))
+      .toEqual([["thinking", "The thread names two services."], ["text", "Two services."]]);
+  }));

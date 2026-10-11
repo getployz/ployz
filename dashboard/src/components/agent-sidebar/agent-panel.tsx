@@ -6,10 +6,11 @@ import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
-import { ArrowUpIcon, SquareIcon, SquarePenIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronRightIcon, SquareIcon, SquarePenIcon, XIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader } from "#/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "#/components/ui/input-group";
 import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
@@ -119,7 +120,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
                 <Turn organizationSlug={organizationSlug} scope={scope} message={message} asked={asked} bound={bound} />
               </MessageScrollerItem>
             ))}
-            {chat.status === "submitted" && (
+            {chat.isLoading && !replying(chat.messages) && (
               <MessageScrollerItem>
                 <Message>
                   <Marker role="status">
@@ -184,6 +185,15 @@ const markdownComponents: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
 };
 
+type Part = UIMessage["parts"][number];
+
+const shows = (part: Part) =>
+  part.type === "tool-call" || ((part.type === "text" || part.type === "thinking") && part.content.trim() !== "");
+
+/** Whether the reply to the latest message shows anything yet; until it does, the Thinking marker stands in for it. */
+const replying = (messages: readonly UIMessage[]) =>
+  messages.slice(messages.map(({ role }) => role).lastIndexOf("user") + 1).some(({ parts }) => parts.some(shows));
+
 type Bound = { key: string; approvalId: string; interrupt: { canResolve: boolean; status: string; resolveInterrupt: (response: Record<string, never>) => void } };
 
 /** One turn of the conversation. A call a human denied says so once, on its approval card. */
@@ -210,8 +220,19 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
     <Message>
       <MessageContent>
         {message.parts.map((part, index) => {
+          if (!shows(part)) return null;
+          if (part.type === "thinking") {
+            return (
+              <Collapsible key={index}>
+                <CollapsibleTrigger render={<Button type="button" variant="ghost" size="sm" className="group self-start text-muted-foreground" />}>
+                  Thinking
+                  <ChevronRightIcon data-icon="inline-end" className="transition-transform group-data-[panel-open]:rotate-90" />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="whitespace-pre-wrap px-2 text-sm text-muted-foreground">{part.content}</CollapsibleContent>
+              </Collapsible>
+            );
+          }
           if (part.type === "text") {
-            if (!part.content.trim()) return null;
             return (
               <Bubble key={index} variant="ghost">
                 <BubbleContent className="typeset typeset-chat">
