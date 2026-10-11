@@ -49,6 +49,7 @@ ts-rs.workspace = true
 unicode-segmentation = "1.13.3"
 unicode-width = { version = "0.2.2", default-features = false }
 uuid = { version = "1.24.0", features = ["v4"] }
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
 
 [features]
 verify-faults = []
