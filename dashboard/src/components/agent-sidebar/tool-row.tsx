@@ -136,7 +136,6 @@ export function RunCard({ organizationSlug, scope, deployment }: { organizationS
   );
 }
 
-/** A run the agent started on Servers or Volumes: its state when the agent last looked, and its name. */
 export function OperationCard({ run }: { run: Run }) {
   const { light, label } = RUN_STATES[run.state];
   return (

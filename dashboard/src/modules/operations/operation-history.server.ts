@@ -11,7 +11,6 @@ import { serverUpgradeAttempt } from "#/modules/server-upgrade/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { Database } from "#/server/database.server";
 
-/** Every attempt table's state, as the run it reads as. */
 const RUN_STATES = {
   pending: "accepted",
   requested: "accepted",
@@ -42,13 +41,11 @@ const operation = (row: { attempt: string; run: string; state: keyof typeof RUN_
   unanswered: [],
 });
 
-/** An Upgrade's attempt is 32 hex digits; the agent reads it as a UUID like every other attempt. */
 export const dashedAttempt = (hex: string) =>
   /^[0-9a-f]{32}$/.test(hex) ? `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}` : hex;
 
 const isUuid = Schema.is(Uuid);
 
-/** Server names by machine ID, best effort: a Cluster that doesn't answer leaves the IDs. */
 export const serverNames = (organizationId: string) =>
   firstRuntimeFrame(organizationId).pipe(
     Effect.map((frame) => new Map((frame?.machines ?? []).map(({ machine }) => [machine.id, machine.name]))),
@@ -125,7 +122,6 @@ const leftoverOperations = Effect.fn("OperationHistory.leftover")(function* (org
   }));
 });
 
-/** The runs on one subject, newest first, or the one `attempt` names. */
 export const operationsOn = (organizationId: string, subject: Subject, attempt: string | null, limit: number) => {
   switch (subject.kind) {
     case "server":

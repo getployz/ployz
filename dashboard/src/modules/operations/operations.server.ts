@@ -17,10 +17,6 @@ import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.se
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { insertRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
 
-/**
- * The request key and approval a call carries; neither is part of what the key stands for. `loss` is the Volume data
- * an agent accepted losing, checked against the plan before anyone is asked; the CLI confirms its own and leaves it out.
- */
 export type OperationCall = {
   readonly key: string | null;
   readonly approvalId: string | null;
@@ -32,7 +28,6 @@ const refused = (refusal: Extract<Admission, { ok: false }>["refusal"]) => ({ ok
 const lossVersion = (effects: readonly DestructiveEffect[]) =>
   createHash("sha256").update(effects.map(({ node }) => node).sort().join("\n")).digest("hex").slice(0, 16);
 
-/** A refusal when the plan deletes Volume data the call didn't accept, by name and at this exact version. */
 function uncovered(asked: OperationAsked, call: OperationCall) {
   if (call.loss === undefined) return null;
   const effects = asked.effects.filter(({ kind }) => kind === "deletes_volume");
@@ -48,7 +43,6 @@ function uncovered(asked: OperationAsked, call: OperationCall) {
   });
 }
 
-/** The loss check, then the gate: an approval never accepts data loss. */
 const gate = (caller: Caller, call: OperationCall, asked: OperationAsked) => {
   const loss = uncovered(asked, call);
   return loss === null ? gateOperation(caller, call.approvalId, asked) : Effect.succeed(loss);
@@ -133,7 +127,6 @@ export const runVolume = (
       .pipe(Effect.map((inserted) => inserted.ok ? { ok: true, id: inserted.run.id } as const : inserted));
   }));
 
-/** A restart, start or stop of one Service; it never asks, since it deletes nothing. */
 export const actService = (
   caller: Caller,
   input: {

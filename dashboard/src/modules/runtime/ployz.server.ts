@@ -110,7 +110,6 @@ export interface PloyzSession {
   ) => Effect.Effect<{ readonly container: ContainerObservation }, PloyzSdkError>;
   readonly agentAsk: (query: CloudQuery) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
-  /** Fails with an `unavailable` RpcError when the stop may have happened. */
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   readonly startContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   readonly copyContainerImage: (

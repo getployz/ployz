@@ -34,7 +34,6 @@ export class ServiceActUnreachable extends Data.TaggedError("ServiceActUnreachab
 
 const seconds = (at: Date) => Math.floor(at.getTime() / 1000);
 
-/** The act as the agent's tools read it: `run` names what was asked, in words. */
 export const operationOf = (row: ActRow): Operation => ({
   attempt: row.id,
   run: `${row.verb} ${row.service}`,
@@ -47,10 +46,6 @@ export const operationOf = (row: ActRow): Operation => ({
   unanswered: row.before?.unanswered ?? [],
 });
 
-/**
- * Accept one act under `attemptId`, with its outbox event, in the caller's transaction. Answers the same attempt
- * again; refuses `conflict` naming the active act when the Service is busy.
- */
 export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
   input: {
@@ -113,10 +108,6 @@ const owned = (request: ActRequest, runId: string) =>
 
 export type ClaimedAct = { kind: "claimed"; verb: ServiceVerb; legs: ServiceActLeg[] } | { kind: "settled"; state: ServiceActState };
 
-/**
- * Bind the run to its accepted row, read the Service's Containers once and write them as Before. A retry after the
- * claim committed reads back what it wrote instead of reading the Servers again.
- */
 export const claimServiceAct = Effect.fn("ServiceAct.claim")(function* (request: ActRequest, runId: string) {
   const { drizzle } = yield* Database;
   yield* drizzle.update(serviceAct).set({ inngestRunId: runId }).where(and(
@@ -146,10 +137,6 @@ const writeLegs = (request: ActRequest, runId: string, legs: ServiceActLeg[]) =>
     drizzle.update(serviceAct).set({ legs }).where(and(owned(request, runId), eq(serviceAct.state, "running"))).returning({ id: serviceAct.id }))
     .pipe(Effect.map((rows) => rows.length > 0));
 
-/**
- * Stop or start every Container the act moves on `server`. Each Container's `sent` is written before its Server is
- * asked; a retry that finds `sent` records `unknown` and never asks again.
- */
 export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
   request: ActRequest,
   runId: string,
@@ -195,7 +182,6 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
   return legs;
 }, Effect.scoped);
 
-/** End the act from its legs. */
 export const recordServiceAct = Effect.fn("ServiceAct.record")(function* (request: ActRequest, runId: string) {
   const { drizzle } = yield* Database;
   const row = yield* readAct(request.actId);
@@ -211,10 +197,6 @@ const RUN_ENDS = {
   cancellation: { accepted: "The run was cancelled before it started.", running: "The run was cancelled while it ran." },
 } as const;
 
-/**
- * A run that failed for good or was cancelled must not leave its row active: an act that never claimed failed, one
- * that claimed may have moved Containers. A run cancelled before it bound its row names the row by `actId`.
- */
 export const closeServiceActRun = Effect.fn("ServiceAct.closeRun")(function* (
   runId: string,
   reason: keyof typeof RUN_ENDS,
@@ -237,7 +219,6 @@ export const closeServiceActRun = Effect.fn("ServiceAct.closeRun")(function* (
   return rows.length;
 });
 
-/** The hourly sweep: an act no run picked up in time never starts; one running this long lost its run. */
 export const closeStaleServiceActs = Effect.fn("ServiceAct.closeStale")(function* () {
   const { drizzle } = yield* Database;
   const now = Date.now();
@@ -250,7 +231,6 @@ export const closeStaleServiceActs = Effect.fn("ServiceAct.closeStale")(function
   return { failed: failed.length, unknown: unknown.length };
 });
 
-/** A Service's acts, newest first, or the one under `attempt`. */
 export const serviceOperations = Effect.fn("ServiceAct.operations")(function* (
   organizationId: string,
   subject: { readonly environment: string; readonly service: string },

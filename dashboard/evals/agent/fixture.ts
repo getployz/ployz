@@ -70,13 +70,6 @@ const environmentCommands = (environment: EnvironmentName): ConfigCommand[] => {
   ];
 };
 
-/**
- * Organization acme with Project app: production and staging each run web (nginx:1.27, generated domain web), db
- * (postgres:17 on Volume pgdata) and worker (acme/worker). Staging's Deployments 1 to 3 applied its Saved revision and
- * Deployment 4 failed. Inngest records what Cloud would hand its worker, a Deployment admitted later applies at once, and
- * a Service act runs the real act-service function to its end.
- * With `fleet`, Cloud reaches the fake fleet of machines.json, that scenario applied.
- */
 export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: FleetScenario) {
   const inngest = new Inngest({ id: "agent-eval" });
   const dispatched: unknown[] = [];

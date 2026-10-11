@@ -24,7 +24,6 @@ import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
-/** What the sidebar asks Cloud: a question about GitHub, Servers and runs, or an act on them. */
 export type CloudCall = { readonly ask: CloudQuery } | { readonly act: Act };
 
 const refusal = (code: string, message: string, details: StoreRefusal["details"] = null) =>
@@ -35,7 +34,6 @@ const CONNECT_SERVERS = { fix: { fix: "connect_servers" } };
 const unreachable = () => refusal("unavailable", UNREACHABLE_MESSAGE, CONNECT_SERVERS);
 const noSuch = (what: string) => refusal("not_found", `No such ${what}.`);
 
-/** The connected runtime session, or the refusal that says to connect Servers. */
 const session = (organizationId: string) =>
   Effect.flatMap(OrganizationRuntime, (runtime) => runtime.open(organizationId)).pipe(
     Effect.map((opened) => opened.status === "connected" ? opened.connected : null),
@@ -54,7 +52,6 @@ const runtimeAsk = (organizationId: string, query: CloudQuery) =>
 const owners = (organizationId: string) =>
   readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces));
 
-/** The Service an act names, by its Environment's ID: its Namespace and its name on the Servers. */
 const findService = Effect.fn("CallCloud.findService")(function* (organizationId: string, environmentId: string, service: string) {
   for (const owned of yield* owners(organizationId)) {
     const view = yield* readStore(organizationId, { query: "namespace", environment: { project: owned.project, environment: owned.environment } });
@@ -65,7 +62,6 @@ const findService = Effect.fn("CallCloud.findService")(function* (organizationId
   return null;
 });
 
-/** The Volume an act names, by its ID: its Environment and its name. */
 const findVolume = Effect.fn("CallCloud.findVolume")(function* (organizationId: string, volumeId: string) {
   for (const owned of yield* owners(organizationId)) {
     const environment: EnvironmentRef = { project: owned.project, environment: owned.environment };
@@ -155,11 +151,9 @@ const volumeRunInput = (run: VolumeRun, name: string): VolumeRunInput => {
   }
 };
 
-/** The Volume data the act accepts losing; an act that can't name any leaves the check to its approval. */
 const lossOf = (action: Act["action"]): AcceptedLoss | null | undefined =>
   "loss" in action ? action.loss : action.action === "volume" && "loss" in action.run ? action.run.loss : undefined;
 
-/** Admits the act, then answers its run as it reads now, so the agent polls `operations` with its attempt. */
 const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, digest, action }: Act, approvalId: string | null) {
   const organizationId = caller.organization.id;
   const call: OperationCall = { key: attempt, approvalId, loss: lossOf(action) };
@@ -211,10 +205,6 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
 type CloudServices = Effect.Services<ReturnType<typeof act>> | Effect.Services<ReturnType<typeof ask>>;
 type CloudError = Effect.Error<ReturnType<typeof act>> | Effect.Error<ReturnType<typeof ask>>;
 
-/**
- * A failure as the agent reads it. A Server that didn't answer says to connect Servers; an act that failed any other
- * way may or may not have reached them, so it says its writes are unknown.
- */
 const refusalOf = (error: CloudError, acting: boolean) => {
   if (error instanceof StoreRefused) return refusal(error.code, error.message, error.details);
   if (error instanceof NotFound) return refusal("not_found", error.message);
@@ -225,10 +215,6 @@ const refusalOf = (error: CloudError, acting: boolean) => {
     : refusal("unavailable", "Cloud couldn't answer this. Try again.");
 };
 
-/**
- * Every question the sidebar asks Cloud and every act it runs. It never fails: a failure answers as a refusal the
- * agent reads. An act that deletes something pauses on `approval_required` until a human answers `approvalId`.
- */
 export const callCloud = (caller: Caller, call: CloudCall, approvalId: string | null = null) =>
   Effect.gen(function* (): Effect.fn.Return<StoreResult<unknown>, CloudError, CloudServices> {
     return "act" in call ? yield* act(caller, call.act, approvalId) : yield* ask(caller, call.ask);

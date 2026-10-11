@@ -122,10 +122,6 @@ const asking = (refusal: StoreRefusal): Extract<Gated, { asking: unknown }> | nu
   return Option.isNone(recorded) ? null : { asking: { approvalId: recorded.value.approval_id, message: refusal.message } };
 };
 
-/**
- * An act whose plan destroys something: Cloud records the approval it asks for, so a refusal naming one waits on a
- * human, a denial goes back to the agent with the human's reason, and anything else is the act's answer.
- */
 const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: Caller, act: Act, approvalId: string | null) {
   const result = yield* callCloud(caller, { act }, approvalId);
   if (result.ok) return { result };
@@ -175,11 +171,6 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
   return (messages[turn]?.toolCalls ?? []).filter((call) => !answered.has(call.id));
 };
 
-/**
- * Decides every gated call before the tool phase runs it, so a write that may destroy something runs once per human answer.
- * A plan that needs a human raises `ployz.approval` keyed by the tool call; the resumed run decides again with the
- * approval the human answered, and every other outcome replaces the call's execution.
- */
 const approvalGate = (caller: Caller, run: Run, here: Here) => {
   const outcomes = new Map<string, ToolOutcome>();
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();

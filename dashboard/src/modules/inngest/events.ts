@@ -143,7 +143,6 @@ export type NamespaceCleanupRequestedEventData = {
   organizationId: string;
 };
 
-/** A restart, start or stop of a Service was accepted: its row is written. */
 export type ServiceActRequestedEventData = {
   actId: string;
   organizationId: string;

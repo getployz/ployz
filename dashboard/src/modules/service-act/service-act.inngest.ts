@@ -20,10 +20,6 @@ const ServiceActRequestedData = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
 });
 
-/**
- * One act: `claim` writes Before, then each Server in turn is stopped and started, and `record` ends the row. A
- * Server's start runs only for Containers whose stop is known to have happened.
- */
 export async function executeServiceAct(
   { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
   runEffect: EffectRunner,

@@ -12,7 +12,6 @@ import {
   type ServiceActState,
 } from "#/modules/service-act/service-act";
 
-/** One restart, start or stop of a Service, keyed by its attempt. At most one is active per Service. */
 export const serviceAct = pgTable(
   "service_act",
   {
@@ -23,7 +22,6 @@ export const serviceAct = pgTable(
     environmentId: text("environment_id").notNull(),
     service: text("service").notNull(),
     namespace: text("namespace").notNull(),
-    /** The Service's name on the Servers. */
     runtime: text("runtime").notNull(),
     verb: text("verb").notNull().$type<ServiceVerb>(),
     only: jsonb("only").$type<ServerRef | null>(),
