@@ -26,7 +26,7 @@ export function RangePicker({ range, onRange, onHover }: RangePickerProps) {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger render={<Button variant="outline" size="sm" />}>
         <ClockIcon data-icon="inline-start" />
-        {rangeLabel(range, timeZone)}
+        {rangeLabel(range, timeZone, Date.now())}
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72">
         <RangeForm range={range} timeZone={timeZone} onRange={pick} onHover={onHover} />

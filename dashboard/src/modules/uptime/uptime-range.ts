@@ -49,10 +49,10 @@ export function edgeMs(edge: string, now: number): number {
 
 export type RangeWindow = { readonly from: number; readonly to: number };
 
-/** `range` at `now`: never past now, never backwards. */
+/** `range` at `now`: never past now, never backwards, never before 1970, so a far offset still reads as an instant the database holds. */
 export function resolveRange(range: UptimeRange, now: number): RangeWindow {
-  const to = Math.min(edgeMs(range.to, now), now);
-  return { from: Math.min(edgeMs(range.from, now), to), to };
+  const to = Math.max(0, Math.min(edgeMs(range.to, now), now));
+  return { from: Math.max(0, Math.min(edgeMs(range.from, now), to)), to };
 }
 
 /** Checks are sparse, so the strip and uptime always cover at least the last 30 minutes of a range. */
@@ -116,14 +116,17 @@ export function edgeText(edge: string, timeZone: string): string {
   return `${date} ${time}`;
 }
 
-/** The picker's button: "Last 15 min", "Last 2h", or "Oct 10, 14:00 – now". */
-export function rangeLabel(range: UptimeRange, timeZone: string): string {
+/** The picker's button: "Last 15 min", "Last 2h", "Oct 10, 14:00 – now", or with years when its edges fall in different ones. */
+export function rangeLabel(range: UptimeRange, timeZone: string, now: number): string {
   if (range.to === "now") {
     const quick = QUICK_RANGES.find((candidate) => candidate.from === range.from);
     if (quick) return `Last ${quick.label}`;
     if (AGO.test(range.from)) return `Last ${range.from}`;
   }
-  const short = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone });
+  const year = (edge: string) => new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone }).format(edgeMs(edge, now));
+  const parts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone };
+  if (year(range.from) !== year(range.to)) parts.year = "numeric";
+  const short = new Intl.DateTimeFormat("en-US", parts);
   const end = (edge: string) => edge === "now" ? "now" : AGO.test(edge) ? `${edge} ago` : short.format(Date.parse(edge));
   return `${end(range.from)} – ${end(range.to)}`;
 }

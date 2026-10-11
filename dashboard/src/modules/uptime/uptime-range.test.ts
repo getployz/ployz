@@ -72,10 +72,12 @@ describe("RangeEdge", () => {
 
 describe("rangeLabel", () => {
   it("names a range back from now by its quick range or offset, and others by their edges", () => {
-    expect(rangeLabel({ from: "15m", to: "now" }, NY)).toBe("Last 15 min");
-    expect(rangeLabel({ from: "2h", to: "now" }, NY)).toBe("Last 2h");
-    expect(rangeLabel({ from: "2026-10-10T18:00:00.000Z", to: "now" }, NY)).toBe("Oct 10, 14:00 – now");
-    expect(rangeLabel({ from: "2d", to: "1d" }, NY)).toBe("2d ago – 1d ago");
+    expect(rangeLabel({ from: "15m", to: "now" }, NY, NOW)).toBe("Last 15 min");
+    expect(rangeLabel({ from: "2h", to: "now" }, NY, NOW)).toBe("Last 2h");
+    expect(rangeLabel({ from: "2026-10-10T18:00:00.000Z", to: "now" }, NY, NOW)).toBe("Oct 10, 14:00 – now");
+    expect(rangeLabel({ from: "2d", to: "1d" }, NY, NOW)).toBe("2d ago – 1d ago");
+    expect(rangeLabel({ from: "2025-10-11T18:00:00.000Z", to: "2026-10-11T18:00:00.000Z" }, NY, NOW))
+      .toBe("Oct 11, 2025, 14:00 – Oct 11, 2026, 14:00");
   });
 });
 
@@ -84,6 +86,7 @@ describe("resolveRange", () => {
     expect(resolveRange({ from: "1h", to: "now" }, NOW)).toEqual({ from: NOW - HOUR, to: NOW });
     expect(resolveRange({ from: "1h", to: "2026-10-12T00:00:00.000Z" }, NOW)).toEqual({ from: NOW - HOUR, to: NOW });
     expect(resolveRange({ from: "1h", to: "2h" }, NOW)).toEqual({ from: NOW - 2 * HOUR, to: NOW - 2 * HOUR });
+    expect(resolveRange({ from: "999999w", to: "999998w" }, NOW)).toEqual({ from: 0, to: 0 });
   });
 });
 
