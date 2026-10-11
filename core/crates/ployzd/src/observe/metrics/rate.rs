@@ -4,9 +4,10 @@
 //! A rate comes from two consecutive samples of one series and lands in the
 //! bucket of the later sample. A counter that went down was reset, so that
 //! interval yields no rate rather than a negative one. Within a bucket a
-//! series' rate is its summed deltas over its summed interval time, so a
-//! container present for part of the bucket still reports its real speed. A
-//! bucket no sample landed in is a `not_sampled` gap, never a zero point.
+//! Service's rate is every container's deltas summed over the time any of them
+//! covered, so a replica replaced mid-bucket counts once while concurrent
+//! replicas add up. A bucket no sample landed in is a `not_sampled` gap, never
+//! a zero point.
 
 use std::collections::BTreeMap;
 
@@ -97,22 +98,42 @@ fn div_ceil(value: i64, by: i64) -> i64 {
     value / by + i64::from(value % by != 0)
 }
 
-/// Summed counter deltas and the interval time they took.
-#[derive(Clone, Copy, Debug, Default)]
+/// Summed counter deltas and the time their intervals covered.
+///
+/// Intervals arrive in order of their end. Time an earlier interval already
+/// covered counts once, so concurrent replicas share one span of time while
+/// their deltas add up.
+#[derive(Clone, Copy, Debug)]
 struct Delta {
     amount: u64,
     nanos: u64,
+    covered_until: i64,
+}
+
+impl Default for Delta {
+    fn default() -> Self {
+        Self {
+            amount: 0,
+            nanos: 0,
+            covered_until: i64::MIN,
+        }
+    }
 }
 
 impl Delta {
-    /// Adds the interval from `prev` to `next` unless either side is missing
-    /// or the counter went down, which means it was reset.
-    fn add(&mut self, prev: Option<u64>, next: Option<u64>, nanos: u64) {
+    /// Adds the interval `from..to` unless either reading is missing or the
+    /// counter went down, which means it was reset.
+    fn add(&mut self, prev: Option<u64>, next: Option<u64>, from: i64, to: i64) {
         if let (Some(prev), Some(next)) = (prev, next)
             && next >= prev
+            && to > from
         {
             self.amount = self.amount.saturating_add(next - prev);
-            self.nanos = self.nanos.saturating_add(nanos);
+            let from = from.max(self.covered_until);
+            if let Ok(nanos @ 1..) = u64::try_from(to.saturating_sub(from)) {
+                self.nanos = self.nanos.saturating_add(nanos);
+                self.covered_until = to;
+            }
         }
     }
 
@@ -160,87 +181,91 @@ fn counters(sample: &MetricSample) -> [Option<u64>; COUNTERS] {
     ]
 }
 
-/// One container's share of one bucket.
-struct ContainerBucket {
+/// Every container of a Service at one sampling tick, summed.
+#[derive(Clone, Copy, Debug)]
+struct Tick {
+    ts: i64,
+    mem: Option<u64>,
+    limit: Option<u64>,
+}
+
+/// Every container of a Service summed over one bucket.
+///
+/// Memory sums the containers at each tick and averages those sums, so a
+/// replica replaced mid-bucket counts once, not twice.
+struct ServiceBucket {
     rates: [Delta; COUNTERS],
+    tick: Option<Tick>,
     mem: Mean,
     /// `None` once a sample in the bucket reported no limit.
     limit: Option<Mean>,
 }
 
-impl Default for ContainerBucket {
+impl Default for ServiceBucket {
     fn default() -> Self {
         Self {
             rates: [Delta::default(); COUNTERS],
+            tick: None,
             mem: Mean::default(),
             limit: Some(Mean::default()),
         }
     }
 }
 
-/// A Service's limit is the sum of its containers' limits, and unknown once
-/// any container in the bucket reports none.
-#[derive(Clone, Copy, Debug, Default)]
-enum LimitSum {
-    #[default]
-    Empty,
-    Sum(u64),
-    Partial,
-}
-
-/// Every container of a Service summed over one bucket.
-#[derive(Default)]
-struct ServiceBucket {
-    rates: [Option<f64>; COUNTERS],
-    mem: Option<u64>,
-    limit: LimitSum,
-}
-
 impl ServiceBucket {
-    fn add(&mut self, container: &ContainerBucket) {
-        for (sum, delta) in self.rates.iter_mut().zip(container.rates) {
-            if let Some(rate) = delta.per_sec() {
-                *sum = Some(sum.unwrap_or(0.0) + rate);
-            }
+    /// Adds `sample`, which is no older than any sample added before, and the
+    /// interval from its container's previous sample.
+    fn add(&mut self, prev: &MetricSample, sample: &MetricSample) {
+        if self.tick.is_some_and(|tick| tick.ts != sample.ts) {
+            self.close_tick();
         }
-        if let Some(mem) = container.mem.get() {
-            self.mem = Some(self.mem.unwrap_or(0).saturating_add(mem));
+        let tick = self.tick.get_or_insert(Tick {
+            ts: sample.ts,
+            mem: None,
+            limit: Some(0),
+        });
+        if let Some(mem) = sample.mem_bytes {
+            tick.mem = Some(tick.mem.unwrap_or(0).saturating_add(mem));
         }
-        self.limit = match (self.limit, container.limit.and_then(Mean::get)) {
-            (LimitSum::Partial, _) | (_, None) => LimitSum::Partial,
-            (LimitSum::Empty, Some(limit)) => LimitSum::Sum(limit),
-            (LimitSum::Sum(sum), Some(limit)) => LimitSum::Sum(sum.saturating_add(limit)),
-        };
+        tick.limit = tick
+            .limit
+            .zip(sample.mem_limit)
+            .map(|(sum, limit)| sum.saturating_add(limit));
+        if tick.limit.is_none() {
+            self.limit = None;
+        }
+        for ((delta, before), after) in self
+            .rates
+            .iter_mut()
+            .zip(counters(prev))
+            .zip(counters(sample))
+        {
+            delta.add(before, after, prev.ts, sample.ts);
+        }
     }
 
-    fn into_point(self, ts: i64) -> ServicePoint {
-        let [cpu_usec, rx, tx, io_r, io_w] = self.rates;
+    fn close_tick(&mut self) {
+        if let Some(tick) = self.tick.take() {
+            self.mem.add(tick.mem);
+            if let Some(limit) = &mut self.limit {
+                limit.add(tick.limit);
+            }
+        }
+    }
+
+    fn into_point(mut self, ts: i64) -> ServicePoint {
+        self.close_tick();
+        let [cpu_usec, rx, tx, io_r, io_w] = self.rates.map(Delta::per_sec);
         ServicePoint {
             ts,
             cpu_usec,
-            mem_bytes: self.mem,
-            mem_limit: match self.limit {
-                LimitSum::Sum(sum) => Some(sum),
-                LimitSum::Empty | LimitSum::Partial => None,
-            },
+            mem_bytes: self.mem.get(),
+            mem_limit: self.limit.and_then(Mean::get),
             rx,
             tx,
             io_r,
             io_w,
         }
-    }
-}
-
-/// One container's progress through a time-ordered pass.
-struct Series<'src> {
-    prev: &'src MetricSample,
-    open: Option<(usize, ContainerBucket)>,
-}
-
-fn add_to(table: &mut [Option<ServiceBucket>], index: usize, container: &ContainerBucket) {
-    if let Some(slot) = table.get_mut(index) {
-        slot.get_or_insert_with(ServiceBucket::default)
-            .add(container);
     }
 }
 
@@ -255,46 +280,17 @@ pub(crate) fn service_history(samples: &[MetricSample], buckets: Buckets) -> Met
 
     let mut table: Vec<Option<ServiceBucket>> = Vec::new();
     table.resize_with(buckets.len, || None);
-    let mut series: BTreeMap<ContainerId, Series<'_>> = BTreeMap::new();
+    let mut prevs: BTreeMap<ContainerId, &MetricSample> = BTreeMap::new();
     for sample in sorted {
         // A container's first sample is its own predecessor: an empty interval.
-        let series = series.entry(sample.container_id).or_insert(Series {
-            prev: sample,
-            open: None,
-        });
-        let prev = std::mem::replace(&mut series.prev, sample);
-        let Some(index) = buckets.index(sample.ts) else {
-            continue;
-        };
-        if let Some((done, container)) = series.open.take_if(|(open, _)| *open != index) {
-            add_to(&mut table, done, &container);
-        }
-        let (_, container) = series
-            .open
-            .get_or_insert_with(|| (index, ContainerBucket::default()));
-
-        container.mem.add(sample.mem_bytes);
-        container.limit = container
-            .limit
-            .zip(sample.mem_limit)
-            .map(|(mut mean, limit)| {
-                mean.add(Some(limit));
-                mean
-            });
-        let Ok(nanos @ 1..) = u64::try_from(sample.ts.saturating_sub(prev.ts)) else {
-            continue;
-        };
-        for ((delta, before), after) in container
-            .rates
-            .iter_mut()
-            .zip(counters(prev))
-            .zip(counters(sample))
+        let prev = prevs.insert(sample.container_id, sample).unwrap_or(sample);
+        if let Some(slot) = buckets
+            .index(sample.ts)
+            .and_then(|index| table.get_mut(index))
         {
-            delta.add(before, after, nanos);
+            slot.get_or_insert_with(ServiceBucket::default)
+                .add(prev, sample);
         }
-    }
-    for (index, container) in series.into_values().filter_map(|series| series.open) {
-        add_to(&mut table, index, &container);
     }
 
     let gaps = buckets.gaps(&table);
@@ -387,15 +383,16 @@ pub(crate) fn machine_history(samples: &[HostSample], buckets: Buckets) -> Metri
         let Some(before) = before else {
             continue;
         };
-        let Ok(nanos @ 1..) = u64::try_from(sample.ts.saturating_sub(before.ts)) else {
-            continue;
-        };
         if let (Some(a), Some(b)) = (before.cpu, sample.cpu)
             && b.busy >= a.busy
             && b.idle >= a.idle
         {
-            bucket.busy.add(Some(a.busy), Some(b.busy), nanos);
-            bucket.idle.add(Some(a.idle), Some(b.idle), nanos);
+            bucket
+                .busy
+                .add(Some(a.busy), Some(b.busy), before.ts, sample.ts);
+            bucket
+                .idle
+                .add(Some(a.idle), Some(b.idle), before.ts, sample.ts);
         }
         for (name, now) in &sample.interfaces {
             let then = before.interfaces.get(name);
@@ -407,8 +404,8 @@ pub(crate) fn machine_history(samples: &[HostSample], buckets: Buckets) -> Metri
                 continue;
             };
             let (rx_delta, tx_delta) = bucket.interfaces.entry(name.clone()).or_default();
-            rx_delta.add(Some(*rx), Some(now.rx), nanos);
-            tx_delta.add(Some(*tx), Some(now.tx), nanos);
+            rx_delta.add(Some(*rx), Some(now.rx), before.ts, sample.ts);
+            tx_delta.add(Some(*tx), Some(now.tx), before.ts, sample.ts);
         }
     }
 
@@ -566,11 +563,37 @@ mod tests {
         assert_eq!(gaps, []);
         let cpu: Vec<_> = points.iter().map(|p| p.cpu_usec).collect();
         // Container 2's first sample at 30s has no predecessor, so it adds
-        // only memory; its rate counts from 40s on.
-        assert_eq!(cpu, [Some(100.0), Some(140.0), Some(140.0)]);
+        // only memory; its rate counts from 40s on, so it adds 40 for two
+        // thirds of the 30s the Service covered in that bucket.
+        assert_eq!(cpu, [Some(100.0), Some(3_800.0 / 30.0), Some(140.0)]);
         let mem: Vec<_> = points.iter().map(|p| p.mem_bytes).collect();
         assert_eq!(mem, [Some(100), Some(200), Some(200)]);
         assert_eq!(points[1].mem_limit, Some(2_000));
+    }
+
+    #[test]
+    fn a_replacement_mid_bucket_keeps_the_rate_of_one_replica() {
+        // A rolling deploy: the old replica runs 0s to 150s, the new one from
+        // 160s, both at the same speed and memory.
+        let mut samples: Vec<_> = (0..=15).map(|i| at(1, i * 10, 1_000)).collect();
+        samples.extend((16..29).map(|i| at(2, i * 10, 1_000)));
+        let (points, gaps) = service(service_history(&samples, grid(0, 288, 288)));
+
+        assert_eq!(gaps, []);
+        assert_eq!(rates(&points[0]), [Some(1_000.0); COUNTERS]);
+        assert_eq!(points[0].mem_bytes, Some(100));
+        assert_eq!(points[0].mem_limit, Some(1_000));
+    }
+
+    #[test]
+    fn concurrent_replicas_sum() {
+        let mut samples: Vec<_> = (0..=6).map(|i| at(1, i * 10, 300)).collect();
+        samples.extend((0..=6).map(|i| at(2, i * 10, 200)));
+        let (points, _) = service(service_history(&samples, grid(0, 61, 61)));
+
+        assert_eq!(rates(&points[0]), [Some(500.0); COUNTERS]);
+        assert_eq!(points[0].mem_bytes, Some(200));
+        assert_eq!(points[0].mem_limit, Some(2_000));
     }
 
     #[test]

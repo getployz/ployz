@@ -1,9 +1,10 @@
 //! Closed hours of raw rows folded to 5 minute points, one file per hour,
 //! kept 90 days.
 //!
-//! A fold groups the hour's container rows by Service and Deployment and
-//! hands each group, and the host rows, to `rate`, so a rollup point is the
-//! same number a raw read of that 5 minutes would give. The groups outlive
+//! A fold groups the hour's container rows by Service and hands each group,
+//! and the host rows, to `rate`, so a rollup point is the same number a raw
+//! read of that 5 minutes would give. The group spans Deployments: a replica
+//! replaced mid-point counts once, as it does in a raw read. The groups outlive
 //! their containers: once the raw hour is deleted, a removed container's
 //! numbers are still in its Service's points.
 //!
@@ -40,25 +41,24 @@ const NANOS_PER_SEC: i64 = 1_000_000_000;
 pub const STEP_NANOS: i64 = 5 * 60 * NANOS_PER_SEC;
 const TEMP_SUFFIX: &str = ".tmp";
 
-/// One Deployment of one Service: the group a fold sums.
-type DeploymentKey = (ServiceId, QualifiedService, Option<String>);
+/// One Service: the group a fold sums.
+type ServiceKey = (ServiceId, QualifiedService);
 
 /// One line of a rollup file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "row", rename_all = "snake_case")]
 pub enum Row {
-    Service(DeploymentPoint),
+    Service(ServiceRow),
     Host(HostPoint),
     Marker(MetricMarker),
 }
 
-/// Every container of one Deployment of a Service, summed over 5 minutes.
+/// Every container of a Service, summed over 5 minutes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeploymentPoint {
+pub struct ServiceRow {
     pub service_id: ServiceId,
     /// The Service's Namespace and name, which is how history selects it.
     pub service: QualifiedService,
-    pub deployment_id: Option<String>,
     pub point: ServicePoint,
 }
 
@@ -76,9 +76,9 @@ impl Stamped for Row {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Rolled {
     Machine(Vec<HostPoint>),
-    /// One point per Deployment per 5 minutes; a Service's total at a `ts`
-    /// is the sum over its Deployments.
-    Service(Vec<DeploymentPoint>),
+    /// One point per Service id per 5 minutes. A name reused by a new
+    /// Service id has a row for each, and its total at a `ts` is their sum.
+    Service(Vec<ServiceRow>),
 }
 
 /// Folds every closed hour whose raw segment has no rollup yet, or changed
@@ -151,7 +151,7 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
     };
     let mut hosts = Vec::new();
     let mut markers = Vec::new();
-    let mut services: BTreeMap<DeploymentKey, Vec<MetricSample>> = BTreeMap::new();
+    let mut services: BTreeMap<ServiceKey, Vec<MetricSample>> = BTreeMap::new();
     segment::scan(
         &store.raw_metrics(),
         lead_in,
@@ -163,7 +163,7 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
                     (sample.service_id, sample.service.clone())
                 {
                     services
-                        .entry((service_id, service, sample.deployment_id.clone()))
+                        .entry((service_id, service))
                         .or_default()
                         .push(sample);
                 }
@@ -181,13 +181,12 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
     if let MetricPoints::Machine(points) = rate::machine_history(&hosts, buckets).points {
         rows.extend(points.into_iter().map(Row::Host));
     }
-    for ((service_id, service, deployment_id), samples) in services {
+    for ((service_id, service), samples) in services {
         if let MetricPoints::Service(points) = rate::service_history(&samples, buckets).points {
             rows.extend(points.into_iter().map(|point| {
-                Row::Service(DeploymentPoint {
+                Row::Service(ServiceRow {
                     service_id,
                     service: service.clone(),
-                    deployment_id: deployment_id.clone(),
                     point,
                 })
             }));
@@ -233,7 +232,7 @@ pub fn read(
     scope: &MetricScope,
 ) -> io::Result<(Rolled, Vec<MetricMarker>)> {
     let mut hosts = Vec::new();
-    let mut deployments = Vec::new();
+    let mut services = Vec::new();
     let mut markers = Vec::new();
     segment::scan(
         &store.rollup_metrics(),
@@ -241,21 +240,19 @@ pub fn read(
         &Prefilter::of(scope),
         |row| match (scope, row) {
             (MetricScope::Machine, Row::Host(point)) => hosts.push(point),
-            (MetricScope::Service { service }, Row::Service(deployment))
-                if deployment.service == *service =>
-            {
-                deployments.push(deployment);
+            (MetricScope::Service { service }, Row::Service(row)) if row.service == *service => {
+                services.push(row);
             }
             (_, Row::Marker(marker)) if segment::shows(scope, &marker) => markers.push(marker),
             _ => {}
         },
     )?;
     hosts.sort_by_key(|point| point.ts);
-    deployments.sort_by_key(|deployment| deployment.point.ts);
+    services.sort_by_key(|row| row.point.ts);
     markers.sort_by_key(|marker| marker.ts);
     let rolled = match scope {
         MetricScope::Machine => Rolled::Machine(hosts),
-        MetricScope::Service { .. } => Rolled::Service(deployments),
+        MetricScope::Service { .. } => Rolled::Service(services),
     };
     Ok((rolled, markers))
 }
@@ -299,9 +296,7 @@ mod tests {
         },
     };
 
-    use super::{
-        self as rollup, DeploymentPoint, Rolled, STEP_NANOS, fold_hour, fold_pending, read,
-    };
+    use super::{self as rollup, Rolled, STEP_NANOS, ServiceRow, fold_hour, fold_pending, read};
     use crate::{
         observe::{
             layout::{SegmentName, StoreRoot},
@@ -414,7 +409,7 @@ mod tests {
         }
     }
 
-    fn service_points(store: &StoreRoot, n: u8) -> Vec<DeploymentPoint> {
+    fn service_points(store: &StoreRoot, n: u8) -> Vec<ServiceRow> {
         let scope = MetricScope::Service {
             service: qualified(n),
         };
@@ -425,9 +420,9 @@ mod tests {
     }
 
     #[test]
-    fn a_fold_gives_twelve_points_per_deployment_and_host_and_folding_again_keeps_the_bytes() {
+    fn a_fold_gives_twelve_points_per_service_and_host_and_folding_again_keeps_the_bytes() {
         let (_dir, store) = store();
-        write_hour(&store, &[(1, 1, 1), (2, 1, 1), (3, 1, 2), (4, 2, 1)]);
+        write_hour(&store, &[(1, 1, 1), (2, 1, 2), (3, 2, 1)]);
         fold_hour(&store, hour(T0)).unwrap();
         let path = store.rollup_metrics().join("1759996800.jsonl");
         let first = fs::read(&path).unwrap();
@@ -435,16 +430,11 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), first);
 
         let points = service_points(&store, 1);
-        assert_eq!(points.len(), 24);
-        let at = |n: u8| {
-            points
-                .iter()
-                .filter(|p| p.deployment_id == Some(deployment(n)))
-                .map(|p| p.point.ts)
-                .collect::<Vec<_>>()
-        };
         let starts: Vec<i64> = (0..12).map(|i| T0 + i * STEP_NANOS).collect();
-        assert_eq!((at(1), at(2)), (starts.clone(), starts));
+        assert_eq!(
+            points.iter().map(|p| p.point.ts).collect::<Vec<_>>(),
+            starts
+        );
         assert!(
             points
                 .iter()
@@ -452,8 +442,8 @@ mod tests {
             "a point names its Service both ways"
         );
         let first = &points.first().unwrap().point;
-        // Two containers at one core each, the first rate seeded by the tick
-        // before the hour.
+        // Two containers of two Deployments at one core each, the first rate
+        // seeded by the tick before the hour.
         assert_eq!(first.cpu_usec, Some(2_000_000.0));
         assert_eq!(first.mem_bytes, Some(200 << 20));
         assert_eq!(first.mem_limit, Some(2 << 30));
@@ -511,6 +501,27 @@ mod tests {
         let mut want = vec![Some(2_000_000.0); 4];
         want.extend([Some(1_000_000.0); 8]);
         assert_eq!(cpu, want);
+    }
+
+    #[test]
+    fn a_deploy_mid_point_folds_to_one_replica_not_two() {
+        let (_dir, store) = store();
+        for tick in -1..360 {
+            let (container, deployment_n) = if tick < 15 { (1, 1) } else { (2, 2) };
+            segment::append(
+                &store,
+                &[Row::Container(sample(container, 1, deployment_n, tick))],
+            )
+            .unwrap();
+        }
+        fold_hour(&store, hour(T0)).unwrap();
+
+        let points = service_points(&store, 1);
+        let first: Vec<_> = points.iter().filter(|p| p.point.ts == T0).collect();
+        let cpu: f64 = first.iter().filter_map(|p| p.point.cpu_usec).sum();
+        let mem: u64 = first.iter().filter_map(|p| p.point.mem_bytes).sum();
+        assert!((cpu - 1_000_000.0).abs() < 1.0, "{cpu} usec/s");
+        assert_eq!(mem, 100 << 20);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use ployz_core::metrics::{
 
 use super::{
     rate::{self, Buckets, Mean},
-    rollup::{self, DeploymentPoint, Rolled, STEP_NANOS},
+    rollup::{self, Rolled, STEP_NANOS, ServiceRow},
     segment::{self, Selected},
 };
 use crate::observe::layout::StoreRoot;
@@ -93,8 +93,8 @@ pub(crate) fn history(
             }
             average_hosts(&points, buckets)
         }
-        Rolled::Service(deployments) => {
-            let mut points = sum_deployments(deployments);
+        Rolled::Service(rows) => {
+            let mut points = sum_services(rows);
             if let Some(MetricPoints::Service(fresh)) = fresh {
                 points.extend(fresh);
             }
@@ -147,11 +147,11 @@ fn rates(point: &ServicePoint) -> [Option<f64>; 5] {
     [point.cpu_usec, point.rx, point.tx, point.io_r, point.io_w]
 }
 
-/// A Service's point at each `ts`: its Deployments' points summed. The
-/// memory limit is unknown once any Deployment's is.
-fn sum_deployments(deployments: Vec<DeploymentPoint>) -> Vec<ServicePoint> {
+/// A Service's point at each `ts`: the points of every Service id that held
+/// its name, summed. The memory limit is unknown once any id's is.
+fn sum_services(rows: Vec<ServiceRow>) -> Vec<ServicePoint> {
     let mut at: BTreeMap<i64, ServicePoint> = BTreeMap::new();
-    for DeploymentPoint { point, .. } in deployments {
+    for ServiceRow { point, .. } in rows {
         let sum = match at.entry(point.ts) {
             Entry::Vacant(entry) => {
                 entry.insert(point);
@@ -378,7 +378,7 @@ pub(crate) mod tests {
         observe::{
             layout::{SegmentName, StoreRoot},
             metrics::{
-                rollup::{self, DeploymentPoint, STEP_NANOS},
+                rollup::{self, STEP_NANOS, ServiceRow},
                 segment::{self, Row},
             },
         },
@@ -784,7 +784,8 @@ pub(crate) mod tests {
                 };
                 line(&mut buf, &rollup::Row::Host(host));
                 for n in 0..50 {
-                    for deployment in 0..2 {
+                    // Two Service ids that held the name, summed on read.
+                    for id in [n, n + 100] {
                         let point = ServicePoint {
                             ts,
                             cpu_usec: Some(1e5),
@@ -795,10 +796,9 @@ pub(crate) mod tests {
                             io_r: Some(512.0),
                             io_w: Some(1_024.0),
                         };
-                        let row = rollup::Row::Service(DeploymentPoint {
-                            service_id: service(n),
+                        let row = rollup::Row::Service(ServiceRow {
+                            service_id: service(id),
                             service: qualified(n),
-                            deployment_id: Some(format!("deployment-{deployment}")),
                             point,
                         });
                         line(&mut buf, &row);
