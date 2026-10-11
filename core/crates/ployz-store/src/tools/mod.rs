@@ -28,7 +28,7 @@ pub use refusal::{Call, NOT_SETTINGS, Refusal, ToolResult, Writes};
 pub use schema::{lint, portable};
 pub use status::{ServiceStatus, service_status};
 pub use step::{
-    AcceptedLoss, Act, Action, Ask, AttemptId, BodyDigest, CloudQuery, DashboardPage, Fix,
+    AcceptedLoss, Act, Action, Answer, Ask, AttemptId, BodyDigest, CloudQuery, DashboardPage, Fix,
     Freshness, Gate, LogsQuery, OperationsQuery, RequestKey, ServerName, ServerRef, ServiceVerb,
     Source, Step, Subject, Timestamp, VolumeRun, Write, WriteSlot,
 };

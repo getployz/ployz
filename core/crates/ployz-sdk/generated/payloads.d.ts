@@ -1,6 +1,12 @@
 // Generated from the Rust wire types by `cargo test -p ployz --test sdk_payloads`.
 // Do not edit.
 
+export type AcceptedLoss = { volumes: Array<string>, version: string, };
+
+export type Act = { attempt: AttemptId, digest: BodyDigest, action: Action, };
+
+export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
+
 export type AddDomain = { environment: EnvironmentRef, service: ServiceName,
 /**
  * A custom hostname; none generates one.
@@ -22,6 +28,8 @@ export type AdmitRemoval = { id: DeploymentId, environment: EnvironmentRef, };
 
 export type AdvertisedEndpoint = string;
 
+export type Answer = { "value": JsonValue } | { "error": RpcError };
+
 export type AppliedVolume = { project: ProjectName, environment: EnvironmentName, volume: VolumeName, };
 
 export type Apply = "staged" | "immediate";
@@ -29,6 +37,8 @@ export type Apply = "staged" | "immediate";
 export type Approval = "not_required" | "required" | { "approved": ApprovalDigest };
 
 export type ApprovalDigest = string;
+
+export type Ask = { "at": "store", "ask": ConfigQuery } | { "at": "cloud", "ask": CloudQuery };
 
 export type AttachConfig = {
 /**
@@ -47,6 +57,8 @@ config: ConfigName,
  * The absolute directory in the Service's containers.
  */
 dir: string, };
+
+export type AttemptId = string;
 
 export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig,
 /**
@@ -135,6 +147,8 @@ results: Array<ConfigWritten>, };
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
+
+export type BodyDigest = string;
 
 export type BranchHead = { repository_id: RepositoryId, branch: BranchName,
 /**
@@ -343,6 +357,8 @@ export type Builder = "github" | "servers";
 
 export type ByteQuantity = number;
 
+export type Call = { tool: string, input: JsonValue, };
+
 export type Cancel = { deployment: DeploymentId, };
 
 export type CancelRemoval = { project: ProjectName, environment?: EnvironmentName | null, };
@@ -418,6 +434,8 @@ conclusion: CheckConclusion | null,
  * When GitHub last changed it: an older result never replaces a newer one.
  */
 updated: GithubTimestamp, };
+
+export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
@@ -734,15 +752,27 @@ resolved_spec: ResolvedServiceSpec, address: ContainerAddress | null, labels: { 
 
 export type ContainerPath = string;
 
+export type ContainerReport = { server: MachineName, service: ServiceName, state: ContainerState, exit_code: number | null, health: Health | null, restarts: number, image: string, deployment: DeploymentId | null, };
+
 export type ContainerResources = { cpu_nanos: CpuNanos | null, memory_bytes: ByteQuantity | null, memory_reservation_bytes: ByteQuantity | null, shared_memory_bytes: ByteQuantity | null, devices: Array<DeviceMapping>, device_reservations: Array<DeviceReservation>, ulimits: { [key in string]: Ulimit }, };
 
 export type ContainerRuntimeObservation = { "state": "created" } | { "state": "running", health: HealthObservation, } | { "state": "paused" } | { "state": "restarting" } | { "state": "exited", code: number, } | { "state": "removing" } | { "state": "dead" } | { "state": "unrecognized", raw: JsonValue, };
+
+export type ContainerState = "created" | "running" | "restarting" | "paused" | "exited" | "dead";
+
+export type ContainersAnswer = { containers: Array<ContainerReport>,
+/**
+ * The Servers asked; `seen.unanswered` names those that did not answer.
+ */
+servers: Array<MachineName>, seen: Freshness, };
 
 export type ContractDescription = { machine_id: MachineId, protocol_major: number,
 /**
  * Diagnostic only. Callers select behavior using capability names.
  */
 daemon_version: string, capabilities: Array<CapabilityName>, };
+
+export type CopiesAnswer = { volumes: Array<VolumeCopies>, seen: Freshness, };
 
 export type CopyNode = {
 /**
@@ -919,6 +949,8 @@ mounts: Array<Mount>,
 shared_writes?: boolean, };
 
 export type Cycle = "open" | "closed";
+
+export type DashboardPage = "projects" | "environments" | "variables" | "servers" | "github";
 
 export type DataEffect = "deleted" | "kept";
 
@@ -1387,6 +1419,8 @@ saved: Revision | null,
  */
 changed: boolean, };
 
+export type Disk = { used_bytes: number, total_bytes: number, };
+
 export type DnsLookup = { hostname: Hostname, cname: string | null, addresses: Array<string>, };
 
 export type DnsRecord = { type: DnsRecordKind,
@@ -1733,6 +1767,10 @@ kind: EnvironmentNodeType,
  */
 name: string | null, };
 
+export type Freshness = { seen_by: MachineName | null, observed_at: Timestamp | null, read_at: Timestamp, age_seconds: number | null, from: Source, unanswered: Array<MachineName>, };
+
+export type Gate = "never" | "store" | "cloud";
+
 export type GitSource = {
 /**
  * Its runtime Service name.
@@ -1870,6 +1908,8 @@ truncated: boolean, };
 
 export type HandOverRequest = { switch: Switch, name: DockerVolumeName, guid: SnapshotGuid, };
 
+export type Health = "starting" | "healthy" | "unhealthy";
+
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out", last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | "failing" | "stopping" | string;
@@ -1987,6 +2027,8 @@ environment: EnvironmentRef,
  */
 kept: boolean, };
 
+export type Kept = { service: ServiceName, why: string, };
+
 export type Landed = "staged" | "hint";
 
 export type LastHealthCheck = { "type": "exited", code: number, output: string, } | { "type": "http_status", status: number, } | { "type": "http_unreachable", error: HttpCheckError, };
@@ -2006,6 +2048,10 @@ deployment: DeploymentSummary | null, status: LeftStatus,
 why: string | null, services: Array<ServiceName>, };
 
 export type LeftStatus = "removing" | "waiting_turn" | "stalled";
+
+export type Leg = { server: MachineName, stopped: Receipt | null, started: Receipt | null, reason: string | null, };
+
+export type LineCap = number;
 
 export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
 
@@ -2057,6 +2103,10 @@ export type LogMetadata = { origin: LogOrigin, machine_id: MachineId, machine_na
 export type LogOrigin = { "origin": "service", service_id: ServiceId, service_name: ServiceName, container_id: ContainerId, hook: string | null, } | { "origin": "machine", service: MachineLogService, };
 
 export type LogText = { "status": "shown" } & LogExcerpt | { "status": "withheld", why: Withheld, };
+
+export type LogsAnswer = { servers: Array<ServerLog>, seen: Freshness, };
+
+export type LogsQuery = { environment: EnvironmentId, namespace: Namespace, service: ServiceName, deployment: DeploymentId | null, server: ServerRef | null, lines: LineCap, since: { secs: number, nanos: number } | null, };
 
 export type Machine = {
 /**
@@ -2306,6 +2356,8 @@ export type MintBuildGrantRequest = {
  */
 repository: BuildGrantRepository, };
 
+export type Mirror = { server: ServerRef, synced_at: Timestamp | null, };
+
 export type MirrorMarker = { "phase": "idle" } | { "phase": "final", guid: SnapshotGuid, } | { "phase": "handed_in", guid: SnapshotGuid, } | { "phase": "promoting" };
 
 export type MirrorRequest = { switch: Switch, name: DockerVolumeName, };
@@ -2472,6 +2524,16 @@ export type OpenPullRequest = { number: PullRequestNumber,
  */
 title: string, author: string, environment: EnvironmentName, };
 
+export type Operation = { attempt: AttemptId,
+/**
+ * What was asked, in words, e.g. `restart web`.
+ */
+run: string, state: RunState, requested_at: Timestamp, ended_at: Timestamp | null, reason: string | null, servers: Array<Leg>,
+/**
+ * Services a drain left in place, and why.
+ */
+kept: Array<Kept>, unanswered: Array<MachineName>, };
+
 export type OperationPhase = { "type": "starting" } | { "type": "creating_container" } | { "type": "starting_container" } | { "type": "waiting_for_health", container_id: ContainerId, health: HealthObservation | null, elapsed_ms: number, deadline_ms: number, } | { "type": "waiting_for_hook", container_id: ContainerId, elapsed_ms: number, deadline_ms: number, } | { "type": "stopping_container" } | { "type": "removing_container" } | { "type": "removing_volume" } | { "type": "compensating" };
 
 export type OperationRow = {
@@ -2506,6 +2568,10 @@ status: OperationStatus, };
 
 export type OperationStatus = { "type": "pending" } | { "type": "running", phase: OperationPhase, } | { "type": "completed" } | { "type": "failed", error: ExecutionError, } | { "type": "unexecuted" };
 
+export type OperationsAnswer = { operations: Array<Operation>, };
+
+export type OperationsQuery = { subject: Subject, attempt: AttemptId | null, limit: number, };
+
 export type OrganizationId = string;
 
 export type OrganizationRemoved = { organization: OrganizationId, };
@@ -2521,6 +2587,8 @@ export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failure
 omissions: Array<MachineId>, };
 
 export type PidMode = string;
+
+export type Place = { project: ProjectName | null, environment: EnvironmentName | null, store: StoreAt, };
 
 export type Placement = {
 /**
@@ -2870,9 +2938,13 @@ gid?: number | null, };
 
 export type QualifiedService = string;
 
+export type Receipt = "yes" | "no" | "unknown";
+
 export type ReceiveStatus = { "state": "idle" } | { "state": "running", target: SnapshotName, } | { "state": "done", newest: Snapshot, } | { "state": "resumable", target: SnapshotName, token: string, } | { "state": "failed", target: SnapshotName, reason: string, };
 
 export type ReceiveView = { round: number | null, status: ReceiveStatus, };
+
+export type Refusal = { code: RpcErrorCode, message: string, field?: string | null, expected?: JsonValue | null, example?: JsonValue | null, did_you_mean?: string | null, valid?: Array<string>, retry: Call, writes: Writes, next: Array<Call>, details?: JsonValue, };
 
 export type RegisterRequest = {
 /**
@@ -3150,6 +3222,8 @@ export type RttStatistics = { median_ns: number, population_stddev_ns: number, }
 
 export type RunEnd = { "end": "built", platforms: Array<string>, } | { "end": "failed" };
 
+export type RunState = "accepted" | "running" | "done" | "failed" | "unknown" | "superseded";
+
 export type RunnerId = string;
 
 export type RuntimeFailureKind = "machine" | "health" | "dependency_health" | "hook" | "cancelled";
@@ -3266,6 +3340,24 @@ held: boolean, };
 
 export type SelectedEndpoint = string;
 
+export type ServerLog = { server: MachineName, text: LogText, };
+
+export type ServerRef = { machine: MachineId, name: MachineName, };
+
+export type ServerReport = { machine: MachineId, name: MachineName, state: ServerState,
+/**
+ * The Ployz release it runs.
+ */
+release: string | null,
+/**
+ * A newer release on its channel, if any.
+ */
+upgrade: string | null, draining: boolean, disk: Disk | null,
+/**
+ * Every Namespace it runs containers or holds volumes for.
+ */
+namespaces: Array<Namespace>, };
+
 export type ServerRow = {
 /**
  * The Machine whose work this row records, independent of its display name.
@@ -3283,6 +3375,10 @@ started_at: number | null,
  * When it finished, in Unix seconds.
  */
 finished_at: number | null, } & ({ "state": "pending" } | { "state": "running", phase: RowPhase, } | { "state": "completed" } | { "state": "failed", reason: string, cause: Array<string>, step: FailedAt | null, log: LogText | null, } | { "state": "not_attempted" } | { "state": "unknown" });
+
+export type ServerState = "online" | "offline" | "removing";
+
+export type ServersAnswer = { servers: Array<ServerReport>, seen: Freshness, };
 
 export type ServiceAttempt = {
 /**
@@ -3483,6 +3579,8 @@ export type ServiceTemplate = { id: ServiceTemplateId,
 version: number, };
 
 export type ServiceTemplateId = string;
+
+export type ServiceVerb = "restart" | "start" | "stop";
 
 export type ServiceView = {
 /**
@@ -3698,6 +3796,8 @@ export type SnapshotGuid = string;
 
 export type SnapshotName = string;
 
+export type Source = "server" | "cloud_cache";
+
 export type SourceContainerRequest = { switch: Switch, name: DockerVolumeName, container_id: ContainerId, };
 
 export type SourceKind = "empty" | "uploaded" | "git" | "image";
@@ -3705,6 +3805,8 @@ export type SourceKind = "empty" | "uploaded" | "git" | "image";
 export type Start = { deployment: DeploymentId, };
 
 export type StayReason = { "kind": "unobserved", server: MachineRef, } | { "kind": "mid_rollout" } | { "kind": "global" } | { "kind": "bind_mount", server: MachineRef, } | { "kind": "volume", server: MachineRef, } | { "kind": "no_destination", detail: string, };
+
+export type Step = { "step": "read", asks: Array<Ask>, } | { "step": "write", write: Write, } | { "step": "wait", ms: number, then: Array<Ask>, } | { "step": "done", result: ToolResult, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 
@@ -3764,6 +3866,10 @@ message: string, } | { "code": "volume_size_conflict",
 name: DockerVolumeName, };
 
 export type StorageChoice = "none" | "zfs";
+
+export type StoreAt = "cloud" | "local";
+
+export type Subject = { "kind": "server", machine: MachineId, } | { "kind": "service", environment: EnvironmentId, service: ServiceName, } | { "kind": "volume", volume: VolumeId, } | { "kind": "leftover", namespace: Namespace, };
 
 export type Sweep = {
 /**
@@ -3993,6 +4099,14 @@ bridge: BridgeEndpointCapacity, };
 
 export type TemplateWarning = { kind: 'missing', ownerId: string | null, key: string, };
 
+export type Timestamp = number;
+
+export type ToolDef = { name: string, description: string, input_schema: JsonValue, output_schema: JsonValue, read_only: boolean, gate: Gate, };
+
+export type ToolFix = { "fix": "use_cloud" } | { "fix": "connect_servers" } | { "fix": "open_dashboard", page: DashboardPage, } | { "fix": "update_client" } | { "fix": "server_remove", server: MachineName, };
+
+export type ToolResult = { ok: true, value: JsonValue } | { ok: false, refusal: Refusal };
+
 export type TransportProtocol = "tcp" | "udp";
 
 export type TypedAddresses = {
@@ -4067,6 +4181,12 @@ export type VolumeAttachment = { volumeResourceId: string, mountPath: string, };
 
 export type VolumeConfig = { version: 2, name: string, storage: VolumeKind, };
 
+export type VolumeCopies = { volume: VolumeName,
+/**
+ * The Server with its writable copy.
+ */
+writer: ServerRef | null, mirror: Mirror | null, };
+
 export type VolumeCopy = { "kind": "root", writer: WriterMarker, readonly: boolean, newest: Snapshot | null, } | { "kind": "slot", mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, resume_token: string | null, };
 
 export type VolumeCopyView = { copy: VolumeCopy | null, lease: LeaseRecord | null, };
@@ -4140,6 +4260,8 @@ volume: VolumeName, };
 export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome, };
 
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
+
+export type VolumeRun = { "run": "mirror", to: ServerRef, full: boolean, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
 
 export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned",
 /**
@@ -4279,5 +4401,9 @@ export type WireGuardPublicKey = Array<number>;
 
 export type Withheld = "no_secret_context" | "unanswered";
 
+export type Write = { "at": "store", "write": ConfigCommand } | { "at": "act", "write": Act };
+
 export type WriterMarker = { "phase": "idle" } | { "phase": "stopping" } | { "phase": "frozen", guid: SnapshotGuid, } | { "phase": "thawing" } | { "phase": "handed", guid: SnapshotGuid, };
+
+export type Writes = "none" | "committed" | "unknown";
 

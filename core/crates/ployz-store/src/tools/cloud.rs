@@ -4,20 +4,21 @@
 
 use ployz_core::{MachineId, Namespace, ServiceName};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::logs::LogText;
 use super::step::{AttemptId, Freshness, ServerName, ServerRef, Timestamp};
 use crate::{DeploymentId, VolumeName};
 
 /// The answer to `CloudQuery::Servers`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServersAnswer {
     pub servers: Vec<ServerReport>,
     pub seen: Freshness,
 }
 
 /// One Server as it last reported.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServerReport {
     pub machine: MachineId,
     pub name: ServerName,
@@ -42,7 +43,7 @@ impl ServerReport {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerState {
     Online,
@@ -50,14 +51,14 @@ pub enum ServerState {
     Removing,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Disk {
     pub used_bytes: u64,
     pub total_bytes: u64,
 }
 
 /// The answer to `CloudQuery::Containers`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ContainersAnswer {
     pub containers: Vec<ContainerReport>,
     /// The Servers asked; `seen.unanswered` names those that did not answer.
@@ -66,7 +67,7 @@ pub struct ContainersAnswer {
 }
 
 /// One container of a Service, by the runtime name its containers carry.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ContainerReport {
     pub server: ServerName,
     pub service: ServiceName,
@@ -78,7 +79,7 @@ pub struct ContainerReport {
     pub deployment: Option<DeploymentId>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerState {
     Created,
@@ -89,7 +90,7 @@ pub enum ContainerState {
     Dead,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Health {
     Starting,
@@ -98,27 +99,27 @@ pub enum Health {
 }
 
 /// The answer to `CloudQuery::Logs`: each Server's lines, already scrubbed.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct LogsAnswer {
     pub servers: Vec<ServerLog>,
     pub seen: Freshness,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServerLog {
     pub server: ServerName,
     pub text: LogText,
 }
 
 /// The answer to `CloudQuery::Copies`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct CopiesAnswer {
     pub volumes: Vec<VolumeCopies>,
     pub seen: Freshness,
 }
 
 /// Where one Volume's data is.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeCopies {
     pub volume: VolumeName,
     /// The Server with its writable copy.
@@ -126,14 +127,14 @@ pub struct VolumeCopies {
     pub mirror: Option<Mirror>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Mirror {
     pub server: ServerRef,
     pub synced_at: Option<Timestamp>,
 }
 
 /// The answer to `CloudQuery::Operations`, newest first.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct OperationsAnswer {
     pub operations: Vec<Operation>,
 }
@@ -144,7 +145,7 @@ pub struct OperationsAnswer {
 /// A refused act carries, in its details: `run` for the run already going,
 /// `writes` when the reply was lost, `fix`, and for a release after the
 /// handover `move_to`, the server the move hands the Volume to.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Operation {
     pub attempt: AttemptId,
     /// What was asked, in words, e.g. `restart web`.
@@ -159,7 +160,7 @@ pub struct Operation {
     pub unanswered: Vec<ServerName>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
     Accepted,
@@ -179,7 +180,7 @@ impl RunState {
 }
 
 /// What one Server did for an operation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Leg {
     pub server: ServerName,
     pub stopped: Option<Receipt>,
@@ -188,7 +189,7 @@ pub struct Leg {
 }
 
 /// Whether a Server confirmed a step. A missing receipt is `unknown`, never `no`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Receipt {
     Yes,
@@ -196,7 +197,7 @@ pub enum Receipt {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Kept {
     pub service: ServiceName,
     pub why: String,

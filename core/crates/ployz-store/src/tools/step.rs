@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ployz_core::{MachineId, MachineName, Namespace, ServiceName};
+use ployz_core::{MachineId, MachineName, Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use super::LineCap;
@@ -19,8 +20,25 @@ use crate::{Command, DeploymentId, EnvironmentId, Query, VolumeId, VolumeName};
 /// A Server's name. Machine names stand in until Servers get their own.
 pub type ServerName = MachineName;
 
+/// One ask's answer as it crosses a process boundary, in the order the asks came.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Answer {
+    Value(Value),
+    Error(RpcError),
+}
+
+impl From<Answer> for Result<Value, RpcError> {
+    fn from(answer: Answer) -> Self {
+        match answer {
+            Answer::Value(value) => Ok(value),
+            Answer::Error(error) => Err(error),
+        }
+    }
+}
+
 /// What a tool needs next, or what it answered.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub enum Step {
     /// Answer every ask, in order, then resume.
@@ -52,7 +70,7 @@ impl WriteSlot {
 }
 
 /// One read a step needs answered.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "at", content = "ask", rename_all = "snake_case")]
 pub enum Ask {
     /// A Config Store query.
@@ -62,7 +80,7 @@ pub enum Ask {
 }
 
 /// The one write a call may make.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "at", content = "write", rename_all = "snake_case")]
 pub enum Write {
     /// A Config Store command.
@@ -72,7 +90,7 @@ pub enum Write {
 }
 
 /// A question Cloud answers from GitHub or from its Servers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "query", rename_all = "snake_case")]
 pub enum CloudQuery {
     GithubTree(GithubTreeQuery),
@@ -97,7 +115,7 @@ pub enum CloudQuery {
 }
 
 /// Log lines of one Service's containers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct LogsQuery {
     pub environment: EnvironmentId,
     pub namespace: Namespace,
@@ -105,11 +123,12 @@ pub struct LogsQuery {
     pub deployment: Option<DeploymentId>,
     pub server: Option<ServerRef>,
     pub lines: LineCap,
+    #[ts(type = "{ secs: number, nanos: number } | null")]
     pub since: Option<Duration>,
 }
 
 /// Recent operations on one subject.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct OperationsQuery {
     pub subject: Subject,
     pub attempt: Option<AttemptId>,
@@ -117,7 +136,7 @@ pub struct OperationsQuery {
 }
 
 /// What an operation ran on.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Subject {
     Server {
@@ -136,14 +155,14 @@ pub enum Subject {
 }
 
 /// A Server by ID, with the name it had when the call read it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServerRef {
     pub machine: MachineId,
     pub name: ServerName,
 }
 
 /// An operation Cloud runs once per attempt.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Act {
     pub attempt: AttemptId,
     pub digest: BodyDigest,
@@ -151,7 +170,7 @@ pub struct Act {
 }
 
 /// What an [`Act`] does.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
     Service {
@@ -180,7 +199,7 @@ pub enum Action {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceVerb {
     Restart,
@@ -188,7 +207,7 @@ pub enum ServiceVerb {
     Stop,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "run", rename_all = "snake_case")]
 pub enum VolumeRun {
     Mirror { to: ServerRef, full: bool },
@@ -199,7 +218,7 @@ pub enum VolumeRun {
 }
 
 /// Volumes whose data a caller accepted losing, bound to the version it read.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct AcceptedLoss {
     pub volumes: Vec<String>,
     pub version: String,
@@ -229,7 +248,7 @@ impl AcceptedLoss {
 }
 
 /// Who asks a human, if anyone.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Gate {
     Never,
@@ -305,8 +324,9 @@ impl From<RequestKey> for String {
 }
 
 /// One attempt at a write, the same for every retry with the same key.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
+#[ts(type = "string")]
 pub struct AttemptId(Uuid);
 
 impl AttemptId {
@@ -338,8 +358,9 @@ impl std::fmt::Display for AttemptId {
 
 /// The SHA-256 of a call's canonical input, without its wait and key: a reused
 /// key with another body is a conflict.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
 pub struct BodyDigest([u8; 32]);
 
 impl BodyDigest {
@@ -395,12 +416,12 @@ fn canonical(value: &Value) -> Value {
 }
 
 /// Seconds since the Unix epoch.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct Timestamp(pub i64);
 
 /// How fresh an answer from Servers is.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Freshness {
     pub seen_by: Option<ServerName>,
     pub observed_at: Option<Timestamp>,
@@ -410,7 +431,7 @@ pub struct Freshness {
     pub unanswered: Vec<ServerName>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Server,
@@ -418,8 +439,9 @@ pub enum Source {
 }
 
 /// What a human does to unblock a refusal, when no tool can.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "fix", rename_all = "snake_case")]
+#[ts(rename = "ToolFix")]
 pub enum Fix {
     UseCloud,
     ConnectServers,
@@ -428,7 +450,7 @@ pub enum Fix {
     ServerRemove { server: ServerName },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DashboardPage {
     Projects,

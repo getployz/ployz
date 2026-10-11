@@ -149,6 +149,17 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::ReceiveView>();
     declarations.add::<ployz_core::SwitchReply>();
     declarations.add::<ployz_core::SwitchError>();
+    declarations.add::<ployz_store::tools::ToolDef>();
+    declarations.add::<ployz_store::tools::Place>();
+    declarations.add::<ployz_store::tools::Step>();
+    declarations.add::<ployz_store::tools::Refusal>();
+    declarations.add::<ployz_store::tools::Fix>();
+    declarations.add::<ployz_store::tools::Answer>();
+    declarations.add::<ployz_store::tools::cloud::ServersAnswer>();
+    declarations.add::<ployz_store::tools::cloud::ContainersAnswer>();
+    declarations.add::<ployz_store::tools::cloud::LogsAnswer>();
+    declarations.add::<ployz_store::tools::cloud::CopiesAnswer>();
+    declarations.add::<ployz_store::tools::cloud::OperationsAnswer>();
 
     let mut out = String::from(HEADER);
     for declaration in declarations.by_name.values() {

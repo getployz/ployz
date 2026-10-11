@@ -4,12 +4,14 @@
 use ployz_core::{RpcError, RpcErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use ts_rs::TS;
 
 use super::step::{DashboardPage, Fix};
 
 /// A tool's answer.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(into = "Wire", try_from = "Wire")]
+#[ts(type = "{ ok: true, value: JsonValue } | { ok: false, refusal: Refusal }")]
 pub enum ToolResult {
     Ok(Value),
     Refused(Box<Refusal>),
@@ -54,7 +56,7 @@ impl TryFrom<Wire> for ToolResult {
 }
 
 /// A tool and its input.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Call {
     pub tool: String,
     pub input: Value,
@@ -80,7 +82,7 @@ impl Call {
 }
 
 /// Whether a refused call wrote anything.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Writes {
     None,
@@ -90,7 +92,7 @@ pub enum Writes {
 
 /// Why a call did not answer, and what to call instead. The message names
 /// things but never echoes a value the caller sent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Refusal {
     pub code: RpcErrorCode,
     pub message: String,

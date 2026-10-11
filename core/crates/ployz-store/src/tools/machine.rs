@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use ts_rs::TS;
 
 use super::cloud::Operation;
 use super::refusal::{Call, Refusal, ToolResult, Writes, from_store};
@@ -29,7 +30,7 @@ pub const WAIT_CAP_SECONDS: u32 = 300;
 
 /// Where a call runs: the Environment open in the client, and which Store
 /// answers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Place {
     pub project: Option<ProjectName>,
     pub environment: Option<EnvironmentName>,
@@ -37,7 +38,7 @@ pub struct Place {
 }
 
 /// Which Store a call reaches.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StoreAt {
     /// Ployz Cloud: it also answers about Servers and GitHub.
@@ -111,7 +112,7 @@ pub(crate) trait Tool: DeserializeOwned + JsonSchema {
 }
 
 /// What a model is told about one tool.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
 pub struct ToolDef {
     pub name: &'static str,
     pub description: String,

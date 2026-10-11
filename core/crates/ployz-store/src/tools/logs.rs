@@ -87,8 +87,9 @@ impl fmt::Debug for SecretSet {
 }
 
 /// How many of the newest lines an excerpt keeps.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "u16", into = "u16")]
+#[ts(type = "number")]
 pub struct LineCap(u16);
 
 impl TryFrom<u16> for LineCap {
