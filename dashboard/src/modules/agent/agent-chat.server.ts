@@ -20,6 +20,7 @@ import { type AnthropicTextProviderOptions, createAnthropicChat } from "@tanstac
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
+import { agentTracing, generationEvents } from "#/modules/agent/agent-telemetry.server";
 import {
   AGENT,
   AGENT_COMMANDS,
@@ -41,6 +42,7 @@ import {
 } from "#/modules/agent/persistence.server";
 import { latestPageContext, PageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
+import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { StoreCall, StoreRefusal } from "#/modules/config-store/store.contract";
@@ -468,6 +470,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
   const scope: AgentScope = { organizationId: caller.organization.id, userId: caller.userId };
   const persistence = yield* agentPersistence(scope);
   const { adapter, modelOptions }: AgentModel = model === undefined ? yield* agentModel : { adapter: model };
+  const posthog = yield* PostHog;
   const { resume } = request;
   // A page the client sent malformed is no page: the turn still answers.
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
@@ -481,7 +484,8 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
       runId: request.runId,
       tools: agentTools(caller, run, request.runId),
       systemPrompts: [systemPrompt(caller)],
-      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run), limit.middleware],
+      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run), limit.middleware,
+        agentTracing, generationEvents(posthog, caller)],
       interrupts: [approvalInterrupt],
       agentLoopStrategy: maxIterations(STEP_LIMIT),
     };

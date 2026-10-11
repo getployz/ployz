@@ -1,13 +1,14 @@
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ConfigStore } from "@ployz/sdk";
 import { reconstructChat } from "@tanstack/ai-persistence";
-import { type AnyTextAdapter, EventType, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
+import { type AnyTextAdapter, EventType, type TokenUsage, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { fakeText } from "@tanstack/ai/testing";
 import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
+import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -1146,4 +1147,53 @@ it.live("a member who stops a reply mid-stream ends the run, and the thread answ
     expect(yield* Effect.promise(() => persistence.stores.runs.findActiveRun(THREAD))).toBeNull();
     model.setResponses([{ text: "Short, then." }]);
     expect((yield* say("shorter please", {}, model)).said).toBe("Short, then.");
+  }));
+
+it.live("each model call tells PostHog its tokens once, cache reads and writes apart from the rest, and none of the words", () =>
+  Effect.gen(function* () {
+    const { caller, say } = yield* sidebar({ removeWeb: false });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const model = fakeText({ cache: true });
+    const reported: TokenUsage[] = [];
+    const stream = model.chatStream.bind(model);
+    model.chatStream = async function* (options) {
+      for await (const chunk of stream(options)) {
+        if (chunk.type === EventType.RUN_FINISHED && chunk.usage !== undefined && !Array.isArray(chunk.usage)) reported.push(chunk.usage);
+        yield chunk;
+      }
+    };
+    model.setResponses([{ text: "Two services." }, { text: "Still two." }]);
+    yield* say("count services", {}, model).pipe(Effect.provideService(PostHog, sink));
+    yield* say("count them again", {}, model).pipe(Effect.provideService(PostHog, sink));
+
+    expect(reported[1]?.promptTokensDetails?.cachedTokens).toBeGreaterThan(0);
+    expect(captured).toEqual(reported.map((usage, index) => {
+      const cacheRead = usage.promptTokensDetails?.cachedTokens ?? 0;
+      const cacheWrite = usage.promptTokensDetails?.cacheWriteTokens ?? 0;
+      return {
+        userId: caller.userId,
+        organizationId: ORGANIZATION,
+        event: "$ai_generation",
+        properties: {
+          $ai_trace_id: `run-${index + 1}`,
+          $ai_session_id: THREAD,
+          $ai_span_id: expect.any(String),
+          $ai_provider: "fake",
+          $ai_model: "fake-model",
+          $ai_input_tokens: usage.promptTokens - cacheRead - cacheWrite,
+          $ai_output_tokens: usage.completionTokens,
+          $ai_cache_read_input_tokens: cacheRead,
+          $ai_cache_creation_input_tokens: cacheWrite,
+          $ai_cache_reporting_exclusive: true,
+          $ai_latency: expect.any(Number),
+          $ai_stream: true,
+        },
+      };
+    }));
+    expect(JSON.stringify(captured)).not.toMatch(/count|services|two/i);
   }));
