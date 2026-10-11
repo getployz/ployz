@@ -171,7 +171,9 @@ fn add_server(
     let add = crate::cli::command()
         .try_get_matches_from(args)
         .map_err(|error| super::clap_usage(&error))?;
-    let handler = super::handler_for("server add").expect("server add has a handler");
+    let handler = super::handler_for("server add")
+        .expect("server add has a handler")
+        .run;
     let (added, server) = crate::ui::captured(|| handler(&add));
     added?;
     Ok(server)

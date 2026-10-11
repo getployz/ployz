@@ -18,6 +18,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createdAt, type JsonObject, updatedAt } from "#/db/tables";
 import { organization } from "#/modules/organization/tables";
+import { FAILURE_CLASSES, type FailureClass } from "./uptime-status";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
@@ -41,6 +42,8 @@ export const uptimeCheck = pgTable(
     // node_id): a trigger the Store open attaches deletes it with that row, environment deletes included.
     environmentId: text("environment_id").notNull(),
     serviceId: text("service_id").notNull(),
+    // When a deploy or Check now last asked for a probe. Writing it leaves revision alone, so it never closes an incident.
+    probeRequestedAt: timestamptz("probe_requested_at"),
     createdAt,
     updatedAt,
   },
@@ -116,6 +119,15 @@ export const uptimeAlert = pgTable(
   ],
 );
 
+/**
+ * What the dashboard calls each probe region, written by the control plane at boot from UPTIME_REGIONS. Probe rows keep
+ * the code, so a rename relabels history. A region no longer configured keeps its row, and with it its label.
+ */
+export const uptimeRegion = pgTable("uptime_region", {
+  region: text("region").primaryKey(),
+  name: text("name"),
+});
+
 export const uptimeResult = pgTable(
   "uptime_result",
   {
@@ -123,7 +135,7 @@ export const uptimeResult = pgTable(
     organizationId: uuid("organization_id").notNull(),
     region: text("region").notNull(),
     scheduledAt: timestamptz("scheduled_at").notNull(),
-    kind: text("kind").notNull().$type<"routine" | "confirm" | "recheck">(),
+    kind: text("kind").notNull().$type<"routine" | "confirm" | "recheck" | "triggered">(),
     startLagMs: integer("start_lag_ms").notNull(),
     verdict: text("verdict").notNull().$type<"pass" | "fail" | "inconclusive">(),
     // 0 when there was no HTTP response.
@@ -149,7 +161,7 @@ export const uptimeResult = pgTable(
       foreignColumns: [uptimeCheck.id, uptimeCheck.organizationId],
     }).onDelete("cascade"),
     index("uptime_result_scheduled_brin").using("brin", table.scheduledAt),
-    check("uptime_result_kind_check", sql`${table.kind} in ('routine', 'confirm', 'recheck')`),
+    check("uptime_result_kind_check", sql`${table.kind} in ('routine', 'confirm', 'recheck', 'triggered')`),
     check("uptime_result_verdict_check", sql`${table.verdict} in ('pass', 'fail', 'inconclusive')`),
     check("uptime_result_phase_check", sql`${table.failedPhase} in ('none', 'dns', 'connect', 'tls', 'request')`),
   ],
@@ -169,10 +181,28 @@ export const uptimeResultHourly = pgTable(
     passMsSum: bigint("pass_ms_sum", { mode: "number" }).notNull(),
     passMsMax: integer("pass_ms_max").notNull(),
     passMsP50: integer("pass_ms_p50"),
-    passMsP95: integer("pass_ms_p95"),
+    dnsMsSum: bigint("dns_ms_sum", { mode: "number" }).default(0).notNull(),
+    connectMsSum: bigint("connect_ms_sum", { mode: "number" }).default(0).notNull(),
+    tlsMsSum: bigint("tls_ms_sum", { mode: "number" }).default(0).notNull(),
+    ttfbMsSum: bigint("ttfb_ms_sum", { mode: "number" }).default(0).notNull(),
+    // `failures` split by FAILURE_CLASSES. Hours rolled up before these columns existed read 0 in each.
+    failuresStatus: integer("failures_status").default(0).notNull(),
+    failuresTimeout: integer("failures_timeout").default(0).notNull(),
+    failuresRefused: integer("failures_refused").default(0).notNull(),
+    failuresDns: integer("failures_dns").default(0).notNull(),
+    failuresConnect: integer("failures_connect").default(0).notNull(),
+    failuresTls: integer("failures_tls").default(0).notNull(),
+    failuresOther: integer("failures_other").default(0).notNull(),
+    lastError: text("last_error"),
+    lastErrorClass: text("last_error_class").$type<FailureClass>(),
+    lastErrorAt: timestamptz("last_error_at"),
   },
   (table) => [
     primaryKey({ columns: [table.checkId, table.region, table.hour] }),
+    check("uptime_result_hourly_last_error_check", sql`(${table.lastError} is null) = (${table.lastErrorClass} is null)
+      and (${table.lastError} is null) = (${table.lastErrorAt} is null)`),
+    check("uptime_result_hourly_last_error_class_check",
+      sql`${table.lastErrorClass} in (${sql.raw(FAILURE_CLASSES.map((cls) => `'${cls}'`).join(", "))})`),
     foreignKey({
       name: "uptime_result_hourly_check_fk",
       columns: [table.checkId, table.organizationId],

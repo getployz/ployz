@@ -9,3 +9,4 @@ GRANT SELECT, INSERT, UPDATE (closed_at, closed_by) ON uptime_incident TO uptime
 GRANT SELECT, INSERT ON uptime_alert TO uptime_control;
 GRANT INSERT ON uptime_result TO uptime_control;
 GRANT SELECT, INSERT ON organization_change TO uptime_control;
+GRANT SELECT, INSERT, UPDATE (name) ON uptime_region TO uptime_control;

@@ -6,6 +6,7 @@
 //!
 //! Mirror, Sync and Mirror removal are Volume runs in Ployz Cloud; see [`run`].
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::VolumeKind;
 use ployz_core::{
@@ -82,20 +83,20 @@ pub(crate) fn command() -> Command {
         .subcommand(run::runs_command())
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "add" => add,
-        "set" => set,
-        "inspect" => inspect,
-        "ls" => list,
-        "rename" => rename,
-        "rm" => remove,
-        "mirror" => run::mirror,
-        "mirror rm" => run::remove_mirror,
-        "sync" => run::sync,
-        "move" => run::move_volume,
-        "release" => run::release,
-        "runs" => run::runs,
+        "add" => cloud(Never, add),
+        "set" => cloud(Never, set),
+        "inspect" => cloud(Never, inspect),
+        "ls" => cloud(Never, list),
+        "rename" => cloud(Never, rename),
+        "rm" => cloud(Never, remove),
+        "mirror" => cloud(Never, run::mirror),
+        "mirror rm" => cloud(Always, run::remove_mirror),
+        "sync" => cloud(Never, run::sync),
+        "move" => cloud(Never, run::move_volume),
+        "release" => cloud(Never, run::release),
+        "runs" => cloud(Never, run::runs),
         _ => return None,
     })
 }
