@@ -10,10 +10,7 @@ import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
 import { parseDisplayToParts } from "#/modules/variables/variable-template";
-import type { VariableRecord } from "#/modules/variables/variables";
-
-/** A variable's name, as the Store takes it (the settings catalog's `env` keys). */
-const VARIABLE_KEY = /^[A-Z_][A-Z0-9_]{0,127}$/u;
+import { variableKeyError, type VariableRecord } from "#/modules/variables/variables";
 import type { VariableAddInput } from "#/components/variables/variables-panel";
 
 type VariableAddFormDefaults = {
@@ -116,8 +113,7 @@ export function VariableAddForm({
   }
 
   const typedKey = state.key.trim().toUpperCase();
-  const keyError = typedKey && !VARIABLE_KEY.test(typedKey)
-    ? "Use letters, digits and underscores, not starting with a digit (at most 128)." : null;
+  const keyError = typedKey ? variableKeyError(typedKey) : null;
   const valueError = state.sealed
     ? state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null
     : referenceError(state.value, serviceNames);

@@ -26,3 +26,11 @@ export type VariableWriter = {
   update(variableId: string, updater: (draft: VariableRecord) => void): { isPersisted: { promise: Promise<unknown> } };
   delete(variableId: string): { isPersisted: { promise: Promise<unknown> } };
 };
+
+/** A variable's name, as the Store takes it (the settings catalog's `env` keys). */
+const VARIABLE_KEY = /^[A-Z_][A-Z0-9_]{0,127}$/u;
+
+/** Why `key`, typed and uppercased, can't name a variable; null when it can. */
+export function variableKeyError(key: string) {
+  return VARIABLE_KEY.test(key) ? null : "Use letters, digits and underscores, not starting with a digit (at most 128).";
+}
