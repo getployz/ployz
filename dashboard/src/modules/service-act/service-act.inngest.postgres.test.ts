@@ -25,7 +25,7 @@ describe("act-service", () => {
   let harness: PostgresTestHarness;
   let copies: ServiceCopies;
   let calls: string[];
-  let answer: (call: string) => Effect.Effect<void, PloyzSdkError>;
+  let answer: (call: string) => Effect.Effect<boolean, PloyzSdkError>;
 
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient>) =>
     harness.runEffect(operation.pipe(
@@ -34,7 +34,7 @@ describe("act-service", () => {
         cancel: () => Effect.void,
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           observeService: () => Effect.succeed(copies),
-          stopContainer: (_machine: string, container: string) => { calls.push(`stop ${container}`); return answer(`stop ${container}`); },
+          stopContainer: (_machine: string, container: string) => { calls.push(`stop ${container}`); return answer(`stop ${container}`).pipe(Effect.asVoid); },
           startContainer: (_machine: string, container: string) => { calls.push(`start ${container}`); return answer(`start ${container}`); },
         }) }),
       }),
@@ -57,13 +57,13 @@ describe("act-service", () => {
   beforeEach(async () => {
     copies = {
       copies: [
-        { server: "alpha", machine: "m-alpha", container: "web-a", state: "running" },
-        { server: "beta", machine: "m-beta", container: "web-b", state: "running" },
+        { server: "alpha", machine: "m-alpha", container: "web-a", state: "running", hook: false },
+        { server: "beta", machine: "m-beta", container: "web-b", state: "running", hook: false },
       ],
       unanswered: [],
     };
     calls = [];
-    answer = () => Effect.void;
+    answer = () => Effect.succeed(true);
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
     await harness.pool.query(`
@@ -106,7 +106,7 @@ describe("act-service", () => {
   it("still starts a Container whose stop the Server never answered, and ends unknown", async () => {
     answer = (call) => call === "stop web-b"
       ? Effect.fail(new PloyzProviderError({ operation: "stop container", cause: { code: "unavailable", message: "gone" } }))
-      : Effect.void;
+      : Effect.succeed(true);
     const admitted = await request("restart");
     if (!admitted.ok) throw new Error("refused");
 
@@ -121,7 +121,7 @@ describe("act-service", () => {
   it("still starts a Container whose stop failed", async () => {
     answer = (call) => call === "stop web-a"
       ? Effect.fail(new PloyzProviderError({ operation: "stop container", cause: { code: "internal", message: "no" } }))
-      : Effect.void;
+      : Effect.succeed(true);
     const admitted = await request("restart");
     if (!admitted.ok) throw new Error("refused");
 
@@ -133,7 +133,7 @@ describe("act-service", () => {
   it("stops rolling when a Server's Container doesn't come back, leaving later Servers untouched", async () => {
     answer = (call) => call === "start web-a"
       ? Effect.fail(new PloyzProviderError({ operation: "start container", cause: { code: "unavailable", message: "gone" } }))
-      : Effect.void;
+      : Effect.succeed(true);
     const admitted = await request("restart");
     if (!admitted.ok) throw new Error("refused");
 
@@ -149,11 +149,44 @@ describe("act-service", () => {
     });
   });
 
+  it("stops rolling when a restarted Container starts but isn't serving", async () => {
+    answer = (call) => Effect.succeed(call !== "start web-a");
+    const admitted = await request("restart");
+    if (!admitted.ok) throw new Error("refused");
+
+    expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "unknown" });
+    expect(calls).toEqual(["stop web-a", "start web-a"]);
+    expect(await operation(admitted.id)).toMatchObject({
+      reason: "alpha didn't come back, so Cloud left beta alone.",
+      servers: [
+        { server: "alpha", stopped: "yes", started: "unknown", reason: "alpha started it, but it isn't serving." },
+        { server: "beta", stopped: null, started: null, reason: null },
+      ],
+    });
+  });
+
+  it("stops a Service's hook Containers with it, and never starts them", async () => {
+    copies.copies.splice(1, 0, { server: "alpha", machine: "m-alpha", container: "hook-a", state: "running", hook: true });
+    const restarted = await request("restart");
+    if (!restarted.ok) throw new Error("refused");
+
+    expect((await act(restarted.id)).result).toEqual({ actId: restarted.id, state: "done" });
+    expect(calls).toEqual(["stop web-a", "stop hook-a", "start web-a", "stop web-b", "start web-b"]);
+
+    calls = [];
+    copies.copies = copies.copies.map((copy) => ({ ...copy, state: "exited" }));
+    const started = await request("start");
+    if (!started.ok) throw new Error("refused");
+
+    expect((await act(started.id, "run-start")).result).toEqual({ actId: started.id, state: "done" });
+    expect(calls).toEqual(["start web-a", "start web-b"]);
+  });
+
   it("never asks again for a stop a crashed step already sent", async () => {
     const admitted = await request("stop");
     if (!admitted.ok) throw new Error("refused");
     const sent: ServiceActLeg[] = [
-      { server: "alpha", machine: "m-alpha", container: "web-a", stop: "sent", start: null, reason: null },
+      { server: "alpha", machine: "m-alpha", container: "web-a", hook: false, stop: "sent", start: null, reason: null },
     ];
     await harness.pool.query(
       `update service_act set state = 'running', inngest_run_id = 'run-1', started_at = now(), before = $2, legs = $3 where id = $1`,

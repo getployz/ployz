@@ -1257,6 +1257,12 @@ pub(crate) fn preparation_error(
     }
 }
 
+/// The mock Machine RPC the SDK's flow tests share with `tests/deploy_client`.
+#[cfg(test)]
+#[path = "../tests/deploy_client/support.rs"]
+#[allow(dead_code)]
+mod test_support;
+
 #[cfg(test)]
 #[path = "sdk_tests.rs"]
 mod preparation_tests;

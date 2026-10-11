@@ -49,7 +49,6 @@ pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let config = super::config_path(leaf_matches(root))?;
-    let at = super::link::scope_from_env(&config)?.at();
     let local = if store::local_mode() {
         store::backend_at(&config)?
     } else {
@@ -59,6 +58,17 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         Some(store::Backend::Local(store, who)) => (Store::Local(store, who), StoreAt::Local),
         _ => (Store::Cloud, StoreAt::Cloud),
     };
+    let linked = config.clone();
+    // Like each CLI command, each call reads the link, so `ployz link` or
+    // `ployz org use` takes effect on the next call.
+    let place: Locate = Box::new(move || {
+        let at = super::link::scope_from_env(&linked)?.at();
+        Ok(Place {
+            project: at.project,
+            environment: at.environment,
+            store: store_at,
+        })
+    });
     let server = Server::new(
         Account {
             config,
@@ -66,11 +76,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
             cloud: std::env::var(crate::cli::env::CLOUD_URL).ok(),
         },
         store,
-        Place {
-            project: at.project,
-            environment: at.environment,
-            store: store_at,
-        },
+        place,
     );
     let runtime = super::runtime()?;
     let served = runtime.block_on(async {
@@ -267,6 +273,19 @@ fn written(answer: Result<Value, StoreCallError>) -> Result<Value, RpcError> {
     })
 }
 
+/// A write ployz mcp stopped waiting for after sending it.
+fn cut_off(tool: &str, deadline: Duration) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: format!(
+            "Stopped waiting for `{tool}` after {}; Ployz Cloud may still take what it sent",
+            span(deadline)
+        ),
+        details: json!({ "writes": "unknown" }),
+        cause: Vec::new(),
+    }
+}
+
 /// Whether Cloud may have acted on a request that failed this way.
 fn may_have_landed(error: &LoginError) -> bool {
     match error {
@@ -298,10 +317,13 @@ fn not_here() -> RpcError {
     }
 }
 
+/// The Project and Environment a call acts on, read when the call starts.
+type Locate = Box<dyn Fn() -> Result<Place, Error> + Send + Sync>;
+
 struct Server {
     account: Account,
     store: Store,
-    place: Place,
+    place: Locate,
     deadline: Duration,
     session: String,
     keys: fn(&str, &RequestId, &str) -> String,
@@ -318,7 +340,7 @@ struct Account {
 }
 
 impl Server {
-    fn new(account: Account, store: Store, place: Place) -> Self {
+    fn new(account: Account, store: Store, place: Locate) -> Self {
         let catalog = tools::catalog();
         let gates = catalog.iter().map(|def| (def.name, def.gate)).collect();
         Self {
@@ -336,7 +358,10 @@ impl Server {
 
     async fn backend(&self) -> Result<Backend<'_>, String> {
         match &self.store {
-            Store::Local(store, who) => Ok(Backend::Local(store, who)),
+            // The in-process Store sweeps as each call starts, as each CLI command does.
+            Store::Local(store, who) => store::sweep(store, who)
+                .map(|()| Backend::Local(store, who))
+                .map_err(|error| Error::from(StoreCallError::Refused(error)).to_string()),
             Store::Cloud => cloud_account::credential(
                 &CredentialStore::beside(&self.account.config),
                 self.account.token.clone(),
@@ -450,8 +475,12 @@ impl ServerHandler for Server {
                 (step, held.state, Some((held.asked, answer)), held.until)
             }
             None => {
+                let place = match (self.place)() {
+                    Ok(place) => place,
+                    Err(error) => return Ok(refused(error.to_string()).into()),
+                };
                 let key = (self.keys)(&self.session, &context.id, tool);
-                let (step, state) = tools::start(tool, input.clone(), &self.place, &key);
+                let (step, state) = tools::start(tool, input.clone(), &place, &key);
                 (step, state, None, Instant::now() + self.deadline)
             }
         };
@@ -462,6 +491,8 @@ impl ServerHandler for Server {
             until,
         };
         tokio::select! {
+            // A write past the deadline settles to its refusal before the arm below fires.
+            biased;
             result = self.settle(&call, step, state, approval, answered, &context) => result,
             () = context.ct.cancelled() => {
                 Err(McpError::internal_error("the call was cancelled", None))
@@ -642,7 +673,15 @@ impl Server {
                                 Answer::Refused(refused) => return Ok(refused.into()),
                             }
                         }
-                        let written = call.backend.write(&write, approval.as_deref()).await;
+                        // Stopped once the write is sent, Cloud may still take it: the
+                        // refusal says so, and its retry repeats the call's key.
+                        let written = tokio::select! {
+                            biased;
+                            written = call.backend.write(&write, approval.as_deref()) => written,
+                            () = tokio::time::sleep_until(call.until) => {
+                                Err(cut_off(call.tool, self.deadline))
+                            }
+                        };
                         let asked = match (&written, call.backend) {
                             (Err(error), Backend::Cloud(_)) => Asked::of(error),
                             _ => None,

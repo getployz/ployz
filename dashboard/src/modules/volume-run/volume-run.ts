@@ -7,11 +7,14 @@ export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisf
 export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
+/** The sidebar also pins the Machine it resolved, so a renamed or reused Server name can't redirect the run. */
+type Destination = { readonly to: MachineName; readonly machine?: MachineId };
+
 export type VolumeRunArgs = {
-  mirror: { readonly to: MachineName };
+  mirror: Destination;
   sync: { readonly full: boolean };
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
-  move: { readonly to: MachineName };
+  move: Destination;
   release: Record<string, never>;
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
