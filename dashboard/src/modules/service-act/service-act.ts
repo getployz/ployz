@@ -38,15 +38,15 @@ export const takes = (leg: ServiceActLeg, side: "stop" | "start") => side === "s
 export const alreadyThere = (verb: ServiceVerb, side: "stop" | "start", state: ContainerState | undefined) =>
   side === "stop" ? state !== undefined && STOPPED.has(state) : verb === "start" && state === "running";
 
-export const serversOf = (legs: readonly ServiceActLeg[]) => [...new Set(legs.map(({ server }) => server))];
+export const machinesOf = (legs: readonly ServiceActLeg[]) => [...new Set(legs.map(({ machine }) => machine))];
 
 export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActState>; reason: string | null };
 
 const confirmed = (step: LegStep | null) => step === "done" || step === "already_there";
 
-/** A restart rolls on only once every copy on `server` is confirmed started again. */
-export const cameBack = (legs: readonly ServiceActLeg[], server: string) =>
-  legs.every((leg) => leg.server !== server || !takes(leg, "start") || confirmed(leg.start));
+/** A restart rolls on only once every copy on `machine` is confirmed started again. */
+export const cameBack = (legs: readonly ServiceActLeg[], machine: string) =>
+  legs.every((leg) => leg.machine !== machine || !takes(leg, "start") || confirmed(leg.start));
 
 /**
  * A Service-wide act never ends done while a Server didn't answer: its copies there may not have moved.
@@ -56,7 +56,7 @@ export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[], 
   const unanswered = only === null ? before.unanswered : before.unanswered.filter(({ machine }) => machine === only.machine);
   const silent = unanswered.length > 0 ? `${unanswered.map(({ name }) => name).join(", ")} didn't answer.` : null;
   if (legs.length === 0) return silent !== null ? { state: "unknown", reason: silent } : { state: "failed", reason: "No containers to move." };
-  const untouched = serversOf(legs.filter((leg) => leg.stop === null && leg.start === null));
+  const untouched = [...new Map(legs.filter((leg) => leg.stop === null && leg.start === null).map((leg) => [leg.machine, leg.server])).values()];
   const halted = untouched.length > 0 ? legs.find((leg) => leg.stop !== null && takes(leg, "start") && !confirmed(leg.start))?.server : undefined;
   const steps = legs.flatMap((leg) => [leg.stop, leg.start]);
   const reason = halted !== undefined
