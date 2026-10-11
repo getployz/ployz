@@ -36,7 +36,7 @@ use tokio::time::Instant;
 use super::{Error, leaf_matches, store};
 use crate::approval::{self, Asked, Subject, Verb};
 use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::CredentialStore;
+use crate::cloud_login::{CredentialStore, LoginError};
 use crate::failure::Failure;
 
 pub(crate) fn command() -> Command {
@@ -221,9 +221,9 @@ impl Backend<'_> {
                 .and_then(|written| value(&written)),
             (Self::Local(..), Write::Act(_)) => Err(not_here()),
             (Self::Cloud(credential), Write::Store(command)) => {
-                called(cloud_account::config_store(credential, "write", command, approval).await)
+                written(cloud_account::config_store(credential, "write", command, approval).await)
             }
-            (Self::Cloud(credential), Write::Act(act)) => called(
+            (Self::Cloud(credential), Write::Act(act)) => written(
                 cloud_account::approved_answer(
                     credential,
                     Method::POST,
@@ -248,6 +248,44 @@ fn called(answer: Result<Value, StoreCallError>) -> Result<Value, RpcError> {
             Error::from(error).report()
         }
     })
+}
+
+/// A write's answer. When Cloud may have taken the write but its reply was lost or
+/// unreadable, the refusal says `writes: unknown` so the retry repeats the call's key.
+fn written(answer: Result<Value, StoreCallError>) -> Result<Value, RpcError> {
+    let unknown = matches!(&answer, Err(StoreCallError::Cloud(error)) if may_have_landed(error));
+    called(answer).map_err(|mut error| {
+        if unknown {
+            if !error.details.is_object() {
+                error.details = json!({});
+            }
+            if let Value::Object(details) = &mut error.details {
+                details.insert("writes".to_owned(), json!("unknown"));
+            }
+        }
+        error
+    })
+}
+
+/// Whether Cloud may have acted on a request that failed this way.
+fn may_have_landed(error: &LoginError) -> bool {
+    match error {
+        LoginError::Unreachable { .. } | LoginError::Status { .. } | LoginError::Reply(_) => true,
+        LoginError::Unsupported(_)
+        | LoginError::Store { .. }
+        | LoginError::Corrupt { .. }
+        | LoginError::OtherCloud { .. }
+        | LoginError::SignedOut
+        | LoginError::Expired
+        | LoginError::Denied
+        | LoginError::Ended
+        | LoginError::AwaitingApproval { .. }
+        | LoginError::TokenRefused
+        | LoginError::NotMember(_)
+        | LoginError::TokenBound
+        | LoginError::UnknownOrganization(_)
+        | LoginError::UnknownCredential(_) => false,
+    }
 }
 
 /// The registry refuses Cloud tools on a local Store before asking; this guards the rest.

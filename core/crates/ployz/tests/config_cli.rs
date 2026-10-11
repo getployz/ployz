@@ -741,6 +741,8 @@ fn an_agent_creates_and_edits_an_image_service() {
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
             12
         );
+        // Read beside a Service, its domains show even when it has none.
+        assert_eq!(got.get("domains"), Some(&json!([])));
         assert_eq!(
             got.pointer("/settings/8"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
@@ -760,6 +762,7 @@ fn an_agent_creates_and_edits_an_image_service() {
         ok(store, &["unset", "web.replicas"]);
         let got = ok(store, &["get", "web.replicas"]);
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
+        assert_eq!(got.get("domains"), None);
 
         // Healthcheck and Private DNS set and unset like any Setting.
         let value = |path: &str| ok(store, &["get", path])["settings"][0]["value"].clone();
@@ -869,6 +872,34 @@ fn an_agent_adds_lists_renames_and_removes_services() {
                 .len(),
             1
         );
+    }
+}
+
+#[test]
+fn a_deployed_service_staged_for_removal_still_inspects() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        applied(store, "production");
+        ok(store, &["service", "rm", "web"]);
+
+        let inspected = ok(store, &["service", "inspect", "web"]);
+        assert_eq!(inspected["change"], json!("delete"), "{inspected}");
+        assert_eq!(inspected["values"]["image"], json!("nginx:1"));
+        assert_eq!(inspected["settings"], json!([]));
+        assert_eq!(inspected["domains"], json!([]));
     }
 }
 

@@ -1,7 +1,7 @@
 use std::io::{BufRead, Read, Write as _};
 use std::sync::mpsc::{Receiver, channel};
 
-use ployz_store::tools::Answer as Answered;
+use ployz_store::tools::{Answer as Answered, RequestKey};
 use ployz_store::{
     CreateProject, EnvironmentId, OrganizationId, ProjectId, ProjectName, SealingKey,
 };
@@ -114,6 +114,43 @@ fn is_write(path: &str) -> bool {
     matches!(path, "/api/config/write" | "/api/cli/agent/act")
 }
 
+/// One request read off `stream`, the connection left open for the reply.
+fn incoming(stream: &std::net::TcpStream) -> Seen {
+    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+    let mut request = String::new();
+    reader.read_line(&mut request).unwrap();
+    let (mut length, mut bearer, mut approval) = (0, String::new(), None);
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header).unwrap();
+        if header.trim().is_empty() {
+            break;
+        }
+        let header = header.to_ascii_lowercase();
+        if let Some(value) = header.strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+        if let Some(value) = header.strip_prefix("authorization: bearer ") {
+            value.trim().clone_into(&mut bearer);
+        }
+        if let Some(value) = header.strip_prefix("x-ployz-approval:") {
+            approval = Some(value.trim().to_owned());
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    Seen {
+        path: request
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned(),
+        approval,
+        bearer,
+        body: serde_json::from_slice(&body).unwrap(),
+    }
+}
+
 /// A Ployz Cloud that answers `script` and records each decision on an approval. With
 /// `asking`, a write without an approval gets that `approval_required` refusal, and one
 /// with an approval waits `slow` before its answer.
@@ -125,35 +162,12 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>, slow: Duration) 
         let mut decided = HashMap::new();
         for stream in listener.incoming() {
             let mut stream = stream.unwrap();
-            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
-            let mut request = String::new();
-            reader.read_line(&mut request).unwrap();
-            let (mut length, mut bearer, mut approval) = (0, String::new(), None);
-            loop {
-                let mut header = String::new();
-                reader.read_line(&mut header).unwrap();
-                if header.trim().is_empty() {
-                    break;
-                }
-                let header = header.to_ascii_lowercase();
-                if let Some(value) = header.strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap();
-                }
-                if let Some(value) = header.strip_prefix("authorization: bearer ") {
-                    value.trim().clone_into(&mut bearer);
-                }
-                if let Some(value) = header.strip_prefix("x-ployz-approval:") {
-                    approval = Some(value.trim().to_owned());
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            let body: Value = serde_json::from_slice(&body).unwrap();
-            let path = request
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or_default()
-                .to_owned();
+            let Seen {
+                path,
+                approval,
+                bearer,
+                body,
+            } = incoming(&stream);
             let (status, reply) = if path.starts_with("/api/cli/approvals/") {
                 decide(&mut decided, &path, &body)
             } else if let (Some(asking), true, None) = (&asking, is_write(&path), &approval) {
@@ -1271,4 +1285,125 @@ async fn a_denial_after_someone_else_approved_says_so_and_claims_nothing() {
         .filter(|write| write.approval.is_some())
         .collect();
     assert_eq!(approved.len(), 1, "{seen:?}");
+}
+
+/// How Cloud loses a reply after taking the request.
+#[derive(Clone, Copy, Debug)]
+enum Lost {
+    Dropped,
+    Garbled,
+}
+
+/// A Ployz Cloud that answers a request on a path in `answers` and loses the reply to
+/// any other, as `lost` says.
+fn lossy_cloud(answers: HashMap<&'static str, Value>, lost: Lost) -> Fake {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (saw, seen) = channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let request = incoming(&stream);
+            let reply = match (answers.get(request.path.as_str()), lost) {
+                (Some(answer), _) => Some(answer.to_string()),
+                (None, Lost::Garbled) => Some("<html>bad gateway</html>".to_owned()),
+                (None, Lost::Dropped) => None,
+            };
+            let _ = saw.send(request);
+            if let Some(reply) = reply {
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+            }
+        }
+    });
+    Fake { url, seen }
+}
+
+/// `tool` called once as request 2 of session `s` against `cloud`, with no `request_key`.
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn refusal_on(cloud: &Fake, place: Place, tool: &str, input: Value) -> Value {
+    let server = Server {
+        session: "s".to_owned(),
+        keys: call_key,
+        ..on_cloud(cloud, place)
+    };
+    let mut client = Client::initialized(server, json!({})).await;
+    let done = client.call(2, tool, input).await;
+    assert_eq!(done["result"]["isError"], true, "{done}");
+    done["result"]["structuredContent"].clone()
+}
+
+fn servers_answer() -> Value {
+    json!({
+        "servers": [{
+            "machine": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "name": "web-2", "state": "online", "release": null, "upgrade": null,
+            "draining": false, "disk": null, "namespaces": [],
+        }],
+        "seen": {
+            "seen_by": null, "observed_at": null, "read_at": 0, "age_seconds": null,
+            "from": "server", "unanswered": [],
+        },
+    })
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn a_lost_reply_to_a_write_says_it_may_have_landed_and_retries_under_the_same_key() {
+    let deploy = transcript("deploy", StoreAt::Cloud);
+    let Some(Answered::Value(services)) = deploy.turns[0].answers.first().cloned() else {
+        panic!("deploy reads its Services first");
+    };
+    let key = RequestKey::effective(None, "s:2");
+    for lost in [Lost::Dropped, Lost::Garbled] {
+        let cases = [
+            (
+                HashMap::from([("/api/cli/agent/ask", servers_answer())]),
+                deploy.place.clone(),
+                "server_drain",
+                json!({ "server": "web-2" }),
+                "/api/cli/agent/act",
+            ),
+            (
+                HashMap::from([("/api/config/read", services.clone())]),
+                deploy.place.clone(),
+                "deploy",
+                json!({ "services": ["web"], "message": "Raise web's log level" }),
+                "/api/config/write",
+            ),
+        ];
+        for (answers, place, tool, input, write) in cases {
+            let cloud = lossy_cloud(answers, lost);
+            let refusal = refusal_on(&cloud, place, tool, input).await;
+            assert!(
+                cloud.requests().iter().any(|seen| seen.path == write),
+                "{tool} {lost:?}: Cloud took the write"
+            );
+            assert_eq!(refusal["writes"], "unknown", "{tool} {lost:?}: {refusal}");
+            assert_eq!(refusal["retry"]["tool"], tool, "{refusal}");
+            assert_eq!(
+                refusal["retry"]["input"]["request_key"],
+                key.as_str(),
+                "{tool} {lost:?}: {refusal}"
+            );
+        }
+    }
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn a_lost_reply_to_a_read_wrote_nothing() {
+    let place = transcript("deploy", StoreAt::Cloud).place;
+    let cloud = lossy_cloud(HashMap::new(), Lost::Dropped);
+    let refusal = refusal_on(&cloud, place, "server_drain", json!({ "server": "web-2" })).await;
+    assert_eq!(refusal["writes"], "none", "{refusal}");
+    assert!(
+        refusal["retry"]["input"].get("request_key").is_none(),
+        "{refusal}"
+    );
 }
