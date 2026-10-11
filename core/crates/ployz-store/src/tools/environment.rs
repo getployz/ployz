@@ -287,13 +287,21 @@ impl Tool for EnvironmentSetup {
             .iter()
             .any(|listing| listing.source == SourceKind::Git);
         let needs = [
-            (servers.servers.is_empty(), "servers", DashboardPage::Servers),
+            (
+                servers.servers.is_empty(),
+                "servers",
+                DashboardPage::Servers,
+            ),
             (
                 servers.cluster_domain.is_none(),
                 "cluster domain",
                 DashboardPage::Servers,
             ),
-            (builds && !github.connected, "GitHub connection", DashboardPage::Github),
+            (
+                builds && !github.connected,
+                "GitHub connection",
+                DashboardPage::Github,
+            ),
         ]
         .into_iter()
         .filter(|(missing, ..)| *missing)

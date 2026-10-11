@@ -27,6 +27,902 @@
       "read_only": true
     },
     {
+      "description": "Everything about one Service: Settings with values and defaults, variables, mounts, Configs, domains with status, and what is Staged. Use it before changing a Service. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "name": "service_inspect",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "description": "Create a Service. Give image to run a container image, or repository to build a GitHub repository. Staged: it runs after the next Deploy. Add domains with domain_add and Settings with service_update. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "branch": {
+            "description": "Branch to build, only with repository. Default: the repository's default branch.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "image": {
+            "description": "Container image to run. Give image or repository.",
+            "examples": [
+              "traefik/whoami"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "description": "New Service name, unique in the Environment.",
+            "examples": [
+              "whoami"
+            ],
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "repository": {
+            "description": "GitHub repository owner/name to build. Give image or repository.",
+            "examples": [
+              "acme/api"
+            ],
+            "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "service_add",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings: use domain_add, domain_update, domain_remove. Most changes are Staged: Review lists them, Discard undoes them, so do not ask the member to confirm. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and Discard does not undo them; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "rename_env": {
+            "additionalProperties": false,
+            "default": {},
+            "description": "Variables to rename, old name to new name. The value moves with it; a secret stays sealed.",
+            "examples": [
+              {
+                "API_URL": "PUBLIC_API_URL"
+              }
+            ],
+            "patternProperties": {
+              "^[A-Z_][A-Z0-9_]{0,127}$": {
+                "pattern": "^[A-Z_][A-Z0-9_]{0,127}$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "service": {
+            "examples": [
+              "web"
+            ],
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "set": {
+            "additionalProperties": false,
+            "description": "A Service's Settings, in the shape service_inspect returns as values.",
+            "properties": {
+              "autoDeploy": {
+                "default": true,
+                "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+                "examples": [
+                  false
+                ],
+                "title": "Auto-deploy",
+                "type": "boolean"
+              },
+              "branch": {
+                "description": "The branch the Service builds. Ployz checks it exists.",
+                "examples": [
+                  "main"
+                ],
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$",
+                "title": "Branch",
+                "type": "string"
+              },
+              "buildCommand": {
+                "description": "Overrides Railpack's build command. Unset keeps detection; Dockerfiles ignore it.",
+                "examples": [
+                  "npm run build"
+                ],
+                "maxLength": 2000,
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$",
+                "title": "Build command",
+                "type": "string"
+              },
+              "buildMethod": {
+                "default": "railpack",
+                "description": "How the image is built: Railpack detects it, or a Dockerfile.",
+                "enum": [
+                  "dockerfile",
+                  "railpack"
+                ],
+                "examples": [
+                  "dockerfile"
+                ],
+                "title": "Build method",
+                "type": "string"
+              },
+              "configs": {
+                "additionalProperties": false,
+                "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add the Config first. Unset unmounts it: the Config and its files stay.",
+                "examples": [
+                  {
+                    "sentry": "/etc/sentry"
+                  }
+                ],
+                "patternProperties": {
+                  "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
+                    "description": "The absolute directory the Config's files appear in, read-only, in the Service's containers, with no `.` or `..` segment, empty segment or trailing `/`. Unset unmounts it: the Config and its files stay.",
+                    "examples": [
+                      "/etc/app"
+                    ],
+                    "minLength": 1,
+                    "pattern": "^(/([^/.][^/]*|\\.[^/.][^/]*|\\.\\.[^/]+))+$",
+                    "title": "Mount directory",
+                    "type": "string"
+                  }
+                },
+                "title": "Config mounts",
+                "type": "object"
+              },
+              "cpuLimit": {
+                "description": "Most vCPUs each replica may use. Unset means no limit.",
+                "examples": [
+                  0.5,
+                  2
+                ],
+                "exclusiveMinimum": 0,
+                "maximum": 64.0,
+                "title": "CPU limit",
+                "type": "number"
+              },
+              "dockerfilePath": {
+                "description": "The Dockerfile to build, relative to the root directory. Unset means Dockerfile.",
+                "examples": [
+                  "docker/web.Dockerfile"
+                ],
+                "maxLength": 500,
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$",
+                "title": "Dockerfile path",
+                "type": "string"
+              },
+              "env": {
+                "additionalProperties": false,
+                "description": "Environment variables by name, each at SERVICE.env.KEY. A patch sets the ones it names and keeps the rest; unset deletes one.",
+                "examples": [
+                  {
+                    "LOG_LEVEL": "info",
+                    "PUBLIC_URL": {
+                      "exported": true,
+                      "value": "http://${{ PLOYZ_PRIVATE_DOMAIN }}"
+                    }
+                  }
+                ],
+                "patternProperties": {
+                  "^[A-Z_][A-Z0-9_]{0,127}$": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "secret": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "secret"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "exported": {
+                            "default": false,
+                            "type": "boolean"
+                          },
+                          "value": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "secret": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "secret"
+                                ],
+                                "type": "object"
+                              }
+                            ]
+                          }
+                        },
+                        "type": "object"
+                      }
+                    ],
+                    "description": "An environment variable. Text may reference variables: ${{ KEY }} for this Service's, ${{ service.KEY }} for another's; $${{ is a literal ${{. A secret reads as {\"secret\": true}, or {\"secret\": false} until it has a value, and sending that back keeps it. {\"value\": …, \"exported\": true} marks one other Services are meant to reference.",
+                    "examples": [
+                      "postgres://${{ db.USER }}@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/app",
+                      {
+                        "secret": true
+                      },
+                      {
+                        "exported": true,
+                        "value": "info"
+                      }
+                    ],
+                    "title": "Variable"
+                  }
+                },
+                "title": "Variables",
+                "type": "object"
+              },
+              "healthcheck": {
+                "additionalProperties": false,
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "path": {
+                        "maxLength": 500,
+                        "minLength": 1,
+                        "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                        "type": "string"
+                      },
+                      "timeoutSeconds": {
+                        "default": 300,
+                        "maximum": 300,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ]
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "command": {
+                        "maxLength": 2000,
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      "timeoutSeconds": {
+                        "default": 300,
+                        "maximum": 300,
+                        "minimum": 1,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "command"
+                    ]
+                  }
+                ],
+                "description": "A check a new replica must pass before it takes traffic: an HTTP path on the container PORT or a shell command, and how many seconds it may take (default 300). Text sets the path. Unset turns it off, along with the image's own check.",
+                "examples": [
+                  {
+                    "path": "/health",
+                    "timeoutSeconds": 30
+                  },
+                  {
+                    "command": "pg_isready -h 127.0.0.1",
+                    "timeoutSeconds": 60
+                  }
+                ],
+                "properties": {
+                  "command": {
+                    "maxLength": 2000,
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]*$",
+                    "type": "string"
+                  },
+                  "path": {
+                    "maxLength": 500,
+                    "minLength": 1,
+                    "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                    "type": "string"
+                  },
+                  "timeoutSeconds": {
+                    "default": 300,
+                    "maximum": 300,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "title": "Healthcheck",
+                "type": "object"
+              },
+              "image": {
+                "description": "The container image each replica runs.",
+                "examples": [
+                  "nginx:1.27",
+                  "ghcr.io/acme/web:1.4.0"
+                ],
+                "maxLength": 500,
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$",
+                "title": "Container image",
+                "type": "string"
+              },
+              "maxRetries": {
+                "default": 10,
+                "description": "How often an on-failure restart policy restarts a replica.",
+                "examples": [
+                  3
+                ],
+                "maximum": 100,
+                "minimum": 0,
+                "title": "Max retries",
+                "type": "integer"
+              },
+              "memLimit": {
+                "anyOf": [
+                  {
+                    "exclusiveMinimum": 0,
+                    "maximum": 1024.0,
+                    "type": "number"
+                  },
+                  {
+                    "pattern": "^[0-9]+(\\.[0-9]+)?\\s?(MB|GB|TB|MiB|GiB|TiB)$",
+                    "type": "string"
+                  }
+                ],
+                "description": "Most memory each replica may use. A number is GB; a string takes a unit. Unset means no limit.",
+                "examples": [
+                  "1GiB",
+                  "512MiB",
+                  0.5
+                ],
+                "title": "Memory limit"
+              },
+              "mounts": {
+                "additionalProperties": false,
+                "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create the Volume first. Unset detaches it: the Volume and its data stay.",
+                "examples": [
+                  {
+                    "data": "/var/lib/data"
+                  }
+                ],
+                "patternProperties": {
+                  "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
+                    "description": "The absolute path the Volume is mounted at in the Service's containers. Unset detaches it: the Volume and its data stay.",
+                    "examples": [
+                      "/var/lib/data"
+                    ],
+                    "minLength": 1,
+                    "pattern": "^/",
+                    "title": "Mount path",
+                    "type": "string"
+                  }
+                },
+                "title": "Mounts",
+                "type": "object"
+              },
+              "preDeployCommand": {
+                "description": "Runs once in a new replica before a Deploy starts the Service.",
+                "examples": [
+                  "npm run migrate"
+                ],
+                "maxLength": 2000,
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$",
+                "title": "Pre-deploy command",
+                "type": "string"
+              },
+              "preferredBuilder": {
+                "anyOf": [
+                  {
+                    "const": "github"
+                  },
+                  {
+                    "pattern": "^[0-9a-f]{32}$"
+                  }
+                ],
+                "description": "Who builds this Service first: \"github\" for GitHub Actions, or a Server's Machine ID; then the Organization's Build Order, without it. Unset follows the Build Order. Applies to the next build.",
+                "examples": [
+                  "github"
+                ],
+                "title": "Preferred Builder",
+                "type": "string"
+              },
+              "privateDns": {
+                "description": "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name.",
+                "examples": [
+                  "api",
+                  "api-v2"
+                ],
+                "maxLength": 63,
+                "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+                "title": "Private DNS",
+                "type": "string"
+              },
+              "replicas": {
+                "default": 1,
+                "description": "How many copies of the Service run.",
+                "examples": [
+                  3
+                ],
+                "maximum": 50,
+                "minimum": 1,
+                "title": "Replicas",
+                "type": "integer"
+              },
+              "repository": {
+                "description": "The GitHub repository the Service builds, as owner/name. Ployz checks the Organization can read it; a change keeps the branch if the new repository has it, else uses its default branch.",
+                "examples": [
+                  "acme/web"
+                ],
+                "maxLength": 300,
+                "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$",
+                "title": "Repository",
+                "type": "string"
+              },
+              "restartPolicy": {
+                "default": "unless-stopped",
+                "description": "When a stopped replica restarts.",
+                "enum": [
+                  "always",
+                  "no",
+                  "on-failure",
+                  "unless-stopped"
+                ],
+                "examples": [
+                  "on-failure"
+                ],
+                "title": "Restart policy",
+                "type": "string"
+              },
+              "rootDir": {
+                "description": "The repository directory the build starts in. Unset means the repository root.",
+                "examples": [
+                  "/apps/web"
+                ],
+                "pattern": "^/[A-Za-z0-9/._-]*$",
+                "title": "Root directory",
+                "type": "string"
+              },
+              "startCommand": {
+                "description": "Overrides the image's command. Unset runs the image's own.",
+                "examples": [
+                  "npm start"
+                ],
+                "maxLength": 2000,
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$",
+                "title": "Start command",
+                "type": "string"
+              },
+              "template": {
+                "additionalProperties": false,
+                "description": "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it.",
+                "examples": [
+                  {
+                    "id": "postgres",
+                    "version": 1
+                  }
+                ],
+                "properties": {
+                  "id": {
+                    "maxLength": 63,
+                    "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+                    "type": "string"
+                  },
+                  "version": {
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id",
+                  "version"
+                ],
+                "title": "Template",
+                "type": "object"
+              },
+              "waitForCi": {
+                "default": false,
+                "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
+                "examples": [
+                  true
+                ],
+                "title": "Wait for CI",
+                "type": "boolean"
+              },
+              "watchPaths": {
+                "default": [],
+                "description": "Gitignore-style patterns of repository paths a push must change to auto-deploy; the last matching pattern wins and ! excludes. Empty means any change. Takes effect at once.",
+                "examples": [
+                  [
+                    "apps/web/**",
+                    "!**/*.md"
+                  ]
+                ],
+                "items": {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "title": "Watch paths",
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "unset": {
+            "default": [],
+            "description": "Settings to return to default, variables to delete (env.KEY), mounts to remove (mounts.VOLUME, configs.CONFIG).",
+            "examples": [
+              [
+                "cpuLimit",
+                "env.OLD_FLAG"
+              ]
+            ],
+            "items": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "autoDeploy",
+                    "branch",
+                    "buildCommand",
+                    "buildMethod",
+                    "cpuLimit",
+                    "dockerfilePath",
+                    "healthcheck",
+                    "image",
+                    "maxRetries",
+                    "memLimit",
+                    "preDeployCommand",
+                    "preferredBuilder",
+                    "privateDns",
+                    "replicas",
+                    "repository",
+                    "restartPolicy",
+                    "rootDir",
+                    "startCommand",
+                    "template",
+                    "waitForCi",
+                    "watchPaths"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "pattern": "^env\\.[A-Z_][A-Z0-9_]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^(mounts|configs)\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "name": "service_update",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Rename a Service. Private DNS names and references to it follow. Staged. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "to": {
+            "description": "New name.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "to"
+        ],
+        "type": "object"
+      },
+      "name": "service_rename",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Remove a Service. Staged: Review lists it and Discard undoes it; the next Publish or Deploy asks a human to approve. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "name": "service_remove",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Give a Service a public domain: a generated one under the cluster domain, or a hostname the member owns. Staged until the next Deploy. A custom hostname comes back with the DNS records the member must create. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hostname": {
+            "description": "A hostname the member owns, e.g. app.example.com. Not with prefix.",
+            "maxLength": 253,
+            "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$",
+            "type": "string"
+          },
+          "port": {
+            "description": "Container port it reaches. Default: the container's PORT.",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "prefix": {
+            "description": "Prefix for a generated domain, PREFIX.cluster-domain. Omit both prefix and hostname for a free one.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "examples": [
+              "web"
+            ],
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "name": "domain_add",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Change a generated domain's prefix, or the port any domain reaches. Staged. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "description": "The domain, by hostname or a generated domain's prefix.",
+            "examples": [
+              "app.example.com"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "port": {
+            "description": "Container port it reaches.",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "prefix": {
+            "description": "New prefix for a generated domain.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "type": "object"
+      },
+      "name": "domain_update",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next Publish or Deploy. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "domain": {
+            "description": "The domain, by hostname or a generated domain's prefix.",
+            "examples": [
+              "app.example.com"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "domain"
+        ],
+        "type": "object"
+      },
+      "name": "domain_remove",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "Turn on or off an Environment per GitHub pull request, built from this Environment. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
@@ -43,7 +939,6 @@
           },
           "expect_revision": {
             "description": "Write only if the place is still at this revision. Omit unless you just read it.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },

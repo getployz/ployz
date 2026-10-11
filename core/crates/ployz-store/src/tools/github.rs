@@ -10,8 +10,10 @@ use serde_json::{Value, json};
 use super::environment::{GithubAnswer, REPOSITORY};
 use super::machine::{Cx, Stop, Tool};
 use super::step::{Ask, CloudQuery};
-use crate::github::{GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView};
 use crate::RepositoryName;
+use crate::github::{
+    GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView,
+};
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +34,8 @@ pub(crate) struct GithubLs {
 
 impl Tool for GithubLs {
     const NAME: &'static str = "github_ls";
-    const DESCRIPTION: &'static str = "List a connected GitHub repository's files at a path, or read one file (at most 64 KB).";
+    const DESCRIPTION: &'static str =
+        "List a connected GitHub repository's files at a path, or read one file (at most 64 KB).";
     const READ_ONLY: bool = true;
 
     fn example() -> Value {
@@ -46,7 +49,9 @@ impl Tool for GithubLs {
             git_ref: self.git_ref.clone(),
             glob: self.glob.clone(),
         };
-        let mut answers = cx.read(vec![Ask::Cloud(CloudQuery::GithubTree(tree))])?.into_iter();
+        let mut answers = cx
+            .read(vec![Ask::Cloud(CloudQuery::GithubTree(tree))])?
+            .into_iter();
         let tree = cx.cloud::<GithubTreeView>(answers.next())?;
         let path = self.path.as_deref().map(|path| path.trim_matches('/'));
         let is_file = path.is_some_and(|path| tree.paths.iter().any(|one| one == path));
@@ -58,7 +63,9 @@ impl Tool for GithubLs {
             path: file.to_owned(),
             git_ref: Some(tree.git_ref.clone()),
         };
-        let mut answers = cx.read(vec![Ask::Cloud(CloudQuery::GithubFile(query))])?.into_iter();
+        let mut answers = cx
+            .read(vec![Ask::Cloud(CloudQuery::GithubFile(query))])?
+            .into_iter();
         let file = cx.cloud::<GithubFileView>(answers.next())?;
         let (content, note) = match file.body {
             GithubFileBody::Text { content } => (Some(content), None),
@@ -77,7 +84,9 @@ impl Tool for GithubLs {
 /// A listing: with a glob every matching file, else what sits directly under
 /// `path`, a directory standing for everything below it.
 fn listing(tree: &GithubTreeView, path: Option<&str>, globbed: bool) -> Value {
-    let prefix = path.filter(|path| !path.is_empty()).map(|path| format!("{path}/"));
+    let prefix = path
+        .filter(|path| !path.is_empty())
+        .map(|path| format!("{path}/"));
     let mut entries = BTreeMap::new();
     for one in &tree.paths {
         let rest = match &prefix {
@@ -91,7 +100,9 @@ fn listing(tree: &GithubTreeView, path: Option<&str>, globbed: bool) -> Value {
             Some((directory, _)) if !globbed => (directory, "directory"),
             _ => (rest, "file"),
         };
-        let full = prefix.as_deref().map_or_else(|| name.to_owned(), |prefix| format!("{prefix}{name}"));
+        let full = prefix
+            .as_deref()
+            .map_or_else(|| name.to_owned(), |prefix| format!("{prefix}{name}"));
         entries.entry(full).or_insert(kind);
     }
     let entries = entries
@@ -123,7 +134,9 @@ impl Tool for GithubConnect {
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        let mut answers = cx.read(vec![Ask::Cloud(CloudQuery::GithubConnection)])?.into_iter();
+        let mut answers = cx
+            .read(vec![Ask::Cloud(CloudQuery::GithubConnection)])?
+            .into_iter();
         let github = cx.cloud::<GithubAnswer>(answers.next())?;
         Ok(json!({
             "connected": github.connected,

@@ -103,7 +103,10 @@ fn tidy(schema: &mut Value, defs: &Map<String, Value>) {
 
 /// A format every provider knows; schemars' `uint64` and the like are not.
 fn is_standard_format(format: &str) -> bool {
-    matches!(format, "date-time" | "date" | "time" | "email" | "uri" | "uuid")
+    matches!(
+        format,
+        "date-time" | "date" | "time" | "email" | "uri" | "uuid"
+    )
 }
 
 /// Take `null` out of a type: an absent field already means none.

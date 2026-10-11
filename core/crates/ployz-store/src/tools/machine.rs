@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 
 use super::refusal::{Call, Refusal, ToolResult, Writes, from_store};
 use super::schema;
-use super::step::{Ask, Gate, RequestKey, Step, Write, WriteSlot};
+use super::step::{Ask, AttemptId, Gate, RequestKey, Step, Write, WriteSlot};
 use crate::{
     Batch, BatchCommand, Command, EnvironmentName, EnvironmentRef, EnvironmentSummary, ProjectName,
     Query, Revision, ServicesQuery, Tell, View, Written,
@@ -265,6 +265,23 @@ impl Cx<'_> {
         }
     }
 
+    /// The call's one write, refused as stale when the Store finds the
+    /// Environment moved past `expect`.
+    pub(crate) fn write_expecting<C: Tell>(
+        &mut self,
+        command: &C,
+        expect: Option<u64>,
+    ) -> Result<C::Written, Stop> {
+        match self.write(command) {
+            Err(Stop::Refuse(refusal))
+                if expect.is_some() && refusal.code == RpcErrorCode::Conflict =>
+            {
+                Err(stale(&self.call))
+            }
+            other => other,
+        }
+    }
+
     /// The call's one write: `commands` applied together, only while the
     /// Environment is still at `expect`.
     pub(crate) fn batch(
@@ -278,15 +295,15 @@ impl Cx<'_> {
             commands,
             expect: expect.map(Revision),
         };
-        match self.write(&batch) {
-            Ok(batched) => Ok(batched.results),
-            Err(Stop::Refuse(refusal))
-                if expect.is_some() && refusal.code == RpcErrorCode::Conflict =>
-            {
-                Err(stale(&self.call))
-            }
-            Err(stop) => Err(stop),
-        }
+        self.write_expecting(&batch, expect)
+            .map(|batched| batched.results)
+    }
+
+    /// An ID for what this call creates, the same on every retry of the call.
+    pub(crate) fn mint<I: TryFrom<String>>(&self, given: Option<RequestKey>) -> Result<I, Stop> {
+        let key = self.request_key(given);
+        I::try_from(AttemptId::derive(&self.call.tool, &key).to_string())
+            .map_err(|_| Refusal::internal("An ID did not mint").into())
     }
 
     /// Refuse before writing when the Environment moved past `expect`. For a
@@ -350,6 +367,18 @@ pub(crate) fn stale(call: &Call) -> Stop {
     Refusal::conflict("The Environment changed since you read it; read it again before writing")
         .with_next(Call::new(tool, next.into()))
         .into()
+}
+
+/// The one result a batch wrote that `pick` takes, the last when several do.
+pub(crate) fn written<T>(
+    results: Vec<Written>,
+    pick: impl FnMut(Written) -> Option<T>,
+) -> Result<T, Stop> {
+    results
+        .into_iter()
+        .rev()
+        .find_map(pick)
+        .ok_or_else(|| Refusal::internal("The Config Store answered in an unknown shape").into())
 }
 
 /// Where a result ran: `project/environment`.

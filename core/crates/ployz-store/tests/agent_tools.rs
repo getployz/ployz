@@ -35,5 +35,8 @@ fn the_catalog_matches_its_snapshot() {
 fn the_catalog_fits_the_cap() {
     let bytes = serde_json::to_vec(&compact()).unwrap().len();
     println!("catalog bytes: {bytes}");
-    assert!(bytes < CAP_BYTES, "the catalog is {bytes} B, over {CAP_BYTES} B");
+    assert!(
+        bytes < CAP_BYTES,
+        "the catalog is {bytes} B, over {CAP_BYTES} B"
+    );
 }
