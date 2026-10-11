@@ -21,4 +21,15 @@ describe("endOf", () => {
   it("leaves a Server's own act with no containers unknown when that Server didn't answer", () => {
     expect(endOf(before, [], { machine: "m-b" as MachineId, name: "b" })).toEqual({ state: "unknown", reason: "b didn't answer." });
   });
+
+  it("never reads a restart that stopped rolling as done, and names the Server that didn't come back", () => {
+    const answered: ServiceActBefore = { ...before, unanswered: [] };
+    const halted: ServiceActLeg[] = [
+      { server: "a", machine: "m-a", container: "web-1", stop: "done", start: "failed", reason: "a couldn't start it." },
+      { server: "b", machine: "m-b", container: "web-2", stop: null, start: null, reason: null },
+    ];
+    expect(endOf(answered, halted, null)).toEqual({ state: "failed", reason: "a didn't come back, so Cloud left b alone." });
+    expect(endOf(answered, halted.map((leg) => leg.server === "a" ? { ...leg, start: "unknown" as const } : leg), null))
+      .toEqual({ state: "unknown", reason: "a didn't come back, so Cloud left b alone." });
+  });
 });
