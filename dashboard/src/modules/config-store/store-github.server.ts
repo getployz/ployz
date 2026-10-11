@@ -73,7 +73,8 @@ const observeMerged = Effect.fn("StoreGithub.observeMerged")(function* (
     );
     const { updatedAt } = live ?? {};
     if (!live?.mergeCommitSha || live.targetBranch !== payload.branch || !updatedAt) continue;
-    const written = yield* storeSystem(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }));
+    const targetHead = yield* mergedInto(payload.installationId, payload.repositoryId, live);
+    const written = yield* storeSystem(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, targetHead));
     deployments.push(...admittedEvents(organizationId, written));
   }
   return deployments;
