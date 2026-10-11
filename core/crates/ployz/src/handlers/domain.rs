@@ -3,6 +3,7 @@
 //! Both are staged until a Deploy, and each reads Ready, Setting up or Needs attention
 //! with at most one action.
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::DomainPrefix;
 use ployz_store::{
@@ -64,13 +65,13 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "add" => add,
-        "set" => set,
-        "ls" => list,
-        "rm" => remove,
-        "check" => check,
+        "add" => cloud(Never, add),
+        "set" => cloud(Never, set),
+        "ls" => cloud(Never, list),
+        "rm" => cloud(Never, remove),
+        "check" => cloud(Never, check),
         _ => return None,
     })
 }

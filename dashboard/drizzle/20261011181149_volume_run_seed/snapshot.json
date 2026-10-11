@@ -3771,6 +3771,19 @@
     {
       "type": "timestamp with time zone",
       "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "probe_requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
       "default": "now()",
@@ -6986,7 +6999,7 @@
       "table": "uptime_incident"
     },
     {
-      "value": "\"kind\" in ('routine', 'confirm', 'recheck')",
+      "value": "\"kind\" in ('routine', 'confirm', 'recheck', 'triggered')",
       "name": "uptime_result_kind_check",
       "entityType": "checks",
       "schema": "public",
