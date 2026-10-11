@@ -1,7 +1,8 @@
-import { expect, it } from "vitest";
-import type { EnvironmentView, RowId } from "@ployz/sdk";
+import { expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
+import type { EnvironmentRef, EnvironmentView, RowId } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
-import { serviceVariables } from "./store-variables";
+import { serviceVariables, storeVariableWriter } from "./store-variables";
 import { withPendingChanges } from "./store-view.queries";
 
 const view: EnvironmentView = {
@@ -86,4 +87,12 @@ it("shows a pending rename under its new name, value, seal, export and Never syn
 it("shows a rename onto a name in use as nothing, since the Store refuses it", () => {
   const shown = withPendingChanges(view, [{ op: "rename", path: "web.env.API_KEY", to: "LOG_LEVEL" }]);
   expect(variables(shown)).toEqual(variables(view));
+});
+
+it("sends a rename as one Store edit on the variable's path", async () => {
+  const edit = vi.fn().mockResolvedValue(undefined);
+  const environment: EnvironmentRef = { project: "shop", environment: "production" };
+  const writer = storeVariableWriter(asTestDouble<Parameters<typeof storeVariableWriter>[0]>()({ edit }), environment, "web", [], new Map());
+  await writer.rename("API_KEY", "STRIPE_KEY");
+  expect(edit).toHaveBeenCalledExactlyOnceWith({ environment, changes: [{ op: "rename", path: "web.env.API_KEY", to: "STRIPE_KEY" }] });
 });

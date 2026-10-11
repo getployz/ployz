@@ -198,4 +198,46 @@ describe("VariableRow", () => {
     fireEvent.click(await screen.findByText("Never sync"));
     expect(onNeverSync).toHaveBeenCalledWith(variable, true);
   });
+
+  it("renames from the menu: prefilled key, typed name saved uppercased", async () => {
+    const onRename = vi.fn();
+    const variable = plainVariable();
+    render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onRename={onRename} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Rename"));
+    const input = await screen.findByLabelText("Key");
+    expect((input as HTMLInputElement).value).toBe("API_KEY");
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(save.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(input, { target: { value: "1BAD" } });
+    expect(screen.getByText("Use letters, digits and underscores, not starting with a digit (at most 128).")).toBeTruthy();
+    expect(save.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.change(input, { target: { value: "stripe_key" } });
+    fireEvent.click(save);
+    expect(onRename).toHaveBeenCalledExactlyOnceWith(variable, "STRIPE_KEY");
+    await waitFor(() => expect(screen.queryByLabelText("Key")).toBeNull());
+  });
+
+  it("renames a sealed variable without showing a value", async () => {
+    const onRename = vi.fn();
+    const variable = sealedVariable();
+    render(<VariableRow variable={variable} collection={collection} onSealVariable={vi.fn()} onRename={onRename} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Rename"));
+    fireEvent.change(await screen.findByLabelText("Key"), { target: { value: "STRIPE_KEY" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onRename).toHaveBeenCalledExactlyOnceWith(variable, "STRIPE_KEY");
+    expect(screen.queryByText("super-secret")).toBeNull();
+  });
+
+  it("offers no Rename where the panel can't rename", async () => {
+    render(<VariableRow variable={plainVariable()} collection={collection} onSealVariable={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    await screen.findByText("Delete");
+    expect(screen.queryByText("Rename")).toBeNull();
+  });
 });
