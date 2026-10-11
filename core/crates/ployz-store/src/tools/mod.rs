@@ -1,6 +1,7 @@
 //! The tools an agent runs Ployz through: a catalog, and a step machine that
 //! plans each call as Store and Cloud reads and at most one write. No IO.
 
+mod config;
 mod domain;
 mod environment;
 mod github;
@@ -11,6 +12,7 @@ mod schema;
 mod service;
 pub mod status;
 mod step;
+mod volume;
 
 pub use logs::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
 pub use machine::{Place, STEP_BUDGET, State, StoreAt, ToolDef, WAIT_CAP_SECONDS, resume, start};
@@ -36,6 +38,11 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<domain::DomainAdd>(),
     entry::<domain::DomainUpdate>(),
     entry::<domain::DomainRemove>(),
+    entry::<volume::VolumeAdd>(),
+    entry::<volume::VolumeUpdate>(),
+    entry::<volume::VolumeRemove>(),
+    entry::<config::ConfigWrite>(),
+    entry::<config::ConfigRemove>(),
     entry::<environment::EnvironmentPr>(),
     entry::<environment::EnvironmentSetup>(),
     entry::<github::GithubLs>(),
