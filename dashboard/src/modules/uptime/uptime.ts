@@ -16,8 +16,8 @@ import {
 } from "./uptime-status";
 
 /**
- * What to call a probe region: its display name, else its code, which reads as code. Null when only one region is in
- * view, since a label that never changes says nothing.
+ * What to call a probe region: its display name, else its code, which reads as code. Null on an install with one region, since
+ * a label that never changes says nothing.
  */
 export function regionLabel(regions: RegionNames, code: string): { readonly text: string; readonly named: boolean } | null {
   if (Object.keys(regions).length <= 1) return null;

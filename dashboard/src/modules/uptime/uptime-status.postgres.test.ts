@@ -388,23 +388,17 @@ describe("uptime incidents", () => {
     ]);
   });
 
-  it("names every region its points, checks and incidents mention, null for one without a name, and no other region", async () => {
-    await harness.pool.query(`insert into uptime_region (region, name)
-      values ('fra', 'Frankfurt'), ('syd', null), ('eu-west', 'Ireland'), ('lhr', 'London')`);
+  it("names every region the install lists and every region its data mentions, null for one without a name", async () => {
+    await harness.pool.query(`insert into uptime_region (region, name) values ('fra', 'Frankfurt'), ('syd', null)`);
     const check = await createCheck();
-    expect((await summary(check)).regions).toEqual({});
+    expect((await summary(check)).regions).toEqual({ fra: "Frankfurt", syd: null });
 
     await result(check, "fra", ago(2 * HOUR), "pass", 120);
-    await result(check, "syd", ago(2 * HOUR), "pass", 300);
     await result(check, "nrt", ago(HOUR), "pass", 200);
     await incident(check, ago(5 * HOUR), ago(4 * HOUR));
     expect((await summary(check)).regions).toEqual({
-      fra: "Frankfurt", syd: null, nrt: null, "eu-west": "Ireland", "us-east": null,
+      fra: "Frankfurt", syd: null, nrt: null, "eu-west": null, "us-east": null,
     });
-
-    const confirmed = await createCheck();
-    await result(confirmed, "lhr", ago(10 * 60_000), "fail", 9000, "confirm");
-    expect((await summary(confirmed, "1h")).regions).toEqual({ lhr: "London" });
   });
 
   it("treats opened_by it can't parse as a defect", async () => {

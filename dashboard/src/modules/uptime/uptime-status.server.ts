@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, between, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, between, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { Clock, Effect, Schema } from "effect";
 import type { Actor } from "#/modules/identity/actor";
@@ -155,12 +155,8 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
     ...(checks ?? []).map((result) => result.region),
     ...incidents.flatMap((incident) => incident.observations.map((observation) => observation.region)),
   ])];
-  const named = codes.length === 0 ? [] : yield* drizzle
-    .select({ region: uptimeRegion.region, name: uptimeRegion.name })
-    .from(uptimeRegion)
-    .where(inArray(uptimeRegion.region, codes));
-  const names = new Map(named.map((row) => [row.region, row.name]));
-  const regions = Object.fromEntries(codes.map((code) => [code, names.get(code) ?? null]));
+  const named = yield* drizzle.select({ region: uptimeRegion.region, name: uptimeRegion.name }).from(uptimeRegion);
+  const regions = { ...Object.fromEntries(codes.map((code) => [code, null])), ...Object.fromEntries(named.map((row) => [row.region, row.name])) };
   return { check, status, uptime, points, checks, incidents, regions } satisfies ServiceUptime;
 });
 
