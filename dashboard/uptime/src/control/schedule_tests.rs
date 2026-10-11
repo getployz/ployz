@@ -88,10 +88,10 @@ fn budget_floor_hands_out_four_per_tick_for_a_tiny_fleet() {
     budget.set_load(0.001);
     let org = OrgId(Uuid::from_u128(1));
     budget.push(org, (0..10).map(|_| job(id(1))).collect());
-    assert_eq!(budget.tick().len(), 4);
-    assert_eq!(budget.tick().len(), 4);
-    assert_eq!(budget.tick().len(), 2);
-    assert!(budget.tick().is_empty());
+    assert_eq!(budget.tick(UnixMs(0)).jobs.len(), 4);
+    assert_eq!(budget.tick(UnixMs(0)).jobs.len(), 4);
+    assert_eq!(budget.tick(UnixMs(0)).jobs.len(), 2);
+    assert!(budget.tick(UnixMs(0)).jobs.is_empty());
 }
 
 #[test]
@@ -99,11 +99,11 @@ fn budget_credit_is_capped_so_an_idle_fleet_cannot_burst_past_the_cap() {
     let mut budget = ConfirmBudget::new();
     budget.set_load(0.001);
     for _ in 0..1000 {
-        assert!(budget.tick().is_empty());
+        assert!(budget.tick(UnixMs(0)).jobs.is_empty());
     }
     let org = OrgId(Uuid::from_u128(1));
     budget.push(org, (0..100).map(|_| job(id(1))).collect());
-    assert_eq!(budget.tick().len(), 32);
+    assert_eq!(budget.tick(UnixMs(0)).jobs.len(), 32);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn budget_alternates_between_organizations() {
     let b = OrgId(Uuid::from_u128(2));
     budget.push(a, (0..10).map(|_| job(id(1))).collect());
     budget.push(b, (0..10).map(|_| job(id(2))).collect());
-    let out = budget.tick();
+    let out = budget.tick(UnixMs(0)).jobs;
     let from_a = out.iter().filter(|j| j.key.check == id(1)).count();
     let from_b = out.iter().filter(|j| j.key.check == id(2)).count();
     assert_eq!((from_a, from_b), (2, 2));
@@ -126,7 +126,7 @@ fn budget_forgets_a_removed_check_and_keeps_the_others() {
     let org = OrgId(Uuid::from_u128(1));
     budget.push(org, vec![job(id(1)), job(id(2))]);
     budget.forget(id(1));
-    let out = budget.tick();
+    let out = budget.tick(UnixMs(0)).jobs;
     assert_eq!(out.len(), 1);
     assert_eq!(out.first().map(|j| j.key.check), Some(id(2)));
 }
