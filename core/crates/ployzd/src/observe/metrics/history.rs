@@ -60,7 +60,7 @@ pub(crate) fn history(
     let range = request.range;
     let buckets = grid(request, now);
     if raw_only(range, now) {
-        return raw(store, range, &request.scope, buckets);
+        return raw(store, range, &request.scope, buckets, now);
     }
     let raw_from = rollup::folded_until(store)?.map_or(range.since_nanos, |until| {
         until.clamp(range.since_nanos, range.until_nanos)
@@ -83,6 +83,7 @@ pub(crate) fn history(
             tail,
             &request.scope,
             Buckets::new(tail, Some(STEP_NANOS)),
+            now,
         )?;
         markers.extend(tail.markers);
         Some(tail.points)
@@ -137,19 +138,22 @@ pub(crate) fn timed_out(request: &MetricHistoryRequest, now: i64) -> MetricHisto
 /// A Service's samples fold into the bucket table hour by hour, and each
 /// hour's are dropped before the next is read. Peak memory is one hour of
 /// samples plus the table, however wide the range. A Machine's host samples
-/// are one per tick, so its hours are kept and folded at the end.
+/// are one per tick, so its hours are kept and folded at the end. Hours past
+/// `now` hold no segments and are not scanned.
 fn raw(
     store: &StoreRoot,
     range: MetricRange,
     scope: &MetricScope,
     buckets: Buckets,
+    now: i64,
 ) -> io::Result<MetricHistoryReply> {
     let since = range.since_nanos.saturating_sub(LEAD_IN);
     let mut hosts = Vec::new();
     let mut fold = rate::ServiceFold::new(buckets);
     let mut markers = Vec::new();
     let mut hour = since - since.rem_euclid(HOUR_NANOS);
-    while hour < range.until_nanos {
+    let last = range.until_nanos.min(now.saturating_add(HOUR_NANOS));
+    while hour < last {
         let next = hour.saturating_add(HOUR_NANOS);
         let within = MetricRange {
             since_nanos: since.max(hour),
@@ -578,6 +582,23 @@ pub(crate) mod tests {
 
         let reply = history(&store, &request(MetricScope::Machine, T0, now, None), now).unwrap();
         assert_eq!(reply.markers, markers[500..]);
+    }
+
+    #[test]
+    fn a_range_ending_far_in_the_future_scans_only_to_now() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + HOUR, |ts| vec![host(ts)]);
+        let now = T0 + HOUR;
+        let started = std::time::Instant::now();
+
+        let reply = history(
+            &store,
+            &request(MetricScope::Machine, T0, i64::MAX, None),
+            now,
+        )
+        .unwrap();
+        assert!(!host_points(&reply).is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
