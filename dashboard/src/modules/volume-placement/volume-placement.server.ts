@@ -100,18 +100,18 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   const name = `${listed.name}-${lossTime(new Date(input.at * 1000)).replace(":", "")}`;
   const commands: BatchCommand[] = [
     ...listed.mounts.map((mount): BatchCommand => ({ command: "edit", environment: input.environment, expect: null, changes: [mountChange(mount.service, listed.name, null)] })),
-    { command: "create_volume", id, environment: input.environment, name, storage: listed.storage, mounts: listed.mounts },
+    {
+      command: "create_volume", id, environment: input.environment, name,
+      storage: listed.storage, storage_locked: true, shared_writes: listed.shared_writes, mounts: listed.mounts,
+    },
   ];
-  const written = yield* callStore(organizationId, userId, {
-    operation: "write", command: { command: "batch", environment: input.environment, commands, expect: environment.revision },
-  });
-  if (!written.ok) return { ok: false, refusal: written.refusal } satisfies PlacementWrite;
   const seed: Seed = {
     sourceVolumeId: input.volumeId,
     sourceName: listed.name,
     dockerVolume: dockerVolumeName(namespace, id),
     point: { guid: input.guid, name: input.name, at: input.at },
   };
+  // The row lands first: a Deploy admitted right after the batch commits must find it to stamp.
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.insert(volumePlacement).values({
     volumeId: id,
@@ -121,6 +121,13 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     staged: { primary: primary.id, mirrors: [], deletes: [], seed },
   }).returning();
   if (row === undefined) return yield* Effect.die("the restore's row was not written");
+  const written = yield* callStore(organizationId, userId, {
+    operation: "write", command: { command: "batch", environment: input.environment, commands, expect: environment.revision },
+  });
+  if (!written.ok) {
+    yield* drizzle.delete(volumePlacement).where(eq(volumePlacement.volumeId, id));
+    return { ok: false, refusal: written.refusal } satisfies PlacementWrite;
+  }
   return { ok: true, placement: view(row) } satisfies PlacementWrite;
 });
 

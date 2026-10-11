@@ -131,12 +131,37 @@ export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   };
 });
 
+/** A seed copies the source's dataset as is, so the restored Volume must still ask for the source's storage. */
+const seedLandingRefusal = Effect.fn("VolumeRun.seedLandingRefusal")(function* (
+  organizationId: string,
+  environment: EnvironmentRef,
+  sourceId: string,
+  intoId: string,
+) {
+  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  const source = volumes.find((entry) => entry.id === sourceId);
+  const into = volumes.find((entry) => entry.id === intoId);
+  if (source === undefined || into === undefined) {
+    return { code: "conflict", message: "The restored Volume or its source is gone. Discard the restore.", details: null } satisfies StoreRefusal;
+  }
+  if (JSON.stringify(source.storage) === JSON.stringify(into.storage)) return null;
+  return {
+    code: "conflict",
+    message: `${into.name}'s storage no longer matches ${source.name}'s, so the restore can't land on it. Discard the restore and restore again.`,
+    details: null,
+  } satisfies StoreRefusal;
+});
+
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
 ) {
   const { drizzle } = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
+  if (input.kind === "seed") {
+    const refusal = yield* seedLandingRefusal(caller.organizationId, input.environment, input.volumeId, input.args.into.volumeId);
+    if (refusal !== null) return { ok: false, refusal } as const;
+  }
   const [inserted] = yield* drizzle.insert(volumeRun).values({
     organizationId: caller.organizationId,
     environmentId: volume.environmentId,

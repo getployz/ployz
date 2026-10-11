@@ -1,4 +1,4 @@
-import type { ConfigStore, CopyObservation, MachineId } from "@ployz/sdk";
+import type { ConfigStore, CopyObservation, MachineId, VolumeKind } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +25,7 @@ describe("deploying a Volume placement", () => {
   let harness: PostgresTestHarness;
   let status: string;
   let members: Member[];
+  let restoredStorage: VolumeKind;
   const inspect: MemberInspector = () => Effect.succeed(members);
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
@@ -37,7 +38,7 @@ describe("deploying a Volume placement", () => {
           if (query.query === "deployment") return { status, in_flight: status === "queued", environment: { id: "env-1", project: "shop", name: "production" } };
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
-            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: { kind: "provisioned", maximumBytes: 1 } }],
+            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: restoredStorage }],
           };
         },
       })),
@@ -55,6 +56,7 @@ describe("deploying a Volume placement", () => {
   afterAll(async () => { await harness?.stop(); });
   beforeEach(async () => {
     status = "queued";
+    restoredStorage = { kind: "provisioned", maximumBytes: 1 };
     send.mockClear();
     await harness.pool.query(`
       truncate table organization cascade;
@@ -139,6 +141,22 @@ describe("deploying a Volume placement", () => {
     expect((await harness.pool.query(`select kind from volume_run where id = $1`, [moving.wait.runId])).rows).toEqual([{ kind: "move" }]);
     const rowOf = async (id: string) => (await run(listPlacements(organizationId))).find((row) => row.volumeId === id);
     expect(await rowOf("vol2")).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
+  });
+
+  it("refuses to seed a restored Volume whose storage no longer matches its source", async () => {
+    members = [member("web-1", "writer")];
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: {
+      primary: web("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
+    } }));
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    restoredStorage = { kind: "docker" };
+
+    expect(await run(advancePlacement(organizationId, "dep-1", null, (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : members)))).toEqual({
+      kind: "failed",
+      message: "data-1430: data-1430's storage no longer matches data's, so the restore can't land on it. Discard the restore and restore again.",
+    });
+    expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
   });
 
   describe("refreshing mirrors", () => {
