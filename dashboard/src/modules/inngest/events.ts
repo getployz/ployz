@@ -83,6 +83,7 @@ export type VolumeRunRequestedEventData = {
 };
 export const serverDrainRequestedEvent = "server/drain.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
+export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
@@ -139,6 +140,12 @@ export type ServerDrainRequestedEventData = {
 /** A clean of a Namespace no Environment owns was requested: its row is written. */
 export type NamespaceCleanupRequestedEventData = {
   cleanupId: string;
+  organizationId: string;
+};
+
+/** A restart, start or stop of a Service was accepted: its row is written. */
+export type ServiceActRequestedEventData = {
+  actId: string;
   organizationId: string;
 };
 
@@ -254,6 +261,10 @@ export const namespaceCleanupRequestedEventType = eventType(
   namespaceCleanupRequestedEvent,
   { schema: staticSchema<NamespaceCleanupRequestedEventData>() },
 );
+export const serviceActRequestedEventType = eventType(
+  serviceActRequestedEvent,
+  { schema: staticSchema<ServiceActRequestedEventData>() },
+);
 export const volumeRunRequestedEventType = eventType(
   volumeRunRequestedEvent,
   { schema: staticSchema<VolumeRunRequestedEventData>() },
@@ -361,6 +372,11 @@ export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventD
 /** Keyed by the clean's row: sending it again for the same request runs nothing new. */
 export function createNamespaceCleanupRequestedEvent(data: NamespaceCleanupRequestedEventData) {
   return { id: `namespace-cleanup-${data.cleanupId}`, name: namespaceCleanupRequestedEvent, data } as const;
+}
+
+/** Keyed by the act's row: sending it again for the same attempt runs nothing new. */
+export function createServiceActRequestedEvent(data: ServiceActRequestedEventData) {
+  return { id: `service-act-${data.actId}`, name: serviceActRequestedEvent, data } as const;
 }
 
 /** Keyed by founding: a retried completion sends it again, and Inngest runs it once. */
@@ -529,6 +545,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createCliServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
+  | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
