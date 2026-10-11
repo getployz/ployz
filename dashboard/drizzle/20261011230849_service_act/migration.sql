@@ -29,7 +29,7 @@ CREATE TABLE "service_act" (
       ))
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX "service_act_one_active_idx" ON "service_act" ("organization_id","environment_id","service") WHERE "state" in ('accepted', 'running');--> statement-breakpoint
+CREATE UNIQUE INDEX "service_act_one_active_idx" ON "service_act" ("organization_id","environment_id","runtime") WHERE "state" in ('accepted', 'running');--> statement-breakpoint
 CREATE UNIQUE INDEX "service_act_run_uidx" ON "service_act" ("inngest_run_id") WHERE "inngest_run_id" is not null;--> statement-breakpoint
 CREATE INDEX "service_act_latest_idx" ON "service_act" ("organization_id","environment_id","service","requested_at" DESC NULLS LAST);--> statement-breakpoint
 ALTER TABLE "service_act" ADD CONSTRAINT "service_act_organization_id_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "organization"("id") ON DELETE CASCADE;--> statement-breakpoint
