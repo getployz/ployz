@@ -260,7 +260,7 @@ pub(in crate::observe) fn machine_id(data_dir: &Path) -> Option<MachineId> {
 }
 
 /// One row per live container, then the Machine's row. M7 fills the
-/// Machine row's `disk`; M8 adds its marker rows to the same batch.
+/// Machine row's `disk`. Marker rows come from the harvester's Docker events.
 fn sample(
     roots: &Roots,
     machine_id: MachineId,
