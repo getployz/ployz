@@ -3,6 +3,7 @@ import type { CopyObservation, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
+import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
@@ -40,6 +41,19 @@ const release = Effect.fn("VolumePlacement.release")(function* (organizationId: 
   const { drizzle } = yield* Database;
   yield* drizzle.update(volumePlacement).set({ deploymentId: null, updatedAt: new Date() })
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId)));
+});
+
+/**
+ * Deployment `deploymentId` ended without settling its Volumes: they go back to staged for the next Deploy. One still in
+ * flight keeps them, so a duplicate run stopping can't take them from the live one. A Volume run already going is its
+ * own Inngest function and keeps running; the next Deploy waits on it before planning again.
+ */
+export const releasePlacementClaims = Effect.fn("VolumePlacement.releaseClaims")(function* (organizationId: string, deploymentId: string) {
+  const inFlight = yield* readStore(organizationId, { query: "deployment", id: deploymentId }).pipe(
+    Effect.map((deployment) => deployment.in_flight),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(false)),
+  );
+  if (!inFlight) yield* release(organizationId, deploymentId);
 });
 
 const settle = Effect.fn("VolumePlacement.settle")(function* (volumeId: string, values: Partial<typeof volumePlacement.$inferInsert>) {

@@ -7,6 +7,7 @@ import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
+import { releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
@@ -131,6 +132,7 @@ export const failStoreDeploymentStorage = Effect.fn("StoreDeployment.failStorage
   const failed = yield* failUnclaimed(store, organizationId, deploymentId, runId, failure, failure).pipe(
     Effect.ensuring(released(store, organizationId, deploymentId)),
   );
+  yield* releasePlacementClaims(organizationId, deploymentId);
   yield* forgetStoreDeploymentRun(runId);
   return failed;
 });
@@ -168,6 +170,7 @@ export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(funct
     Effect.catchIf(refusedWith("conflict"), (refused) => failUnclaimed(store, organizationId, deploymentId, runId, refused.message)),
     Effect.ensuring(released(store, organizationId, deploymentId)),
   );
+  yield* releasePlacementClaims(organizationId, deploymentId);
   yield* cancelled;
   yield* forgetStoreDeploymentRun(runId);
   return stopped;

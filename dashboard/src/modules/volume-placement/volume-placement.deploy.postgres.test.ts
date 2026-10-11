@@ -6,7 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
-  advancePlacement, type MemberInspector, refreshMirrors, stageOffServer, unlessPlacementRefused,
+  advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
@@ -99,6 +99,15 @@ describe("deploying a Volume placement", () => {
     expect(await run(advancePlacement(organizationId, "dep-1", null, inspect))).toEqual({ kind: "stopped" });
     expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("returns an ended Deploy's Volumes to staged, and leaves one still in flight its claim", async () => {
+    await stageMove("web-2", ["web-2"]);
+    await run(releasePlacementClaims(organizationId, "dep-1"));
+    expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: "dep-1" });
+    status = "failed";
+    await run(releasePlacementClaims(organizationId, "dep-1"));
+    expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
   });
 
   it("waits for a run it didn't start, then plans again", async () => {

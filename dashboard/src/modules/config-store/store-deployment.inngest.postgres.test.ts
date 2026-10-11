@@ -4,13 +4,16 @@ import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, ConfigTrusted } from "@ployz/sdk";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
+import { eq } from "drizzle-orm";
 import { Header } from "tar";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { createCancelStoreDeployment, createDeployToFirstServer, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
-import { recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
+import { failStoreDeploymentStorage, recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
 import { GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
 import { configDeploymentAdmittedEvent, createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
+import { volumePlacement } from "#/modules/volume-placement/tables";
+import { Database } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
@@ -23,6 +26,7 @@ const CANCELLED = "00000000-0000-4000-8000-00000000a102";
 const LOST = "00000000-0000-4000-8000-00000000a103";
 const QUEUED = "00000000-0000-4000-8000-00000000a104";
 const UNCLAIMED = "00000000-0000-4000-8000-00000000a105";
+const UNSTORED = "00000000-0000-4000-8000-00000000a106";
 const SECRET = "s3cr3t-never-in-a-step";
 const here = { project: null, environment: null };
 
@@ -57,6 +61,15 @@ it.live(
       const worker = createRunStoreDeployment(inngest, runner);
       const run = (deploymentId: string) =>
         Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)] }).execute());
+      const claim = (deploymentId: string) => Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.insert(volumePlacement).values({ volumeId: `vol-${deploymentId}`, organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId });
+      }).pipe(Effect.provide(services));
+      const claimOn = (deploymentId: string) => Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const [row] = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.volumeId, `vol-${deploymentId}`));
+        return row?.deploymentId;
+      }).pipe(Effect.provide(services));
 
       // No Server is enrolled, so its runner records that nothing ran.
       const first = yield* run(DEPLOYED);
@@ -78,22 +91,27 @@ it.live(
       expect(cancelled.result).toMatchObject({ nothingToRun: expect.any(String) });
 
       // A failed run that never claimed its Deployment leaves it to the runner that did.
+      yield* claim(DEPLOYED);
       const onFailure = worker.opts.onFailure;
       if (onFailure === undefined) return expect.fail("the worker records abandoned runs");
       const abandoned = yield* Effect.promise(() =>
         // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
         Promise.resolve(onFailure({ event: { data: { run_id: "never-claimed", event: admitted(DEPLOYED) } } } as never)));
       expect(abandoned).toMatchObject({ nothingToRun: expect.any(String) });
+      // A Deployment that ended leaves its Volumes staged for the next one.
+      expect(yield* claimOn(DEPLOYED)).toBeNull();
 
       // A run cancelled in Inngest after it claimed its Deployment records that it stopped: it never reads running.
       yield* write({ command: "admit", admit: "deploy", id: LOST, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* recordStoreDeploymentRun("cancelled-run", admitted(LOST).data).pipe(Effect.provide(services));
       yield* Effect.promise(() => store.runDeployment(ORGANIZATION, LOST, "cloud-cancelled-run", [], { failure: "stopped" }));
+      yield* claim(LOST);
       const stop = (runId: string) => Effect.promise(async () => (await new InngestTestEngine({
         function: createCancelStoreDeployment(inngest, runner),
         events: [{ name: "inngest/function.cancelled", data: { function_id: "run-store-deployment", run_id: runId } }],
       }).execute()).result);
       expect(yield* stop("cancelled-run")).toMatchObject({ abandoned: { id: LOST } });
+      expect(yield* claimOn(LOST)).toBeNull();
       // Recorded runs are forgotten once stopped, and other functions' runs were never recorded.
       expect(yield* stop("cancelled-run")).toEqual({ skipped: true });
 
@@ -102,6 +120,13 @@ it.live(
       yield* recordStoreDeploymentRun("early-run", admitted(UNCLAIMED).data).pipe(Effect.provide(services));
       expect(yield* stop("early-run")).toEqual({ failed: UNCLAIMED });
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: UNCLAIMED }))).toMatchObject({ status: "failed" });
+
+      // A run that gave up moving its Volumes fails the Deployment and returns them to staged.
+      yield* write({ command: "admit", admit: "deploy", id: UNSTORED, environment: here, services: [], version: null, accept_volume_loss: [] });
+      yield* claim(UNSTORED);
+      expect(yield* failStoreDeploymentStorage(ORGANIZATION, UNSTORED, "storage-run", "data: web-2 did not answer").pipe(Effect.provide(services)))
+        .toEqual({ failed: UNSTORED });
+      expect(yield* claimOn(UNSTORED)).toBeNull();
 
       // An admission whose hand-off was lost is handed over again once it has waited a minute, unless a worker run
       // holds its Environment's queue.
