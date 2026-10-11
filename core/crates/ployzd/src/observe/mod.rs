@@ -67,7 +67,7 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         store.clone(),
         data_dir.to_path_buf(),
     ));
-    harvest::Harvester::run(docker, &docker_root, store).await
+    harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf()).await
 }
 
 fn lock_store(store: &StoreRoot) -> io::Result<File> {

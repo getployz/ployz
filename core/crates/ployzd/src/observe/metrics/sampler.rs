@@ -252,7 +252,7 @@ fn tick(
 }
 
 /// Read every tick: a reset gives the Machine a new id.
-fn machine_id(data_dir: &Path) -> Option<MachineId> {
+pub(in crate::observe) fn machine_id(data_dir: &Path) -> Option<MachineId> {
     let bytes = fs::read(data_dir.join(MACHINE_FILE)).ok()?;
     serde_json::from_slice::<LocalMachineRecord>(&bytes)
         .ok()

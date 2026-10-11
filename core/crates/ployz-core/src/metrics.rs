@@ -81,6 +81,42 @@ pub struct HostSample {
     pub disk: Option<DiskBreakdown>,
 }
 
+/// Something Docker did to a Service container, kept beside its samples.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MetricMarker {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    pub service_id: ServiceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deployment_id: Option<String>,
+    pub replica: String,
+    /// When Docker reported the event.
+    pub ts: i64,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub kind: MarkerKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MarkerKind {
+    /// The kernel's OOM killer killed a process in the container.
+    Oom,
+    /// The container's main process exited.
+    Exit {
+        /// Absent when Docker did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        exit_code: Option<i64>,
+    },
+    /// Docker started the container again after it exited.
+    Restart,
+}
+
 /// Cumulative jiffies across all CPUs. Idle includes iowait.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CpuJiffies {
@@ -388,6 +424,50 @@ mod tests {
                 "disk": { "total": 1_000, "free": 400, "observe_store": 50 },
             })
         );
+    }
+
+    #[test]
+    fn a_marker_names_its_kind_beside_the_container_labels() {
+        let sample = sample();
+        let marker = MetricMarker {
+            machine_id: sample.machine_id,
+            container_id: sample.container_id,
+            service_id: sample.service_id.unwrap(),
+            namespace: None,
+            deployment_id: Some("d1".into()),
+            replica: "web-1".into(),
+            ts: 7,
+            kind: MarkerKind::Exit {
+                exit_code: Some(137),
+            },
+        };
+        let json = serde_json::to_value(&marker).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "machine_id": "a".repeat(32),
+                "container_id": "b".repeat(64),
+                "service_id": "c".repeat(32),
+                "deployment_id": "d1",
+                "replica": "web-1",
+                "ts": 7,
+                "kind": "exit",
+                "exit_code": 137,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<MetricMarker>(json).unwrap(),
+            marker
+        );
+
+        let oom = MetricMarker {
+            kind: MarkerKind::Oom,
+            ..marker
+        };
+        let json = serde_json::to_value(&oom).unwrap();
+        assert_eq!(json.get("kind"), Some(&"oom".into()));
+        assert!(json.get("exit_code").is_none());
+        assert_eq!(serde_json::from_value::<MetricMarker>(json).unwrap(), oom);
     }
 
     #[test]

@@ -17,7 +17,10 @@ use bollard::{
 };
 use futures_util::{Stream, StreamExt};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
-use ployz_core::{ContainerId, Namespace};
+use ployz_core::{
+    ContainerId, MachineId, Namespace, ServiceId,
+    metrics::{MarkerKind, MetricMarker},
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -29,8 +32,14 @@ use super::{
         ContainerKind, ContainerMeta, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason, LINKING_FILE,
         LogFileName, META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
     },
+    metrics::{
+        sampler,
+        segment::{self, Row},
+    },
 };
-use crate::docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_NAME};
+use crate::docker::{
+    LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID, LABEL_SERVICE_NAME,
+};
 
 const LABEL_SYSTEM_MANAGED: &str = "ployzd.managed";
 const LABEL_DEPLOYMENT: &str = "ployz.deployment.id";
@@ -43,6 +52,8 @@ const INSPECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DIR_MASK: WatchMask = WatchMask::CREATE.union(WatchMask::ONLYDIR);
 const SYNC_ATTEMPTS: usize = 8;
 const GAP_BOUND_READ_BYTES: u64 = 1 << 20;
+const EXIT_CODE_ATTRIBUTE: &str = "exitCode";
+const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 type DockerEvents = Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>>;
 
@@ -89,6 +100,14 @@ pub(super) struct Harvester {
     /// each maintenance tick and, from the files alone, at startup.
     unsettled: HashSet<ContainerId>,
     inspected: mpsc::UnboundedSender<(ContainerId, Inspected)>,
+    /// Holds the Machine record that stamps metric markers.
+    data_dir: PathBuf,
+    /// The newest Docker event seen. A reconnect resumes from it, so events
+    /// sent while the stream was down still leave their markers.
+    last_event_nanos: Option<i64>,
+    /// Service containers whose exit was marked; their next start is a
+    /// restart.
+    exited: HashSet<ContainerId>,
 }
 
 impl Harvester {
@@ -96,12 +115,13 @@ impl Harvester {
         docker: Docker,
         docker_root: &Path,
         store: StoreRoot,
+        data_dir: PathBuf,
     ) -> io::Result<()> {
         let inotify = Inotify::init()?;
         let watches = inotify.watches();
         let mut inotify_events = inotify.into_event_stream([0_u8; 64 * 1024])?;
         let (inspected, mut inspections) = mpsc::unbounded_channel();
-        let mut harvester = Self::new(docker, docker_root, store, watches, inspected);
+        let mut harvester = Self::new(docker, docker_root, store, watches, inspected, data_dir);
         let mut docker_events = Some(harvester.docker_events());
         let mut reconnect_at = None;
         harvester.rescan();
@@ -156,6 +176,7 @@ impl Harvester {
         store: StoreRoot,
         watches: Watches,
         inspected: mpsc::UnboundedSender<(ContainerId, Inspected)>,
+        data_dir: PathBuf,
     ) -> Self {
         Self {
             docker,
@@ -169,6 +190,9 @@ impl Harvester {
             inspecting: HashMap::new(),
             unsettled: HashSet::new(),
             inspected,
+            data_dir,
+            last_event_nanos: None,
+            exited: HashSet::new(),
         }
     }
 
@@ -177,8 +201,11 @@ impl Harvester {
             ("type", vec!["container"]),
             ("event", vec!["start", "oom", "die"]),
         ]);
-        let options = EventsOptionsBuilder::default().filters(&filters).build();
-        Box::pin(self.docker.events(Some(options)))
+        let mut options = EventsOptionsBuilder::default().filters(&filters);
+        if let Some(since) = self.last_event_nanos.map(docker_time) {
+            options = options.since(&since);
+        }
+        Box::pin(self.docker.events(Some(options.build())))
     }
 
     fn rescan(&mut self) {
@@ -214,6 +241,7 @@ impl Harvester {
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
+        self.exited.retain(|id| present.contains(id));
         for id in present {
             self.discovered(id);
         }
@@ -263,6 +291,9 @@ impl Harvester {
         else {
             return;
         };
+        if self.first_delivery(&message) {
+            self.mark(id, &message);
+        }
         if matches!(self.seen.get(&id), Some(Seen::Ignored)) {
             return;
         }
@@ -275,6 +306,31 @@ impl Harvester {
         ) {
             self.request_inspect(id);
             self.sync(&id);
+        }
+    }
+
+    /// Records the event's time and says whether it is new: a stream resumed
+    /// from the newest event repeats that event.
+    fn first_delivery(&mut self, message: &EventMessage) -> bool {
+        let Some(at) = message.time_nano else {
+            return true;
+        };
+        if self.last_event_nanos.is_some_and(|last| at <= last) {
+            return false;
+        }
+        self.last_event_nanos = Some(at);
+        true
+    }
+
+    fn mark(&mut self, id: ContainerId, message: &EventMessage) {
+        let Some(machine_id) = sampler::machine_id(&self.data_dir) else {
+            return;
+        };
+        let Some(marker) = marker(machine_id, id, message, &mut self.exited) else {
+            return;
+        };
+        if let Err(error) = segment::append(&self.store, &[Row::Marker(marker)]) {
+            tracing::warn!(container = %id, %error, "cannot append a metric marker");
         }
     }
 
@@ -541,6 +597,7 @@ impl Harvester {
     fn forget(&mut self, id: &ContainerId) {
         self.seen.insert(*id, Seen::Ignored);
         self.damage.remove(id);
+        self.exited.remove(id);
         self.owned_by_event.remove(id);
         self.unwatch_container(id);
     }
@@ -1227,6 +1284,53 @@ fn labelled_by_event(message: &EventMessage) -> ContainerInspectResponse {
     }
 }
 
+/// The marker a Docker event leaves on a Service container. System
+/// containers and pre-deploy hooks get none: no Service shows them, and a
+/// hook is meant to exit.
+fn marker(
+    machine_id: MachineId,
+    id: ContainerId,
+    message: &EventMessage,
+    exited: &mut HashSet<ContainerId>,
+) -> Option<MetricMarker> {
+    let labelled = labelled_by_event(message);
+    let meta = container_meta(&labelled).filter(|meta| meta.kind == ContainerKind::Service)?;
+    let attributes = labelled.config.and_then(|config| config.labels)?;
+    let service_id = ServiceId::parse(attributes.get(LABEL_SERVICE_ID)?.clone()).ok()?;
+    let kind = match message.action.as_deref()? {
+        "oom" => MarkerKind::Oom,
+        "die" => {
+            exited.insert(id);
+            MarkerKind::Exit {
+                exit_code: attributes
+                    .get(EXIT_CODE_ATTRIBUTE)
+                    .and_then(|code| code.parse().ok()),
+            }
+        }
+        "start" if exited.remove(&id) => MarkerKind::Restart,
+        _ => return None,
+    };
+    Some(MetricMarker {
+        machine_id,
+        container_id: id,
+        service_id,
+        namespace: meta.namespace,
+        deployment_id: meta.deployment,
+        replica: meta.replica,
+        ts: message.time_nano.unwrap_or_else(now_nanos),
+        kind,
+    })
+}
+
+/// Docker's `since` takes seconds with a fractional part.
+fn docker_time(nanos: i64) -> String {
+    format!(
+        "{}.{:09}",
+        nanos.div_euclid(NANOS_PER_SEC),
+        nanos.rem_euclid(NANOS_PER_SEC)
+    )
+}
+
 pub(super) fn now_nanos() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1282,7 +1386,7 @@ mod tests {
         },
     };
     use inotify::Inotify;
-    use ployz_core::ContainerId;
+    use ployz_core::{ContainerId, MachineId, metrics::MarkerKind};
     use tokio::sync::mpsc;
     use tracing_subscriber::fmt::MakeWriter;
 
@@ -1292,11 +1396,14 @@ mod tests {
         sync_container, write_meta,
     };
     use crate::{
+        machine::{LocalMachineBody, LocalMachineRecord},
+        network::WireGuardPrivateKey,
         observe::{
             frame::{Piece, Stream, tests::frame},
             layout::{
                 ContainerKind, ContainerMeta, Gap, GapReason, LINKING_FILE, LogFileName, StoreRoot,
             },
+            metrics::segment::Row,
         },
         test_dir::TestDir,
     };
@@ -1963,6 +2070,7 @@ mod tests {
                 self.store.clone(),
                 inotify.watches(),
                 inspected,
+                self.root.0.clone(),
             );
             Running {
                 harvester,
@@ -2574,5 +2682,122 @@ mod tests {
         let journal = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
         assert!(journal.contains("symlinks=1"), "{journal}");
         assert!(exists(&host.local_logs()));
+    }
+
+    const SERVICE_ID: &str = "cccccccccccccccccccccccccccccccc";
+
+    impl Host {
+        fn with_machine(self) -> Self {
+            let record = LocalMachineRecord::parse(
+                LocalMachineBody::Uninitialized {
+                    id: MachineId::parse("a".repeat(32)).unwrap(),
+                },
+                WireGuardPrivateKey::from_bytes([0; 32]),
+            )
+            .unwrap();
+            fs::write(
+                self.root.0.join("machine.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+            self
+        }
+
+        fn markers(&self) -> Vec<(i64, MarkerKind)> {
+            let Ok(segments) = fs::read_dir(self.store.raw_metrics()) else {
+                return Vec::new();
+            };
+            let mut markers: Vec<(i64, MarkerKind)> = segments
+                .flat_map(|segment| {
+                    fs::read_to_string(segment.unwrap().path())
+                        .unwrap()
+                        .lines()
+                        .map(|line| serde_json::from_str::<Row>(line).unwrap())
+                        .collect::<Vec<_>>()
+                })
+                .filter_map(|row| match row {
+                    Row::Marker(marker) => {
+                        assert_eq!(marker.service_id.as_str(), SERVICE_ID);
+                        assert_eq!(marker.replica, "web-1");
+                        assert_eq!(marker.deployment_id.as_deref(), Some("d1"));
+                        Some((marker.ts, marker.kind))
+                    }
+                    Row::Container(_) | Row::Host(_) => None,
+                })
+                .collect();
+            markers.sort_by_key(|(ts, _)| *ts);
+            markers
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oom_kill_and_its_restart_leave_one_marker_each() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = [("ployz.service.id", SERVICE_ID)];
+        let die = event("die", T0 + 2, &[service[0], ("exitCode", "137")]);
+        running
+            .harvester
+            .on_docker_event(event("oom", T0 + 1, &service));
+        running.harvester.on_docker_event(die.clone());
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 3, &service));
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 4, &service));
+        // A stream resumed from the newest event delivers it again.
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 4, &service));
+        running.harvester.on_docker_event(die);
+
+        assert_eq!(
+            host.markers(),
+            [
+                (T0 + 1, MarkerKind::Oom),
+                (
+                    T0 + 2,
+                    MarkerKind::Exit {
+                        exit_code: Some(137)
+                    }
+                ),
+                (T0 + 3, MarkerKind::Restart),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn system_containers_and_hooks_leave_no_marker() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let mut system = event("die", T0, &[]);
+        system.actor.as_mut().unwrap().attributes = Some(HashMap::from([
+            ("ployzd.managed".to_owned(), "true".to_owned()),
+            ("name".to_owned(), "ployz-corrosion".to_owned()),
+        ]));
+        running.harvester.on_docker_event(system);
+        running.harvester.on_docker_event(event(
+            "die",
+            T0 + 1,
+            &[
+                ("ployz.service.id", SERVICE_ID),
+                ("ployz.service.hook", "pre-deploy"),
+            ],
+        ));
+        running.harvester.on_docker_event(event(
+            "oom",
+            T0 + 2,
+            &[("ployz.service.id", "not-an-id")],
+        ));
+        assert_eq!(host.markers(), []);
+    }
+
+    #[test]
+    fn docker_resumes_events_from_a_fractional_second() {
+        assert_eq!(
+            super::docker_time(1_760_000_000_000_000_042),
+            "1760000000.000000042"
+        );
     }
 }

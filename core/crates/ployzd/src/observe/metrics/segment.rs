@@ -5,6 +5,10 @@
 //! a segment once its hour is a day old, or sooner when the Observe Store
 //! passes its cap or the disk its free floor.
 //!
+//! The sampler and the harvester's Docker event markers append to the same
+//! segment. Each append is one write of whole lines to a file opened for
+//! appending, so their lines do not interleave.
+//!
 //! A crash can leave a segment's last line half written. Reads skip any line
 //! that does not parse, and the next append first ends the torn line so it
 //! cannot swallow the row written after it.
@@ -23,7 +27,7 @@ use std::{
 };
 
 use nix::fcntl::OFlag;
-use ployz_core::metrics::{HostSample, MetricRange, MetricSample, MetricScope};
+use ployz_core::metrics::{HostSample, MetricMarker, MetricRange, MetricSample, MetricScope};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::observe::layout::{self, METRICS_DIR, SegmentName, StoreRoot};
@@ -34,6 +38,7 @@ use crate::observe::layout::{self, METRICS_DIR, SegmentName, StoreRoot};
 pub enum Row {
     Container(MetricSample),
     Host(HostSample),
+    Marker(MetricMarker),
 }
 
 /// A stored metric row, which a range read keeps or drops by its `ts`.
@@ -46,6 +51,7 @@ impl Stamped for Row {
         match self {
             Self::Container(sample) => sample.ts,
             Self::Host(sample) => sample.ts,
+            Self::Marker(marker) => marker.ts,
         }
     }
 }
