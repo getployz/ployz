@@ -91,7 +91,7 @@ pub async fn control(
     };
     let gate = Gate {
         token,
-        regions: config.regions.clone(),
+        regions: config.region_codes(),
     };
     let plane = Arc::new(ControlPlane::start(config, crypto, shutdown.clone()).await?);
     let listener = bind(listen).await?;
