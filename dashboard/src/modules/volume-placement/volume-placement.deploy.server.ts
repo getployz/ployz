@@ -68,6 +68,7 @@ const settle = Effect.fn("VolumePlacement.settle")(function* (volumeId: string, 
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
+  read: BlockerReader = readPlacementBlockers,
 ) {
   const deployment = yield* readStore(organizationId, { query: "deployment", id: deploymentId });
   if (deployment.status !== "queued") {
@@ -86,6 +87,12 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
+  // A Server that joined on an older daemon since these were staged can't take part in a run.
+  const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId, read);
+  if (refusal?.code === "upgrade_required") {
+    yield* release(organizationId, deploymentId);
+    return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
+  }
   const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
@@ -93,7 +100,8 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   for (const row of ordered) {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     if (volume === undefined) {
-      yield* settle(row.volumeId, { staged: null, deploymentId: null });
+      // A restore's Volume can be still on its way into the Store; only staging or discarding the restore drops its row.
+      yield* settle(row.volumeId, row.staged?.seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
       continue;
     }
     // A restore's run belongs to its source, the Volume it copies from.

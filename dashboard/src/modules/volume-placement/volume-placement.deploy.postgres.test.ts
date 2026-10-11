@@ -32,7 +32,7 @@ describe("deploying a Volume placement", () => {
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
     Effect.provideService(InngestClient, inngest),
-    Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("the test inspects members itself") }),
+    Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
         read: async (_: string, query: { query: string }) => {
@@ -152,6 +152,29 @@ describe("deploying a Volume placement", () => {
     expect((await harness.pool.query(`select kind from volume_run where id = $1`, [moving.wait.runId])).rows).toEqual([{ kind: "move" }]);
     const rowOf = async (id: string) => (await run(listPlacements(organizationId))).find((row) => row.volumeId === id);
     expect(await rowOf("vol2")).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
+  });
+
+  it("fails with the upgrade message once a Server with storage runs an older daemon", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    await stageMove("web-2", ["web-2"]);
+
+    expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, () => Effect.succeed(["db-old"])))).toEqual({
+      kind: "failed", message: expect.stringContaining("db-old"),
+    });
+    expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
+    expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
+  });
+
+  it("keeps a restore staged when its Volume isn't in the Store yet", async () => {
+    const seed = { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } };
+    await harness.pool.query(
+      `insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ('vol3', $1, 'env-1', '[]', $2)`,
+      [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed })],
+    );
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+
+    expect(await run(advancePlacement(organizationId, "dep-1", null, inspect))).toEqual({ kind: "done" });
+    expect(await placement()).toMatchObject({ volumeId: "vol3", staged: { seed }, deploymentId: null });
   });
 
   it("refuses to seed a restored Volume whose storage no longer matches its source", async () => {
