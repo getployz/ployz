@@ -2,9 +2,10 @@ import type { ReactNode } from "react";
 import { areaY, crosshair, defineChart, lineY, rect, ruleX, ruleY } from "@tanstack/charts";
 import { cursorHost, type ChartCursorController } from "@tanstack/charts/cursor";
 import { decorative } from "@tanstack/charts/mark/decorative";
-import { Chart } from "@tanstack/charts/react";
+import { Chart } from "@tanstack/charts/react/tooltip";
 import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
+import { portal } from "@tanstack/charts/tooltip/portal";
 import { scaleUtc } from "d3-scale";
 import { Card } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
@@ -19,7 +20,7 @@ const AT_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numer
  * One metric as a card: title and latest value on top, a thin line over a soft fill, incident bands, deploy rules and an
  * optional dashed limit. Every chart on the tab shares `cursor`, so hovering one lines them all up.
  */
-export function MetricChart({ id, title, value, times, series, format, limit, bands, deploys, from, to, cursor, onPick, dimmed = false, height = 120 }: {
+export function MetricChart({ id, title, value, times, series, format, limit, bands, deploys, from, to, cursor, onPick, renderTooltip, dimmed = false, height = 120 }: {
   id: string;
   title: string;
   value: ReactNode;
@@ -34,6 +35,8 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
   cursor: ChartCursorController<Date, number>;
   /** A click on the chart, with the time under it. */
   onPick: (at: number) => void;
+  /** The tooltip for the step at `at`, in place of one line per series. */
+  renderTooltip?: (at: number) => ReactNode;
   /** Showing an older read while a newer one loads. */
   dimmed?: boolean;
   height?: number;
@@ -69,6 +72,8 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
     cursor: { use: cursorHost, controller: cursor, mode: "focus", match: "x" },
     tooltip: {
       use: tooltip,
+      // The Card clips its children, and the Response time tooltip is taller than the chart.
+      portal,
       sticky: false,
       formatGroup: (points) => {
         const row = points[0]?.datum;
@@ -88,6 +93,8 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
       </div>
       <Chart definition={definition} height={height} initialWidth={600} idPrefix={id} ariaLabel={title}
         onSelect={(point) => { if (point?.xValue instanceof Date) onPick(point.xValue.getTime()); }}
+        renderTooltipBody={renderTooltip === undefined ? undefined
+          : ({ primaryPoint, defaultBody }) => primaryPoint?.xValue instanceof Date ? renderTooltip(primaryPoint.xValue.getTime()) : defaultBody}
         className={cn("text-xs text-muted-foreground transition-opacity [--ts-chart-tooltip-background:var(--popover)] [--ts-chart-tooltip-color:var(--popover-foreground)]", dimmed && "opacity-50")} />
       {series.length > 1 ? (
         <div className="flex gap-3 text-xs text-muted-foreground">

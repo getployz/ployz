@@ -18,8 +18,8 @@ import { LIMITS, previewMetrics } from "#/modules/uptime/metrics-preview";
 import {
   barCount,
   causeText,
-  checkSeries,
   checkState,
+  checkSteps,
   formatMs,
   formatSpan,
   historyBars,
@@ -40,6 +40,7 @@ import { UPTIME_RANGES, type UptimeIncidentEntry, type UptimeRange } from "#/mod
 import { type UptimeScope, usePrefetchServiceUptime, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
 import { MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
+import { ResponseTooltip } from "./ResponseTooltip";
 
 type MonitoringProps = {
   organizationSlug: string;
@@ -290,7 +291,7 @@ type ChartFrame = {
 };
 
 /**
- * The check's response time, averaged across regions. A zoom reads the finest range that covers it, and keeps the old
+ * The check's response time, the median across regions, with each region's on hover. A zoom reads the finest range that covers it, and keeps the old
  * line, dimmed, until that read lands.
  */
 function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }: {
@@ -304,15 +305,22 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }:
   chart: ChartFrame;
 }) {
   const shown = useDeferredValue(range);
-  const check = checkSeries(useServiceUptime(scope, serviceId, shown).data?.points ?? [], window);
+  const checked = checkSteps(useServiceUptime(scope, serviceId, shown).data?.points ?? [], window);
+  const check = checked.map((step) => step.medianMs);
   const checkMs = average(check);
+  const byAt = new Map(checked.map((step, index) => [step.at, index]));
   const series: MetricSeries[] = [
     ...(edge ? [{ label: "Edge", color: "var(--chart-1)", values: edge }] : []),
     { label: "Check", color: "var(--chart-2)", values: check },
   ];
   return (
     <MetricChart id="response" title="Response time" format={formatMs} {...chart} dimmed={shown !== range}
-      value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series} />
+      value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series}
+      renderTooltip={(at) => {
+        const index = byAt.get(at);
+        const step = index === undefined ? undefined : checked[index];
+        return step ? <ResponseTooltip step={step} stepMs={window.stepMs} edgeMs={edge?.[index ?? -1] ?? null} /> : null;
+      }} />
   );
 }
 

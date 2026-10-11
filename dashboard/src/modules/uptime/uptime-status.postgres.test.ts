@@ -3,7 +3,10 @@ import { Effect, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import contract from "#/modules/uptime/incident-evidence.fixture.json";
-import { IncidentEvidence, UPTIME_RANGES, type UptimeRange } from "#/modules/uptime/uptime-status";
+import { mergePoints, tally } from "#/modules/uptime/uptime";
+import {
+  FAILURE_CLASSES, type FailureClass, IncidentEvidence, PHASES, UPTIME_RANGES, type UptimePoint, type UptimeRange,
+} from "#/modules/uptime/uptime-status";
 import { readEnvironmentUptime, readServiceUptime } from "#/modules/uptime/uptime-status.server";
 import type { Database } from "#/server/database.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -72,21 +75,42 @@ async function createCheck(organizationId = acme, environmentId = randomUUID()) 
 type Check = Awaited<ReturnType<typeof createCheck>>;
 
 function result(check: Check, region: string, scheduledAt: string, verdict: "pass" | "fail" | "inconclusive",
-  totalMs: number, kind: "routine" | "confirm" | "recheck" = "routine") {
+  totalMs: number, kind: "routine" | "confirm" | "recheck" = "routine", status = verdict === "pass" ? 200 : 0) {
   return harness.pool.query(
     `insert into uptime_result (check_id, organization_id, region, scheduled_at, kind, start_lag_ms, verdict, status,
        failed_phase, error, detail, dns_ms, connect_ms, tls_ms, ttfb_ms, total_ms, agent)
-     values ($1, $2, $3, $4, $5, 0, $6, $7, $8, '', '', 0, 0, 0, 0, $9, 'agent-1')`,
-    [check.id, check.organizationId, region, scheduledAt, kind, verdict, verdict === "pass" ? 200 : 0,
-      verdict === "fail" ? "connect" : "none", totalMs],
+     values ($1, $2, $3, $4, $5, 0, $6, $7, $8, '', $9, 1, 2, 3, $10, $10 + 6, 'agent-1')`,
+    [check.id, check.organizationId, region, scheduledAt, kind, verdict, status,
+      verdict === "fail" && status === 0 ? "connect" : "none", verdict === "fail" && status === 0 ? "refused by peer" : "",
+      totalMs - 6],
   );
 }
 
-function hourly(check: Check, region: string, hour: string, probes: number, failures: number, inconclusive: number,
+type Hour = Omit<UptimePoint, "medianMs" | "maxMs" | "at"> & { at: string; medianMs: number | null; maxMs: number };
+
+/** An hour as both the rollup row and the UptimePoint it stands for, so a test can fold it with mergePoints. */
+const hour = (region: string, at: string, probes: number, failed: Partial<Record<FailureClass, number>> = {},
+  medianMs: number | null = null, patch: Partial<Hour> = {}): Hour => ({
+  at, region, probes, failures: tally(FAILURE_CLASSES, (cls) => failed[cls] ?? 0), medianMs, maxMs: medianMs ?? 0,
+  phaseMsSum: tally(PHASES, () => 0), lastError: null, ...patch,
+});
+
+function hourly(check: Check, region: string, at: string, probes: number, failures: number, inconclusive: number,
   p50: number | null = null) {
+  return insertHour(check, hour(region, at, probes, { other: failures }, p50), inconclusive);
+}
+
+function insertHour(check: Check, row: Hour, inconclusive = 0) {
+  const failures = FAILURE_CLASSES.map((cls) => row.failures[cls]);
   return harness.pool.query(
-    `insert into uptime_result_hourly values ($1, $2, $3, $4, $5, $6, $7, 0, 0, $8, $8)`,
-    [check.id, check.organizationId, region, hour, probes, failures, inconclusive, p50],
+    `insert into uptime_result_hourly (check_id, organization_id, region, hour, probes, failures, inconclusive, pass_ms_sum,
+       pass_ms_max, pass_ms_p50, dns_ms_sum, connect_ms_sum, tls_ms_sum, ttfb_ms_sum,
+       ${FAILURE_CLASSES.map((cls) => `failures_${cls}`).join(", ")}, last_error, last_error_class, last_error_at)
+     values ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11, $12, $13, ${failures.map((_, index) => `$${index + 14}`).join(", ")},
+       $21, $22, $23)`,
+    [check.id, check.organizationId, row.region, row.at, row.probes, failures.reduce((a, b) => a + b, 0), inconclusive,
+      row.maxMs, row.medianMs, ...PHASES.map((phase) => row.phaseMsSum[phase]), ...failures,
+      row.lastError?.text ?? null, row.lastError?.cls ?? null, row.lastError?.at ?? null],
   );
 }
 
@@ -192,62 +216,85 @@ describe("uptime percentages", () => {
 });
 
 describe("uptime chart", () => {
-  it("draws 24h from raw routine probes, with null for every probe that did not pass", async () => {
+  const brief = (points: readonly UptimePoint[]) =>
+    points.map(({ at, region, probes, medianMs }) => ({ at, region, probes, medianMs }));
+
+  it("draws 24h from raw routine probes, one probe a point, a failure in the class and words its probe gave", async () => {
     const check = await createCheck();
     await result(check, "us-east", ago(2 * HOUR), "fail", 9000);
     await result(check, "eu-west", ago(2 * HOUR), "pass", 140);
     await result(check, "eu-west", ago(HOUR), "inconclusive", 0);
     await result(check, "eu-west", ago(HOUR - 1000), "fail", 9000, "confirm");
+    await result(check, "eu-west", ago(30 * 60_000), "fail", 400, "routine", 503);
     await result(check, "eu-west", ago(25 * HOUR), "pass", 99);
     await hourly(check, "eu-west", hourAgo(2), 1, 0, 0, 555);
 
-    expect(await series(check, "24h")).toEqual([
-      { at: ago(2 * HOUR), region: "eu-west", ms: 140 },
-      { at: ago(2 * HOUR), region: "us-east", ms: null },
-      { at: ago(HOUR), region: "eu-west", ms: null },
+    const points = await series(check, "24h");
+    expect(brief(points)).toEqual([
+      { at: ago(2 * HOUR), region: "eu-west", probes: 1, medianMs: 140 },
+      { at: ago(2 * HOUR), region: "us-east", probes: 1, medianMs: null },
+      { at: ago(HOUR), region: "eu-west", probes: 0, medianMs: null },
+      { at: ago(30 * 60_000), region: "eu-west", probes: 1, medianMs: null },
     ]);
+    expect(points[0]).toMatchObject({ maxMs: 140, phaseMsSum: { dns: 1, connect: 2, tls: 3, ttfb: 134 }, lastError: null });
+    expect(points[1]).toMatchObject({
+      maxMs: null, phaseMsSum: { dns: 0, connect: 0, tls: 0, ttfb: 0 }, failures: tally(FAILURE_CLASSES, (cls) => cls === "connect" ? 1 : 0),
+      lastError: { at: ago(2 * HOUR), cls: "connect", text: "Connect · refused by peer" },
+    });
+    expect(points[3]).toMatchObject({ failures: { status: 1 }, lastError: { cls: "status", text: "503" } });
   });
 
-  it("draws 7d from the hourly medians, then raw probes after the last rolled-up hour", async () => {
+  it("draws 7d from the hourly rows, then raw probes after the last rolled-up hour", async () => {
     const check = await createCheck();
     await result(check, "eu-west", ago(3 * HOUR), "pass", 130);
     await result(check, "eu-west", ago(HOUR), "pass", 140);
+    const failing = hour("us-east", hourAgo(2), 4, { tls: 3, timeout: 1 }, null, {
+      lastError: { at: ago(2 * HOUR + 60_000), cls: "timeout", text: "Timeout" } });
+    await insertHour(check, failing);
     await hourly(check, "eu-west", hourAgo(2), 4, 0, 0, 210);
-    await hourly(check, "us-east", hourAgo(2), 4, 4, 0, null);
     await hourly(check, "eu-west", hourAgo(6 * 24), 4, 0, 0, 180);
     await hourly(check, "eu-west", hourAgo(8 * 24), 4, 0, 0, 170);
 
-    expect(await series(check, "7d")).toEqual([
-      { at: hourAgo(6 * 24), region: "eu-west", ms: 180 },
-      { at: hourAgo(2), region: "eu-west", ms: 210 },
-      { at: hourAgo(2), region: "us-east", ms: null },
-      { at: ago(HOUR), region: "eu-west", ms: 140 },
+    const points = await series(check, "7d");
+    expect(brief(points)).toEqual([
+      { at: hourAgo(6 * 24), region: "eu-west", probes: 4, medianMs: 180 },
+      { at: hourAgo(2), region: "eu-west", probes: 4, medianMs: 210 },
+      { at: hourAgo(2), region: "us-east", probes: 4, medianMs: null },
+      { at: ago(HOUR), region: "eu-west", probes: 1, medianMs: 140 },
     ]);
+    expect(points[2]).toEqual({ ...failing, maxMs: null });
   });
 
   it("draws a check's only probe before any hour rolled up, in every range", async () => {
     const check = await createCheck();
     await result(check, "eu-west", ago(10 * 60_000), "pass", 120);
     for (const range of UPTIME_RANGES) {
-      expect(await series(check, range)).toEqual([{ at: ago(10 * 60_000), region: "eu-west", ms: 120 }]);
+      expect(brief(await series(check, range))).toEqual([{ at: ago(10 * 60_000), region: "eu-west", probes: 1, medianMs: 120 }]);
     }
   });
 
-  it("draws 90d in 6-hour buckets per region, averaging the medians by passing probes", async () => {
+  it("draws 90d in 6-hour buckets per region, each the hours folded by mergePoints", async () => {
     const check = await createCheck();
+    const error = (at: string, cls: FailureClass, text: string) => ({ lastError: { at, cls, text } });
     // hourAgo(240) is 12:00 UTC, so it and the next five hours share one bucket.
-    await hourly(check, "eu-west", hourAgo(240), 4, 0, 1, 100);
-    await hourly(check, "eu-west", hourAgo(239), 4, 2, 0, 400);
-    await hourly(check, "eu-west", hourAgo(235), 3, 3, 0, null);
-    await hourly(check, "eu-west", hourAgo(234), 4, 0, 0, 900);
-    await hourly(check, "us-east", hourAgo(240), 2, 2, 0, null);
-    await hourly(check, "eu-west", hourAgo(91 * 24), 4, 0, 0, 160);
+    const first = [
+      hour("eu-west", hourAgo(240), 4, {}, 100, { maxMs: 180, phaseMsSum: { dns: 8, connect: 40, tls: 60, ttfb: 300 } }),
+      hour("eu-west", hourAgo(239), 4, { tls: 2 }, 400, { maxMs: 610, phaseMsSum: { dns: 4, connect: 20, tls: 30, ttfb: 700 },
+        ...error(ago(239 * HOUR), "tls", "TLS · invalid peer certificate: Expired") }),
+      hour("eu-west", hourAgo(235), 3, { timeout: 3 }, null, error(ago(235 * HOUR), "timeout", "Timeout")),
+      hour("eu-west", hourAgo(236), 2, { status: 1 }, 50, error(ago(236 * HOUR), "status", "503")),
+    ];
+    const next = [hour("eu-west", hourAgo(234), 4, {}, 900)];
+    const down = [hour("us-east", hourAgo(240), 2, { dns: 2 }, null, error(ago(240 * HOUR), "dns", "DNS"))];
+    for (const row of [...first, ...next, ...down, hour("eu-west", hourAgo(91 * 24), 4, {}, 160)]) await insertHour(check, row);
 
-    expect(await series(check, "90d")).toEqual([
-      { at: hourAgo(240), region: "eu-west", ms: 200 },
-      { at: hourAgo(240), region: "us-east", ms: null },
-      { at: hourAgo(234), region: "eu-west", ms: 900 },
-    ]);
+    const fold = (rows: readonly Hour[]) => {
+      const merged = rows.map((row): UptimePoint => ({ ...row, maxMs: row.medianMs === null ? null : row.maxMs }))
+        .reduce(mergePoints);
+      return { ...merged, at: new Date(merged.at).toISOString() };
+    };
+    expect(await series(check, "90d")).toEqual([fold(first), fold(down), fold(next)]);
+    expect(fold(first)).toMatchObject({ probes: 13, medianMs: (100 * 4 + 400 * 2 + 50) / 7, maxMs: 610 });
   });
 });
 
