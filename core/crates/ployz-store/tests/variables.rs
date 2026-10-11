@@ -656,6 +656,12 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{path} → {to}");
     }
     assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
+
+    // A reference is not rewritten, so a variable something references keeps its name.
+    set(&store, &[("web.env.UPSTREAM", json!("${{ API_URL }}"))]).unwrap();
+    let referenced = rename(&store, &[], "web.env.API_URL", "PUBLIC_API_URL").unwrap_err();
+    assert_eq!(referenced.code, RpcErrorCode::Conflict, "{referenced:?}");
+    assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
 }
 
 #[test]

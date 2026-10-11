@@ -32,6 +32,16 @@ Paste or edit them, then click **Update variables**.
 - Sealed variables aren't shown and stay as they are.
 - Values you save here are plain text. Seal secrets afterwards from their menu.
 
+## Rename a variable
+
+From the CLI, `ployz set web.env.API_URL --rename PUBLIC_API_URL` renames a variable. Its value
+moves with it, and a sealed variable stays sealed. Deploy to give your service the new name.
+
+- Ployz refuses a new name another variable of the service already has, and leaves both as
+  they are. Rename or remove that one first.
+- Ployz refuses to rename a variable something references, such as `${{ web.API_URL }}`,
+  because references aren't updated. Change those references first.
+
 ## Seal a secret
 
 A sealed variable is encrypted when you save it, and the dashboard never shows its value again.
@@ -39,7 +49,8 @@ Your service still gets the real value when it deploys.
 
 - New variables are plain unless you tick **Sealed**.
 - To seal a plain variable, choose **Seal** from its menu. You can't unseal it.
-- To change a sealed value, delete the variable and add it again.
+- To change a sealed value, delete the variable and add it again. Setting a sealed variable to
+  a plain value is refused, so a secret never turns into plain text by mistake.
 - A sealed value is stored exactly as typed, so it can't hold a
   [reference](#reference-another-services-variable).
 

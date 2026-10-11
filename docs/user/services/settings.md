@@ -112,7 +112,10 @@ headroom. See [Scaling and multiple servers](scaling.md#run-more-replicas).
 
 ### Memory limit
 
-Empty by default, which means no limit. Set it in GB, up to 1024. A replica that goes over it is
+Empty by default, which means no limit. Set it in GB, up to 1024. From the CLI you can also give
+a unit: `ployz set web.memLimit=512MiB` or `ployz set web.memLimit=1GiB` (MB, GB, TB, MiB, GiB
+and TiB). A plain number is always GB, so `1073741824` is refused rather than read as bytes;
+write `1GiB`. A replica that goes over it is
 killed, and its [Restart policy](#restart-policy) decides whether it comes back. See
 [Scaling and multiple servers](scaling.md#run-more-replicas).
 
