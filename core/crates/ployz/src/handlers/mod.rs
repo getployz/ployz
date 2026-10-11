@@ -22,6 +22,7 @@ pub(crate) mod env;
 pub(crate) mod github;
 pub(crate) mod link;
 pub(crate) mod login;
+pub(crate) mod metrics;
 pub(crate) mod operator;
 pub(crate) mod project;
 pub(crate) mod review;
@@ -401,6 +402,7 @@ fn handler_for(path: &str) -> Option<Handler> {
         ("login", "") => Some(login::login),
         ("logout", "") => Some(login::logout),
         ("logs", "") => Some(operator::logs),
+        ("metrics", "") => Some(metrics::metrics),
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
         ("ps", "") => Some(service::processes),
