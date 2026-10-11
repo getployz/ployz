@@ -711,9 +711,12 @@ pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<Str
 /// and followed by the default when it is not: `3 (default 1)`.
 pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
     let value = plain(&row.value);
+    // A variable or mount (`SERVICE.env.KEY`, `SERVICE.mounts.VOLUME`) has no
+    // default: unset removes it.
+    let removable = row.path.to_string().split('.').count() > 2;
     if row.value == row.default {
         format!("{value} (default)")
-    } else if row.default.is_null() {
+    } else if removable && row.default.is_null() {
         value
     } else {
         format!("{value} (default {})", plain(&row.default))
@@ -891,6 +894,24 @@ mod tests {
         let error = error.report();
         assert_eq!(error.code, RpcErrorCode::Conflict);
         assert_eq!(error.message, "Working State changed while get read it.");
+    }
+
+    #[test]
+    fn a_set_setting_without_a_default_shows_its_default_as_nothing() {
+        let row = |path: &str, value: serde_json::Value| ployz_store::SettingRow {
+            path: ployz_store::SettingPath::parse(path).unwrap(),
+            value,
+            default: serde_json::Value::Null,
+            apply: serde_json::from_value(json!("staged")).unwrap(),
+            row: None,
+        };
+        assert_eq!(
+            valued(&row("web.startCommand", json!("npm start"))),
+            "npm start (default -)"
+        );
+        assert_eq!(valued(&row("web.startCommand", json!(null))), "- (default)");
+        assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "3000");
+        assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "/data");
     }
 
     #[test]
