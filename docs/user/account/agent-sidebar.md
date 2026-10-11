@@ -9,8 +9,24 @@ anything, it stops and asks you.
 
 The agent works in the project and environment you're looking at, unless you name another. It
 can add and change services, [configs](../services/configs.md), volumes and domains, review
-what's staged, publish and deploy. It doesn't create projects or environments, and it can't read
-GitHub repositories or reach your servers yet.
+what's staged, publish and deploy. It can also read your GitHub repositories and work on your
+servers. It doesn't create projects or environments, and it can't read a service's logs yet.
+
+## What it can do on your servers
+
+The agent asks your servers and Cloud directly, so its answers are as fresh as the servers that
+replied. It can:
+
+- Show a server, a service's containers, and where each volume's copies live
+  (**server show**, **service status**, **volume show**).
+- Restart, start or stop a service (**service restart**, **service start**, **service stop**).
+- Drain, upgrade, clean up after or remove a server (**server drain**, **server upgrade**,
+  **server clean**, **server remove**).
+- Mirror a volume to another server, refresh that mirror, move a volume, release it, or remove a
+  mirror (**volume mirror**, **volume move**, **volume release**, **volume mirror remove**). To
+  refresh a mirror, ask for a **volume mirror** to the same server again.
+- Read a connected GitHub repository, or tell you how to connect one (**github ls**,
+  **github connect**).
 
 ## Talk to the agent
 
@@ -27,11 +43,16 @@ after you reload or come back later. Closing the panel keeps the conversation.
 Each thing the agent runs shows as a short line under its reply, named for what it does, like
 **environment show**. When it deploys or publishes, that line becomes a card with the
 deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
+When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
+name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
+went to see where it got to.
 
 ## Approve or deny a removal
 
 When a deploy or publish would remove a running service, delete a volume, detach a volume from a
-service or remove a domain, the agent stops and shows a card. The card leads with what would be
+service or remove a domain, the agent stops and shows a card. It does the same before it removes
+a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
+command that deletes data. The card leads with what would be
 destroyed. Everything else the change does is folded under a count, like **2 other changes**;
 click it to see them.
 
@@ -59,6 +80,9 @@ server, like **Remove fra-1**.
   "publish, accepting the volume loss", and only in the same project and environment.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
+  Restarting, starting or stopping a service never asks, and neither does upgrading a server.
+- **One at a time.** The agent runs at most one command that might ask per reply, so you never
+  get two cards for one message.
 - **You approve one plan.** If the change moves on before you answer, the card says the plan
   changed, and the agent asks again about the new one.
 - **Asking is always on.** No setting turns it off. See
