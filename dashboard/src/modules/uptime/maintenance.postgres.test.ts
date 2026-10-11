@@ -5,6 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { pruneUptimeBatch, rollupUptime } from "#/modules/uptime/maintenance.server";
 import { retentionCutoff } from "#/modules/uptime/retention";
+import { failureClass } from "#/modules/uptime/uptime";
+import { FAILURE_CLASSES } from "#/modules/uptime/uptime-status";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-0000000d0001";
@@ -31,7 +33,7 @@ async function createCheck() {
   return row.id;
 }
 
-type Kind = "routine" | "confirm" | "recheck";
+type Kind = "routine" | "confirm" | "recheck" | "triggered";
 type Verdict = "pass" | "fail" | "inconclusive";
 
 function result(checkId: string, region: string, scheduledAt: string, verdict: Verdict, totalMs: number, kind: Kind = "routine") {
@@ -46,18 +48,54 @@ function result(checkId: string, region: string, scheduledAt: string, verdict: V
 
 type Bucket = {
   region: string; hour: string; probes: number; failures: number; inconclusive: number;
-  pass_ms_sum: number; pass_ms_max: number; pass_ms_p50: number | null; pass_ms_p95: number | null;
+  pass_ms_sum: number; pass_ms_max: number; pass_ms_p50: number | null;
 };
 
 async function hourly(checkId: string) {
   const { rows } = await harness.pool.query<Bucket>(
     `select region, to_char(hour at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI') as hour, probes, failures, inconclusive,
-       pass_ms_sum::int as pass_ms_sum, pass_ms_max, pass_ms_p50, pass_ms_p95
+       pass_ms_sum::int as pass_ms_sum, pass_ms_max, pass_ms_p50
      from uptime_result_hourly where check_id = $1 order by hour, region`,
     [checkId],
   );
   return rows;
 }
+
+type Probe = {
+  verdict: Verdict; status: number; failedPhase: "none" | "dns" | "connect" | "tls" | "request"; error: string; detail: string;
+  phases: readonly [number, number, number, number]; totalMs: number;
+};
+
+/** A routine probe with every field the agent reports. */
+function probe(checkId: string, region: string, scheduledAt: string, patch: Partial<Probe>) {
+  const row: Probe = { verdict: "pass", status: 200, failedPhase: "none", error: "", detail: "", phases: [0, 0, 0, 0], totalMs: 0, ...patch };
+  return harness.pool.query(
+    `insert into uptime_result (check_id, organization_id, region, scheduled_at, kind, start_lag_ms, verdict, status,
+       failed_phase, error, detail, dns_ms, connect_ms, tls_ms, ttfb_ms, total_ms, agent)
+     values ($1, $2, $3, $4, 'routine', 0, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'agent-1')`,
+    [checkId, organizationId, region, scheduledAt, row.verdict, row.status, row.failedPhase, row.error, row.detail, ...row.phases, row.totalMs],
+  );
+}
+
+type Breakdown = {
+  region: string; dns_ms_sum: number; connect_ms_sum: number; tls_ms_sum: number; ttfb_ms_sum: number;
+  failures: number; classes: Record<string, number>; last_error: string | null; last_error_class: string | null; last_error_at: string | null;
+};
+
+async function breakdown(checkId: string) {
+  const { rows } = await harness.pool.query<Breakdown>(
+    `select region, dns_ms_sum::int as dns_ms_sum, connect_ms_sum::int as connect_ms_sum, tls_ms_sum::int as tls_ms_sum,
+       ttfb_ms_sum::int as ttfb_ms_sum, failures,
+       json_build_object(${FAILURE_CLASSES.map((cls) => `'${cls}', failures_${cls}`).join(", ")}) as classes,
+       last_error, last_error_class, to_char(last_error_at at time zone 'UTC', 'HH24:MI') as last_error_at
+     from uptime_result_hourly where check_id = $1 order by hour, region`,
+    [checkId],
+  );
+  return rows;
+}
+
+const counts = (patch: Partial<Record<(typeof FAILURE_CLASSES)[number], number>>) =>
+  Object.fromEntries(FAILURE_CLASSES.map((cls) => [cls, patch[cls] ?? 0]));
 
 const rollup = (now: string) => harness.runEffect(rollupUptime(new Date(now)));
 
@@ -78,14 +116,73 @@ describe("uptime-rollup", () => {
 
     await rollup("2026-10-11T10:05:00Z");
 
-    // p50 of 100..400 is 250. p95 sits at 0.95 * 3 = 2.85 of the way, 300 + 0.85 * 100.
+    // p50 of 100..400 is 250.
     expect(await hourly(a)).toEqual([
-      { region: "eu", hour: "2026-10-11T08:00", probes: 1, failures: 0, inconclusive: 0, pass_ms_sum: 700, pass_ms_max: 700, pass_ms_p50: 700, pass_ms_p95: 700 },
-      { region: "eu", hour: "2026-10-11T09:00", probes: 5, failures: 1, inconclusive: 1, pass_ms_sum: 1000, pass_ms_max: 400, pass_ms_p50: 250, pass_ms_p95: 385 },
-      { region: "us", hour: "2026-10-11T09:00", probes: 1, failures: 1, inconclusive: 0, pass_ms_sum: 0, pass_ms_max: 0, pass_ms_p50: null, pass_ms_p95: null },
+      { region: "eu", hour: "2026-10-11T08:00", probes: 1, failures: 0, inconclusive: 0, pass_ms_sum: 700, pass_ms_max: 700, pass_ms_p50: 700 },
+      { region: "eu", hour: "2026-10-11T09:00", probes: 5, failures: 1, inconclusive: 1, pass_ms_sum: 1000, pass_ms_max: 400, pass_ms_p50: 250 },
+      { region: "us", hour: "2026-10-11T09:00", probes: 1, failures: 1, inconclusive: 0, pass_ms_sum: 0, pass_ms_max: 0, pass_ms_p50: null },
     ]);
     expect(await hourly(b)).toEqual([
-      { region: "eu", hour: "2026-10-11T09:00", probes: 0, failures: 0, inconclusive: 1, pass_ms_sum: 0, pass_ms_max: 0, pass_ms_p50: null, pass_ms_p95: null },
+      { region: "eu", hour: "2026-10-11T09:00", probes: 0, failures: 0, inconclusive: 1, pass_ms_sum: 0, pass_ms_max: 0, pass_ms_p50: null },
+    ]);
+  });
+
+  it("splits failures by class, sums passing probes' phases and keeps the newest error, the same on a rerun", async () => {
+    const a = await createCheck();
+    await probe(a, "eu", "2026-10-11T09:00:00Z", { phases: [4, 18, 31, 47], totalMs: 100 });
+    await probe(a, "eu", "2026-10-11T09:05:00Z", { phases: [6, 20, 29, 145], totalMs: 200 });
+    await probe(a, "eu", "2026-10-11T09:10:00Z", { verdict: "fail", status: 0, failedPhase: "tls", error: "other",
+      detail: "invalid peer certificate: Expired", phases: [5, 19, 900, 0], totalMs: 924 });
+    await probe(a, "eu", "2026-10-11T09:20:00Z", { verdict: "fail", status: 503, phases: [5, 19, 30, 400], totalMs: 454 });
+    await probe(a, "eu", "2026-10-11T09:15:00Z", { verdict: "fail", status: 0, failedPhase: "request", error: "timed_out",
+      detail: "operation timed out", totalMs: 10_000 });
+    await probe(a, "eu", "2026-10-11T09:25:00Z", { verdict: "inconclusive", status: 0, error: "saturated", phases: [9, 9, 9, 9] });
+    await probe(a, "us", "2026-10-11T09:00:00Z", { phases: [1, 2, 3, 4], totalMs: 10 });
+
+    await rollup("2026-10-11T10:05:00Z");
+    const first = await breakdown(a);
+    await rollup("2026-10-11T10:59:00Z");
+
+    expect(first).toEqual([
+      { region: "eu", dns_ms_sum: 10, connect_ms_sum: 38, tls_ms_sum: 60, ttfb_ms_sum: 192, failures: 3,
+        classes: counts({ status: 1, timeout: 1, tls: 1 }), last_error: "503", last_error_class: "status", last_error_at: "09:20" },
+      { region: "us", dns_ms_sum: 1, connect_ms_sum: 2, tls_ms_sum: 3, ttfb_ms_sum: 4, failures: 0, classes: counts({}),
+        last_error: null, last_error_class: null, last_error_at: null },
+    ]);
+    expect(await breakdown(a)).toEqual(first);
+  });
+
+  it("puts each failing probe in the class failureClass names, with its word and detail as the error", async () => {
+    const a = await createCheck();
+    const cases = [0, 503].flatMap((status) => ["", "connection_refused", "timed_out", "other"].flatMap((error) =>
+      (["none", "dns", "connect", "tls", "request"] as const).map((failedPhase) => ({ status, error, failedPhase }))));
+    for (const [index, row] of cases.entries()) {
+      await probe(a, `r${index}`, "2026-10-11T09:00:00Z", { ...row, verdict: "fail", detail: index % 2 ? "why" : "" });
+    }
+
+    await rollup("2026-10-11T10:05:00Z");
+
+    const rows = new Map((await breakdown(a)).map((row) => [row.region, row]));
+    for (const [index, row] of cases.entries()) {
+      const cls = failureClass({ status: row.status, error: row.error === "" ? null : row.error as "other",
+        failedPhase: row.failedPhase === "none" ? null : row.failedPhase });
+      const words = { status: String(row.status), timeout: "Timeout", refused: "Refused", dns: "DNS", connect: "Connect", tls: "TLS", other: "Error" };
+      expect(rows.get(`r${index}`)).toMatchObject({
+        failures: 1, classes: counts({ [cls]: 1 }), last_error_class: cls, last_error: index % 2 ? `${words[cls]} · why` : words[cls],
+      });
+    }
+  });
+
+  it("counts a triggered probe like a routine one, even at the same instant in the same region", async () => {
+    const a = await createCheck();
+    await result(a, "eu", "2026-10-11T09:00:00Z", "pass", 100);
+    await result(a, "eu", "2026-10-11T09:00:00Z", "fail", 9000, "triggered");
+    await result(a, "eu", "2026-10-11T09:30:00Z", "pass", 300, "triggered");
+
+    await rollup("2026-10-11T10:05:00Z");
+
+    expect(await hourly(a)).toEqual([
+      { region: "eu", hour: "2026-10-11T09:00", probes: 3, failures: 1, inconclusive: 0, pass_ms_sum: 400, pass_ms_max: 300, pass_ms_p50: 200 },
     ]);
   });
 
@@ -120,7 +217,9 @@ describe("uptime-rollup", () => {
     await result(a, "eu", "2026-10-11T09:00:00Z", "pass", 100);
     await result(a, "eu", "2026-10-11T09:30:00Z", "fail", 100);
     await harness.pool.query(
-      `insert into uptime_result_hourly values ($1, $2, 'eu', '2026-10-11T09:00:00Z', 99, 99, 99, 99, 99, 99, 99)`,
+      `insert into uptime_result_hourly (check_id, organization_id, region, hour, probes, failures, inconclusive, pass_ms_sum,
+         pass_ms_max, pass_ms_p50, dns_ms_sum, failures_tls, last_error, last_error_class, last_error_at)
+       values ($1, $2, 'eu', '2026-10-11T09:00:00Z', 99, 99, 99, 99, 99, 99, 99, 99, 'stale', 'tls', '2026-10-11T09:59:00Z')`,
       [a, organizationId],
     );
 
@@ -130,7 +229,7 @@ describe("uptime-rollup", () => {
     await rollup("2026-10-11T10:59:00Z");
 
     expect(first).toEqual([
-      { region: "eu", hour: "2026-10-11T09:00", probes: 2, failures: 1, inconclusive: 0, pass_ms_sum: 100, pass_ms_max: 100, pass_ms_p50: 100, pass_ms_p95: 100 },
+      { region: "eu", hour: "2026-10-11T09:00", probes: 2, failures: 1, inconclusive: 0, pass_ms_sum: 100, pass_ms_max: 100, pass_ms_p50: 100 },
     ]);
     expect(await hourly(a)).toEqual(first);
   });
@@ -144,7 +243,7 @@ describe("uptime-rollup", () => {
     await rollup("2026-10-11T11:05:00Z");
 
     expect(await hourly(a)).toEqual([
-      { region: "eu", hour: "2026-10-11T09:00", probes: 2, failures: 1, inconclusive: 0, pass_ms_sum: 100, pass_ms_max: 100, pass_ms_p50: 100, pass_ms_p95: 100 },
+      { region: "eu", hour: "2026-10-11T09:00", probes: 2, failures: 1, inconclusive: 0, pass_ms_sum: 100, pass_ms_max: 100, pass_ms_p50: 100 },
     ]);
   });
 
@@ -157,7 +256,7 @@ describe("uptime-rollup", () => {
     await rollup("2026-10-11T11:05:00Z");
 
     expect(await hourly(a)).toEqual([
-      { region: "eu", hour: "2026-10-11T08:00", probes: 1, failures: 0, inconclusive: 0, pass_ms_sum: 100, pass_ms_max: 100, pass_ms_p50: 100, pass_ms_p95: 100 },
+      { region: "eu", hour: "2026-10-11T08:00", probes: 1, failures: 0, inconclusive: 0, pass_ms_sum: 100, pass_ms_max: 100, pass_ms_p50: 100 },
     ]);
   });
 });
@@ -188,7 +287,8 @@ describe("uptime-prune", () => {
     await result(a, "eu", prunes.raw.toISOString(), "pass", 2);
     await result(a, "eu", now.toISOString(), "pass", 3);
     const bucket = (hour: string) => harness.pool.query(
-      `insert into uptime_result_hourly values ($1, $2, 'eu', $3, 1, 0, 0, 1, 1, 1, 1)`, [a, organizationId, hour]);
+      `insert into uptime_result_hourly (check_id, organization_id, region, hour, probes, failures, inconclusive, pass_ms_sum, pass_ms_max)
+       values ($1, $2, 'eu', $3, 1, 0, 0, 1, 1)`, [a, organizationId, hour]);
     await bucket("2025-09-11T10:00:00Z");
     await bucket("2025-09-11T11:00:00Z");
     await bucket("2026-09-01T00:00:00Z");

@@ -544,3 +544,140 @@ fn closes_name_the_adopted_incident_and_its_revision() {
     };
     assert_eq!((incident, revision), (adopted, Revision(2)));
 }
+
+fn evidence_kinds(step: &Step) -> Vec<ProbeKind> {
+    let (Step::Open { evidence, .. } | Step::Close { evidence, .. }) = step else {
+        panic!("expected an open or close, got {step:?}")
+    };
+    evidence.observations.iter().map(|o| o.kind).collect()
+}
+
+#[test]
+fn a_trigger_asks_every_live_region_and_a_quorum_of_failures_opens() {
+    let mut d = Detector::cloud(&["a", "b", "c", "d"]);
+    let start = d.now;
+    let plan = dispatched(d.feed(Input::Triggered));
+    assert_eq!(plan_regions(&plan), ["a", "b", "c", "d"]);
+    assert!(
+        plan.probes
+            .iter()
+            .all(|k| k.kind == ProbeKind::Triggered && k.scheduled_at == start)
+    );
+    let mut probes = plan.probes.iter();
+    assert_eq!(d.see(probes.next().unwrap(), Verdict::Fail), Step::Nothing);
+    let step = d.see(probes.next().unwrap(), Verdict::Fail);
+    assert_eq!(
+        evidence_kinds(&step),
+        [ProbeKind::Triggered, ProbeKind::Triggered]
+    );
+}
+
+#[test]
+fn a_trigger_short_of_the_quorum_returns_to_reachable_once_every_region_answers() {
+    let mut d = Detector::cloud(&["a", "b", "c", "d"]);
+    let plan = dispatched(d.feed(Input::Triggered));
+    let verdicts = [Verdict::Pass, Verdict::Fail, Verdict::Pass];
+    for (key, verdict) in plan.probes.iter().zip(verdicts) {
+        assert_eq!(d.see(key, verdict), Step::Nothing);
+    }
+    assert!(matches!(d.health, Health::Suspect(_)), "{:?}", d.health);
+    assert_eq!(
+        d.see(plan.probes.last().unwrap(), Verdict::Pass),
+        Step::Nothing
+    );
+    assert!(matches!(d.health, Health::Reachable), "{:?}", d.health);
+}
+
+#[test]
+fn one_passing_triggered_round_closes_with_triggered_evidence() {
+    let mut d = Detector::cloud(&["a", "b", "c", "d"]);
+    d.open();
+    let plan = dispatched(d.feed(Input::Triggered));
+    assert_eq!(plan_regions(&plan), ["a", "b", "c", "d"], "no recheck cap");
+    let mut last = Step::Nothing;
+    for key in &plan.probes {
+        last = d.see(key, Verdict::Pass);
+    }
+    assert_eq!(evidence_kinds(&last), [ProbeKind::Triggered; 4]);
+    assert!(matches!(last, Step::Close { .. }), "got {last:?}");
+    assert!(matches!(d.health, Health::Reachable));
+}
+
+#[test]
+fn a_trigger_replaces_a_recheck_round_and_a_second_trigger_is_dropped() {
+    let mut d = Detector::cloud(&["a", "b", "c", "d"]);
+    d.open();
+    assert_eq!(
+        d.recheck_round(&[Verdict::Pass, Verdict::Pass, Verdict::Pass]),
+        Step::Nothing
+    );
+    assert_eq!(d.passing_rounds(), 1);
+    let recheck = dispatched(d.feed(Input::RecheckDue));
+    let trigger = dispatched(d.feed(Input::Triggered));
+    assert_eq!(d.feed(Input::Triggered), Step::Nothing);
+    for key in &recheck.probes {
+        assert_eq!(d.see(key, Verdict::Pass), Step::Nothing, "replaced round");
+    }
+    assert_eq!(
+        d.see(trigger.probes.first().unwrap(), Verdict::Fail),
+        Step::Nothing
+    );
+    assert_eq!(d.passing_rounds(), 0, "a failing trigger resets the streak");
+}
+
+#[test]
+fn a_trigger_while_a_confirm_round_is_out_is_dropped() {
+    let mut d = Detector::cloud(&["a", "b", "c", "d"]);
+    dispatched(d.routine("a", Verdict::Fail));
+    assert_eq!(d.feed(Input::Triggered), Step::Nothing);
+}
+
+#[test]
+fn a_trigger_with_no_live_region_does_nothing() {
+    let mut d = Detector::cloud(&[]);
+    assert_eq!(d.feed(Input::Triggered), Step::Nothing);
+    assert!(matches!(d.health, Health::Reachable));
+}
+
+#[test]
+fn self_host_trigger_probes_twice_thirty_seconds_apart_and_closes_on_both_passing() {
+    let mut d = Detector::self_host();
+    d.open();
+    let start = d.now;
+    let plan = dispatched(d.feed(Input::Triggered));
+    let at: Vec<UnixMs> = plan.probes.iter().map(|k| k.scheduled_at).collect();
+    assert_eq!(at, [start, start.plus(Duration::from_secs(30))]);
+    let [first, second] = plan.probes.as_slice() else {
+        panic!("expected two probes, got {plan:?}")
+    };
+    assert_eq!(d.see(first, Verdict::Pass), Step::Nothing);
+    d.wait(Duration::from_secs(31));
+    let step = d.see(second, Verdict::Pass);
+    assert!(matches!(step, Step::Close { .. }), "got {step:?}");
+}
+
+/// A round's jobs can wait in the confirm budget past the deadline planned for them. Admission
+/// restarts the clock, so results inside the new window still count.
+#[test]
+fn admission_pushes_the_deadline_back() {
+    let mut d = Detector::cloud(&["a", "b", "c", "d"]);
+    let plan = dispatched(d.feed(Input::Triggered));
+    d.wait(Duration::from_secs(20));
+    assert_eq!(d.feed(Input::Admitted(plan.round)), Step::Nothing);
+
+    d.now = plan.deadline.plus(Duration::from_millis(1));
+    assert_eq!(
+        d.feed(Input::RoundExpired(plan.round)),
+        Step::Nothing,
+        "the planned deadline's timer is stale"
+    );
+    assert!(matches!(d.health, Health::Suspect(_)));
+    let [first, second, ..] = plan.probes.as_slice() else {
+        panic!("a triggered round asks every live region")
+    };
+    assert_eq!(d.see(first, Verdict::Fail), Step::Nothing);
+    assert!(
+        matches!(d.see(second, Verdict::Fail), Step::Open { .. }),
+        "results inside the extended window count"
+    );
+}

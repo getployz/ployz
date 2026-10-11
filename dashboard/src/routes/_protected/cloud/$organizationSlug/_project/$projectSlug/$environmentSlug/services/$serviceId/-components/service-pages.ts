@@ -1,5 +1,5 @@
 import { Effect, Option, Schema } from "effect";
-import { UPTIME_RANGES } from "#/modules/uptime/uptime-status";
+import { RangeEdge } from "#/modules/uptime/uptime-range";
 
 export const SERVICE_PAGES = [
   { id: "deployments", label: "Deployments" },
@@ -17,7 +17,6 @@ export const serviceSearchSchema = Schema.Struct({
   tab: Schema.optional(servicePageSchema.pipe(
     Schema.catchDecoding(() => Effect.succeed(Option.some("settings" as const))),
   )),
-  range: Schema.optional(Schema.Literals(UPTIME_RANGES).pipe(
-    Schema.catchDecoding(() => Effect.succeed(Option.none())),
-  )),
+  from: Schema.optional(RangeEdge.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
+  to: Schema.optional(RangeEdge.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
 });
