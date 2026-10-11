@@ -3,7 +3,7 @@
 
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 pub use ployz_core::HttpCheckError;
 use ployz_core::check_output_line;
@@ -43,6 +43,16 @@ impl UnixMs {
     #[must_use]
     pub fn since(self, earlier: UnixMs) -> Duration {
         Duration::from_millis(u64::try_from(self.0.saturating_sub(earlier.0)).unwrap_or(0))
+    }
+
+    #[must_use]
+    pub fn to_system_time(self) -> SystemTime {
+        let by = Duration::from_millis(self.0.unsigned_abs());
+        if self.0 >= 0 {
+            SystemTime::UNIX_EPOCH + by
+        } else {
+            SystemTime::UNIX_EPOCH - by
+        }
     }
 }
 
@@ -133,6 +143,18 @@ pub enum ProbeKind {
     Confirm,
     /// A recovery probe while the check is unreachable.
     Recheck,
+}
+
+impl ProbeKind {
+    /// The `uptime_result.kind` and evidence spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProbeKind::Routine => "routine",
+            ProbeKind::Confirm => "confirm",
+            ProbeKind::Recheck => "recheck",
+        }
+    }
 }
 
 /// A probe's identity: the result table's primary key and the dedupe key. The control plane mints
@@ -317,6 +339,28 @@ pub enum Phase {
     Request,
 }
 
+impl Phase {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Phase::Dns => "dns",
+            Phase::Connect => "connect",
+            Phase::Tls => "tls",
+            Phase::Request => "request",
+        }
+    }
+}
+
+/// The spelling core's serde gives [`HttpCheckError`], which the TS types read through ts-rs.
+#[must_use]
+pub fn http_error_str(error: HttpCheckError) -> &'static str {
+    match error {
+        HttpCheckError::ConnectionRefused => "connection_refused",
+        HttpCheckError::TimedOut => "timed_out",
+        HttpCheckError::Other => "other",
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotProbed {
     /// At least one resolved answer was not a global address. One bad answer refuses the whole
@@ -358,6 +402,17 @@ pub enum Verdict {
     Fail,
     /// We could not or would not probe. Counts neither way.
     Inconclusive,
+}
+
+impl Verdict {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Pass => "pass",
+            Verdict::Fail => "fail",
+            Verdict::Inconclusive => "inconclusive",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

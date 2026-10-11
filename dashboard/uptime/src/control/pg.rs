@@ -8,7 +8,7 @@ use std::time::Duration;
 use rustls::crypto::CryptoProvider;
 use tokio::sync::Mutex;
 use tokio_postgres::error::SqlState;
-use tokio_postgres::{Client, Config, Transaction};
+use tokio_postgres::{Client, Config, Row, Transaction};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -96,6 +96,18 @@ async fn run<T>(
     let value = f(&tx).await?;
     tx.commit().await?;
     Ok(value)
+}
+
+/// A column that won't decode means the schema doesn't match this build, which a retry won't fix.
+///
+/// # Errors
+/// The column is missing or holds another type.
+pub fn column<'a, T: tokio_postgres::types::FromSql<'a>>(
+    row: &'a Row,
+    name: &str,
+) -> Result<T, PgError> {
+    row.try_get(name)
+        .map_err(|e| PgError::Fatal(format!("Column {name} doesn't read as expected: {e}")))
 }
 
 #[derive(Debug, thiserror::Error)]

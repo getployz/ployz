@@ -1,140 +1,14 @@
-//! Each test starts its own postgres:16-alpine and applies the dashboard's real migrations, so the
-//! change-log triggers the feed tails are the ones production runs.
+//! Each test runs against its own real Postgres (see `test_pg`), so the change-log triggers the
+//! feed tails are the ones production runs.
 
 use std::collections::HashSet;
-use std::path::Path;
-use std::process::Command;
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::sleep;
-use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
 use super::*;
-
-struct Postgres {
-    container: String,
-    url: String,
-}
-
-impl Drop for Postgres {
-    fn drop(&mut self) {
-        drop(
-            Command::new("docker")
-                .args(["rm", "-f", &self.container])
-                .output(),
-        );
-    }
-}
-
-fn docker(args: &[&str]) -> String {
-    let out = Command::new("docker")
-        .args(args)
-        .output()
-        .expect("these tests need Docker on PATH");
-    assert!(
-        out.status.success(),
-        "docker {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).unwrap().trim().to_owned()
-}
-
-/// A fresh database with every `dashboard/drizzle/*/migration.sql` applied in order.
-async fn postgres() -> (Postgres, Client) {
-    let container = docker(&[
-        "run",
-        "-d",
-        "--rm",
-        "--tmpfs",
-        "/var/lib/postgresql/data:rw",
-        "--publish",
-        "127.0.0.1::5432",
-        "-e",
-        "POSTGRES_PASSWORD=postgres",
-        "-e",
-        "POSTGRES_DB=ployz_cloud",
-        "postgres:16-alpine",
-        "-c",
-        "fsync=off",
-        "-c",
-        "synchronous_commit=off",
-        "-c",
-        "full_page_writes=off",
-    ]);
-    let port = docker(&["port", &container, "5432/tcp"]);
-    let port = port
-        .lines()
-        .next()
-        .unwrap()
-        .rsplit(':')
-        .next()
-        .unwrap()
-        .to_owned();
-    let pg = Postgres {
-        container,
-        url: format!("postgres://postgres:postgres@127.0.0.1:{port}/ployz_cloud?sslmode=disable"),
-    };
-    // initdb's temporary server listens on the socket only, so a TCP answer is the real one.
-    let mut client = None;
-    for _ in 0..300 {
-        if let Ok((c, connection)) = tokio_postgres::connect(&pg.url, NoTls).await {
-            tokio::spawn(connection);
-            if c.simple_query("SELECT 1").await.is_ok() {
-                client = Some(c);
-                break;
-            }
-        }
-        sleep(Duration::from_millis(100)).await;
-    }
-    let client = client.expect("postgres:16-alpine never accepted a connection");
-    let drizzle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../drizzle");
-    let mut migrations: Vec<_> = std::fs::read_dir(&drizzle)
-        .unwrap()
-        .map(|entry| entry.unwrap().path().join("migration.sql"))
-        .filter(|path| path.exists())
-        .collect();
-    migrations.sort();
-    assert!(migrations.len() >= 6, "found {migrations:?}");
-    for migration in &migrations {
-        let sql = std::fs::read_to_string(migration).unwrap();
-        client
-            .batch_execute(&sql)
-            .await
-            .unwrap_or_else(|e| panic!("{}: {e:?}", migration.display()));
-    }
-    (pg, client)
-}
-
-async fn feed_pg(pg: &Postgres) -> Pg {
-    let crypto = Arc::new(rustls::crypto::ring::default_provider());
-    Pg::connect(&pg.url, crypto).await.unwrap()
-}
-
-async fn org(admin: &Client) -> Uuid {
-    let id = Uuid::new_v4();
-    admin
-        .execute(
-            "INSERT INTO organization (id, name, slug) VALUES ($1, 'Org', $2)",
-            &[&id, &id.to_string()],
-        )
-        .await
-        .unwrap();
-    id
-}
-
-async fn check(admin: &Client, org: Uuid, url: &str) -> Uuid {
-    admin
-        .query_one(
-            "INSERT INTO uptime_check (organization_id, name, url) VALUES ($1, 'Check', $2) \
-             RETURNING id",
-            &[&org, &url],
-        )
-        .await
-        .unwrap()
-        .get(0)
-}
+use crate::control::test_pg::{check, connect, cut, org, postgres, restore};
 
 /// Polls the tail until `done` holds. A change that never arrives fails after about two seconds.
 async fn follow(feed: &mut CheckFeed, checks: &mut Checks, done: impl Fn(&Checks) -> bool) {
@@ -182,7 +56,7 @@ async fn the_load_returns_every_enabled_check_across_pages() {
         .collect();
     assert_eq!(want.len(), 20_007, "5 of the 20,012 are disabled");
 
-    let (_feed, snapshot) = CheckFeed::load(feed_pg(&pg).await).await.unwrap();
+    let (_feed, snapshot) = CheckFeed::load(pg.pg().await).await.unwrap();
     assert!(snapshot.skipped.is_empty(), "{:?}", snapshot.skipped);
     let got: Vec<Uuid> = snapshot.rows.iter().map(|r| r.check.id.0).collect();
     assert_eq!(got.len(), 20_007, "no row lost or repeated");
@@ -198,7 +72,7 @@ async fn inserts_edits_disables_deletes_and_incidents_reach_the_map() {
     let edited = check(&admin, org, "https://a.example.com/").await;
     let disabled = check(&admin, org, "https://b.example.com/").await;
     let deleted = check(&admin, org, "https://c.example.com/").await;
-    let (mut feed, snapshot) = CheckFeed::load(feed_pg(&pg).await).await.unwrap();
+    let (mut feed, snapshot) = CheckFeed::load(pg.pg().await).await.unwrap();
     let mut checks = loaded(snapshot);
     assert_eq!(checks.len(), 3);
 
@@ -273,7 +147,7 @@ async fn a_malformed_row_is_skipped_while_the_others_load() {
     let bad = check(&admin, org, "https://b.example.com:8443/").await;
     let other = check(&admin, org, "http://c.example.com/").await;
 
-    let (mut feed, snapshot) = CheckFeed::load(feed_pg(&pg).await).await.unwrap();
+    let (mut feed, snapshot) = CheckFeed::load(pg.pg().await).await.unwrap();
     assert_eq!(snapshot.skipped.len(), 1, "{:?}", snapshot.skipped);
     let skipped = snapshot.skipped.first().unwrap();
     assert_eq!(skipped.check, CheckId(bad));
@@ -312,44 +186,24 @@ async fn a_dropped_connection_resumes_without_losing_a_change() {
     let org = org(&admin).await;
     check(&admin, org, "https://a.example.com/").await;
     // Its own role, so the outage can be held open: a connection limit of 0 refuses reconnects.
-    admin
-        .batch_execute(
-            "CREATE ROLE feed LOGIN PASSWORD 'feed'; \
-             GRANT SELECT ON uptime_check, uptime_incident, organization_change TO feed",
+    let url = pg
+        .role(
+            &admin,
+            "feed",
+            "GRANT SELECT ON uptime_check, uptime_incident, organization_change TO feed",
         )
-        .await
-        .unwrap();
-    let url = pg.url.replacen("postgres:postgres@", "feed:feed@", 1);
-    let crypto = Arc::new(rustls::crypto::ring::default_provider());
-    let (mut feed, snapshot) = CheckFeed::load(Pg::connect(&url, crypto).await.unwrap())
-        .await
-        .unwrap();
+        .await;
+    let (mut feed, snapshot) = CheckFeed::load(connect(&url).await).await.unwrap();
     let mut checks = loaded(snapshot);
 
-    admin
-        .batch_execute("ALTER ROLE feed CONNECTION LIMIT 0")
-        .await
-        .unwrap();
-    let killed: i64 = admin
-        .query_one(
-            "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
-             WHERE usename = 'feed'",
-            &[],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    assert_eq!(killed, 1, "the feed's one connection");
+    assert_eq!(cut(&admin, "feed").await, 1, "the feed's one connection");
     let during = check(&admin, org, "https://during.example.com/").await;
 
     for _ in 0..3 {
         let refused = feed.next().await;
         assert!(matches!(refused, Err(PgError::Transient(_))), "{refused:?}");
     }
-    admin
-        .batch_execute("ALTER ROLE feed CONNECTION LIMIT -1")
-        .await
-        .unwrap();
+    restore(&admin, "feed").await;
     follow(&mut feed, &mut checks, |c| held(c, during).is_some()).await;
     assert_eq!(checks.len(), 2);
 }
@@ -359,7 +213,7 @@ async fn a_dropped_connection_resumes_without_losing_a_change() {
 async fn a_cursor_older_than_the_log_reloads_everything() {
     let (pg, admin) = postgres().await;
     let org = org(&admin).await;
-    let (mut feed, snapshot) = CheckFeed::load(feed_pg(&pg).await).await.unwrap();
+    let (mut feed, snapshot) = CheckFeed::load(pg.pg().await).await.unwrap();
     assert!(snapshot.rows.is_empty());
     let pruned = check(&admin, org, "https://a.example.com/").await;
     let kept = check(&admin, org, "https://b.example.com/").await;
@@ -390,7 +244,7 @@ async fn a_bulk_statement_replaces_its_org_and_no_other() {
     let bulk = org(&admin).await;
     let quiet = org(&admin).await;
     let untouched = check(&admin, quiet, "https://quiet.example.com/").await;
-    let (mut feed, snapshot) = CheckFeed::load(feed_pg(&pg).await).await.unwrap();
+    let (mut feed, snapshot) = CheckFeed::load(pg.pg().await).await.unwrap();
     let mut checks = loaded(snapshot);
 
     admin

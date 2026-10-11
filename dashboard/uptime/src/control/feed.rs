@@ -14,7 +14,7 @@ use tokio_postgres::types::Type;
 use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
 
-use crate::control::pg::{Pg, PgError};
+use crate::control::pg::{Pg, PgError, column};
 use crate::domain::{
     BadExpect, BadInterval, BadTarget, Check, CheckId, Expect, IncidentId, Interval, OrgId,
     Revision, Target, UnixMs,
@@ -344,14 +344,6 @@ fn log(skipped: Skipped) -> Skipped {
         "Skipped an uptime_check row the checker can't probe; it is not held.",
     );
     skipped
-}
-
-fn column<'a, T: tokio_postgres::types::FromSql<'a>>(
-    row: &'a Row,
-    name: &str,
-) -> Result<T, PgError> {
-    row.try_get(name)
-        .map_err(|e| PgError::Fatal(format!("Column {name} doesn't read as expected: {e}")))
 }
 
 fn unix_ms(at: SystemTime) -> UnixMs {
