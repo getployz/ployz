@@ -46,6 +46,9 @@ export const ReadServiceUptimeInput = Schema.Struct({
 });
 export type ReadServiceUptimeInput = typeof ReadServiceUptimeInput.Type;
 
+export const RequestUptimeProbeInput = Schema.Struct({ ...EnvironmentScope, serviceId: Schema.NonEmptyString });
+export type RequestUptimeProbeInput = typeof RequestUptimeProbeInput.Type;
+
 /** One check of the environment, and when its open incident opened. */
 export type EnvironmentUptimeCheck = {
   readonly serviceId: string;
@@ -129,6 +132,11 @@ export type ServiceUptime = {
   readonly incidents: readonly UptimeIncidentEntry[];
   /** Every region the install lists and every region the points, checks and incidents name, with its display name or null. */
   readonly regions: RegionNames;
+  /**
+   * The probe a deploy or Check now asked for in the last 45 s, and whether a result for it has landed. Null when none
+   * was, so a request the checker never answers stops reading as checking.
+   */
+  readonly probe: { readonly requestedAt: string; readonly answered: boolean } | null;
 };
 
 export type RegionNames = Readonly<Record<string, string | null>>;
