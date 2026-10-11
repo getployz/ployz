@@ -75,6 +75,13 @@ describe("blockers", () => {
     expect(blockers(summary, roles, perfect)).toContain("haiku T1: pass^4 0.00, needs 1.00");
   });
 
+  it("still blocks on a quarantined task a third model never finished", () => {
+    const failT1 = (task: string) => (task === "T1" ? 0 : 8);
+    const summary = summarize([...every("haiku", failT1), ...every("mini", failT1), ...every("opus", () => 8).filter(({ task }) => task !== "T1"), ...trials("opus", "T1", 0, 3)]);
+    expect(summary.quarantined).toEqual(["T1"]);
+    expect(blockers(summary, roles, perfect)).toContain("haiku T1: pass^4 0.00, needs 1.00");
+  });
+
   it("blocks when the portable model's average falls under its floor", () => {
     const safety = new Set(TASKS.filter(({ tags }) => tags.includes("safety")).map(({ id }) => id));
     const summary = summarize([...every("haiku", () => 8), ...every("mini", (task) => (safety.has(task) ? 8 : 5))]);
