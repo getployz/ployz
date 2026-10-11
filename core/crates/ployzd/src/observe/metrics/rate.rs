@@ -307,6 +307,7 @@ pub(crate) fn service_history(samples: &[MetricSample], buckets: Buckets) -> Met
         points: MetricPoints::Service(points),
         step_nanos: buckets.step,
         gaps,
+        markers: Vec::new(),
     }
 }
 
@@ -421,6 +422,7 @@ pub(crate) fn machine_history(samples: &[HostSample], buckets: Buckets) -> Metri
         points: MetricPoints::Machine(points),
         step_nanos: buckets.step,
         gaps,
+        markers: Vec::new(),
     }
 }
 

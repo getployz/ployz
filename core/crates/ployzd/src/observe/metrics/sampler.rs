@@ -783,7 +783,9 @@ Inter-|   Receive                                                |  Transmit
                     service: qualified(n),
                 },
             )
-            .unwrap() else {
+            .unwrap()
+            .0
+            else {
                 panic!("a Service scope selects Service rows");
             };
             rows
@@ -809,7 +811,9 @@ Inter-|   Receive                                                |  Transmit
         assert_eq!((row.rx, row.tx), (Some(100), Some(200)));
         assert_eq!((row.io_r, row.io_w), (Some(7), Some(9)));
 
-        let Selected::Machine(hosts) = segment::read(&store, range, &MetricScope::Machine).unwrap()
+        let Selected::Machine(hosts) = segment::read(&store, range, &MetricScope::Machine)
+            .unwrap()
+            .0
         else {
             panic!("the Machine scope selects host rows");
         };
@@ -1007,7 +1011,9 @@ Inter-|   Receive                                                |  Transmit
             },
             &MetricScope::Machine,
         )
-        .unwrap() else {
+        .unwrap()
+        .0
+        else {
             panic!("the Machine scope selects host rows");
         };
         assert!(hosts.is_empty());

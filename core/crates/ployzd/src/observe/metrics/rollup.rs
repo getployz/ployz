@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     rate::{self, Buckets},
-    segment::{self, Stamped},
+    segment::{self, Prefilter, Stamped},
 };
 use crate::observe::layout::{self, METRICS_DIR, SegmentName, StoreRoot};
 
@@ -152,22 +152,29 @@ pub fn fold_hour(store: &StoreRoot, hour: SegmentName) -> io::Result<()> {
     let mut hosts = Vec::new();
     let mut markers = Vec::new();
     let mut services: BTreeMap<DeploymentKey, Vec<MetricSample>> = BTreeMap::new();
-    segment::scan(&store.raw_metrics(), lead_in, None, |row| match row {
-        segment::Row::Host(sample) => hosts.push(sample),
-        segment::Row::Container(sample) => {
-            if let (Some(service_id), Some(service)) = (sample.service_id, sample.service.clone()) {
-                services
-                    .entry((service_id, service, sample.deployment_id.clone()))
-                    .or_default()
-                    .push(sample);
+    segment::scan(
+        &store.raw_metrics(),
+        lead_in,
+        &Prefilter::All,
+        |row| match row {
+            segment::Row::Host(sample) => hosts.push(sample),
+            segment::Row::Container(sample) => {
+                if let (Some(service_id), Some(service)) =
+                    (sample.service_id, sample.service.clone())
+                {
+                    services
+                        .entry((service_id, service, sample.deployment_id.clone()))
+                        .or_default()
+                        .push(sample);
+                }
             }
-        }
-        segment::Row::Marker(marker) => {
-            if marker.ts >= range.since_nanos {
-                markers.push(marker);
+            segment::Row::Marker(marker) => {
+                if marker.ts >= range.since_nanos {
+                    markers.push(marker);
+                }
             }
-        }
-    })?;
+        },
+    )?;
 
     let buckets = Buckets::new(range, Some(STEP_NANOS));
     let mut rows = Vec::new();
@@ -213,20 +220,25 @@ fn write_rollup(store: &StoreRoot, hour: SegmentName, rows: &[Row]) -> io::Resul
     fs::rename(temp, dir.join(name))
 }
 
-/// Reads the rollup points `scope` selects with `ts` inside `range`.
+/// Reads the rollup points `scope` selects with `ts` inside `range`, and the
+/// markers it shows, each oldest first.
 ///
 /// # Errors
 ///
 /// Returns an error when the rollup dir exists but cannot be listed. A file
 /// that cannot be read is logged and skipped.
-pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::Result<Rolled> {
+pub fn read(
+    store: &StoreRoot,
+    range: MetricRange,
+    scope: &MetricScope,
+) -> io::Result<(Rolled, Vec<MetricMarker>)> {
     let mut hosts = Vec::new();
     let mut deployments = Vec::new();
-    let needle = segment::needle(scope);
+    let mut markers = Vec::new();
     segment::scan(
         &store.rollup_metrics(),
         range,
-        Some(&needle),
+        &Prefilter::of(scope),
         |row| match (scope, row) {
             (MetricScope::Machine, Row::Host(point)) => hosts.push(point),
             (MetricScope::Service { service }, Row::Service(deployment))
@@ -234,15 +246,18 @@ pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::R
             {
                 deployments.push(deployment);
             }
+            (_, Row::Marker(marker)) if segment::shows(scope, &marker) => markers.push(marker),
             _ => {}
         },
     )?;
     hosts.sort_by_key(|point| point.ts);
     deployments.sort_by_key(|deployment| deployment.point.ts);
-    Ok(match scope {
+    markers.sort_by_key(|marker| marker.ts);
+    let rolled = match scope {
         MetricScope::Machine => Rolled::Machine(hosts),
         MetricScope::Service { .. } => Rolled::Service(deployments),
-    })
+    };
+    Ok((rolled, markers))
 }
 
 /// The end of the newest folded hour in Unix nanoseconds, or `None` before
@@ -403,7 +418,7 @@ mod tests {
         let scope = MetricScope::Service {
             service: qualified(n),
         };
-        let Rolled::Service(points) = read(store, all(), &scope).unwrap() else {
+        let Rolled::Service(points) = read(store, all(), &scope).unwrap().0 else {
             panic!("service scope reads service points");
         };
         points
@@ -443,7 +458,7 @@ mod tests {
         assert_eq!(first.mem_bytes, Some(200 << 20));
         assert_eq!(first.mem_limit, Some(2 << 30));
 
-        let Rolled::Machine(hosts) = read(&store, all(), &MetricScope::Machine).unwrap() else {
+        let Rolled::Machine(hosts) = read(&store, all(), &MetricScope::Machine).unwrap().0 else {
             panic!("machine scope reads host points");
         };
         assert_eq!(hosts.len(), 12);
@@ -470,7 +485,7 @@ mod tests {
         append_marker(store.rollup_metrics().join("1759996800.jsonl"));
 
         assert_eq!(service_points(&store, 1).len(), 12);
-        let Rolled::Machine(hosts) = read(&store, all(), &MetricScope::Machine).unwrap() else {
+        let Rolled::Machine(hosts) = read(&store, all(), &MetricScope::Machine).unwrap().0 else {
             panic!("machine scope reads host points");
         };
         assert_eq!(hosts.len(), 12);
@@ -528,11 +543,16 @@ mod tests {
         fs::remove_dir_all(store.raw_metrics()).unwrap();
 
         let mut kept = Vec::new();
-        segment::scan(&store.rollup_metrics(), all(), None, |row| {
-            if let rollup::Row::Marker(m) = row {
-                kept.push(m);
-            }
-        })
+        segment::scan(
+            &store.rollup_metrics(),
+            all(),
+            &segment::Prefilter::All,
+            |row| {
+                if let rollup::Row::Marker(m) = row {
+                    kept.push(m);
+                }
+            },
+        )
         .unwrap();
         assert_eq!(kept, vec![oom, exit]);
     }
@@ -573,7 +593,7 @@ mod tests {
         let (_dir, store) = store();
         assert_eq!(fold_pending(&store, time(T0)).unwrap(), 0);
         assert_eq!(
-            read(&store, all(), &MetricScope::Machine).unwrap(),
+            read(&store, all(), &MetricScope::Machine).unwrap().0,
             Rolled::Machine(Vec::new())
         );
         assert!(service_points(&store, 1).is_empty());

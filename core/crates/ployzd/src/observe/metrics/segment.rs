@@ -110,48 +110,96 @@ fn append_lines(path: &Path, mut buf: Vec<u8>) -> io::Result<()> {
     file.write_all(&buf)
 }
 
-/// Reads the rows `scope` selects with `ts` inside `range`.
+/// Reads the rows `scope` selects with `ts` inside `range`, and the markers
+/// it shows, each oldest first.
 ///
 /// # Errors
 ///
 /// Returns an error when the segment dir exists but cannot be listed. A
 /// segment that cannot be read is logged and skipped.
-pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::Result<Selected> {
+pub fn read(
+    store: &StoreRoot,
+    range: MetricRange,
+    scope: &MetricScope,
+) -> io::Result<(Selected, Vec<MetricMarker>)> {
     let mut hosts = Vec::new();
     let mut containers = Vec::new();
-    let needle = needle(scope);
-    scan(&store.raw_metrics(), range, Some(&needle), |row| {
-        match (scope, row) {
+    let mut markers = Vec::new();
+    scan(
+        &store.raw_metrics(),
+        range,
+        &Prefilter::of(scope),
+        |row| match (scope, row) {
             (MetricScope::Machine, Row::Host(sample)) => hosts.push(sample),
             (MetricScope::Service { service }, Row::Container(sample))
                 if sample.service.as_ref() == Some(service) =>
             {
                 containers.push(sample);
             }
+            (_, Row::Marker(marker)) if shows(scope, &marker) => markers.push(marker),
             _ => {}
-        }
-    })?;
+        },
+    )?;
     hosts.sort_by_key(|sample| sample.ts);
     containers.sort_by_key(|sample| sample.ts);
-    Ok(match scope {
+    markers.sort_by_key(|marker| marker.ts);
+    let selected = match scope {
         MetricScope::Machine => Selected::Machine(hosts),
         MetricScope::Service { .. } => Selected::Service(containers),
-    })
+    };
+    Ok((selected, markers))
 }
 
-/// Bytes every stored line `scope` selects contains: its Service's quoted
-/// `namespace/name`, or a host row's tag. Checking them first skips parsing
-/// the other Services' rows. The quotes keep `prod/web` from matching
-/// `prod/web-2`.
-pub fn needle(scope: &MetricScope) -> Vec<u8> {
+/// Whether `scope` shows `marker`: a Service its own, a Machine every
+/// Service's.
+pub fn shows(scope: &MetricScope, marker: &MetricMarker) -> bool {
     match scope {
-        MetricScope::Machine => br#""row":"host""#.to_vec(),
-        MetricScope::Service { service } => format!("\"{service}\"").into_bytes(),
+        MetricScope::Machine => true,
+        MetricScope::Service { service } => marker.service == *service,
+    }
+}
+
+/// Precedes the row tag in every stored line.
+const TAG: &[u8] = br#""row":""#;
+
+/// A byte test every stored line a scope selects passes. Checking it first
+/// skips parsing the other rows.
+pub enum Prefilter {
+    All,
+    /// Lines whose row tag is one of these, each with its closing quote.
+    Tags(Finder<'static>, &'static [&'static [u8]]),
+    /// Lines containing a Service's quoted `namespace/name`. The quotes keep
+    /// `prod/web` from matching `prod/web-2`.
+    Contains(Finder<'static>),
+}
+
+impl Prefilter {
+    /// A Service's rows all carry its name. A Machine's host and marker rows
+    /// are found by tag, which sits at the start of a line, so the other
+    /// rows are not searched end to end.
+    pub fn of(scope: &MetricScope) -> Self {
+        match scope {
+            MetricScope::Machine => Self::Tags(Finder::new(TAG), &[b"host\"", b"marker\""]),
+            MetricScope::Service { service } => {
+                Self::Contains(Finder::new(format!("\"{service}\"").as_bytes()).into_owned())
+            }
+        }
+    }
+
+    fn keeps(&self, line: &[u8]) -> bool {
+        match self {
+            Self::All => true,
+            Self::Tags(finder, tags) => finder
+                .find(line)
+                .and_then(|at| line.get(at + TAG.len()..))
+                .is_some_and(|rest| tags.iter().any(|tag| rest.starts_with(tag))),
+            Self::Contains(finder) => finder.find(line).is_some(),
+        }
     }
 }
 
 /// Calls `visit` with every row in `range` of the hourly files in `dir`,
-/// oldest hour first, skipping lines without `needle` unparsed.
+/// oldest hour first, skipping lines `prefilter` drops unparsed.
 ///
 /// # Errors
 ///
@@ -160,10 +208,9 @@ pub fn needle(scope: &MetricScope) -> Vec<u8> {
 pub fn scan<R: DeserializeOwned + Stamped>(
     dir: &Path,
     range: MetricRange,
-    needle: Option<&[u8]>,
+    prefilter: &Prefilter,
     mut visit: impl FnMut(R),
 ) -> io::Result<()> {
-    let finder = needle.map(Finder::new);
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -177,7 +224,7 @@ pub fn scan<R: DeserializeOwned + Stamped>(
     segments.sort();
     for name in segments {
         let path = dir.join(name.to_string());
-        let skipped = match read_segment(&path, range, finder.as_ref(), &mut visit) {
+        let skipped = match read_segment(&path, range, prefilter, &mut visit) {
             Ok(skipped) => skipped,
             Err(error) => {
                 tracing::warn!(segment = %path.display(), %error, "skipping a metric segment");
@@ -202,7 +249,7 @@ fn overlaps(name: SegmentName, range: MetricRange) -> bool {
 fn read_segment<R: DeserializeOwned + Stamped>(
     path: &Path,
     range: MetricRange,
-    finder: Option<&Finder<'_>>,
+    prefilter: &Prefilter,
     visit: &mut impl FnMut(R),
 ) -> io::Result<usize> {
     let file = fs::OpenOptions::new()
@@ -220,7 +267,7 @@ fn read_segment<R: DeserializeOwned + Stamped>(
         let Some(complete) = line.strip_suffix(b"\n") else {
             return Ok(skipped + 1);
         };
-        if finder.is_some_and(|finder| finder.find(complete).is_none()) {
+        if !prefilter.keeps(complete) {
             continue;
         }
         match serde_json::from_slice::<R>(complete) {
@@ -373,14 +420,14 @@ mod tests {
             service: qualified(1),
         };
         assert_eq!(
-            read(&store, window, &scope).unwrap(),
+            read(&store, window, &scope).unwrap().0,
             Selected::Service(vec![
                 sample(1, 1, T0 + 10 * SEC),
                 sample(1, 1, T0 + HOUR + 10 * SEC),
             ])
         );
         assert_eq!(
-            read(&store, window, &MetricScope::Machine).unwrap(),
+            read(&store, window, &MetricScope::Machine).unwrap().0,
             Selected::Machine(vec![host(T0 + 10 * SEC), host(T0 + HOUR + 10 * SEC)])
         );
     }
@@ -389,7 +436,9 @@ mod tests {
     fn an_empty_store_reads_nothing() {
         let (_dir, store) = store();
         assert_eq!(
-            read(&store, range(0, i64::MAX), &MetricScope::Machine).unwrap(),
+            read(&store, range(0, i64::MAX), &MetricScope::Machine)
+                .unwrap()
+                .0,
             Selected::Machine(Vec::new())
         );
     }
@@ -409,13 +458,13 @@ mod tests {
             .unwrap();
         let everything = range(T0, T0 + HOUR);
         assert_eq!(
-            read(&store, everything, &MetricScope::Machine).unwrap(),
+            read(&store, everything, &MetricScope::Machine).unwrap().0,
             Selected::Machine(vec![host(T0)])
         );
 
         append(&store, &[Row::Host(host(T0 + 20 * SEC))]).unwrap();
         assert_eq!(
-            read(&store, everything, &MetricScope::Machine).unwrap(),
+            read(&store, everything, &MetricScope::Machine).unwrap().0,
             Selected::Machine(vec![host(T0), host(T0 + 20 * SEC)])
         );
     }
@@ -441,14 +490,14 @@ mod tests {
 
         let everything = range(T0, T0 + HOUR);
         assert_eq!(
-            read(&store, everything, &MetricScope::Machine).unwrap(),
+            read(&store, everything, &MetricScope::Machine).unwrap().0,
             Selected::Machine(vec![host(T0)])
         );
         let scope = MetricScope::Service {
             service: qualified(1),
         };
         assert_eq!(
-            read(&store, everything, &scope).unwrap(),
+            read(&store, everything, &scope).unwrap().0,
             Selected::Service(vec![sample(1, 1, T0 + 2 * SEC)])
         );
     }
@@ -464,7 +513,8 @@ mod tests {
         let scope = MetricScope::Service {
             service: qualified(1),
         };
-        let Selected::Service(samples) = read(&store, range(T0, T0 + HOUR), &scope).unwrap() else {
+        let Selected::Service(samples) = read(&store, range(T0, T0 + HOUR), &scope).unwrap().0
+        else {
             panic!("service scope reads service samples");
         };
         assert_eq!(samples.len(), 500);

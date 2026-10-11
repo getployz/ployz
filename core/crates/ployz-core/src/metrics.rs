@@ -207,6 +207,10 @@ pub struct MetricHistoryReply {
     pub step_nanos: i64,
     #[serde(default)]
     pub gaps: Vec<MetricGap>,
+    /// OOM kills, exits and restarts inside the range, oldest first. A
+    /// Service sees its own; a Machine sees every Service's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<MetricMarker>,
 }
 
 /// One list of points, shaped by the request's scope.
@@ -375,12 +379,34 @@ mod tests {
                 to: 300,
                 reason: MetricGapReason::NotSampled,
             }],
+            markers: vec![MetricMarker {
+                machine_id: sample.machine_id,
+                container_id: sample.container_id,
+                service_id: sample.service_id.unwrap(),
+                service: sample.service.unwrap(),
+                deployment_id: None,
+                replica: "web-1".into(),
+                ts: 150,
+                kind: MarkerKind::Restart,
+            }],
         };
         let json = serde_json::to_value(&reply).unwrap();
         assert_eq!(json.pointer("/gaps/0/reason"), Some(&"not_sampled".into()));
+        assert_eq!(json.pointer("/markers/0/kind"), Some(&"restart".into()));
         assert_eq!(
             serde_json::from_value::<MetricHistoryReply>(json).unwrap(),
             reply
+        );
+
+        let quiet = MetricHistoryReply {
+            markers: Vec::new(),
+            ..reply
+        };
+        let json = serde_json::to_value(&quiet).unwrap();
+        assert!(json.get("markers").is_none());
+        assert_eq!(
+            serde_json::from_value::<MetricHistoryReply>(json).unwrap(),
+            quiet
         );
     }
 

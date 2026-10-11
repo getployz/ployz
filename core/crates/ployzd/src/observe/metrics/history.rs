@@ -62,7 +62,7 @@ pub(crate) fn history(
     let raw_from = rollup::folded_until(store)?.map_or(range.since_nanos, |until| {
         until.clamp(range.since_nanos, range.until_nanos)
     });
-    let rolled = rollup::read(
+    let (rolled, mut markers) = rollup::read(
         store,
         MetricRange {
             until_nanos: raw_from,
@@ -75,19 +75,18 @@ pub(crate) fn history(
             since_nanos: raw_from,
             ..range
         };
-        Some(
-            raw(
-                store,
-                tail,
-                &request.scope,
-                Buckets::new(tail, Some(STEP_NANOS)),
-            )?
-            .points,
-        )
+        let tail = raw(
+            store,
+            tail,
+            &request.scope,
+            Buckets::new(tail, Some(STEP_NANOS)),
+        )?;
+        markers.extend(tail.markers);
+        Some(tail.points)
     } else {
         None
     };
-    Ok(match rolled {
+    let mut reply = match rolled {
         Rolled::Machine(mut points) => {
             if let Some(MetricPoints::Machine(fresh)) = fresh {
                 points.extend(fresh);
@@ -101,7 +100,9 @@ pub(crate) fn history(
             }
             average_services(&points, buckets)
         }
-    })
+    };
+    reply.markers = markers;
+    Ok(reply)
 }
 
 /// The reply for a read that did not finish in time: no points, and one
@@ -118,6 +119,7 @@ pub(crate) fn timed_out(request: &MetricHistoryRequest, now: i64) -> MetricHisto
             to: request.range.until_nanos,
             reason: MetricGapReason::Timeout,
         }],
+        markers: Vec::new(),
     }
 }
 
@@ -131,10 +133,14 @@ fn raw(
         since_nanos: range.since_nanos.saturating_sub(LEAD_IN),
         ..range
     };
-    Ok(match segment::read(store, lead_in, scope)? {
+    let (selected, mut markers) = segment::read(store, lead_in, scope)?;
+    markers.retain(|marker| marker.ts >= range.since_nanos);
+    let mut reply = match selected {
         Selected::Machine(samples) => rate::machine_history(&samples, buckets),
         Selected::Service(samples) => rate::service_history(&samples, buckets),
-    })
+    };
+    reply.markers = markers;
+    Ok(reply)
 }
 
 fn rates(point: &ServicePoint) -> [Option<f64>; 5] {
@@ -280,6 +286,7 @@ fn average_services(points: &[ServicePoint], buckets: Buckets) -> MetricHistoryR
         points: MetricPoints::Service(points),
         step_nanos: buckets.step(),
         gaps,
+        markers: Vec::new(),
     }
 }
 
@@ -345,6 +352,7 @@ fn average_hosts(points: &[HostPoint], buckets: Buckets) -> MetricHistoryReply {
         points: MetricPoints::Machine(points),
         step_nanos: buckets.step(),
         gaps,
+        markers: Vec::new(),
     }
 }
 
@@ -360,8 +368,8 @@ pub(crate) mod tests {
         ContainerId, MachineId, QualifiedService, ServiceId,
         metrics::{
             CpuJiffies, HostMemory, HostPoint, HostSample, InterfaceBytes, InterfaceRate,
-            MetricGap, MetricGapReason, MetricHistoryReply, MetricHistoryRequest, MetricPoints,
-            MetricRange, MetricSample, MetricScope, ServicePoint,
+            MarkerKind, MetricGap, MetricGapReason, MetricHistoryReply, MetricHistoryRequest,
+            MetricMarker, MetricPoints, MetricRange, MetricSample, MetricScope, ServicePoint,
         },
     };
 
@@ -454,6 +462,24 @@ pub(crate) mod tests {
             .into(),
             disk: None,
         })
+    }
+
+    fn marker(service_n: u8, ts: i64, kind: MarkerKind) -> MetricMarker {
+        MetricMarker {
+            machine_id: machine(),
+            container_id: ContainerId::parse(format!("{service_n:02x}").repeat(32)).unwrap(),
+            service_id: service(service_n),
+            service: qualified(service_n),
+            deployment_id: Some("deployment-1".into()),
+            replica: format!("web-{service_n}"),
+            ts,
+            kind,
+        }
+    }
+
+    fn append_markers(store: &StoreRoot, markers: &[MetricMarker]) {
+        let rows: Vec<Row> = markers.iter().cloned().map(Row::Marker).collect();
+        segment::append(store, &rows).unwrap();
     }
 
     /// Appends `rows(ts)` every 10 seconds of `[from, to)`.
@@ -604,6 +630,82 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_recent_range_returns_the_markers_inside_it_for_its_scope() {
+        let (_dir, store) = store();
+        let since = T0 + 30 * MIN;
+        let until = T0 + HOUR;
+        let restart = marker(1, T0 + 50 * MIN, MarkerKind::Restart);
+        let oom = marker(1, T0 + 40 * MIN, MarkerKind::Oom);
+        let other = marker(
+            2,
+            T0 + 45 * MIN,
+            MarkerKind::Exit {
+                exit_code: Some(137),
+            },
+        );
+        append_markers(
+            &store,
+            &[
+                marker(1, T0 + 10 * MIN, MarkerKind::Oom),
+                // Inside the lead-in read for the first rate, not the range.
+                marker(1, since - MIN, MarkerKind::Restart),
+                restart.clone(),
+                oom.clone(),
+                other.clone(),
+                marker(1, until, MarkerKind::Oom),
+            ],
+        );
+
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        let reply = history(&store, &request(scope, since, until, None), until).unwrap();
+        assert_eq!(reply.markers, [oom.clone(), restart.clone()]);
+
+        let asked = request(MetricScope::Machine, since, until, None);
+        let reply = history(&store, &asked, until).unwrap();
+        assert_eq!(reply.markers, [oom, other, restart]);
+    }
+
+    #[test]
+    fn a_wide_range_returns_rolled_and_raw_tail_markers_once() {
+        let (_dir, store) = store();
+        write(&store, T0, T0 + 3 * HOUR, |ts| {
+            vec![host(ts), container(1, Some(1), 1, ts, 10)]
+        });
+        let rolled = marker(1, T0 + 20 * MIN, MarkerKind::Oom);
+        // Folded, and also inside the raw tail's lead-in.
+        let seam = marker(1, T0 + 2 * HOUR - 2 * MIN, MarkerKind::Restart);
+        let other = marker(2, T0 + HOUR + 30 * MIN, MarkerKind::Oom);
+        let tail = marker(
+            1,
+            T0 + 2 * HOUR + 20 * MIN,
+            MarkerKind::Exit { exit_code: Some(0) },
+        );
+        append_markers(
+            &store,
+            &[rolled.clone(), seam.clone(), other.clone(), tail.clone()],
+        );
+        for hour in [T0, T0 + HOUR] {
+            rollup::fold_hour(&store, SegmentName::containing(hour).unwrap()).unwrap();
+        }
+        let oldest = SegmentName::containing(T0).unwrap().to_string();
+        fs::remove_file(store.raw_metrics().join(oldest)).unwrap();
+        let now = T0 + 3 * HOUR;
+        let since = now - 7 * DAY;
+
+        let scope = MetricScope::Service {
+            service: qualified(1),
+        };
+        let reply = history(&store, &request(scope, since, now, None), now).unwrap();
+        assert_eq!(reply.markers, [rolled.clone(), seam.clone(), tail.clone()]);
+
+        let asked = request(MetricScope::Machine, since, now, None);
+        let reply = history(&store, &asked, now).unwrap();
+        assert_eq!(reply.markers, [rolled, other, seam, tail]);
+    }
+
+    #[test]
     fn an_empty_store_is_one_not_sampled_gap() {
         let (_dir, store) = store();
         let now = T0;
@@ -659,8 +761,16 @@ pub(crate) mod tests {
             serde_json::to_writer(&mut *buf, row).unwrap();
             buf.push(b'\n');
         };
-        for hour in (since..now).step_by(usize::try_from(HOUR).unwrap()) {
+        for (index, hour) in (since..now)
+            .step_by(usize::try_from(HOUR).unwrap())
+            .enumerate()
+        {
             let mut buf = Vec::new();
+            let restarted = u8::try_from(index % 50).unwrap();
+            line(
+                &mut buf,
+                &rollup::Row::Marker(marker(restarted, hour, MarkerKind::Restart)),
+            );
             for ts in (hour..hour + HOUR).step_by(usize::try_from(STEP_NANOS).unwrap()) {
                 let host = HostPoint {
                     ts,
@@ -711,9 +821,14 @@ pub(crate) mod tests {
             eprintln!("{scope:?}: {took:?}");
             assert_eq!(reply.gaps, []);
             match &reply.points {
-                MetricPoints::Machine(points) => assert_eq!(points.len(), 300),
+                MetricPoints::Machine(points) => {
+                    assert_eq!(points.len(), 300);
+                    assert_eq!(reply.markers.len(), 90 * 24);
+                }
                 MetricPoints::Service(points) => {
                     assert_eq!(points.len(), 300);
+                    // Hours 7, 57, ... 2157 of 2160.
+                    assert_eq!(reply.markers.len(), 44);
                     assert!(near(points[0].cpu_usec, 2e5), "{:?}", points[0]);
                 }
             }
