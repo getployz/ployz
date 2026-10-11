@@ -46,6 +46,8 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
 import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
+import { usePrefetchServiceUptime } from "#/modules/uptime/uptime.queries";
+import { MonitoringTab } from "./monitoring/MonitoringTab";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
 export type StoreService = {
@@ -100,7 +102,7 @@ function nameSchema(service: ServiceListing, services: readonly ServiceListing[]
  * through the Environment's queue; a rename or removal is staged like any other change.
  */
 export function StoreServiceDrawer({ params }: { params: { organizationSlug: string; projectSlug: string; environmentSlug: string; serviceId: string } }) {
-  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
   const views = useStoreViews(organizationSlug,
     [servicesQuery(store), environmentSettingsQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store)] as const);
@@ -110,7 +112,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const volumes = effectiveVolumes(requireView(views[3]).volumes, services, settings);
   const namespace = views[4].ok ? views[4].value.namespace : null;
   const writer = useStoreWriter(organizationSlug);
-  const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
+  const { tab, range = "24h" } = useSearch({ from: SERVICE_ROUTE_FROM });
+  const prefetchUptime = usePrefetchServiceUptime({ organizationSlug, environmentId }, params.serviceId);
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
@@ -200,7 +203,10 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           }}
           className="flex min-h-0 flex-1 flex-col overflow-visible sm:overflow-clip">
           <TabsList variant="line" className="-mx-4 max-w-none shrink-0 overflow-x-auto sm:mx-0 sm:max-w-full">
-            {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
+            {SERVICE_PAGES.map((page) => (
+              <TabsTrigger key={page.id} value={page.id}
+                onPointerEnter={page.id === "monitoring" ? () => prefetchUptime(range) : undefined}>{page.label}</TabsTrigger>
+            ))}
           </TabsList>
           <TabsContent value="deployments" className="mt-4 min-h-0 flex-1 overflow-y-auto">
             <nav aria-label="Deployments" className="mx-auto w-full max-w-2xl">
@@ -213,6 +219,26 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           </TabsContent>
           <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             <ContainerLogs selection={{ organizationSlug, projectSlug: params.projectSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
+          </TabsContent>
+          <TabsContent value="monitoring" className="mt-3 min-h-0 flex-1 overflow-clip">
+            <div className="h-full overflow-y-auto pr-1 pb-8">
+              <div className="mx-auto w-full max-w-2xl">
+                <MonitoringTab organizationSlug={organizationSlug} service={service} range={range}
+                  onRange={(next) => void navigate({ search: (prev) => ({ ...prev, range: next === "24h" ? undefined : next }), replace: true })}
+                  addDomain={(
+                    <Button variant="outline" size="sm" nativeButton={false}
+                      render={<Link to={SERVICE_ROUTE_TO} params={params} search={(prev) => ({ ...prev, tab: "settings" as const })} hash="settings-networking" replace />}>
+                      Add domain
+                    </Button>
+                  )}
+                  fixPath={(
+                    <Button variant="outline" size="sm" nativeButton={false}
+                      render={<Link to={SERVICE_ROUTE_TO} params={params} search={(prev) => ({ ...prev, tab: "settings" as const })} hash="healthcheck" replace />}>
+                      Fix path
+                    </Button>
+                  )} />
+              </div>
+            </div>
           </TabsContent>
           <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">

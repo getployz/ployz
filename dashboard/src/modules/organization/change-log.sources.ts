@@ -49,6 +49,9 @@ export const changeSources = {
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
   organization_server_upgrades: { key: ["organization_id"] },
+  uptime_check: { key: ["id"] },
+  // Logs the check id, so a change names the one check whose open incident it touched.
+  uptime_incident: { key: ["check_id"] },
   ...storeChangeSources,
 } satisfies Record<string, { organizationColumn?: string; key: readonly string[] }>;
 
