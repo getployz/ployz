@@ -154,6 +154,24 @@ mod tests {
     }
 
     #[test]
+    fn writing_100_mb_into_a_volume_grows_its_referenced_bytes_by_100_mb() {
+        // Captured on an Incus Machine before and after `dd` wrote 100 MiB into a
+        // Managed volume.
+        const VOLUME: &str =
+            "ployz/ployz/verify-production_vol-b611d842-26d8-42dd-9f04-f1e6bdd13df3";
+        let before = parse(include_str!("fixtures/zfs_list_before_write.txt")).unwrap();
+        let after = parse(include_str!("fixtures/zfs_list_after_write.txt")).unwrap();
+
+        let (before, after) = (before.get(VOLUME).unwrap(), after.get(VOLUME).unwrap());
+        assert_eq!(after.refquota, NonZeroU64::new(1_000_000_000));
+        let grown = after.referenced - before.referenced;
+        assert!(
+            (100 << 20..101 << 20).contains(&grown),
+            "grew {grown} bytes"
+        );
+    }
+
+    #[test]
     fn dash_none_and_zero_refquota_mean_no_quota() {
         for refquota in ["-", "none", "0"] {
             assert_eq!(
