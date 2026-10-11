@@ -1930,6 +1930,14 @@ export type HealthcheckSpec = { "state": "disabled" } | { "state": "configured" 
 
 export type HintSource = ConditionalSyncId | EnvironmentName;
 
+export type HistoryContainer = { container_id: ContainerId, namespace: string | null, service: string | null, deployment: string | null, replica: string, kind: HistoryContainerKind, };
+
+export type HistoryContainerKind = "service" | "pre_deploy_hook" | "system";
+
+export type HistoryGapReason = "not_captured" | "corrupt";
+
+export type HistoryStream = "stdout" | "stderr";
+
 export type HoldSecret = {
 /**
  * The Destination.
@@ -2096,8 +2104,6 @@ export type LocalMachineRemoved = { reset_warning: string | null, };
 
 export type LogChannel = "stdout" | "stderr" | "error";
 
-export type LogDriver = { name: string, options: { [key in string]: string }, };
-
 export type LogExcerpt = { lines: Array<string>,
 /**
  * Whether a cap dropped any line or byte.
@@ -2107,6 +2113,10 @@ cut: boolean,
  * How many secrets and secret-shaped values were replaced.
  */
 redacted: number, };
+
+export type LogHistoryRecord = { "row": "container" } & HistoryContainer | { "row": "line", container_id: ContainerId, timestamp_nanos: string, stream: HistoryStream, level: LogLevel, message: string, } | { "row": "gap", container_id: ContainerId, from_nanos: string, to_nanos: string, reason: HistoryGapReason, } | { "row": "exit", container_id: ContainerId, timestamp_nanos: string, exit_code: number | null, oom_killed: boolean, } | { "row": "end", next: string | null, };
+
+export type LogLevel = "error" | "warn" | "info" | "debug";
 
 export type LogMetadata = { origin: LogOrigin, machine_id: MachineId, machine_name: MachineName, };
 
@@ -3426,7 +3436,7 @@ hostname: ContainerHostname | null,
 /**
  * Container-local Docker `/etc/hosts` entries.
  */
-extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, log_driver: LogDriver | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
+extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
 
 export type ServiceDependency = {
 /**

@@ -18,6 +18,7 @@ enum StreamKind {
     LogStderr = 0x11,
     LogHeartbeat = 0x12,
     LogError = 0x13,
+    LogHistory = 0x14,
     ExecId = 0x81,
     ExecStdout = 0x82,
     ExecStderr = 0x83,
@@ -35,6 +36,7 @@ impl fmt::Display for StreamKind {
             Self::LogStderr => "log stderr",
             Self::LogHeartbeat => "log heartbeat",
             Self::LogError => "log error",
+            Self::LogHistory => "log history",
             Self::ExecId => "exec ID",
             Self::ExecStdout => "exec stdout",
             Self::ExecStderr => "exec stderr",
@@ -56,6 +58,7 @@ impl TryFrom<u8> for StreamKind {
             0x11 => Ok(Self::LogStderr),
             0x12 => Ok(Self::LogHeartbeat),
             0x13 => Ok(Self::LogError),
+            0x14 => Ok(Self::LogHistory),
             0x81 => Ok(Self::ExecId),
             0x82 => Ok(Self::ExecStdout),
             0x83 => Ok(Self::ExecStderr),
@@ -188,6 +191,7 @@ impl ExecRequestFrame {
             | StreamKind::LogStderr
             | StreamKind::LogHeartbeat
             | StreamKind::LogError
+            | StreamKind::LogHistory
             | StreamKind::ExecId
             | StreamKind::ExecStdout
             | StreamKind::ExecStderr
@@ -240,7 +244,8 @@ impl ExecResponseFrame {
             | StreamKind::LogStdout
             | StreamKind::LogStderr
             | StreamKind::LogHeartbeat
-            | StreamKind::LogError) => Err(unexpected("exec response", actual)),
+            | StreamKind::LogError
+            | StreamKind::LogHistory) => Err(unexpected("exec response", actual)),
         }
     }
 }
@@ -363,30 +368,16 @@ impl LogEntry {
             },
             "log header",
         )?;
-        let header_length = u32::try_from(header.len())
-            .map_err(|_| StreamProtocolError::PayloadTooLarge(header.len()))?;
-        let mut payload = Vec::with_capacity(4 + header.len() + message.len());
-        payload.extend_from_slice(&header_length.to_be_bytes());
-        payload.extend_from_slice(&header);
-        payload.extend_from_slice(message);
-        StreamFrame { kind, payload }.encode()
+        StreamFrame {
+            kind,
+            payload: with_header(&header, message)?,
+        }
+        .encode()
     }
 
     pub fn decode(payload: &OpaquePayload) -> Result<Self, StreamProtocolError> {
         let frame = StreamFrame::decode(payload)?;
-        if frame.payload.len() < size_of::<u32>() {
-            return Err(invalid("log entry", "truncated metadata length"));
-        }
-        let (header_length, rest) = frame.payload.split_at(size_of::<u32>());
-        let header_length = u32::from_be_bytes(
-            header_length
-                .try_into()
-                .expect("the metadata length prefix was checked above"),
-        ) as usize;
-        if rest.len() < header_length {
-            return Err(invalid("log entry", "truncated metadata"));
-        }
-        let (header, message) = rest.split_at(header_length);
+        let (header, message) = split_header(&frame.payload, "log entry")?;
         let header: LogHeader = decode_json(header, "log header")?;
         let body = match (frame.kind, header.error, message.is_empty()) {
             (StreamKind::LogStdout, None, _) => LogBody::Stdout(message.to_vec()),
@@ -405,6 +396,7 @@ impl LogEntry {
                 actual @ (StreamKind::ExecConfig
                 | StreamKind::ExecStdin
                 | StreamKind::ExecResize
+                | StreamKind::LogHistory
                 | StreamKind::ExecId
                 | StreamKind::ExecStdout
                 | StreamKind::ExecStderr
@@ -420,6 +412,243 @@ impl LogEntry {
             body,
         })
     }
+}
+
+/// What a stored container was, from the labels the store saw.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryContainerKind {
+    Service,
+    PreDeployHook,
+    System,
+}
+
+/// A stored container, sent before its first row on each page.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct HistoryContainer {
+    pub container_id: ContainerId,
+    pub namespace: Option<String>,
+    pub service: Option<String>,
+    pub deployment: Option<String>,
+    pub replica: String,
+    pub kind: HistoryContainerKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryStream {
+    Stdout,
+    Stderr,
+}
+
+/// Why output between a gap's bounds may be missing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryGapReason {
+    /// Docker deleted a file before the store linked it.
+    NotCaptured,
+    /// Bytes the decoder could not read.
+    Corrupt,
+}
+
+/// One row of a `ployz.logs.history.v2` page. Timestamps are Unix
+/// nanoseconds. A page ends with [`HistoryRow::End`]; heartbeats keep a slow
+/// page's stream open and carry nothing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistoryRow {
+    Container(HistoryContainer),
+    Line {
+        container_id: ContainerId,
+        ts: i64,
+        stream: HistoryStream,
+        text: Vec<u8>,
+    },
+    Gap {
+        container_id: ContainerId,
+        from: i64,
+        to: i64,
+        reason: HistoryGapReason,
+    },
+    Exit {
+        container_id: ContainerId,
+        ts: i64,
+        exit_code: Option<i64>,
+        oom_killed: bool,
+    },
+    /// `next` is the cursor for the following page, or `None` when the
+    /// range holds nothing more.
+    End {
+        next: Option<String>,
+    },
+    Heartbeat,
+    Error(String),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "row", rename_all = "snake_case")]
+enum HistoryHeader {
+    Container(HistoryContainer),
+    Line {
+        container_id: ContainerId,
+        ts: i64,
+        stream: HistoryStream,
+    },
+    Gap {
+        container_id: ContainerId,
+        from: i64,
+        to: i64,
+        reason: HistoryGapReason,
+    },
+    Exit {
+        container_id: ContainerId,
+        ts: i64,
+        exit_code: Option<i64>,
+        oom_killed: bool,
+    },
+    End {
+        next: Option<String>,
+    },
+    Heartbeat,
+    Error {
+        message: String,
+    },
+}
+
+impl HistoryRow {
+    pub fn encode(&self) -> Result<OpaquePayload, StreamProtocolError> {
+        let (header, text) = match self {
+            Self::Container(container) => (HistoryHeader::Container(container.clone()), &[][..]),
+            Self::Line {
+                container_id,
+                ts,
+                stream,
+                text,
+            } => (
+                HistoryHeader::Line {
+                    container_id: *container_id,
+                    ts: *ts,
+                    stream: *stream,
+                },
+                text.as_slice(),
+            ),
+            Self::Gap {
+                container_id,
+                from,
+                to,
+                reason,
+            } => (
+                HistoryHeader::Gap {
+                    container_id: *container_id,
+                    from: *from,
+                    to: *to,
+                    reason: *reason,
+                },
+                &[][..],
+            ),
+            Self::Exit {
+                container_id,
+                ts,
+                exit_code,
+                oom_killed,
+            } => (
+                HistoryHeader::Exit {
+                    container_id: *container_id,
+                    ts: *ts,
+                    exit_code: *exit_code,
+                    oom_killed: *oom_killed,
+                },
+                &[][..],
+            ),
+            Self::End { next } => (HistoryHeader::End { next: next.clone() }, &[][..]),
+            Self::Heartbeat => (HistoryHeader::Heartbeat, &[][..]),
+            Self::Error(message) => (
+                HistoryHeader::Error {
+                    message: message.clone(),
+                },
+                &[][..],
+            ),
+        };
+        StreamFrame {
+            kind: StreamKind::LogHistory,
+            payload: with_header(&json(&header, "history header")?, text)?,
+        }
+        .encode()
+    }
+
+    pub fn decode(payload: &OpaquePayload) -> Result<Self, StreamProtocolError> {
+        let frame = StreamFrame::decode(payload)?;
+        if frame.kind != StreamKind::LogHistory {
+            return Err(unexpected("log history", frame.kind));
+        }
+        let (header, text) = split_header(&frame.payload, "log history")?;
+        Ok(match decode_json(header, "history header")? {
+            HistoryHeader::Container(container) => Self::Container(container),
+            HistoryHeader::Line {
+                container_id,
+                ts,
+                stream,
+            } => Self::Line {
+                container_id,
+                ts,
+                stream,
+                text: text.to_vec(),
+            },
+            HistoryHeader::Gap {
+                container_id,
+                from,
+                to,
+                reason,
+            } => Self::Gap {
+                container_id,
+                from,
+                to,
+                reason,
+            },
+            HistoryHeader::Exit {
+                container_id,
+                ts,
+                exit_code,
+                oom_killed,
+            } => Self::Exit {
+                container_id,
+                ts,
+                exit_code,
+                oom_killed,
+            },
+            HistoryHeader::End { next } => Self::End { next },
+            HistoryHeader::Heartbeat => Self::Heartbeat,
+            HistoryHeader::Error { message } => Self::Error(message),
+        })
+    }
+}
+
+fn with_header(header: &[u8], body: &[u8]) -> Result<Vec<u8>, StreamProtocolError> {
+    let header_length = u32::try_from(header.len())
+        .map_err(|_| StreamProtocolError::PayloadTooLarge(header.len()))?;
+    let mut payload = Vec::with_capacity(4 + header.len() + body.len());
+    payload.extend_from_slice(&header_length.to_be_bytes());
+    payload.extend_from_slice(header);
+    payload.extend_from_slice(body);
+    Ok(payload)
+}
+
+fn split_header<'a>(
+    payload: &'a [u8],
+    kind: &'static str,
+) -> Result<(&'a [u8], &'a [u8]), StreamProtocolError> {
+    if payload.len() < size_of::<u32>() {
+        return Err(invalid(kind, "truncated metadata length"));
+    }
+    let (header_length, rest) = payload.split_at(size_of::<u32>());
+    let header_length = u32::from_be_bytes(
+        header_length
+            .try_into()
+            .expect("the metadata length prefix was checked above"),
+    ) as usize;
+    if rest.len() < header_length {
+        return Err(invalid(kind, "truncated metadata"));
+    }
+    Ok(rest.split_at(header_length))
 }
 
 fn json(value: &impl Serialize, kind: &'static str) -> Result<Vec<u8>, StreamProtocolError> {

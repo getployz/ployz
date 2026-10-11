@@ -82,8 +82,8 @@ Every domain serves https, and Ployz gets and renews its certificates for you. A
 domain gets its certificate once it's deployed and its DNS points at your servers.
 
 Keep ports 80 and 443 open on the servers that take web traffic: they use port 80 to get
-certificates. Ployz doesn't redirect `http://` to `https://` yet, and plain http shows
-**Not Found**, so share `https://` links.
+certificates. Once a domain has its certificate, `http://` links redirect to `https://` with the
+same path. Until then, plain http shows **Nothing is deployed here**.
 
 ## Check a domain's status
 

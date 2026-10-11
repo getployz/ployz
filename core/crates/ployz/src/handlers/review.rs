@@ -30,38 +30,13 @@ pub(crate) fn discard_command() -> Command {
         .arg(version())
 }
 
-/// `ployz diff --json`: the review, plus each staged domain change as people read it,
-/// since the rows store a domain as `managedHostnames` or `routes`.
+/// `ployz diff --json`: the review, plus each staged domain change as people read it.
 #[derive(Serialize)]
 struct Diffed<'v> {
     #[serde(flatten)]
     view: &'v DiffView,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    domains: Vec<DomainLine>,
-}
-
-#[derive(Serialize)]
-struct DomainLine {
-    /// `SERVICE.domains`.
-    path: String,
-    /// `added shop`, `removed app.example.com`.
-    change: String,
-}
-
-fn domains(view: &DiffView) -> Vec<DomainLine> {
-    view.changes
-        .iter()
-        .flat_map(|change| &change.settings)
-        .filter_map(|row| {
-            let domains = ployz_store::DomainChange::of(row)?;
-            let service = row.path.split('.').next().unwrap_or_default();
-            Some(domains.into_iter().map(move |domain| DomainLine {
-                path: format!("{service}.domains"),
-                change: domain.to_string(),
-            }))
-        })
-        .flatten()
-        .collect()
+    domain_changes: Vec<super::store::DomainLine>,
 }
 
 fn version() -> clap::Arg {
@@ -77,7 +52,9 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let hint = (!view.changes.is_empty())
         .then(|| next(matches, &["deploy", "--expect-version", &view.version]));
     let shown = Diffed {
-        domains: domains(&view),
+        domain_changes: super::store::domain_changes(
+            view.changes.iter().flat_map(|change| &change.settings),
+        ),
         view: &view,
     };
     crate::ui::finish(&Next::new(&shown, hint.clone()), || {
