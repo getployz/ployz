@@ -43,6 +43,10 @@ const notOrganizationOwned = {
   operation_request: "The attempt a request key admitted, read only to answer a replayed request; no view reads it, so it needs no change log.",
   operation_outbox: "Events waiting for Inngest, keyed by event id; it belongs to no Organization and no view reads it.",
   volume_run: "A volume command's run record, read only by its own run, the sweep and `volume runs`; no view reads it, so it needs no change log.",
+  uptime_alert: "The uptime alert outbox, read only by the alert sender; no view reads it, so it needs no change log.",
+  uptime_region: "Display names for the probe regions, shared by every Organization and written only by the uptime checker.",
+  uptime_result: "Probe results, read as a Remote Read; growing history that would flood the change log.",
+  uptime_result_hourly: "Hourly probe rollups, read as a Remote Read; growing history that would flood the change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;
