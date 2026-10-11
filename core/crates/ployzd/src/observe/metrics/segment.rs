@@ -24,7 +24,7 @@ use std::{
 
 use nix::fcntl::OFlag;
 use ployz_core::metrics::{HostSample, MetricRange, MetricSample, MetricScope};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::observe::layout::{self, METRICS_DIR, SegmentName, StoreRoot};
 
@@ -36,9 +36,13 @@ pub enum Row {
     Host(HostSample),
 }
 
-impl Row {
-    #[must_use]
-    pub fn ts(&self) -> i64 {
+/// A stored metric row, which a range read keeps or drops by its `ts`.
+pub trait Stamped {
+    fn ts(&self) -> i64;
+}
+
+impl Stamped for Row {
+    fn ts(&self) -> i64 {
         match self {
             Self::Container(sample) => sample.ts,
             Self::Host(sample) => sample.ts,
@@ -129,8 +133,18 @@ pub fn read(store: &StoreRoot, range: MetricRange, scope: &MetricScope) -> io::R
     })
 }
 
-/// Calls `visit` with every row in `range`, segment by segment.
-fn scan(dir: &Path, range: MetricRange, mut visit: impl FnMut(Row)) -> io::Result<()> {
+/// Calls `visit` with every row in `range` of the hourly files in `dir`,
+/// oldest hour first.
+///
+/// # Errors
+///
+/// Returns an error when `dir` exists but cannot be listed. A file that
+/// cannot be read is logged and skipped.
+pub fn scan<R: DeserializeOwned + Stamped>(
+    dir: &Path,
+    range: MetricRange,
+    mut visit: impl FnMut(R),
+) -> io::Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -166,7 +180,11 @@ fn overlaps(name: SegmentName, range: MetricRange) -> bool {
 
 /// Visits the rows of one segment in `range` and returns how many lines did
 /// not parse, a torn last line included.
-fn read_segment(path: &Path, range: MetricRange, visit: &mut impl FnMut(Row)) -> io::Result<usize> {
+fn read_segment<R: DeserializeOwned + Stamped>(
+    path: &Path,
+    range: MetricRange,
+    visit: &mut impl FnMut(R),
+) -> io::Result<usize> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(OFlag::O_NOFOLLOW.bits())
@@ -182,7 +200,7 @@ fn read_segment(path: &Path, range: MetricRange, visit: &mut impl FnMut(Row)) ->
         let Some(complete) = line.strip_suffix(b"\n") else {
             return Ok(skipped + 1);
         };
-        match serde_json::from_slice::<Row>(complete) {
+        match serde_json::from_slice::<R>(complete) {
             Ok(row) if (range.since_nanos..range.until_nanos).contains(&row.ts()) => visit(row),
             Ok(_) => {}
             Err(_) => skipped += 1,

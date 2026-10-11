@@ -8,6 +8,7 @@ mod net;
     expect(dead_code, reason = "wired by the metric query in M9")
 )]
 mod rate;
+mod rollup;
 pub(crate) mod sampler;
 pub(crate) mod segment;
 mod zfs_io;

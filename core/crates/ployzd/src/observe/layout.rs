@@ -16,6 +16,10 @@
 //!         <hour>.jsonl                  every metric row of one hour, one
 //!                                       per line; <hour> is its start in
 //!                                       Unix seconds
+//!       rollup/
+//!         <hour>.jsonl                  that hour folded to 5 minute points
+//!                                       per Service and Deployment, plus
+//!                                       the host
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -45,6 +49,7 @@ pub const FIRST_SET_FILE: &str = "first-set.json";
 pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
+pub const ROLLUP_DIR: &str = "rollup";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
@@ -77,6 +82,11 @@ impl StoreRoot {
     #[must_use]
     pub fn raw_metrics(&self) -> PathBuf {
         self.0.join(METRICS_DIR).join(RAW_DIR)
+    }
+
+    #[must_use]
+    pub fn rollup_metrics(&self) -> PathBuf {
+        self.0.join(METRICS_DIR).join(ROLLUP_DIR)
     }
 
     /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.

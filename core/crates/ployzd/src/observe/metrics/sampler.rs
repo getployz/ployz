@@ -1,5 +1,6 @@
 //! Every 10 s, one raw row per running Ployz container and one for the
-//! Machine, appended to the hour's segment.
+//! Machine, appended to the hour's segment. At start and on the first tick of
+//! each hour, closed hours are folded into rollups.
 //!
 //! Docker is asked only which containers run and, once per new container,
 //! for its pid and labels. Counters come from files: the cgroup named by the
@@ -10,7 +11,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bollard::{
@@ -26,12 +27,16 @@ use super::{
     cgroup::{self, MemoryLimit},
     host::{self, HostCounters},
     net::{self, NetCounters},
+    rollup,
     segment::{self, Row},
 };
 use crate::{
     docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
     machine::LocalMachineRecord,
-    observe::{harvest, layout::StoreRoot},
+    observe::{
+        harvest,
+        layout::{SegmentName, StoreRoot},
+    },
 };
 
 const INTERVAL: Duration = Duration::from_secs(10);
@@ -89,13 +94,22 @@ pub(crate) async fn run(docker: Docker, store: StoreRoot, data_dir: PathBuf) {
     let mut tracked: HashMap<ContainerId, Tracked> = HashMap::new();
     let mut ticks = interval(INTERVAL);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut folded: Option<SegmentName> = None;
     loop {
         ticks.tick().await;
         refresh(&docker, &roots, &mut tracked).await;
         let containers: Vec<Tracked> = tracked.values().cloned().collect();
         let (roots, store, data_dir) = (roots.clone(), store.clone(), data_dir.clone());
+        let ts = harvest::now_nanos();
+        let hour = SegmentName::containing(ts);
+        let fold = hour != folded;
+        folded = hour;
         let tick = tokio::task::spawn_blocking(move || {
-            tick(&roots, &store, &data_dir, &containers, harvest::now_nanos())
+            let gone = tick(&roots, &store, &data_dir, &containers, ts);
+            if fold && let Err(error) = rollup::fold_pending(&store, SystemTime::now()) {
+                tracing::warn!(%error, "cannot fold metric hours");
+            }
+            gone
         });
         match tick.await {
             Ok(Ok(gone)) => {
