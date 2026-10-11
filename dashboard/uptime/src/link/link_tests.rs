@@ -64,10 +64,10 @@ async fn server(token: Option<&str>) -> Server {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let plane = Arc::new(Fake::default());
     let (trigger, shutdown) = Shutdown::new();
-    let gate = Gate {
-        token: token.map(Secret::new),
+    let gate = token.map(|token| Gate {
+        token: Secret::new(token),
         regions: vec![region("fra")],
-    };
+    });
     tokio::spawn(serve(listener, plane.clone(), gate, shutdown));
     Server {
         url,
@@ -155,11 +155,12 @@ async fn a_pull_without_the_token_is_refused_before_the_plane_hears_of_it() {
 
 #[tokio::test]
 async fn a_pull_from_an_unknown_region_is_refused() {
-    let server = server(None).await;
-    let (status, _) = post(&server.url, "/v1/agent/pull", &[], "{}").await;
+    let server = server(Some("hunter2")).await;
+    let bearer = (AUTHORIZATION.as_str(), "Bearer hunter2");
+    let (status, _) = post(&server.url, "/v1/agent/pull", &[bearer], "{}").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let other = (REGION, "sjc");
-    let (status, _) = post(&server.url, "/v1/agent/pull", &[other], "{}").await;
+    let (status, _) = post(&server.url, "/v1/agent/pull", &[bearer, other], "{}").await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(server.plane.pulls.load(Ordering::SeqCst), 0);
 }
@@ -183,8 +184,8 @@ async fn jobs_cross_the_link_intact_and_the_server_clock_comes_with_them() {
 
 #[tokio::test]
 async fn every_outcome_kind_survives_the_round_trip_with_its_batch_id() {
-    let server = server(None).await;
-    let link = HttpLink::new(&server.url, None, region("fra")).unwrap();
+    let server = server(Some("hunter2")).await;
+    let link = HttpLink::new(&server.url, Some(Secret::new("hunter2")), region("fra")).unwrap();
     let observations = vec![
         observation(Outcome::Http { status: 503 }),
         observation(Outcome::Unreachable {
@@ -208,8 +209,8 @@ async fn every_outcome_kind_survives_the_round_trip_with_its_batch_id() {
 
 #[tokio::test]
 async fn an_oversized_batch_is_refused_and_not_retried() {
-    let server = server(None).await;
-    let link = HttpLink::new(&server.url, None, region("fra")).unwrap();
+    let server = server(Some("hunter2")).await;
+    let link = HttpLink::new(&server.url, Some(Secret::new("hunter2")), region("fra")).unwrap();
     let batch = ResultBatch {
         id: Uuid::now_v7(),
         observations: (0..5001)
@@ -226,20 +227,21 @@ async fn an_oversized_batch_is_refused_and_not_retried() {
 
 #[tokio::test]
 async fn a_greedy_want_is_capped_before_it_reaches_the_plane() {
-    let server = server(None).await;
-    let link = HttpLink::new(&server.url, None, region("fra")).unwrap();
+    let server = server(Some("hunter2")).await;
+    let link = HttpLink::new(&server.url, Some(Secret::new("hunter2")), region("fra")).unwrap();
     link.pull(10_000).await.unwrap();
     assert_eq!(*server.plane.wants.lock().unwrap(), vec![4096]);
 }
 
 #[tokio::test]
 async fn unknown_fields_are_ignored_and_malformed_jobs_dropped_and_counted() {
-    let server = server(None).await;
+    let server = server(Some("hunter2")).await;
     let region_header = (REGION, "fra");
+    let bearer = (AUTHORIZATION.as_str(), "Bearer hunter2");
     let (status, _) = post(
         &server.url,
         "/v1/agent/pull",
-        &[region_header],
+        &[region_header, bearer],
         "{\"want\":1,\"color\":\"red\"}",
     )
     .await;
@@ -276,6 +278,22 @@ async fn unknown_fields_are_ignored_and_malformed_jobs_dropped_and_counted() {
     assert_eq!(link.malformed_jobs(), 1);
 }
 
+/// Catches `all` mode's listener, bound on every interface, handing jobs and taking results from
+/// anyone who can reach the port.
+#[tokio::test]
+async fn a_listener_with_no_gate_answers_ready_and_nothing_else() {
+    let server = server(None).await;
+    server.plane.ready.store(true, Ordering::SeqCst);
+    assert_eq!(get(&server.url, "/ready").await, StatusCode::OK);
+    let region_header = (REGION, "fra");
+    for path in ["/v1/agent/pull", "/v1/agent/results"] {
+        let (status, _) = post(&server.url, path, &[region_header], "{}").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(server.plane.pulls.load(Ordering::SeqCst), 0);
+    assert!(server.plane.reports.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn ready_answers_503_until_the_plane_has_its_checks() {
     let server = server(Some("hunter2")).await;
@@ -296,4 +314,36 @@ fn the_link_refuses_a_control_url_that_is_not_plain_http() {
     assert!(err.0.contains("UPTIME_CONTROL_URL"), "{}", err.0);
     assert!(!err.0.contains("https://control"), "{}", err.0);
     assert_eq!(REGION_HEADER.as_str(), REGION);
+}
+
+/// Catches the timeout covering only the response head, so a control plane that stalls mid-body
+/// hangs the agent's pull or report forever.
+#[tokio::test]
+async fn a_body_that_stalls_after_the_head_times_out() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request).await;
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        drop(stream);
+    });
+    let link = HttpLink::new(&url, None, region("fra")).unwrap();
+    let sent = link.post(
+        &link.results_uri,
+        b"{}".to_vec(),
+        Duration::from_millis(200),
+    );
+    let err = tokio::time::timeout(Duration::from_secs(5), sent)
+        .await
+        .expect("the post outlived its timeout")
+        .unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
 }

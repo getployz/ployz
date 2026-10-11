@@ -48,8 +48,7 @@ const REPORT_TIMEOUT: Duration = Duration::from_secs(15);
 /// What the listener asks of a caller before it reaches the plane.
 #[derive(Clone, Debug)]
 pub struct Gate {
-    /// `None` only in `all` mode, where no agent is remote.
-    pub token: Option<Secret>,
+    pub token: Secret,
     pub regions: Vec<Region>,
 }
 
@@ -70,11 +69,12 @@ pub trait PlaneApi: Send + Sync + 'static {
     fn ready(&self) -> bool;
 }
 
-/// Serves until `shutdown` fires, then stops accepting and lets open requests finish.
+/// Serves until `shutdown` fires, then stops accepting and lets open requests finish. With no
+/// gate it answers only `/ready`: `all` mode's agent is in-process, so nothing remote may pull.
 pub async fn serve<P: PlaneApi>(
     listener: TcpListener,
     plane: Arc<P>,
-    gate: Gate,
+    gate: Option<Gate>,
     shutdown: Shutdown,
 ) {
     let gate = Arc::new(gate);
@@ -100,13 +100,13 @@ pub async fn serve<P: PlaneApi>(
 async fn connection<P: PlaneApi>(
     stream: tokio::net::TcpStream,
     plane: Arc<P>,
-    gate: Arc<Gate>,
+    gate: Arc<Option<Gate>>,
     shutdown: Shutdown,
 ) {
     let service = service_fn(move |req| {
         let plane = plane.clone();
         let gate = gate.clone();
-        async move { Ok::<_, Infallible>(handle(req, &*plane, &gate).await) }
+        async move { Ok::<_, Infallible>(handle(req, &*plane, gate.as_ref().as_ref()).await) }
     });
     let mut conn = pin!(http1::Builder::new().serve_connection(TokioIo::new(stream), service));
     tokio::select! {
@@ -129,7 +129,7 @@ fn log_conn(done: Result<(), hyper::Error>) {
 async fn handle<P: PlaneApi>(
     req: Request<Incoming>,
     plane: &P,
-    gate: &Gate,
+    gate: Option<&Gate>,
 ) -> Response<Full<Bytes>> {
     match (req.method(), req.uri().path()) {
         (&Method::GET, READY_PATH) => {
@@ -139,11 +139,11 @@ async fn handle<P: PlaneApi>(
                 reply(StatusCode::SERVICE_UNAVAILABLE, "{\"ready\":false}")
             }
         }
-        (&Method::POST, PULL_PATH) => match admit(&req, gate) {
+        (&Method::POST, PULL_PATH) if let Some(gate) = gate => match admit(&req, gate) {
             Ok(region) => pull(req, plane, &region).await,
             Err((status, body)) => reply(status, body),
         },
-        (&Method::POST, RESULTS_PATH) => match admit(&req, gate) {
+        (&Method::POST, RESULTS_PATH) if let Some(gate) = gate => match admit(&req, gate) {
             Ok(region) => results(req, plane, &region).await,
             Err((status, body)) => reply(status, body),
         },
@@ -155,14 +155,12 @@ type Refused = (StatusCode, &'static str);
 
 /// 401 before 403: a caller without the token learns nothing about the region list.
 fn admit(req: &Request<Incoming>, gate: &Gate) -> Result<Region, Refused> {
-    if let Some(token) = &gate.token {
-        let presented = req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|v| v.as_bytes().strip_prefix(b"Bearer "));
-        if !presented.is_some_and(|p| token.matches(p)) {
-            return Err((StatusCode::UNAUTHORIZED, "{\"error\":\"unauthorized\"}"));
-        }
+    let presented = req
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|v| v.as_bytes().strip_prefix(b"Bearer "));
+    if !presented.is_some_and(|p| gate.token.matches(p)) {
+        return Err((StatusCode::UNAUTHORIZED, "{\"error\":\"unauthorized\"}"));
     }
     let region = req
         .headers()
@@ -353,19 +351,23 @@ impl HttpLink {
         json: Vec<u8>,
         timeout: Duration,
     ) -> Result<(StatusCode, Bytes), LinkError> {
-        let sent = tokio::time::timeout(timeout, self.client.request(self.request(uri, json)));
-        let response = match sent.await {
-            Ok(Ok(response)) => response,
-            Ok(Err(e)) => return Err(LinkError::Broken(format!("request failed: {e}"))),
-            Err(_) => return Err(LinkError::Broken("request timed out".to_owned())),
+        let exchange = async {
+            let response = self
+                .client
+                .request(self.request(uri, json))
+                .await
+                .map_err(|e| LinkError::Broken(format!("request failed: {e}")))?;
+            let status = response.status();
+            let body = Limited::new(response.into_body(), RESPONSE_LIMIT)
+                .collect()
+                .await
+                .map_err(|e| LinkError::Broken(format!("response body unreadable: {e}")))?
+                .to_bytes();
+            Ok((status, body))
         };
-        let status = response.status();
-        let body = Limited::new(response.into_body(), RESPONSE_LIMIT)
-            .collect()
+        tokio::time::timeout(timeout, exchange)
             .await
-            .map_err(|e| LinkError::Broken(format!("response body unreadable: {e}")))?
-            .to_bytes();
-        Ok((status, body))
+            .map_err(|_| LinkError::Broken("request timed out".to_owned()))?
     }
 }
 

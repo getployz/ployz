@@ -85,13 +85,16 @@ pub async fn control(
     shutdown: Shutdown,
 ) -> Result<(), Fatal> {
     let listen = config.listen;
+    let Some(token) = config.agent_token.clone() else {
+        return Err(Fatal("Control mode needs UPTIME_AGENT_TOKEN.".to_owned()));
+    };
     let gate = Gate {
-        token: config.agent_token.clone(),
+        token,
         regions: config.regions.clone(),
     };
     let plane = Arc::new(ControlPlane::start(config, crypto, shutdown.clone()).await?);
     let listener = bind(listen).await?;
-    serve(listener, plane.clone(), gate, shutdown).await;
+    serve(listener, plane.clone(), Some(gate), shutdown).await;
     plane.stopped().await;
     Ok(())
 }
@@ -128,12 +131,8 @@ pub async fn all(
     let Some(region) = plane.regions().first().cloned() else {
         return Err(Fatal("UPTIME_REGIONS names no region.".to_owned()));
     };
-    let gate = Gate {
-        token: None,
-        regions: plane.regions().to_vec(),
-    };
     let listener = bind(listen).await?;
-    let server = tokio::spawn(serve(listener, plane.clone(), gate, shutdown.clone()));
+    let server = tokio::spawn(serve(listener, plane.clone(), None, shutdown.clone()));
     let link = Arc::new(LocalLink::new(plane.clone(), region));
     let agent = crate::agent::run::run(link, prober, agent_run, shutdown).await;
     server
