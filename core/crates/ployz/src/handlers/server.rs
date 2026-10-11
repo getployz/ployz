@@ -101,6 +101,46 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
     super::connect_context(matches, context).await
 }
 
+/// The credential Cloud runs a Server operation under: signed in, with neither `--connect`
+/// nor `--context` naming a Cluster to dial, the same rule [`connect`] follows.
+pub(super) fn cloud_runs(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+) -> Result<Option<Credential>, Error> {
+    if matches.get_one::<String>("connect").is_some()
+        || matches.get_one::<String>("context").is_some()
+    {
+        return Ok(None);
+    }
+    let store = CredentialStore::beside(&super::config_path(matches)?);
+    match runtime.block_on(cloud_account::from_env(&store)) {
+        Ok(credential) => Ok(Some(credential)),
+        Err(LoginError::SignedOut) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The Server `selector` names, for a Cloud route, among the Servers Cloud's dial sees.
+/// An id resolves there too, since only the Engine knows the name prose says.
+pub(super) fn cloud_machine(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    selector: &str,
+) -> Result<ployz_core::Machine, Error> {
+    runtime.block_on(async {
+        let mut client = connect(matches, None).await?;
+        let machines = client.machines().await?;
+        remove::select_machine(&machines, selector)
+    })
+}
+
+/// `rerun` with `--approval id`, the command that goes ahead once a human approved.
+pub(super) fn approved_rerun(matches: &ArgMatches, args: &[&str], id: &str) -> String {
+    let mut args = args.to_vec();
+    args.extend(["--approval", id]);
+    super::rerun(matches, &args)
+}
+
 async fn through_cloud(matches: &ArgMatches, credential: &Credential) -> Result<Client, Error> {
     let access = cloud_account::server_access(credential).await?;
     if access.connections.is_empty() {
@@ -407,8 +447,9 @@ pub(crate) fn command() -> Command {
             .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(
             base("drain", "Stop placing Services on a Server and move its Services' Containers off it")
-                .long_about("Turn off the Server's services role, then move each replicated Service's Containers off it one at a time: a new Container starts on another Server from the same image and serves before the old one stops. No hooks run and no Deployment is recorded. Rerun to act on what remains. Turning the services role back on does not move anything back.")
-                .arg(positional("server", true)),
+                .long_about("Turn off the Server's services role, then move each replicated Service's Containers off it one at a time: a new Container starts on another Server from the same image and serves before the old one stops. No hooks run and no Deployment is recorded. Rerun to act on what remains. Turning the services role back on does not move anything back. Signed in to Cloud without --context or --connect, Cloud runs the drain, asking a human first when the Organization wants that.")
+                .arg(positional("server", true))
+                .arg(crate::cli::approval()),
         )
         .subcommand(
             base(
@@ -424,12 +465,13 @@ pub(crate) fn command() -> Command {
         .subcommand(base("ls", "List Servers"))
         .subcommand(
             base("rm", "Remove a Server")
-                .long_about("Remove a Server from the Cluster and reset it. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry.")
+                .long_about("Remove a Server from the Cluster and reset it. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
                 .arg(switch("no-reset", None).help(
                     "Remove the Server from the Cluster without resetting it; use when the Server is unreachable",
                 ))
                 .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal"))
                 .arg(positional("server", true))
+                .arg(crate::cli::approval())
                 .arg(
                     volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),
                 ),
@@ -451,7 +493,7 @@ pub(crate) fn command() -> Command {
         )
         .subcommand(
             base("upgrade", "Upgrade the daemon on explicitly selected Servers, one at a time")
-                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, the Ingress Proxy then moves to the latest Caddy image on every Server with that role.")
+                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, the Ingress Proxy then moves to the latest Caddy image on every Server with that role. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
                 .arg_required_else_help(true)
                 .arg(
                     positional("version", true)

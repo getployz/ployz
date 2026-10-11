@@ -19,6 +19,10 @@ export type AppliedVolume = { project: ProjectName, environment: EnvironmentName
 
 export type Apply = "staged" | "immediate";
 
+export type Approval = "not_required" | "required" | { "approved": ApprovalDigest };
+
+export type ApprovalDigest = string;
+
 export type AttachConfig = {
 /**
  * The Environment they are in.
@@ -648,7 +652,12 @@ volumes?: VolumeObservation,
  * admitted only when one could run it. None when the caller can't count them,
  * such as the hidden local Store, which runs its Deployments itself.
  */
-servers?: number, };
+servers?: number,
+/**
+ * Whether a human must approve a publication that destroys something, and what they
+ * approved.
+ */
+approval?: Approval, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "numbered_deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "namespaces" } & NamespacesView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "configs" } & ConfigsView | { "view": "config" } & ConfigItemView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "sync" } & SyncView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
@@ -1240,6 +1249,27 @@ changes: number,
  */
 waiting: Array<string>, };
 
+export type DestructiveEffect = {
+/**
+ * What it destroys.
+ */
+kind: DestructiveKind,
+/**
+ * What a human calls the thing destroyed: the Service, the Volume, or the
+ * domain's hostname.
+ */
+name?: string,
+/**
+ * The node's ID: a Service's, or a Volume's resource ID.
+ */
+node: string,
+/**
+ * The row it changes, as `diff` shows it.
+ */
+path: string, };
+
+export type DestructiveKind = "removes_service" | "deletes_volume" | "detaches_volume" | "removes_domain" | "removes_server";
+
 export type DetachConfig = {
 /**
  * The Environment they are in.
@@ -1303,7 +1333,12 @@ incoming: Array<IncomingChange>,
  * The Parent's deployed values that followed into this Branch beside its own
  * changes, or that it discarded: take one to stage it.
  */
-follow_hints: Array<FollowHint>, };
+follow_hints: Array<FollowHint>,
+/**
+ * What deploying Working State destroys of Applied State and of what the Deployment
+ * in flight puts in place, sorted; empty when nothing.
+ */
+effects?: Array<DestructiveEffect>, };
 
 export type Discard = {
 /**
@@ -1451,7 +1486,7 @@ remaining: Remaining,
  */
 complete: boolean, };
 
-export type DrainScope = { "scope": "every_namespace" } | { "scope": "owned", namespaces: Array<Namespace>, };
+export type DrainScope = { "scope": "every_namespace" } | { "scope": "owned", namespaces: Array<Namespace>, } | { "scope": "services", services: Array<QualifiedService>, };
 
 export type DrainStop = { "kind": "cancelled" } | { "kind": "entry_unreachable", detail: string, };
 
@@ -2841,7 +2876,7 @@ export type Remaining = { "kind": "observed",
  */
 services: Array<QualifiedService>,
 /**
- * Those of `services` in a user Namespace the Drain's scope left alone.
+ * The user Services of `services` that the Drain's scope left alone.
  */
 unchosen: Array<QualifiedService>, } | { "kind": "unobserved", error: string, };
 

@@ -16,6 +16,7 @@ pub(crate) fn diff_command() -> Command {
 pub(crate) fn publish_command() -> Command {
     scoped(Command::new("publish").about("Put staged changes in Saved State without deploying"))
         .arg(version())
+        .arg(crate::cli::approval())
 }
 
 pub(crate) fn discard_command() -> Command {
