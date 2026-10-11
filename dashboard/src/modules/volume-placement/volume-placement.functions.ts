@@ -3,16 +3,16 @@ import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, listPlacements, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
+import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const Organization = Schema.Struct({ organizationSlug: Schema.NonEmptyString });
 const Machine = rustMachineIdSchema;
 const Placement = Schema.Struct({ primary: Machine, mirrors: Schema.Array(Machine), deletes: Schema.Array(Machine) });
+const Environment = Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) });
+const VolumeInput = Schema.Struct({ ...Organization.fields, volumeId: Schema.NonEmptyString, environment: Environment });
 const StageInput = Schema.Struct({
-  ...Organization.fields,
-  volumeId: Schema.NonEmptyString,
-  environment: Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) }),
+  ...VolumeInput.fields,
   staged: Schema.NullOr(Placement),
   mirrors: Schema.Array(Machine),
 });
@@ -33,9 +33,17 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
 
 export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Struct({ ...Organization.fields, volumeId: Schema.NonEmptyString })))
+  .validator(strictValidator(VolumeInput))
   .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => discardPlacement(organization.id, data.volumeId)),
+    Effect.flatMap((organization) => discardPlacement(organization.id, context.actor.userId, data.volumeId, data.environment)),
+  )));
+
+/** `at` is the restore point's time in Unix seconds. */
+export const stageRestoreServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Schema.Struct({ ...VolumeInput.fields, guid: Schema.NonEmptyString, name: Schema.NonEmptyString, at: Schema.Number })))
+  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
+    Effect.flatMap((organization) => stageRestore(organization.id, context.actor.userId, data)),
   )));
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })

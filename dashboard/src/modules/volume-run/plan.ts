@@ -40,6 +40,7 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly source: AnsweredMember; readonly mirror: AnsweredMember | null; readonly thaw: boolean } }
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
+  | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember } }
   | { readonly ok: false; readonly refusal: Refusal };
 
 type Phase = Extract<Planned, { ok: true }>["phase"];
@@ -76,6 +77,8 @@ export function participantsOf(phase: Phase): readonly AnsweredMember[] {
       return [phase.from];
     case "demote":
       return [phase.old];
+    case "seed":
+      return [phase.source];
   }
 }
 
@@ -168,6 +171,12 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
 
   if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
   if (input.kind === "restore") return planRestore(name, input.args.from, answered);
+  if (input.kind === "seed") {
+    if (switching.length > 0) return midRun();
+    if (roots.length > 1) return refuse("two_writers", `${name} has two primaries, ${roots.map(named).join(" and ")}`);
+    if (writer === undefined) return refuse("no_writer", `${name} has no primary to restore from`);
+    return { ok: true, phase: { kind: "seed", source: writer } };
+  }
   const [source] = switching;
   if (source !== undefined && switching.length === 1) {
     const guid = frozenGuid(source);

@@ -3,18 +3,21 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { EnvironmentRef, MachineId } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
+import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
-  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, stagedOffServer, storageStep, undoPlacement,
+  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, type RestorePoint, stagedOffServer,
+  storageStep, undoPlacement,
 } from "./volume-placement";
-import { discardPlacementServerFn, stagePlacementServerFn } from "./volume-placement.functions";
+import { discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
 type PlacementResult = { readonly ok: true } | { readonly ok: false; readonly refusal: { readonly message: string } };
 
-function useSettle(failure: string) {
+/** Settle placement writes. One that touched the Store (a restore staged or discarded) refreshes `environment`'s views too. */
+function useSettle(failure: string, organizationSlug: string, environment: EnvironmentRef) {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const settle = (writes: Promise<PlacementResult>[]) => {
@@ -22,6 +25,7 @@ function useSettle(failure: string) {
     Promise.all(writes).then((results) => {
       for (const result of results) if (!result.ok) toast.error(result.refusal.message);
       void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
+      void refetchAfterWrite(queryClient, organizationSlug, environmentKey(environment));
     }, (error: Error) => toast.error(toErrorMessage(error, failure)))
       .finally(() => setPending(false));
   };
@@ -30,11 +34,20 @@ function useSettle(failure: string) {
 
 /** Stage or discard a Volume's placement. A refusal toasts; the row then arrives on the change stream. */
 export function useStagePlacement(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {
-  const { settle, pending } = useSettle(`Could not change ${volume.name}`);
+  const { settle, pending } = useSettle(`Could not change ${volume.name}`, organizationSlug, environment);
   const stage = (staged: Placement | null, mirrors: readonly MachineId[]) =>
     settle([stagePlacementServerFn({ data: { organizationSlug, volumeId: volume.id, environment, staged, mirrors: [...mirrors] } })]);
-  const discard = () => settle([discardPlacementServerFn({ data: { organizationSlug, volumeId: volume.id } })]);
+  const discard = () => settle([discardPlacementServerFn({ data: { organizationSlug, volumeId: volume.id, environment } })]);
   return { stage, discard, pending };
+}
+
+/** Stage a new Volume restored from one of `volume`'s restore points; it takes over `volume`'s mounts at the next Deploy. */
+export function useStageRestore(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {
+  const { settle, pending } = useSettle(`Could not restore ${volume.name}`, organizationSlug, environment);
+  const restore = (point: RestorePoint) => settle([stageRestoreServerFn({ data: {
+    organizationSlug, volumeId: volume.id, environment, guid: point.guid, name: point.name, at: Math.floor(point.at.getTime() / 1000),
+  } })]);
+  return { restore, pending };
 }
 
 export type StagedPlacements = {
@@ -55,7 +68,7 @@ export function useStagedPlacements(
   const rows = (useVolumePlacements(organizationSlug).data ?? [])
     .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
   const members = useQueries({ queries: rows.map((row) => volumeMembersQueryOptions(organizationSlug, environment, row.volumeId)) });
-  const { settle } = useSettle("Could not discard the Volume changes");
+  const { settle } = useSettle("Could not discard the Volume changes", organizationSlug, environment);
   const staged = rows.flatMap((row, index) => {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     const answered = members[index]?.data;
@@ -64,7 +77,7 @@ export function useStagedPlacements(
     return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
   });
   const groups = staged.map(({ volume, changes }) => placementGroup(volume, changes));
-  const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId } });
+  const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
   return {
     groups,
     count: groups.reduce((total, group) => total + group.changeCount, 0),
@@ -73,6 +86,7 @@ export function useStagedPlacements(
       const entry = staged.find(({ volume }) => volume.id === volumeId);
       const change = entry?.changes[Number(path)];
       if (entry === undefined || change === undefined) return;
+      if (change.kind === "seed") return settle([discardOf(volumeId)]);
       const mirrors = appliedMirrors(observePlacement(entry.members), entry.row);
       settle([stagePlacementServerFn({ data: {
         organizationSlug, volumeId, environment, staged: undoPlacement(entry.volume, entry.members, entry.row, change), mirrors: [...mirrors],

@@ -19,8 +19,26 @@ export type ObservedPlacement = {
   readonly unanswered: readonly MachineRef[];
 };
 
+/** One snapshot a mirror holds, which a new Volume can be restored from. */
+export type RestorePoint = { readonly guid: string; readonly name: string; readonly at: Date; readonly server: MachineRef };
+
+/** A new Volume's data comes from one restore point of `sourceVolumeId`, copied on the source's primary. */
+export type Seed = {
+  readonly sourceVolumeId: string;
+  readonly sourceName: string;
+  /** The new Volume's Docker name, which the copy lands under. */
+  readonly dockerVolume: string;
+  /** `at` in Unix seconds, as the jsonb row keeps it. */
+  readonly point: { readonly guid: string; readonly name: string; readonly at: number };
+};
+
 /** Where the user wants the Volume. `deletes` names detached copies to delete. */
-export type Placement = { readonly primary: MachineId; readonly mirrors: readonly MachineId[]; readonly deletes: readonly MachineId[] };
+export type Placement = {
+  readonly primary: MachineId;
+  readonly mirrors: readonly MachineId[];
+  readonly deletes: readonly MachineId[];
+  readonly seed?: Seed;
+};
 
 /**
  * The dashboard's record of a Volume's placement. `mirrors` are the copies that refresh; a copy on any other Server is
@@ -52,7 +70,15 @@ export type PlacementChange =
   }
   | { readonly kind: "add_mirror"; readonly volume: PlacementVolume; readonly server: MachineRef; readonly clears: readonly MachineRef[] }
   | { readonly kind: "remove_mirror"; readonly volume: PlacementVolume; readonly server: MachineRef }
-  | { readonly kind: "delete_copy"; readonly volume: PlacementVolume; readonly server: MachineRef };
+  | { readonly kind: "delete_copy"; readonly volume: PlacementVolume; readonly server: MachineRef }
+  | {
+    readonly kind: "seed";
+    readonly volume: PlacementVolume;
+    readonly source: { readonly id: string; readonly name: string };
+    readonly to: MachineRef;
+    readonly dockerVolume: string;
+    readonly point: Seed["point"];
+  };
 
 const toDate = (seconds: number | undefined) => (seconds === undefined ? null : new Date(seconds * 1000));
 const isRoot = (member: AnsweredMember) => member.view.copy?.kind === "root";
@@ -124,6 +150,19 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   const observed = observePlacement(members);
   const machine = (id: MachineId): MachineRef =>
     members.find((member) => member.machine.id === id)?.machine ?? { id, name: id };
+  // Once any root of the new Volume answers, the copy landed; a second seed would make a second root.
+  if (staged.seed !== undefined) {
+    const { seed } = staged;
+    if (observed.primary !== null) return [];
+    return [{
+      kind: "seed",
+      volume,
+      source: { id: seed.sourceVolumeId, name: seed.sourceName },
+      to: machine(staged.primary),
+      dockerVolume: seed.dockerVolume,
+      point: seed.point,
+    }];
+  }
   const copyOn = (id: MachineId) => observed.copies.find((copy) => copy.server.id === id && copy.kind === "slot");
   const applied = appliedMirrors(observed, row);
   const detached = detachedCopies(observed, row).filter((copy) => !staged.deletes.includes(copy.server.id));
@@ -176,6 +215,13 @@ const STEPS = {
       change.how === "restore" ? { kind: "restore", args: { from: change.to.name } } : { kind: "move", args: { to: change.to.name } },
     ],
   },
+  seed: {
+    order: 2,
+    runs: (change) => [{
+      kind: "seed",
+      args: { into: { volumeId: change.volume.id, dockerVolume: change.dockerVolume, name: change.volume.name }, guid: change.point.guid, name: change.point.name },
+    }],
+  },
   add_mirror: { order: 3, runs: (change) => [...change.clears.map(deleteSlot), { kind: "mirror", args: { to: change.server.name } }] },
 } satisfies { [K in PlacementChange["kind"]]: { order: number; runs: (change: Extract<PlacementChange, { kind: K }>) => VolumeRunInput[] } };
 
@@ -189,6 +235,8 @@ function runsOf(change: PlacementChange): VolumeRunInput[] {
       return STEPS.move.runs(change);
     case "add_mirror":
       return STEPS.add_mirror.runs(change);
+    case "seed":
+      return STEPS.seed.runs(change);
   }
 }
 
@@ -218,6 +266,7 @@ export function mirrorsAfter(mirrors: readonly MachineId[], change: PlacementCha
     case "remove_mirror":
       return mirrors.filter((id) => id !== change.server.id);
     case "delete_copy":
+    case "seed":
       return [...mirrors];
   }
 }
@@ -282,7 +331,7 @@ export function stagedOffServer(server: string, rows: readonly PlacementRow[], c
   return rows.filter((row) => primaries.has(row.volumeId) && row.staged !== null && row.staged.primary !== server).length;
 }
 
-const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;
+const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove", seed: "add" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;
 
 /** One Server in the Placement form, and what the next Deploy does to it: add, update, remove, or nothing (null). */
 export type PlacementItem = {
@@ -306,7 +355,7 @@ export function placementForm(volume: PlacementVolume, members: readonly Member[
   const machine = (id: MachineId): MachineRef =>
     members.find((member) => member.machine.id === id)?.machine ?? { id, name: id };
   const changes = placementChanges(volume, members, row);
-  const move = changes.find((change) => change.kind === "move") ?? null;
+  const onPrimary = changes.find((change) => change.kind === "move" || change.kind === "seed") ?? null;
   const changeOn = (kinds: readonly PlacementChange["kind"][], id: MachineId) =>
     changes.find((change) => kinds.includes(change.kind) && "server" in change && change.server.id === id) ?? null;
   const cleared = new Set(changes.flatMap((change) => change.kind === "move" || change.kind === "add_mirror" ? change.clears.map((server) => server.id) : []));
@@ -315,11 +364,11 @@ export function placementForm(volume: PlacementVolume, members: readonly Member[
   const kindOf = (change: PlacementChange | null) => change && CHANGE_KINDS[change.kind];
   const mirrors = [...new Set([...appliedMirrors(observed, row), ...target.mirrors])].filter((id) => id !== target.primary)
     .map((id) => item(machine(id), kindOf(changeOn(["add_mirror", "remove_mirror"], id))));
-  const left = move !== null && move.how !== "restore" && move.from !== null ? [item(move.from, "add")] : [];
+  const left = onPrimary?.kind === "move" && onPrimary.how !== "restore" && onPrimary.from !== null ? [item(onPrimary.from, "add")] : [];
   const detached = detachedCopies(observed, row)
     .filter((copy) => copy.server.id !== target.primary && !target.mirrors.includes(copy.server.id))
     .map((copy) => item(copy.server, changeOn(["delete_copy"], copy.server.id) || cleared.has(copy.server.id) ? "remove" : null));
-  return { primary: item(machine(target.primary), kindOf(move)), mirrors, detached: [...left, ...detached] };
+  return { primary: item(machine(target.primary), kindOf(onPrimary)), mirrors, detached: [...left, ...detached] };
 }
 
 export function undoPlacement(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, change: PlacementChange): Placement | null {
@@ -340,6 +389,8 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
         return { ...staged, mirrors: [...staged.mirrors, change.server.id] };
       case "delete_copy":
         return { ...staged, deletes: staged.deletes.filter((id) => id !== change.server.id) };
+      case "seed":
+        return null;
     }
   })();
   return next === null || placementChanges(volume, members, { ...row, staged: next }).length === 0 ? null : next;
@@ -349,9 +400,10 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
   const clears = "clears" in change && change.clears.length > 0 ? `Deletes ${detachedName(volume)} first` : undefined;
   switch (change.kind) {
     case "move":
+      if (change.how !== "restore") return { name: "Primary", currentValue: change.from?.name ?? "", newValue: change.to.name, detail: clears };
       return {
         name: "Primary", currentValue: change.from?.name ?? "", newValue: change.to.name,
-        detail: change.how !== "restore" ? clears : change.lostAfter === null ? "Recent changes lost" : `Changes after ${lossTime(change.lostAfter)} lost`,
+        loss: change.lostAfter === null ? "Recent changes lost" : `Changes after ${lossTime(change.lostAfter)} lost`,
       };
     case "add_mirror":
       return { name: "Mirror", currentValue: "", newValue: change.server.name, detail: clears };
@@ -359,6 +411,14 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
       return { name: "Mirror", currentValue: change.server.name, newValue: "" };
     case "delete_copy":
       return { name: "Detached copy", currentValue: change.server.name, newValue: "" };
+    case "seed": {
+      const at = lossTime(new Date(change.point.at * 1000));
+      return {
+        name: "From", currentValue: "", newValue: `${change.source.name} · ${at}`,
+        loss: `Changes after ${at} are not in ${volume.name}`,
+        detail: "Volume data, not database point-in-time.",
+      };
+    }
   }
 }
 
@@ -370,7 +430,7 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     nodeName: volume.name,
     discardPath: volume.id,
     row: null,
-    lifecycle: "update",
+    lifecycle: changes.some((change) => change.kind === "seed") ? "create" : "update",
     changeCount: changes.length,
     restarts: [],
     canDiscard: true,
@@ -388,6 +448,19 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
       };
     }),
   };
+}
+
+/** The snapshots the Volume's mirrors hold, newest first: what a new Volume can be restored from. */
+export function restorePoints(members: readonly Member[]): RestorePoint[] {
+  const points = new Map<string, RestorePoint>();
+  for (const member of members) {
+    if (!member.answered) continue;
+    const copy = member.view.copy;
+    if (copy?.kind !== "slot" || copy.newest === null || points.has(copy.newest.guid)) continue;
+    const { guid, name, created_unix_seconds } = copy.newest;
+    points.set(guid, { guid, name, at: new Date(created_unix_seconds * 1000), server: member.machine });
+  }
+  return [...points.values()].sort((a, b) => b.at.getTime() - a.at.getTime());
 }
 
 /** What Deploy `deploymentId` is doing to storage, from the run under way on a Volume it took: "pg-data · Moving to web-2". */

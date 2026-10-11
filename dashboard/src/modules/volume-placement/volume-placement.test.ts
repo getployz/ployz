@@ -14,6 +14,7 @@ import {
   placementTargets,
   placementForm,
   placementGroup,
+  restorePoints,
   stagedOffServer,
   storageStep,
   targetPlacement,
@@ -40,9 +41,9 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 };
 const changes = (members: Member[], placement: PlacementRow | null) => placementChanges(volume, members, placement);
 const review = (members: Member[], placement: PlacementRow | null) => placementGroup(volume, changes(members, placement)).rows
-  .map(({ kind, name, currentValue, newValue, detail }) => ({ kind, name, currentValue, newValue, detail }));
-const primaryMove = (from: string, to: string, detail?: string) =>
-  ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail });
+  .map(({ kind, name, currentValue, newValue, detail, loss }) => ({ kind, name, currentValue, newValue, detail, loss }));
+const primaryMove = (from: string, to: string, loss?: string) =>
+  ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail: undefined, loss });
 const steps = (members: Member[], placement: PlacementRow | null) => placementSteps(changes(members, placement));
 
 describe("placementChanges", () => {
@@ -327,5 +328,40 @@ describe("stagedOffServer", () => {
     ];
     const copies = [copy("web-1", "v1", "writer"), copy("web-1", "v2", "writer"), copy("web-2", "v3", "writer"), copy("web-1", "v3", "slot"), copy("web-1", "v4", "writer")];
     expect(stagedOffServer(id("web-1"), rows, copies)).toBe(1);
+  });
+});
+
+describe("restore into a new Volume", () => {
+  const point = { guid: "11", name: "ployz-1", at: at.getTime() / 1000 };
+  const seeded: PlacementRow = {
+    ...row([], { primary: "web-1" }),
+    staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: { sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point } },
+  };
+
+  it("copies the restore point on the source's primary until a root of the new Volume answers", () => {
+    expect(nextPlacementStep(changes([], seeded), [])).toEqual({
+      run: { kind: "seed", args: { into: { volumeId: "v1", dockerVolume: "ns_vol-v1", name: "pg-data" }, guid: "11", name: "ployz-1" } },
+      mirrors: [],
+    });
+    expect(changes([member("web-1", "writer")], seeded)).toEqual([]);
+  });
+
+  it("reviews as a created Volume that says what it leaves out, and has no inline undo", () => {
+    const [change] = changes([], seeded);
+    if (change === undefined) throw new Error("fixture");
+    const group = placementGroup(volume, [change]);
+    expect(group.lifecycle).toBe("create");
+    expect(group.rows).toMatchObject([{
+      kind: "add", name: "From", currentValue: "", newValue: "data · 10:36",
+      loss: "Changes after 10:36 are not in pg-data", detail: "Volume data, not database point-in-time.",
+    }]);
+    expect(undoPlacement(volume, [], seeded, change)).toBeNull();
+  });
+
+  it("lists each mirror's newest restore point once, newest first, from Servers that answer", () => {
+    const points = restorePoints([
+      member("web-1", "writer"), member("web-2", "mirror"), mirrorAsOf("web-3", at), member("web-4", "mirror"), member("web-5", "unanswered"),
+    ]);
+    expect(points.map(({ guid, server }) => ({ guid, server: server.name }))).toEqual([{ guid: "12", server: "web-3" }, { guid: "11", server: "web-2" }]);
   });
 });
