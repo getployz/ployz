@@ -1,31 +1,43 @@
 //! `ployz mcp`: the Cloud commands as MCP tools over stdio. Each call runs as a child
 //! `ployz <command> --json`, so stdout carries nothing but JSON-RPC frames.
 
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
+use ployz_core::RpcErrorCode;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema,
+    Implementation, InputRequest, InputRequiredResult, InputResponses, JsonObject, ListToolsResult,
+    MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig, StringSchema, Tool,
     ToolAnnotations,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::transport::Transport;
+use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
-#[cfg(not(test))]
+#[cfg(not(all(test, target_os = "linux")))]
 use rustix::process::kill_process_group;
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, setsid, waitid};
 use serde_json::{Map, Value, json};
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use tests::kill_process_group;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::time::Instant;
 
 use super::catalog::{self, Approval, ArgEntry, ArgType, CommandEntry, Stdin, Surface};
 use super::{Error, leaf_matches};
+use crate::approval::{self, Asked};
+use crate::cloud_account::{self, StoreCallError};
+use crate::cloud_login::CredentialStore;
 use crate::failure::Failure;
 
 pub(crate) fn command() -> Command {
@@ -57,7 +69,14 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
                 .map(move |value| format!("--{id}={}", value.to_string_lossy()))
         })
         .collect();
-    let server = Server::new(std::env::current_exe()?, globals);
+    let server = Server {
+        account: Account {
+            config: super::config_path(matches)?,
+            token: std::env::var(crate::cli::env::TOKEN).ok(),
+            cloud: std::env::var(crate::cli::env::CLOUD_URL).ok(),
+        },
+        ..Server::new(std::env::current_exe()?, globals)
+    };
     // With no controlling terminal, SSH that wants a password fails at once instead of
     // prompting on the user's terminal. A server that already leads a process group keeps its
     // terminal, and its calls still run in background groups that cannot read it.
@@ -71,7 +90,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         let mut pipe = signal(SignalKind::pipe())?;
         let serving = async {
             server
-                .serve(rmcp::transport::stdio())
+                .serve(Lines::new(tokio::io::stdin(), tokio::io::stdout()))
                 .await
                 .map_err(Failure::command)?
                 .waiting()
@@ -94,12 +113,94 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     served
 }
 
+/// Newline-delimited JSON-RPC over a byte stream. Unlike rmcp's own stdio transport, a
+/// line that is not JSON gets the Parse error JSON-RPC 2.0 requires instead of silence.
+struct Lines<R, W: AsyncWrite> {
+    read: BufReader<R>,
+    line: Vec<u8>,
+    write: AsyncRwTransport<RoleServer, tokio::io::Empty, W>,
+}
+
+impl<R: AsyncRead, W: AsyncWrite + Send + Unpin + 'static> Lines<R, W> {
+    fn new(read: R, write: W) -> Self {
+        Self {
+            read: BufReader::new(read),
+            line: Vec::new(),
+            write: AsyncRwTransport::new(tokio::io::empty(), write),
+        }
+    }
+}
+
+impl<R, W> Transport<RoleServer> for Lines<R, W>
+where
+    R: AsyncRead + Send + Unpin,
+    W: AsyncWrite + Send + Unpin + 'static,
+{
+    type Error = std::io::Error;
+
+    fn send(
+        &mut self,
+        item: TxJsonRpcMessage<RoleServer>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.write.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleServer>> {
+        loop {
+            // A cancelled read leaves its partial line in `self.line` for the next call.
+            if self.read.read_until(b'\n', &mut self.line).await.ok()? == 0 {
+                return None;
+            }
+            let line = self.line.trim_ascii();
+            let line = line.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(line);
+            if line.is_empty() {
+                self.line.clear();
+                continue;
+            }
+            let parsed = serde_json::from_slice::<Value>(line);
+            self.line.clear();
+            let (error, id) = match parsed {
+                Err(_) => (McpError::parse_error("Parse error", None), None),
+                Ok(value) => {
+                    let notification = value.get("method").is_some() && value.get("id").is_none();
+                    let id = value
+                        .get("id")
+                        .and_then(|id| serde_json::from_value(id.clone()).ok());
+                    match serde_json::from_value(value) {
+                        Ok(message) => return Some(message),
+                        // A notification is never answered, even one this server doesn't know.
+                        Err(_) if notification => continue,
+                        Err(_) => (McpError::invalid_request("Invalid request", None), id),
+                    }
+                }
+            };
+            self.write
+                .send(TxJsonRpcMessage::<RoleServer>::error(error, id))
+                .await
+                .ok()?;
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.write.close().await
+    }
+}
+
 struct Server {
     exe: PathBuf,
     globals: Vec<String>,
+    account: Account,
     deadline: Duration,
     commands: Vec<CommandEntry>,
     tools: Vec<Tool>,
+    waiting: Waiting,
+}
+
+#[derive(Default)]
+struct Account {
+    config: PathBuf,
+    token: Option<String>,
+    cloud: Option<String>,
 }
 
 impl Server {
@@ -117,9 +218,11 @@ impl Server {
         Self {
             exe,
             globals,
+            account: Account::default(),
             deadline: CALL_DEADLINE,
             commands,
             tools,
+            waiting: Waiting::default(),
         }
     }
 
@@ -163,9 +266,208 @@ impl ServerHandler for Server {
             McpError::invalid_params(format!("no tool named {}", request.name), None)
         })?;
         let argv = argv(entry, &self.globals, request.arguments.unwrap_or_default())?;
+        let (answered, until) = match request.request_state {
+            Some(state) => {
+                let answer = answer(request.input_responses)?;
+                let held = self.waiting.take(&state, &request.name, &argv)?;
+                if held.until <= Instant::now() {
+                    return Ok(refused(late(verb(entry), &held.asked, self.deadline)).into());
+                }
+                (Some((held.asked, answer)), held.until)
+            }
+            None => (None, Instant::now() + self.deadline),
+        };
+        let call = Call {
+            entry,
+            tool: &request.name,
+            argv: &argv,
+            until,
+        };
+        tokio::select! {
+            result = self.settle(&call, answered, &context) => result,
+            () = context.ct.cancelled() => {
+                Err(McpError::internal_error("the call was cancelled", None))
+            }
+            () = tokio::time::sleep_until(until) => {
+                let content = vec![ContentBlock::text(overdue(entry, self.deadline))];
+                Ok(CallToolResult::error(content).into())
+            }
+        }
+    }
+}
+
+const APPROVAL: &str = "approval";
+
+struct Ran {
+    result: CallToolResult,
+    asked: Option<Asked>,
+}
+
+enum Asking {
+    Unable,
+    InResult,
+    ByRequest,
+}
+
+fn asking(context: &RequestContext<RoleServer>) -> Asking {
+    let form = context
+        .client_capabilities()
+        .and_then(|capabilities| capabilities.elicitation)
+        .is_some_and(|elicitation| elicitation.form.is_some() || elicitation.url.is_none());
+    if !form {
+        Asking::Unable
+    } else if context
+        .protocol_version()
+        .is_some_and(|version| !version.has_initialize())
+    {
+        Asking::InResult
+    } else {
+        Asking::ByRequest
+    }
+}
+
+/// A dialog returned in a tool result, waiting for the host to call the same tool again
+/// with the human's answer before the first call's deadline.
+struct Held {
+    tool: String,
+    argv: Vec<String>,
+    asked: Asked,
+    until: Instant,
+}
+
+#[derive(Default)]
+struct Waiting {
+    held: Mutex<HashMap<String, Held>>,
+    asked: AtomicU64,
+}
+
+impl Waiting {
+    /// Hold `held` under a state of its own: two calls can ask about the same approval.
+    fn hold(&self, held: Held) -> String {
+        let state = format!(
+            "{}.{}",
+            held.asked.id,
+            self.asked.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut waiting = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        waiting.retain(|_, held| held.until > now);
+        waiting.insert(state.clone(), held);
+        state
+    }
+
+    fn take(&self, state: &str, tool: &str, argv: &[String]) -> Result<Held, McpError> {
+        let mut waiting = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Entry::Occupied(found) = waiting.entry(state.to_owned()) else {
+            return Err(McpError::invalid_params(
+                format!("no approval waits on {state}"),
+                None,
+            ));
+        };
+        if found.get().tool != tool || found.get().argv != argv {
+            return Err(McpError::invalid_params(
+                format!(
+                    "approval {} was asked by another call; answer it by calling `{}` again \
+                     with the same arguments",
+                    found.get().asked.id,
+                    found.get().tool
+                ),
+                None,
+            ));
+        }
+        let held = found.remove();
+        let now = Instant::now();
+        waiting.retain(|_, held| held.until > now);
+        Ok(held)
+    }
+}
+
+fn answer(responses: Option<InputResponses>) -> Result<ElicitResult, McpError> {
+    let answer = responses
+        .and_then(|mut responses| responses.remove(APPROVAL))
+        .ok_or_else(|| {
+            McpError::invalid_params(
+                format!("this retry carries no answer to `{APPROVAL}`"),
+                None,
+            )
+        })?;
+    serde_json::from_value(answer).map_err(|error| {
+        McpError::invalid_params(format!("the `{APPROVAL}` answer: {error}"), None)
+    })
+}
+
+struct Call<'a> {
+    entry: &'a CommandEntry,
+    tool: &'a str,
+    argv: &'a [String],
+    until: Instant,
+}
+
+fn verb(entry: &CommandEntry) -> &'static str {
+    match entry.command.as_str() {
+        "publish" => "publish",
+        _ => "deploy",
+    }
+}
+
+impl Server {
+    async fn settle(
+        &self,
+        call: &Call<'_>,
+        mut answered: Option<(Asked, ElicitResult)>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let verb = verb(call.entry);
+        let mut argv = call.argv.to_vec();
+        loop {
+            if let Some((asked, answer)) = answered.take() {
+                if let Answer::Refused(refused) = self.decide(verb, &asked, answer).await? {
+                    return Ok(refused.into());
+                }
+                approve_with(&mut argv, &asked.id);
+            }
+            let ran = self.run(call.entry, &argv).await?;
+            let Some(asked) = ran.asked else {
+                return Ok(ran.result.into());
+            };
+            let form = form(verb, &asked);
+            match asking(context) {
+                Asking::Unable => return Ok(cannot_ask(verb, &asked).into()),
+                Asking::InResult => {
+                    let requests = BTreeMap::from([(
+                        APPROVAL.to_owned(),
+                        InputRequest::Elicitation(ElicitRequest::new(form)),
+                    )]);
+                    let state = self.waiting.hold(Held {
+                        tool: call.tool.to_owned(),
+                        argv: call.argv.to_vec(),
+                        asked,
+                        until: call.until,
+                    });
+                    return Ok(InputRequiredResult::new(Some(requests), Some(state)).into());
+                }
+                Asking::ByRequest => {
+                    let answer = context
+                        .peer
+                        .create_elicitation(form)
+                        .await
+                        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                    answered = Some((asked, answer));
+                }
+            }
+        }
+    }
+
+    async fn run(&self, entry: &CommandEntry, argv: &[String]) -> Result<Ran, McpError> {
         let mut child = KillGroupOnDrop(
             tokio::process::Command::new(&self.exe)
-                .args(&argv)
+                .args(argv)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -181,20 +483,12 @@ impl ServerHandler for Server {
             }
             child.0.wait().await
         };
-        let finished = async { tokio::join!(exited, capture(stdout), capture(stderr)) };
-        let (status, stdout, stderr) = tokio::select! {
-            (status, stdout, stderr) = finished => (
-                status.map_err(|error| McpError::internal_error(error.to_string(), None))?,
-                stdout,
-                stderr,
-            ),
-            () = context.ct.cancelled() => {
-                return Err(McpError::internal_error("the call was cancelled", None));
-            }
-            () = tokio::time::sleep(self.deadline) => {
-                let content = vec![ContentBlock::text(overdue(entry, self.deadline))];
-                return Ok(CallToolResult::error(content).into());
-            }
+        let (status, stdout, stderr) = tokio::join!(exited, capture(stdout), capture(stderr));
+        let status = status.map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let asked = if status.success() {
+            None
+        } else {
+            asked(&stdout)
         };
         let text = [stdout, stderr]
             .into_iter()
@@ -206,13 +500,146 @@ impl ServerHandler for Server {
                 )
             });
         let content = vec![ContentBlock::text(text)];
-        Ok(if status.success() {
+        let result = if status.success() {
             CallToolResult::success(content)
         } else {
             CallToolResult::error(content)
-        }
-        .into())
+        };
+        Ok(Ran { result, asked })
     }
+
+    async fn decide(
+        &self,
+        verb: &str,
+        asked: &Asked,
+        answer: ElicitResult,
+    ) -> Result<Answer, McpError> {
+        let content = answer.content.unwrap_or_default();
+        let accepted = matches!(answer.action, ElicitationAction::Accept);
+        let approved = accepted && content.get("approve") == Some(&Value::Bool(true));
+        let reason = if accepted { reason(&content) } else { None };
+        let decision = match (approved, &reason) {
+            (true, _) => json!({ "approve": { "digest": asked.digest } }),
+            (false, Some(reason)) => json!({ "reject": { "reason": reason } }),
+            (false, None) => json!({ "reject": {} }),
+        };
+        let credential = cloud_account::credential(
+            &CredentialStore::beside(&self.account.config),
+            self.account.token.clone(),
+            self.account.cloud.clone(),
+        )
+        .await
+        .map_err(|error| McpError::internal_error(Error::from(error).to_string(), None))?;
+        match approval::decide(&credential, &asked.id, &decision).await {
+            Ok(()) => {}
+            Err(StoreCallError::Refused(error)) if error.code == RpcErrorCode::Conflict => {
+                return Ok(Answer::Refused(refused(format!(
+                    "Approval {} was already decided elsewhere, so this answer was not \
+                     recorded: {} Nothing was {verb}ed by this call.",
+                    asked.id, error.message
+                ))));
+            }
+            Err(error) => return Ok(Answer::Refused(refused(Error::from(error).to_string()))),
+        }
+        if approved {
+            return Ok(Answer::Approved);
+        }
+        let because = reason.map_or_else(String::new, |reason| format!(": {reason}"));
+        Ok(Answer::Refused(refused(format!(
+            "The human denied this {verb}{because}. Nothing was {verb}ed; do not retry it \
+             unless they ask."
+        ))))
+    }
+}
+
+/// Cloud keeps a denial's reason up to this many UTF-16 code units.
+const REASON_LIMIT: u16 = 1024;
+
+fn reason(content: &Value) -> Option<String> {
+    let mut units = 0;
+    let reason: String = content
+        .get("reason")?
+        .as_str()?
+        .trim()
+        .chars()
+        .take_while(|character| {
+            units += character.len_utf16();
+            units <= usize::from(REASON_LIMIT)
+        })
+        .collect();
+    (!reason.is_empty()).then_some(reason)
+}
+
+fn late(verb: &str, asked: &Asked, deadline: Duration) -> String {
+    format!(
+        "The human answered approval {id} more than {span} after this {verb} was called, so \
+         the answer was not recorded and nothing was {verb}ed. Approval {id} stays pending in \
+         Ployz Cloud; call the tool again to ask again.",
+        id = asked.id,
+        span = span(deadline),
+    )
+}
+
+fn form(verb: &str, asked: &Asked) -> ElicitRequestParams {
+    ElicitRequestParams::FormElicitationParams {
+        meta: None,
+        message: format!(
+            "Approve this {verb} to {}?\n{}",
+            asked.diff.environment.name,
+            asked.review(verb).join("\n")
+        ),
+        requested_schema: ElicitationSchema::builder()
+            .required_bool_property("approve", |schema: BooleanSchema| {
+                schema
+                    .title("Approve")
+                    .description(format!("Go ahead with this {verb}"))
+            })
+            .string_property("reason", |schema: StringSchema| {
+                schema
+                    .title("Reason")
+                    .description("Why not, if you leave Approve unticked")
+                    .max_length(u32::from(REASON_LIMIT))
+            })
+            .build_unchecked(),
+    }
+}
+
+fn cannot_ask(verb: &str, asked: &Asked) -> CallToolResult {
+    refused(format!(
+        "A human must approve this {verb} to {environment} first, and this agent cannot ask \
+         them. Show them what it destroys, then ask them to approve approval {id} in the \
+         Ployz Cloud sidebar, or to run the command themselves in a terminal. Once they \
+         approve, call this tool again with `approval` set to `{id}`.\n{review}",
+        environment = asked.diff.environment.name,
+        id = asked.id,
+        review = asked.review(verb).join("\n"),
+    ))
+}
+
+fn refused(text: String) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(text)])
+}
+
+enum Answer {
+    Approved,
+    Refused(CallToolResult),
+}
+
+fn asked(stdout: &str) -> Option<Asked> {
+    let reply: Value = serde_json::from_str(stdout).ok()?;
+    let error = serde_json::from_value(reply.get("error")?.clone()).ok()?;
+    Asked::of(&error)
+}
+
+fn approve_with(argv: &mut Vec<String>, id: &str) {
+    let flags = argv
+        .iter()
+        .position(|word| word == "--json")
+        .unwrap_or(argv.len());
+    let rest = argv.split_off(flags);
+    argv.retain(|word| !word.starts_with("--approval="));
+    argv.push(format!("--approval={id}"));
+    argv.extend(rest);
 }
 
 struct KillGroupOnDrop(tokio::process::Child);
@@ -353,12 +780,22 @@ fn tool(entry: &CommandEntry) -> Tool {
     .as_object()
     .cloned()
     .unwrap_or_default();
-    Tool::new(
+    let tool = Tool::new(
         tool_name(&entry.command),
         entry.about.clone(),
         Arc::new(schema),
     )
-    .annotate(ToolAnnotations::new().destructive(destructive(entry.approval)))
+    .annotate(ToolAnnotations::new().destructive(destructive(entry.approval)));
+    if entry.approval != Approval::Always {
+        return tool;
+    }
+    // Hosts that honor it ask the human before every call, since each destroys at once.
+    let mut meta = JsonObject::new();
+    meta.insert(
+        "anthropic/requiresUserInteraction".into(),
+        Value::Bool(true),
+    );
+    tool.with_meta(MetaObject(meta))
 }
 
 fn arg_schema(arg: &ArgEntry, conflicts: &[&str]) -> Value {
@@ -526,6 +963,7 @@ fn words(arg: &ArgEntry, key: &str, value: Value) -> Result<Vec<String>, McpErro
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use std::sync::Mutex;
 
     use serde_json::{Value, json};
@@ -533,8 +971,10 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
     static SIGNALLED: Mutex<Vec<(i32, Option<char>)>> = Mutex::new(Vec::new());
 
+    #[cfg(target_os = "linux")]
     pub(super) fn kill_process_group(group: Pid, signal: Signal) -> rustix::io::Result<()> {
         let leader = std::fs::read_to_string(format!("/proc/{}/stat", group.as_raw_pid()))
             .ok()
@@ -573,8 +1013,9 @@ mod tests {
         fn connect(server: Server) -> Self {
             let (server_io, client_io) = tokio::io::duplex(1 << 20);
             let server = tokio::spawn(async move {
+                let (read, write) = tokio::io::split(server_io);
                 server
-                    .serve(tokio::io::split(server_io))
+                    .serve(Lines::new(read, write))
                     .await
                     .expect("the handshake completes")
                     .waiting()
@@ -645,6 +1086,11 @@ mod tests {
         assert_eq!(tool("server_rm")["annotations"]["destructiveHint"], true);
         assert_eq!(tool("project_ls")["annotations"]["destructiveHint"], false);
         assert_eq!(tool("service_rm")["annotations"]["destructiveHint"], false);
+        assert_eq!(
+            tool("server_rm")["_meta"]["anthropic/requiresUserInteraction"],
+            true
+        );
+        assert!(tool("deploy").get("_meta").is_none(), "{}", tool("deploy"));
         for absent in [
             "ctx",
             "ctx_use",
@@ -741,6 +1187,31 @@ mod tests {
         );
     }
 
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_line_that_is_not_json_gets_a_parse_error_and_the_server_keeps_serving() {
+        let mut client =
+            Client::connect(Server::new(PathBuf::from("/nonexistent/ployz"), Vec::new()));
+        for frame in handshake() {
+            client.send(&frame).await;
+        }
+        let _ = client.reply().await;
+        client.write.write_all(b"{not json\n").await.unwrap();
+        let parse = client.reply().await;
+        assert_eq!(parse["error"]["code"], -32700, "{parse}");
+        assert_eq!(parse["id"], Value::Null, "{parse}");
+        client.send(&json!(["not", "a", "message"])).await;
+        let invalid = client.reply().await;
+        assert_eq!(invalid["error"]["code"], -32600, "{invalid}");
+        client
+            .send(&json!({ "jsonrpc": "2.0", "method": "notifications/unknown" }))
+            .await;
+        client.send(&request(2, "tools/list", json!({}))).await;
+        let listed = client.reply().await;
+        assert_eq!(listed["id"], 2, "{listed}");
+        assert!(listed["result"]["tools"].is_array(), "{listed}");
+    }
+
     #[test]
     fn exec_is_a_cloud_command_but_no_tool_because_it_refuses_json() {
         let exec = catalog::commands()
@@ -795,6 +1266,11 @@ mod tests {
              server) echo \"no such server\" >&2; exit 3 ;;\n\
              logs) head -c 3000000 /dev/zero | tr '\\0' a; exit 0 ;;\n\
              deployment) sleep 60 & echo $$ $! > \"$(dirname \"$0\")/pids\"; wait ;;\n\
+             deploy) echo \"$*\" >> \"$(dirname \"$0\")/runs\"\n\
+               case \"$*\" in\n\
+               *--approval=apr_1*) [ ! -f \"$(dirname \"$0\")/slow\" ] || sleep 1.5 ;;\n\
+               *) cat \"$(dirname \"$0\")/asked.json\"; exit 1 ;;\n\
+               esac ;;\n\
              service) sleep 60 >/dev/null 2>&1 & echo $$ $! > \"$(dirname \"$0\")/pids\"; kill -9 $$ ;;\n\
              volume) sleep 60 & echo $! > \"$(dirname \"$0\")/pids\"; echo left one running; exit 0 ;;\n\
              esac\n\
@@ -848,6 +1324,7 @@ mod tests {
         assert_eq!(flooded.find('\n'), Some(OUTPUT_LIMIT));
     }
 
+    #[cfg(target_os = "linux")]
     async fn call_pids(dir: &std::path::Path) -> Vec<String> {
         let path = dir.join("pids");
         for _ in 0..500 {
@@ -861,16 +1338,19 @@ mod tests {
         panic!("the child never started");
     }
 
+    #[cfg(target_os = "linux")]
     async fn assert_killed(pids: &[String]) {
         for pid in pids {
             assert_gone(pid).await;
         }
     }
 
+    #[cfg(target_os = "linux")]
     async fn assert_gone(pid: &str) {
         for _ in 0..500 {
             match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                Err(_) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => panic!("reading process {pid}: {error}"),
                 Ok(stat)
                     if stat
                         .rsplit(") ")
@@ -885,6 +1365,7 @@ mod tests {
         panic!("process {pid} is still running");
     }
 
+    #[cfg(target_os = "linux")]
     fn deployment_start() -> Value {
         request(
             2,
@@ -893,6 +1374,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_call_past_the_deadline_is_killed_with_its_children_and_names_where_to_check() {
@@ -912,6 +1394,7 @@ mod tests {
         assert_killed(&call_pids(dir.path()).await).await;
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_cancelled_call_kills_its_children_and_the_server_keeps_serving() {
@@ -941,6 +1424,7 @@ mod tests {
         request(2, "tools/call", json!({ "name": name, "arguments": {} }))
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn what_a_failed_call_left_running_is_killed() {
@@ -957,6 +1441,7 @@ mod tests {
         assert_killed(&call_pids(dir.path()).await).await;
     }
 
+    #[cfg(target_os = "linux")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_finished_call_signals_its_group_before_it_reaps_the_command() {
@@ -994,6 +1479,7 @@ mod tests {
         let done = &replies[1]["result"];
         assert_eq!(done["isError"], false, "{done}");
         assert_eq!(done["content"][0]["text"], "left one running\n");
+        #[cfg(target_os = "linux")]
         assert_killed(&call_pids(dir.path()).await).await;
     }
 
@@ -1021,6 +1507,662 @@ mod tests {
         assert_eq!(
             argv,
             ["server", "rm", "--no-reset", "--json", "--", "web-1"]
+        );
+    }
+
+    #[test]
+    fn an_approval_replaces_the_one_the_call_named_among_the_flags() {
+        let mut argv: Vec<String> = ["deploy", "--approval=apr_0", "--json", "--", "--approval=x"]
+            .map(str::to_owned)
+            .to_vec();
+        approve_with(&mut argv, "apr_1");
+        assert_eq!(
+            argv,
+            ["deploy", "--approval=apr_1", "--json", "--", "--approval=x"]
+        );
+    }
+
+    fn fake_cloud() -> (String, std::sync::mpsc::Receiver<(String, String, Value)>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (decided, decisions) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rows = HashMap::new();
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let (mut length, mut bearer) = (0, String::new());
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header.trim().is_empty() {
+                        break;
+                    }
+                    let header = header.to_ascii_lowercase();
+                    if let Some(value) = header.strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    if let Some(value) = header.strip_prefix("authorization: bearer ") {
+                        value.trim().clone_into(&mut bearer);
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let request = request.trim().trim_end_matches(" HTTP/1.1").to_owned();
+                let decision: Value = serde_json::from_slice(&body).unwrap();
+                let (status, reply) = if !cloud_takes(&decision) {
+                    (
+                        "422 Unprocessable Entity",
+                        r#"{"error":{"code":"invalid_request","message":"not a decision"}}"#,
+                    )
+                } else if rows
+                    .get(&request)
+                    .is_some_and(|first: &Value| first.get("approve") != decision.get("approve"))
+                {
+                    (
+                        "409 Conflict",
+                        r#"{"error":{"code":"conflict","message":"This approval is already approved."}}"#,
+                    )
+                } else {
+                    rows.insert(request.clone(), decision.clone());
+                    decided.send((request, bearer, decision)).unwrap();
+                    ("200 OK", "{}")
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+            }
+        });
+        (url, decisions)
+    }
+
+    /// Cloud's `ApprovalDecision`: an approval names a digest, and a rejection's reason is
+    /// a string or absent.
+    fn cloud_takes(decision: &Value) -> bool {
+        match (decision.get("approve"), decision.get("reject")) {
+            (Some(approve), None) => approve
+                .get("digest")
+                .and_then(Value::as_str)
+                .is_some_and(|digest| !digest.is_empty()),
+            (None, Some(reject)) => reject
+                .as_object()
+                .is_some_and(|reject| reject.get("reason").is_none_or(Value::is_string)),
+            _ => false,
+        }
+    }
+
+    fn approving(
+        dir: &std::path::Path,
+    ) -> (Server, std::sync::mpsc::Receiver<(String, String, Value)>) {
+        let asked = json!({ "error": {
+            "code": "approval_required",
+            "message": "A human must approve this first: this deploy removes Service worker",
+            "details": {
+                "approval_id": "apr_1",
+                "approval": "3:abc",
+                "effects": [
+                    { "kind": "removes_service", "name": "worker", "node": "svc_1", "path": "worker" },
+                ],
+                "diff": {
+                    "environment": {
+                        "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                        "project": "shop",
+                        "name": "production",
+                        "revision": 3,
+                    },
+                    "version": "3:abc",
+                    "saved": 2,
+                    "published": false,
+                    "changes": [],
+                    "total_count": 3,
+                },
+                "retry": "ployz deploy --approval apr_1",
+            },
+        }});
+        std::fs::write(dir.join("asked.json"), asked.to_string()).unwrap();
+        let (cloud, decisions) = fake_cloud();
+        let server = Server {
+            account: Account {
+                config: dir.join("config.toml"),
+                token: Some("ployz_acme".to_owned()),
+                cloud: Some(cloud),
+            },
+            ..Server::new(fake_ployz(dir), Vec::new())
+        };
+        (server, decisions)
+    }
+
+    async fn connect_eliciting(server: Server) -> Client {
+        let mut client = Client::connect(server);
+        client
+            .send(&request(
+                1,
+                "initialize",
+                json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": { "elicitation": {} },
+                    "clientInfo": { "name": "test", "version": "0" },
+                }),
+            ))
+            .await;
+        client.reply().await;
+        client
+            .send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await;
+        client
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_host_that_elicits_asks_the_human_and_an_approval_reruns_the_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = connect_eliciting(server).await;
+        client.send(&tool_call("deploy")).await;
+        let asking = client.reply().await;
+        assert_eq!(asking["method"], "elicitation/create", "{asking}");
+        assert_eq!(
+            asking["params"]["message"],
+            "Approve this deploy to production?\n\
+             This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        );
+        let schema = &asking["params"]["requestedSchema"];
+        assert_eq!(
+            schema["properties"]["approve"]["type"], "boolean",
+            "{schema}"
+        );
+        assert_eq!(schema["properties"]["reason"]["type"], "string", "{schema}");
+        assert_eq!(
+            schema["properties"]["reason"]["maxLength"], 1024,
+            "{schema}"
+        );
+        assert_eq!(schema["required"], json!(["approve"]), "{schema}");
+        client
+            .send(&json!({
+                "jsonrpc": "2.0",
+                "id": asking["id"],
+                "result": { "action": "accept", "content": { "approve": true } },
+            }))
+            .await;
+        let done = client.reply().await;
+        assert_eq!(done["id"], 2, "{done}");
+        assert_eq!(done["result"]["isError"], false, "{done}");
+        assert_eq!(
+            done["result"]["content"][0]["text"],
+            "deploy --approval=apr_1 --json\n"
+        );
+        assert_eq!(
+            decisions.try_recv().unwrap(),
+            (
+                "POST /api/cli/approvals/apr_1".to_owned(),
+                "ployz_acme".to_owned(),
+                json!({ "approve": { "digest": "3:abc" } }),
+            )
+        );
+    }
+
+    async fn unticked(content: Value) -> (Value, Option<Value>) {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = connect_eliciting(server).await;
+        client.send(&tool_call("deploy")).await;
+        let asking = client.reply().await;
+        client
+            .send(&json!({
+                "jsonrpc": "2.0",
+                "id": asking.get("id"),
+                "result": { "action": "accept", "content": content },
+            }))
+            .await;
+        let denied = client.reply().await;
+        (denied, decisions.try_recv().ok().map(|decided| decided.2))
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_human_who_unticks_approve_denies_it_in_cloud_with_their_reason() {
+        let (denied, decided) =
+            unticked(json!({ "approve": false, "reason": "  the worker still drains " })).await;
+        assert_eq!(denied["result"]["isError"], true, "{denied}");
+        assert_eq!(
+            denied["result"]["content"][0]["text"],
+            "The human denied this deploy: the worker still drains. Nothing was deployed; do \
+             not retry it unless they ask."
+        );
+        assert_eq!(
+            decided,
+            Some(json!({ "reject": { "reason": "the worker still drains" } }))
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_human_who_unticks_approve_without_a_reason_denies_it_in_cloud() {
+        let (denied, decided) = unticked(json!({ "approve": false, "reason": " " })).await;
+        assert_eq!(
+            denied["result"]["content"][0]["text"],
+            "The human denied this deploy. Nothing was deployed; do not retry it unless they ask."
+        );
+        assert_eq!(decided, Some(json!({ "reject": {} })));
+    }
+
+    #[tokio::test]
+    async fn a_reason_is_cut_to_what_cloud_keeps() {
+        let (_, decided) =
+            unticked(json!({ "approve": false, "reason": "\u{1F600}".repeat(600) })).await;
+        let reason = decided
+            .as_ref()
+            .and_then(|decided| decided.pointer("/reject/reason"))
+            .and_then(Value::as_str)
+            .unwrap();
+        assert_eq!(reason.encode_utf16().count(), 1024);
+    }
+
+    /// The `_meta` Claude Code 2.1.294 puts on every request: it speaks 2026-07-28, which
+    /// has no `initialize`, so its capabilities arrive per request.
+    fn claude_code() -> Value {
+        json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { "name": "claude-code", "version": "2.1.294" },
+            "io.modelcontextprotocol/clientCapabilities": {
+                "roots": { "listChanged": true },
+                "elicitation": { "form": {}, "url": {} },
+            },
+        })
+    }
+
+    async fn ask_as_claude_code(client: &mut Client) -> Value {
+        client
+            .send(&request(
+                1,
+                "server/discover",
+                json!({ "_meta": claude_code() }),
+            ))
+            .await;
+        let discovered = client.reply().await;
+        assert!(
+            discovered
+                .pointer("/result/supportedVersions")
+                .and_then(Value::as_array)
+                .unwrap()
+                .contains(&json!("2026-07-28")),
+            "{discovered}"
+        );
+        client
+            .send(&request(
+                2,
+                "tools/call",
+                json!({ "_meta": claude_code(), "name": "deploy", "arguments": {} }),
+            ))
+            .await;
+        client.reply().await
+    }
+
+    async fn answer_as_claude_code(client: &mut Client, asking: &Value, answer: Value) -> Value {
+        answer_on(client, "deploy", json!({}), asking, answer).await
+    }
+
+    async fn answer_on(
+        client: &mut Client,
+        tool: &str,
+        arguments: Value,
+        asking: &Value,
+        answer: Value,
+    ) -> Value {
+        client
+            .send(&request(
+                3,
+                "tools/call",
+                json!({
+                    "_meta": claude_code(),
+                    "name": tool,
+                    "arguments": arguments,
+                    "inputResponses": { "approval": answer },
+                    "requestState": asking.pointer("/result/requestState"),
+                }),
+            ))
+            .await;
+        client.reply().await
+    }
+
+    fn runs(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("runs"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn an_answer_after_the_deadline_decides_nothing_and_runs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut server, decisions) = approving(dir.path());
+        server.deadline = Duration::from_secs(1);
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let late = answer_as_claude_code(
+            &mut client,
+            &asking,
+            json!({ "action": "accept", "content": { "approve": true } }),
+        )
+        .await;
+        assert_eq!(late["result"]["isError"], true, "{late}");
+        assert_eq!(
+            late["result"]["content"][0]["text"],
+            "The human answered approval apr_1 more than 1 seconds after this deploy was \
+             called, so the answer was not recorded and nothing was deployed. Approval apr_1 \
+             stays pending in Ployz Cloud; call the tool again to ask again."
+        );
+        assert!(
+            decisions.try_recv().is_err(),
+            "nothing was decided in Cloud"
+        );
+        assert_eq!(runs(dir.path()), ["deploy --json"]);
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn an_answered_call_keeps_the_deadline_of_the_call_that_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut server, decisions) = approving(dir.path());
+        server.deadline = Duration::from_secs(3);
+        std::fs::write(dir.path().join("slow"), "").unwrap();
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let stopped = answer_as_claude_code(
+            &mut client,
+            &asking,
+            json!({ "action": "accept", "content": { "approve": true } }),
+        )
+        .await;
+        assert_eq!(
+            stopped["result"]["content"][0]["text"],
+            "ployz mcp stopped `ployz deploy` after 3 seconds. What it started may still be \
+             running; check with the `status` tool (`ployz status`)."
+        );
+        assert_eq!(
+            decisions.try_recv().unwrap().2,
+            json!({ "approve": { "digest": "3:abc" } })
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn an_answer_on_another_call_is_refused_and_keeps_the_dialog() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        let approve = json!({ "action": "accept", "content": { "approve": true } });
+        for (tool, arguments) in [
+            ("project_ls", json!({})),
+            ("deploy", json!({ "env": "staging" })),
+        ] {
+            let refused = answer_on(&mut client, tool, arguments, &asking, approve.clone()).await;
+            assert_eq!(refused["error"]["code"], -32602, "{refused}");
+            assert_eq!(
+                refused["error"]["message"],
+                "approval apr_1 was asked by another call; answer it by calling `deploy` again \
+                 with the same arguments"
+            );
+        }
+        assert!(
+            decisions.try_recv().is_err(),
+            "nothing was decided in Cloud"
+        );
+        assert_eq!(runs(dir.path()), ["deploy --json"]);
+        let done = answer_as_claude_code(&mut client, &asking, approve).await;
+        assert_eq!(done["result"]["isError"], false, "{done}");
+        assert_eq!(
+            decisions.try_recv().unwrap().2,
+            json!({ "approve": { "digest": "3:abc" } })
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_replayed_or_unknown_answer_is_refused_and_runs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        answer_as_claude_code(&mut client, &asking, json!({ "action": "decline" })).await;
+        let approve = json!({ "action": "accept", "content": { "approve": true } });
+        let unknown = json!({ "result": { "requestState": "apr_1" } });
+        for asking in [&asking, &unknown] {
+            let refused = answer_as_claude_code(&mut client, asking, approve.clone()).await;
+            assert_eq!(refused["error"]["code"], -32602, "{refused}");
+            assert_eq!(
+                refused["error"]["message"],
+                format!(
+                    "no approval waits on {}",
+                    asking["result"]["requestState"].as_str().unwrap()
+                )
+            );
+        }
+        assert_eq!(
+            decisions
+                .try_iter()
+                .map(|decided| decided.2)
+                .collect::<Vec<_>>(),
+            [json!({ "reject": {} })]
+        );
+        assert_eq!(runs(dir.path()), ["deploy --json"]);
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn two_calls_asking_about_one_approval_each_keep_their_dialog() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = Client::connect(server);
+        let first = ask_as_claude_code(&mut client).await;
+        let second = ask_as_claude_code(&mut client).await;
+        assert_ne!(
+            first["result"]["requestState"], second["result"]["requestState"],
+            "{second}"
+        );
+        let approve = json!({ "action": "accept", "content": { "approve": true } });
+        for asking in [&first, &second] {
+            let done = answer_as_claude_code(&mut client, asking, approve.clone()).await;
+            assert_eq!(done["result"]["isError"], false, "{done}");
+        }
+        assert_eq!(decisions.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn a_held_dialog_past_its_deadline_is_dropped_when_another_is_held() {
+        let held = |until| Held {
+            tool: "deploy".to_owned(),
+            argv: vec!["deploy".to_owned()],
+            asked: serde_json::from_value(json!({
+                "approval_id": "apr_1",
+                "approval": "3:abc",
+                "effects": [],
+                "diff": {
+                    "environment": {
+                        "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                        "project": "shop",
+                        "name": "production",
+                        "revision": 3,
+                    },
+                    "version": "3:abc",
+                    "saved": 2,
+                    "published": false,
+                    "changes": [],
+                    "total_count": 0,
+                },
+            }))
+            .unwrap(),
+            until,
+        };
+        let waiting = Waiting::default();
+        let abandoned = waiting.hold(held(Instant::now()));
+        let fresh = waiting.hold(held(Instant::now() + Duration::from_secs(60)));
+        let argv = ["deploy".to_owned()];
+        assert!(waiting.take(&abandoned, "deploy", &argv).is_err());
+        assert!(waiting.take(&fresh, "deploy", &argv).is_ok());
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_host_without_initialize_gets_the_dialog_in_the_result_and_its_approval_reruns_the_call()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        assert_eq!(asking["id"], 2, "{asking}");
+        assert_eq!(asking["result"]["resultType"], "input_required", "{asking}");
+        let dialog = &asking["result"]["inputRequests"]["approval"];
+        assert_eq!(dialog["method"], "elicitation/create", "{asking}");
+        assert_eq!(dialog["params"]["mode"], "form", "{asking}");
+        assert_eq!(
+            dialog["params"]["message"],
+            "Approve this deploy to production?\n\
+             This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        );
+        assert_eq!(
+            dialog["params"]["requestedSchema"]["required"],
+            json!(["approve"])
+        );
+        let done = answer_as_claude_code(
+            &mut client,
+            &asking,
+            json!({ "action": "accept", "content": { "approve": true } }),
+        )
+        .await;
+        assert_eq!(done["id"], 3, "{done}");
+        assert_eq!(done["result"]["isError"], false, "{done}");
+        assert_eq!(
+            done["result"]["content"][0]["text"],
+            "deploy --approval=apr_1 --json\n"
+        );
+        assert_eq!(
+            decisions.try_recv().unwrap().2,
+            json!({ "approve": { "digest": "3:abc" } })
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_declined_dialog_denies_the_approval_in_cloud() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = Client::connect(server);
+        let asking = ask_as_claude_code(&mut client).await;
+        let denied =
+            answer_as_claude_code(&mut client, &asking, json!({ "action": "decline" })).await;
+        assert_eq!(denied["result"]["isError"], true, "{denied}");
+        assert_eq!(
+            denied["result"]["content"][0]["text"],
+            "The human denied this deploy. Nothing was deployed; do not retry it unless they ask."
+        );
+        assert_eq!(
+            decisions.try_recv().unwrap(),
+            (
+                "POST /api/cli/approvals/apr_1".to_owned(),
+                "ployz_acme".to_owned(),
+                json!({ "reject": {} }),
+            )
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_closed_form_denies_the_approval_in_cloud() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = connect_eliciting(server).await;
+        client.send(&tool_call("deploy")).await;
+        let asking = client.reply().await;
+        client
+            .send(
+                &json!({ "jsonrpc": "2.0", "id": asking["id"], "result": { "action": "cancel" } }),
+            )
+            .await;
+        let closed = client.reply().await;
+        assert_eq!(closed["result"]["isError"], true, "{closed}");
+        assert_eq!(
+            closed["result"]["content"][0]["text"],
+            "The human denied this deploy. Nothing was deployed; do not retry it unless they ask."
+        );
+        assert_eq!(decisions.try_recv().unwrap().2, json!({ "reject": {} }));
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_host_without_elicitation_gets_a_tool_error_naming_where_to_approve() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut frames = handshake();
+        frames.push(tool_call("deploy"));
+        let replies = exchange_with(server, &frames).await;
+        let refused = &replies[1];
+        assert_eq!(refused["id"], 2, "{refused}");
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        assert_eq!(
+            refused["result"]["content"][0]["text"],
+            "A human must approve this deploy to production first, and this agent cannot ask \
+             them. Show them what it destroys, then ask them to approve approval apr_1 in the \
+             Ployz Cloud sidebar, or to run the command themselves in a terminal. Once they \
+             approve, call this tool again with `approval` set to `apr_1`.\n\
+             This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+        );
+        assert!(
+            decisions.try_recv().is_err(),
+            "nothing was decided in Cloud"
+        );
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    #[tokio::test]
+    async fn a_denial_after_someone_else_approved_says_so_and_claims_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (server, decisions) = approving(dir.path());
+        let mut client = connect_eliciting(server).await;
+        let mut answers = Vec::new();
+        for (id, approve) in [(2, true), (3, false)] {
+            client
+                .send(&request(
+                    id,
+                    "tools/call",
+                    json!({ "name": "deploy", "arguments": {} }),
+                ))
+                .await;
+            let asking = client.reply().await;
+            client
+                .send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": asking["id"],
+                    "result": { "action": "accept", "content": { "approve": approve } },
+                }))
+                .await;
+            answers.push(client.reply().await);
+        }
+        let refused = &answers[1];
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        assert_eq!(
+            refused["result"]["content"][0]["text"],
+            "Approval apr_1 was already decided elsewhere, so this answer was not recorded: \
+             This approval is already approved. Nothing was deployed by this call."
+        );
+        assert_eq!(
+            decisions
+                .try_iter()
+                .map(|decided| decided.2)
+                .collect::<Vec<_>>(),
+            [json!({ "approve": { "digest": "3:abc" } })]
         );
     }
 }

@@ -12,6 +12,7 @@ use ployz_store::{
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
+use crate::approval::{self, Asked};
 use crate::cli::{env, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{CredentialStore, LoginError};
@@ -22,6 +23,7 @@ impl From<StoreCallError> for Error {
         match error {
             StoreCallError::Refused(error) => error.into(),
             StoreCallError::Cloud(error) => error.into(),
+            StoreCallError::Stopped(failure) => failure,
         }
     }
 }
@@ -74,14 +76,19 @@ impl Backend {
                     credential,
                     "read",
                     &query.to_query(),
+                    None,
                 ))?;
                 Q::view(view).map_err(StoreCallError::Refused)
             }
         }
     }
 
-    /// `trusted` is the in-process Store's evidence; Cloud gathers its own.
-    fn write<C: Tell>(&self, command: &C, trusted: Trusted) -> Result<C::Written, StoreCallError> {
+    fn write<C: Tell>(
+        &self,
+        command: &C,
+        trusted: Trusted,
+        approval: Option<&str>,
+    ) -> Result<C::Written, StoreCallError> {
         match self {
             Self::Local(store, who) => store
                 .write_trusted(who, command, &trusted)
@@ -91,6 +98,7 @@ impl Backend {
                     credential,
                     "write",
                     &command.to_command(),
+                    approval,
                 ))?;
                 C::written(written).map_err(StoreCallError::Refused)
             }
@@ -140,7 +148,44 @@ impl<'m> Store<'m> {
 
     /// [`Self::write`], leaving the refusal for the caller to add a next step to.
     pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.backend.write(command, Trusted::default())
+        self.approved(command, &Trusted::default())
+    }
+
+    fn approved<C: Tell>(
+        &self,
+        command: &C,
+        trusted: &Trusted,
+    ) -> Result<C::Written, StoreCallError> {
+        let mut approval = self
+            .matches
+            .try_get_one::<String>("approval")
+            .ok()
+            .flatten()
+            .cloned();
+        loop {
+            let refused = match self
+                .backend
+                .write(command, trusted.clone(), approval.as_deref())
+            {
+                Err(StoreCallError::Refused(refused)) => refused,
+                written => return written,
+            };
+            let (Backend::Cloud(runtime, credential), Some(asked), false) =
+                (&self.backend, Asked::of(&refused), crate::ui::json())
+            else {
+                return Err(StoreCallError::Refused(refused));
+            };
+            let verb = match command
+                .to_command()
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some("publish") => "publish",
+                _ => "deploy",
+            };
+            let retry = self.approving(&asked.id);
+            approval = Some(approval::settle(runtime, credential, verb, &asked, retry)?);
+        }
     }
 
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
@@ -155,9 +200,9 @@ impl<'m> Store<'m> {
             }
             _ => None,
         };
-        self.backend.write(
+        self.approved(
             admit,
-            Trusted {
+            &Trusted {
                 volumes,
                 ..Trusted::default()
             },
@@ -229,13 +274,18 @@ impl<'m> Store<'m> {
     /// This command's failure for a Store error: an ambiguous Project is fixed by
     /// linking this directory to one, after which the same command runs as typed.
     pub(crate) fn fail(&self, error: impl Into<Refusal>) -> Error {
-        let Refusal { error, hint } = with_next(
+        let Refusal { error, mut hint } = with_next(
             error,
             |refusal| {
                 refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
             },
             || next(self.matches, &["link", "--project", "PROJECT"]),
         );
+        if let (None, StoreCallError::Refused(refused)) = (&hint, &error)
+            && let Some(asked) = Asked::of(refused)
+        {
+            hint = Some(Hint::Retry(self.approving(&asked.id)));
+        }
         Error::from(error).hint(hint)
     }
 
@@ -257,20 +307,21 @@ impl<'m> Store<'m> {
                 ..
             } if error.code == RpcErrorCode::ConfirmationRequired => {
                 let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
-                let mut extra = Vec::new();
+                let carried = self.carried();
                 let accept = error
                     .details
                     .get("accept")
                     .and_then(serde_json::Value::as_array)
                     .into_iter()
-                    .flatten();
-                for name in accept.filter_map(text) {
-                    extra.extend(["--accept-volume-loss".to_owned(), name]);
-                }
-                if let Some(version) = error.details.get("version").and_then(text) {
-                    extra.extend(["--expect-version".to_owned(), version]);
-                }
-                let retry = self.again(&extra.iter().map(String::as_str).collect::<Vec<_>>());
+                    .flatten()
+                    .filter_map(text)
+                    .collect();
+                let version = error.details.get("version").and_then(text);
+                let retry = self.retry(Carried {
+                    accept,
+                    version: version.or(carried.version),
+                    ..carried
+                });
                 Refusal {
                     error: StoreCallError::Refused(error),
                     hint: Some(Hint::Retry(retry)),
@@ -280,6 +331,48 @@ impl<'m> Store<'m> {
         };
         self.fail(refusal)
     }
+
+    fn approving(&self, id: &str) -> String {
+        self.retry(Carried {
+            approval: Some(id.to_owned()),
+            ..self.carried()
+        })
+    }
+
+    fn carried(&self) -> Carried {
+        let one = |id| {
+            self.matches
+                .try_get_one::<String>(id)
+                .ok()
+                .flatten()
+                .cloned()
+        };
+        Carried {
+            accept: super::string_values(self.matches, "accept-volume-loss"),
+            version: one("expect-version"),
+            approval: one("approval"),
+        }
+    }
+
+    fn retry(&self, carried: Carried) -> String {
+        let mut extra = Vec::new();
+        for name in &carried.accept {
+            extra.extend(["--accept-volume-loss", name.as_str()]);
+        }
+        if let Some(version) = &carried.version {
+            extra.extend(["--expect-version", version.as_str()]);
+        }
+        if let Some(approval) = &carried.approval {
+            extra.extend(["--approval", approval.as_str()]);
+        }
+        self.again(&extra)
+    }
+}
+
+struct Carried {
+    accept: Vec<String>,
+    version: Option<String>,
+    approval: Option<String>,
 }
 
 /// The Config Store `root`'s command reads and writes.
@@ -515,9 +608,9 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_volume_loss_names_the_exact_retry() {
+    fn a_refused_volume_loss_names_the_exact_retry_keeping_the_approval() {
         let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
+            .try_get_matches_from(["ployz", "deploy", "--env", "staging", "--approval", "apr_1"])
             .unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
         let local = ConfigStore::open("sqlite::memory:", key).unwrap();
@@ -536,7 +629,7 @@ mod tests {
             cause: Vec::new(),
         };
         let error = store.accepting(StoreCallError::Refused(refused));
-        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --env staging";
+        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --approval apr_1 --env staging";
         assert_eq!(error.hints(), [Hint::Retry(retry.into())]);
         let error = error.report();
         assert_eq!(error.details.get("retry"), Some(&json!(retry)));

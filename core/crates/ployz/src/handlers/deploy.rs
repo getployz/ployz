@@ -45,6 +45,7 @@ pub(crate) fn deploy_command() -> Command {
                 .help("Show what would deploy, from authored state alone; run nothing"),
         )
         .arg(crate::cli::reviewed_version())
+        .arg(crate::cli::approval())
         .arg(
             value("message", None)
                 .value_name("TEXT")

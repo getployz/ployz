@@ -720,6 +720,15 @@
         "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
       },
       {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
+      },
+      {
         "name": "--message",
         "required": false,
         "value": true,
@@ -2794,6 +2803,15 @@
         "multiple": false,
         "trailing": false,
         "help": "Refuse unless this is still the latest `ployz diff` version"
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },
@@ -4248,6 +4266,15 @@
         "multiple": false,
         "trailing": false,
         "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },

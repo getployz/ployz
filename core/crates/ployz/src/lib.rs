@@ -1,6 +1,7 @@
 // Human text goes through `ui` so `--json` keeps stdout parseable; tests may print.
 #![cfg_attr(not(test), deny(clippy::print_stdout))]
 
+mod approval;
 pub mod build;
 mod cancellation;
 pub mod cli;

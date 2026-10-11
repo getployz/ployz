@@ -58,9 +58,22 @@ claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. Each tool runs one `ployz` command with
-`--json`, signed in as you, and returns its one result. Tools that can remove something live,
-such as `deploy` and `server rm`, are marked destructive. Whether the agent asks you before it
-runs one depends on the agent's own permission settings.
+`--json`, signed in as you, and returns its one result. Tools that can change something live,
+such as `deploy`, `server rm`, and `token new`, are marked destructive. Every one of them that
+acts the moment it runs, rather than through a plan Ployz reviews first, also asks the agent's
+app to check with you before every call, even when you've told it to skip permission prompts.
+`server rm`, `service stop`, and `token new` ask this way; `deploy` and `publish` don't. Claude
+Code honors this.
+
+When a `publish` or `deploy` needs your approval (see
+[Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions)),
+the agent's app shows you what it would remove and asks you to approve or deny it. Approve and
+the command runs. Leave Approve unticked and Ployz denies the approval; any reason you type goes
+back to the agent, which is told nothing changed. Declining or closing the dialog denies it
+too, without a reason. Answer within 30 minutes of the agent's call; a later answer isn't
+recorded and the approval stays pending in Ployz Cloud. An app that can't show this dialog gets
+an error instead, naming the approval, which you can approve in Ployz Cloud or by running the
+command yourself in a terminal.
 
 Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
 Servers are added with `ployz server add` from a terminal, not through MCP, because it installs
@@ -73,7 +86,8 @@ values of secrets the service already has, and they stay secret. To add a secret
 `ployz set web.env.KEY --secret` yourself.
 
 A tool call that runs for more than 30 minutes is stopped, along with the processes it started
-on this computer, except a process that detaches into a session of its own. Calls still running
+on this computer, except a process that leaves the call's process group, for example with
+`setsid` or `setpgid`. Calls still running
 when the agent closes `ployz mcp` stop the same way. A deployment or volume run a call started
 keeps going in Cloud, and the tool's error names the command that shows where it stands, such as
 `ployz status`. When `ployz mcp` reaches Servers over SSH, through an SSH context or
@@ -145,7 +159,7 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, Ployz refused, or the server or Cloud doesn't support what you asked. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but some servers didn't answer, so part of it is missing. Run it again once they're back. |
-| 130 | You cancelled: pressed Ctrl-C, or didn't confirm a prompt. Nothing was removed. |
+| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Nothing was removed. |
 
 `ployz exec` exits with your command's own exit code.
 
@@ -153,7 +167,10 @@ A command that deletes something, such as `ployz project rm shop`, shows what go
 to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
 with `--confirm`. Commands that would otherwise ask you to choose, such as `ployz ctx use` without
-a name or the storage choice in `ployz server add`, work the same way.
+a name or the storage choice in `ployz server add`, work the same way. A `publish` or `deploy`
+that needs an approval asks the same way in a terminal. Without one it waits for the approval in
+Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
+[Ask before destructive actions](../account/organizations.md#ask-before-destructive-actions).
 
 Ployz colors its output in a terminal. With `CI` set or `TERM=dumb`, it prints plain text even in
 one. Set `NO_COLOR=1` or pass `--color never` to turn color off, or `--color always` to keep it
