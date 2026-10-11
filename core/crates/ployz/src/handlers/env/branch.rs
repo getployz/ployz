@@ -283,7 +283,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             }
             if row.secret.is_some() {
                 notes.push(format!(
-                    "{} lacks this secret: it arrives without a value",
+                    "{} lacks this secret: it arrives Not set",
                     view.into.name
                 ));
             }

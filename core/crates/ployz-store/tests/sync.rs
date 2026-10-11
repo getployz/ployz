@@ -12,11 +12,11 @@ use std::collections::BTreeMap;
 
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
-    Deploy, DeploymentId, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
-    KeepBranch, OrganizationId, ProjectId, ProjectName, Publish, RemoveService, RenameService,
-    SecretRow, ServiceLineageId, ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId,
-    SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Trusted, UndoSync, When,
+    Actor, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Discard,
+    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, OrganizationId, ProjectId,
+    ProjectName, Publish, RemoveService, RenameService, SecretRow, ServiceLineageId, ServiceQuery,
+    SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, SyncedWhen,
+    UndoSync, When,
 };
 use serde_json::{Value, json};
 
@@ -1190,40 +1190,17 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
         &[("api.env.KEY", json!({ "secret": false }))],
     );
 
-    // Deploy refuses, naming it, until production has its own.
-    let refused = store
-        .write_trusted(
-            &who,
-            &Admit::Deploy(Deploy {
-                id: DeploymentId::parse(uuid(50)).unwrap(),
-                environment: at("production"),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-                message: None,
-            }),
-            &Trusted::default(),
-        )
-        .unwrap_err();
-    assert_eq!(refused.code, RpcErrorCode::Conflict);
-    assert_eq!(
-        refused.message,
-        "production has secrets without a value: set api.env.KEY before deploying"
-    );
-    assert_eq!(
-        refused.details["next"],
-        json!("ployz set api.env.KEY --secret --project shop --env production")
-    );
+    // Not set never blocks: Deploy ships without it, and without what reads it, and
+    // warns.
     set(
         &store,
         &who,
         "production",
-        &[("api.env.KEY", json!({ "secret": "prod-api-key" }))],
+        &[("web.env.KEY_URL", json!("https://${{ api.KEY }}@api"))],
     );
-    let input = deploy(&store, &who, "production", 3);
-    // Each Service by its lineage: web's is 3, api's 5.
-    let env = |n: u8| {
+    let id = backend::admit(&store, &who, "production", 3);
+    let input = backend::run(&store, &id);
+    let env = |input: &Value, n: u8| {
         let id = &input["lineages"][uuid(n)];
         input["snapshots"]
             .as_array()
@@ -1233,12 +1210,34 @@ fn a_secret_the_receiver_lacks_syncs_with_the_value_given_or_without_one() {
             .unwrap()["resolvedEnv"]
             .clone()
     };
-    let web = env(3);
+    assert_eq!(env(&input, 5).get("KEY"), None);
+    assert_eq!(env(&input, 3).get("KEY_URL"), None);
+    assert_eq!(env(&input, 3)["API_KEY"], json!("given-key"));
+    let shipped = store
+        .read(&who, &ployz_store::DeploymentQuery { id })
+        .unwrap();
+    assert_eq!(
+        json!(shipped.deployment.warnings),
+        json!([
+            { "service": "web", "variable": "KEY_URL" },
+            { "service": "api", "variable": "KEY" },
+        ])
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[("api.env.KEY", json!({ "secret": "prod-api-key" }))],
+    );
+    let input = deploy(&store, &who, "production", 4);
+    // Each Service by its lineage: web's is 3, api's 5.
+    let web = env(&input, 3);
     assert_eq!(
         (&web["TOKEN"], &web["API_KEY"]),
         (&json!("prod-token"), &json!("given-key"))
     );
-    assert_eq!(env(5)["KEY"], json!("prod-api-key"));
+    assert_eq!(env(&input, 5)["KEY"], json!("prod-api-key"));
+    assert_eq!(web["KEY_URL"], json!("https://prod-api-key@api"));
 }
 
 #[test]

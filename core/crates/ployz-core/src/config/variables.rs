@@ -8,9 +8,17 @@ use ts_rs::TS;
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResolverValue {
-    Literal { value: String },
-    Secret { value: String },
-    Template { parts: Vec<ValuePart> },
+    Literal {
+        value: String,
+    },
+    Secret {
+        value: String,
+    },
+    Template {
+        parts: Vec<ValuePart>,
+    },
+    /// A secret without a value: what references it is skipped.
+    NotSet,
 }
 
 /// A supplied variable value keyed by its owner and stable reference scope.
@@ -42,7 +50,8 @@ pub struct TemplateWarning {
     pub key: String,
 }
 
-/// Resolved text with secret provenance, or the cycle that prevents resolution.
+/// Resolved text with secret provenance, a reference to a secret without a value,
+/// or the cycle that prevents resolution.
 #[derive(Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResolveVariablesResult {
@@ -51,9 +60,19 @@ pub enum ResolveVariablesResult {
         secret: bool,
         warnings: Vec<TemplateWarning>,
     },
+    NotSet,
     Cycle {
         path: Vec<String>,
     },
+}
+
+/// What reached a resolved value, ordered: the most telling wins.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+enum Taint {
+    #[default]
+    Plain,
+    Secret,
+    NotSet,
 }
 
 /// Resolve supplied templates transitively, retaining secret provenance and reporting missing producers or cycles.
@@ -70,9 +89,10 @@ pub fn resolve_variables(input: &ResolveVariablesInput) -> ResolveVariablesResul
         &mut memo,
         &mut stack,
     ) {
-        Ok((value, secret)) => ResolveVariablesResult::Resolved {
+        Ok((_, Taint::NotSet)) => ResolveVariablesResult::NotSet,
+        Ok((value, taint)) => ResolveVariablesResult::Resolved {
             value,
-            secret,
+            secret: taint == Taint::Secret,
             warnings,
         },
         Err(path) => ResolveVariablesResult::Cycle { path },
@@ -83,7 +103,7 @@ pub fn resolve_variables(input: &ResolveVariablesInput) -> ResolveVariablesResul
 #[derive(Clone, Eq, PartialEq)]
 pub struct ResolvedConfigFile {
     pub content: String,
-    /// Whether a secret reached `content`.
+    /// Whether a secret reached `content`. One without a value reaches it empty.
     pub secret: bool,
     /// References whose value may break the file's syntax, each once.
     pub fragile: Vec<FragileReference>,
@@ -144,7 +164,7 @@ pub fn resolve_config_file(
             }
             ValuePart::Ref { owner, key } => (owner, key),
         };
-        let (value, secret) = resolve_parts(
+        let (value, taint) = resolve_parts(
             std::slice::from_ref(part),
             "",
             producers,
@@ -162,7 +182,7 @@ pub fn resolve_config_file(
             file.fragile.push(reference);
         }
         file.content.push_str(&value);
-        file.secret |= secret;
+        file.secret |= taint != Taint::Plain;
     }
     Ok(file)
 }
@@ -281,11 +301,11 @@ fn resolve_parts(
     self_owner_id: &str,
     producers: &[VariableProducer],
     warnings: &mut Vec<TemplateWarning>,
-    memo: &mut BTreeMap<(String, String), (String, bool)>,
+    memo: &mut BTreeMap<(String, String), (String, Taint)>,
     stack: &mut Vec<(String, String)>,
-) -> Result<(String, bool), Vec<String>> {
+) -> Result<(String, Taint), Vec<String>> {
     let mut value = String::new();
-    let mut secret = false;
+    let mut taint = Taint::Plain;
     for part in parts {
         let ValuePart::Ref { owner, key } = part else {
             if let ValuePart::Text { value: text } = part {
@@ -321,8 +341,9 @@ fn resolve_parts(
             cached.clone()
         } else {
             let resolved = match &found.value {
-                ResolverValue::Literal { value } => (value.clone(), false),
-                ResolverValue::Secret { value } => (value.clone(), true),
+                ResolverValue::Literal { value } => (value.clone(), Taint::Plain),
+                ResolverValue::Secret { value } => (value.clone(), Taint::Secret),
+                ResolverValue::NotSet => (String::new(), Taint::NotSet),
                 ResolverValue::Template { parts } => {
                     stack.push(id.clone());
                     let result =
@@ -335,9 +356,9 @@ fn resolve_parts(
             resolved
         };
         value.push_str(&resolved.0);
-        secret |= resolved.1;
+        taint = taint.max(resolved.1);
     }
-    Ok((value, secret))
+    Ok((value, taint))
 }
 
 #[cfg(test)]

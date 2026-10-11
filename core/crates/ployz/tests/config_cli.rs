@@ -2609,7 +2609,7 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
 }
 
 #[test]
-fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
+fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "web", "--image", "web:1"]);
@@ -2636,18 +2636,14 @@ fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
         );
         ok(store, &["env", "sync", "--to", "--env", "fix-web"]);
 
-        let refused = error(store, &["deploy"]);
-        assert_eq!(refused["code"], json!("conflict"), "{refused}");
-        assert_eq!(refused["details"]["secrets"], json!(["web.env.API_KEY"]));
-        assert_eq!(
-            refused["details"]["next"],
-            json!("ployz set web.env.API_KEY --secret --project shop --env production")
-        );
-        let (code, set) = piped(store, &secret, "prod-key\n");
-        assert_eq!(code, Some(0), "{set}");
-        // With its own value, production's Deploy is admitted.
+        // Not set, it never blocks: production's Deploy is admitted and skips it.
         let (_, deployed) = ployz(Some(store), &["deploy"]);
         assert_eq!(deployed["number"], json!(1), "{deployed}");
+        assert!(!deployed.to_string().contains("ployz set"), "{deployed}");
+        let (code, set) = piped(store, &secret, "prod-key\n");
+        assert_eq!(code, Some(0), "{set}");
+        let (_, deployed) = ployz(Some(store), &["deploy"]);
+        assert_eq!(deployed["number"], json!(2), "{deployed}");
 
         // A sync can give the receiver its value, a line of stdin per --value.
         ok(store, &["env", "branch", "fix-key", "--copy", "web"]);
@@ -2673,7 +2669,7 @@ fn a_synced_secret_arrives_without_its_value_and_deploy_says_which_to_set() {
         assert_eq!(code, Some(0), "{synced}");
         assert!(!synced.contains("given-key"), "{synced}");
         let (_, deployed) = ployz(Some(store), &["deploy"]);
-        assert_eq!(deployed["number"], json!(2), "{deployed}");
+        assert_eq!(deployed["number"], json!(3), "{deployed}");
     }
 }
 

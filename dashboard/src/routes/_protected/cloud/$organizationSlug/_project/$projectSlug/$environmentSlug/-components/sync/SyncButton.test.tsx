@@ -61,7 +61,7 @@ const pullRequestView = (synced: boolean): PullRequestView => ({
     commits: 1, open: true, merge_commit: null, updated: "2026-09-29T10:00:00Z",
   },
   environments: [{ environment: summary("fix-api"), deployment: null, destinations: [{
-    name: "production", changes: 3, conditional_sync: synced ? { id: "cs", standing: true, changes: 3, waiting: [] } : null,
+    name: "production", changes: 3, conditional_sync: synced ? { id: "cs", standing: true, changes: 3 } : null,
   }] }],
   passing: synced, reason: synced ? "3 changes go live with this PR" : "3 changes to sync in Ployz",
 });

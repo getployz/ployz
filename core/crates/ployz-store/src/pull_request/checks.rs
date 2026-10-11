@@ -94,21 +94,6 @@ pub(super) fn check(environments: &[PrEnvironment], target: &str) -> (bool, Stri
     if unsaved > 0 {
         return (false, format!("{} to sync in Ployz", changes(unsaved)));
     }
-    for destination in &waiting {
-        let secrets = destination
-            .conditional_sync
-            .as_ref()
-            .map_or(&[][..], |sync| &sync.waiting);
-        let of = match secrets {
-            [] => continue,
-            [one] => one.rsplit('.').next().unwrap_or(one).to_owned(),
-            many => format!("{} secrets", many.len()),
-        };
-        return (
-            false,
-            format!("Waiting for {}'s value of {of}", destination.name),
-        );
-    }
     let saved: usize = waiting
         .iter()
         .filter_map(|destination| destination.conditional_sync.as_ref())

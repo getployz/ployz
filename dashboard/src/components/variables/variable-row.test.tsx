@@ -160,11 +160,11 @@ describe("VariableRow", () => {
     expect(screen.queryByText("Edit")).toBeNull();
   });
 
-  it("says a secret needs a value, and Set value seals the one typed", async () => {
+  it("says a secret is Not set, and Set value seals the one typed", async () => {
     const onSealVariable = vi.fn();
-    render(<VariableRow variable={{ ...sealedVariable(), value: { type: "sealed", needsValue: true } }} collection={collection}
+    render(<VariableRow variable={{ ...sealedVariable(), value: { type: "sealed", notSet: true } }} collection={collection}
       onSealVariable={onSealVariable} />);
-    expect(screen.getByText("needs a value")).toBeTruthy();
+    expect(screen.getByText("Not set")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
     fireEvent.click(await screen.findByText("Set value"));

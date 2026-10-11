@@ -34,7 +34,8 @@ Ployz opens the new deployment's page. A deploy covers the whole environment, no
 changed: every GitHub service moves to the newest commit on its Git branch, and if you've added
 or lost a server, replicas spread over the servers you have now (if a service's volume was on a
 lost server, see [When a server goes down](../services/scaling.md#when-a-server-goes-down)).
-Everything else keeps running as it is.
+Everything else keeps running as it is. A secret that is **Not set** never stops a deploy: the
+deploy skips it, and any variable that references it, and warns.
 
 **Save** in **Details** records your changes and optional message without deploying them. Your
 next deploy takes them along, including one started by a push to GitHub; unsaved changes stay

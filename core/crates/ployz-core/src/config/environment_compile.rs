@@ -177,7 +177,7 @@ fn env_value(variable: &SavedVariableIntent, slugs: &BTreeMap<String, String>) -
             fingerprint: variable.value_fingerprint.clone(),
             interpolated: None,
         },
-        // Deploy refuses it first; a review shows it as a secret.
+        // A review shows it as a secret; a Deployment leaves it out.
         SavedVariableValue::SecretWithoutValue => ServiceEnvValue::Secret {
             variable_id: Some(variable.id.clone()),
             encrypted_value: None,

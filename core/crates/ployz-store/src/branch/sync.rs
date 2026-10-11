@@ -149,7 +149,7 @@ pub enum SyncChange {
 }
 
 /// A secret a Sync carries without its value: give [`SyncChanges::values`] one, or
-/// it arrives without one and the receiver's Deploy refuses until it has one.
+/// it arrives Not set and the receiver's deploys skip it until it has one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SecretRow {}
 

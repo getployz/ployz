@@ -164,7 +164,7 @@ export function shownValue(value: JsonValue): string {
     onSome: (shown) => {
       if (Schema.is(Schema.String)(shown)) return shown;
       if ("hostname" in shown) return shown.hostname;
-      if ("secret" in shown) return shown.secret ? "Sealed" : "needs a value";
+      if ("secret" in shown) return shown.secret ? "Sealed" : "Not set";
       if ("kind" in shown) return volumeStorageText(shown);
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },

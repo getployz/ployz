@@ -267,47 +267,23 @@ pub(crate) fn standing_in(
     };
     let proposal: ProposalId = row.parse(0, "proposal")?;
     let standing = row.number::<u64>(1, "proposal")? == pr.summary.revision.0;
-    let (changes, waiting) = match row.optional_text(2)? {
-        Some(text) => {
-            let offer = Offer::decode(&proposal, text)?;
-            let owned = branch::proposal_owners(tx, &into.summary.id, None)?;
-            let plan = offer
-                .planned(tx, into, owned.held.into_keys())?
-                .plan(&into.working);
-            let waiting = plan
-                .rows()
-                .iter()
-                .filter(|row| {
-                    matches!(
-                        row.verdict,
-                        Verdict::Moves {
-                            arrives: Arrives::NeedsValue,
-                            ..
-                        }
-                    ) && !offer.held.contains_key(&row.id)
-                })
-                .filter_map(|row| offer.stored.picks.iter().find(|pick| pick.at.row == row.id))
-                .map(|pick| pick.at.to_string())
-                .collect();
-            (offer.stored.picks.len(), waiting)
-        }
+    let changes = match row.optional_text(2)? {
+        Some(text) => Offer::decode(&proposal, text)?.stored.picks.len(),
         None => {
             let owned = tx.query(
                 "SELECT COUNT(*) FROM config_sync_arrival \
                  WHERE environment_id = ?1 AND proposal_id = ?2",
                 &[into.summary.id.as_str().into(), proposal.as_str().into()],
             )?;
-            let owned = owned
+            owned
                 .first()
                 .ok_or_else(|| error::corrupt("proposal"))?
-                .number::<usize>(0, "proposal")?;
-            (owned, Vec::new())
+                .number::<usize>(0, "proposal")?
         }
     };
     Ok(Some(pull_request::DestinationSync {
         id: ConditionalSyncId::parse(proposal.as_str())?,
         standing,
         changes,
-        waiting,
     }))
 }

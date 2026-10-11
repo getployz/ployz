@@ -101,7 +101,7 @@ it("words a healthcheck by its path or command and timeout", () => {
 
 it("words a secret as Sealed, or as needing a value until it has one", () => {
   expect(shownValue({ secret: true })).toBe("Sealed");
-  expect(shownValue({ secret: false })).toBe("needs a value");
+  expect(shownValue({ secret: false })).toBe("Not set");
 });
 
 it("words a Volume's storage by its limit", () => {

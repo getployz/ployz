@@ -28,7 +28,7 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
     return [{
       id: key, serviceId, key, description: null,
       exported: rows.get(`${name}.exported`)?.value === true,
-      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, needsValue: isValueless(value) },
+      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, notSet: isValueless(value) },
       changed: changes.has(name) || changes.has(`${name}.exported`),
       neverSynced: row.row !== undefined && neverSynced.has(row.row),
     }];

@@ -1210,6 +1210,10 @@ export type DeploymentWarning = { config: ConfigName, file: ConfigFileName,
 /**
  * The variable as the file references it, such as `api.TOKEN`.
  */
+variable: string, } | { service: ServiceName,
+/**
+ * The variable's key, such as `TOKEN`.
+ */
 variable: string, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
@@ -1250,12 +1254,7 @@ standing: boolean,
 /**
  * How many changes it holds.
  */
-changes: number,
-/**
- * The secrets it brings by name only that the Destination has no value of, as
- * `SERVICE.env.KEY`: the check waits for one, its own or held for the merge.
- */
-waiting: Array<string>, };
+changes: number, };
 
 export type DetachConfig = {
 /**
@@ -3090,7 +3089,7 @@ export type RequestedServiceSpec = { name: ServiceName, mode: ServiceMode, conta
 
 export type ResolveVariablesInput = { parts: Array<ValuePart>, selfOwnerId: string, producers: Array<VariableProducer>, };
 
-export type ResolveVariablesResult = { "status": "resolved", value: string, secret: boolean, warnings: Array<TemplateWarning>, } | { "status": "cycle", path: Array<string>, };
+export type ResolveVariablesResult = { "status": "resolved", value: string, secret: boolean, warnings: Array<TemplateWarning>, } | { "status": "not_set" } | { "status": "cycle", path: Array<string>, };
 
 export type ResolvedServiceSpec = { service_id: ServiceId, name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, update: ResolvedUpdateConfig, };
 
@@ -3100,7 +3099,7 @@ export type ResolvedUpdateConfig = { order: UpdateOrder, monitor_millis: number 
 
 export type ResolvedVolumeSource = (Extract<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope: ScopedVolumeSource }) | (Exclude<VolumeSource, { kind: "ordinary" | "provisioned" }> & { scope: null });
 
-export type ResolverValue = { "kind": "literal", value: string, } | { "kind": "secret", value: string, } | { "kind": "template", parts: Array<ValuePart>, };
+export type ResolverValue = { "kind": "literal", value: string, } | { "kind": "secret", value: string, } | { "kind": "template", parts: Array<ValuePart>, } | { "kind": "not_set" };
 
 export type RestartAttempt<E> = { "type": "restarted" } | { "type": "failed", error: E, };
 

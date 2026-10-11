@@ -139,8 +139,9 @@ pub(super) struct Lowered {
     /// The lowering input the runner lowers again once it built.
     pub(super) input: Value,
     pub(super) intent: DeployIntent,
-    /// Config file references whose resolved value may break the file. Only
-    /// lowering with the sealing key sees every value, so only it warns.
+    /// Service variables a secret without a value left out, then Config file
+    /// references whose resolved value may break the file. Only lowering with the
+    /// sealing key sees every value, so only it warns of those.
     pub(super) warnings: Vec<DeploymentWarning>,
 }
 
@@ -216,7 +217,17 @@ pub(super) fn lower(
         .iter()
         .map(|service| (service.lineage_id.as_str(), service.slug.as_str()))
         .collect();
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<DeploymentWarning> = snapshots
+        .iter()
+        .filter_map(|(config, snapshot)| {
+            let keys = resolved.not_set.remove(snapshot.service_id.as_deref()?)?;
+            Some(keys.into_iter().map(|variable| DeploymentWarning::NotSet {
+                service: config.settings.private_dns.clone(),
+                variable,
+            }))
+        })
+        .flatten()
+        .collect();
     let mut configs = Vec::new();
     for config in &saved.configs {
         let mounting: Vec<&str> = saved
@@ -250,18 +261,20 @@ pub(super) fn lower(
         for (name, file) in &config.files {
             let resolved = files.remove(name).ok_or_else(|| error::corrupt("Config"))?;
             if warns {
-                warnings.extend(resolved.fragile.iter().map(|reference| DeploymentWarning {
-                    config: config.name.clone(),
-                    file: name.clone(),
-                    variable: match &reference.owner {
-                        ValuePartOwner::Service { lineage_id } => {
-                            match slugs.get(lineage_id.as_str()) {
-                                Some(slug) => format!("{slug}.{}", reference.key),
-                                None => reference.key.clone(),
+                warnings.extend(resolved.fragile.iter().map(|reference| {
+                    DeploymentWarning::Fragile {
+                        config: config.name.clone(),
+                        file: name.clone(),
+                        variable: match &reference.owner {
+                            ValuePartOwner::Service { lineage_id } => {
+                                match slugs.get(lineage_id.as_str()) {
+                                    Some(slug) => format!("{slug}.{}", reference.key),
+                                    None => reference.key.clone(),
+                                }
                             }
-                        }
-                        ValuePartOwner::Self_ => reference.key.clone(),
-                    },
+                            ValuePartOwner::Self_ => reference.key.clone(),
+                        },
+                    }
                 }));
             }
             lowered.insert(
