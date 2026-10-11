@@ -1891,6 +1891,22 @@ fn held_row_differs_as_included_even_when_equal() {
     assert!(plan.rows().iter().all(|r| r.id.to_string() != start));
 }
 
+/// A held row that is not the sender's own never moves, even when it differs from
+/// both the base and the receiver.
+#[test]
+fn inherited_held_row_never_moves() {
+    let start = format!("{API}:startCommand");
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("two");
+    let opts = Opts {
+        held: vec![start.clone()],
+        own: Some(Vec::new()),
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &from, &parent(), Way::Sync, opts);
+    assert!(plan.rows().iter().all(|r| r.id.to_string() != start));
+}
+
 #[test]
 fn pick_of_included_row_is_refused() {
     let start = format!("{API}:startCommand");

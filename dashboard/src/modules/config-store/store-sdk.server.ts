@@ -32,7 +32,8 @@ export const storeTry = <A>(call: () => Promise<A>): Effect.Effect<A, StoreRefus
 
 /**
  * The Store creates its tables when it first opens, after Cloud's migrations have run, so Cloud attaches its
- * change log to them then. The lock serializes processes opening the Store at once.
+ * change log to them then, and the trigger that deletes a Service's uptime check with its Applied State row. The lock
+ * serializes processes opening the Store at once.
  */
 const attachChangeLog = Effect.gen(function* () {
   const database = yield* Database;
@@ -46,6 +47,10 @@ const attachChangeLog = Effect.gen(function* () {
         where not exists (select from pg_trigger where tgrelid = ${table}::regclass and tgname = 'organization_change_insert')
       `);
     }
+    yield* drizzle.execute(sql`
+      create or replace trigger uptime_check_forget_services after delete on config_applied
+      referencing old table as old_rows for each statement execute function uptime_check_forget_services()
+    `);
   }));
 });
 

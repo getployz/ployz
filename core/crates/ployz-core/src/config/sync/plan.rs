@@ -224,10 +224,10 @@ impl Policy {
     /// [`Self::verdict`] for a setting no Environment owns.
     fn moved(&self, row: &RowId, base: &Cell, from: &Cell, into: &Cell) -> Option<Verdict> {
         let own = self.own.as_ref().is_none_or(|own| own.contains(row));
-        // Before the equal-value elision: a row another proposal holds is disclosed
-        // even when both bring the same value.
-        if self.held.contains(row) && from != base && own {
-            return Some(Verdict::Differs(Why::Included));
+        // Before the equal-value elision: a row another proposal holds never moves, and
+        // is disclosed, even when both bring the same value, only as the sender's own.
+        if self.held.contains(row) {
+            return (own && from != base).then_some(Verdict::Differs(Why::Included));
         }
         if from == into || from == base {
             return None;

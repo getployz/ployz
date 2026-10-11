@@ -20,6 +20,7 @@ import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
+import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
@@ -28,7 +29,7 @@ import { useRuntimeService } from "#/providers/runtime-provider";
 export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, notSet, selected, compact = false, className }:
   StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
   const runtimeLens = use(RuntimeLensContext);
@@ -37,7 +38,8 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const light = useNodeLighting(service.id);
   const chip = deployChip(service, changeCount, inFlight);
   const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploying: chip?.kind === "deploying" });
-  const issues = nodeIssues(status, domains);
+  const unreachable = useUnreachableHost({ organizationSlug: params.organizationSlug, environmentId }, service.id);
+  const issues = nodeIssues(status, domains, unreachable);
   const domain = publicDomain(domains);
   const surface = stagedSurface(light, service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;

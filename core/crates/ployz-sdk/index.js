@@ -46,6 +46,10 @@ class Client {
         const reader = await withRpcError(inner.containerLogs(input));
         return { next: () => withRpcError(reader.next()), cancel: () => reader.cancel() };
       },
+      history: async (input) => {
+        const reader = await withRpcError(inner.logHistory(input));
+        return { next: () => withRpcError(reader.next()), cancel: () => reader.cancel() };
+      },
     };
     this.runtime = {
       watch: (options = {}) => iterateWatch(() => inner.watch(), options && options.signal),

@@ -5,18 +5,20 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'sudo rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/bin" "$TMP/install" "$TMP/systemd" "$TMP/state" "$TMP/run"
+mkdir -p "$TMP/bin" "$TMP/install" "$TMP/systemd" "$TMP/runtime-systemd" "$TMP/state" "$TMP/run"
 LOG=$TMP/commands.log
 SCENARIO=active
+DOCKER_ROOT=$TMP/docker-root
 export SCENARIO
 export LOG
+export DOCKER_ROOT
 : > "$LOG"
 
 cat > "$TMP/bin/docker" <<'EOF'
 #!/bin/sh
 echo "docker $*" >> "$LOG"
-[ ! -e "$PLOYZ_RUN_DIR/worker" ] && [ ! -e "$PLOYZ_RUN_DIR/daemon" ] || {
-    echo "unsafe cleanup: active upgrade worker or daemon" | tee -a "$LOG" >&2
+[ ! -e "$PLOYZ_RUN_DIR/worker" ] && [ ! -e "$PLOYZ_RUN_DIR/daemon" ] && [ ! -e "$PLOYZ_RUN_DIR/dns" ] || {
+    echo "unsafe cleanup: active upgrade worker, daemon or dns" | tee -a "$LOG" >&2
     exit 1
 }
 if flock -n "$PLOYZ_RUN_DIR/.install.lock" true; then
@@ -27,6 +29,7 @@ case "$*" in
     'ps -aq --filter label=ployz.managed') echo managed-container ;;
     'ps -aq --filter name=^/ployz-corrosion$') echo corrosion-container ;;
     'network ls -q --filter name=^ployz$') echo ployz-network ;;
+    'info --format {{.DockerRootDir}}') echo "$DOCKER_ROOT" ;;
     'rm -f '*)
         grep -Eq '^systemctl stop .*ployz-volume-plugin\.(socket|service)' "$LOG" && {
             echo "volume plugin stopped before managed containers were removed" >&2
@@ -55,6 +58,9 @@ case "$*" in
             *'ployz.socket')
                 [ ! -e "$PLOYZ_RUN_DIR/daemon" ] || echo 'ployz.socket loaded active listening Socket'
                 ;;
+            *'ployz-dns.service')
+                [ ! -e "$PLOYZ_RUN_DIR/dns" ] || echo 'ployz-dns.service loaded active running Internal DNS'
+                ;;
         esac
         ;;
     'stop ployz-upgrade-test.service')
@@ -71,12 +77,23 @@ case "$*" in
         # An accepted worker can appear after the initial worker stop.
         [ "$SCENARIO" != late ] || touch "$PLOYZ_RUN_DIR/worker"
         ;;
+    'stop ployz-dns.service')
+        grep -Fxq 'systemctl stop ployz.service' "$LOG" || {
+            echo "dns stopped while the daemon could still recreate it" >&2
+            exit 1
+        }
+        rm -f "$PLOYZ_RUN_DIR/dns"
+        ;;
 esac
 exit 0
 EOF
 cat > "$TMP/bin/ip" <<'EOF'
 #!/bin/sh
 echo "ip $*" >> "$LOG"
+if [ "$SCENARIO" = wireguard-delete-failure ] && [ "$*" = 'link delete ployz-wg' ]; then
+    [ -e "$PLOYZ_DATA_DIR/receipt" ] || exit 2
+    exit 1
+fi
 exit 0
 EOF
 for command in getent userdel groupdel; do
@@ -85,20 +102,22 @@ done
 chmod 0755 "$TMP/bin"/*
 
 run_uninstall() {
-    sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" SCENARIO="$SCENARIO" PLOYZ_AUTO_CONFIRM=true \
-        INSTALL_BIN_DIR="$TMP/install" INSTALL_SYSTEMD_DIR="$TMP/systemd" \
+    sudo env PATH="$TMP/bin:$PATH" LOG="$LOG" SCENARIO="$SCENARIO" DOCKER_ROOT="$DOCKER_ROOT" PLOYZ_AUTO_CONFIRM=true \
+        INSTALL_BIN_DIR="$TMP/install" INSTALL_SYSTEMD_DIR="$TMP/systemd" RUNTIME_SYSTEMD_DIR="$TMP/runtime-systemd" \
         PLOYZ_DATA_DIR="$TMP/state" PLOYZ_RUN_DIR="$TMP/run" bash "$ROOT/scripts/uninstall.sh"
 }
 
-for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent worker-stop-failure list-failure daemon-stop-failure busy; do
+for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure active late absent worker-stop-failure list-failure daemon-stop-failure wireguard-delete-failure busy; do
     : > "$LOG"
     mkdir -p "$TMP/state" "$TMP/run"
     touch "$TMP/state/receipt" "$TMP/run/socket"
-    if [ "$SCENARIO" != absent ]; then touch "$TMP/run/worker" "$TMP/run/daemon"; fi
+    if [ "$SCENARIO" != absent ]; then touch "$TMP/run/worker" "$TMP/run/daemon" "$TMP/run/dns"; fi
+    touch "$TMP/runtime-systemd/ployz-dns.service"
     touch "$TMP/install/ployzd" "$TMP/install/ployz-uninstall" "$TMP/install/ployz-corrosion"
     printf 'CLI retained\n' > "$TMP/install/ployz"
     chmod 0755 "$TMP/install/ployzd" "$TMP/install/ployz-uninstall"
     touch "$TMP/docker" "$TMP/images" "$TMP/volumes" "$TMP/docker-config"
+    mkdir -p "$DOCKER_ROOT/ployz-observe/v1/containers" "$DOCKER_ROOT/containers"
 
     if [ "$SCENARIO" = symlink-failure ]; then
         printf 'protected target\n' | sudo tee "$TMP/protected-target" >/dev/null
@@ -140,6 +159,7 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         case "$SCENARIO" in *failure|busy) echo "unexpected uninstall success: $SCENARIO" >&2; exit 1 ;; esac
         [ ! -e "$TMP/install/ployzd" ]
         [ ! -e "$TMP/install/ployz-uninstall" ]
+        [ ! -e "$TMP/runtime-systemd/ployz-dns.service" ]
         [ ! -e "$TMP/state" ]
         # Keep the lock inode: unlinking it lets a concurrent installer bypass ownership.
         [ "$(ls -A "$TMP/run")" = .install.lock ]
@@ -147,12 +167,20 @@ for SCENARIO in symlink-failure dangling-failure fifo-failure directory-failure 
         grep -Fq 'docker rm -f managed-container' "$LOG"
         grep -Fq 'docker rm -f corrosion-container' "$LOG"
         grep -Fq 'docker network rm ployz-network' "$LOG"
-        grep -Fq 'ip link delete ployz' "$LOG"
+        grep -Fxq 'ip link delete ployz-wg' "$LOG"
+        grep -Fxq 'ip link delete ployz' "$LOG"
+        grep -Fxq 'systemctl stop ployz-observe.service' "$LOG"
+        [ ! -e "$DOCKER_ROOT/ployz-observe" ]
+        [ -d "$DOCKER_ROOT/containers" ]
     else
         case "$SCENARIO" in *failure|busy) ;; *) echo "unexpected uninstall failure: $SCENARIO" >&2; exit 1 ;; esac
         [ -e "$TMP/install/ployzd" ] && [ -e "$TMP/install/ployz-uninstall" ]
-        [ -e "$TMP/state/receipt" ] && [ -e "$TMP/run/socket" ]
-        if grep -q '^docker ' "$LOG"; then exit 1; fi
+        [ -e "$TMP/state/receipt" ] && [ -e "$TMP/run/socket" ] && [ -e "$TMP/runtime-systemd/ployz-dns.service" ]
+        if [ "$SCENARIO" = wireguard-delete-failure ]; then
+            grep -Fxq 'ip link delete ployz-wg' "$LOG"
+        elif grep -q '^docker ' "$LOG"; then
+            exit 1
+        fi
     fi
     if grep -q '^unsafe cleanup:' "$LOG"; then exit 1; fi
     if [ "$SCENARIO" = busy ]; then exec {lock_fd}>&-; fi

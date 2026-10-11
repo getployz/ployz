@@ -66,6 +66,13 @@ pub enum NetworkError {
     #[error("configured Machine has no WireGuard private key")]
     MissingPrivateKey,
     #[error(
+        "refusing to change the retained WireGuard interface: {reason}; safe recovery: {recovery}"
+    )]
+    WireGuardConflict {
+        reason: &'static str,
+        recovery: &'static str,
+    },
+    #[error(
         "refusing to replace the existing Docker network: {reason}; expected: {expected}; observed: {observed}; safe recovery: {recovery}"
     )]
     DockerNetworkConflict {

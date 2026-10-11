@@ -120,17 +120,24 @@ it("holds a row another source's included change holds: unticked, Included with 
   expect(sync.getByRole("button", { name: "Sync 1 change" })).toBeTruthy();
 });
 
-it("sends one Sync id however often the Sync is sent", async () => {
+it("sends one Sync id for a retry of the same picks, and a new one once the picks change", async () => {
   const { write } = open();
-  write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "stale" } } as never);
+  const stale = { ok: false, refusal: { code: "conflict", message: "stale" } } as never;
+  write.mockResolvedValueOnce(stale).mockResolvedValueOnce(stale);
   const sync = await dialog();
   fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
   await sync.findByText("These changed since you opened them. Here they are now.");
   fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
   await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(sync.getByRole("button", { name: "Sync 5 changes" }).hasAttribute("disabled")).toBe(false));
+  fireEvent.click(sync.getByRole("checkbox", { name: /^MODE/u }));
+  fireEvent.click(sync.getByRole("button", { name: "Sync 4 changes" }));
+  await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
   const ids = write.mock.calls.map(([{ data }]) => (data.command as { id?: string }).id);
   expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/u);
   expect(ids[1]).toBe(ids[0]);
+  expect(ids[2]).toMatch(/^[0-9a-f-]{36}$/u);
+  expect(ids[2]).not.toBe(ids[0]);
 });
 
 it("drops a flip once its change moves under the review, and says so", async () => {

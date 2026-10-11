@@ -76,7 +76,6 @@ const container: ServiceContainerSpec = {
   open_stdin: false,
   privileged: false,
   pid_mode: null,
-  log_driver: null,
   resources: {
     cpu_nanos: null,
     memory_bytes: null,

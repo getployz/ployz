@@ -5,49 +5,15 @@ use std::collections::BTreeMap;
 use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
-    Machine, MachineId, MachineName, MachineRuntime, Namespace, ResolvedServiceSpec, ServiceId,
-    ServiceName, WireGuardPublicKey,
+    MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName,
 };
 use serde_json::json;
-use tokio::net::UnixListener;
+use tokio::net::{TcpListener, UnixListener};
 
 use super::*;
-use crate::corrosion::{ReplicatedObservations, fake_cluster};
+use crate::corrosion::ReplicatedObservations;
 
 const SUBNET: &str = "10.210.1.0/24";
-
-#[tokio::test]
-async fn run_reports_subscription_failure() {
-    let machine = Machine {
-        labels: Default::default(),
-        accepts_builds: true,
-        accepts_services: true,
-        accepts_ingress: true,
-        id: MachineId::random(),
-        name: MachineName::parse("node-a").unwrap(),
-        subnet: SUBNET.parse().unwrap(),
-        public_key: WireGuardPublicKey([1; 32]),
-        public_ip: None,
-        advertised_endpoints: Vec::new(),
-        runtime: MachineRuntime::default(),
-        build_concurrency: None,
-    };
-    let (replicated, replicated_server) = fake_cluster::store().await;
-
-    let error = run(
-        machine,
-        replicated,
-        MachineView::fixed(None),
-        AdminClient::new("/no/such/admin.sock"),
-        None,
-        CancellationToken::new(),
-    )
-    .await
-    .unwrap_err();
-
-    assert!(error.to_string().contains("HTTP 404 Not Found"));
-    replicated_server.abort();
-}
 
 #[tokio::test(start_paused = true)]
 async fn membership_sample_times_out() {
@@ -455,12 +421,46 @@ fn malformed_internal_and_non_a_queries_are_authoritative() {
 }
 
 #[test]
-fn explicit_upstreams_override_system_configuration() {
-    let upstreams = vec!["192.0.2.53:5353".parse().unwrap()];
+fn explicit_upstreams_override_resolv_conf() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolv_conf = dir.path().join("resolv.conf");
+    std::fs::write(&resolv_conf, "nameserver 198.51.100.53\n").unwrap();
+    let fixed: Vec<SocketAddr> = vec!["192.0.2.53:5353".parse().unwrap()];
+    let listen = Ipv4Addr::new(10, 210, 1, 1);
+
     assert_eq!(
-        configured_upstreams(Some(upstreams.clone()), Ipv4Addr::new(10, 210, 1, 1)),
-        upstreams
+        Upstreams::of(&fixed, &resolv_conf, listen).snapshot(),
+        fixed
     );
+    assert_eq!(
+        Upstreams::of(&[], &resolv_conf, listen).snapshot(),
+        vec!["198.51.100.53:53".parse::<SocketAddr>().unwrap()]
+    );
+}
+
+#[test]
+fn resolv_conf_upstreams_follow_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let resolv_conf = dir.path().join("resolv.conf");
+    let listen = Ipv4Addr::new(10, 210, 1, 1);
+    let upstreams = Upstreams::of(&[], &resolv_conf, listen);
+    assert!(upstreams.snapshot().is_empty());
+
+    std::fs::write(
+        &resolv_conf,
+        "nameserver 10.210.1.1\nnameserver 192.0.2.53\n",
+    )
+    .unwrap();
+    assert!(upstreams.reload_if_changed());
+    assert!(!upstreams.reload_if_changed());
+    assert_eq!(
+        upstreams.snapshot(),
+        vec!["192.0.2.53:53".parse::<SocketAddr>().unwrap()]
+    );
+
+    std::fs::remove_file(&resolv_conf).unwrap();
+    assert!(upstreams.reload_if_changed());
+    assert!(upstreams.snapshot().is_empty());
 }
 
 #[test]
@@ -596,13 +596,11 @@ async fn small_internal_udp_answer_is_not_truncated() {
 }
 
 async fn serve_internal(count: u16) -> (SocketAddr, SocketAddr, Server<Handler>) {
-    let handler = Handler {
-        projection: Arc::new(RwLock::new(unfiltered_projection(&replica_observations(
-            count,
-        )))),
-        local_subnet: SUBNET.parse().unwrap(),
-        upstreams: Vec::new(),
-    };
+    let handler = Handler::new(Answers::loaded(
+        unfiltered_projection(&replica_observations(count)),
+        SUBNET.parse().unwrap(),
+        Upstreams::fixed(Vec::new()),
+    ));
     let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let udp_addr = udp.local_addr().unwrap();
     let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -654,7 +652,7 @@ fn a_query(edns_payload: Option<u16>) -> Vec<u8> {
     message.to_vec().unwrap()
 }
 
-fn replica_observations(count: u16) -> Vec<ContainerObservation> {
+pub(super) fn replica_observations(count: u16) -> Vec<ContainerObservation> {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let service = ServiceId::parse("b".repeat(32)).unwrap();
     let name = ServiceName::parse("api").unwrap();
@@ -678,6 +676,25 @@ fn replica_observations(count: u16) -> Vec<ContainerObservation> {
             observation
         })
         .collect()
+}
+
+/// Writes an executable `#!/bin/sh` script from a child process. A file this
+/// process held open for writing leaks into any child a concurrent test forks
+/// before that child execs, and exec'ing the script then fails with ETXTBSY.
+pub(super) fn write_script(path: &std::path::Path, body: &str) {
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"printf '#!/bin/sh\n%s\n' "$1" > "$2" && chmod 755 "$2""#)
+        .arg("sh")
+        .arg(body)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
 }
 
 fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {

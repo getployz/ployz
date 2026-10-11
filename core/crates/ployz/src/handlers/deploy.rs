@@ -8,6 +8,7 @@
 mod follow_tests;
 mod progress;
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use crate::ui::progress::{Disposition, Progress};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 use std::collections::BTreeMap;
@@ -140,13 +141,13 @@ fn id() -> clap::Arg {
     positional("id", true).help("The Deployment's ID, or its number in the Environment")
 }
 
-pub(super) fn deployment_handler(path: &str) -> Option<super::Handler> {
+pub(super) fn deployment_handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "ls" => ls,
-        "show" => show,
-        "retry" => retry,
-        "start" => start,
-        "cancel" => cancel,
+        "ls" => cloud(Never, ls),
+        "show" => cloud(Never, show),
+        "retry" => cloud(Never, retry),
+        "start" => cloud(Never, start),
+        "cancel" => cloud(Never, cancel),
         _ => return None,
     })
 }

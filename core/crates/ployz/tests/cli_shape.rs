@@ -87,6 +87,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "login",
             "logout",
             "logs",
+            "mcp",
             "org",
             "org build-order",
             "org ls",
@@ -999,4 +1000,35 @@ fn results_on_stdout_side_channel_on_stderr() {
     let listed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(listed.is_object(), "{stdout}");
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn logs_reads_a_window_or_a_deployment_running_or_not() {
+    for args in [
+        &["ployz", "logs", "web", "--since", "2h"][..],
+        &["ployz", "logs", "web", "--since", "2h", "-f"],
+        &["ployz", "logs", "web", "--deployment", "dep_old"],
+        &[
+            "ployz",
+            "logs",
+            "web",
+            "--deployment",
+            "dep_old",
+            "-n",
+            "all",
+            "--json",
+        ],
+    ] {
+        assert!(
+            ployz::cli::command().try_get_matches_from(args).is_ok(),
+            "{args:?}"
+        );
+    }
+    let mut command = ployz::cli::command();
+    let help = command
+        .find_subcommand_mut("logs")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+    assert!(help.contains("running or not"), "{help}");
 }
