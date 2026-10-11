@@ -1,0 +1,17 @@
+# Uptime checker decision trail
+
+The design contract is the architect synthesis: the C3 base with grafts G1 to G7, P, B and S. This file
+records where the build deviated from that contract or settled something it left open. Each row says why.
+
+| Unit | Decision | Why |
+| --- | --- | --- |
+| 0 | Branch `uptime/architect` fast-forwarded to `origin/main` before any commit. | The branch had no commits of its own. Building on stale main would grow the merge cost. |
+| 1 | `dashboard/uptime` is its own Cargo workspace that path-depends on `ployz-core`. | The checker is AGPL, like the dashboard. Core is Apache. A separate workspace keeps core's lockfile and CI untouched, and it can still reuse core's domain types. |
+| 1 | `ployz_core::check_output_line` is now public, and `Detail::new` uses it. | Error details get cut the same way as health-check output, from one function, with no copied rule. |
+| 1 | With no other live region, a routine failure stays Reachable and returns `Nothing`. | The sketch dispatched an empty confirm round and expired it back. The outcome is the same with one less state. |
+| 1 | The confirm rule is "the quorum fails". The "fails outnumber passes" clause is gone. | A mutation test showed the clause could never decide anything. A round is the trigger plus one confirm per missing vote, so two failing regions always outnumber the passes. Rejection fires once every confirm is in, which is the only point the quorum can become unreachable. |
+| 1 | A recheck round ends at the first Fail. Otherwise it waits for every probe or its deadline, and judges what it saw. | A Fail already means the round can't pass. Waiting for the rest would only delay the next round. |
+| 1 | With fewer live regions than the quorum, a recheck round still goes out but can't pass. | The evidence still gets stored, and one vantage point never closes what two opened. |
+| 1 | `EvidenceItem.status` is `Option<u16>`, and rounds use `Vec`, not `SmallVec`. | A failed or declined probe has no status. Rounds hold at most 3 probes, so a dependency doesn't earn its place. |
+| 1 | `Ctx` carries the `CheckId`. | Probe keys need it, and the detector holds no check of its own. |
+| 1 | serde on the domain types is deferred to the unit that serializes them. | No unit-1 code needs it. |

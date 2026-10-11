@@ -1,0 +1,24 @@
+[package]
+name = "ployz-uptime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace]
+
+[dependencies]
+ployz-core = { path = "../../core/crates/ployz-core" }
+thiserror = "2.0.20"
+uuid = { version = "1.24.0", features = ["v7"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+indexing_slicing = "warn"
+fallible_impl_from = "warn"
+wildcard_enum_match_arm = "warn"
+fn_params_excessive_bools = "warn"
+must_use_candidate = "warn"
