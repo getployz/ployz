@@ -1747,3 +1747,123 @@ fn a_full_manual_deploy_takes_what_landed_from_the_next_push() {
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     assert!(deployed(&pushed).is_empty(), "{pushed:?}");
 }
+
+#[test]
+fn two_merges_before_their_pushes_each_deploy_with_their_own_commit() {
+    let (store, who) = shop_with(|store, who| {
+        for (n, name) in [(9, "api"), (10, "db")] {
+            store
+                .write(
+                    who,
+                    &ployz_store::CreateService {
+                        id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ServiceName::parse(name).unwrap(),
+                        image: Some(format!("{name}:1")),
+                        template: None,
+                    },
+                )
+                .unwrap();
+        }
+        set(
+            store,
+            who,
+            "production",
+            &[
+                ("web.env.API", json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}")),
+                ("web.env.DB", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
+            ],
+        );
+        save(store, who, "production");
+    });
+    watching(&store, &who);
+    system(
+        &store,
+        &who,
+        &event(6, "fix", "main", None, true, "2026-09-29T10:00:00Z"),
+    );
+    set(&store, &who, "pr-5", &[("api.env.X", json!("2"))]);
+    set(&store, &who, "pr-6", &[("db.env.Y", json!("2"))]);
+
+    // Both merge before GitHub reports either push.
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    system(
+        &store,
+        &who,
+        &event(6, "fix", "main", Some(LATER), false, "2026-09-29T11:00:00Z"),
+    );
+    let first = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(deployed_services(&first), ["api"]);
+    let second = system(
+        &store,
+        &who,
+        &push(Some(MERGE), LATER, Some(&["README.md"])),
+    );
+    assert_eq!(deployed_services(&second), ["db"]);
+}
+
+#[test]
+fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.autoDeploy", json!("false"))],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    // web builds HEAD by hand.
+    let built = ployz_store::DeploymentId::parse(::uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: built.clone(),
+                environment: at("production"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    store
+        .pin(
+            &built,
+            &std::collections::BTreeMap::from([(web.clone(), backend::sha(HEAD))]),
+        )
+        .unwrap();
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    store.claim(&built, &runner).unwrap();
+    store
+        .record(
+            &built,
+            &runner,
+            ployz_store::RunEvidence::Build(ployz_store::BuildReport {
+                service: web,
+                status: ployz_store::BuildStatus::Built,
+                message: None,
+                log: String::new(),
+            }),
+        )
+        .unwrap();
+
+    set(&store, &who, "pr-5", &[("web.privateDns", json!("site"))]);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let [admitted] = pushed.admitted.as_slice() else {
+        panic!("one Deployment: {pushed:?}")
+    };
+    // web follows no push: the renamed Service ships the code it last built.
+    let sources = store.sources(&admitted.deployment.id).unwrap();
+    assert_eq!(
+        sources
+            .iter()
+            .map(|source| (source.service.as_str(), source.commit.clone()))
+            .collect::<Vec<_>>(),
+        [("site", Some(backend::sha(HEAD)))]
+    );
+}

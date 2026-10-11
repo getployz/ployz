@@ -10,15 +10,18 @@ CREATE TABLE config_merge_value (
     PRIMARY KEY (environment_id, destination_id, lineage, at)
 );
 
--- The Services merges landed in an Environment, deployed with the first push of
--- `branch` that contains them; kept until a Deployment takes them.
+-- The Services each merge commit into `branch` landed in an Environment, deployed
+-- with the first push of `branch` that contains that commit; kept until a
+-- Deployment takes them. `seq` orders a branch's merges as they landed.
 CREATE TABLE config_merge_deploy (
     environment_id TEXT NOT NULL REFERENCES config_environment (id) ON DELETE CASCADE,
     organization_id TEXT NOT NULL,
     repository_id BIGINT NOT NULL,
     branch TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    seq BIGINT NOT NULL,
     services TEXT NOT NULL,
-    PRIMARY KEY (environment_id, repository_id, branch)
+    PRIMARY KEY (environment_id, repository_id, branch, commit_sha)
 );
 
 -- The heads a branch had lately, newest last, as a JSON array: a merge that arrives
