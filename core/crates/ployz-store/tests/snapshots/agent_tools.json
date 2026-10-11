@@ -1,0 +1,146 @@
+{
+  "instructions": "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers and their logs need Ployz Cloud.",
+  "tools": [
+    {
+      "description": "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, and the latest Deployment. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "environment_show",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "description": "Turn on or off an Environment per GitHub pull request, built from this Environment. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "description": "true to build an Environment for each pull request, false to stop.",
+            "type": "boolean"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "repository": {
+            "description": "GitHub repository owner/name whose pull requests get Environments. Omit when the Project has one.",
+            "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "type": "object"
+      },
+      "name": "environment_pr",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "What this Environment still needs before it can deploy: servers, a GitHub connection, a cluster domain. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "environment_setup",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "description": "List a connected GitHub repository's files at a path, or read one file (at most 64 KB). Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "match": {
+            "description": "Only paths matching this glob, like *.rs or src/**.",
+            "type": "string"
+          },
+          "path": {
+            "description": "A directory to list, or a file to read. Omit for the top.",
+            "type": "string"
+          },
+          "ref": {
+            "description": "Branch, tag or commit. Default: the repository's default branch.",
+            "type": "string"
+          },
+          "repository": {
+            "description": "GitHub repository owner/name.",
+            "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository"
+        ],
+        "type": "object"
+      },
+      "name": "github_ls",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "description": "Whether GitHub is connected, which repositories Ployz can read, and the page that connects more. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "github_connect",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    }
+  ]
+}

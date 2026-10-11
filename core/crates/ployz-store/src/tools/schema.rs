@@ -80,7 +80,8 @@ fn tidy(schema: &mut Value, defs: &Map<String, Value>) {
             object.retain(|key, value| {
                 !(key == "$schema"
                     || key.starts_with("x-ployz-")
-                    || (key == "default" && value.is_null()))
+                    || (key == "default" && value.is_null())
+                    || (key == "format" && !value.as_str().is_some_and(is_standard_format)))
             });
             if let Some(one_of) = object.remove("oneOf") {
                 object.insert("anyOf".into(), one_of);
@@ -98,6 +99,11 @@ fn tidy(schema: &mut Value, defs: &Map<String, Value>) {
         }
         _ => {}
     }
+}
+
+/// A format every provider knows; schemars' `uint64` and the like are not.
+fn is_standard_format(format: &str) -> bool {
+    matches!(format, "date-time" | "date" | "time" | "email" | "uri" | "uuid")
 }
 
 /// Take `null` out of a type: an absent field already means none.

@@ -1,6 +1,8 @@
 //! The tools an agent runs Ployz through: a catalog, and a step machine that
 //! plans each call as Store and Cloud reads and at most one write. No IO.
 
+mod environment;
+mod github;
 pub mod logs;
 mod machine;
 mod refusal;
@@ -22,7 +24,13 @@ pub use step::{
 use machine::{Entry, entry};
 
 /// Every tool, in catalog order.
-pub(crate) const TOOLS: &[Entry] = &[];
+pub(crate) const TOOLS: &[Entry] = &[
+    entry::<environment::EnvironmentShow>(),
+    entry::<environment::EnvironmentPr>(),
+    entry::<environment::EnvironmentSetup>(),
+    entry::<github::GithubLs>(),
+    entry::<github::GithubConnect>(),
+];
 
 /// What a model is told: every tool's name, description and schemas.
 #[must_use]
