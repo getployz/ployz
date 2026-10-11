@@ -230,6 +230,12 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
                       render={<Link to={SERVICE_ROUTE_TO} params={params} search={(prev) => ({ ...prev, tab: "settings" as const })} hash="settings-networking" replace />}>
                       Add domain
                     </Button>
+                  )}
+                  fixPath={(
+                    <Button variant="outline" size="sm" nativeButton={false}
+                      render={<Link to={SERVICE_ROUTE_TO} params={params} search={(prev) => ({ ...prev, tab: "settings" as const })} hash="healthcheck" replace />}>
+                      Fix path
+                    </Button>
                   )} />
               </div>
             </div>

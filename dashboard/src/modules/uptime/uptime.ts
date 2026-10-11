@@ -42,6 +42,17 @@ export function causeText(incident: UptimeIncidentEntry): string {
   return failure ? observationText(failure) : "Unknown";
 }
 
+/**
+ * The open incident of a check that never passed, when its first failure is a 4xx: the server answers, but not at the
+ * healthcheck path. Null otherwise. A closed incident or any counted pass means the path worked once.
+ */
+export function wrongPathIncident(uptime: ServiceUptime): UptimeIncidentEntry | null {
+  const open = openIncident(uptime.incidents);
+  const failure = open?.observations.find((observation) => observation.verdict === "fail");
+  const neverPassed = !uptime.uptime["90d"] && uptime.incidents.every((incident) => incident.closedAt === null);
+  return open && failure && failure.status >= 400 && failure.status < 500 && neverPassed ? open : null;
+}
+
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 const FIVE_MINUTES = 5 * 60_000;

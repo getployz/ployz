@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   causeText, checkSeries, checkState, formatSpan, historyDays, incidentWindow, observationText, rangeCovering, steps, uncheckedDays, unreachableHost,
-  uptimePercent,
+  uptimePercent, wrongPathIncident,
 } from "./uptime";
 import type { IncidentObservation, ServiceUptime, UptimeIncidentEntry } from "./uptime-status";
 
@@ -54,6 +54,23 @@ describe("unreachableHost", () => {
     expect(unreachableHost([check], "web")).toBe("acme.com");
     expect(unreachableHost([{ ...check, openIncidentAt: null }], "web")).toBeNull();
     expect(unreachableHost([check], "api")).toBeNull();
+  });
+});
+
+describe("wrongPathIncident", () => {
+  const open = incident([observation({ verdict: "pass", status: 200 }), observation({ status: 404 })]);
+  it("is the open incident of a check that never passed and first failed with a 4xx", () => {
+    expect(wrongPathIncident(uptime({ status: "unreachable", incidents: [open] }))).toBe(open);
+    expect(wrongPathIncident(uptime({ status: "unreachable", uptime: { "24h": 0, "7d": 0, "90d": 0 }, incidents: [open] }))).toBe(open);
+  });
+
+  it("is null once the check has passed, or when the failure is not a 4xx", () => {
+    expect(wrongPathIncident(uptime({ status: "unreachable", uptime: { "24h": 0, "7d": 0.5, "90d": 0.5 }, incidents: [open] }))).toBeNull();
+    const closed = incident([observation({ status: 503 })], "2026-10-01T00:00:00.000Z", "2026-10-01T01:00:00.000Z");
+    expect(wrongPathIncident(uptime({ status: "unreachable", incidents: [open, closed] }))).toBeNull();
+    expect(wrongPathIncident(uptime({ status: "unreachable", incidents: [incident([observation({ status: 502 })])] }))).toBeNull();
+    expect(wrongPathIncident(uptime({ status: "unreachable", incidents: [incident([observation({ error: "timed_out" })])] }))).toBeNull();
+    expect(wrongPathIncident(uptime({ incidents: [] }))).toBeNull();
   });
 });
 

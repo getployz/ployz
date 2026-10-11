@@ -31,6 +31,7 @@ import {
   steps,
   uncheckedDays,
   uptimePercent,
+  wrongPathIncident,
   type CheckState,
   type HistoryDay,
   type TimeWindow,
@@ -51,6 +52,8 @@ type MonitoringProps = {
   range: UptimeRange;
   onRange: (range: UptimeRange) => void;
   addDomain: ReactNode;
+  /** Opens the healthcheck setting, for a check that never passed with a 4xx. */
+  fixPath: ReactNode;
 };
 
 /**
@@ -160,7 +163,7 @@ type Picked = { readonly incident: UptimeIncidentEntry; readonly x: number; read
 const PREVIEW_METRICS = import.meta.env.DEV;
 
 /** Status, ninety days of history, then every metric on one time axis. Incidents shade each chart; a click tells the story. */
-function Monitoring({ organizationSlug, service, range, addDomain, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
+function Monitoring({ organizationSlug, service, range, addDomain, fixPath, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
   const { data: uptime, dataUpdatedAt } = useServiceUptime(scope, service.id);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deployments = useStoreDeployments(organizationSlug, store).data.pages.flatMap((page) => page.deployments);
@@ -186,6 +189,7 @@ function Monitoring({ organizationSlug, service, range, addDomain, scope, toggle
   });
   const share = uptimePercent(uptime?.uptime[range] ?? null);
   const open = openIncident(incidents);
+  const wrongPath = uptime ? wrongPathIncident(uptime) : null;
   const pick = (at: number) => {
     const incident = incidents.find((candidate) => {
       const span = incidentSpan(candidate, now);
@@ -219,6 +223,7 @@ function Monitoring({ organizationSlug, service, range, addDomain, scope, toggle
         </StatusLine>
         <div className="flex items-center gap-2">
           {state === "no_domain" ? addDomain : null}
+          {wrongPath ? fixPath : null}
           {zoom ? (
             <Button variant="secondary" size="sm" onClick={() => setZoom(null)}>
               {AT_FORMAT.format(Date.parse(zoom.openedAt))} · {causeText(zoom)}
@@ -264,7 +269,8 @@ function Monitoring({ organizationSlug, service, range, addDomain, scope, toggle
         {picked ? (
           <PopoverContent side="bottom" align="start"
             anchor={{ getBoundingClientRect: () => DOMRect.fromRect({ x: picked.x, y: picked.y, width: 0, height: 0 }) }}>
-            <Evidence incident={picked.incident} now={now} onZoom={zoom?.id === picked.incident.id ? null : () => zoomTo(picked.incident)} />
+            <Evidence incident={picked.incident} now={now} onZoom={zoom?.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
+              fixPath={picked.incident.id === wrongPath?.id ? fixPath : null} />
           </PopoverContent>
         ) : null}
       </Popover>
@@ -360,7 +366,12 @@ function HistoryStrip({ days, zoomed, onZoom }: {
 }
 
 /** What opened an incident: when, how long, and what each region got back. */
-function Evidence({ incident, now, onZoom }: { incident: UptimeIncidentEntry; now: number; onZoom: (() => void) | null }) {
+function Evidence({ incident, now, onZoom, fixPath }: {
+  incident: UptimeIncidentEntry;
+  now: number;
+  onZoom: (() => void) | null;
+  fixPath: ReactNode;
+}) {
   const span = incidentSpan(incident, now);
   return (
     <>
@@ -381,7 +392,12 @@ function Evidence({ incident, now, onZoom }: { incident: UptimeIncidentEntry; no
           ))}
         </dd>
       </dl>
-      {onZoom ? <Button variant="outline" size="sm" onClick={onZoom}>Zoom in</Button> : null}
+      {onZoom || fixPath ? (
+        <div className="flex gap-2">
+          {fixPath}
+          {onZoom ? <Button variant="outline" size="sm" onClick={onZoom}>Zoom in</Button> : null}
+        </div>
+      ) : null}
     </>
   );
 }
