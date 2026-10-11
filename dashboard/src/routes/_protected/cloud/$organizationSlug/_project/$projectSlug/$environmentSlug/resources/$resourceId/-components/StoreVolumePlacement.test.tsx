@@ -48,31 +48,28 @@ describe("VolumePlacementPanel", () => {
     expect(stage).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
   });
 
-  it("shows a staged move in pink on the new Server, says what it was, and leaves the old copy detached", () => {
-    const stage = panel([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }));
-    expect(rows()).toEqual(["dataweb-3 · Was web-1Undo", "data-oldweb-1 · Detached"]);
+  it("shows a staged move in pink on the new Server and leaves the old copy detached, with no Was or Undo", () => {
+    panel([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }));
+    expect(rows()).toEqual(["dataweb-3", "data-oldweb-1 · Detached"]);
     expect(staged()).toEqual([true, true]);
-    expect(screen.queryByText(/staged/i)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    expect(stage).toHaveBeenCalledWith(null, []);
+    expect(screen.queryByText(/staged|was/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
   });
 
-  it("stages a mirror, and its Undo keeps the other staged change", async () => {
+  it("stages a mirror, and staged rows offer no actions", async () => {
     const add = panel([member("web-1", "writer"), pooled("web-3")], null);
     await choose("Add mirror", "web-3");
     expect(add).toHaveBeenCalledWith({ primary: id("web-1"), mirrors: [id("web-3")], deletes: [] }, []);
     cleanup();
-    const undo = panel([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"], deletes: ["web-1"] }));
-    expect(rows()).toEqual(["dataweb-2", "data-web-3web-3 · MirrorUndo", "data-oldweb-1 · DetachedUndo"]);
-    const [undoMirror] = screen.getAllByRole("button", { name: "Undo" });
-    if (undoMirror === undefined) throw new Error("no Undo");
-    fireEvent.click(undoMirror);
-    expect(undo).toHaveBeenCalledWith({ primary: id("web-2"), mirrors: [], deletes: [id("web-1")] }, []);
+    panel([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"], deletes: ["web-1"] }));
+    expect(rows()).toEqual(["dataweb-2", "data-web-3web-3 · Mirror", "data-oldweb-1 · Detached"]);
+    expect(screen.queryByRole("button", { name: "Actions for data-web-3" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Actions for data-old" })).toBeNull();
   });
 
   it("strikes a removed mirror and keeps it in the list until Deploy", () => {
     panel([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"], { primary: "web-1" }));
-    expect(rows()).toEqual(["dataweb-1", "data-web-2web-2 · MirrorUndo"]);
+    expect(rows()).toEqual(["dataweb-1", "data-web-2web-2 · Mirror"]);
     expect(staged()).toEqual([false, true]);
     expect(struck("data-web-2")).toBe(true);
   });
@@ -96,7 +93,7 @@ describe("VolumePlacementPanel", () => {
   it("shows the run under way, and drops the staged treatment and edits while a Deploy runs the move", () => {
     panel([member("web-1", "writer"), pooled("web-3"), pooled("web-4")], row([], { primary: "web-3" }, "dep-1"));
     expect(screen.getByRole("status").textContent).toBe("Deploying");
-    expect(rows()).toEqual(["dataweb-3 · Was web-1", "data-oldweb-1 · Detached"]);
+    expect(rows()).toEqual(["dataweb-3", "data-oldweb-1 · Detached"]);
     expect(staged()).toEqual([false, false]);
     expect(screen.getByRole("button", { name: "Add mirror" }).hasAttribute("disabled")).toBe(true);
     cleanup();

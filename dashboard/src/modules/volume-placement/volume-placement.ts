@@ -289,8 +289,6 @@ export type PlacementEntry = {
   readonly role: "primary" | "mirror" | "detached";
   readonly server: MachineRef;
   readonly change: ChangeKind | null;
-  readonly movedFrom: MachineRef | null;
-  readonly undo: PlacementChange | null;
 };
 
 export function placementEntries(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): PlacementEntry[] {
@@ -304,8 +302,8 @@ export function placementEntries(volume: PlacementVolume, members: readonly Memb
   const changeOn = (kinds: readonly PlacementChange["kind"][], id: MachineId) =>
     changes.find((change) => kinds.includes(change.kind) && "server" in change && change.server.id === id) ?? null;
   const cleared = new Set(changes.flatMap((change) => change.kind === "move" || change.kind === "add_mirror" ? change.clears.map((server) => server.id) : []));
-  const entry = (key: string, role: PlacementEntry["role"], server: MachineRef, undo: PlacementChange | null, change = undo && CHANGE_KINDS[undo.kind]): PlacementEntry =>
-    ({ key, role, server, change, movedFrom: null, undo });
+  const entry = (key: string, role: PlacementEntry["role"], server: MachineRef, from: PlacementChange | null, change = from && CHANGE_KINDS[from.kind]): PlacementEntry =>
+    ({ key, role, server, change });
   const mirrors = [...new Set([...appliedMirrors(observed, row), ...target.mirrors])].filter((id) => id !== target.primary)
     .map((id) => entry(`mirror:${id}`, "mirror", machine(id), changeOn(["add_mirror", "remove_mirror"], id)));
   const left = move !== null && move.how !== "restore" && move.from !== null ? [entry(`detached:${move.from.id}`, "detached", move.from, null, "add")] : [];
@@ -315,7 +313,7 @@ export function placementEntries(volume: PlacementVolume, members: readonly Memb
       const deleted = changeOn(["delete_copy"], copy.server.id);
       return entry(`detached:${copy.server.id}`, "detached", copy.server, deleted, deleted || cleared.has(copy.server.id) ? "remove" : null);
     });
-  return [{ ...entry("primary", "primary", machine(target.primary), move), movedFrom: move?.from ?? null }, ...mirrors, ...left, ...detached];
+  return [entry("primary", "primary", machine(target.primary), move), ...mirrors, ...left, ...detached];
 }
 
 export function undoPlacement(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, change: PlacementChange): Placement | null {

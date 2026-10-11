@@ -128,35 +128,35 @@ describe("placementChanges", () => {
 
 describe("placementEntries", () => {
   const entries = (members: Member[], placement: PlacementRow | null) => placementEntries(volume, members, placement)
-    .map(({ role, server, change, movedFrom, undo }) => ({ role, server: server.name, change, movedFrom: movedFrom?.name ?? null, undo: undo?.kind ?? null }));
+    .map(({ role, server, change }) => ({ role, server: server.name, change }));
 
   it("marks nothing when nothing is staged, even while the primary is silent", () => {
     expect(entries([member("web-1", "unanswered"), member("web-2", "mirror")], row(["web-2"]))).toEqual([
-      { role: "primary", server: "web-1", change: null, movedFrom: null, undo: null },
-      { role: "mirror", server: "web-2", change: null, movedFrom: null, undo: null },
+      { role: "primary", server: "web-1", change: null },
+      { role: "mirror", server: "web-2", change: null },
     ]);
   });
 
   it("shows a staged move on the new Server, what it was, and the old copy it leaves detached", () => {
     expect(entries([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }))).toEqual([
-      { role: "primary", server: "web-3", change: "update", movedFrom: "web-1", undo: "move" },
-      { role: "detached", server: "web-1", change: "add", movedFrom: null, undo: null },
+      { role: "primary", server: "web-3", change: "update" },
+      { role: "detached", server: "web-1", change: "add" },
     ]);
   });
 
   it("strikes a detached copy a new mirror deletes first, with no Undo of its own", () => {
     expect(entries([member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")], row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual([
-      { role: "primary", server: "web-2", change: null, movedFrom: null, undo: null },
-      { role: "mirror", server: "web-3", change: "add", movedFrom: null, undo: "add_mirror" },
-      { role: "detached", server: "web-1", change: "remove", movedFrom: null, undo: null },
+      { role: "primary", server: "web-2", change: null },
+      { role: "mirror", server: "web-3", change: "add" },
+      { role: "detached", server: "web-1", change: "remove" },
     ]);
   });
 
   it("keeps a removed mirror and a deleted copy in the list, struck, each with its Undo", () => {
     expect(entries([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"], { primary: "web-1" }))[1])
-      .toEqual({ role: "mirror", server: "web-2", change: "remove", movedFrom: null, undo: "remove_mirror" });
+      .toEqual({ role: "mirror", server: "web-2", change: "remove" });
     expect(entries([member("web-2", "writer"), member("web-1", "mirror")], row([], { primary: "web-2", deletes: ["web-1"] }))[1])
-      .toEqual({ role: "detached", server: "web-1", change: "remove", movedFrom: null, undo: "delete_copy" });
+      .toEqual({ role: "detached", server: "web-1", change: "remove" });
   });
 });
 

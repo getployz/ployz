@@ -11,8 +11,8 @@ import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
-  appliedMirrors, detachedName, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementChange, type PlacementEdit,
-  type PlacementEntry, placementEntries, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement, undoPlacement,
+  appliedMirrors, detachedName, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
+  type PlacementEntry, placementEntries, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useStagePlacement } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -63,11 +63,9 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
   const locked = disabled || deploying;
   const applied = appliedMirrors(observed, row);
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
-  const undo = (change: PlacementChange) => { if (row !== null) stage(undoPlacement(volume, members, row, change), applied); };
   const entries = placementEntries(volume, members, row);
   const targets = placementTargets(volume, members, row, accepting);
-  const movedFrom = entries.find((entry) => entry.role === "primary")?.movedFrom ?? null;
-  const moveTo = targets.move.filter((server) => server.id !== target.primary && server.id !== movedFrom?.id);
+  const moveTo = targets.move.filter((server) => server.id !== target.primary);
   const mirrorOn = target.mirrors.length > 0 ? [] : targets.mirror.filter((server) => server.id !== target.primary);
   const offer = failover(observed, row);
   const nameOf = (entry: PlacementEntry) =>
@@ -106,19 +104,18 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
         const name = nameOf(entry);
         const role = ROLE_WORDS[entry.role];
         const struck = entry.change === "remove";
-        const change = deploying ? null : entry.undo;
         return <Item key={entry.key} role="listitem" size="xs" data-changed={entry.change === null || deploying ? undefined : true}>
           <ItemContent className="min-w-0">
             <ItemTitle className={cn(struck && "text-muted-foreground line-through")}>{name}</ItemTitle>
             <ItemDescription className="flex items-center gap-1">
-              {[entry.server.name, entry.movedFrom ? `Was ${entry.movedFrom.name}` : role].filter(Boolean).join(" · ")}
+              {[entry.server.name, role].filter(Boolean).join(" · ")}
               {entry.role === "mirror" && !struck ? <span className="-my-1 inline-flex">
                 <InfoHint label="When it refreshes">Refreshes on every deploy and every 15 minutes.</InfoHint>
               </span> : null}
             </ItemDescription>
           </ItemContent>
           <ItemActions>
-            {change ? <Button variant="ghost" size="sm" disabled={locked} onClick={() => undo(change)}>Undo</Button> : menuOf(entry, name)}
+            {menuOf(entry, name)}
           </ItemActions>
         </Item>;
       })}

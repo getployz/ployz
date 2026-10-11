@@ -11,17 +11,17 @@ Without Cloud, volumes stay on the server that has them.
 
 Open a managed volume after its first deploy. **Placement** lists its primary, the server your
 service writes it on, its mirror as `data-web-2`, and any detached copy. A change here waits for
-your next deploy, which runs it before your services. Until then its row shows pink with **Undo**,
-and it counts in the bottom bar and Details. Nothing runs on click.
+your next deploy, which runs it before your services. Until then its row shows pink, and it
+counts in the bottom bar and Details. Nothing runs on click.
 
 - **Add mirror** offers only servers that run services. A volume has one mirror for now.
 - **Move to web-2**, in the volume's menu, changes the primary and leaves the mirror alone. The row
-  then reads "web-2 · Was web-1". A move to the mirror's server promotes it. A move anywhere else
+  then shows web-2 in pink. A move to the mirror's server promotes it. A move anywhere else
   copies the volume first, then stops your service briefly.
 - A move leaves the old copy as `data-old`, detached. **Delete**, in its menu, deletes it with the
   next deploy. A removed mirror or a deleted copy shows struck through until then.
 - A move or mirror onto a server that holds `data-old` deletes it first. Details says so.
-- **Undo** on a row, or in Details, drops just that change.
+- To drop one change, discard it in Details.
 - When the primary's server stops answering, Placement says "web-1 is not answering" and when
   changes are lost from, for example "Changes after 10:36 lost". **Use mirror** makes the mirror
   the primary at the next deploy.
