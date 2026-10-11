@@ -4,6 +4,7 @@
 # Usage: scripts/verify/up.sh [port]      BILLING=1 turns billing on. State: dashboard/.verify/run (down.sh removes it).
 # SERVERS=N [DAEMON=stable|beta|checkout|<version>] also enrolls N real Machines through it (core/scripts/verify-cluster);
 # down.sh tears that cluster down too. Real Servers also get a per-checkout Inngest dev server and worker.
+# Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 set -euo pipefail
 dash=$(cd "$(dirname "$0")/../.." && pwd)
 wt=$(dirname "$dash")
@@ -127,6 +128,10 @@ done
 # Signed in: /cloud redirects into the organization, not to /auth. Also warms the SSR bundle.
 where=$(curl -s -o /dev/null -w '%{redirect_url}' -H "Cookie: better-auth.session_token=$cookie" "http://127.0.0.1:$port/cloud")
 case "$where" in */cloud/$org*) ;; *) echo "up.sh: session check failed: /cloud -> '$where' (see $run/vite.log)" >&2; exit 1 ;; esac
+if [ "${VERIFY_IDLE_TIMEOUT:-900}" != 0 ]; then
+  setsid nohup "$dash/scripts/verify/idle.sh" "$port" > "$run/idle.log" 2>&1 < /dev/null &
+  echo $! > "$run/idle.pid"
+fi
 base=http://localhost:$port
 curl -s -o /dev/null -H "Cookie: better-auth.session_token=$cookie" "$base/cloud/$org/shop/production" || true
 

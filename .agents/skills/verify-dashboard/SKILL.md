@@ -68,6 +68,8 @@ Save evidence to `dashboard/.verify/evidence/`, which is gitignored and survives
 scripts/verify/down.sh        # stops vite, Inngest, the worker and the cluster; removes the container and browser session; keeps .verify/evidence
 ```
 
+The instance runs `down.sh` by itself after 15 minutes with nothing connected to vite; an open page counts as connected. `VERIFY_IDLE_TIMEOUT=<seconds>` changes that, and `0` keeps it up.
+
 ## Known gaps
 
 - Without `SERVERS`, no Server answers. Service nodes read **Queued · Can't reach servers**, Logs and runtime status stay empty, and Inngest points at a dead port, so anything that sends an Inngest event fails at that call.
