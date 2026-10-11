@@ -902,6 +902,14 @@ fn a_deployed_service_staged_for_removal_still_inspects() {
         assert_eq!(inspected["values"]["image"], json!("nginx:1"));
         assert_eq!(inspected["settings"], json!([]));
         assert_eq!(inspected["domains"], json!([]));
+        let home = tempfile::tempdir().unwrap();
+        let human = store
+            .command(home.path())
+            .args(["service", "inspect", "web"])
+            .output()
+            .unwrap();
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert!(human.contains("nginx:1"), "{human}");
     }
 }
 
