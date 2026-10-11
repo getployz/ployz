@@ -5,3 +5,5 @@ mod cgroup;
 mod host;
 #[cfg_attr(not(test), expect(dead_code, reason = "wired by the sampler in M6"))]
 mod net;
+#[cfg_attr(not(test), expect(dead_code, reason = "wired by the sampler in M7"))]
+mod zfs_usage;
