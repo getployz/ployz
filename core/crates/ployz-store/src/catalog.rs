@@ -19,7 +19,7 @@ const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 pub(crate) const NODE_NAME: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
 
 /// A variable name, as stored.
-const VARIABLE_KEY: &str = "^[A-Z_][A-Z0-9_]{0,127}$";
+pub(crate) const VARIABLE_KEY: &str = "^[A-Z_][A-Z0-9_]{0,127}$";
 
 /// The whole catalog, or the part at `SERVICE` or `SERVICE.SETTING`.
 ///
@@ -90,7 +90,7 @@ fn versioned(mut schema: Value) -> Value {
     schema
 }
 
-fn service() -> Value {
+pub(crate) fn service() -> Value {
     let mut properties = ServiceSetting::ALL
         .into_iter()
         .map(|one| (one.name().to_owned(), setting(one)))

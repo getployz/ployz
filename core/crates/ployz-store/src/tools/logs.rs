@@ -87,8 +87,23 @@ impl fmt::Debug for SecretSet {
 }
 
 /// How many of the newest lines an excerpt keeps.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
 pub struct LineCap(u16);
+
+impl TryFrom<u16> for LineCap {
+    type Error = String;
+
+    fn try_from(lines: u16) -> Result<Self, String> {
+        Self::new(lines).ok_or_else(|| format!("a line count from 1 to {}", Self::MAX))
+    }
+}
+
+impl From<LineCap> for u16 {
+    fn from(cap: LineCap) -> Self {
+        cap.0
+    }
+}
 
 impl LineCap {
     pub const MAX: u16 = 200;
