@@ -3,7 +3,8 @@
 
 use clap::{ArgMatches, Command};
 use ployz_core::ServiceName;
-use ployz_store::{DiffQuery, Discard, Publish, SettingPath};
+use ployz_store::{DiffQuery, DiffView, Discard, Publish, SettingPath};
+use serde::Serialize;
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
@@ -29,6 +30,40 @@ pub(crate) fn discard_command() -> Command {
         .arg(version())
 }
 
+/// `ployz diff --json`: the review, plus each staged domain change as people read it,
+/// since the rows store a domain as `managedHostnames` or `routes`.
+#[derive(Serialize)]
+struct Diffed<'v> {
+    #[serde(flatten)]
+    view: &'v DiffView,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    domains: Vec<DomainLine>,
+}
+
+#[derive(Serialize)]
+struct DomainLine {
+    /// `SERVICE.domains`.
+    path: String,
+    /// `added shop`, `removed app.example.com`.
+    change: String,
+}
+
+fn domains(view: &DiffView) -> Vec<DomainLine> {
+    view.changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .filter_map(|row| {
+            let domains = ployz_store::DomainChange::of(row)?;
+            let service = row.path.split('.').next().unwrap_or_default();
+            Some(domains.into_iter().map(move |domain| DomainLine {
+                path: format!("{service}.domains"),
+                change: domain.to_string(),
+            }))
+        })
+        .flatten()
+        .collect()
+}
+
 fn version() -> clap::Arg {
     value("version", None).help("Refuse unless this is still the latest `ployz diff` version")
 }
@@ -41,7 +76,11 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let view = store(root)?.read(&query)?;
     let hint = (!view.changes.is_empty())
         .then(|| next(matches, &["deploy", "--expect-version", &view.version]));
-    crate::ui::finish(&Next::new(&view, hint.clone()), || {
+    let shown = Diffed {
+        domains: domains(&view),
+        view: &view,
+    };
+    crate::ui::finish(&Next::new(&shown, hint.clone()), || {
         let where_ = format!("{}/{}", view.environment.project, view.environment.name);
         if view.changes.is_empty() {
             crate::ui::note(format_args!("No staged changes in {where_}."));
