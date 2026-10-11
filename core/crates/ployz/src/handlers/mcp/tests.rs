@@ -250,7 +250,7 @@ fn writes(seen: &[Seen]) -> Vec<&Seen> {
 
 fn on_cloud(fake: &Fake, place: Place) -> Server {
     Server {
-        keys: |tool| format!("call-{tool}"),
+        keys: |_, _, tool| format!("call-{tool}"),
         ..Server::new(
             Account {
                 config: PathBuf::from("/nonexistent/config.toml"),
@@ -289,7 +289,7 @@ fn shop() -> ConfigStore {
 
 fn on_local(place: Place) -> Server {
     Server {
-        keys: |tool| format!("call-{tool}"),
+        keys: |_, _, tool| format!("call-{tool}"),
         ..Server::new(
             Account::default(),
             Store::Local(Arc::new(shop()), who()),
@@ -539,6 +539,38 @@ async fn an_unknown_tool_is_an_invalid_params_error() {
     let unknown = client.call(2, "kubectl", json!({})).await;
     assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
     assert_eq!(unknown["error"]["message"], "no tool named kubectl");
+}
+
+#[tokio::test]
+async fn a_replayed_request_without_a_key_writes_under_the_same_id() {
+    let transcript = transcript("service_add", StoreAt::Cloud);
+    let fake = fake_cloud(
+        (0..4).flat_map(|_| script(&transcript)).collect(),
+        None,
+        Duration::ZERO,
+    );
+    let unkeyed = |fake: &Fake| Server {
+        keys: call_key,
+        ..on_cloud(fake, transcript.place.clone())
+    };
+    let mut client = Client::initialized(unkeyed(&fake), json!({})).await;
+    for id in [2, 2, 3] {
+        client
+            .call(id, &transcript.tool, transcript.input.clone())
+            .await;
+    }
+    let mut restarted = Client::initialized(unkeyed(&fake), json!({})).await;
+    restarted
+        .call(2, &transcript.tool, transcript.input.clone())
+        .await;
+    let seen = fake.requests();
+    let bodies: Vec<&Value> = writes(&seen).iter().map(|seen| &seen.body).collect();
+    let [first, replayed, next, after_restart] = bodies[..] else {
+        panic!("four writes: {bodies:?}");
+    };
+    assert_eq!(first, replayed, "a replay keeps its id");
+    assert_ne!(first, next, "another request gets its own id");
+    assert_ne!(first, after_restart, "a restarted server reuses no id");
 }
 
 fn deploy_asks() -> Value {

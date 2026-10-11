@@ -20,7 +20,8 @@ use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
     ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema,
     Implementation, InputRequest, InputRequiredResult, InputResponses, JsonObject, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, StringSchema, Tool, ToolAnnotations,
+    PaginatedRequestParams, RequestId, ServerCapabilities, ServerConfig, StringSchema, Tool,
+    ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
@@ -264,7 +265,8 @@ struct Server {
     store: Store,
     place: Place,
     deadline: Duration,
-    keys: fn(&str) -> String,
+    session: String,
+    keys: fn(&str, &RequestId, &str) -> String,
     tools: Vec<Tool>,
     gates: HashMap<&'static str, Gate>,
     waiting: Waiting,
@@ -286,7 +288,8 @@ impl Server {
             store,
             place,
             deadline: CALL_DEADLINE,
-            keys: |_| uuid::Uuid::new_v4().to_string(),
+            session: uuid::Uuid::new_v4().to_string(),
+            keys: call_key,
             tools: catalog.into_iter().map(tool).collect(),
             gates,
             waiting: Waiting::default(),
@@ -306,6 +309,12 @@ impl Server {
             .map_err(|error| Error::from(error).to_string()),
         }
     }
+}
+
+/// MCP forbids reusing a request ID within a session, so the session and the ID name
+/// one request: a replay of it keeps its key, and a restarted `ployz mcp` never reuses one.
+fn call_key(session: &str, id: &RequestId, _tool: &str) -> String {
+    format!("{session}:{}", json!(id))
 }
 
 fn tool(def: tools::ToolDef) -> Tool {
@@ -403,8 +412,8 @@ impl ServerHandler for Server {
                 (step, held.state, Some((held.asked, answer)), held.until)
             }
             None => {
-                let (step, state) =
-                    tools::start(tool, input.clone(), &self.place, &(self.keys)(tool));
+                let key = (self.keys)(&self.session, &context.id, tool);
+                let (step, state) = tools::start(tool, input.clone(), &self.place, &key);
                 (step, state, None, Instant::now() + self.deadline)
             }
         };
