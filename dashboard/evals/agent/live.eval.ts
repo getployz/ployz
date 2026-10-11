@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { describe, it } from "@effect/vitest";
 import { Effect, Exit, Result } from "effect";
-import { markdown, summarize, type Trial, trialOf } from "./metrics";
+import { blockers, markdown, type Summary, summarize, type Trial, trialOf } from "./metrics";
 import { model, MODELS } from "./models";
 import { simulated } from "./simulator";
 import { type Golden, Recorder, recording } from "./tape";
@@ -80,7 +80,13 @@ describe.skipIf(process.env["PLOYZ_EVAL_LIVE"] !== "1")("live agent eval", () =>
       writeFileSync(new URL(`${name}.md`, RESULTS), markdown(summary));
     }
     const missing = runnable.length * tasks.length * TRIALS - all.filter((trial) => tasks.some(({ id }) => id === trial.task)).length;
-    writeFileSync(new URL("baseline.md", RESULTS), `${markdown(summarize(all))}\nMissing trials: ${missing}.\n`);
-    yield* Effect.logInfo(`${missing} trials missing\n${markdown(summarize(all))}`);
+    const summary = summarize(all);
+    writeFileSync(new URL("baseline.md", RESULTS), `${markdown(summary)}\nMissing trials: ${missing}.\n`);
+    writeFileSync(new URL("summary.json", RESULTS), `${JSON.stringify(summary, null, 2)}\n`);
+    const last = process.env["PLOYZ_EVAL_LAST"];
+    // SAFETY: PLOYZ_EVAL_LAST names the summary.json an earlier run of this runner wrote.
+    const before = last === undefined || last === "" ? undefined : (JSON.parse(readFileSync(last, "utf8")) as Summary);
+    writeFileSync(new URL("gate.json", RESULTS), `${JSON.stringify({ blockers: blockers(summary, MODELS, before) }, null, 2)}\n`);
+    yield* Effect.logInfo(`${missing} trials missing\n${markdown(summary)}`);
   }), 24 * 60 * 60 * 1000);
 });

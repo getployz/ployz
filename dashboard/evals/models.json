@@ -5,5 +5,7 @@
     "gpt-6-luna": "codex-cli"
   },
   "simulator": "claude-haiku-5-5",
+  "target": "claude-haiku-5-5",
+  "portable": "gpt-6-luna",
   "agents": ["claude-haiku-5-5", "claude-sonnet-5-5", "gpt-6-luna"]
 }

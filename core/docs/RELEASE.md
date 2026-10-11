@@ -14,7 +14,7 @@ No `next` branch. Features and fixes both land on `main`. Beta is a tag.
 ## Cut a release
 
 1. From `core/`, set `[workspace.package] version` in `Cargo.toml` to the version you will tag (`0.2.0` or `0.3.0-beta.1`). `check-release-tag.sh` rejects a tag if the Cargo version is missing or differs.
-2. Merge that commit to `main`.
+2. Merge that commit to `main`. Dispatch **Agent eval** (`agent-eval.yml`) on it, or wait for the nightly run, and let it pass.
 3. Tag and push:
 
 ```sh
@@ -36,6 +36,8 @@ Protected `main` pushes populate the shared R2 compiler cache through the checks
 ## Confidence before Publish
 
 `ci.yml` selects checks for PR and `main` changes and reports one `CI ready` result. Require that check in branch protection after the workflow lands. Rust lint and tests run independently; Cloud static checks, SDK preparation, frontend builds, and tests have separate results. The ignored cluster suite runs through `cluster.yml` nightly or by manual dispatch, with per-suite logs, five-minute suite limits, and no whole-batch retries. It is informing: a red nightly does not block a tag or Publish.
+
+`agent-eval.yml` holds the agent tools to their release floors. Tier 1 replays the golden trajectories through the sidebar and `ployz mcp` with no model; Fast CI also runs it on every PR that touches the Store, the agent module or `mcp.rs`. Tier 2 runs every pinned model on every task, 8 trials each, nightly on `main`, on PRs labelled `eval`, and on PRs that change the tool snapshot, the Store's instructions, the sidebar system prompt or the pinned models. It needs a self-hosted runner labelled `ployz-eval` with Docker and signed-in `claude` and `codex` CLIs, posts its table on the PR, and fails when `evals/results/gate.json` lists a blocker. The Release workflow refuses a tag whose commit has no passing nightly or dispatched run.
 
 Before Publish, use the beta on real Machines through Cloud: enrol, deploy, attach a domain and certificate, and upgrade. There is no scripted qualification; when the informing cluster suite and those Machines disagree, the real Machines are the authority. Testkit bugs do not block a release.
 

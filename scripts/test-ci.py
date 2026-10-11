@@ -33,6 +33,15 @@ class CiTest(unittest.TestCase):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
 
+    def test_tier_1_agent_replays_run_wherever_the_agent_surface_changes(self):
+        # Cloud's `pnpm test` replays the sidebar's golden trajectories; rust-tests replays them through `ployz mcp`.
+        for path in ["core/crates/ployz-store/src/tools/mod.rs", "core/crates/ployz/src/handlers/mcp.rs", "dashboard/src/modules/agent/agent-tools.ts"]:
+            with self.subTest(path=path):
+                self.assertIn("cloud", ci["select"]([path]))
+        for path in ["core/crates/ployz-store/src/tools/mod.rs", "core/crates/ployz/src/handlers/mcp.rs"]:
+            with self.subTest(path=path):
+                self.assertIn("rust-tests", ci["select"]([path]))
+
     def test_renames_and_deletions_include_the_old_production_path(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

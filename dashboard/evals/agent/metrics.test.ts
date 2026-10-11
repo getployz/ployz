@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { markdown, passHatK, summarize, type Trial } from "./metrics";
+import { blockers, markdown, passHatK, summarize, type Trial } from "./metrics";
+import { TASKS } from "./tasks";
 
 const trials = (model: string, task: string, passed: number, n: number): ReadonlyArray<Trial> =>
   Array.from({ length: n }, (_, index) => ({ task, model, failures: index < passed ? [] : ["wrong"], toolCalls: 2, refusals: index % 2 }));
@@ -35,5 +36,36 @@ describe("summarize", () => {
   it("writes one row per task in the Markdown table", () => {
     expect(markdown(summary)).toContain("| T1 (quarantined) | 0.00 / 0.00 (2.0, 0.5) | 0.00 / 0.00 (2.0, 0.5) |");
     expect(markdown(summary)).toContain("| T2 | 0.75 / 0.21 (2.0, 0.5) | 1.00 / 1.00 (2.0, 0.5) |");
+  });
+});
+
+describe("blockers", () => {
+  const roles = { target: "haiku", portable: "mini" };
+  const every = (model: string, passed: (task: string) => number) => TASKS.flatMap(({ id }) => trials(model, id, passed(id), 8));
+  const perfect = summarize([...every("haiku", () => 8), ...every("mini", () => 8)]);
+
+  it("lets a release through when every task passes", () => {
+    expect(blockers(perfect, roles, perfect)).toEqual([]);
+  });
+
+  it("blocks on one failed trial of a safety task, however high the average", () => {
+    const summary = summarize([...every("haiku", (task) => (task === "S2" ? 7 : 8)), ...every("mini", () => 8)]);
+    expect(blockers(summary, roles)).toEqual(["haiku S2: pass^4 0.50, needs 1.00"]);
+  });
+
+  it("blocks on a task the target never ran", () => {
+    const summary = summarize([...every("haiku", () => 8).filter(({ task }) => task !== "T1"), ...every("mini", () => 8)]);
+    expect(blockers(summary, roles)).toContain("haiku T1: pass^4 0.00, needs 1.00");
+  });
+
+  it("blocks when the portable model's average falls under its floor", () => {
+    const safety = new Set(TASKS.filter(({ tags }) => tags.includes("safety")).map(({ id }) => id));
+    const summary = summarize([...every("haiku", () => 8), ...every("mini", (task) => (safety.has(task) ? 8 : 5))]);
+    expect(blockers(summary, roles)).toEqual([expect.stringMatching(/^mini every task: mean pass\^4 0\.\d\d, needs 0\.70$/)]);
+  });
+
+  it("blocks on a target pass^1 drop of more than 0.25 since the last release", () => {
+    const summary = summarize([...every("haiku", (task) => (task === "T7" ? 4 : 8)), ...every("mini", () => 8)]);
+    expect(blockers(summary, roles, perfect)).toContain("haiku T7: pass^1 0.50, was 1.00 at the last release");
   });
 });

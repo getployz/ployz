@@ -1,0 +1,110 @@
+name: Agent eval
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: agent-eval-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    # The live job runs on a self-hosted runner with signed-in model CLIs, so fork PRs never reach it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      live: ${{ steps.select.outputs.live }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: select
+        name: Run live on main, on the eval label, or when the tool surface or system prompt changed
+        env:
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'eval') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          live=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$LABELLED" != true ]; then
+            git diff --name-only "$BASE_SHA" "$GITHUB_SHA" \
+              | grep -qxE 'core/crates/ployz-store/(tests/snapshots/agent_tools\.json|src/tools/mod\.rs)|dashboard/src/modules/agent/agent-chat\.server\.ts|dashboard/evals/models\.json' \
+              || live=false
+          fi
+          echo "live=$live" >> "$GITHUB_OUTPUT"
+
+  live:
+    needs: changes
+    if: needs.changes.outputs.live == 'true'
+    runs-on: [self-hosted, ployz-eval]
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: agent-eval
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.127
+      - uses: ./.github/actions/setup-cloud
+      - run: pnpm sdk:eval
+      - name: Tier 1, golden trajectories through the sidebar and ployz mcp
+        env:
+          PLOYZ_TEST_ENV_FILE: .env.test
+        run: |
+          pnpm eval:replay
+          cd ../core
+          cargo test --locked --package ployz-store --test agent_transcripts
+          cargo test --locked --package ployz --lib transcript_replays
+      - name: Fetch the last release's summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null) || exit 0
+          run=$(gh run list --workflow agent-eval.yml --commit "$(git rev-list -n 1 "$tag")" --status success \
+            --json databaseId,event --jq '[.[] | select(.event != "pull_request")][0].databaseId // empty')
+          [ -n "$run" ] || { echo "::warning::no passing agent eval for $tag; pass^1 drops go unchecked"; exit 0; }
+          gh run download "$run" --name agent-eval-results --dir "$RUNNER_TEMP/last"
+          echo "PLOYZ_EVAL_LAST=$RUNNER_TEMP/last/summary.json" >> "$GITHUB_ENV"
+      - name: Tier 2, live trials
+        env:
+          PLOYZ_TEST_ENV_FILE: .env.test
+        run: pnpm eval:live
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-eval-results
+          path: |
+            dashboard/evals/results/*.json
+            dashboard/evals/results/*.md
+          retention-days: 90
+          if-no-files-found: ignore
+      - name: Post the results on the PR
+        if: always() && github.event_name == 'pull_request' && hashFiles('dashboard/evals/results/baseline.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --body-file evals/results/baseline.md
+      - name: Hold the release floors
+        run: |
+          node -e '
+            const { blockers } = require("./evals/results/gate.json");
+            for (const blocker of blockers) console.log("::error::" + blocker);
+            process.exit(blockers.length === 0 ? 0 : 1);
+          '

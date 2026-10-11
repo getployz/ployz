@@ -66,8 +66,26 @@ jobs:
     with:
       release-tag: ${{ inputs.tag || github.ref_name }}
 
+  agent-eval:
+    needs: [tag]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Require a passing nightly or dispatched agent eval on the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow agent-eval.yml --commit "$RELEASE_SHA" --status success \
+            --json event --jq '[.[] | select(.event != "pull_request")] | length')
+          [ "$runs" -gt 0 ] || { echo "::error::no passing agent eval on $RELEASE_SHA; dispatch agent-eval.yml on it and wait for it to pass"; exit 1; }
+
   publish:
-    needs: [tag, artifacts, cloud]
+    needs: [tag, artifacts, cloud, agent-eval]
     runs-on: ubuntu-latest
     permissions:
       contents: write

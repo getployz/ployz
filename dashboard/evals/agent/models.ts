@@ -8,10 +8,15 @@ const Provider = Schema.Literals(["anthropic", "openai", "claude-cli", "codex-cl
 const Pinned = Schema.Struct({
   providers: Schema.Record(Schema.String, Provider),
   simulator: Schema.String,
+  target: Schema.String,
+  portable: Schema.String,
   agents: Schema.Array(Schema.String),
 });
 
-/** The models `models.json` pins, each with its provider: the simulated member's, and the agents' under test. */
+/**
+ * The models `models.json` pins, each with its provider: the simulated member's, and the agents' under test. `target` is
+ * the release target and `portable` the cheap model of another vendor; the release gate holds both to its floors.
+ */
 export const MODELS = Schema.decodeUnknownSync(Pinned)(pinned);
 
 const KEYS = { anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY" };
