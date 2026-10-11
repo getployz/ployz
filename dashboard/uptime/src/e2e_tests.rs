@@ -307,6 +307,9 @@ async fn a_probe_still_in_flight_at_shutdown_is_written_before_all_mode_exits() 
 }
 
 const REQUEST_PROBE: &str = "UPDATE uptime_check SET probe_requested_at = now() WHERE id = $1";
+/// The control plane reads the request to the millisecond and answers with what it read.
+const ANSWERED: &str = "SELECT count(*) FROM uptime_check WHERE id = $1 \
+    AND probe_answered_at = date_trunc('milliseconds', probe_requested_at)";
 
 /// The interval is an hour (two minutes at this tempo) and rechecks wait a minute, so within one
 /// step only a requested probe can open or close.
@@ -329,6 +332,10 @@ async fn a_requested_probe_opens_and_closes_without_waiting_for_the_schedule() {
     admin.execute(REQUEST_PROBE, &[&check]).await.unwrap();
     until("a requested probe opening an incident", async || {
         count(&admin, OPEN_INCIDENTS, check).await == 1
+    })
+    .await;
+    until("the opening request answered", async || {
+        count(&admin, ANSWERED, check).await == 1
     })
     .await;
 
@@ -354,6 +361,15 @@ async fn a_requested_probe_opens_and_closes_without_waiting_for_the_schedule() {
         .map(|row| row.get(0))
         .collect();
     assert_eq!(closed_by, ["triggered", "triggered"]);
+    until("the closing request answered", async || {
+        count(&admin, ANSWERED, check).await == 1
+    })
+    .await;
+    // The answer logs a change the feed reloads within a second. It must not reset the check or
+    // probe again, which the count of triggered results below would show.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let revision = "SELECT revision::bigint FROM uptime_check WHERE id = $1";
+    assert_eq!(count(&admin, revision, check).await, 1);
 
     trigger.fire();
     tokio::time::timeout(Duration::from_secs(35), all)
