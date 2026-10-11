@@ -67,6 +67,8 @@ export function storeVariableWriter(
       { op: "set", path: path(key), value: sealed ? { secret: value } : value },
       { op: "set", path: `${path(key)}.exported`, value: exported },
     ),
+    /** Renames it, value, seal and export alike; the Store refuses a name in use or a referenced variable. */
+    rename: (key: string, to: string) => edit({ op: "rename", path: path(key), to }),
     seal: (key: string, value: string) => edit({ op: "set", path: path(key), value: { secret: value } }),
     export: (key: string, exported: boolean) => edit({ op: "set", path: `${path(key)}.exported`, value: exported }),
     /** Marks the variable Never sync, or with `marked` false syncs it again: at once, nothing to deploy. */

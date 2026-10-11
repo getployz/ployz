@@ -7,6 +7,7 @@ import { VariableRowActions } from "#/components/variables/variable-row-actions"
 import { VariableRowDialogs } from "#/components/variables/variable-row-dialogs";
 import { VariableRowHeading } from "#/components/variables/variable-row-heading";
 import { VariableRowValue } from "#/components/variables/variable-row-value";
+import { VariableRenameDialog } from "#/components/variables/variable-rename-dialog";
 export type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
@@ -22,6 +23,7 @@ export function VariableRow({
   onSealVariable,
   onUpdateMetadata,
   onNeverSync,
+  onRename,
 }: {
   variable: VariableRecord;
   collection: VariableWriter;
@@ -35,6 +37,8 @@ export function VariableRow({
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** When provided, the menu marks the variable Never sync, or syncs it again. */
   onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
+  /** When provided, the menu renames the variable. */
+  onRename?: (variable: VariableRecord, to: string) => void;
 }) {
   const [state, dispatch] = useReducer(
     variableRowReducer,
@@ -118,6 +122,7 @@ export function VariableRow({
         onUpdateMetadata={(patch) => onUpdateMetadata?.(variable, patch)}
         neverSynced={onNeverSync ? variable.neverSynced ?? false : null}
         onToggleNeverSync={() => onNeverSync?.(variable, !variable.neverSynced)}
+        onOpenRename={onRename ? () => dispatch({ type: "renameDialogChanged", open: true }) : null}
       />
 
       </div>
@@ -130,6 +135,14 @@ export function VariableRow({
         }
         onConfirmSeal={handleSeal}
       />
+      {onRename ? (
+        <VariableRenameDialog
+          variableKey={variable.key}
+          open={state.renameOpen}
+          onOpenChange={(open) => dispatch({ type: "renameDialogChanged", open })}
+          onRename={(to) => onRename(variable, to)}
+        />
+      ) : null}
     </div>
   );
 }

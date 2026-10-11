@@ -53,13 +53,14 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       onUpdateMetadata={(variable, patch) => writer.export(variable.key, patch.exported ?? variable.exported)}
       onApplyRaw={({ creates, updates, deletes }) => writer.replace([...creates, ...updates], deletes)}
       onNeverSync={(variable, marked) => writer.neverSync(variable.key, marked)}
+      onRename={(variable, to) => writer.rename(variable.key, to)}
     />
   );
 }
 
 /** A Service's variables tab: its variables, the raw editor and the variables Ployz adds. */
 function ServiceVariablesView({
-  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, allowSealOnCreate = false,
+  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, onNeverSync, onRename, allowSealOnCreate = false,
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
@@ -72,6 +73,7 @@ function ServiceVariablesView({
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   onApplyRaw: (diff: RawEditorDiff) => Persistable;
   onNeverSync: (variable: VariableRecord, marked: boolean) => void;
+  onRename: (variable: VariableRecord, to: string) => void;
   allowSealOnCreate?: boolean;
 }) {
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
@@ -86,6 +88,7 @@ function ServiceVariablesView({
         onSealVariable={onSealVariable}
         onUpdateMetadata={onUpdateMetadata}
         onNeverSync={onNeverSync}
+        onRename={onRename}
         valueTargets={valueTargets}
         serviceNames={serviceNames}
         headerActions={

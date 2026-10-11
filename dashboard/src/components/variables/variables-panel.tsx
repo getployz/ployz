@@ -40,6 +40,7 @@ export function VariablesPanel({
   onSealVariable,
   onUpdateMetadata,
   onNeverSync,
+  onRename,
   allowSealOnCreate = false,
   defaultExported = false,
   headerActions,
@@ -61,6 +62,8 @@ export function VariablesPanel({
   onSealVariable: (variable: PlainVariableRecord) => void;
   /** When provided, each row's menu marks it Never sync, or syncs it again. */
   onNeverSync?: (variable: VariableRecord, marked: boolean) => void;
+  /** When provided, each row's menu renames it. */
+  onRename?: (variable: VariableRecord, to: string) => void;
   onUpdateMetadata?: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
   /** Show the "Sealed" toggle in the add form (owners that support sealed-on-create). */
   allowSealOnCreate?: boolean;
@@ -135,6 +138,7 @@ export function VariablesPanel({
                 onSealVariable={onSealVariable}
                 onUpdateMetadata={onUpdateMetadata}
                 onNeverSync={onNeverSync}
+                onRename={onRename}
               />
             ))}
           </div>

@@ -3,6 +3,7 @@ export type VariableRowState = {
   editValue: string;
   revealed: boolean;
   confirmSealOpen: boolean;
+  renameOpen: boolean;
 };
 
 export type VariableRowAction =
@@ -11,13 +12,15 @@ export type VariableRowAction =
   | { type: "editValueChanged"; value: string }
   | { type: "revealToggled" }
   | { type: "saveSucceeded" }
-  | { type: "sealDialogChanged"; open: boolean };
+  | { type: "sealDialogChanged"; open: boolean }
+  | { type: "renameDialogChanged"; open: boolean };
 
 export const initialVariableRowState: VariableRowState = {
   editing: false,
   editValue: "",
   revealed: false,
   confirmSealOpen: false,
+  renameOpen: false,
 };
 
 export function variableRowReducer(
@@ -37,5 +40,7 @@ export function variableRowReducer(
       return { ...state, editing: false, editValue: "" };
     case "sealDialogChanged":
       return { ...state, confirmSealOpen: action.open };
+    case "renameDialogChanged":
+      return { ...state, renameOpen: action.open };
   }
 }

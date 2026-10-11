@@ -5,6 +5,7 @@ import {
   PencilIcon,
   PinIcon,
   PinOffIcon,
+  TextCursorInputIcon,
   Share2Icon,
   TrashIcon,
   XIcon,
@@ -34,6 +35,7 @@ export function VariableRowActions({
   onUpdateMetadata,
   neverSynced,
   onToggleNeverSync,
+  onOpenRename,
 }: {
   editing: boolean;
   exported: boolean;
@@ -52,6 +54,8 @@ export function VariableRowActions({
   /** Whether it is marked Never sync; null offers no Never sync item. */
   neverSynced: boolean | null;
   onToggleNeverSync: () => void;
+  /** Null offers no Rename item. */
+  onOpenRename: (() => void) | null;
 }) {
   if (editing) {
     return (
@@ -106,6 +110,12 @@ export function VariableRowActions({
             <DropdownMenuItem onClick={onOpenSealDialog}>
               <LockIcon />
               Seal
+            </DropdownMenuItem>
+          ) : null}
+          {onOpenRename ? (
+            <DropdownMenuItem onClick={onOpenRename}>
+              <TextCursorInputIcon />
+              Rename
             </DropdownMenuItem>
           ) : null}
           {showMetadata ? (
