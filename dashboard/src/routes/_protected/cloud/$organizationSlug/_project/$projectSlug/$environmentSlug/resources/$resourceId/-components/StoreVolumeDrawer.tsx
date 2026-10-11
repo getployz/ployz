@@ -18,6 +18,7 @@ import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { StoreVolumePlacement } from "./StoreVolumePlacement";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
@@ -76,6 +77,10 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
       </CanvasInspectorHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
         <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+          {/* Copies exist once a Deploy made the managed Volume on a Server. */}
+          {volume.deployed && volume.storage.kind === "provisioned" && !removing ? (
+            <StoreVolumePlacement organizationSlug={organizationSlug} environment={store} volume={volume} />
+          ) : null}
           {removing ? <SettingsSection id="mounts" title="Mounts">
               <Empty variant="placeholder">
                 <EmptyDescription>Removed on next deploy.</EmptyDescription>

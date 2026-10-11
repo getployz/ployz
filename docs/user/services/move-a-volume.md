@@ -7,10 +7,43 @@ A volume lives on one server. With Ployz Cloud you can keep a read-only copy of 
 server, called a mirror, and move the volume and the service that mounts it to another server.
 Without Cloud, volumes stay on the server that has them.
 
+## In Ployz Cloud
+
+Open a managed volume after its first deploy. **Placement** shows its **Primary**, the server your
+service writes it on, its **Mirrors**, and any **Detached** copy, each with when it last
+refreshed. A change here waits for your next deploy, which runs it before your services. Until
+then it shows in its colour: pink for a new primary, green for a new copy, red and struck through
+for one going away. It counts in the bottom bar and Details. Nothing runs on click.
+
+- **+ Add**, under Mirrors, offers only servers that run services. A volume has one mirror for now.
+  The × on a mirror removes it.
+- Pick another server in **Primary** to move the volume there. The mirror stays. A move to the
+  mirror's server promotes it. A move anywhere else copies the volume first, then stops your
+  service briefly.
+- A move leaves the old copy detached, shown as New under Detached. The × on a detached copy
+  deletes it with the next deploy.
+- A move or mirror onto a server that holds a detached copy deletes that copy first. Details says so.
+- To drop one change, discard it in Details.
+- When the primary's server stops answering, Placement says "web-1 is not answering" and when
+  changes are lost from, for example "Changes after 10:36 lost". **Use mirror** makes the mirror
+  the primary at the next deploy.
+- **Drain** on a server page also moves each primary there off at the next deploy, to its mirror
+  or else to the first other server that runs services. The page says "Next deploy moves 2
+  volumes". Each environment's next deploy moves them.
+
+Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, Placement, the
+bottom bar and the deployment page say what it is doing, for example "data · Moving to web-2".
+Cancel lets the step under way finish, and the rest waits for your next deploy.
+
+Backups are not part of Placement. See [Back up a database](databases.md#back-up-a-database).
+
+The commands below do the same from the CLI, one run at a time. Deleting a mirror is CLI-only.
+
 ## Mirror a volume
 
-A mirror holds the volume's data as of its last sync. It refreshes only when you sync it, and a
-volume has at most one.
+A mirror holds the volume's data as of its last sync. From the CLI it refreshes only when you sync
+it. With Ployz Cloud it also refreshes on every deploy and every 15 minutes. A volume has at most
+one.
 
 ```
 ployz volume mirror data --to web-2     # copy data to web-2; it shows as data-web-2
