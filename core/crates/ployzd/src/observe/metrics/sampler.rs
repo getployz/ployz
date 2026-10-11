@@ -6,9 +6,14 @@
 //! for its pid and labels. Counters come from files: the cgroup named by the
 //! `0::` line of `/proc/<pid>/cgroup`, the pid's `net/dev`, and the host's
 //! procfs. A container that is gone yields no row rather than zeros.
+//!
+//! ZFS flushes a container's Volume writes from its own kernel threads,
+//! outside the container's cgroup, so on a ZFS Server Volume IO comes from
+//! the Pool's objset kstats. The Machine row's disk breakdown takes the last
+//! 60 s reading from [`disk`] and never waits for it.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -18,21 +23,29 @@ use bollard::{
     Docker, models::ContainerInspectResponse, query_parameters::ListContainersOptionsBuilder,
 };
 use ployz_core::{
-    ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
-    metrics::{CpuJiffies, HostMemory, HostSample, InterfaceBytes, MetricSample},
+    ContainerId, DockerVolumeName, MachineId, Namespace, PROVISIONED_VOLUME_DRIVER,
+    QualifiedService, ServiceId, ServiceName,
+    metrics::{CpuJiffies, DiskBreakdown, HostMemory, HostSample, InterfaceBytes, MetricSample},
 };
-use tokio::time::{MissedTickBehavior, interval, timeout};
+use tokio::{
+    sync::watch,
+    time::{MissedTickBehavior, interval, timeout},
+};
 
 use super::{
     cgroup::{self, MemoryLimit},
+    disk::{self, DatasetPlace, PoolPaths, SlowReading},
     host::{self, HostCounters},
     net::{self, NetCounters},
     rollup,
     segment::{self, Row},
+    zfs_io::{self, DatasetIo},
+    zfs_usage::{ZFS_LIST_TIMEOUT, ZfsUsageReader},
 };
 use crate::{
     docker::{LABEL_HOOK, LABEL_MANAGED, LABEL_SERVICE_ID},
     machine::LocalMachineRecord,
+    network::DOCKER_NETWORK_NAME,
     observe::{
         harvest,
         layout::{SegmentName, StoreRoot},
@@ -48,12 +61,16 @@ const LOOPBACK: &str = "lo";
 /// The host end of each container's veth pair. Its bytes are the
 /// container's, already in that container's row and again on the uplink.
 const VETH_PREFIX: &str = "veth";
+/// Bridges carry container traffic that the uplink carries again.
+const DOCKER_BRIDGE: &str = "docker0";
+const COMPOSE_BRIDGE_PREFIX: &str = "br-";
 
 /// Where the sampler reads procfs and the cgroup v2 hierarchy.
 #[derive(Clone, Debug)]
 struct Roots {
     proc: PathBuf,
     cgroup: PathBuf,
+    zfs_kstat: PathBuf,
 }
 
 impl Roots {
@@ -61,6 +78,7 @@ impl Roots {
         Self {
             proc: PathBuf::from("/proc"),
             cgroup: PathBuf::from("/sys/fs/cgroup"),
+            zfs_kstat: PathBuf::from(zfs_io::KSTAT_ROOT),
         }
     }
 }
@@ -77,6 +95,8 @@ struct Tracked {
     /// Shares the Machine's network namespace, whose `net/dev` holds every
     /// interface on the Machine rather than the container's own traffic.
     host_network: bool,
+    /// Ployz Volumes the container mounts.
+    volumes: Vec<DockerVolumeName>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +110,20 @@ struct Labels {
 
 /// Samples until the task is dropped.
 pub(crate) async fn run(docker: Docker, store: StoreRoot, data_dir: PathBuf) {
+    let (latest, slow) = watch::channel(SlowReading::default());
+    let zfs = ZfsUsageReader::new(PathBuf::from("zfs"), ZFS_LIST_TIMEOUT);
+    tokio::join!(
+        disk::run(store.clone(), zfs, PoolPaths::system(), latest),
+        sample_every_interval(docker, store, data_dir, slow),
+    );
+}
+
+async fn sample_every_interval(
+    docker: Docker,
+    store: StoreRoot,
+    data_dir: PathBuf,
+    slow: watch::Receiver<SlowReading>,
+) {
     let roots = Roots::system();
     let mut tracked: HashMap<ContainerId, Tracked> = HashMap::new();
     let mut ticks = interval(INTERVAL);
@@ -104,8 +138,9 @@ pub(crate) async fn run(docker: Docker, store: StoreRoot, data_dir: PathBuf) {
         let hour = SegmentName::containing(ts);
         let fold = hour != folded;
         folded = hour;
+        let slow = *slow.borrow();
         let tick = tokio::task::spawn_blocking(move || {
-            let gone = tick(&roots, &store, &data_dir, &containers, ts);
+            let gone = tick(&roots, &store, &data_dir, &containers, slow, ts);
             if fold && let Err(error) = rollup::fold_pending(&store, SystemTime::now()) {
                 tracing::warn!(%error, "cannot fold metric hours");
             }
@@ -206,6 +241,13 @@ fn track(
         (Some(id), Some(service)) => (Some(id), Some(service)),
         _ => (None, None),
     };
+    let volumes = inspected
+        .mounts
+        .iter()
+        .flatten()
+        .filter(|mount| mount.driver.as_deref() == Some(PROVISIONED_VOLUME_DRIVER))
+        .filter_map(|mount| DockerVolumeName::parse(mount.name.clone()?).ok())
+        .collect();
     Some(Tracked {
         id,
         pid,
@@ -221,6 +263,7 @@ fn track(
             .as_ref()
             .and_then(|host| host.network_mode.as_deref())
             == Some("host"),
+        volumes,
     })
 }
 
@@ -240,13 +283,14 @@ fn tick(
     store: &StoreRoot,
     data_dir: &Path,
     containers: &[Tracked],
+    slow: SlowReading,
     ts: i64,
 ) -> io::Result<Vec<ContainerId>> {
     let Some(machine_id) = machine_id(data_dir) else {
         tracing::debug!("no Machine id yet; skipping the metric sample");
         return Ok(Vec::new());
     };
-    let (rows, gone) = sample(roots, machine_id, ts, containers);
+    let (rows, gone) = sample(roots, store.path(), slow, machine_id, ts, containers);
     segment::append(store, &rows)?;
     Ok(gone)
 }
@@ -259,38 +303,92 @@ pub(in crate::observe) fn machine_id(data_dir: &Path) -> Option<MachineId> {
         .map(|record| record.id())
 }
 
-/// One row per live container, then the Machine's row. M7 fills the
-/// Machine row's `disk`. Marker rows come from the harvester's Docker events.
+/// One row per live container, then the Machine's row with its disk. Marker
+/// rows come from the harvester's Docker events.
 fn sample(
     roots: &Roots,
+    store: &Path,
+    slow: SlowReading,
     machine_id: MachineId,
     ts: i64,
     containers: &[Tracked],
 ) -> (Vec<Row>, Vec<ContainerId>) {
-    let mut rows = Vec::with_capacity(containers.len() + 1);
-    let mut gone = Vec::new();
-    for container in containers {
-        // A pid that exited, or was reused by another process, no longer
-        // names the container's cgroup.
-        if cgroup_path(&roots.proc, container.pid).as_deref() != Some(container.cgroup.as_str()) {
-            gone.push(container.id);
-            continue;
-        }
+    // A pid that exited, or was reused by another process, no longer names
+    // the container's cgroup.
+    let (live, gone): (Vec<&Tracked>, Vec<&Tracked>) = containers.iter().partition(|container| {
+        cgroup_path(&roots.proc, container.pid).as_deref() == Some(container.cgroup.as_str())
+    });
+    let volume_io = volume_io(&zfs_io::read(&roots.zfs_kstat), &live);
+    let mut rows = Vec::with_capacity(live.len() + 1);
+    for container in live {
         let dir = roots.cgroup.join(container.cgroup.trim_start_matches('/'));
         let counters = cgroup::read_cgroup(&dir);
         let net = (!container.host_network)
             .then(|| net::read_net_dev(&roots.proc, container.pid))
             .flatten();
         rows.push(Row::Container(container_sample(
-            machine_id, ts, container, &counters, net,
+            machine_id,
+            ts,
+            container,
+            &counters,
+            net,
+            volume_io.get(&container.id).copied(),
         )));
     }
-    rows.push(Row::Host(host_sample(
-        machine_id,
-        ts,
-        host::read_host(&roots.proc, &[]),
-    )));
-    (rows, gone)
+    let host = host::read_host(&roots.proc, &[store]);
+    let disk = host
+        .mounts
+        .first()
+        .and_then(|mount| mount.bytes)
+        .map(|filesystem| disk::breakdown(filesystem, slow));
+    rows.push(Row::Host(host_sample(machine_id, ts, host, disk)));
+    (
+        rows,
+        gone.into_iter().map(|container| container.id).collect(),
+    )
+}
+
+/// Each Volume's ZFS bytes, booked once per Service on the lowest container
+/// id that mounts it. Replicas sharing a Volume cannot be told apart, and
+/// booking it on each would count it once per replica.
+fn volume_io(
+    datasets: &BTreeMap<String, DatasetIo>,
+    containers: &[&Tracked],
+) -> HashMap<ContainerId, DatasetIo> {
+    let by_volume: HashMap<&str, DatasetIo> = datasets
+        .iter()
+        .filter_map(|(dataset, io)| match DatasetPlace::of(dataset) {
+            DatasetPlace::Volume(volume) => Some((volume, *io)),
+            DatasetPlace::Slot | DatasetPlace::Other => None,
+        })
+        .collect();
+    let mut owners: HashMap<(Option<ServiceId>, &str), ContainerId> = HashMap::new();
+    for container in containers {
+        for volume in &container.volumes {
+            if !by_volume.contains_key(volume.as_str()) {
+                continue;
+            }
+            match owners.entry((container.labels.service_id, volume.as_str())) {
+                Entry::Occupied(mut owner) if container.id < *owner.get() => {
+                    owner.insert(container.id);
+                }
+                Entry::Occupied(_) => {}
+                Entry::Vacant(owner) => {
+                    owner.insert(container.id);
+                }
+            }
+        }
+    }
+    let mut booked: HashMap<ContainerId, DatasetIo> = HashMap::new();
+    for ((_, volume), owner) in owners {
+        let Some(io) = by_volume.get(volume) else {
+            continue;
+        };
+        let total = booked.entry(owner).or_default();
+        total.read_bytes = total.read_bytes.saturating_add(io.read_bytes);
+        total.write_bytes = total.write_bytes.saturating_add(io.write_bytes);
+    }
+    booked
 }
 
 fn container_sample(
@@ -299,8 +397,13 @@ fn container_sample(
     container: &Tracked,
     counters: &cgroup::CgroupCounters,
     net: Option<NetCounters>,
+    volume_io: Option<DatasetIo>,
 ) -> MetricSample {
     let labels = &container.labels;
+    let io = |cgroup: Option<u64>, volume: Option<u64>| match (cgroup, volume) {
+        (Some(cgroup), Some(volume)) => Some(cgroup.saturating_add(volume)),
+        (cgroup, volume) => cgroup.or(volume),
+    };
     MetricSample {
         machine_id,
         container_id: container.id,
@@ -317,14 +420,27 @@ fn container_sample(
         },
         rx: net.map(|net| net.rx),
         tx: net.map(|net| net.tx),
-        io_r: counters.io.map(|io| io.read),
-        io_w: counters.io.map(|io| io.write),
+        io_r: io(
+            counters.io.map(|io| io.read),
+            volume_io.map(|io| io.read_bytes),
+        ),
+        io_w: io(
+            counters.io.map(|io| io.write),
+            volume_io.map(|io| io.write_bytes),
+        ),
     }
 }
 
-/// Loopback and veth pairs are left out: neither leaves the Machine, and one
-/// veth per container would grow every row with the container count.
-fn host_sample(machine_id: MachineId, ts: i64, host: HostCounters) -> HostSample {
+/// Loopback, veth pairs, and bridges are left out. Loopback never leaves the
+/// Machine; veths and bridges carry container traffic the uplink counts
+/// again, and one veth per container would grow every row with the
+/// container count.
+fn host_sample(
+    machine_id: MachineId,
+    ts: i64,
+    host: HostCounters,
+    disk: Option<DiskBreakdown>,
+) -> HostSample {
     HostSample {
         machine_id,
         ts,
@@ -340,9 +456,7 @@ fn host_sample(machine_id: MachineId, ts: i64, host: HostCounters) -> HostSample
             .interfaces
             .unwrap_or_default()
             .into_iter()
-            .filter(|interface| {
-                interface.name != LOOPBACK && !interface.name.starts_with(VETH_PREFIX)
-            })
+            .filter(|interface| counts_on_host(&interface.name))
             .map(|interface| {
                 (
                     interface.name,
@@ -353,8 +467,14 @@ fn host_sample(machine_id: MachineId, ts: i64, host: HostCounters) -> HostSample
                 )
             })
             .collect::<BTreeMap<_, _>>(),
-        disk: None,
+        disk,
     }
+}
+
+fn counts_on_host(interface: &str) -> bool {
+    ![LOOPBACK, DOCKER_BRIDGE, DOCKER_NETWORK_NAME].contains(&interface)
+        && !interface.starts_with(VETH_PREFIX)
+        && !interface.starts_with(COMPOSE_BRIDGE_PREFIX)
 }
 
 #[cfg(test)]
@@ -362,11 +482,11 @@ mod tests {
     use std::fs;
 
     use ployz_core::{
-        ContainerId, MachineId, QualifiedService, ServiceId,
-        metrics::{MetricRange, MetricScope},
+        ContainerId, DockerVolumeName, MachineId, QualifiedService, ServiceId,
+        metrics::{MetricRange, MetricSample, MetricScope},
     };
 
-    use super::{Labels, Roots, Tracked, cgroup_path, sample, tick};
+    use super::{Labels, Roots, SlowReading, Tracked, cgroup_path, sample, tick};
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
         network::WireGuardPrivateKey,
@@ -396,6 +516,7 @@ Inter-|   Receive                                                |  Transmit
             let roots = Roots {
                 proc: dir.0.join("proc"),
                 cgroup: dir.0.join("cgroup"),
+                zfs_kstat: dir.0.join("kstat"),
             };
             fs::create_dir_all(&roots.proc).unwrap();
             fs::create_dir_all(&roots.cgroup).unwrap();
@@ -409,7 +530,7 @@ Inter-|   Receive                                                |  Transmit
             fs::write(
                 roots.proc.join("net/dev"),
                 format!(
-                    "{NET_DEV_HEADER}    lo: 9 1 0 0 0 0 0 0 9 1 0 0 0 0 0 0\n  eth0: 500 5 0 0 0 0 0 0 600 6 0 0 0 0 0 0\nployz-wg: 70 1 0 0 0 0 0 0 80 1 0 0 0 0 0 0\nveth1a2b: 100 1 0 0 0 0 0 0 200 2 0 0 0 0 0 0\n"
+                    "{NET_DEV_HEADER}    lo: 9 1 0 0 0 0 0 0 9 1 0 0 0 0 0 0\n  eth0: 500 5 0 0 0 0 0 0 600 6 0 0 0 0 0 0\nployz-wg: 70 1 0 0 0 0 0 0 80 1 0 0 0 0 0 0\nveth1a2b: 100 1 0 0 0 0 0 0 200 2 0 0 0 0 0 0\ndocker0: 300 3 0 0 0 0 0 0 300 3 0 0 0 0 0 0\n ployz: 100 1 0 0 0 0 0 0 200 2 0 0 0 0 0 0\nbr-0f1e2d3c: 40 1 0 0 0 0 0 0 40 1 0 0 0 0 0 0\n"
                 ),
             )
             .unwrap();
@@ -455,7 +576,21 @@ Inter-|   Receive                                                |  Transmit
                     replica: format!("web-{n}"),
                 },
                 host_network: false,
+                volumes: Vec::new(),
             }
+        }
+
+        /// One objset kstat file, as OpenZFS writes it per mounted dataset.
+        fn objset(&self, id: u32, dataset: &str, read: u64, written: u64) {
+            let pool = self.roots.zfs_kstat.join("ployz");
+            fs::create_dir_all(&pool).unwrap();
+            fs::write(
+                pool.join(format!("objset-0x{id:x}")),
+                format!(
+                    "dataset_name 7 {dataset}\nwrites 4 1\nnwritten 4 {written}\nreads 4 1\nnread 4 {read}\n"
+                ),
+            )
+            .unwrap();
         }
 
         /// The container exits: the kernel drops its pid and its cgroup.
@@ -538,7 +673,15 @@ Inter-|   Receive                                                |  Transmit
         let api = fixture.start(2);
         let containers = vec![web.clone(), api.clone()];
 
-        let gone = tick(&fixture.roots, &store, &data_dir, &containers, T0).unwrap();
+        let gone = tick(
+            &fixture.roots,
+            &store,
+            &data_dir,
+            &containers,
+            SlowReading::default(),
+            T0,
+        )
+        .unwrap();
         assert!(gone.is_empty());
 
         fixture.stop(&api);
@@ -547,6 +690,7 @@ Inter-|   Receive                                                |  Transmit
             &store,
             &data_dir,
             &containers,
+            SlowReading::default(),
             T0 + 10 * SEC,
         )
         .unwrap();
@@ -607,9 +751,17 @@ Inter-|   Receive                                                |  Transmit
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             ["eth0", "ployz-wg"],
-            "the Machine keeps its mesh interface apart and drops loopback and veths"
+            "the Machine keeps its mesh interface apart and drops loopback, veths, and bridges"
         );
-        assert_eq!(host.disk, None);
+        let disk = host
+            .disk
+            .expect("the Observe Store's filesystem is measured");
+        assert!(disk.total > 0 && disk.free <= disk.total);
+        assert_eq!(
+            (disk.volumes, disk.observe_store, disk.other),
+            (None, None, None),
+            "nothing is known before the first 60 s reading"
+        );
     }
 
     #[test]
@@ -621,7 +773,14 @@ Inter-|   Receive                                                |  Transmit
             "0::/user.slice/session-1.scope\n",
         )
         .unwrap();
-        let (rows, gone) = sample(&fixture.roots, machine(), T0, std::slice::from_ref(&web));
+        let (rows, gone) = sample(
+            &fixture.roots,
+            &fixture.dir.0,
+            SlowReading::default(),
+            machine(),
+            T0,
+            std::slice::from_ref(&web),
+        );
         assert_eq!(gone, vec![web.id]);
         assert!(matches!(rows.as_slice(), [Row::Host(_)]));
     }
@@ -636,7 +795,14 @@ Inter-|   Receive                                                |  Transmit
             .join(web.cgroup.trim_start_matches('/'));
         fs::remove_file(dir.join("io.stat")).unwrap();
         fs::remove_file(fixture.roots.proc.join(web.pid.to_string()).join("net/dev")).unwrap();
-        let (rows, gone) = sample(&fixture.roots, machine(), T0, &[web]);
+        let (rows, gone) = sample(
+            &fixture.roots,
+            &fixture.dir.0,
+            SlowReading::default(),
+            machine(),
+            T0,
+            &[web],
+        );
         assert!(gone.is_empty());
         let Some(Row::Container(row)) = rows.first() else {
             panic!("the first row is the container's");
@@ -719,7 +885,14 @@ Inter-|   Receive                                                |  Transmit
         };
         let tracked = super::track(&fixture.roots.proc, corrosion.id, &inspected).unwrap();
 
-        let (rows, _) = sample(&fixture.roots, machine(), T0, &[tracked]);
+        let (rows, _) = sample(
+            &fixture.roots,
+            &fixture.dir.0,
+            SlowReading::default(),
+            machine(),
+            T0,
+            &[tracked],
+        );
         let Some(Row::Container(row)) = rows.first() else {
             panic!("the first row is the container's");
         };
@@ -737,7 +910,15 @@ Inter-|   Receive                                                |  Transmit
         let store = fixture.store();
         let data_dir = fixture.data_dir(None);
         let web = fixture.start(1);
-        let gone = tick(&fixture.roots, &store, &data_dir, &[web], T0).unwrap();
+        let gone = tick(
+            &fixture.roots,
+            &store,
+            &data_dir,
+            &[web],
+            SlowReading::default(),
+            T0,
+        )
+        .unwrap();
         assert!(gone.is_empty());
         let Selected::Machine(hosts) = segment::read(
             &store,
@@ -751,5 +932,90 @@ Inter-|   Receive                                                |  Transmit
             panic!("the Machine scope selects host rows");
         };
         assert!(hosts.is_empty());
+    }
+
+    fn volume(name: &str) -> DockerVolumeName {
+        DockerVolumeName::parse(name).unwrap()
+    }
+
+    fn io_by_container(rows: &[Row]) -> Vec<(ContainerId, Option<u64>, Option<u64>)> {
+        let mut io: Vec<_> = rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Container(MetricSample {
+                    container_id,
+                    io_r,
+                    io_w,
+                    ..
+                }) => Some((*container_id, *io_r, *io_w)),
+                Row::Host(_) => None,
+            })
+            .collect();
+        io.sort();
+        io
+    }
+
+    #[test]
+    fn a_volume_shared_by_two_replicas_is_booked_once_and_slots_are_left_out() {
+        let fixture = Fixture::new();
+        let mut first = fixture.start(1);
+        let mut second = fixture.start(2);
+        let mut other = fixture.start(3);
+        second.labels.service_id = first.labels.service_id;
+        first.volumes = vec![volume("prod_db")];
+        second.volumes = vec![volume("prod_db")];
+        other.volumes = vec![volume("prod_cache")];
+        fixture.objset(0x36, "ployz/ployz/prod_db", 1000, 5000);
+        fixture.objset(0x37, "ployz/ployz-mirror/prod_cache", 70, 70);
+        fixture.objset(0x38, "ployz/ployz-mirror/prod_cache/fs", 80, 80);
+
+        let (rows, _) = sample(
+            &fixture.roots,
+            &fixture.dir.0,
+            SlowReading::default(),
+            machine(),
+            T0,
+            &[second.clone(), first.clone(), other.clone()],
+        );
+
+        assert_eq!(
+            io_by_container(&rows),
+            [
+                (first.id, Some(7 + 1000), Some(9 + 5000)),
+                (second.id, Some(7), Some(9)),
+                (other.id, Some(7), Some(9)),
+            ],
+            "the lowest id carries the Volume; a mirror slot is not a mounted Volume"
+        );
+    }
+
+    #[test]
+    fn replicas_of_different_services_on_one_volume_each_carry_it() {
+        let fixture = Fixture::new();
+        let mut web = fixture.start(1);
+        let mut api = fixture.start(2);
+        web.volumes = vec![volume("shared")];
+        api.volumes = vec![volume("shared")];
+        fixture.objset(0x36, "ployz/ployz/shared", 10, 20);
+        let dir = fixture
+            .roots
+            .cgroup
+            .join(api.cgroup.trim_start_matches('/'));
+        fs::remove_file(dir.join("io.stat")).unwrap();
+
+        let (rows, _) = sample(
+            &fixture.roots,
+            &fixture.dir.0,
+            SlowReading::default(),
+            machine(),
+            T0,
+            &[web.clone(), api.clone()],
+        );
+
+        assert_eq!(
+            io_by_container(&rows),
+            [(web.id, Some(17), Some(29)), (api.id, Some(10), Some(20)),],
+            "Volume bytes stand alone when the cgroup counter is missing"
+        );
     }
 }

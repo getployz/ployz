@@ -7,12 +7,11 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-#[expect(dead_code, reason = "wired by the sampler in M6")]
 pub(crate) const KSTAT_ROOT: &str = "/proc/spl/kstat/zfs";
 const OBJSET_PREFIX: &str = "objset-";
 
 /// Bytes read from and written to one dataset since its pool was imported.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DatasetIo {
     pub(crate) read_bytes: u64,
     pub(crate) write_bytes: u64,
@@ -22,7 +21,6 @@ pub(crate) struct DatasetIo {
 ///
 /// A missing root, an unreadable pool dir, or a file that does not parse
 /// leaves those datasets out; it never reports them as zero.
-#[cfg_attr(not(test), expect(dead_code, reason = "wired by the sampler in M6"))]
 pub(crate) fn read(root: &Path) -> BTreeMap<String, DatasetIo> {
     let Ok(pools) = fs::read_dir(root) else {
         return BTreeMap::new();
