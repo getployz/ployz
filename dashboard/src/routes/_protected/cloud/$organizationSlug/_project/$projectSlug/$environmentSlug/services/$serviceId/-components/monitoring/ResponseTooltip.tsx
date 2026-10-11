@@ -1,5 +1,5 @@
-import { failureTotal, formatMs, passes, type UptimeStep } from "#/modules/uptime/uptime";
-import { PHASES, type Phase, type UptimePoint } from "#/modules/uptime/uptime-status";
+import { failureTotal, formatMs, passes, regionLabel, type UptimeStep } from "#/modules/uptime/uptime";
+import { PHASES, type Phase, type RegionNames, type UptimePoint } from "#/modules/uptime/uptime-status";
 import { useTimeZone } from "#/utils/time-zone";
 import { atFormat } from "./MetricChart";
 
@@ -27,7 +27,12 @@ const phaseMeans = (point: UptimePoint) => PHASES.map((phase) => ({ phase, ms: p
 const meanTotal = (point: UptimePoint) => phaseMeans(point).reduce((sum, part) => sum + part.ms, 0);
 
 /** One step of the Response time chart, ending at `end`, region by region: how fast, where the time went, and what failed. */
-export function ResponseTooltip({ step, end, edgeMs }: { step: UptimeStep; end: number; edgeMs: number | null }) {
+export function ResponseTooltip({ step, end, edgeMs, regions }: {
+  step: UptimeStep;
+  end: number;
+  edgeMs: number | null;
+  regions: RegionNames;
+}) {
   const timeZone = useTimeZone();
   const slowest = Math.max(...step.regions.map(meanTotal), 0);
   return (
@@ -37,7 +42,7 @@ export function ResponseTooltip({ step, end, edgeMs }: { step: UptimeStep; end: 
         {step.regions.length > 0 ? <span className="text-muted-foreground tabular-nums">{checksLabel(step.regions)}</span> : null}
       </div>
       {step.regions.length === 0 ? <span className="text-muted-foreground">No checks</span> : null}
-      {step.regions.map((point) => <RegionRow key={point.region} point={point} slowest={slowest} />)}
+      {step.regions.map((point) => <RegionRow key={point.region} point={point} slowest={slowest} regions={regions} />)}
       {edgeMs === null ? null : (
         <div className="flex justify-between gap-3">
           <span className="text-muted-foreground">Edge</span>
@@ -58,7 +63,8 @@ export function ResponseTooltip({ step, end, edgeMs }: { step: UptimeStep; end: 
   );
 }
 
-function RegionRow({ point, slowest }: { point: UptimePoint; slowest: number }) {
+function RegionRow({ point, slowest, regions }: { point: UptimePoint; slowest: number; regions: RegionNames }) {
+  const label = regionLabel(regions, point.region);
   const failed = failureTotal(point.failures);
   const single = point.probes === 1;
   // Most probes failed: the row leads with the failure, not with a median of the few that passed.
@@ -67,7 +73,7 @@ function RegionRow({ point, slowest }: { point: UptimePoint; slowest: number }) 
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="font-mono">{point.region}</span>
+        {label ? <span className={label.named ? undefined : "font-mono"}>{label.text}</span> : null}
         {failing ? (
           <span className="text-destructive tabular-nums">{single ? "Down" : `${failed} of ${point.probes} failed`}</span>
         ) : (

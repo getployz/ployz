@@ -127,4 +127,8 @@ export type ServiceUptime = {
   readonly checks: readonly UptimeCheckResult[] | null;
   /** Open and closed incidents that overlap the check window, newest first. */
   readonly incidents: readonly UptimeIncidentEntry[];
+  /** Every region the install lists and every region the points, checks and incidents name, with its display name or null. */
+  readonly regions: RegionNames;
 };
+
+export type RegionNames = Readonly<Record<string, string | null>>;

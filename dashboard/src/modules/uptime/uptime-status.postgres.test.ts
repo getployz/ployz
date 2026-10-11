@@ -388,6 +388,19 @@ describe("uptime incidents", () => {
     ]);
   });
 
+  it("names every region the install lists and every region its data mentions, null for one without a name", async () => {
+    await harness.pool.query(`insert into uptime_region (region, name) values ('fra', 'Frankfurt'), ('syd', null)`);
+    const check = await createCheck();
+    expect((await summary(check)).regions).toEqual({ fra: "Frankfurt", syd: null });
+
+    await result(check, "fra", ago(2 * HOUR), "pass", 120);
+    await result(check, "nrt", ago(HOUR), "pass", 200);
+    await incident(check, ago(5 * HOUR), ago(4 * HOUR));
+    expect((await summary(check)).regions).toEqual({
+      fra: "Frankfurt", syd: null, nrt: null, "eu-west": null, "us-east": null,
+    });
+  });
+
   it("treats opened_by it can't parse as a defect", async () => {
     const check = await createCheck();
     await harness.pool.query(

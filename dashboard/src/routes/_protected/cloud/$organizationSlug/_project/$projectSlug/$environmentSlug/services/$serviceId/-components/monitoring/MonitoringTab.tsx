@@ -26,6 +26,7 @@ import {
   incidentSpan,
   observationText,
   openIncident,
+  regionLabel,
   steps,
   uptimePercent,
   wrongPathIncident,
@@ -34,7 +35,7 @@ import {
   type TimeWindow,
 } from "#/modules/uptime/uptime";
 import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modules/uptime/uptime-range";
-import type { UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
+import type { RegionNames, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
 import { type UptimeScope, usePrefetchServiceUptime, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
 import { useTimeZone } from "#/utils/time-zone";
@@ -230,7 +231,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
           ) : toggle}
         </div>
       </div>
-      <HistoryStrip bars={bars} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
+      <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
         from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
       <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}
         onPointerDownCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}>
@@ -268,7 +269,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
         {picked ? (
           <PopoverContent side="bottom" align="start"
             anchor={{ getBoundingClientRect: () => DOMRect.fromRect({ x: picked.x, y: picked.y, width: 0, height: 0 }) }}>
-            <Evidence incident={picked.incident} now={now} at={at} onZoom={zoom?.incident.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
+            <Evidence incident={picked.incident} regions={uptime?.regions ?? {}} now={now} at={at} onZoom={zoom?.incident.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
               fixPath={picked.incident.id === wrongPath?.id ? fixPath : null} />
           </PopoverContent>
         ) : null}
@@ -318,7 +319,8 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, frame }:
       renderTooltip={(at) => {
         const index = byAt.get(at);
         const step = index === undefined ? undefined : checked[index];
-        return step ? <ResponseTooltip step={step} end={checked[(index ?? 0) + 1]?.at ?? window.to} edgeMs={edge?.[index ?? -1] ?? null} /> : null;
+        return step ? <ResponseTooltip step={step} end={checked[(index ?? 0) + 1]?.at ?? window.to} edgeMs={edge?.[index ?? -1] ?? null}
+          regions={data?.regions ?? {}} /> : null;
       }} />
   );
 }
@@ -335,19 +337,26 @@ function ResponseTimeError({ reset }: ErrorComponentProps) {
 
 const KIND_WORDS = { routine: null, confirm: "Confirm", recheck: "Recheck" } as const;
 
-/** A result in a few words: "us-east · 212 ms", "eu-west · 502 · Confirm". */
-function resultText(result: UptimeCheckResult) {
+/** A result in a few words: "Amsterdam · 212 ms", "sin · 502 · Confirm". */
+function ResultText({ result, regions }: { result: UptimeCheckResult; regions: RegionNames }) {
+  const label = regionLabel(regions, result.region);
   const answer = result.verdict === "inconclusive" ? "Inconclusive"
     : result.verdict === "pass" ? formatMs(result.ms)
     : result.status === 0 ? "No response" : String(result.status);
-  return [result.region, answer, KIND_WORDS[result.kind]].filter(Boolean).join(" · ");
+  return (
+    <span>
+      {label ? <><span className={label.named ? undefined : "font-mono"}>{label.text}</span> · </> : null}
+      {[answer, KIND_WORDS[result.kind]].filter(Boolean).join(" · ")}
+    </span>
+  );
 }
 
 const TONES = { up: "bg-success", down: "bg-destructive", none: "bg-muted" } as const satisfies Record<HistoryBar["tone"], string>;
 
 /** The check window in bars, red where a check failed or an incident touched. Hover tells it; click zooms onto its incident. */
-function HistoryStrip({ bars, at, from, to, zoomed, onZoom }: {
+function HistoryStrip({ bars, regions, at, from, to, zoomed, onZoom }: {
   bars: readonly HistoryBar[];
+  regions: RegionNames;
   at: Intl.DateTimeFormat;
   from: string;
   to: string;
@@ -372,7 +381,7 @@ function HistoryStrip({ bars, at, from, to, zoomed, onZoom }: {
                 } />
                 <TooltipContent className="flex-col items-start gap-0.5">
                   <span className="font-medium">{label}</span>
-                  {bar.result ? <span>{resultText(bar.result)}</span> : null}
+                  {bar.result ? <ResultText result={bar.result} regions={regions} /> : null}
                   {bar.incidents.length === 0
                     ? bar.result ? null : <span>{bar.tone === "up" ? "No incidents" : "No data"}</span>
                     : bar.incidents.map((incident) => (
@@ -392,8 +401,9 @@ function HistoryStrip({ bars, at, from, to, zoomed, onZoom }: {
 }
 
 /** What opened an incident: when, how long, and what each region got back. */
-function Evidence({ incident, now, at, onZoom, fixPath }: {
+function Evidence({ incident, regions, now, at, onZoom, fixPath }: {
   incident: UptimeIncidentEntry;
+  regions: RegionNames;
   now: number;
   at: Intl.DateTimeFormat;
   onZoom: (() => void) | null;
@@ -409,14 +419,17 @@ function Evidence({ incident, now, at, onZoom, fixPath }: {
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
         <dt className="text-muted-foreground">Since</dt>
         <dd>{at.format(span.from)}</dd>
-        <dt className="text-muted-foreground">Regions</dt>
-        <dd className="flex flex-col font-mono">
-          {incident.observations.map((observation) => (
-            <span key={`${observation.region}-${observation.at}`} className="flex gap-2">
-              <span>{observation.region}</span>
-              <span className={observation.verdict === "fail" ? "text-destructive" : "text-muted-foreground"}>{observationText(observation)}</span>
-            </span>
-          ))}
+        <dt className="text-muted-foreground">{Object.keys(regions).length > 1 ? "Regions" : "Checks"}</dt>
+        <dd className="flex flex-col">
+          {incident.observations.map((observation) => {
+            const label = regionLabel(regions, observation.region);
+            return (
+              <span key={`${observation.region}-${observation.at}`} className="flex gap-2">
+                {label ? <span className={label.named ? undefined : "font-mono"}>{label.text}</span> : null}
+                <span className={observation.verdict === "fail" ? "text-destructive" : "text-muted-foreground"}>{observationText(observation)}</span>
+              </span>
+            );
+          })}
         </dd>
       </dl>
       {onZoom || fixPath ? (

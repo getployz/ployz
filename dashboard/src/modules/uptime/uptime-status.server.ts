@@ -7,7 +7,7 @@ import { requireInfrastructureOrganization } from "#/modules/runtime/organizatio
 import { Database } from "#/server/database.server";
 import { failureClassSql, failureColumn, failureTextSql, phaseColumn } from "./failure-sql.server";
 import { clampSince, type UptimeSeries } from "./retention";
-import { uptimeCheck, uptimeIncident, uptimeResult, uptimeResultHourly } from "./tables";
+import { uptimeCheck, uptimeIncident, uptimeRegion, uptimeResult, uptimeResultHourly } from "./tables";
 import {
   type EnvironmentUptimeCheck,
   IncidentEvidence,
@@ -150,7 +150,14 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
 
   const checks = perCheck(checked) && rawFrom.getTime() === checked.from ? yield* readChecks(of, rawFrom, to) : null;
   const points = yield* readPoints(of, window, pointSource(window, now.getTime()), since);
-  return { check, status, uptime, points, checks, incidents } satisfies ServiceUptime;
+  const codes = [...new Set([
+    ...points.map((point) => point.region),
+    ...(checks ?? []).map((result) => result.region),
+    ...incidents.flatMap((incident) => incident.observations.map((observation) => observation.region)),
+  ])];
+  const named = yield* drizzle.select({ region: uptimeRegion.region, name: uptimeRegion.name }).from(uptimeRegion);
+  const regions = { ...Object.fromEntries(codes.map((code) => [code, null])), ...Object.fromEntries(named.map((row) => [row.region, row.name])) };
+  return { check, status, uptime, points, checks, incidents, regions } satisfies ServiceUptime;
 });
 
 /** The newest results of every kind between `from` and `to`, oldest first. */

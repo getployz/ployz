@@ -7,12 +7,23 @@ import {
   type FailureCounts,
   type IncidentObservation,
   PHASES,
+  type RegionNames,
   type ServiceUptime,
   type UptimeCheckResult,
   type UptimeIncidentEntry,
   type UptimePoint,
   type UptimeStatus,
 } from "./uptime-status";
+
+/**
+ * What to call a probe region: its display name, else its code, which reads as code. Null on an install with one region, since
+ * a label that never changes says nothing.
+ */
+export function regionLabel(regions: RegionNames, code: string): { readonly text: string; readonly named: boolean } | null {
+  if (Object.keys(regions).length <= 1) return null;
+  const name = regions[code] ?? null;
+  return name === null ? { text: code, named: false } : { text: name, named: true };
+}
 
 /** A Service without a check has no public domain. */
 export type CheckState = "no_domain" | UptimeStatus;

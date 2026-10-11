@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   causeText, chartWindow, checkState, checkSteps, failureClass, formatSpan, historyBars, incidentRange, mergePoints,
-  observationText, steps, tally, unreachableHost, uptimePercent, wrongPathIncident,
+  observationText, regionLabel, steps, tally, unreachableHost, uptimePercent, wrongPathIncident,
 } from "./uptime";
 import { pointSource } from "./uptime-range";
 import {
@@ -35,7 +35,17 @@ const uptime = (patch: Partial<ServiceUptime>): ServiceUptime => ({
   points: [],
   checks: null,
   incidents: [],
+  regions: {},
   ...patch,
+});
+
+describe("regionLabel", () => {
+  it("names a region, falls back to its code, and labels nothing when one region is in view", () => {
+    const regions = { ams: "Amsterdam", sin: null };
+    expect(regionLabel(regions, "ams")).toEqual({ text: "Amsterdam", named: true });
+    expect(regionLabel(regions, "sin")).toEqual({ text: "sin", named: false });
+    expect(regionLabel({ ams: "Amsterdam" }, "ams")).toBeNull();
+  });
 });
 
 describe("observationText", () => {
