@@ -2,6 +2,7 @@
 //! repositories, see what it grants, and disconnect it. Acts in Cloud as this
 //! device's sign-in or `PLOYZ_TOKEN`; needs no Server.
 
+use super::catalog::{Approval::*, Runnable, cloud};
 use std::time::{Duration, Instant};
 
 use clap::{ArgMatches, Command};
@@ -13,7 +14,7 @@ use serde_json::json;
 use super::account::in_cloud;
 use super::login::open_browser;
 use super::store::Next;
-use super::{Error, Handler, leaf_matches};
+use super::{Error, leaf_matches};
 use crate::cli::{positional, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
@@ -48,11 +49,11 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "connect" => connect,
-        "ls" => list,
-        "disconnect" => disconnect,
+        "connect" => cloud(Never, connect),
+        "ls" => cloud(Never, list),
+        "disconnect" => cloud(Always, disconnect),
         _ => return None,
     })
 }
