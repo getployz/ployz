@@ -167,6 +167,18 @@ it.live("a store tool the agent mints ids for creates a Service where the member
     expect(JSON.stringify(listed)).toContain('"api"');
   }));
 
+it.live("a Service restart runs through Cloud without asking anyone", () =>
+  Effect.gen(function* () {
+    const { say, pending } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_restart", input: { service: "web", wait_seconds: 0 } }] }, { text: "Restarting." }]);
+    const answered = yield* say("restart web", { page: architecture }, model);
+    expect(answered.results).toMatchObject([{ ok: true, value: { run: "restart web", state: "accepted", at: "shop/production" } }]);
+    expect(answered.said).toBe("Restarting.");
+    expect(answered.interrupts).toEqual([]);
+    expect(yield* pending).toEqual([]);
+  }));
+
 const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };
 const ARCHITECTURE = '<dashboard-page page="architecture" project="shop" environment="production" service="web"/>';
 const SERVERS = '<dashboard-page page="servers"/>';
