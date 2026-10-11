@@ -2933,7 +2933,7 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
             json!({ "secret": true })
         );
         let refused = error(store, &["set", "web.env.TOKEN=plain-text"]);
-        assert_eq!(refused["code"], json!("invalid_argument"));
+        assert_eq!(refused["code"], json!("conflict"));
         assert!(!refused.to_string().contains("plain-text"));
         failed(store, &["set", "web.env.TOKEN=x", "--secret"], 2);
         failed(

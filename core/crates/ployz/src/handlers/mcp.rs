@@ -1132,7 +1132,7 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .ends_with(
-                    "- reads stdin. `-` for stdin is refused. Cannot be used with `--from-env-file`."
+                    "- reads stdin. `-` for stdin is refused. Cannot be used with `--from-env-file`, `--rename`."
                 ),
         );
         let no_reset = &tool("server_rm")["inputSchema"]["properties"]["no-reset"];

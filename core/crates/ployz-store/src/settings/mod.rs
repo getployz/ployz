@@ -463,9 +463,10 @@ impl ServiceSetting {
         if value.is_null() {
             return Err(self.invalid("null never clears a Setting; unset it"));
         }
-        let value = match self {
-            Self::MemLimit => self.mem_limit(value)?,
-            _ => self.coerce(value),
+        let value = if matches!(self, Self::MemLimit) {
+            self.mem_limit(value)?
+        } else {
+            self.coerce(value)
         };
         if let Self::Git(git) = self {
             return git.set(config, value, trusted);
