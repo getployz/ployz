@@ -2220,7 +2220,7 @@
   },
   {
     "command": "explain",
-    "about": "Describe one Setting, with an example",
+    "about": "Describe one Setting with an example, or list a Service's Settings",
     "json": true,
     "approval": "never",
     "surface": "cloud",
@@ -2233,7 +2233,7 @@
         "multiple": false,
         "index": 1,
         "trailing": false,
-        "help": "SERVICE.SETTING, for example web.replicas"
+        "help": "SERVICE.SETTING, for example web.replicas, or SERVICE"
       }
     ]
   },
