@@ -81,13 +81,6 @@ function agoEdge(ms: number) {
   return unit && ms / UNIT_MS[unit] < 1_000_000 ? `${ms / UNIT_MS[unit]}${unit}` : null;
 }
 
-const casual = chrono.en.configuration.createCasualConfiguration();
-/** chrono's casual English, but "2026-13-01" is no date rather than January 13: the first parser is the year-month-day one. */
-const parser = new chrono.Chrono({
-  ...casual,
-  parsers: [...chrono.en.configuration.createConfiguration(true).parsers.slice(0, 1), ...casual.parsers.slice(1)],
-});
-
 /**
  * What a person typed into From or Until, as an edge, or null when it names no time. chrono-node reads the text: "now",
  * "15m ago", "2 hours ago", "yesterday", "2023-12-25 14:30", ISO instants. "15m" reads as "15m ago". An offset back
@@ -97,7 +90,7 @@ export function parseEdge(input: string, timeZone: string, now: number): string 
   const trimmed = input.trim().toLowerCase();
   const text = /^\d+\s*[a-z]+$/u.test(trimmed) ? `${trimmed} ago` : trimmed;
   const reference = { instant: new Date(now), timezone: tzOffset(timeZone, new Date(now)) };
-  const [result, ...rest] = parser.parse(text, reference, { forwardDate: false });
+  const [result, ...rest] = chrono.parse(text, reference, { forwardDate: false });
   if (!result || rest.length > 0 || result.end || result.index !== 0 || result.text.length !== text.length) return null;
   const tags = result.tags();
   if (tags.has("casualReference/now")) return "now";
