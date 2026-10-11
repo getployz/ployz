@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { EventType, type StreamChunk } from "@tanstack/ai/client";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
 import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
@@ -67,7 +68,13 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
   const [connection] = useState(() => fetchServerSentEvents(`/api/agent/${encodeURIComponent(organizationSlug)}/chat`));
   // useChat hands new forwardedProps to its client on every change of identity.
   const forwardedProps = useMemo(() => ({ page }), [page]);
-  const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps });
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const onChunk = (chunk: StreamChunk) => {
+    if (chunk.type !== EventType.RUN_ERROR) return;
+    const wait = chunk.metadata?.tanstack?.retryAfterMs;
+    setRetryAt(wait === undefined ? null : Date.now() + wait);
+  };
+  const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps, onChunk });
   const bound = chat.interrupts.flatMap((interrupt) =>
     interrupt.kind === "generic" && "definitionId" in interrupt && interrupt.definitionId === approvalInterrupt.id && interrupt.payload
       ? [{ key: interrupt.key, approvalId: interrupt.payload.approvalId, interrupt }]
@@ -130,9 +137,10 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
                     <Button size="sm" variant="outline" onClick={onNewChat}>New chat</Button>
                   </div>
                 ) : (
-                  <Message>
-                    <Bubble variant="destructive"><BubbleContent role="alert">{chat.error.message}</BubbleContent></Bubble>
-                  </Message>
+                  <Failed message={chat.error.message} retryAt={retryAt} onRetry={() => {
+                    setRetryAt(null);
+                    void chat.reload();
+                  }} />
                 )}
               </MessageScrollerItem>
             )}
@@ -142,6 +150,31 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
       </MessageScroller>
       <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
     </MessageScrollerProvider>
+  );
+}
+
+/** Seconds left until `at`, ticking down to 0. */
+function useSecondsUntil(at: number | null) {
+  const [now, setNow] = useState(Date.now);
+  const left = at === null ? 0 : Math.ceil((at - now) / 1000);
+  useEffect(() => {
+    if (at === null || left <= 0) return;
+    const tick = setTimeout(() => setNow(Date.now()), at - now - (left - 1) * 1000);
+    return () => clearTimeout(tick);
+  }, [at, now, left]);
+  return Math.max(0, left);
+}
+
+/** A reply that failed. Retry waits as long as a rate-limited model asked. */
+function Failed({ message, retryAt, onRetry }: { message: string; retryAt: number | null; onRetry: () => void }) {
+  const wait = useSecondsUntil(retryAt);
+  return (
+    <Message>
+      <MessageContent>
+        <Bubble variant="destructive"><BubbleContent role="alert">{message}</BubbleContent></Bubble>
+        <Button size="sm" variant="outline" className="self-start" disabled={wait > 0} onClick={onRetry}>{wait > 0 ? `Retry in ${wait}s` : "Retry"}</Button>
+      </MessageContent>
+    </Message>
   );
 }
 
