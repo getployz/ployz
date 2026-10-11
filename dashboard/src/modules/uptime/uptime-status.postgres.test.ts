@@ -450,7 +450,10 @@ describe("probe requests", () => {
     await request(check);
     expect(await requested(check)).toEqual(first);
 
-    await result(check, "eu-west", first?.at ?? "", "pass", 120, "triggered");
+    // `now()` writes microseconds and the checker answers with the request's millisecond.
+    await harness.pool.query(`update uptime_check set
+      probe_requested_at = date_trunc('milliseconds', probe_requested_at) + interval '456 microseconds',
+      probe_answered_at = date_trunc('milliseconds', probe_requested_at) where id = $1`, [check.id]);
     await harness.pool.query("select pg_sleep(0.05)");
     await request(check);
     const second = await requested(check);
@@ -466,22 +469,36 @@ describe("probe requests", () => {
     expect(await requested(foreign)).toEqual({ at: null, revision: 1 });
   });
 
-  it("reads a request as unanswered until a triggered result at or after it lands, and drops it after 45 s", async () => {
+  it("reads a request as unanswered until the checker answers it or a later one, and drops it once its slowest round is over", async () => {
+    const answerAt = (check: Check, when: string) =>
+      harness.pool.query("update uptime_check set probe_answered_at = $2 where id = $1", [check.id, when]);
     const check = await createCheck();
     expect((await summary(check)).probe).toBeNull();
 
-    await requestAt(check, ago(10_000));
-    await result(check, "eu-west", ago(20_000), "pass", 120, "triggered");
-    await result(check, "eu-west", ago(5_000), "pass", 120, "routine");
-    expect((await summary(check)).probe).toEqual({ requestedAt: ago(10_000), answered: false });
+    // The checker reads the request to the millisecond and answers with that.
+    const requestedAt = ago(10_000).replace(".000Z", ".456Z");
+    await requestAt(check, requestedAt);
+    await result(check, "eu-west", ago(5_000), "pass", 120, "triggered");
+    expect((await summary(check)).probe).toEqual({ requestedAt, answered: false });
 
-    await result(check, "us-east", ago(10_000), "pass", 120, "triggered");
-    expect((await summary(check)).probe).toEqual({ requestedAt: ago(10_000), answered: true });
+    await answerAt(check, ago(10_000).replace(".000Z", ".455Z"));
+    expect((await summary(check)).probe).toEqual({ requestedAt, answered: false });
 
-    await requestAt(check, ago(46_000));
+    await answerAt(check, requestedAt);
+    expect((await summary(check)).probe).toEqual({ requestedAt, answered: true });
+
+    // A 5 s timeout: 30 s spacing, 5 s for the second probe, 15 s of grace.
+    await requestAt(check, ago(51_000));
     expect((await summary(check)).probe).toBeNull();
-    await requestAt(check, ago(44_000));
-    expect((await summary(check)).probe).toEqual({ requestedAt: ago(44_000), answered: true });
+    await requestAt(check, ago(49_000));
+    expect((await summary(check)).probe).toEqual({ requestedAt: ago(49_000), answered: true });
+
+    // The longest timeout keeps the slowest round's request shown to its end.
+    await harness.pool.query("update uptime_check set timeout_ms = 30000 where id = $1", [check.id]);
+    await requestAt(check, ago(74_000));
+    expect((await summary(check)).probe).toEqual({ requestedAt: ago(74_000), answered: true });
+    await requestAt(check, ago(76_000));
+    expect((await summary(check)).probe).toBeNull();
   });
 });
 
