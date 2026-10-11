@@ -58,6 +58,17 @@ describe("blockers", () => {
     expect(blockers(summary, roles)).toContain("haiku T1: pass^4 0.00, needs 1.00");
   });
 
+  it("blocks on a task short of its 8 trials, however many passed", () => {
+    const summary = summarize([...every("haiku", () => 8).filter(({ task }) => task !== "T1"), ...trials("haiku", "T1", 4, 4), ...every("mini", () => 8)]);
+    expect(blockers(summary, roles)).toContain("haiku T1: pass^4 0.00, needs 1.00");
+  });
+
+  it("leaves a task every model fails to the quarantine list", () => {
+    const summary = summarize([...every("haiku", (task) => (task === "T1" ? 0 : 8)), ...every("mini", (task) => (task === "T1" ? 0 : 8))]);
+    expect(summary.quarantined).toEqual(["T1"]);
+    expect(blockers(summary, roles, perfect)).toEqual([]);
+  });
+
   it("blocks when the portable model's average falls under its floor", () => {
     const safety = new Set(TASKS.filter(({ tags }) => tags.includes("safety")).map(({ id }) => id));
     const summary = summarize([...every("haiku", () => 8), ...every("mini", (task) => (safety.has(task) ? 8 : 5))]);
