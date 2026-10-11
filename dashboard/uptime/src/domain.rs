@@ -187,6 +187,9 @@ pub enum ProbeKind {
     Confirm,
     /// A recovery probe while the check is unreachable.
     Recheck,
+    /// A probe from every live region, asked for by a deploy or Check now. It counts toward uptime
+    /// like a routine probe.
+    Triggered,
 }
 
 impl ProbeKind {
@@ -197,6 +200,7 @@ impl ProbeKind {
             ProbeKind::Routine => "routine",
             ProbeKind::Confirm => "confirm",
             ProbeKind::Recheck => "recheck",
+            ProbeKind::Triggered => "triggered",
         }
     }
 }
