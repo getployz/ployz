@@ -2945,6 +2945,7 @@ fn a_sync_from_a_pr_environment_stages_in_production_now() {
         commits: 1,
         open: true,
         merge_commit: None,
+        target_head: None,
         updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:00:01Z").unwrap(),
     };
     local

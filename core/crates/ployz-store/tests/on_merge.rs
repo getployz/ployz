@@ -127,6 +127,7 @@ fn pull(store: &ConfigStore, who: &Actor, target: &str, updated: &str) {
         commits: 1,
         open: true,
         merge_commit: None,
+        target_head: None,
         updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
     });
     store
@@ -470,6 +471,18 @@ fn system(store: &ConfigStore, who: &Actor, event: &SystemEvent) -> Automated {
 
 /// Pull request #5 merged at `commit`, as GitHub said at `updated`.
 fn merged(store: &ConfigStore, who: &Actor, updated: &str, commit: &str) -> Automated {
+    merged_within(store, who, updated, commit, None)
+}
+
+/// Pull request #5 merged at `commit`, with GitHub saying `main`'s head `target_head`
+/// contains it.
+fn merged_within(
+    store: &ConfigStore,
+    who: &Actor,
+    updated: &str,
+    commit: &str,
+    target_head: Option<&str>,
+) -> Automated {
     let event = SystemEvent::PullRequest(PullRequest {
         repository_id: backend::repo_id(11),
         number: backend::pr_number(5),
@@ -482,6 +495,7 @@ fn merged(store: &ConfigStore, who: &Actor, updated: &str, commit: &str) -> Auto
         commits: 1,
         open: false,
         merge_commit: Some(backend::sha(commit)),
+        target_head: target_head.map(backend::sha),
         updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
     });
     system(store, who, &event)
@@ -795,6 +809,32 @@ fn what_landed_deploys_at_once_if_the_push_came_first() {
 }
 
 #[test]
+fn a_merge_whose_commit_was_never_pushed_deploys_from_the_head_that_contains_it() {
+    let (store, who) = shop();
+    watching(&store, &who);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    // Two merges in quick succession: Cloud read the branch at the second, so the
+    // Store never heard of the first.
+    let later = system(&store, &who, &push(Some(HEAD), LATER, Some(&["README.md"])));
+    assert!(later.admitted.is_empty(), "{later:?}");
+
+    let landed = merged_within(&store, &who, "2026-09-29T11:00:00Z", MERGE, Some(LATER));
+    assert_eq!(deployed(&landed), [["web"]]);
+}
+
+#[test]
+fn a_merge_contained_in_a_head_the_store_has_not_seen_waits_for_its_push() {
+    let (store, who) = shop();
+    watching(&store, &who);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+
+    let landed = merged_within(&store, &who, "2026-09-29T11:00:00Z", MERGE, Some(LATER));
+    assert!(landed.admitted.is_empty(), "{landed:?}");
+    let pushed = system(&store, &who, &push(Some(HEAD), LATER, Some(&["README.md"])));
+    assert_eq!(deployed(&pushed), [["web"]]);
+}
+
+#[test]
 fn what_landed_deploys_with_auto_deploy_off() {
     let (store, who) = shop();
     set(
@@ -1074,6 +1114,7 @@ fn event(
         commits: 1,
         open,
         merge_commit: merge.map(backend::sha),
+        target_head: None,
         updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
     })
 }

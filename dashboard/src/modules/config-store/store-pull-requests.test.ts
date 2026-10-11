@@ -29,7 +29,7 @@ describe("storePrCheckRun", () => {
   const view = (check: OnMergeCheck | null): PullRequestView => ({
     pull_request: {
       repository_id: 42, number: 146, title: "Add search", author: "ada", bot: false, head_branch: "search", head: "a".repeat(40),
-      target_branch: "main", commits: 1, open: true, merge_commit: null, updated: "2026-10-11T10:00:00Z",
+      target_branch: "main", commits: 1, open: true, merge_commit: null, target_head: null, updated: "2026-10-11T10:00:00Z",
     },
     environments: [{
       environment: { id: "e1", project: "shop", name: "pr-146", revision: 3 },

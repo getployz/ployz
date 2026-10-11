@@ -182,7 +182,7 @@ const seed = Effect.gen(function* () {
   const pullRequest = (number: number, second: number, facts: Partial<PullRequest> = {}): PullRequest => ({
     repository_id: 4242, number, title: `Change ${number}`, author: "ada", bot: false, head_branch: `change-${number}`,
     head: String(number).repeat(14).slice(0, 40), target_branch: "main", commits: 1, open: true,
-    merge_commit: null, updated: `2026-10-01T10:00:${String(second).padStart(2, "0")}Z`, ...facts,
+    merge_commit: null, target_head: null, updated: `2026-10-01T10:00:${String(second).padStart(2, "0")}Z`, ...facts,
   });
   const observe = (label: string, facts: PullRequest) => storeSystem(organizationId, { event: "pull_request", ...facts }).pipe(
     Effect.as("ok"), Effect.catchTag("StoreRefused", (refused) => Effect.succeed(`refused: ${refused.code} ${refused.message}`)),

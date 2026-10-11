@@ -6,7 +6,7 @@ import { storePrCheckRun } from "./store-pull-requests";
 import { volumeLoss } from "./store-volumes";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { StoreGithubFailure, pullRequestEvent } from "#/modules/config-store/store-github.server";
+import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { fetchInstallationPullRequest, postInstallationCheckRun } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { member } from "#/modules/identity/tables";
@@ -47,7 +47,8 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
   const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, payload.number);
   const { updatedAt } = live;
   if (updatedAt === null) return yield* new StoreGithubFailure({ message: "GitHub sent a pull request without updated_at." });
-  const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt });
+  const targetHead = yield* mergedInto(payload.installationId, payload.repositoryId, live);
+  const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, targetHead);
   for (const organizationId of organizations) {
     yield* collect(organizationId, yield* storeSystem(organizationId, event), done);
   }

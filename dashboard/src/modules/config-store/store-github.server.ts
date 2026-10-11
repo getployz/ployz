@@ -27,17 +27,34 @@ export const githubTimestamp = (at: string) => new Date(at).toISOString().replac
 
 type LivePullRequest = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;
 
-/** A pull request's facts as the Store takes them. */
+/** A pull request's facts as the Store takes them, with `targetHead` from `mergedInto`. */
 export function pullRequestEvent(
-  repositoryId: number, number: number, live: LivePullRequest & { updatedAt: string },
+  repositoryId: number, number: number, live: LivePullRequest & { updatedAt: string }, targetHead: string | null = null,
 ): SystemEvent {
   return {
     event: "pull_request", repository_id: repositoryId, number, title: live.title,
     author: live.author.login, bot: live.author.isBot, head_branch: live.headBranch, head: live.headSha,
     target_branch: live.targetBranch, commits: live.commits, open: live.open, merge_commit: live.mergeCommitSha,
-    updated: githubTimestamp(live.updatedAt),
+    target_head: targetHead, updated: githubTimestamp(live.updatedAt),
   };
 }
+
+/**
+ * A merged pull request's target branch head now, when GitHub says it contains the merge commit. Two quick merges
+ * push the branch past the first one's commit before Cloud reads it, so the Store never sees that commit as a head;
+ * this tells it a head it saw already carries the merge.
+ */
+export const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
+  installationId: number, repositoryId: number, live: Pick<LivePullRequest, "mergeCommitSha" | "targetBranch">,
+) {
+  if (!live.mergeCommitSha) return null;
+  const repository = yield* resolveGithubRepository(installationId, repositoryId);
+  const branch = yield* resolveGithubBranchHead(installationId, repository, `refs/heads/${live.targetBranch}`);
+  if (branch.state !== "present") return null;
+  const comparison = yield* compareInstallationRepositoryCommits(installationId, repository, live.mergeCommitSha, branch.headSha)
+    .pipe(Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)));
+  return comparison?.status === "ahead" || comparison?.status === "identical" ? branch.headSha : null;
+});
 
 /**
  * Pull requests into the pushed branch that merged before their closed delivery arrived: the Store hears it now, so

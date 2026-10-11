@@ -16,7 +16,7 @@
 //! idle PR Environment whose merge would land something only comes off the Servers.
 
 mod checks;
-mod on_merge;
+pub(crate) mod on_merge;
 mod plan;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
@@ -72,6 +72,10 @@ pub struct PullRequest {
     /// Its merge commit, once merged.
     #[serde(default)]
     pub merge_commit: Option<CommitSha>,
+    /// Its target branch's head as Cloud read it with the merge, when GitHub says it
+    /// contains the merge commit: a push that skipped past the merge reached it.
+    #[serde(default)]
+    pub target_head: Option<CommitSha>,
     /// When GitHub last changed it.
     pub updated: crate::GithubTimestamp,
 }
@@ -479,6 +483,7 @@ pub(crate) fn pull_request(
             let at = on_merge::Merging {
                 commit,
                 target,
+                target_head: event.target_head.as_ref(),
                 trusted,
             };
             let all = on_merge::land(tx, who, environment, &at, (&mut automated, &mut unlanded))?;

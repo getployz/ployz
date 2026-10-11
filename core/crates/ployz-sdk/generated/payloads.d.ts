@@ -2773,6 +2773,11 @@ target_branch: BranchName, commits: number, open: boolean,
  */
 merge_commit: CommitSha | null,
 /**
+ * Its target branch's head as Cloud read it with the merge, when GitHub says it
+ * contains the merge commit: a push that skipped past the merge reached it.
+ */
+target_head: CommitSha | null,
+/**
  * When GitHub last changed it.
  */
 updated: GithubTimestamp, };

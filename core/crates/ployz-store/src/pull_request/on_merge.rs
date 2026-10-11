@@ -489,6 +489,8 @@ pub(crate) struct Merging<'a> {
     pub(crate) commit: &'a CommitSha,
     /// The branch it merged into.
     pub(crate) target: &'a BranchName,
+    /// A head of `target` that GitHub says contains `commit`.
+    pub(crate) target_head: Option<&'a CommitSha>,
     pub(crate) trusted: &'a Trusted,
 }
 
@@ -520,9 +522,9 @@ pub(crate) fn land(
                     tx,
                     who,
                     &into.id,
-                    (pull_request.repository_id, merge.target, merge.commit),
+                    pull_request.repository_id,
+                    merge,
                     services,
-                    merge.trusted,
                     automated,
                 )?;
                 unlanded.extend(

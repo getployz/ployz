@@ -128,6 +128,7 @@ fn facts(open: bool, updated: &str) -> PullRequest {
         commits: 1,
         open,
         merge_commit: None,
+        target_head: None,
         updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
     }
 }
@@ -1311,6 +1312,7 @@ fn an_idle_kept_preview_edited_after_its_merge_landed_closes() {
         &who,
         PullRequest {
             merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+            target_head: None,
             ..facts(false, "2026-09-29T11:00:00Z")
         },
     );
@@ -1339,6 +1341,7 @@ fn a_merge_reported_after_its_close_still_lands() {
     assert_eq!(closing.closing.len(), 1, "{closing:?}");
     let merged = PullRequest {
         merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+        target_head: None,
         ..facts(false, "2026-09-29T11:00:00Z")
     };
     pull(&store, &who, merged);

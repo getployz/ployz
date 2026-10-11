@@ -24,6 +24,7 @@ use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
+use crate::pull_request::on_merge::Merging;
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
 use crate::storage::{Tx, name_of};
@@ -476,11 +477,12 @@ pub(crate) fn deploy_landed(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
-    (repository_id, branch, commit): (RepositoryId, &BranchName, &CommitSha),
+    repository_id: RepositoryId,
+    merge: &Merging<'_>,
     services: Vec<String>,
-    trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
+    let (branch, commit) = (merge.target, merge.commit);
     let mut pending: BTreeSet<String> = services.into_iter().collect();
     let earlier = tx.query(
         "SELECT services FROM config_merge_deploy \
@@ -517,7 +519,11 @@ pub(crate) fn deploy_landed(
     let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
         return Ok(());
     };
-    if head != *commit && !recent(tx, who, repository_id, branch)?.contains(commit) {
+    let recent = recent(tx, who, repository_id, branch)?;
+    let reached = |at: &CommitSha| *at == head || recent.contains(at);
+    // A push that skipped past the merge commit reached it all the same, when GitHub
+    // says the head Cloud read with the merge contains it.
+    if !reached(commit) && !merge.target_head.is_some_and(reached) {
         return Ok(());
     }
     // What still waits for this head's CI keeps waiting with it.
@@ -545,7 +551,7 @@ pub(crate) fn deploy_landed(
         environment,
         &push,
         Select::Services(&waiting),
-        trusted,
+        merge.trusted,
         automated,
     )
 }
