@@ -65,7 +65,12 @@ async fn servers(session: &Session, only: Option<&ServerName>) -> Result<Servers
             let mut unanswered = silent(&machines);
             unanswered.extend(gaps.failures.iter().map(|failure| failure.machine_id));
             unanswered.extend(gaps.omissions.iter().copied());
-            unanswered.extend(live.containers.failures.iter().map(|failure| failure.machine_id));
+            unanswered.extend(
+                live.containers
+                    .failures
+                    .iter()
+                    .map(|failure| failure.machine_id),
+            );
             unanswered.extend(live.containers.omissions.iter().copied());
             let mut namespaces = BTreeMap::<MachineId, BTreeSet<Namespace>>::new();
             for container in live.containers.successes.iter().flat_map(|s| &s.value) {
@@ -140,7 +145,12 @@ async fn containers(
                 .await
                 .map_err(RpcError::from)?;
             let mut unanswered = silent(&machines);
-            unanswered.extend(live.containers.failures.iter().map(|failure| failure.machine_id));
+            unanswered.extend(
+                live.containers
+                    .failures
+                    .iter()
+                    .map(|failure| failure.machine_id),
+            );
             unanswered.extend(live.containers.omissions.iter().copied());
             let names: BTreeMap<MachineId, &ServerName> = machines
                 .iter()

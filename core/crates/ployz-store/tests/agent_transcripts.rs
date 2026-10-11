@@ -158,7 +158,12 @@ fn every_transcript_replays_to_its_recorded_steps() {
     if std::env::var_os("PLOYZ_BLESS").is_some() {
         let transcripts: Vec<Transcript> = catalog()
             .iter()
-            .flat_map(|def| [record(def.name, StoreAt::Cloud), record(def.name, StoreAt::Local)])
+            .flat_map(|def| {
+                [
+                    record(def.name, StoreAt::Cloud),
+                    record(def.name, StoreAt::Local),
+                ]
+            })
             .collect();
         let mut text = serde_json::to_string_pretty(&transcripts).unwrap();
         text.push('\n');
