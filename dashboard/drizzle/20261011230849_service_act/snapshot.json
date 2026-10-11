@@ -1,9 +1,10 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "30f942b9-3a48-46a0-b868-63b80dc69df1",
+  "id": "0019f142-bd9e-45ef-ab08-635a9ae41a69",
   "prevIds": [
-    "beff0f1c-072b-486b-a2ae-7fc833d53f02"
+    "beff0f1c-072b-486b-a2ae-7fc833d53f02",
+    "f39c6cc3-5be3-4e96-9ee9-8cb7f1c0bf66"
   ],
   "ddl": [
     {
@@ -213,6 +214,42 @@
     {
       "isRlsEnabled": false,
       "name": "service_act",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "uptime_alert",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "uptime_check",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "uptime_incident",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "uptime_region",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "uptime_result",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "uptime_result_hourly",
       "entityType": "tables",
       "schema": "public"
     },
@@ -4542,6 +4579,1020 @@
       "table": "service_act"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "incident_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "payload",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'pending'",
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "attempts",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sent_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "url",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "300",
+      "generated": null,
+      "identity": null,
+      "name": "interval_seconds",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "10000",
+      "generated": null,
+      "identity": null,
+      "name": "timeout_ms",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'below_400'",
+      "generated": null,
+      "identity": null,
+      "name": "expect",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "enabled",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'service'",
+      "generated": null,
+      "identity": null,
+      "name": "source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "environment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "service_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "probe_requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "check_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "check_revision",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "opened_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "opened_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "closed_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "region",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_region"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_region"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "check_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "region",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "scheduled_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "start_lag_ms",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "verdict",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "smallint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "failed_phase",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "detail",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "dns_ms",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "connect_ms",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "tls_ms",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ttfb_ms",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "total_ms",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "inet",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "remote_ip",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "cert_not_after",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "agent",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "check_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "region",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "hour",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "probes",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "failures",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "inconclusive",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "pass_ms_sum",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "pass_ms_max",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "pass_ms_p50",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "dns_ms_sum",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "connect_ms_sum",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "tls_ms_sum",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "ttfb_ms_sum",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failures_status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failures_timeout",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failures_refused",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failures_dns",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failures_connect",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failures_tls",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failures_other",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_error",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_error_class",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_error_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
       "nameExplicit": true,
       "columns": [
         {
@@ -5672,7 +6723,7 @@
           "opclass": null
         },
         {
-          "value": "service",
+          "value": "runtime",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
@@ -5751,6 +6802,244 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "service_act"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "incident_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "kind",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_alert_transition_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"state\" in ('pending', 'sending')",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_alert_pending_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_check_organization_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_check_id_organization_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "environment_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "service_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_check_service_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "check_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"closed_at\" is null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_incident_one_open_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "check_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "opened_at",
+          "isExpression": false,
+          "asc": false,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_incident_history_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "closed_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"closed_at\" is not null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "uptime_incident_closed_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "scheduled_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "brin",
+      "concurrently": false,
+      "name": "uptime_result_scheduled_brin",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "hour",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "brin",
+      "concurrently": false,
+      "name": "uptime_result_hourly_brin",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "uptime_result_hourly"
     },
     {
       "nameExplicit": false,
@@ -6520,6 +7809,114 @@
       "table": "service_act"
     },
     {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "uptime_alert_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "incident_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "uptime_incident",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "uptime_alert_incident_id_uptime_incident_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "uptime_check_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "check_id",
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "uptime_check",
+      "columnsTo": [
+        "id",
+        "organization_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "uptime_incident_check_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "check_id",
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "uptime_check",
+      "columnsTo": [
+        "id",
+        "organization_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "uptime_result_check_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "check_id",
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "uptime_check",
+      "columnsTo": [
+        "id",
+        "organization_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "uptime_result_hourly_check_fk",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
       "columns": [
         "organization_id",
         "cluster_key"
@@ -6586,6 +7983,31 @@
       "entityType": "pks",
       "schema": "public",
       "table": "operation_request"
+    },
+    {
+      "columns": [
+        "check_id",
+        "region",
+        "scheduled_at",
+        "kind"
+      ],
+      "nameExplicit": false,
+      "name": "uptime_result_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "columns": [
+        "check_id",
+        "region",
+        "hour"
+      ],
+      "nameExplicit": false,
+      "name": "uptime_result_hourly_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "uptime_result_hourly"
     },
     {
       "columns": [
@@ -6875,6 +8297,46 @@
       "name": "service_act_pkey",
       "schema": "public",
       "table": "service_act",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "uptime_alert_pkey",
+      "schema": "public",
+      "table": "uptime_alert",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "uptime_check_pkey",
+      "schema": "public",
+      "table": "uptime_check",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "uptime_incident_pkey",
+      "schema": "public",
+      "table": "uptime_incident",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "region"
+      ],
+      "nameExplicit": false,
+      "name": "uptime_region_pkey",
+      "schema": "public",
+      "table": "uptime_region",
       "entityType": "pks"
     },
     {
@@ -7364,6 +8826,125 @@
       "entityType": "checks",
       "schema": "public",
       "table": "service_act"
+    },
+    {
+      "value": "\"kind\" in ('opened', 'resolved')",
+      "name": "uptime_alert_kind_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "value": "\"state\" in ('pending', 'sending', 'sent', 'failed', 'expired')",
+      "name": "uptime_alert_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "value": "(\"state\" = 'sent') = (\"sent_at\" is not null)",
+      "name": "uptime_alert_sent_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_alert"
+    },
+    {
+      "value": "length(\"name\") between 1 and 128",
+      "name": "uptime_check_name_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "value": "\"url\" ~ '^https?://[^/?#@[:space:]]+([/?]|$)' and length(\"url\") <= 2048",
+      "name": "uptime_check_url_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "value": "\"interval_seconds\" between 30 and 3600",
+      "name": "uptime_check_interval_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "value": "\"timeout_ms\" between 1000 and 30000 and \"timeout_ms\" < \"interval_seconds\" * 1000",
+      "name": "uptime_check_timeout_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "value": "\"expect\" in ('below_400')",
+      "name": "uptime_check_expect_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "value": "\"revision\" >= 1",
+      "name": "uptime_check_revision_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "value": "\"source\" in ('service')",
+      "name": "uptime_check_source_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "value": "(\"closed_at\" is null) = (\"closed_by\" is null)",
+      "name": "uptime_incident_closed_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "value": "\"closed_at\" is null or \"closed_at\" >= \"opened_at\"",
+      "name": "uptime_incident_order_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_incident"
+    },
+    {
+      "value": "\"kind\" in ('routine', 'confirm', 'recheck', 'triggered')",
+      "name": "uptime_result_kind_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "value": "\"verdict\" in ('pass', 'fail', 'inconclusive')",
+      "name": "uptime_result_verdict_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "value": "\"failed_phase\" in ('none', 'dns', 'connect', 'tls', 'request')",
+      "name": "uptime_result_phase_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_result"
+    },
+    {
+      "value": "(\"last_error\" is null) = (\"last_error_class\" is null)\n      and (\"last_error\" is null) = (\"last_error_at\" is null)",
+      "name": "uptime_result_hourly_last_error_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_result_hourly"
+    },
+    {
+      "value": "\"last_error_class\" in ('status', 'timeout', 'refused', 'dns', 'connect', 'tls', 'other')",
+      "name": "uptime_result_hourly_last_error_class_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "uptime_result_hourly"
     }
   ],
   "renames": []

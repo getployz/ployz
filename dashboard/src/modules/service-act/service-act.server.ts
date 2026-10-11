@@ -82,7 +82,7 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
   const [active] = yield* drizzle.select().from(serviceAct).where(and(
     eq(serviceAct.organizationId, caller.organizationId),
     eq(serviceAct.environmentId, input.environmentId),
-    eq(serviceAct.service, input.service),
+    eq(serviceAct.runtime, input.runtime),
     inArray(serviceAct.state, ACTIVE_STATES),
   )).limit(1);
   const run = active === undefined ? null : operationOf(active);

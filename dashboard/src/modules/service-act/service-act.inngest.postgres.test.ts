@@ -112,6 +112,16 @@ describe("act-service", () => {
     expect(busy).toMatchObject({ ok: false, refusal: { code: "conflict", details: { run: { attempt: first.id, run: "stop web", state: "accepted" } } } });
   });
 
+  it("keeps a renamed Service busy while its runtime still has an act running", async () => {
+    const first = await request("stop");
+    if (!first.ok) throw new Error("refused");
+
+    const renamed = await runEffect(requestServiceAct(caller, {
+      attemptId: crypto.randomUUID(), environmentId: "env-1", service: "site", namespace: "acme-prod", runtime: "web", verb: "restart", only: null, digest: "restart",
+    }));
+    expect(renamed).toMatchObject({ ok: false, refusal: { code: "conflict", details: { run: { attempt: first.id, run: "stop web" } } } });
+  });
+
   it("still starts a Container whose stop the Server never answered, and ends unknown", async () => {
     answer = (call) => call === "stop web-b"
       ? Effect.fail(new PloyzProviderError({ operation: "stop container", cause: { code: "unavailable", message: "gone" } }))
