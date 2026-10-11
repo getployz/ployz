@@ -33,9 +33,6 @@ export const legsOf = (before: ServiceActBefore, only: ServerRef | null): Servic
 export const alreadyThere = (verb: ServiceVerb, side: "stop" | "start", state: ContainerState | undefined) =>
   side === "stop" ? state !== undefined && STOPPED.has(state) : verb === "start" && state === "running";
 
-export const mayStart = (verb: ServiceVerb, leg: ServiceActLeg) =>
-  verb === "start" || leg.stop === "done" || leg.stop === "already_there";
-
 export const serversOf = (legs: readonly ServiceActLeg[]) => [...new Set(legs.map(({ server }) => server))];
 
 export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActState>; reason: string | null };

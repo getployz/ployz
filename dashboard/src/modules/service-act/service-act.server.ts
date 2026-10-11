@@ -14,7 +14,6 @@ import {
   legOf,
   legsOf,
   type LegStep,
-  mayStart,
   SERVICE_ACT_PENDING_LIMIT_MS,
   SERVICE_ACT_RUNNING_LIMIT_MS,
   type ServiceActBefore,
@@ -156,7 +155,6 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
   const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
   for (const leg of legs) {
     if (leg.server !== server || leg[side] !== null && leg[side] !== "sent") continue;
-    if (side === "start" && !mayStart(row.verb, leg)) continue;
     if (leg[side] === "sent") {
       if (!(yield* write(leg, "unknown", `${server} didn't answer.`))) return legs;
       continue;
@@ -172,7 +170,7 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
     if (!(yield* write(leg, "sent"))) return legs;
     const call = side === "stop" ? session.connected.stopContainer : session.connected.startContainer;
     const [step, reason] = yield* call(leg.machine, leg.container).pipe(
-      Effect.map(() => ["done", null] as const),
+      Effect.map(() => ["done", leg.reason] as const),
       Effect.catch((error) => Effect.succeed(rpcErrorCode(error) === "unavailable"
         ? ["unknown", `${server} didn't answer.`] as const
         : ["failed", `${server} couldn't ${side} it.`] as const)),
