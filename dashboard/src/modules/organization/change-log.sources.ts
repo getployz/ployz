@@ -49,6 +49,7 @@ export const changeSources = {
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
   volume_run: { key: ["id"] },
+  volume_placement: { key: ["volume_id"] },
   organization_server_upgrades: { key: ["organization_id"] },
   uptime_check: { key: ["id"] },
   // Logs the check id, so a change names the one check whose open incident it touched.

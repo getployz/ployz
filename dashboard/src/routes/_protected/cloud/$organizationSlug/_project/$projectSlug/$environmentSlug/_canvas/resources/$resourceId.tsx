@@ -1,6 +1,7 @@
 import { createFileRoute, useLoaderData } from "@tanstack/react-router";
-import { prefetchStoreConfig } from "#/collections/route-data";
+import { prefetchRemote, prefetchStoreConfig } from "#/collections/route-data";
 import { configsQuery, requireView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -12,8 +13,11 @@ import { StoreVolumeDrawer } from "#/routes/_protected/cloud/$organizationSlug/_
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId",
 )({
-  loader: ({ params, context }) => prefetchStoreConfig(context, params.organizationSlug,
-    { project: params.projectSlug, environment: params.environmentSlug }, params.resourceId),
+  loader: ({ params, context }) => Promise.all([
+    prefetchStoreConfig(context, params.organizationSlug,
+      { project: params.projectSlug, environment: params.environmentSlug }, params.resourceId),
+    prefetchRemote(context, volumePlacementsQueryOptions(params.organizationSlug)),
+  ]),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Resource" />,
   component: RouteComponent,
