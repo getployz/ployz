@@ -20,7 +20,7 @@ const AT_FORMAT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numer
  * One metric as a card: title and latest value on top, a thin line over a soft fill, incident bands, deploy rules and an
  * optional dashed limit. Every chart on the tab shares `cursor`, so hovering one lines them all up.
  */
-export function MetricChart({ id, title, value, times, series, format, limit, bands, deploys, from, to, cursor, onPick, renderTooltip, dimmed = false, height = 120 }: {
+export function MetricChart({ id, title, value, times, series, format, limit, bands, deploys, from, to, cursor, onPick, renderTooltip, focusAt = [], dimmed = false, height = 120 }: {
   id: string;
   title: string;
   value: ReactNode;
@@ -37,11 +37,14 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
   onPick: (at: number) => void;
   /** The tooltip for the step at `at`, in place of one line per series. */
   renderTooltip?: (at: number) => ReactNode;
+  /** Times with no value drawn that still take hover, such as a step where every check failed. */
+  focusAt?: readonly number[];
   /** Showing an older read while a newer one loads. */
   dimmed?: boolean;
   height?: number;
 }) {
   const rows: Row[] = times.map((at, index) => ({ at: new Date(at), values: series.map((line) => line.values[index] ?? null) }));
+  const focusRows = rows.filter((row) => focusAt.includes(row.at.getTime()));
   const peak = Math.max(limit ?? 0, ...series.flatMap((line) => line.values.flatMap((point) => point === null ? [] : [point])), 0);
   const top = peak === 0 ? 1 : peak * 1.15;
   const definition = defineChart({
@@ -49,6 +52,7 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
       decorative(rect(bands, { x1: (band) => new Date(band.from), x2: (band) => new Date(band.to), y1: () => 0, y2: () => top, fill: "var(--destructive)", fillOpacity: 0.12, inset: 0 })),
       ...series.map((_, index) => decorative(areaY(rows, { x: "at", y: (row) => row.values[index] ?? null, fill: `url(#fill-${index})` }))),
       ...series.map((line, index) => lineY(rows, { x: "at", y: (row) => row.values[index] ?? null, stroke: line.color, strokeWidth: 1.5, z: () => line.label })),
+      lineY(focusRows, { x: "at", y: () => 0, strokeOpacity: 0, z: () => "focus" }),
       ...(limit === undefined ? [] : [ruleY([limit], { stroke: "currentColor", strokeOpacity: 0.45, strokeDasharray: "4 4" })]),
       ruleX(deploys.map((at) => new Date(at)), { stroke: "currentColor", strokeOpacity: 0.35, strokeDasharray: "2 3" }),
       crosshair({ y: false, stroke: "currentColor", strokeOpacity: 0.5, strokeDasharray: "3 3" }),

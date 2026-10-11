@@ -316,6 +316,7 @@ function ResponseTime({ scope, serviceId, range, window, pending, edge, chart }:
   return (
     <MetricChart id="response" title="Response time" format={formatMs} {...chart} dimmed={shown !== range}
       value={pending ?? (checkMs === null ? "–" : formatMs(checkMs))} series={series}
+      focusAt={checked.flatMap((step) => step.medianMs === null && step.regions.length > 0 ? [step.at] : [])}
       renderTooltip={(at) => {
         const index = byAt.get(at);
         const step = index === undefined ? undefined : checked[index];
