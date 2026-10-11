@@ -2,7 +2,7 @@
 //! variable and never its value, so a bad `DATABASE_URL` or token is reported without leaking.
 
 use std::fmt;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
 use crate::agent::probe::ProbeConfig;
@@ -143,7 +143,7 @@ impl ControlConfig {
             database_url,
             regions,
             agent_token,
-            listen: SocketAddr::from((Ipv4Addr::UNSPECIFIED, port(env)?)),
+            listen: SocketAddr::from((Ipv6Addr::UNSPECIFIED, port(env)?)),
         })
     }
 }

@@ -166,6 +166,35 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  uptime:
+    defaults:
+      run:
+        working-directory: dashboard/uptime
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: uptime
+          components: clippy,rustfmt
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
+        with:
+          tool: cargo-nextest@0.9.143
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      # The Postgres tests start their own postgres:16-alpine containers through the Docker CLI.
+      - run: docker pull --quiet postgres:16-alpine
+      - run: cargo nextest run --locked
+      - name: Build the Railway image
+        working-directory: .
+        run: docker build --file dashboard/uptime/Dockerfile .
+
   sdk-types:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'sdk-types')
@@ -216,7 +245,7 @@ jobs:
   ready:
     name: CI ready
     if: always()
-    needs: [changes, contracts, rust-lint, rust-tests, sdk-types, macos-cli, cloud, release-contracts]
+    needs: [changes, contracts, rust-lint, rust-tests, uptime, sdk-types, macos-cli, cloud, release-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

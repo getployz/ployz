@@ -92,7 +92,11 @@ fn control_dedupes_regions_keeps_the_token_and_listens_on_port_by_default() {
     };
     let names: Vec<&str> = control.regions.iter().map(|r| r.as_str()).collect();
     assert_eq!(names, ["ams", "fra"]);
-    assert_eq!(control.listen.port(), 8080);
+    assert_eq!(
+        control.listen.to_string(),
+        "[::]:8080",
+        "dual-stack for private networking"
+    );
     assert!(
         control
             .agent_token
@@ -150,7 +154,7 @@ fn all_defaults_to_one_local_region_with_no_token() {
     assert_eq!(control.regions.first().map(|r| r.as_str()), Some("local"));
     assert!(control.agent_token.is_none());
     assert!(agent.token.is_none());
-    assert_eq!(agent.control_url, "http://0.0.0.0:9000");
+    assert_eq!(agent.control_url, "http://[::]:9000");
     assert_eq!(agent.region.as_str(), "local");
 }
 

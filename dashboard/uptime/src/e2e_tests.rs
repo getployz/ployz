@@ -123,8 +123,15 @@ async fn an_outage_opens_one_incident_recovers_and_survives_a_config_edit() {
     let crypto = Arc::new(rustls::crypto::ring::default_provider());
     let (trigger, shutdown) = Shutdown::new();
     let region = Region::parse("local").unwrap();
+    let control_url = pg
+        .role(
+            &admin,
+            "uptime_control",
+            include_str!("../control-role.sql"),
+        )
+        .await;
     let config = ControlConfig {
-        database_url: Secret::new(&pg.url),
+        database_url: Secret::new(&control_url),
         regions: vec![region.clone()],
         agent_token: None,
         listen: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
