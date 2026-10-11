@@ -1,12 +1,12 @@
 import {
-  cancelStoreDeploymentRun, deployToFirstServer, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
+  cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentStorage, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
   stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
   configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
-  inngestFunctionCancelledEventType,
+  inngestFunctionCancelledEventType, inngestFunctionFinishedEventType, type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
@@ -14,6 +14,7 @@ import {
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
+import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { cleanOrphanSlots } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
@@ -44,6 +45,13 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await step.run("record-run", () => runEffect(recordStoreDeploymentRun(runId, event.data)));
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
+      const storage = await walkPlacement(event.data, step, runEffect);
+      if (storage.kind === "failed") {
+        return step.run("storage-failed", () => runEffect(failStoreDeploymentStorage(event.data.organizationId, event.data.deploymentId, runId, storage.message)));
+      }
+      if (storage.kind === "done") {
+        await step.run("refresh-mirrors", () => runEffect(refreshMirrors(event.data.organizationId, event.data.environmentId)));
+      }
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way.
       await step.run("sync-uptime", () => runEffect(syncUptimeChecks(event.data.organizationId, event.data.environmentId)));
@@ -113,6 +121,27 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
     const found = await step.run(`github-check-${key}-${check}`, () => runEffect(checkStoreGithubBuild(organizationId, target, seen)));
     if (found === "done") return;
   }
+}
+
+const PLACEMENT_CHECKS = 180;
+
+/**
+ * The Deploy's storage, before its Services: one Volume run at a time, each awaited until its row ends. A wait ends on
+ * the run's finish or after a minute, then looks again, since the row closes just after the run finishes.
+ */
+async function walkPlacement(data: ConfigDeploymentAdmittedEventData, step: Step, runEffect: StoreEffectRunner): Promise<PlacementAdvance> {
+  let waited: PlacementWait | null = null;
+  for (let check = 0; check < PLACEMENT_CHECKS; check += 1) {
+    const last = waited;
+    const advanced = await step.run(`placement-${check}`, () => runEffect(advancePlacement(data.organizationId, data.deploymentId, last)));
+    if (advanced.kind !== "wait") return advanced;
+    waited = advanced.wait;
+    const ended = await step.waitForEvent(`placement-wait-${check}`, {
+      event: inngestFunctionFinishedEventType, if: `async.data.event.data.runId == '${advanced.wait.runId}'`, timeout: "1m",
+    });
+    if (ended !== null) await step.sleep(`placement-close-${check}`, "3s");
+  }
+  return { kind: "failed", message: "Its Volumes were still moving after three hours. Deploy again once they finish." };
 }
 
 /**
