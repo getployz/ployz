@@ -923,6 +923,483 @@
       "read_only": false
     },
     {
+      "description": "Create a Volume, persistent storage, and mount it into a Service at a path. Staged until the next Deploy. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "New Volume name, unique in the Environment.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "path": {
+            "description": "Absolute path in the Service's containers, with service.",
+            "pattern": "^/",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "description": "Service to mount it into, with path.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "size": {
+            "description": "Storage limit. Default: 5GB.",
+            "examples": [
+              "10GiB"
+            ],
+            "pattern": "^[0-9]+(GB|GiB|TB|TiB)$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "volume_add",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Change one thing about a Volume per call: its size, its name, or whether several containers may write it. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "shared_writes": {
+            "description": "true lets more than one container write it. Applies at once.",
+            "type": "boolean"
+          },
+          "size": {
+            "description": "New storage limit. Only before its first Deploy.",
+            "examples": [
+              "10GiB"
+            ],
+            "pattern": "^[0-9]+(GB|GiB|TB|TiB)$",
+            "type": "string"
+          },
+          "to": {
+            "description": "New name.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "volume": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "volume"
+        ],
+        "type": "object"
+      },
+      "name": "volume_update",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next Publish or Deploy, which asks a human to approve. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "volume": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "volume"
+        ],
+        "type": "object"
+      },
+      "name": "volume_remove",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Write files into a Config, creating it if needed, and optionally mount it into a Service at a directory. A file's text may read a Service variable as ${{ SERVICE.KEY }}. Staged. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "description": "Config name. Created when it does not exist.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "File name to contents.",
+            "type": "object"
+          },
+          "path": {
+            "description": "Absolute directory in the Service's containers, with service.",
+            "pattern": "^/",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "description": "Service to mount it into, with path.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config",
+          "files"
+        ],
+        "type": "object"
+      },
+      "name": "config_write",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Remove one file from a Config, or the whole Config and its mounts. Staged. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "file": {
+            "description": "One file to remove. Omit to remove the whole Config and unmount it everywhere.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config"
+        ],
+        "type": "object"
+      },
+      "name": "config_remove",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "What Publish would save and Deploy would apply, in plain lines, with the version publish and deploy take and what a human must approve. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "review",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "description": "Return every Staged change, or one Service's, Volume's or Config's, to what is deployed. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "description": "Only this Config's Staged changes.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "expect_revision": {
+            "description": "Write only if the place is still at this revision. Omit unless you just read it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "description": "Only this Service's Staged changes. Omit service, volume and config to discard everything Staged.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "volume": {
+            "description": "Only this Volume's Staged changes.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "discard",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Save everything Staged as the next Saved revision, without deploying. Usually call deploy instead: it publishes and deploys. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "gate": "store",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "accept_volume_loss": {
+            "default": [],
+            "description": "Volumes whose data this may delete. Only when the member asked for exactly that loss.",
+            "items": {
+              "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "version": {
+            "description": "Only if review still shows this version. Required with accept_volume_loss.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "publish",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "Deploy what is Staged and Saved: publishes first if needed, then queues a Deployment and returns. Follow it with deployment_show. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "gate": "store",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "accept_volume_loss": {
+            "default": [],
+            "description": "Volumes whose data this may delete. Only when the member asked for exactly that loss.",
+            "items": {
+              "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "message": {
+            "description": "What this ships, in a few words. Shown on the Deployment.",
+            "maxLength": 200,
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "request_key": {
+            "description": "Any id you choose. Repeat the same call with the same key after a lost reply and you get the same result back, not a second one.",
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          },
+          "services": {
+            "default": [],
+            "description": "Deploy only these Services. Omit to deploy every Service.",
+            "items": {
+              "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "description": "Only if review still shows this version. Required with accept_volume_loss.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "deploy",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
+      "description": "One Deployment, the latest unless you name its number: status, each Service's outcome, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment": {
+            "description": "The Deployment's number. Omit for the latest.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "wait_seconds": {
+            "default": 0,
+            "description": "Wait up to this long for the outcome.",
+            "maximum": 300,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "deployment_show",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "description": "Cancel a queued or running Deployment. What already changed on servers stays. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment": {
+            "description": "The Deployment's number. Omit for the latest.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "environment": {
+            "description": "Environment name, e.g. staging. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Omit for the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "deployment_cancel",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "Turn on or off an Environment per GitHub pull request, built from this Environment. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {

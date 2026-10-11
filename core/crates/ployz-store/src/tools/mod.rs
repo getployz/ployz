@@ -2,12 +2,14 @@
 //! plans each call as Store and Cloud reads and at most one write. No IO.
 
 mod config;
+mod deployment;
 mod domain;
 mod environment;
 mod github;
 pub mod logs;
 mod machine;
 mod refusal;
+mod release;
 mod schema;
 mod service;
 pub mod status;
@@ -43,6 +45,12 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<volume::VolumeRemove>(),
     entry::<config::ConfigWrite>(),
     entry::<config::ConfigRemove>(),
+    entry::<release::Review>(),
+    entry::<release::DiscardInput>(),
+    entry::<release::PublishInput>(),
+    entry::<release::DeployInput>(),
+    entry::<deployment::DeploymentShow>(),
+    entry::<deployment::DeploymentCancel>(),
     entry::<environment::EnvironmentPr>(),
     entry::<environment::EnvironmentSetup>(),
     entry::<github::GithubLs>(),
