@@ -51,7 +51,7 @@ pub async fn observe_volumes(
     connections: serde_json::Value,
     sought: Vec<String>,
 ) -> Result<serde_json::Value> {
-    let connections = connections_of(connections)?;
+    let connections = crate::parse_connections(connections)?;
     let sought = sought
         .into_iter()
         .map(ployz_core::DockerVolumeName::parse)
@@ -69,7 +69,7 @@ pub async fn observe_volumes(
 /// no Server can be reached.
 #[napi]
 pub async fn observe_copies(connections: serde_json::Value) -> Result<serde_json::Value> {
-    let connections = connections_of(connections)?;
+    let connections = crate::parse_connections(connections)?;
     to_json(ployz::sdk::observe_copies(connections).await)
 }
 
@@ -188,7 +188,7 @@ impl ConfigStore {
         }
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
-        let connections = connections_of(connections)?;
+        let connections = crate::parse_connections(connections)?;
         let sources: Sources = sources
             .map(|sources| decode(sources, "Expected checkouts, upload and failure"))
             .transpose()?
@@ -344,7 +344,7 @@ impl ConfigStore {
         build: String,
         connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let (build, connections) = (github_id(&build)?, connections_of(connections)?);
+        let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
         to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections).await)
     }
 
@@ -401,7 +401,7 @@ impl ConfigStore {
         connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
-        let connections = connections_of(connections)?;
+        let connections = crate::parse_connections(connections)?;
         to_json(
             ployz::sdk::github_check_in(Arc::clone(&self.store), build, claims, connections).await,
         )
@@ -435,7 +435,7 @@ impl ConfigStore {
         timed_out: bool,
         connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let (build, connections) = (github_id(&build)?, connections_of(connections)?);
+        let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
         to_json(
             ployz::sdk::github_finish(Arc::clone(&self.store), build, timed_out, connections).await,
         )
@@ -453,7 +453,7 @@ impl ConfigStore {
         connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let connections = connections_of(connections)?;
+        let connections = crate::parse_connections(connections)?;
         to_json(ployz::sdk::github_cancel(Arc::clone(&self.store), deployment, connections).await)
     }
 }
@@ -464,11 +464,6 @@ fn github_id(build: &str) -> Result<GithubBuildId> {
 
 fn claims_of(claims: serde_json::Value) -> Result<ployz_store::GithubClaims> {
     decode(claims, "Expected OIDC claims")
-}
-
-fn connections_of(connections: serde_json::Value) -> Result<Vec<ployz::context::Connection>> {
-    serde_json::from_value(connections)
-        .map_err(|_| invalid_argument("invalid management connections"))
 }
 
 fn repository(repository_id: i64) -> Result<u64> {

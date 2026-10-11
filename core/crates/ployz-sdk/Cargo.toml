@@ -11,6 +11,10 @@ crate-type = ["cdylib"]
 test = false
 doctest = false
 
+[features]
+# Dial `{"unix": path}` connections, which only the eval's fake fleet serves.
+eval = []
+
 [dependencies]
 napi = { version = "2.16.17", default-features = false, features = ["napi4", "async", "tokio_rt", "serde-json"] }
 napi-derive = "2.16.13"

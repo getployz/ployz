@@ -31,8 +31,7 @@ pub struct PendingConnection {
 /// Returns InvalidArgument for malformed or empty connections.
 #[napi]
 pub fn start_connections(connections: serde_json::Value) -> Result<PendingConnection> {
-    let connections: Vec<ployz::context::Connection> = serde_json::from_value(connections)
-        .map_err(|_| invalid_argument("invalid management connections"))?;
+    let connections = parse_connections(connections)?;
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty"));
     }
@@ -40,6 +39,28 @@ pub fn start_connections(connections: serde_json::Value) -> Result<PendingConnec
         connections: std::sync::Mutex::new(Some(connections)),
         cancel: tokio_util::sync::CancellationToken::new(),
     })
+}
+
+/// Connection descriptors from JavaScript. A unix socket is refused unless this addon
+/// was built with the `eval` feature: only the eval's fake fleet serves one, and
+/// Cloud must never dial a path on its own host. The refusal reads like any malformed
+/// descriptor, so it does not reveal the build's capabilities.
+///
+/// # Errors
+/// Returns InvalidArgument for a malformed descriptor or, outside `eval`, a unix one.
+pub(crate) fn parse_connections(
+    connections: serde_json::Value,
+) -> Result<Vec<ployz::context::Connection>> {
+    let connections: Vec<ployz::context::Connection> = serde_json::from_value(connections)
+        .map_err(|_| invalid_argument("invalid management connections"))?;
+    if !cfg!(feature = "eval")
+        && connections
+            .iter()
+            .any(|connection| matches!(connection.transport(), ployz::context::Transport::Unix(_)))
+    {
+        return Err(invalid_argument("invalid management connections"));
+    }
+    Ok(connections)
 }
 
 #[napi]
