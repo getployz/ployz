@@ -5,7 +5,7 @@ import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
-import { ArrowUpIcon, SquarePenIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, SquareIcon, SquarePenIcon, XIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
@@ -140,7 +140,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
         </MessageScrollerViewport>
         <MessageScrollerButton />
       </MessageScroller>
-      <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} />
+      <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
     </MessageScrollerProvider>
   );
 }
@@ -211,7 +211,7 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
   );
 }
 
-function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string) => void }) {
+function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (text: string) => void; onStop: () => void }) {
   const [draft, setDraft] = useState("");
   const { scrollToEnd } = useMessageScroller();
   const send = (event?: FormEvent) => {
@@ -232,10 +232,17 @@ function Composer({ busy, onSend }: { busy: boolean; onSend: (text: string) => v
         <InputGroupTextarea aria-label="Message the agent" placeholder="Ask about your servers…" rows={1} value={draft}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} className="max-h-40 min-h-9" />
         <InputGroupAddon align="block-end">
-          <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={busy || !draft.trim()}>
-            <ArrowUpIcon />
-            <span className="sr-only">Send</span>
-          </InputGroupButton>
+          {busy ? (
+            <InputGroupButton type="button" size="icon-sm" variant="default" className="ml-auto" onClick={onStop}>
+              <SquareIcon className="fill-current" />
+              <span className="sr-only">Stop</span>
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={!draft.trim()}>
+              <ArrowUpIcon />
+              <span className="sr-only">Send</span>
+            </InputGroupButton>
+          )}
         </InputGroupAddon>
       </InputGroup>
     </form>

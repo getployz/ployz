@@ -1124,3 +1124,26 @@ it.live("a turn that runs out of steps tells the member to say continue, and the
     model.setResponses([{ text: "Picking up." }]);
     expect((yield* say("continue", {}, model)).said).toBe("Picking up.");
   }));
+
+it.live("a member who stops a reply mid-stream ends the run, and the thread answers the next message", () =>
+  Effect.gen(function* () {
+    const harness = yield* sidebar({ removeWeb: false });
+    const { provided, caller, persistence, say } = harness;
+    const model = fakeText({ tokensPerSecond: 200 });
+    model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);
+    const abortController = new AbortController();
+    const stream = yield* provided(agentChat(caller, { messages: [{ role: "user", content: "explain" }], threadId: THREAD, runId: "run-stopped", abortController }, model));
+    const heard = yield* Effect.promise(async () => {
+      let deltas = 0;
+      for await (const chunk of stream) {
+        if (chunk.type === EventType.TEXT_MESSAGE_CONTENT && ++deltas === 3) abortController.abort();
+      }
+      return deltas;
+    });
+
+    expect(heard).toBeLessThan(10);
+    expect((yield* Effect.promise(() => persistence.stores.runs.get("run-stopped")))?.status).toBe("aborted");
+    expect(yield* Effect.promise(() => persistence.stores.runs.findActiveRun(THREAD))).toBeNull();
+    model.setResponses([{ text: "Short, then." }]);
+    expect((yield* say("shorter please", {}, model)).said).toBe("Short, then.");
+  }));

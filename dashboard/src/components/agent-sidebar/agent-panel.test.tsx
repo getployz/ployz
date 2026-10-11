@@ -81,3 +81,27 @@ it("shows a member message without the page block it opens with", () => {
   expect(screen.getByText("restart this service").textContent).toBe("restart this service");
   expect(screen.queryByText(/dashboard-page/)).toBeNull();
 });
+
+it("stops a streaming reply from the composer, and the request it stops is cut", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const signals: AbortSignal[] = [];
+  const fetched = vi.fn((_url: string, init?: RequestInit) => {
+    if (init?.method !== "POST") return Promise.resolve(Response.json({ messages: [] }));
+    if (init.signal) signals.push(init.signal);
+    const started = `data: ${JSON.stringify({ type: "RUN_STARTED", threadId: "thread-acme", runId: "r1", timestamp: 0 })}\n\n`;
+    const body = new ReadableStream({ start: (controller) => controller.enqueue(new TextEncoder().encode(started)) });
+    return Promise.resolve(new Response(body, { headers: { "content-type": "text/event-stream" } }));
+  });
+  vi.stubGlobal("fetch", fetched);
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
+    onNewChat={() => {}} onClose={() => {}} /></QueryClientProvider>);
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: "explain" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+  expect(signals.map((signal) => signal.aborted)).toEqual([true]);
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
+  expect(screen.getByRole("button", { name: "Send" })).toBeDefined();
+});
