@@ -469,3 +469,24 @@ export function storageStep(deploymentId: string, rows: readonly PlacementRow[],
   const run = runs.find((candidate) => taken.has(candidate.volume_id));
   return run === undefined ? null : [run.volume_name, runWords(run), run.message].filter((part) => part !== null).join(" · ");
 }
+
+/**
+ * Details shows a restored Volume once. The Store lists it as a created Volume and its placement row says where the
+ * data comes from, so both go into one group. Discard takes the whole group through the placement, which removes
+ * the Volume and puts the mount back as one write.
+ */
+export function mergeRestoreGroups(store: readonly ChangeGroup[], placement: readonly ChangeGroup[]): ChangeGroup[] {
+  const restored = new Map(placement.filter((group) => group.lifecycle === "create").map((group) => [group.nodeId, group]));
+  const merged = store.map((group) => {
+    const seed = restored.get(group.nodeId);
+    if (seed === undefined) return group;
+    restored.delete(group.nodeId);
+    return {
+      ...seed,
+      rows: [...seed.rows, ...group.rows.map((row) => ({ ...row, canDiscard: false }))],
+      changeCount: seed.changeCount + group.changeCount,
+      restarts: group.restarts,
+    };
+  });
+  return [...merged, ...placement.filter((group) => group.lifecycle !== "create" || restored.has(group.nodeId))];
+}

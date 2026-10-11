@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
@@ -13,6 +14,7 @@ import {
   placementSteps,
   placementTargets,
   placementForm,
+  mergeRestoreGroups,
   placementGroup,
   restorePoints,
   stagedOffServer,
@@ -363,5 +365,33 @@ describe("restore into a new Volume", () => {
       member("web-1", "writer"), member("web-2", "mirror"), mirrorAsOf("web-3", at), member("web-4", "mirror"), member("web-5", "unanswered"),
     ]);
     expect(points.map(({ guid, server }) => ({ guid, server: server.name }))).toEqual([{ guid: "12", server: "web-3" }, { guid: "11", server: "web-2" }]);
+  });
+});
+
+describe("mergeRestoreGroups", () => {
+  const group = (owner: "store" | "placement", nodeId: string, lifecycle: "create" | "update", rows: number): ChangeGroup => ({
+    owner, nodeType: "volume", nodeId, nodeName: nodeId, discardPath: nodeId, row: null, lifecycle, restarts: [], canDiscard: true,
+    changeCount: rows,
+    rows: Array.from({ length: rows }, (_, index) => ({
+      changeKey: `${owner}:${index}`, path: String(index), row: null, kind: "add" as const, label: owner, name: owner, variable: false,
+      currentValue: "", newValue: "", canDiscard: true,
+    })),
+  });
+
+  it("shows a restored Volume once, discarded as a whole through its placement", () => {
+    const merged = mergeRestoreGroups(
+      [group("store", "new", "create", 1), group("store", "web", "update", 1)],
+      [group("placement", "new", "create", 1), group("placement", "other", "update", 2)],
+    );
+    expect(merged.map(({ owner, nodeId, changeCount }) => ({ owner, nodeId, changeCount }))).toEqual([
+      { owner: "placement", nodeId: "new", changeCount: 2 },
+      { owner: "store", nodeId: "web", changeCount: 1 },
+      { owner: "placement", nodeId: "other", changeCount: 2 },
+    ]);
+    expect(merged[0]?.rows.map((row) => row.canDiscard)).toEqual([true, false]);
+  });
+
+  it("keeps a restore the Store has not listed yet", () => {
+    expect(mergeRestoreGroups([], [group("placement", "new", "create", 1)]).map(({ nodeId }) => nodeId)).toEqual(["new"]);
   });
 });

@@ -1,4 +1,5 @@
 import { createFileRoute, useLoaderData } from "@tanstack/react-router";
+import { Schema } from "effect";
 import { prefetchRemote, prefetchStoreConfig } from "#/collections/route-data";
 import { configsQuery, requireView, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
@@ -9,10 +10,12 @@ import {
 import { ENVIRONMENT_ROUTE_FROM } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { StoreConfigDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreConfigDrawer";
 import { StoreVolumeDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeDrawer";
+import { volumeSearchSchema } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/volume-pages";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId",
 )({
+  validateSearch: Schema.toStandardSchemaV1(volumeSearchSchema),
   loader: ({ params, context }) => Promise.all([
     prefetchStoreConfig(context, params.organizationSlug,
       { project: params.projectSlug, environment: params.environmentSlug }, params.resourceId),
