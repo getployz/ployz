@@ -26,6 +26,7 @@ use ployz_core::{
 
 pub use payloads::typescript_declarations;
 
+pub mod agent;
 mod build;
 mod deploy;
 mod github_build;

@@ -74,7 +74,8 @@ pub struct ContainerReport {
     pub state: ContainerState,
     pub exit_code: Option<i64>,
     pub health: Option<Health>,
-    pub restarts: u32,
+    /// Absent when the Server does not report it.
+    pub restarts: Option<u32>,
     pub image: String,
     pub deployment: Option<DeploymentId>,
 }

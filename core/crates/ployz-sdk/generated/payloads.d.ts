@@ -752,7 +752,11 @@ resolved_spec: ResolvedServiceSpec, address: ContainerAddress | null, labels: { 
 
 export type ContainerPath = string;
 
-export type ContainerReport = { server: MachineName, service: ServiceName, state: ContainerState, exit_code: number | null, health: Health | null, restarts: number, image: string, deployment: DeploymentId | null, };
+export type ContainerReport = { server: MachineName, service: ServiceName, state: ContainerState, exit_code: number | null, health: Health | null,
+/**
+ * Absent when the Server does not report it.
+ */
+restarts: number | null, image: string, deployment: DeploymentId | null, };
 
 export type ContainerResources = { cpu_nanos: CpuNanos | null, memory_bytes: ByteQuantity | null, memory_reservation_bytes: ByteQuantity | null, shared_memory_bytes: ByteQuantity | null, devices: Array<DeviceMapping>, device_reservations: Array<DeviceReservation>, ulimits: { [key in string]: Ulimit }, };
 
