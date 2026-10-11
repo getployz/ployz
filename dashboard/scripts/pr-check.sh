@@ -9,6 +9,7 @@ checks=(
   "sdk:bash ../core/scripts/build-cloud-sdk.sh"
   "build:pnpm build:app"
   "test:pnpm test"
+  "uptime:cd uptime && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo nextest run --locked"
 )
 
 failed=0

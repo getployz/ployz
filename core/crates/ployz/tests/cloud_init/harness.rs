@@ -306,9 +306,8 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<Self::BuildStream>, Status> {
         Err(Status::unimplemented("Build is not used by this fixture"))
     }
-    type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type LogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -1107,22 +1106,16 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<Self::ExecStream>, Status> {
         unused()
     }
-    async fn container_logs(
+    async fn tail_logs(
         &self,
         _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogsStream>, Status> {
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
         unused()
     }
-    async fn container_log_history(
+    async fn log_history(
         &self,
         _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
-        unused()
-    }
-    async fn machine_logs(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::MachineLogsStream>, Status> {
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
         unused()
     }
     async fn runtime_watch(

@@ -51,7 +51,7 @@ const count = (keys: ReadonlyArray<string>) => {
 };
 
 /** Requests that only read a Machine, which the grader ignores. */
-const READ = /^(inspect|list|describe|get)_|^(machine_token|container_log_history|container_logs|machine_logs|runtime_watch)$/;
+const READ = /^(inspect|list|describe|get)_|^(machine_token|log_history|tail_logs|runtime_watch)$/;
 const NAMES = new Map<string, string>(Object.values(MACHINES_BY_NAME).map(({ id, name }) => [id, name]));
 
 /** What a request acts on: its container, its upgrade attempt or its Volume, else nothing. */
