@@ -40,7 +40,7 @@ describe("summarize", () => {
 });
 
 describe("blockers", () => {
-  const roles = { target: "haiku", portable: "mini" };
+  const roles = { target: "haiku", portable: "mini", agents: ["haiku", "mini"] };
   const every = (model: string, passed: (task: string) => number) => TASKS.flatMap(({ id }) => trials(model, id, passed(id), 8));
   const perfect = summarize([...every("haiku", () => 8), ...every("mini", () => 8)]);
 
@@ -80,6 +80,13 @@ describe("blockers", () => {
     const summary = summarize([...every("haiku", failT1), ...every("mini", failT1), ...every("opus", () => 8).filter(({ task }) => task !== "T1"), ...trials("opus", "T1", 0, 3)]);
     expect(summary.quarantined).toEqual(["T1"]);
     expect(blockers(summary, roles, perfect)).toContain("haiku T1: pass^4 0.00, needs 1.00");
+  });
+
+  it("still blocks on a quarantined task a pinned model saved no trials for", () => {
+    const failT1 = (task: string) => (task === "T1" ? 0 : 8);
+    const summary = summarize([...every("haiku", failT1), ...every("mini", failT1)]);
+    expect(summary.quarantined).toEqual(["T1"]);
+    expect(blockers(summary, { ...roles, agents: ["haiku", "mini", "opus"] }, perfect)).toContain("haiku T1: pass^4 0.00, needs 1.00");
   });
 
   it("blocks when the portable model's average falls under its floor", () => {
