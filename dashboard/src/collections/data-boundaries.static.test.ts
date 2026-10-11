@@ -28,6 +28,7 @@ const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
   "components/ui/spinner.tsx": "the primitive",
+  "components/agent-sidebar/agent-panel.tsx": "the agent starting its reply",
   "components/ui/sonner.tsx": "promise toasts for writes",
   "components/confirm-dialog.tsx": "confirm in flight",
   "components/deletion-dialog.tsx": "deletion in flight",
