@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, Subject, VolumeRun } from "@ployz/sdk";
+import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -130,7 +130,9 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
     case "copies":
       return yield* copies(organizationId, query.namespace, query.volume);
     case "operations":
-      return yield* operationsOn(organizationId, query.subject, query.attempt, query.limit).pipe(Effect.map(answer));
+      return yield* operationsOn(organizationId, query.subject, query.attempt, query.limit).pipe(
+        Effect.map((operations) => answer<OperationsAnswer>({ operations })),
+      );
     case "logs":
       return refusal("unavailable", "The sidebar can't read logs yet. Open the Service's logs instead.");
   }
