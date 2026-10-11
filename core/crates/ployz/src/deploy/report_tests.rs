@@ -117,7 +117,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
         service: QualifiedService::parse("ployz-system/ingress").unwrap(),
         machine,
         server: "edge".into(),
-        lines: vec!["could not load configuration".into()],
+        log: Some(shown("could not load configuration")),
     };
     let failure = crate::handlers::ingress_hints(failure(&outcome, vec![tail]), |args| {
         shell_words::join(
@@ -149,7 +149,8 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
             .any(|value| value == "registry request failed")
     );
     assert_eq!(
-        json.pointer("/details/progress/logs/0/lines/0").unwrap(),
+        json.pointer("/details/progress/logs/0/log/lines/0")
+            .unwrap(),
         "could not load configuration"
     );
 }
@@ -179,7 +180,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
         service: QualifiedService::parse("shop/web").unwrap(),
         machine,
         server: "edge".into(),
-        lines: Vec::new(),
+        log: None,
     };
     let text = crate::ui::plain(&crate::handlers::ingress_hints(
         failure(&outcome, vec![tail]),
@@ -201,4 +202,14 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
     assert!(text.contains("inspect: ployz logs shop/web"));
     assert!(!text.contains("Last 0"));
     assert!(!text.contains("Restarted the old"));
+}
+
+fn shown(text: &str) -> ployz_store::tools::LogText {
+    let mut secrets = ployz_store::tools::SecretSet::from_store([], []);
+    secrets.add_machine_env(Some(&std::collections::BTreeMap::new()));
+    ployz_store::tools::LogExcerpt::scrub(
+        [text.to_owned()],
+        &secrets,
+        ployz_store::tools::LineCap::default(),
+    )
 }

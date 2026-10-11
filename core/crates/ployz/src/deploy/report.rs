@@ -1,7 +1,6 @@
 //! Direct execution evidence, grouped by the same RowTracker the Store uses.
 
 use crate::{
-    connect::Client,
     failure::Failure,
     ui::progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
 };
@@ -10,9 +9,10 @@ use ployz_core::{
     Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
     ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
+use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{RowState, RowTracker, ServerProgress};
 use std::collections::BTreeMap;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// Factual Service/Server progress plus standalone operations and failed Container identity.
 pub(super) struct Direct {
@@ -111,26 +111,19 @@ impl Direct {
         }
     }
 
-    pub(super) async fn tails(&self, client: &Client) -> Vec<LogTail> {
-        let mut tails = Vec::new();
-        for (row, _) in self
-            .rows
+    pub(super) fn tails(&self) -> Vec<LogTail> {
+        self.rows
             .values()
             .filter(|(row, _)| matches!(row.state, RowState::Failed { .. }))
-        {
-            let lines = if let Some(container) = self.tracker.container(row) {
-                log_tail(client, row.machine, container).await
-            } else {
-                Vec::new()
-            };
-            tails.push(LogTail {
+            .map(|(row, _)| LogTail {
                 service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
                 machine: row.machine,
                 server: row.server.clone(),
-                lines,
-            });
-        }
-        tails
+                log: self.tracker.container(row).map(|_| LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                }),
+            })
+            .collect()
     }
 }
 
@@ -212,46 +205,6 @@ fn failure_causes(error: &ExecutionError) -> Vec<String> {
         .collect()
 }
 
-async fn log_tail(client: &Client, machine: MachineId, container: ContainerId) -> Vec<String> {
-    let read = async {
-        let request =
-            ployz_core::op::ContainerLogs::into_request(ployz_core::ContainerLogsRequest {
-                container_id: container,
-                options: ployz_core::LogsOptions {
-                    follow: false,
-                    tail: 10,
-                    since_unix_seconds: None,
-                    until_unix_seconds: None,
-                },
-            })
-            .encode()
-            .ok()?;
-        let mut stream = client
-            .container_logs_stream(&ployz_core::MachineTarget::from(&machine), request)
-            .await
-            .ok()?;
-        let mut lines = std::collections::VecDeque::new();
-        while let Ok(Some(payload)) = stream.message().await {
-            let entry = ployz_core::LogEntry::decode(&payload).ok()?;
-            let bytes = match entry.body {
-                ployz_core::LogBody::Stdout(bytes) | ployz_core::LogBody::Stderr(bytes) => bytes,
-                ployz_core::LogBody::Heartbeat | ployz_core::LogBody::Error(_) => continue,
-            };
-            for line in String::from_utf8_lossy(&bytes).lines() {
-                if lines.len() == ployz_store::LOG_TAIL {
-                    lines.pop_front();
-                }
-                lines.push_back(line.to_owned());
-            }
-        }
-        Some(lines.into_iter().collect())
-    };
-    tokio::time::timeout(Duration::from_secs(5), read)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default()
-}
 pub(super) fn visible_row_name(row: &OperationRow) -> String {
     visible_name(
         row.display_name.as_deref(),

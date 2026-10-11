@@ -529,7 +529,7 @@ mod tests {
                     service: QualifiedService::system_ingress(),
                     machine: failed,
                     server: "same-name".into(),
-                    lines: Vec::new(),
+                    log: None,
                 }],
                 ..Default::default()
             })

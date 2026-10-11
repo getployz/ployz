@@ -12,9 +12,7 @@ use ts_rs::TS;
 
 use super::{DeploymentStatus, Stored, TargetNode, json_text, now, saved_at};
 use crate::storage::Tx;
-
-/// The most log lines a failed row keeps.
-pub const LOG_TAIL: usize = 10;
+use crate::tools::{LogText, Withheld};
 
 /// What one Service's work on one Server is doing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -26,11 +24,15 @@ pub enum RowState {
     },
     Completed,
     /// `reason` is our sentence; `cause` lists what it came from, outermost first.
-    /// `log` is the failed Container's last lines, when they could be read.
+    /// `step` is the work that failed, when known. `log` is the failed Container's last
+    /// lines, scrubbed, or why they are not shown; absent when no Container was involved.
     Failed {
         reason: String,
         cause: Vec<String>,
-        log: Vec<String>,
+        #[serde(default)]
+        step: Option<FailedAt>,
+        #[serde(default, deserialize_with = "stored_log")]
+        log: Option<LogText>,
     },
     /// The Deployment stopped before this work finished.
     NotAttempted,
@@ -47,6 +49,70 @@ impl RowState {
     }
 }
 
+/// The step a failed row's work was on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FailedAt {
+    Build,
+    Create,
+    Start,
+    Health,
+    Hook,
+    Stop,
+    Remove,
+    Volume,
+}
+
+impl FailedAt {
+    fn of(error: &ExecutionError, last: Option<&RowState>) -> Option<Self> {
+        let from_phase = || match last {
+            Some(RowState::Running { phase }) => phase.failed_at(),
+            Some(RowState::Failed { step, .. }) => *step,
+            Some(
+                RowState::Pending
+                | RowState::Completed
+                | RowState::NotAttempted
+                | RowState::Unknown,
+            )
+            | None => None,
+        };
+        match error {
+            ExecutionError::Machine { action, .. } => match action {
+                MachineAction::PrepareVolumes | MachineAction::RemoveVolume => Some(Self::Volume),
+                MachineAction::CreateContainer => Some(Self::Create),
+                MachineAction::StartContainer => Some(Self::Start),
+                MachineAction::StopContainer => Some(Self::Stop),
+                MachineAction::RemoveContainer => Some(Self::Remove),
+                MachineAction::InspectContainer => from_phase(),
+            },
+            ExecutionError::Health { .. } | ExecutionError::DependencyHealth { .. } => {
+                Some(Self::Health)
+            }
+            ExecutionError::Hook { .. } => Some(Self::Hook),
+            ExecutionError::Cancelled => from_phase(),
+        }
+    }
+}
+
+/// Rows stored before logs were scrubbed hold raw lines. They are never shown again.
+fn stored_log<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<LogText>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        Raw(Vec<String>),
+        Scrubbed(Option<LogText>),
+    }
+    Ok(match Stored::deserialize(deserializer)? {
+        Stored::Raw(lines) if lines.is_empty() => None,
+        Stored::Raw(_) => Some(LogText::Withheld {
+            why: Withheld::NoSecretContext,
+        }),
+        Stored::Scrubbed(log) => log,
+    })
+}
+
 /// An [`OperationPhase`] without its clocks, which change on every tick.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +126,21 @@ pub enum RowPhase {
     RemovingContainer,
     RemovingVolume,
     Compensating,
+}
+
+impl RowPhase {
+    const fn failed_at(self) -> Option<FailedAt> {
+        match self {
+            Self::CreatingContainer => Some(FailedAt::Create),
+            Self::StartingContainer => Some(FailedAt::Start),
+            Self::WaitingForHealth => Some(FailedAt::Health),
+            Self::WaitingForHook => Some(FailedAt::Hook),
+            Self::StoppingContainer => Some(FailedAt::Stop),
+            Self::RemovingContainer => Some(FailedAt::Remove),
+            Self::RemovingVolume => Some(FailedAt::Volume),
+            Self::Starting | Self::Compensating => None,
+        }
+    }
 }
 
 impl From<&OperationPhase> for RowPhase {
@@ -244,7 +325,11 @@ impl RowTracker {
         }
         let mut changes = Vec::new();
         for (key, (server, statuses)) in grouped {
-            let state = state(&statuses, self.last.get(&key));
+            let container = self
+                .failed
+                .get(&key)
+                .is_some_and(|index| self.containers.contains_key(index));
+            let state = state(&statuses, self.last.get(&key), container);
             if self.last.get(&key) == Some(&state) {
                 continue;
             }
@@ -303,7 +388,8 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
     }
 }
 
-fn state(statuses: &[&OperationStatus], last: Option<&RowState>) -> RowState {
+/// A failed row's `log` waits as unanswered until the runner reads its Container's tail.
+fn state(statuses: &[&OperationStatus], last: Option<&RowState>, container: bool) -> RowState {
     let (mut failed, mut running, mut pending, mut completed) = (None, None, 0, 0);
     for status in statuses {
         match status {
@@ -319,7 +405,10 @@ fn state(statuses: &[&OperationStatus], last: Option<&RowState>) -> RowState {
         return RowState::Failed {
             reason,
             cause,
-            log: Vec::new(),
+            step: FailedAt::of(error, last),
+            log: container.then_some(LogText::Withheld {
+                why: Withheld::Unanswered,
+            }),
         };
     }
     if let Some(phase) = running {

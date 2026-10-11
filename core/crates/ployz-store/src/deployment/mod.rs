@@ -13,7 +13,7 @@ mod rows;
 pub(crate) use history::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
-pub use rows::{Failure, LOG_TAIL, RowPhase, RowState, RowTracker, ServerProgress, ServerRow};
+pub use rows::{FailedAt, Failure, RowPhase, RowState, RowTracker, ServerProgress, ServerRow};
 
 use std::collections::BTreeMap;
 

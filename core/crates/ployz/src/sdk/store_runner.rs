@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
+use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, Failure, LOG_TAIL, RowState, RowTracker, RunEvidence,
-    RunnerId,
+    DeploymentStatus, DeploymentSummary, Failure, RowState, RowTracker, RunEvidence, RunnerId,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -28,8 +28,6 @@ const CANCEL_POLL: Duration = Duration::from_secs(2);
 
 /// How often a build's new log output is recorded.
 const LOG_FLUSH: Duration = Duration::from_secs(3);
-
-const LOG_READ: Duration = Duration::from_secs(5);
 
 /// Each Git Service's checkout at its pinned commit, by runtime Service name, and the
 /// Deployment's upload, if Cloud still holds it; or why Cloud could not read them.
@@ -262,7 +260,7 @@ impl Run {
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
         let outcome = self
-            .renewing(self.executing(session, &running), || running.abort())
+            .renewing(self.executing(&running), || running.abort())
             .await;
         match outcome {
             Ok((outcome, progress)) => {
@@ -474,7 +472,6 @@ impl Run {
     /// stays so if this runner is lost before the outcome.
     async fn executing(
         &self,
-        session: &Session,
         running: &super::RunningDeploy,
     ) -> Result<
         (
@@ -491,10 +488,10 @@ impl Run {
                 continue;
             };
             for mut row in tracker.changes(&rows) {
-                let container = tracker.container(&row);
-                if let (RowState::Failed { log, .. }, Some(container)) = (&mut row.state, container)
-                {
-                    *log = log_tail(session, row.machine, container).await;
+                if let RowState::Failed { log: Some(log), .. } = &mut row.state {
+                    *log = LogText::Withheld {
+                        why: Withheld::NoSecretContext,
+                    };
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }
@@ -774,38 +771,6 @@ pub(super) fn log_line(event: &Value) -> String {
         return format!("{} {name}\n", if cached { "CACHED" } else { "DONE" });
     }
     String::new()
-}
-
-async fn log_tail(
-    session: &Session,
-    machine: ployz_core::MachineId,
-    container: ployz_core::ContainerId,
-) -> Vec<String> {
-    let read = async {
-        let stream = session
-            .container_logs(super::logs::ContainerLogInput {
-                machine_id: machine,
-                container_id: container,
-                tail: i32::try_from(LOG_TAIL).unwrap_or(i32::MAX),
-                follow: false,
-                before_nanos: None,
-                since_unix_seconds: None,
-            })
-            .await
-            .ok()?;
-        let mut lines = Vec::new();
-        while let Ok(Some(record)) = stream.next().await {
-            lines.extend(record.message.lines().map(str::to_owned));
-        }
-        Some(lines)
-    };
-    let mut lines = tokio::time::timeout(LOG_READ, read)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    lines.drain(..lines.len().saturating_sub(LOG_TAIL));
-    lines
 }
 
 /// Delete exactly the Docker Volumes admission accepted, never others of the same

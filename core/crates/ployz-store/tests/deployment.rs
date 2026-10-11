@@ -10,11 +10,12 @@ use ployz_core::{
     ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, OperationRow,
     RpcError, RpcErrorCode, ServiceName,
 };
+use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
     DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery,
-    DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentRef,
+    DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentRef, FailedAt,
     NamespaceQuery, NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId, ProjectName,
     Publish, PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision,
     RowPhase, RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId,
@@ -1318,7 +1319,10 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                 RowState::Failed {
                     reason: "remove Container failed".into(),
                     cause: vec!["the daemon is busy".into(), "connection refused".into()],
-                    log: Vec::new(),
+                    step: Some(FailedAt::Remove),
+                    log: Some(LogText::Withheld {
+                        why: Withheld::Unanswered
+                    }),
                 }
             ),
             ("api".to_owned(), "beta".to_owned(), RowState::NotAttempted),
@@ -1397,7 +1401,13 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
         let mut changes = RowTracker::default().changes(&snapshot);
         for row in &mut changes {
             if let RowState::Failed { log, .. } = &mut row.state {
-                *log = vec!["alpha disk log".into()];
+                let mut secrets = SecretSet::from_store([], []);
+                secrets.add_machine_env(Some(&Default::default()));
+                *log = Some(LogExcerpt::scrub(
+                    ["alpha disk log\n".to_owned()],
+                    &secrets,
+                    LineCap::default(),
+                ));
             }
         }
         store
@@ -1422,7 +1432,8 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
                     json!({
                         "machine_id": row["machine_id"], "server": row["server"],
                         "state": row["state"], "phase": row["phase"],
-                        "reason": row["reason"], "cause": row["cause"], "log": row["log"]
+                        "reason": row["reason"], "cause": row["cause"], "step": row["step"],
+                        "log": row["log"]
                     })
                 })
                 .collect();
@@ -1433,12 +1444,13 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
                         "machine_id": snapshot[1].machine_id, "server": "same-name",
                         "state": "failed", "phase": null,
                         "reason": "remove Container failed", "cause": ["disk failure"],
-                        "log": ["alpha disk log"]
+                        "step": "remove",
+                        "log": {"status": "shown", "lines": ["alpha disk log"], "cut": false, "redacted": 0}
                     }),
                     json!({
                         "machine_id": snapshot[2].machine_id, "server": "same-name",
                         "state": "running", "phase": "waiting_for_health",
-                        "reason": null, "cause": null, "log": null
+                        "reason": null, "cause": null, "step": null, "log": null
                     })
                 ]
             );
@@ -3169,4 +3181,90 @@ fn removing_a_volume_no_service_mounts_asks_nothing_while_its_deployment_runs() 
         .unwrap();
     assert!(diff(&store, &who).effects.is_empty());
     publish_asking(&store, &who, Approval::Required).unwrap();
+}
+
+fn failed_row(snapshots: &[Vec<OperationRow>]) -> RowState {
+    let mut tracker = RowTracker::default();
+    let mut last = None;
+    for snapshot in snapshots {
+        for change in tracker.changes(snapshot) {
+            last = Some(change.state);
+        }
+    }
+    last.unwrap()
+}
+
+#[test]
+fn a_failed_row_records_the_step_it_failed_at() {
+    let health = json!({"type": "failed", "error": {
+        "type": "health", "container_id": "c".repeat(64), "failure": {"type": "cancelled"}
+    }});
+    let RowState::Failed { step, log, .. } = failed_row(&[progress(&[("web", "alpha", health)])])
+    else {
+        panic!("expected a failed row");
+    };
+    assert_eq!(step, Some(FailedAt::Health));
+    assert_eq!(
+        log,
+        Some(LogText::Withheld {
+            why: Withheld::Unanswered
+        })
+    );
+    let inspect = json!({"type": "failed", "error": {
+        "type": "machine", "action": "InspectContainer",
+        "error": {"code": "internal", "message": "gone", "details": {}}
+    }});
+    let state = failed_row(&[
+        progress(&[("web", "alpha", waiting(1_000))]),
+        progress(&[("web", "alpha", inspect.clone())]),
+    ]);
+    assert!(
+        matches!(
+            state,
+            RowState::Failed {
+                step: Some(FailedAt::Health),
+                ..
+            }
+        ),
+        "an error without a step falls back to the last phase: {state:?}"
+    );
+    let state = failed_row(&[progress(&[("web", "alpha", inspect)])]);
+    assert!(
+        matches!(
+            state,
+            RowState::Failed {
+                step: None,
+                log: None,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+}
+
+#[test]
+fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
+    let stored = json!({
+        "state": "failed", "reason": "Deploy failed", "cause": [],
+        "log": ["DATABASE_URL=postgres://app:raw-secret@db/app"]
+    });
+    let state: RowState = serde_json::from_value(stored).unwrap();
+    assert_eq!(
+        state,
+        RowState::Failed {
+            reason: "Deploy failed".into(),
+            cause: Vec::new(),
+            step: None,
+            log: Some(LogText::Withheld {
+                why: Withheld::NoSecretContext
+            }),
+        }
+    );
+    let reserialized = serde_json::to_string(&state).unwrap();
+    assert!(!reserialized.contains("raw-secret"), "{reserialized}");
+    let empty: RowState = serde_json::from_value(json!({
+        "state": "failed", "reason": "Deploy failed", "cause": [], "log": []
+    }))
+    .unwrap();
+    assert!(matches!(empty, RowState::Failed { log: None, .. }));
 }

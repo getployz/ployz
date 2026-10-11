@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ployz_core::{DeployWarning, MachineId, Namespace, QualifiedService};
+use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -787,13 +788,14 @@ pub(crate) struct Detail {
     pub causes: Vec<String>,
 }
 
-/// Already-bounded log evidence. An empty tail makes no claim about Container output.
+/// Scrubbed log evidence. `None` means no Container was involved, so there is no log
+/// to show or withhold.
 #[derive(Debug)]
 pub(crate) struct LogTail {
     pub service: QualifiedService,
     pub machine: MachineId,
     pub server: String,
-    pub lines: Vec<String>,
+    pub log: Option<LogText>,
 }
 
 impl Diagnostic {
@@ -807,17 +809,26 @@ impl Diagnostic {
             )?;
         }
         for tail in &self.logs {
-            if !tail.lines.is_empty() {
-                writeln!(
-                    writer,
-                    "Last {} log lines from {} on {}:",
-                    tail.lines.len(),
-                    tail.service.name,
-                    tail.server
-                )?;
-                for line in &tail.lines {
-                    writeln!(writer, "  {line}")?;
+            let (service, server) = (&tail.service.name, &tail.server);
+            match &tail.log {
+                None => {}
+                Some(LogText::Shown(excerpt)) if excerpt.lines().is_empty() => {}
+                Some(LogText::Shown(excerpt)) => {
+                    let count = excerpt.lines().len();
+                    writeln!(writer, "Last {count} log lines from {service} on {server}:")?;
+                    for line in excerpt.lines() {
+                        writeln!(writer, "  {line}")?;
+                    }
                 }
+                Some(LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                }) => writeln!(
+                    writer,
+                    "Logs from {service} on {server} withheld: no secret context."
+                )?,
+                Some(LogText::Withheld {
+                    why: Withheld::Unanswered,
+                }) => writeln!(writer, "Logs from {service} on {server} unavailable.")?,
             }
         }
         for fact in &self.compensation {
@@ -835,7 +846,7 @@ impl Diagnostic {
         serde_json::json!({
             "failed_machine": self.failed_machine,
             "failures": self.failures.iter().map(detail).collect::<Vec<_>>(),
-            "logs": self.logs.iter().map(|tail| serde_json::json!({"service": tail.service, "machine_id": tail.machine, "server": tail.server, "lines": tail.lines})).collect::<Vec<_>>(),
+            "logs": self.logs.iter().map(|tail| serde_json::json!({"service": tail.service, "machine_id": tail.machine, "server": tail.server, "log": tail.log})).collect::<Vec<_>>(),
             "compensation": self.compensation.iter().map(detail).collect::<Vec<_>>(),
         })
     }

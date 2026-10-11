@@ -178,6 +178,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 reason: row_reason,
                 cause: row_cause,
                 log,
+                ..
             } = &row.state
             else {
                 continue;
@@ -194,7 +195,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 service: service.clone(),
                 machine: row.machine_id,
                 server: row.server.clone(),
-                lines: log.clone(),
+                log: log.clone(),
             });
             hints.push(Hint::Inspect(command(&[
                 "logs",
@@ -245,8 +246,8 @@ mod tests {
             "namespace": "shop-production", "preview": null, "builds": [], "runtime_names": {"web": "private-web"},
             "nodes": [
                 {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "failed", "rows": [
-                    {"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["pull failed", "denied"], "log": ["startup failed"], "started_at": 1, "finished_at": 2},
-                    {"machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["pull failed", "denied"], "log": [], "started_at": 1, "finished_at": 2}
+                    {"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["pull failed", "denied"], "log": {"status": "shown", "lines": ["startup failed"], "cut": false, "redacted": 0}, "started_at": 1, "finished_at": 2},
+                    {"machine_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["pull failed", "denied"], "log": null, "started_at": 1, "finished_at": 2}
                 ]},
                 {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "api", "outcome": "unchanged", "rows": []},
                 {"type": "volume", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "data", "outcome": "not_attempted", "rows": []}

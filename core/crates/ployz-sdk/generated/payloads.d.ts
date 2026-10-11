@@ -1686,6 +1686,8 @@ export type ExecutionError = { "type": "machine", action: MachineAction, error: 
 
 export type ExtraHost = string;
 
+export type FailedAt = "build" | "create" | "start" | "health" | "hook" | "stop" | "remove" | "volume";
+
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
 export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step";
@@ -2016,9 +2018,21 @@ export type LogChannel = "stdout" | "stderr" | "error";
 
 export type LogDriver = { name: string, options: { [key in string]: string }, };
 
+export type LogExcerpt = { lines: Array<string>,
+/**
+ * Whether a cap dropped any line or byte.
+ */
+cut: boolean,
+/**
+ * How many secrets and secret-shaped values were replaced.
+ */
+redacted: number, };
+
 export type LogMetadata = { origin: LogOrigin, machine_id: MachineId, machine_name: MachineName, };
 
 export type LogOrigin = { "origin": "service", service_id: ServiceId, service_name: ServiceName, container_id: ContainerId, hook: string | null, } | { "origin": "machine", service: MachineLogService, };
+
+export type LogText = { "status": "shown" } & LogExcerpt | { "status": "withheld", why: Withheld, };
 
 export type Machine = {
 /**
@@ -3241,7 +3255,7 @@ started_at: number | null,
 /**
  * When it finished, in Unix seconds.
  */
-finished_at: number | null, } & ({ "state": "pending" } | { "state": "running", phase: RowPhase, } | { "state": "completed" } | { "state": "failed", reason: string, cause: Array<string>, log: Array<string>, } | { "state": "not_attempted" } | { "state": "unknown" });
+finished_at: number | null, } & ({ "state": "pending" } | { "state": "running", phase: RowPhase, } | { "state": "completed" } | { "state": "failed", reason: string, cause: Array<string>, step: FailedAt | null, log: LogText | null, } | { "state": "not_attempted" } | { "state": "unknown" });
 
 export type ServiceAttempt = {
 /**
@@ -4225,6 +4239,8 @@ export type When = { "kind": "now",
 close_after?: boolean, } | { "kind": "at_merge" };
 
 export type WireGuardPublicKey = Array<number>;
+
+export type Withheld = "no_secret_context" | "unanswered";
 
 export type WriterMarker = { "phase": "idle" } | { "phase": "stopping" } | { "phase": "frozen", guid: SnapshotGuid, } | { "phase": "thawing" } | { "phase": "handed", guid: SnapshotGuid, };
 

@@ -64,7 +64,7 @@ pub use conditional_sync::{
     SecretHeld,
 };
 pub use deployment::{
-    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, Failure, LOG_TAIL,
+    Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, FailedAt, Failure,
     NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress,
     ServerRow, Unclaimed, UploadBase, UploadedSource,
 };
