@@ -500,7 +500,10 @@ pub(crate) fn local_mode() -> bool {
 
 /// The Store as seen with the CLI config at `config` (where a device's sign-in lives).
 pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
-    if let Ok(url) = std::env::var(env::STORE) {
+    if let Some(url) = std::env::var_os(env::STORE) {
+        let Some(url) = url.to_str() else {
+            return Err(Error::usage("PLOYZ_STORE must be valid Unicode"));
+        };
         let actor = Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"));
         // The hidden test mode keeps its sealing key beside its database.
         let key = match url
@@ -511,7 +514,7 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
             None => config.with_file_name("store.key"),
         };
         let key = SealingKey::from_file(&key)?;
-        let store = ConfigStore::open(&url, key)?;
+        let store = ConfigStore::open(url, key)?;
         // Cloud sweeps on a clock; the in-process Store sweeps as each command starts.
         sweep(&store, &actor).map_err(StoreCallError::Refused)?;
         return Ok(Some(Backend::Local(std::sync::Arc::new(store), actor)));

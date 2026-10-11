@@ -58,9 +58,10 @@ claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They read and
-stage changes in your Projects, review, publish and deploy them, and show Services, Servers,
-Volumes and logs. Logs never show a secret. The agent can resend a call after a lost reply
-without running it twice.
+stage changes in your Projects, review, publish and deploy them, and show Services, Servers
+and Volumes. Through Ployz Cloud, `service_logs` answers unavailable for now; read logs on the
+[Logs page](../observe/logs.md). The agent can resend a call after a lost reply without running
+it twice.
 
 Some things are not tools. Run these yourself in a terminal:
 

@@ -40,17 +40,15 @@ export const serversOf = (legs: readonly ServiceActLeg[]) => [...new Set(legs.ma
 
 export type ServiceActEnd = { state: Exclude<ServiceActState, ActiveServiceActState>; reason: string | null };
 
-export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[]): ServiceActEnd {
-  if (legs.length === 0) {
-    return before.unanswered.length > 0
-      ? { state: "unknown", reason: `${before.unanswered.join(", ")} didn't answer.` }
-      : { state: "failed", reason: "No containers to move." };
-  }
+/** A Service-wide act never ends done while a Server didn't answer: its copies there may not have moved. */
+export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[], only: ServerRef | null): ServiceActEnd {
+  const silent = before.unanswered.length > 0 ? `${before.unanswered.join(", ")} didn't answer.` : null;
+  if (legs.length === 0) return silent !== null ? { state: "unknown", reason: silent } : { state: "failed", reason: "No containers to move." };
   const steps = legs.flatMap((leg) => [leg.stop, leg.start]);
   const reason = legs.find((leg) => leg.reason !== null)?.reason ?? null;
   if (steps.some((step) => step === "unknown" || step === "sent")) return { state: "unknown", reason };
   if (steps.some((step) => step === "failed")) return { state: "failed", reason };
-  return { state: "done", reason: null };
+  return only === null && silent !== null ? { state: "unknown", reason: silent } : { state: "done", reason: null };
 }
 
 const RECEIPTS = { sent: "unknown", unknown: "unknown", done: "yes", already_there: "yes", failed: "no" } as const satisfies Record<LegStep, Receipt>;
