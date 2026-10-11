@@ -34,7 +34,7 @@ jobs:
         run: |
           live=true
           if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$LABELLED" != true ]; then
-            git diff --name-only "$BASE_SHA" "$GITHUB_SHA" \
+            git diff --name-only --no-renames "$BASE_SHA" "$GITHUB_SHA" \
               | grep -qxE 'core/crates/ployz-store/(tests/snapshots/agent_tools\.json|src/tools/mod\.rs)|dashboard/src/modules/agent/agent-chat\.server\.ts|dashboard/evals/models\.json' \
               || live=false
           fi
