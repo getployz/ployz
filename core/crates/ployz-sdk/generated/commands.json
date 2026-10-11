@@ -2367,24 +2367,6 @@
     "surface": "cloud",
     "args": [
       {
-        "name": "--project",
-        "required": false,
-        "value": true,
-        "type": "string",
-        "multiple": false,
-        "trailing": false,
-        "help": "Project [default: the only Project]"
-      },
-      {
-        "name": "--env",
-        "required": false,
-        "value": true,
-        "type": "string",
-        "multiple": false,
-        "trailing": false,
-        "help": "Environment [default: the Project's Default Environment]"
-      },
-      {
         "name": "REVISION",
         "required": true,
         "value": true,
@@ -2419,6 +2401,24 @@
         "multiple": false,
         "trailing": false,
         "help": "Accept the reviewed draft fields being overwritten"
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
       }
     ]
   },
@@ -2430,24 +2430,6 @@
     "surface": "cloud",
     "args": [
       {
-        "name": "--project",
-        "required": false,
-        "value": true,
-        "type": "string",
-        "multiple": false,
-        "trailing": false,
-        "help": "Project [default: the only Project]"
-      },
-      {
-        "name": "--env",
-        "required": false,
-        "value": true,
-        "type": "string",
-        "multiple": false,
-        "trailing": false,
-        "help": "Environment [default: the Project's Default Environment]"
-      },
-      {
         "name": "REVISION",
         "required": true,
         "value": true,
@@ -2482,6 +2464,24 @@
         "multiple": false,
         "trailing": false,
         "help": "Accept the reviewed draft fields being overwritten"
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
       }
     ]
   },

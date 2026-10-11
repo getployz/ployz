@@ -2062,3 +2062,98 @@ fn history_reads_only_the_newest_revisions_it_is_asked_for() {
     assert!(oldest.predecessor.is_some());
     assert_eq!(oldest.total_count, 1);
 }
+
+fn add_domain(store: &ConfigStore, who: &Actor, hostname: &str) {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::AddDomain {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                hostname: Some(ployz_store::Hostname::parse(hostname).unwrap()),
+                port: None,
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+}
+
+/// Removing `b.example.com` and adding it back moves it after `c.example.com`.
+fn reorder_routes(store: &ConfigStore, who: &Actor) {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "b.example.com".into(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    add_domain(store, who, "b.example.com");
+}
+
+fn route_order(store: &ConfigStore, who: &Actor) -> Vec<String> {
+    store
+        .read(who, &ployz_store::DomainsQuery::default())
+        .unwrap()
+        .domains
+        .into_iter()
+        .map(|domain| domain.domain.shown().to_string())
+        .collect()
+}
+
+#[test]
+fn reordered_routes_review_publish_and_discard() {
+    let (store, who) = shop();
+    for hostname in ["a.example.com", "b.example.com", "c.example.com"] {
+        add_domain(&store, &who, hostname);
+    }
+    backend::deploy(&store, &who, "production", 1);
+    reorder_routes(&store, &who);
+    let review = diff(&store, &who);
+    store
+        .write(
+            &who,
+            &Discard {
+                target: ployz_store::DiscardTarget::Review,
+                version: Some(review.version),
+                ..Discard::default()
+            },
+        )
+        .unwrap();
+    reorder_routes(&store, &who);
+    publish(&store, &who, None).unwrap();
+}
+
+#[test]
+fn history_undo_refuses_reordered_routes_but_restore_stages() {
+    let (store, who) = shop();
+    for hostname in ["a.example.com", "b.example.com", "c.example.com"] {
+        add_domain(&store, &who, hostname);
+    }
+    publish(&store, &who, None).unwrap();
+    let original = route_order(&store, &who);
+    reorder_routes(&store, &who);
+    publish(&store, &who, None).unwrap();
+    assert_ne!(route_order(&store, &who), original);
+    let error = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision: Revision(2),
+                action: ployz_store::HistoryAction::Undo,
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        error.message,
+        "History cannot restore reordered custom routes"
+    );
+    // Restore stages the whole snapshot, so a reorder alone is not refused.
+    stage_history(&store, &who, 1, ployz_store::HistoryAction::Restore);
+    let mut restored = route_order(&store, &who);
+    restored.sort();
+    assert_eq!(restored, original);
+}

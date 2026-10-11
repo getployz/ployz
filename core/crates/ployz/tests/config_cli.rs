@@ -3072,3 +3072,25 @@ fn a_config_lists_as_new_until_deployed_and_its_change_names_the_services_it_res
     assert!(human(&["deploy", "--plan"]).contains("\n  restarts web, worker\n"));
     assert!(human(&["deploy", "web", "--plan"]).contains("\n  restarts web\n"));
 }
+
+#[test]
+fn history_scope_flags_work_before_or_after_the_action() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["env", "new", "staging"]);
+        ok(
+            store,
+            &[
+                "service", "add", "web", "--image", "web:1", "--env", "staging",
+            ],
+        );
+        ok(store, &["publish", "--env", "staging"]);
+        for args in [
+            ["history", "--env", "staging", "restore", "1", "--preview"],
+            ["history", "restore", "1", "--preview", "--env", "staging"],
+        ] {
+            let preview = ok(store, &args);
+            assert_eq!(preview["environment"]["name"], json!("staging"), "{args:?}");
+        }
+    }
+}
