@@ -3,6 +3,7 @@ import type { MachineId } from "@ployz/sdk";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
+  canvasMirrors,
   detachedCopies,
   drainPlacement,
   editPlacement,
@@ -13,6 +14,7 @@ import {
   placementSteps,
   placementTargets,
   placementForm,
+  mirroredVolumes,
   placementGroup,
   stagedOffServer,
   storageStep,
@@ -327,5 +329,46 @@ describe("stagedOffServer", () => {
     ];
     const copies = [copy("web-1", "v1", "writer"), copy("web-1", "v2", "writer"), copy("web-2", "v3", "writer"), copy("web-1", "v3", "slot"), copy("web-1", "v4", "writer")];
     expect(stagedOffServer(id("web-1"), rows, copies)).toBe(1);
+  });
+});
+
+describe("canvasMirrors", () => {
+  const nodes = (members: Member[], placement: PlacementRow | null) =>
+    canvasMirrors(volume, members, placement).map(({ volume: owner, server, change, newest }) => ({ owner: owner.id, server: server.name, change, newest }));
+
+  it("draws a live mirror with when it last refreshed", () => {
+    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"])))
+      .toEqual([{ owner: "v1", server: "web-2", change: null, newest: at }]);
+  });
+
+  it("draws a staged mirror as one the Deploy adds", () => {
+    expect(nodes([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-1", mirrors: ["web-3"] })))
+      .toEqual([{ owner: "v1", server: "web-3", change: "add", newest: null }]);
+  });
+
+  it("keeps a mirror staged for removal, as one the Deploy removes", () => {
+    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-1" })))
+      .toEqual([{ owner: "v1", server: "web-2", change: "remove", newest: at }]);
+  });
+
+  it("draws none without mirrors, and leaves detached copies to the drawer", () => {
+    expect(nodes([member("web-1", "writer")], row([]))).toEqual([]);
+    expect(nodes([member("web-2", "writer"), member("web-1", "mirror")], row([]))).toEqual([]);
+    expect(nodes([], null)).toEqual([]);
+  });
+});
+
+describe("mirroredVolumes", () => {
+  const placement = (volumeId: string, mirrors: string[] | null, staged: boolean, environmentId = "e1"): PlacementRow =>
+    ({ ...row(mirrors, staged ? { primary: "web-1" } : null), volumeId, environmentId });
+
+  it("asks the Servers only about Volumes here that have, or will have, a mirror", () => {
+    const rows = [placement("listed", ["web-2"], false), placement("staged", [], true), placement("bare", [], false), placement("elsewhere", ["web-2"], false, "e2")];
+    const copies = [
+      { machineId: "web-2", name: "ns_vol-cli-made", role: "slot" as const },
+      { machineId: "web-1", name: "ns_vol-none", role: "writer" as const },
+    ];
+    expect(mirroredVolumes(["listed", "staged", "bare", "elsewhere", "cli-made", "none"], rows, "e1", copies))
+      .toEqual(["listed", "staged", "cli-made"]);
   });
 });

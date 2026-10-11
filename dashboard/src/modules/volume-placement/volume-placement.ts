@@ -322,6 +322,27 @@ export function placementForm(volume: PlacementVolume, members: readonly Member[
   return { primary: item(machine(target.primary), kindOf(move)), mirrors, detached: [...left, ...detached] };
 }
 
+/** A Volume's mirror as the canvas draws it: a node under the Volume, in the colour of what the next Deploy does to it. */
+export type CanvasMirror = PlacementItem & { readonly volume: PlacementVolume };
+
+/** The Placement form's Mirrors, as canvas nodes. Detached copies stay in the drawer: they serve nothing and refresh never. */
+export function canvasMirrors(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): CanvasMirror[] {
+  return placementForm(volume, members, row)?.mirrors.map((item) => ({ ...item, volume })) ?? [];
+}
+
+/**
+ * The Volumes of `environmentId` worth asking the Servers about for the canvas: one the dashboard lists a mirror or a
+ * staged placement for, or one with a mirror the Runtime Watch reports, as the CLI makes them. The rest have no mirror node.
+ */
+export function mirroredVolumes(
+  volumeIds: readonly string[], rows: readonly PlacementRow[], environmentId: string, copies: readonly RuntimeVolumeCopy[],
+): string[] {
+  const placed = new Set(rows.filter((row) => row.environmentId === environmentId && (row.staged !== null || (row.mirrors?.length ?? 0) > 0))
+    .map((row) => row.volumeId));
+  const slots = new Set(copies.filter((copy) => copy.role === "slot").flatMap((copy) => parseDockerVolumeName(copy.name)?.volumeId ?? []));
+  return volumeIds.filter((id) => placed.has(id) || slots.has(id));
+}
+
 export function undoPlacement(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, change: PlacementChange): Placement | null {
   const staged = row.staged;
   if (staged === null) return null;
