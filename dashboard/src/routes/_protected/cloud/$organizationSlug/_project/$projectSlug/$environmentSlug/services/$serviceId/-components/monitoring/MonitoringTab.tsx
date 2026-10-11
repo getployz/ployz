@@ -231,7 +231,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
           ) : toggle}
         </div>
       </div>
-      <HistoryStrip bars={bars} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
+      <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
         from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
       <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}
         onPointerDownCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}>
@@ -337,19 +337,26 @@ function ResponseTimeError({ reset }: ErrorComponentProps) {
 
 const KIND_WORDS = { routine: null, confirm: "Confirm", recheck: "Recheck" } as const;
 
-/** A result in a few words: "us-east · 212 ms", "eu-west · 502 · Confirm". */
-function resultText(result: UptimeCheckResult) {
+/** A result in a few words: "Amsterdam · 212 ms", "sin · 502 · Confirm". */
+function ResultText({ result, regions }: { result: UptimeCheckResult; regions: RegionNames }) {
+  const label = regionLabel(regions, result.region);
   const answer = result.verdict === "inconclusive" ? "Inconclusive"
     : result.verdict === "pass" ? formatMs(result.ms)
     : result.status === 0 ? "No response" : String(result.status);
-  return [result.region, answer, KIND_WORDS[result.kind]].filter(Boolean).join(" · ");
+  return (
+    <span>
+      {label ? <><span className={label.named ? undefined : "font-mono"}>{label.text}</span> · </> : null}
+      {[answer, KIND_WORDS[result.kind]].filter(Boolean).join(" · ")}
+    </span>
+  );
 }
 
 const TONES = { up: "bg-success", down: "bg-destructive", none: "bg-muted" } as const satisfies Record<HistoryBar["tone"], string>;
 
 /** The check window in bars, red where a check failed or an incident touched. Hover tells it; click zooms onto its incident. */
-function HistoryStrip({ bars, at, from, to, zoomed, onZoom }: {
+function HistoryStrip({ bars, regions, at, from, to, zoomed, onZoom }: {
   bars: readonly HistoryBar[];
+  regions: RegionNames;
   at: Intl.DateTimeFormat;
   from: string;
   to: string;
@@ -374,7 +381,7 @@ function HistoryStrip({ bars, at, from, to, zoomed, onZoom }: {
                 } />
                 <TooltipContent className="flex-col items-start gap-0.5">
                   <span className="font-medium">{label}</span>
-                  {bar.result ? <span>{resultText(bar.result)}</span> : null}
+                  {bar.result ? <ResultText result={bar.result} regions={regions} /> : null}
                   {bar.incidents.length === 0
                     ? bar.result ? null : <span>{bar.tone === "up" ? "No incidents" : "No data"}</span>
                     : bar.incidents.map((incident) => (

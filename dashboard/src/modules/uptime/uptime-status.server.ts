@@ -152,6 +152,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   const points = yield* readPoints(of, window, pointSource(window, now.getTime()), since);
   const codes = [...new Set([
     ...points.map((point) => point.region),
+    ...(checks ?? []).map((result) => result.region),
     ...incidents.flatMap((incident) => incident.observations.map((observation) => observation.region)),
   ])];
   const named = codes.length === 0 ? [] : yield* drizzle
