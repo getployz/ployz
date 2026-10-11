@@ -83,7 +83,7 @@ jobs:
           conclusions=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow agent-eval.yml --commit "$RELEASE_SHA" \
             --json event,conclusion --jq '.[] | select(.event != "pull_request") | .conclusion')
           if grep -qx success <<<"$conclusions"; then exit 0; fi
-          if grep -qxE 'failure|timed_out|cancelled|stale|startup_failure|action_required' <<<"$conclusions"; then
+          if grep -qxE 'failure|timed_out|cancelled|stale|startup_failure|action_required|neutral|skipped' <<<"$conclusions"; then
             echo "::error::the agent eval on $RELEASE_SHA did not pass; see agent-eval.yml's run for its blockers"
             exit 1
           fi
