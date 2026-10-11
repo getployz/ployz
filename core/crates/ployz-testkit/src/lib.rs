@@ -1,6 +1,7 @@
 //! Docker-in-Docker support for the ignored informing cluster suite.
 
 pub mod fake_acme;
+pub mod fake_fleet;
 mod machine_admin;
 
 use std::{

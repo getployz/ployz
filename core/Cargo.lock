@@ -3709,6 +3709,7 @@ version = "0.2.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "ployz",
  "ployz-core",
  "rcgen",
  "reqwest",
@@ -3716,9 +3717,11 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.20",
  "time",
  "tokio",
+ "tokio-stream",
  "tonic",
 ]
 
