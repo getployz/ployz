@@ -545,7 +545,7 @@ describe("roll-out-server-upgrade", () => {
     `);
     const cancel = () => new InngestTestEngine({
       function: createCancelServerUpgrade(new Inngest({ id: "test" }), runEffect),
-      events: [{ name: "inngest/function.cancelled", data: { function_id: "roll-out-server-upgrade", run_id: "run-1" } }],
+      events: [{ name: "inngest/function.cancelled", data: { function_id: "test-roll-out-server-upgrade", run_id: "run-1" } }],
     }).execute();
 
     expect((await cancel()).result).toEqual({ closed: 1 });
@@ -561,7 +561,7 @@ describe("roll-out-server-upgrade", () => {
     `);
     const output = await new InngestTestEngine({
       function: createCancelServerUpgrade(new Inngest({ id: "test" }), runEffect),
-      events: [{ name: "inngest/function.cancelled", data: { function_id: "drain-server", run_id: "run-1" } }],
+      events: [{ name: "inngest/function.cancelled", data: { function_id: "test-drain-server", run_id: "run-1" } }],
     }).execute();
 
     expect(output.result).toEqual({ skipped: true });
