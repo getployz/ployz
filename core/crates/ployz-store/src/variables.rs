@@ -252,40 +252,128 @@ fn refuse_reserved(key: &VariableKey) -> Result<(), RpcError> {
 
 /// Rename variable `key` of `service` to `to`, keeping its value, secret or not,
 /// without opening it. Already renamed is no change, so a retried rename succeeds.
-/// References to the old name elsewhere are left as they are.
+/// The variables in this Environment that reference it, as `${{ KEY }}` in its own
+/// Service or `${{ service.KEY }}` anywhere, switch to `to` with
+/// `update_references`; without it they refuse the rename with `conflict`.
+/// Returns the variables it rewrote, or `None` when nothing changed.
 pub(crate) fn rename(
     environment: &mut Environment,
     service: &ServiceName,
     key: &VariableKey,
     to: &VariableKey,
-) -> Result<bool, RpcError> {
+    update_references: bool,
+) -> Result<Option<Vec<(ServiceName, VariableKey)>>, RpcError> {
     refuse_reserved(to)?;
     let node = environment.service(service)?;
     let has = |name: &VariableKey| node.variables.iter().any(|v| v.key == name.as_str());
     match (has(key), key != to && has(to)) {
         // A rename onto a name in use would lose one value: refuse, and change neither.
-        (true, true) => Err(error::conflict(
-            format!(
-                "{} already has a variable {to}; rename or unset that one first",
-                node.slug
-            ),
-            json!({ "variable": to.as_str() }),
-        )),
-        (true, false) if key == to => Ok(false),
+        (true, true) => {
+            return Err(error::conflict(
+                format!(
+                    "{} already has a variable {to}; rename or unset that one first",
+                    node.slug
+                ),
+                json!({ "variable": to.as_str() }),
+            ));
+        }
+        (true, false) if key == to => return Ok(None),
         // Already renamed by an earlier try.
-        (false, true) => Ok(false),
-        (false, false) => find(node, key).map(|_| false),
-        (true, false) => {
-            let variable = environment
-                .service_mut(service)?
-                .variables
-                .iter_mut()
-                .find(|variable| variable.key == key.as_str())
-                .ok_or_else(|| error::corrupt("variable"))?;
-            to.as_str().clone_into(&mut variable.key);
-            Ok(true)
+        (false, true) => return Ok(None),
+        (false, false) => return find(node, key).map(|_| None),
+        (true, false) => {}
+    }
+    let lineage = node.lineage_id.clone();
+    let names = |referrers: &[(ServiceName, VariableKey)]| {
+        referrers
+            .iter()
+            .map(|(service, key)| format!("{service}.{key}"))
+            .collect::<Vec<_>>()
+    };
+    let referrers = referrers(environment, service, &lineage, key)?;
+    if !referrers.is_empty() && !update_references {
+        let summary = &environment.summary;
+        return Err(error::conflict(
+            format!(
+                "{service}.{key} is used by {}; rename it with update_references to switch them to {to}",
+                names(&referrers).join(", ")
+            ),
+            json!({
+                "variables": names(&referrers),
+                "next": format!(
+                    "ployz set {service}.env.{key} --rename {to} --update-references --env {} --project {}",
+                    summary.name, summary.project
+                ),
+            }),
+        ));
+    }
+    for referrer in &mut environment.working.services {
+        let own = referrer.slug == service.as_str();
+        for variable in &mut referrer.variables {
+            let SavedVariableValue::Template { parts } = &mut variable.value else {
+                continue;
+            };
+            let mut rewrote = false;
+            for part in parts.iter_mut() {
+                if let ValuePart::Ref { owner, key: wanted } = part
+                    && wanted == key.as_str()
+                    && references(owner, own, &lineage)
+                {
+                    to.as_str().clone_into(wanted);
+                    rewrote = true;
+                }
+            }
+            if rewrote {
+                variable.value_fingerprint = plain_fingerprint(parts);
+            }
         }
     }
+    let variable = environment
+        .service_mut(service)?
+        .variables
+        .iter_mut()
+        .find(|variable| variable.key == key.as_str())
+        .ok_or_else(|| error::corrupt("variable"))?;
+    to.as_str().clone_into(&mut variable.key);
+    Ok(Some(referrers))
+}
+
+/// Whether a reference by `owner`, in a Service that is (`own`) or isn't the one
+/// with lineage `lineage`, names that Service.
+fn references(owner: &ValuePartOwner, own: bool, lineage: &str) -> bool {
+    match owner {
+        ValuePartOwner::Self_ => own,
+        ValuePartOwner::Service { lineage_id } => lineage_id == lineage,
+    }
+}
+
+/// The variables of Working State that reference variable `key` of `service`
+/// (lineage `lineage`), Service by Service, each sorted by name.
+fn referrers(
+    environment: &Environment,
+    service: &ServiceName,
+    lineage: &str,
+    key: &VariableKey,
+) -> Result<Vec<(ServiceName, VariableKey)>, RpcError> {
+    let mut found = Vec::new();
+    for referrer in &environment.working.services {
+        let own = referrer.slug == service.as_str();
+        for variable in sorted(referrer) {
+            let SavedVariableValue::Template { parts } = &variable.value else {
+                continue;
+            };
+            let uses = parts.iter().any(|part| {
+                matches!(part, ValuePart::Ref { owner, key: wanted }
+                    if wanted == key.as_str() && references(owner, own, lineage))
+            });
+            if uses {
+                let name = ServiceName::parse(&referrer.slug)
+                    .map_err(|_| error::corrupt("Service name"))?;
+                found.push((name, VariableKey::parse(&variable.key)?));
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Text as a variable's parts, referencing Services by their names in `names`

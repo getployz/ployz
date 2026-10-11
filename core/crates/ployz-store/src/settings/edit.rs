@@ -63,12 +63,20 @@ pub enum Change {
         value: Value,
     },
     /// Rename a variable. Its value moves with it, and a secret stays sealed.
-    /// Already renamed is no change, so a retried rename succeeds.
+    /// Already renamed is no change, so a retried rename succeeds. A variable other
+    /// variables reference is renamed only with `update_references`.
     Rename {
         /// The variable, as `SERVICE.env.KEY`.
         path: SettingPath,
         /// Its new name.
         to: String,
+        /// Switch the variables of this Environment that reference it to the new
+        /// name in the same edit. Without it, a referenced variable refuses with
+        /// `conflict`, naming them.
+        // An older Store refuses the field, so it is sent only when set.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        update_references: bool,
     },
 }
 
@@ -76,7 +84,10 @@ pub enum Change {
 enum Step {
     Set(Value),
     Unset,
-    Rename(VariableKey),
+    Rename {
+        to: VariableKey,
+        update_references: bool,
+    },
 }
 
 /// The Environment after an edit, and which Setting paths it changed: staged until
@@ -131,7 +142,10 @@ pub(crate) fn edit(
         let value = match step {
             Step::Set(value) => Some(value),
             Step::Unset => None,
-            Step::Rename(to) => {
+            Step::Rename {
+                to,
+                update_references,
+            } => {
                 let Some(Target::Variable(key)) = path.target() else {
                     return Err(error::invalid(
                         format!("{path}: only a variable is renamed"),
@@ -139,14 +153,19 @@ pub(crate) fn edit(
                     ));
                 };
                 let renamed = SettingPath::at(service, Target::Variable(to.clone()));
-                if variables::rename(&mut environment, service, key, &to)? {
+                let rewrote =
+                    variables::rename(&mut environment, service, key, &to, update_references)?;
+                if let Some(rewrote) = rewrote {
                     // What the variable types moves with it.
                     for typed in &mut typed_addresses {
                         if typed.path == path {
                             typed.path = renamed.clone();
                         }
                     }
-                    for changed in [renamed, path] {
+                    let rewrote = rewrote
+                        .into_iter()
+                        .map(|(service, key)| SettingPath::at(&service, Target::Variable(key)));
+                    for changed in [renamed, path].into_iter().chain(rewrote) {
                         if !staged.contains(&changed) {
                             staged.push(changed);
                         }
@@ -316,8 +335,16 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Step)>, RpcError> {
         match change {
             Change::Set { path, value } => expanded.push((path.clone(), Step::Set(value.clone()))),
             Change::Unset { path } => expanded.push((path.clone(), Step::Unset)),
-            Change::Rename { path, to } => {
-                expanded.push((path.clone(), Step::Rename(VariableKey::parse(to)?)));
+            Change::Rename {
+                path,
+                to,
+                update_references,
+            } => {
+                let step = Step::Rename {
+                    to: VariableKey::parse(to)?,
+                    update_references: *update_references,
+                };
+                expanded.push((path.clone(), step));
             }
             Change::Patch { path, value } => {
                 let service = path.settings_of()?;

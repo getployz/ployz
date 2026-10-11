@@ -92,6 +92,17 @@ fn rename(
     path: &str,
     to: &str,
 ) -> Result<Edited, RpcError> {
+    rename_with(store, changes, path, to, false)
+}
+
+/// [`rename`], switching the variables that reference it with `update_references`.
+fn rename_with(
+    store: &ConfigStore,
+    changes: &[(&str, Value)],
+    path: &str,
+    to: &str,
+    update_references: bool,
+) -> Result<Edited, RpcError> {
     let mut changes = changes
         .iter()
         .map(|(path, value)| Change::Set {
@@ -102,6 +113,7 @@ fn rename(
     changes.push(Change::Rename {
         path: SettingPath::parse(path).unwrap(),
         to: to.to_owned(),
+        update_references,
     });
     store.write(
         &who(),
@@ -656,12 +668,129 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{path} → {to}");
     }
     assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
+}
 
-    // A reference is not rewritten, so a variable something references keeps its name.
-    set(&store, &[("web.env.UPSTREAM", json!("${{ API_URL }}"))]).unwrap();
-    let referenced = rename(&store, &[], "web.env.API_URL", "PUBLIC_API_URL").unwrap_err();
-    assert_eq!(referenced.code, RpcErrorCode::Conflict, "{referenced:?}");
-    assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
+/// Services `web`, `api` and `worker`, where `api` and `worker` reference web's
+/// API_URL in both forms, beside text that only looks like it.
+fn referenced(store: &ConfigStore) {
+    shop(store);
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        store,
+        &[
+            ("web.env.API_URL", json!("https://api")),
+            ("api.env.API_URL", json!("https://own")),
+            ("web.env.UPSTREAM", json!("${{ API_URL }}/v1")),
+            ("worker.env.BACKEND", json!("${{ web.API_URL }} ${{ api.API_URL }}")),
+            ("worker.env.LITERAL", json!("$${{ web.API_URL }} API_URL")),
+            ("api.env.SELF", json!("${{ API_URL }}")),
+            ("web.env.TOKEN", json!({ "secret": "${{ API_URL }}" })),
+        ],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_referenced_variable_is_renamed_only_with_its_references() {
+    let store = backend::open();
+    referenced(&store);
+    let before = get(&store, None);
+
+    let refused = rename(&store, &[], "web.env.API_URL", "PUBLIC_API_URL").unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.details["variables"],
+        json!(["web.UPSTREAM", "worker.BACKEND"])
+    );
+    let next = refused.details["next"].as_str().unwrap();
+    assert!(
+        next.starts_with("ployz set web.env.API_URL --rename PUBLIC_API_URL --update-references"),
+        "{next}"
+    );
+    assert!(refused.message.contains("worker.BACKEND"), "{}", refused.message);
+    assert_eq!(get(&store, None), before, "a refused rename changes nothing");
+
+    let edited = rename_with(&store, &[], "web.env.API_URL", "PUBLIC_API_URL", true).unwrap();
+    assert_eq!(
+        staged(&edited),
+        [
+            "web.env.PUBLIC_API_URL",
+            "web.env.API_URL",
+            "web.env.UPSTREAM",
+            "worker.env.BACKEND"
+        ]
+    );
+    assert_eq!(value(&store, "web.env.UPSTREAM"), json!("${{ PUBLIC_API_URL }}/v1"));
+    assert_eq!(
+        value(&store, "worker.env.BACKEND"),
+        json!("${{ web.PUBLIC_API_URL }} ${{ api.API_URL }}")
+    );
+    // Text that only looks like a reference, and api's own API_URL, stay.
+    assert_eq!(
+        value(&store, "worker.env.LITERAL"),
+        json!("$${{ web.API_URL }} API_URL")
+    );
+    assert_eq!(value(&store, "api.env.SELF"), json!("${{ API_URL }}"));
+    assert_eq!(value(&store, "api.env.API_URL"), json!("https://own"));
+
+    // A retry changes nothing.
+    let retried = rename_with(&store, &[], "web.env.API_URL", "PUBLIC_API_URL", true).unwrap();
+    assert!(staged(&retried).is_empty());
+    assert_eq!(retried.environment.revision, edited.environment.revision);
+
+    let id = admit(&store, 1).unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    assert_eq!(environment_of(&claimed, "web")["UPSTREAM"], "https://api/v1");
+    assert_eq!(
+        environment_of(&claimed, "worker")["BACKEND"],
+        "https://api https://own"
+    );
+    // A secret holds text, never a reference: it is neither read nor rewritten.
+    assert_eq!(environment_of(&claimed, "web")["TOKEN"], "${{ API_URL }}");
+}
+
+#[test]
+fn a_referenced_secret_is_renamed_and_stays_sealed() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.TOKEN", json!({ "secret": SECRET })),
+            ("api.env.AUTH", json!("Bearer ${{ web.TOKEN }}")),
+        ],
+    )
+    .unwrap();
+    let edited = rename_with(&store, &[], "web.env.TOKEN", "API_TOKEN", true).unwrap();
+    assert_eq!(
+        staged(&edited),
+        ["web.env.API_TOKEN", "web.env.TOKEN", "api.env.AUTH"]
+    );
+    assert!(!json!(edited).to_string().contains("s3cr3t"));
+    assert_eq!(value(&store, "web.env.API_TOKEN"), json!({ "secret": true }));
+    assert_eq!(value(&store, "api.env.AUTH"), json!("Bearer ${{ web.API_TOKEN }}"));
+    let id = admit(&store, 1).unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    assert_eq!(environment_of(&claimed, "web")["API_TOKEN"], SECRET);
+    assert_eq!(
+        environment_of(&claimed, "api")["AUTH"],
+        format!("Bearer {SECRET}")
+    );
 }
 
 #[test]
