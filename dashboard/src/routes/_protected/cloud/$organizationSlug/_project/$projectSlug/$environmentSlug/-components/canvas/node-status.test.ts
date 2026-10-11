@@ -74,7 +74,7 @@ describe("runtimeLine", () => {
 });
 
 describe("nodeIssues", () => {
-  const domain = (status: DomainRow["status"]) => ({ status });
+  const domain = (status: DomainRow["status"], hostname: string | null = "acme.com") => ({ status, hostname });
 
   it("counts what the user can fix, red when a Service is down", () => {
     expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "bad" });
@@ -95,6 +95,24 @@ describe("nodeIssues", () => {
     expect(nodeIssues(runtimeLine(service, runtime(container("running", "starting")), seen), [])).toBeNull();
     expect(nodeIssues(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" })), [])).toBeNull();
     expect(nodeIssues(runtimeLine({ ...service, change: "create" }, null, seen), [])).toBeNull();
+  });
+
+  describe("with an open uptime incident", () => {
+    const healthy = runtimeLine(service, runtime(container("running", "healthy")), seen);
+
+    it("adds one red issue", () => {
+      expect(nodeIssues(healthy, [], "acme.com")).toEqual({ count: 1, tone: "bad" });
+      expect(nodeIssues(runtimeLine(service, runtime(container("running", "failing")), seen), [], "acme.com")).toEqual({ count: 2, tone: "bad" });
+    });
+
+    it("adds nothing when the Service is already down", () => {
+      expect(nodeIssues(runtimeLine(service, runtime(), seen), [], "acme.com")).toEqual({ count: 1, tone: "bad" });
+    });
+
+    it("shares one issue with a domain needing attention on the same hostname", () => {
+      expect(nodeIssues(healthy, [domain("needs_attention")], "acme.com")).toEqual({ count: 1, tone: "bad" });
+      expect(nodeIssues(healthy, [domain("needs_attention", "web.acme.ployz.app")], "acme.com")).toEqual({ count: 2, tone: "bad" });
+    });
   });
 });
 
