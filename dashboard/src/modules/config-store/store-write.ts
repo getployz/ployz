@@ -29,6 +29,9 @@ function writtenRevision(written: ConfigWritten): number | null {
     ? last.environment.revision : null;
 }
 
+const isStale = (error: Error) => error instanceof StoreRefused && error.code === "conflict"
+  && typeof error.details === "object" && error.details !== null && "revision" in error.details;
+
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
 const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Check your connection and try again.";
@@ -85,13 +88,13 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         return value;
       },
       onError: async (error) => {
-        // Only a write that sent `expect` meets a stale revision; a command's `conflict` (a taken name) says its own.
+        // Only a write that sent `expect` meets a stale revision, whose `conflict` names the revision; any other
+        // `conflict` (a taken name, a referenced variable) says its own.
         // A refusal the caller says it handles (`confirmation_required`, a question it puts to the user) is its to show.
         if (isUnauthorized(error)) {
           toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign("/auth") } });
         } else if (!(error instanceof StoreRefused && handled.includes(error.code))) {
-          toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT
-            : error instanceof TypeError ? UNREACHABLE : error.message);
+          toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : error.message);
         }
         // What the write was refused against shows: the rollback, or a Sync's fresh review.
         await refresh();

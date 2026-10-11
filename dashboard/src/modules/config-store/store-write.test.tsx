@@ -106,6 +106,17 @@ it("undoes an edit the Store refuses as a conflict and shows what changed elsewh
   expect(error).toHaveBeenCalledWith("Changed elsewhere, so this edit was undone. You're seeing the latest now.");
 });
 
+it("words a refused rename as the Store does: a referenced variable isn't a stale revision", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const message = "web references web.API_URL (UPSTREAM); remove those references first";
+  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message, details: { service: "web", references: "web.API_URL", variables: ["UPSTREAM"] } } });
+  let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => { edit = test.edit({ environment: ref, changes: [{ op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" }] }); });
+  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "conflict" });
+  expect(error).toHaveBeenCalledWith(message);
+});
+
 it("says a signed-out edit wasn't saved and offers to sign in", async () => {
   const test = setup(view(2, 1));
   const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
