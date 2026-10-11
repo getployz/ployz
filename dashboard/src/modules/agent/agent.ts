@@ -1,4 +1,4 @@
-import type { ConfigWritten } from "@ployz/sdk";
+import type { ConfigWritten, ToolResult } from "@ployz/sdk";
 import { defineInterrupt } from "@tanstack/ai/client";
 import { Schema } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract.ts";
@@ -37,7 +37,8 @@ export const approvalInterrupt = defineInterrupt({
 export type ToolOutcome<T = unknown> =
   | { ok: true; value: T; nothing_destroyed?: true }
   | { ok: false; refusal: StoreRefusal }
-  | { ok: false; cancelled: true };
+  | { ok: false; cancelled: true }
+  | ToolResult;
 
 export type DeployOutcome = ToolOutcome<Extract<ConfigWritten, { written: "deployment" }>>;
 
