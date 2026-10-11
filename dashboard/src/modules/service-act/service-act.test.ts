@@ -13,4 +13,12 @@ describe("endOf", () => {
   it("ends a Server's own act done when only another Server didn't answer", () => {
     expect(endOf(before, moved, { machine: "m-a" as MachineId, name: "a" })).toEqual({ state: "done", reason: null });
   });
+
+  it("ends a Server's own act failed when that Server answered with no containers, whoever else stayed silent", () => {
+    expect(endOf(before, [], { machine: "m-a" as MachineId, name: "a" })).toEqual({ state: "failed", reason: "No containers to move." });
+  });
+
+  it("leaves a Server's own act with no containers unknown when that Server didn't answer", () => {
+    expect(endOf(before, [], { machine: "m-b" as MachineId, name: "b" })).toEqual({ state: "unknown", reason: "b didn't answer." });
+  });
 });
