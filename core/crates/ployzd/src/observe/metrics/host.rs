@@ -3,14 +3,11 @@
 //!
 //! Every value is raw and cumulative where the kernel keeps it that way. A
 //! source that cannot be read or parsed leaves its field `None`, never zero.
-#![cfg_attr(not(test), expect(dead_code, reason = "wired by the sampler in M6"))]
 
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-
-const PROC_ROOT: &str = "/proc";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HostCounters {
@@ -59,11 +56,8 @@ pub(crate) struct FsBytes {
     pub available: u64,
 }
 
-pub(crate) fn read_host(mounts: &[&Path]) -> HostCounters {
-    read_host_from(Path::new(PROC_ROOT), mounts)
-}
-
-fn read_host_from(proc_root: &Path, mounts: &[&Path]) -> HostCounters {
+/// Reads the host totals from the `proc_root` procfs mount.
+pub(crate) fn read_host(proc_root: &Path, mounts: &[&Path]) -> HostCounters {
     let read = |name: &str| fs::read_to_string(proc_root.join(name)).ok();
     HostCounters {
         cpu: read("stat").as_deref().and_then(parse_stat),
@@ -166,8 +160,7 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        CpuJiffies, InterfaceBytes, Memory, parse_meminfo, parse_net_dev, parse_stat,
-        read_host_from,
+        CpuJiffies, InterfaceBytes, Memory, parse_meminfo, parse_net_dev, parse_stat, read_host,
     };
     use crate::test_dir::TestDir;
 
@@ -259,7 +252,7 @@ trunc0: 1 2 3 4 5 6 7 8 9 10
     fn unreadable_sources_leave_every_field_none() {
         let dir = TestDir::new("host-metrics-missing");
         let missing = dir.0.join("not-a-mount");
-        let host = read_host_from(&dir.0, &[&missing, Path::new("/")]);
+        let host = read_host(&dir.0, &[&missing, Path::new("/")]);
         assert_eq!(host.cpu, None);
         assert_eq!(host.memory, Memory::default());
         assert_eq!(host.interfaces, None);
@@ -277,7 +270,10 @@ trunc0: 1 2 3 4 5 6 7 8 9 10
     #[test]
     #[ignore = "reads this machine's /proc and runs `free -b`"]
     fn real_memory_total_matches_free() {
-        let host = super::read_host(&[Path::new("/"), Path::new("/var/lib/ployz-volumes")]);
+        let host = super::read_host(
+            Path::new("/proc"),
+            &[Path::new("/"), Path::new("/var/lib/ployz-volumes")],
+        );
         println!("{host:#?}");
         let free = std::process::Command::new("free")
             .arg("-b")

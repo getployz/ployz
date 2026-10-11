@@ -9,7 +9,10 @@
 //! that does not parse, and the next append first ends the torn line so it
 //! cannot swallow the row written after it.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "wired by the sampler in M6"))]
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "segments are read by the metric queries in M9")
+)]
 
 use std::{
     collections::BTreeMap,

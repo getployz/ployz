@@ -5,7 +5,7 @@
 //! mesh and the public network through the same interface, so the mesh and
 //! public split is a Machine metric, not a container one.
 
-use std::fs;
+use std::{fs, path::Path};
 
 use super::host;
 
@@ -18,10 +18,11 @@ pub struct NetCounters {
     pub tx: u64,
 }
 
-/// Reads the network counters of the namespace `pid` lives in. `None` when
-/// the process is gone or the file is unreadable.
-pub fn read_net_dev(pid: u32) -> Option<NetCounters> {
-    let text = fs::read_to_string(format!("/proc/{pid}/net/dev")).ok()?;
+/// Reads the network counters of the namespace `pid` lives in, under the
+/// `proc_root` procfs mount. `None` when the process is gone or the file is
+/// unreadable.
+pub fn read_net_dev(proc_root: &Path, pid: u32) -> Option<NetCounters> {
+    let text = fs::read_to_string(proc_root.join(pid.to_string()).join("net/dev")).ok()?;
     Some(total(&text))
 }
 
@@ -61,7 +62,7 @@ ployz-wg:    1000     10    0    0    0     0          0         0     2000     
 
     #[test]
     fn a_missing_process_reads_none() {
-        assert_eq!(read_net_dev(u32::MAX), None);
+        assert_eq!(read_net_dev(Path::new("/proc"), u32::MAX), None);
     }
 
     /// Start the container first:
@@ -79,7 +80,7 @@ ployz-wg:    1000     10    0    0    0     0          0         0     2000     
             .trim()
             .parse()
             .unwrap();
-        let counters = read_net_dev(pid).unwrap();
+        let counters = read_net_dev(Path::new("/proc"), pid).unwrap();
         println!("pid {pid}: {counters:?}");
         assert!(counters.rx > 0 && counters.tx > 0);
     }

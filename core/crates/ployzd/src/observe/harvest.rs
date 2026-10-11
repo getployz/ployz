@@ -1169,7 +1169,7 @@ fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
     crate::filesystem::atomic_write(&dir.join(META_FILE), &json, 0o600)
 }
 
-fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta> {
+pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta> {
     let labels = inspected.config.as_ref()?.labels.as_ref()?;
     if !labels.contains_key(LABEL_MANAGED) && !labels.contains_key(LABEL_SYSTEM_MANAGED) {
         return None;
@@ -1227,7 +1227,7 @@ fn labelled_by_event(message: &EventMessage) -> ContainerInspectResponse {
     }
 }
 
-fn now_nanos() -> i64 {
+pub(super) fn now_nanos() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .ok()

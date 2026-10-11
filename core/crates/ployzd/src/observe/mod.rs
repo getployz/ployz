@@ -32,14 +32,15 @@ const DOCKER_LOG_FILE: &str = "container.log";
 pub const SOCKET_FILE: &str = "observe.sock";
 const LOCK_FILE: &str = "harvester.lock";
 
-/// Runs the harvester: holds the log files of every Ployz container in the
-/// Log Store until SIGTERM.
+/// Runs the harvester, which holds the log files of every Ployz container in
+/// the Log Store, and the metric sampler until SIGTERM. `data_dir` holds the
+/// Machine record the sampler stamps rows with.
 ///
 /// # Errors
 ///
 /// Returns an error when Docker cannot be reached, another harvester holds
 /// the store, or the store or socket cannot be created.
-pub async fn run(run_dir: &Path) -> io::Result<()> {
+pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     crate::faults::check_env()?;
     crate::faults::leak_memory();
     let docker = Docker::connect_with_defaults().map_err(io::Error::other)?;
@@ -56,6 +57,11 @@ pub async fn run(run_dir: &Path) -> io::Result<()> {
     let listener = bind_socket(&run_dir.join(SOCKET_FILE))?;
     tracing::info!(store = %store.path().display(), "holding Ployz container logs");
     tokio::spawn(serve::serve(listener, store.clone()));
+    tokio::spawn(metrics::sampler::run(
+        docker.clone(),
+        store.clone(),
+        data_dir.to_path_buf(),
+    ));
     harvest::Harvester::run(docker, &docker_root, store).await
 }
 
