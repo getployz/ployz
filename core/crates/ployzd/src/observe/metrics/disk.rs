@@ -188,8 +188,10 @@ fn store_bytes(root: &Path) -> Option<u64> {
     while let Some(dir) = dirs.pop() {
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(_) if dir == root => return None,
-            Err(_) => continue,
+            // Cleanup removes container dirs mid-walk; any other failure
+            // would undercount, so it leaves the reading unmeasured.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && dir != root => continue,
+            Err(_) => return None,
         };
         for entry in entries.flatten() {
             let Ok(meta) = entry.metadata() else {
