@@ -108,6 +108,22 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         cluster
             .machine_shell(index, "test ! -e /var/lib/ployz/ingress/caddy/caddy.json")
             .unwrap();
+        let missing = cluster
+            .machine_shell(
+                index,
+                "curl -sS -D - -H 'Host: missing.test' -H 'Accept: application/json' http://127.0.0.1",
+            )
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(missing.starts_with("http/1.1 404"), "{missing}");
+        assert!(
+            missing.contains("ployz-error: domain_not_found"),
+            "{missing}"
+        );
+        assert!(
+            missing.contains(r#""code":"domain_not_found""#),
+            "{missing}"
+        );
     }
 
     let logs = run_cli(&direct, &["logs", "ployz-system/ingress", "--tail", "1"]);

@@ -1,0 +1,2 @@
+ALTER TABLE "uptime_check" ADD COLUMN "probe_requested_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "uptime_result" DROP CONSTRAINT "uptime_result_kind_check", ADD CONSTRAINT "uptime_result_kind_check" CHECK ("kind" in ('routine', 'confirm', 'recheck', 'triggered'));
