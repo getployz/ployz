@@ -1,7 +1,3 @@
-//! Every tool's example driven to its result against a SQLite Config Store, each
-//! step recorded with the answers it got. Ployz Cloud's conformance test replays
-//! the same transcripts through the Node SDK and expects the same steps.
-
 use std::path::PathBuf;
 
 use ployz_core::{RpcError, RpcErrorCode};
@@ -130,7 +126,6 @@ fn record(tool: &str, store_at: StoreAt) -> Transcript {
     }
 }
 
-/// The steps `transcript`'s call takes when fed its recorded answers.
 fn replay(transcript: &Transcript) -> Vec<Step> {
     let (mut step, mut state) = start(
         &transcript.tool,

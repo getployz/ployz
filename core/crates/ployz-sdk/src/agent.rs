@@ -1,7 +1,3 @@
-//! The agent tools for Cloud's sidebar: the catalog, the step machine and the Cloud
-//! asks the Servers answer. A call's `State` crosses as JSON that Cloud keeps
-//! between steps and hands back unchanged; only the step machine reads it.
-
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz_store::tools::{self, Answer, CloudQuery, Place};
@@ -11,7 +7,7 @@ use crate::{Client, invalid_argument, rpc_to_napi, to_json};
 /// What a model is told: `{ instructions, tools }`.
 ///
 /// # Errors
-/// Never in practice; the catalog always encodes.
+/// Returns an error when the catalog fails to encode.
 #[napi]
 pub fn agent_tools() -> Result<serde_json::Value> {
     to_json(&serde_json::json!({

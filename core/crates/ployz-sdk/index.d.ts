@@ -319,9 +319,9 @@ export declare class Client {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
-  /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
   /** Answer a CloudQuery from this session's Servers; ones that did not answer are named in `seen.unanswered`. */
   agentAsk(query: import("./generated/payloads").CloudQuery): Promise<import("./generated/payloads").ServersAnswer | import("./generated/payloads").ContainersAnswer>;
+  /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
   inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**
    * Copy the image Container `container` runs on `source` to `dest`, by its local image ID and

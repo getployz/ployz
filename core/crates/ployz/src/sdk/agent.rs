@@ -1,7 +1,3 @@
-//! What Ployz Cloud's Machines answer for the agent tools: the [`CloudQuery`]s a
-//! Session can answer alone. Copies need the Store to name each Volume and Logs need
-//! its secrets, so Cloud's adapter answers those, as it does Operations and GitHub.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -19,15 +15,13 @@ use ployz_store::tools::{CloudQuery, Freshness, ServerName, Source, Timestamp};
 use serde_json::Value;
 
 use super::Session;
-
-/// The label ployzd puts on each container a Deployment creates.
-const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
+use crate::operator::DEPLOYMENT_LABEL;
 
 /// Answer `query` from the Servers behind `session`. A Server that did not answer is
 /// named in `seen.unanswered`, never guessed.
 ///
 /// # Errors
-/// Returns `unsupported` for a query Cloud answers without the Machines alone, and
+/// Returns `unsupported` for a query only Cloud answers, and
 /// the session's error when it is closed or the Servers cannot be listed.
 pub async fn ask(session: &Session, query: CloudQuery) -> Result<Value, RpcError> {
     match query {
@@ -48,7 +42,6 @@ pub async fn ask(session: &Session, query: CloudQuery) -> Result<Value, RpcError
     }
 }
 
-/// Every Server, or the one named `only`, with its storage and Namespaces.
 async fn servers(session: &Session, only: Option<&ServerName>) -> Result<ServersAnswer, RpcError> {
     let mut client = session.client()?;
     session
@@ -62,7 +55,7 @@ async fn servers(session: &Session, only: Option<&ServerName>) -> Result<Servers
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = silent(&machines);
+            let mut unanswered = uninvited(&machines);
             unanswered.extend(gaps.failures.iter().map(|failure| failure.machine_id));
             unanswered.extend(gaps.omissions.iter().copied());
             unanswered.extend(
@@ -130,7 +123,6 @@ fn server(
     }
 }
 
-/// `namespace`'s Service containers, or `service`'s only, with redacted env.
 async fn containers(
     session: &Session,
     namespace: &Namespace,
@@ -144,7 +136,7 @@ async fn containers(
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await
                 .map_err(RpcError::from)?;
-            let mut unanswered = silent(&machines);
+            let mut unanswered = uninvited(&machines);
             unanswered.extend(
                 live.containers
                     .failures
@@ -193,7 +185,6 @@ fn report(container: &ContainerObservation, server: &ServerName) -> ContainerRep
         ContainerRuntimeObservation::Restarting => (ContainerState::Restarting, None, None),
         ContainerRuntimeObservation::Exited { code } => (ContainerState::Exited, Some(*code), None),
         ContainerRuntimeObservation::Removing => (ContainerState::Exited, None, None),
-        // A state Docker reports that this release does not know is not running.
         ContainerRuntimeObservation::Dead | ContainerRuntimeObservation::Unknown { .. } => {
             (ContainerState::Dead, None, None)
         }
@@ -224,8 +215,7 @@ fn health(observed: &HealthObservation) -> Option<Health> {
     }
 }
 
-/// The Machines membership says not to ask.
-fn silent(machines: &[MachineObservation]) -> BTreeSet<MachineId> {
+fn uninvited(machines: &[MachineObservation]) -> BTreeSet<MachineId> {
     machines
         .iter()
         .filter(|machine| !machine.invites_rpc())

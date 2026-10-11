@@ -443,7 +443,7 @@ pub async fn open_exec(
 }
 
 /// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
-const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
+pub(crate) const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
 
 /// Ask the Servers `machine_selectors` names, every Server without one, which
 /// Service containers they run. A down Server is asked too, so it is a gap

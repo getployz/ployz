@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 
 type Transcript = { tool: string; input: JsonValue; place: Place; call_key: string; turns: { step: Step; answers?: Answer[] }[] };
 
-// Rust records these by driving the step machine against a real Config Store.
 const snapshot = <T>(name: string): T =>
   JSON.parse(readFileSync(new URL(`../../../../core/crates/ployz-store/tests/snapshots/${name}`, import.meta.url), "utf8")) as T;
 
