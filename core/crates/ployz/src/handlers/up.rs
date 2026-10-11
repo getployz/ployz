@@ -39,6 +39,7 @@ pub(crate) fn command() -> Command {
     )
     .arg(crate::cli::volume_acceptance())
     .arg(crate::cli::reviewed_version())
+    .arg(crate::cli::approval())
 }
 
 #[derive(Serialize)]

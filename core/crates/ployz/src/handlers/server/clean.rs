@@ -1,16 +1,15 @@
-//! `ployz server clean`: remove a Namespace the Servers run that no Environment owns,
-//! such as one a failed teardown or a Store reset left behind. Without `--namespace`
-//! it lists them; removing one takes its name typed with `--confirm`.
-
 use clap::{ArgMatches, Command};
 use ployz_core::{DeployOutcome, DockerVolumeId, Namespace, RpcErrorCode};
 use ployz_store::{NamespacesQuery, OwnedNamespace};
-use serde::Serialize;
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::teardown::confirm;
 use super::super::{Error, leaf_matches, runtime, store};
+use crate::approval::{self, Verb};
 use crate::cli::{base, value};
+use crate::cloud_account::{self, Credential};
 use crate::deploy::VolumeFate;
 use crate::ui::{Hint, Table, Tree};
 
@@ -24,7 +23,9 @@ pub(super) fn command() -> Command {
          teardown left behind: its containers, and its Volumes with their data. Without \
          --namespace, lists those Namespaces. Type the Namespace with --confirm, or in a \
          terminal when it asks; elsewhere it fails with confirmation_required, naming the \
-         Volumes whose data goes.",
+         Volumes whose data goes. Signed in to Cloud without --context or --connect, Cloud \
+         removes it after the same typed confirmation, asking a human first when the \
+         Organization wants that.",
     )
     .arg(value("namespace", None).value_name("NAMESPACE"))
     .arg(
@@ -33,6 +34,7 @@ pub(super) fn command() -> Command {
             .requires("namespace")
             .help("The Namespace, typed to confirm its removal"),
     )
+    .arg(crate::cli::approval().requires("namespace"))
 }
 
 /// A Namespace no Environment owns, and what removing it takes.
@@ -41,6 +43,19 @@ struct Unowned {
     namespace: Namespace,
     services: Vec<ployz_core::ServiceName>,
     volumes: Vec<DockerVolumeId>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Doomed {
+    #[serde(flatten)]
+    id: DockerVolumeId,
+    label: Option<String>,
+}
+
+impl Doomed {
+    fn name(&self) -> &str {
+        self.label.as_deref().unwrap_or(self.id.name.as_str())
+    }
 }
 
 /// What `--confirm` removed.
@@ -60,17 +75,15 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 .map_err(|_| Error::usage("Expected a Namespace: lowercase letters, digits and -"))
         })
         .transpose()?;
+    if let Some(namespace) = &named {
+        let runtime = runtime()?;
+        if let Some(credential) = super::cloud_runs(&runtime, matches)? {
+            confirm_in_cloud(&runtime, matches, &credential, namespace)?;
+            return through_cloud(&runtime, matches, &credential, namespace);
+        }
+    }
     let store = store::store(root)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
-    // Ownership comes from the signed-in Organization, so the Servers read must be
-    // that Organization's: another Cluster's owned Namespaces would read as stray.
-    if matches!(store.backend(), store::Backend::Cloud(..))
-        && (context.is_some() || matches.get_one::<String>("connect").is_some())
-    {
-        return Err(Error::usage(
-            "server clean reads your Organization's Servers; drop --context and --connect",
-        ));
-    }
     let owned = store.read(&NamespacesQuery {})?.namespaces;
     let runtime = runtime()?;
     let mut client = runtime.block_on(super::connect(matches, context))?;
@@ -163,13 +176,18 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
         "Namespace",
         next.clone(),
         || {
+            let doomed: Vec<_> = found
+                .volumes
+                .iter()
+                .map(|id| Doomed {
+                    id: id.clone(),
+                    label: None,
+                })
+                .collect();
+            let (message, loss) = deletes(&namespace, &doomed);
             let refusal = Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                format!(
-                    "Removing Namespace {namespace} deletes its containers and the data of Volumes \
-                 {}; this can't be undone. No changes made.",
-                    volume_names(&found.volumes)
-                ),
+                message,
                 json!({
                     "namespace": namespace,
                     "services": found.services,
@@ -177,16 +195,6 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 }),
             )
             .hint(Hint::Retry(next.clone()));
-            let loss = Tree::new(
-                format!("Removing Namespace {namespace} deletes, for good:"),
-                vec![
-                    Tree::leaf("its containers"),
-                    Tree::leaf(format!(
-                        "the data of Volumes {}",
-                        volume_names(&found.volumes)
-                    )),
-                ],
-            );
             Ok((refusal, loss))
         },
     )?;
@@ -234,6 +242,115 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
+fn confirm_in_cloud(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    credential: &Credential,
+    namespace: &Namespace,
+) -> Result<(), Error> {
+    #[derive(Deserialize)]
+    struct Preview {
+        volumes: Vec<Doomed>,
+    }
+    let next = retry(matches, namespace);
+    confirm(
+        matches,
+        namespace.as_str(),
+        "Namespace",
+        next.clone(),
+        || {
+            let Preview { volumes } = runtime.block_on(cloud_account::refusable(
+                credential,
+                Method::GET,
+                &format!("namespaces/{namespace}/clean"),
+                None,
+            ))?;
+            let (message, loss) = deletes(namespace, &volumes);
+            let refusal = Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                message,
+                json!({ "namespace": namespace, "volumes": volumes }),
+            )
+            .hint(Hint::Retry(next.clone()));
+            Ok((refusal, loss))
+        },
+    )
+}
+
+fn through_cloud(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    credential: &Credential,
+    namespace: &Namespace,
+) -> Result<(), Error> {
+    let id = approval::approved(
+        runtime,
+        credential,
+        Verb::Clean,
+        matches.get_one::<String>("approval").cloned(),
+        |id| {
+            let namespace = namespace.to_string();
+            let args = [
+                "server",
+                "clean",
+                "--namespace",
+                namespace.as_str(),
+                "--confirm",
+                namespace.as_str(),
+            ];
+            super::approved_rerun(matches, &args, id)
+        },
+        async |approval| {
+            cloud_account::start_run(
+                credential,
+                Method::POST,
+                &format!("namespaces/{namespace}/clean"),
+                &json!({}),
+                approval,
+            )
+            .await
+        },
+    )?;
+    #[derive(Deserialize)]
+    struct Finished {
+        volumes: Vec<String>,
+    }
+    let settled = runtime.block_on(cloud_account::follow_operation::<Finished>(
+        credential,
+        &format!("namespace-cleanups/{id}"),
+        &format!("Removing Namespace {namespace}"),
+    ))?;
+    let volumes = settled.finished()?.volumes;
+    let report = json!({ "namespace": namespace, "volumes": volumes });
+    crate::ui::finish(&report, || match volumes.len() {
+        0 => crate::ui::stream(format_args!("Removed Namespace {namespace}.")),
+        1 => crate::ui::stream(format_args!(
+            "Removed Namespace {namespace} and the data of its Volume."
+        )),
+        count => crate::ui::stream(format_args!(
+            "Removed Namespace {namespace} and the data of its {count} Volumes."
+        )),
+    })
+}
+
+fn deletes(namespace: &Namespace, volumes: &[Doomed]) -> (String, Tree) {
+    let doomed = std::iter::once("its containers".to_owned()).chain(
+        volumes
+            .iter()
+            .map(|volume| format!("Volume {} and its data", volume.name())),
+    );
+    let doomed: Vec<_> = doomed.collect();
+    let message = format!(
+        "Removing Namespace {namespace} deletes {}. This can't be undone. No changes made.",
+        doomed.join("; ")
+    );
+    let tree = Tree::new(
+        format!("Removing Namespace {namespace} deletes, for good:"),
+        doomed.into_iter().map(Tree::leaf).collect(),
+    );
+    (message, tree)
+}
+
 fn owner<'a>(owned: &'a [OwnedNamespace], namespace: &Namespace) -> Option<&'a OwnedNamespace> {
     owned.iter().find(|owned| &owned.namespace == namespace)
 }
@@ -268,4 +385,44 @@ fn volume_names(volumes: &[DockerVolumeId]) -> String {
     }
     let names: Vec<_> = volumes.iter().map(|volume| &volume.name).collect();
     super::super::joined(&names)
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, Namespace};
+
+    use super::{Doomed, deletes};
+
+    #[test]
+    fn a_clean_names_a_volume_by_its_label_and_falls_back_to_its_docker_name() {
+        let volume = |name: &str, label: Option<&str>| Doomed {
+            id: DockerVolumeId {
+                machine_id: MachineId::parse("a".repeat(32)).unwrap(),
+                name: DockerVolumeName::parse(name).unwrap(),
+            },
+            label: label.map(str::to_owned),
+        };
+        let (message, tree) = deletes(
+            &Namespace::parse("stray").unwrap(),
+            &[
+                volume("stray_vol-1", Some("used by web at /data on fra-1")),
+                volume("stray_data", None),
+            ],
+        );
+        assert_eq!(
+            message,
+            "Removing Namespace stray deletes its containers; Volume used by web at /data on \
+             fra-1 and its data; Volume stray_data and its data. This can't be undone. No \
+             changes made."
+        );
+        assert_eq!(
+            anstream::adapter::strip_str(&tree.to_string()).to_string(),
+            concat!(
+                "Removing Namespace stray deletes, for good:\n",
+                "├─ its containers\n",
+                "├─ Volume used by web at /data on fra-1 and its data\n",
+                "└─ Volume stray_data and its data\n",
+            )
+        );
+    }
 }
