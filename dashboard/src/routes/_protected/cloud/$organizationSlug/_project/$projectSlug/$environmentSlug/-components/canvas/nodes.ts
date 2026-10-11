@@ -137,7 +137,7 @@ export function buildStoreNodes(
 }
 
 /** Each Volume's mirrors, keyed by the node that shows the Volume: its first Service's, else its own. */
-function mirrorsByNode(store: Pick<StoreCanvas, "services"> & Partial<Pick<StoreCanvas, "mirrors">>) {
+export function mirrorsByNode(store: Pick<StoreCanvas, "services"> & Partial<Pick<StoreCanvas, "mirrors">>) {
   const byNode = new Map<string, CanvasMirror[]>();
   for (const [volumeId, mirrors] of store.mirrors ?? []) {
     const shownBy = store.services.find(({ trays }) => trays.some((tray) => tray.volume.id === volumeId))?.service.id ?? volumeId;
