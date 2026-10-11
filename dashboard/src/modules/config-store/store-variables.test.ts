@@ -67,3 +67,23 @@ it("marks the variables their Environment never syncs, by their rows", () => {
     { key: "LOG_LEVEL", neverSynced: true },
   ]);
 });
+
+it("shows a pending rename under its new name, value, seal, export and Never sync mark kept", () => {
+  const row = "w:variables.API_KEY" as RowId;
+  const marked = { ...view, settings: view.settings.map((setting) => setting.path === "web.env.API_KEY" ? { ...setting, row } : setting), never_synced: [row] };
+  const shown = withPendingChanges(marked, [
+    { op: "rename", path: "web.env.API_KEY", to: "stripe_key" },
+    { op: "rename", path: "web.env.LOG_LEVEL", to: "LOG" },
+  ]);
+  expect(serviceVariables(serviceSettingRows(shown, "web"), "web-id", new Map(), new Set(shown.never_synced))
+    .map(({ key, value, exported, neverSynced }) => ({ key, exported, neverSynced, value: value.type === "plain" ? value.value : "sealed" })))
+    .toEqual([
+      { key: "LOG", exported: true, neverSynced: false, value: "info" },
+      { key: "STRIPE_KEY", exported: false, neverSynced: true, value: "sealed" },
+    ]);
+});
+
+it("shows a rename onto a name in use as nothing, since the Store refuses it", () => {
+  const shown = withPendingChanges(view, [{ op: "rename", path: "web.env.API_KEY", to: "LOG_LEVEL" }]);
+  expect(variables(shown)).toEqual(variables(view));
+});

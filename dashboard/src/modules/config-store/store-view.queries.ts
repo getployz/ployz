@@ -172,14 +172,24 @@ const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
 /**
  * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
  * edit rules: the dashboard only sends `set PATH VALUE` and `unset PATH` for rows the view lists (a new variable adds
- * its row), so a pending edit shows as its value, or the row's default once unset. A secret shows as reads show it,
- * `{"secret": true}`, or `{"secret": false}` while kept without a value. What the Store makes of an edit arrives with the committed view.
+ * its row), so a pending edit shows as its value, or the row's default once unset. A rename moves the variable's rows,
+ * value and `.exported` alike, to its new name; onto a name in use it shows nothing, as the Store refuses it. A secret
+ * shows as reads show it, `{"secret": true}`, or `{"secret": false}` while kept without a value. What the Store makes
+ * of an edit arrives with the committed view.
  */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
-  const settings = view.settings.map((row) => ({ ...row }));
+  let settings = view.settings.map((row) => ({ ...row }));
   for (const change of changes) {
     if (change.op === "patch") continue;
+    if (change.op === "rename") {
+      const to = `${change.path.slice(0, change.path.lastIndexOf(".") + 1)}${change.to.toUpperCase()}`;
+      if (to === change.path || settings.some((row) => row.path === to && row.value !== null)) continue;
+      const moved = (path: string) => path === change.path || path.startsWith(`${change.path}.`);
+      settings = settings.flatMap((row) => moved(row.path) ? [{ ...row, path: `${to}${row.path.slice(change.path.length)}` }]
+        : row.path === to || row.path.startsWith(`${to}.`) ? [] : [row]);
+      continue;
+    }
     let row = settings.find((candidate) => candidate.path === change.path);
     if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
     if (!row) continue;
