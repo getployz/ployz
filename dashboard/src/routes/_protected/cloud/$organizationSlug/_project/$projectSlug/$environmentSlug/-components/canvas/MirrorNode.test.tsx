@@ -5,14 +5,14 @@ import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
 import { afterEach, expect, it } from "vitest";
-import type { MachineId, MachineName, VolumeListing } from "@ployz/sdk";
+import type { MachineId, VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
 import { CanvasNodeList } from "./CanvasServiceList";
 
 const volume = asTestDouble<VolumeListing>()({ id: "vol-1", name: "data", mounts: [], deployed: true, storage: { kind: "docker" }, storage_locked: false, change: null });
 const mirror = (change: CanvasMirror["change"], newest: Date | null = new Date(Date.now() - 4 * 60_000)): CanvasMirror =>
-  ({ volume, server: { id: "m2" as MachineId, name: "web-2" as MachineName }, change, newest });
+  ({ volume, server: { id: "m2" as MachineId, name: "web-2" }, change, newest });
 
 afterEach(cleanup);
 

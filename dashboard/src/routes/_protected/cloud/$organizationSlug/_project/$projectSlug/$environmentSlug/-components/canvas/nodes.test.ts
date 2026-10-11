@@ -100,7 +100,7 @@ describe("Config Store nodes", () => {
 
   describe("mirrors", () => {
     const mirror = (volumeId: string, server: string): CanvasMirror =>
-      ({ volume: { id: volumeId, name: volumeId }, server: { id: server as MachineId, name: server as never }, change: null, newest: null });
+      ({ volume: { id: volumeId, name: volumeId }, server: { id: server as MachineId, name: server }, change: null, newest: null });
     const mirrors = new Map([["shared", [mirror("shared", "web-2")]], ["loose", [mirror("loose", "web-3")]]]);
     const withMirrors = { ...store, mirrors };
 
