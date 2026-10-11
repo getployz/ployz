@@ -26,6 +26,7 @@ mod lease;
 mod mirror;
 mod pool;
 mod removal;
+mod seed;
 mod storage;
 mod switch_source;
 mod switch_target;
@@ -197,6 +198,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
             post(switch_target::start_handed_container),
         )
         .route("/Volume.Restore", post(switch_target::restore))
+        .route("/Volume.Seed", post(seed::seed_volume))
         .route("/Volume.DeclareMirror", post(mirror::declare))
         .route("/Volume.BeginRound", post(mirror::begin_round))
         .route("/Volume.CommitSnapshots", post(mirror::commit))
@@ -399,6 +401,7 @@ mod tests {
 
     #[path = "receive_tests.rs"]
     mod receive_tests;
+    mod seed_tests;
 
     use fake_zfs::{USABLE_POOL, fake_zfs};
 

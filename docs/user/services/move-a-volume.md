@@ -44,7 +44,7 @@ restore points. **Make primary** stages the same move as picking its server in *
 **Remove mirror** stages its removal; its copy is deleted on the next deploy. A staged mirror has
 neither: discard it in Details.
 
-Backups are not part of Placement. See [Back up a database](databases.md#back-up-a-database).
+A mirror also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
 
 The commands below do the same from the CLI, one run at a time. Deleting a mirror is CLI-only.
 

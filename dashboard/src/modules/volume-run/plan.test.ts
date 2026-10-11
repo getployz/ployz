@@ -10,6 +10,7 @@ const remove = (slot: string | null, confirmed: string | null = null): PlanInput
 const move = (to: string): PlanInput => ({ kind: "move", args: { to }, volumeName: "data", orphan: false });
 const release: PlanInput = { kind: "release", args: {}, volumeName: "data", orphan: false };
 const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, volumeName: "data", orphan: false });
+const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "ployz-1" }, volumeName: "data", orphan: false };
 const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, volumeName: "ns_vol-1", orphan: true };
 
 function outcome(input: PlanInput, members: Member[]) {
@@ -31,6 +32,8 @@ function outcome(input: PlanInput, members: Member[]) {
       return `restore ${phase.from.machine.name}${phase.lostAfter === null ? "" : ` ${phase.lostAfter.guid}`}`;
     case "demote":
       return `demote ${phase.old.machine.name} below ${phase.writer.machine.name}`;
+    case "seed":
+      return `seed on ${phase.source.machine.name}`;
   }
 }
 
@@ -137,6 +140,12 @@ describe("plan_from_copies_table", () => {
     ["restore from a Server with no copy", restore("b"), [member("a", "empty"), member("b", "empty")], "refuse no_copy"],
     ["restore from a Server not in the cluster", restore("z"), [member("b", "mirror")], "refuse invalid"],
     ["restore with a Server unanswered", restore("b"), [member("a", "unanswered"), member("b", "mirror")], "refuse unanswered"],
+    ["seed on the writer beside its mirror", seed, [member("a", "writer"), member("b", "mirror")], "seed on a"],
+    ["seed with no writer", seed, [member("b", "mirror")], "refuse no_writer"],
+    ["seed from a read-only root mid-move", seed, [member("a", "switching"), member("b", "mirror")], "refuse volume_switching"],
+    ["seed after handover", seed, [member("a", "handed"), member("b", "stale")], "refuse volume_switching"],
+    ["seed with two roots", seed, [member("a", "writer", { lease: 8 }), member("b", "writer", { lease: 3 })], "refuse two_writers"],
+    ["seed with a Server unanswered", seed, [member("a", "writer"), member("b", "unanswered")], "refuse unanswered"],
     ["mirror with a returning root below the restored one", mirror("c"), [member("a", "writer", { lease: 7 }), member("b", "writer", { lease: 8 }), member("c", "empty")], "demote a below b"],
     ["move with a returning root above in the list", move("c"), [member("b", "writer", { lease: 8 }), member("a", "writer", { lease: 7 }), member("c", "empty")], "demote a below b"],
     ["sync with a returning root without a record", sync(), [member("a", "writer"), member("b", "writer", { lease: 8 }), member("c", "mirror")], "demote a below b"],

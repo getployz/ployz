@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
@@ -18,7 +19,9 @@ import {
   mirrorPanel,
   mirrorResourceId,
   parseMirrorResourceId,
+  mergeRestoreGroups,
   placementGroup,
+  restorePoints,
   stagedOffServer,
   storageStep,
   targetPlacement,
@@ -45,9 +48,9 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 };
 const changes = (members: Member[], placement: PlacementRow | null) => placementChanges(volume, members, placement);
 const review = (members: Member[], placement: PlacementRow | null) => placementGroup(volume, changes(members, placement)).rows
-  .map(({ kind, name, currentValue, newValue, detail }) => ({ kind, name, currentValue, newValue, detail }));
-const primaryMove = (from: string, to: string, detail?: string) =>
-  ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail });
+  .map(({ kind, name, currentValue, newValue, detail, loss }) => ({ kind, name, currentValue, newValue, detail, loss }));
+const primaryMove = (from: string, to: string, loss?: string) =>
+  ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail: undefined, loss });
 const steps = (members: Member[], placement: PlacementRow | null) => placementSteps(changes(members, placement));
 
 describe("placementChanges", () => {
@@ -423,5 +426,68 @@ describe("mirroredVolumes", () => {
     ];
     expect(mirroredVolumes(["listed", "staged", "bare", "elsewhere", "cli-made", "none"], rows, "e1", copies))
       .toEqual(["listed", "staged", "cli-made"]);
+  });
+});
+
+describe("restore into a new Volume", () => {
+  const point = { guid: "11", name: "ployz-1", at: at.getTime() / 1000 };
+  const seeded: PlacementRow = {
+    ...row([], { primary: "web-1" }),
+    staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: { sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point } },
+  };
+
+  it("copies the restore point on the source's primary until a root of the new Volume answers", () => {
+    expect(nextPlacementStep(changes([], seeded), [])).toEqual({
+      run: { kind: "seed", args: { into: { volumeId: "v1", dockerVolume: "ns_vol-v1", name: "pg-data" }, guid: "11", name: "ployz-1" } },
+      mirrors: [],
+    });
+    expect(changes([member("web-1", "writer")], seeded)).toEqual([]);
+  });
+
+  it("reviews as a created Volume that says what it leaves out, and has no inline undo", () => {
+    const [change] = changes([], seeded);
+    if (change === undefined) throw new Error("fixture");
+    const group = placementGroup(volume, [change]);
+    expect(group.lifecycle).toBe("create");
+    expect(group.rows).toMatchObject([{
+      kind: "add", name: "From", currentValue: "", newValue: "data · 10:36",
+      loss: "Changes after 10:36 are not in pg-data", detail: "Volume data, not database point-in-time.",
+    }]);
+    expect(undoPlacement(volume, [], seeded, change)).toBeNull();
+  });
+
+  it("lists each mirror's newest restore point once, newest first, from Servers that answer", () => {
+    const points = restorePoints([
+      member("web-1", "writer"), member("web-2", "mirror"), mirrorAsOf("web-3", at), member("web-4", "mirror"), member("web-5", "unanswered"),
+    ]);
+    expect(points.map(({ guid, server }) => ({ guid, server: server.name }))).toEqual([{ guid: "12", server: "web-3" }, { guid: "11", server: "web-2" }]);
+  });
+});
+
+describe("mergeRestoreGroups", () => {
+  const group = (owner: "store" | "placement", nodeId: string, lifecycle: "create" | "update", rows: number): ChangeGroup => ({
+    owner, nodeType: "volume", nodeId, nodeName: nodeId, discardPath: nodeId, row: null, lifecycle, restarts: [], canDiscard: true,
+    changeCount: rows,
+    rows: Array.from({ length: rows }, (_, index) => ({
+      changeKey: `${owner}:${index}`, path: String(index), row: null, kind: "add" as const, label: owner, name: owner, variable: false,
+      currentValue: "", newValue: "", canDiscard: true,
+    })),
+  });
+
+  it("shows a restored Volume once, discarded as a whole through its placement", () => {
+    const merged = mergeRestoreGroups(
+      [group("store", "new", "create", 1), group("store", "web", "update", 1)],
+      [group("placement", "new", "create", 1), group("placement", "other", "update", 2)],
+    );
+    expect(merged.map(({ owner, nodeId, changeCount }) => ({ owner, nodeId, changeCount }))).toEqual([
+      { owner: "placement", nodeId: "new", changeCount: 2 },
+      { owner: "store", nodeId: "web", changeCount: 1 },
+      { owner: "placement", nodeId: "other", changeCount: 2 },
+    ]);
+    expect(merged[0]?.rows.map((row) => row.canDiscard)).toEqual([true, false]);
+  });
+
+  it("keeps a restore the Store has not listed yet", () => {
+    expect(mergeRestoreGroups([], [group("placement", "new", "create", 1)]).map(({ nodeId }) => nodeId)).toEqual(["new"]);
   });
 });

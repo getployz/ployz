@@ -67,8 +67,8 @@ export function MirrorDrawerView({ params, panel, disabled, stage }: {
   const { volume, server, change, newest } = panel;
   const name = copyName(volume.name, server.name);
   const chip = mirrorChip(change);
-  const volumeLink = (children: ReactNode) => (
-    <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} className="text-foreground underline underline-offset-4">
+  const volumeLink = (children: ReactNode, tab?: "backups") => (
+    <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }} search={(prev) => ({ ...prev, tab })} className="text-foreground underline underline-offset-4">
       {children}
     </Link>
   );
@@ -88,7 +88,7 @@ export function MirrorDrawerView({ params, panel, disabled, stage }: {
             <Row title="Server">{server.name}</Row>
             <Row title="Last refresh">{newest && change !== "add" ? <RelativeTime date={newest} /> : "Not yet"}</Row>
             <Row title="Refreshes">{MIRROR_REFRESHES}</Row>
-            <Row title="Restore points">{volumeLink(`In ${volume.name}`)}</Row>
+            <Row title="Restore points">{volumeLink(`In ${volume.name}`, "backups")}</Row>
             {panel.promote ? (
               <Field orientation="responsive">
                 <FieldContent>

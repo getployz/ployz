@@ -29,6 +29,8 @@ export type ChangeRow = {
   canDiscard: boolean;
   /** A placement change's second line, in words, where a Setting shows its before and after. */
   detail?: string;
+  /** What the change loses, which Details shows in red. */
+  loss?: string;
 };
 
 /** One changed node in Details, with its changed Settings. */

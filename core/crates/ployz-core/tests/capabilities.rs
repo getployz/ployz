@@ -17,10 +17,11 @@ use ployz_core::{
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
     REMOVE_IMAGES_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY,
     REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RESET_MACHINE_CAPABILITY,
-    RESTORE_VOLUME_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SET_MANAGEMENT_CLIENT_CAPABILITY,
-    START_CONTAINER_CAPABILITY, START_HANDED_CONTAINER_CAPABILITY, START_RECEIVE_CAPABILITY,
-    STOP_CONTAINER_CAPABILITY, THAW_VOLUME_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    WARM_SNAPSHOT_CAPABILITY, WITHDRAW_VOLUME_CAPABILITY, op,
+    RESTORE_VOLUME_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, START_CONTAINER_CAPABILITY,
+    START_HANDED_CONTAINER_CAPABILITY, START_RECEIVE_CAPABILITY, STOP_CONTAINER_CAPABILITY,
+    THAW_VOLUME_CAPABILITY, UPDATE_MACHINE_CAPABILITY, WARM_SNAPSHOT_CAPABILITY,
+    WITHDRAW_VOLUME_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -90,6 +91,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (CLEAR_FINAL_CAPABILITY, "ployz.volume.clear-final.v1"),
         (RESTORE_VOLUME_CAPABILITY, "ployz.volume.restore.v1"),
+        (SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1"),
         (DECLARE_MIRROR_CAPABILITY, "ployz.volume.mirror.declare.v1"),
         (BEGIN_ROUND_CAPABILITY, "ployz.volume.round.begin.v1"),
         (COMMIT_SNAPSHOTS_CAPABILITY, "ployz.volume.round.commit.v1"),
@@ -199,6 +201,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.volume.start-handed-container.v1",
             "ployz.volume.clear-final.v1",
             "ployz.volume.restore.v1",
+            "ployz.volume.seed.v1",
             "ployz.volume.mirror.declare.v1",
             "ployz.volume.round.begin.v1",
             "ployz.volume.round.commit.v1",

@@ -65,6 +65,7 @@ import type {
   InspectVolumeCopyRequest,
   MirrorRequest,
   ReceiveView,
+  SeedVolumeRequest,
   ServiceVolumeRequest,
   SnapshotGuid,
   SourceContainerRequest,
@@ -107,7 +108,8 @@ export type VolumeSwitchRequest =
   | { command: "promote"; payload: ServiceVolumeRequest }
   | { command: "start_handed_container"; payload: ServiceVolumeRequest }
   | { command: "clear_final"; payload: MirrorRequest }
-  | { command: "restore"; payload: ServiceVolumeRequest };
+  | { command: "restore"; payload: ServiceVolumeRequest }
+  | { command: "seed_volume"; payload: SeedVolumeRequest };
 
 /** The reply payload of one Volume run verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =

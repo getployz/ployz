@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 import type { ChangeKind, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { InfoHint } from "#/components/info-hint";
 import { RelativeTime } from "#/components/relative-time";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
@@ -121,10 +120,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
     </Field>
     <Field orientation="responsive">
       <FieldContent>
-        <FieldLabel className="items-center gap-1">
-          Mirrors
-          <span className="-my-1 inline-flex"><InfoHint label="When it refreshes">Refreshes {MIRROR_REFRESHES.toLowerCase()}.</InfoHint></span>
-        </FieldLabel>
+        <FieldLabel>Mirrors</FieldLabel>
       </FieldContent>
       <Chips label="Mirrors">
         {form.mirrors.map((item) => <Chip key={item.server.id} item={item} kind={kindOf(item)}

@@ -35,7 +35,10 @@ describe("deploying a Volume placement", () => {
         read: async (_: string, query: { query: string }) => {
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
           if (query.query === "deployment") return { status, in_flight: status === "queued", environment: { id: "env-1", project: "shop", name: "production" } };
-          return { environment: { id: "env-1", project: "shop", name: "production", revision: 1 }, volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }] };
+          return {
+            environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
+            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: { kind: "provisioned", maximumBytes: 1 } }],
+          };
         },
       })),
     }),
@@ -105,6 +108,37 @@ describe("deploying a Volume placement", () => {
     await endRun(other.rows[0].id, "failed");
     expect(await run(advancePlacement(organizationId, "dep-1", waiting.kind === "wait" ? waiting.wait : null, inspect)))
       .toMatchObject({ kind: "wait", wait: { mirrors: [] } });
+  });
+
+  it("restores before it moves the source, running the copy on the source", async () => {
+    const restored = [member("web-1", "writer")];
+    const source = [member("web-1", "writer"), member("web-2", "mirror")];
+    let landed = false;
+    const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? (landed ? restored : []) : source);
+    await stageMove("web-2", ["web-2"]);
+    await run(stagePlacement(organizationId, { environment, volumeId: "vol2", mirrors: [], staged: {
+      primary: web("web-1"), mirrors: [], deletes: [],
+      seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
+    } }));
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+
+    const seeding = await run(advancePlacement(organizationId, "dep-1", null, byVolume));
+    expect(seeding).toMatchObject({ kind: "wait", wait: { volumeId: "vol2", mirrors: [] } });
+    if (seeding.kind !== "wait") throw new Error("expected a run");
+    const { rows } = await harness.pool.query(`select volume_id, kind, args from volume_run where id = $1`, [seeding.wait.runId]);
+    expect(rows).toEqual([{
+      volume_id: volumeId, kind: "seed",
+      args: { into: { volumeId: "vol2", dockerVolume: "shop-production_vol-vol2", name: "data-1430" }, guid: "11", name: "ployz-1" },
+    }]);
+
+    await endRun(seeding.wait.runId, "done");
+    landed = true;
+    const moving = await run(advancePlacement(organizationId, "dep-1", seeding.wait, byVolume));
+    expect(moving).toMatchObject({ kind: "wait", wait: { volumeId } });
+    if (moving.kind !== "wait") throw new Error("expected a run");
+    expect((await harness.pool.query(`select kind from volume_run where id = $1`, [moving.wait.runId])).rows).toEqual([{ kind: "move" }]);
+    const rowOf = async (id: string) => (await run(listPlacements(organizationId))).find((row) => row.volumeId === id);
+    expect(await rowOf("vol2")).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
   });
 
   describe("refreshing mirrors", () => {

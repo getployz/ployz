@@ -84,6 +84,22 @@ function volume(machine, name) {
     "invalid_argument",
   );
 
+  // Byte counts above u32::MAX cross napi as floats; the SDK must still read them whole,
+  // so the verb reaches the Machine (this fixture refuses every switch verb) instead of
+  // failing to parse.
+  await expectRpc(
+    () =>
+      client.volumeSwitch(machineB, {
+        command: "declare_mirror",
+        payload: {
+          switch: { lease: 1, pos: { seq: 3, round: 0, sub: 0 } },
+          name: "data",
+          refquota_bytes: 5_000_000_000,
+        },
+      }),
+    "unsupported",
+  );
+
   await client.close();
   await expectRpc(
     () => client.removeVolumes({ volumes: [volume(machineA, "data")] }),

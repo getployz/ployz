@@ -138,6 +138,7 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::Promote(_)
         | Body::StartHandedContainer(_)
         | Body::ClearFinal(_)
+        | Body::SeedVolume(_)
         | Body::Restore(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),

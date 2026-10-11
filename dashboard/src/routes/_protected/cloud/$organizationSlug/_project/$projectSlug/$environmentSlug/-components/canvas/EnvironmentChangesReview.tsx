@@ -147,6 +147,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
                   <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
                 </p>
+                {row.loss !== undefined ? <p className="text-destructive">{row.loss}</p> : null}
                 {row.detail !== undefined ? <p className="text-muted-foreground">{row.detail}</p> : null}
                 {restarts}
                 {row.configFile ? <ConfigFileValue {...row.configFile} /> : null}
