@@ -146,12 +146,12 @@ it.live("a read tool answers straight from the Store", () =>
     expect(answered.said).toBe("Services: web.");
   }));
 
-it.live("a GitHub read the sidebar can't reach yet reaches the model as the tool's refusal", () =>
+it.live("a GitHub read of a repository the Organization can't read reaches the model as the tool's refusal", () =>
   Effect.gen(function* () {
     const { say } = yield* sidebar({ removeWeb: false });
     const answered = yield* say("tree acme/web");
     expect(answered.interrupts).toEqual([]);
-    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "unavailable" } }]);
+    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
     expect(answered.said).toMatch(/^The Store refused: /);
   }));
 
