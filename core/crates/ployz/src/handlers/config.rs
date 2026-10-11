@@ -113,10 +113,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let environment = environment(matches)?;
     // Domains are no Setting: `get` reads them beside a Service's or the Environment's
     // Settings, and never beside one Setting.
-    let (service, every) = match matches
-        .get_one::<String>("path")
-        .map(|raw| NodeName::parse(raw))
-    {
+    let (service, every) = match path.as_ref().map(|path| NodeName::parse(&path.to_string())) {
         None => (Some(None), all),
         Some(Ok(NodeName::Service(service))) => (Some(Some(service)), true),
         Some(_) => (None, false),
