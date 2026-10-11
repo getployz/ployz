@@ -83,8 +83,9 @@ answers for it there.
 
 - **Check the exact name.** `www.example.com` and `example.com` are different domains. Add each
   one you use to the service.
-- **On `http://`?** Ployz serves https only and doesn't redirect yet. Use `https://`. Behind
-  Cloudflare, see [below](#my-domain-is-behind-cloudflare).
+- **On `http://`?** Ployz redirects http to https only once the domain has its certificate.
+  Until then, wait for it to be issued. Behind Cloudflare, see
+  [below](#my-domain-is-behind-cloudflare).
 - **On `https://`?** The domain isn't live yet. If its row says
   **Live after your next deploy**, click **Deploy**.
 
