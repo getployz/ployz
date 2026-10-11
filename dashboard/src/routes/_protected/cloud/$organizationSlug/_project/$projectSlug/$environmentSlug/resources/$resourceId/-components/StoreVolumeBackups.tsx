@@ -5,7 +5,7 @@ import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyTitle } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { runsPlacement } from "#/modules/volume-placement/daemon-release";
+import { restoreOpen } from "#/modules/volume-placement/daemon-release";
 import { lossTime, observePlacement, type PlacementRow, type RestorePoint, restorePoints } from "#/modules/volume-placement/volume-placement";
 import { useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -28,9 +28,7 @@ export function StoreVolumeBackups({ organizationSlug, environment, volume, remo
   const rows = useVolumePlacements(organizationSlug).data ?? [];
   const { restore, pending } = useStageRestore(organizationSlug, environment, volume);
   const machines = useRuntimeLens(organizationSlug).machines;
-  // The Primary's Server seeds the new Volume, so Restore waits for its daemon to have SeedVolume.
-  const primary = members === undefined ? null : observePlacement(members).primary;
-  const seeds = primary !== null && machines.some((machine) => machine.id === primary.id && runsPlacement(machine.daemonVersion));
+  const seeds = restoreOpen(machines, members === undefined ? null : observePlacement(members).primary?.id ?? null);
   return <>
     {managed ? <VolumeRestorePoints volume={volume} members={members} rows={rows} disabled={pending}
       restore={seeds ? restore : null} onAddMirror={onAddMirror} /> : (

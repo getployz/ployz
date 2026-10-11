@@ -3,6 +3,9 @@ import type { CopyObservation, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, isNotNull } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
+import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import {
@@ -98,6 +101,34 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   return { kind: "done" } satisfies PlacementAdvance;
 });
 
+/** The names of the Servers with storage that hold placement back; none when no Cluster is connected. */
+export type BlockerReader = (organizationId: string) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
+
+export const readPlacementBlockers: BlockerReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
+  Effect.map((frame) => frame === null ? [] : placementBlockers(frame.machines.map((entry) => ({
+    name: entry.machine.name, storage: entry.storage?.state ?? null, daemonVersion: entry.machine.runtime.daemon_version,
+  })))),
+);
+
+const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
+
+/** Why the organization can't stage a placement or restore yet, or null when it can. */
+export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string, read: BlockerReader = readPlacementBlockers) {
+  const blockers = yield* read(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
+  if (blockers === null) return UNANSWERED;
+  if (blockers.length === 0) return null;
+  const refusal: StoreRefusal = { code: "upgrade_required", message: placementUpgradeMessage(blockers), details: { servers: [...blockers] } };
+  return refusal;
+});
+
+/** `write` runs only once the organization can stage; otherwise the refusal answers in its place. */
+export const unlessPlacementRefused = <A, E, R>(organizationId: string, write: Effect.Effect<A, E, R>, read: BlockerReader = readPlacementBlockers) =>
+  Effect.gen(function* () {
+    const refusal = yield* placementRefusal(organizationId, read);
+    if (refusal !== null) return { ok: false, refusal } as const;
+    return yield* write;
+  });
+
 const NO_COPIES: CopyObservation["copies"] = [];
 
 type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string };
@@ -123,11 +154,17 @@ const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(funct
  */
 export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(function* (
   organizationId: string, onlyEnvironmentId: string | null, observe: CopyObserver = observeOrganizationCopies,
+  read: BlockerReader = readPlacementBlockers,
 ) {
   const copies = yield* observe(organizationId).pipe(
     Effect.catch((error) => Effect.logWarning("Mirror refresh could not observe the copies.", { organizationId, error }).pipe(Effect.as(NO_COPIES))),
   );
   if (copies.length === 0) return [];
+  const refusal = yield* placementRefusal(organizationId, read);
+  if (refusal !== null) {
+    yield* Effect.logInfo("Mirror refresh skipped.", { organizationId, reason: refusal.message });
+    return [];
+  }
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement).where(eq(volumePlacement.organizationId, organizationId));
   const requested: string[] = [];

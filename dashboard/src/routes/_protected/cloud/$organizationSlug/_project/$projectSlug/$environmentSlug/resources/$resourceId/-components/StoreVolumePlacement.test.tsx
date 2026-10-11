@@ -22,10 +22,13 @@ const mirrorAsOf = (server: string, when: Date): Member => {
   return { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: { name: "s", guid: "12", created_unix_seconds: when.getTime() / 1000 } } } };
 };
 
-function panel(members: Member[], placement: PlacementRow | null, running: VolumeRunView | null = null, accepting = members.map((entry) => entry.machine.id)) {
+function panel(
+  members: Member[], placement: PlacementRow | null, running: VolumeRunView | null = null, accepting = members.map((entry) => entry.machine.id),
+  upgrade: string[] = [],
+) {
   const stage = vi.fn();
   render(<VolumePlacementPanel volume={{ id: "v1", name: "data", mounts: [{ service: "postgres" }] }} members={members} row={placement} running={running}
-    accepting={accepting} disabled={false} stage={stage} />);
+    accepting={accepting} upgrade={upgrade} disabled={false} stage={stage} />);
   return stage;
 }
 const primary = () => screen.getByRole("combobox", { name: "Primary" });
@@ -122,6 +125,15 @@ describe("VolumePlacementPanel", () => {
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36))], row(["web-2"]), null, [id("web-1")]);
     expect(screen.getByRole("alert").textContent).toBe("web-1 is not answeringChanges after 10:36 lost");
     expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
+  });
+
+  it("only shows the placement while a Server with storage runs an older daemon", () => {
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36)), member("web-3", "mirror")], row(["web-2"]), null, [], ["db-old"]);
+    expect(screen.getByText("Upgrade db-old to Ployz 0.2.5")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Remove mirror on/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete copy on/ })).toBeNull();
+    expect(primary().hasAttribute("data-disabled") || primary().hasAttribute("disabled")).toBe(true);
   });
 
   it("shows the run under way, and drops the staged colours and edits while a Deploy runs the move", () => {

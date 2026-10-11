@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { placementServers } from "#/modules/volume-placement/daemon-release";
+import { PLACEMENT_RELEASE, placementBlockers, placementServers } from "#/modules/volume-placement/daemon-release";
 import {
   appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
   placementChanges, type PlacementItem, placementForm, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
@@ -42,7 +42,7 @@ export function StoreVolumePlacement({ organizationSlug, environment, volume }: 
     </SettingsSection>;
   }
   const accepting = placementServers(lens.machines);
-  return <VolumePlacementPanel volume={volume} members={members} row={row} running={running} disabled={pending}
+  return <VolumePlacementPanel volume={volume} members={members} row={row} running={running} disabled={pending} upgrade={placementBlockers(lens.machines)}
     accepting={members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id)} stage={stage} />;
 }
 
@@ -56,13 +56,15 @@ const KIND_CLASSES = {
   remove: "border-destructive-border bg-destructive-soft text-destructive",
 } satisfies Record<ChangeKind, string>;
 
-export function VolumePlacementPanel({ volume, members, row, running, accepting, disabled, stage }: {
+export function VolumePlacementPanel({ volume, members, row, running, accepting, upgrade, disabled, stage }: {
   volume: PanelVolume;
   members: readonly Member[];
   row: PlacementRow | null;
   running: VolumeRunView | null;
   /** Servers that accept Services and run the volume verbs: the only ones a move or a mirror may name. */
   accepting: readonly MachineId[];
+  /** Servers with storage on a daemon older than the volume verbs: until they upgrade, the panel only shows. */
+  upgrade: readonly string[];
   disabled: boolean;
   stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
 }) {
@@ -75,7 +77,8 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
     </SettingsSection>;
   }
   const deploying = row?.deploymentId != null;
-  const locked = disabled || deploying;
+  const blocked = upgrade.length > 0;
+  const locked = disabled || deploying || blocked;
   const applied = appliedMirrors(observed, row);
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
   const targets = placementTargets(volume, members, row, accepting);
@@ -98,6 +101,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
         <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
       </AlertAction> : null}
     </Alert> : null}
+    {blocked ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to Ployz {PLACEMENT_RELEASE}</p> : null}
     {running || deploying ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
       <Spinner role="presentation" aria-hidden="true" />
       <span>{running ? [runWords(running), running.message].filter(Boolean).join(" · ") : "Deploying"}</span>
@@ -128,7 +132,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
       <Chips label="Mirrors">
         {form.mirrors.map((item) => <Chip key={item.server.id} item={item} kind={kindOf(item)}
           note={item.newest ? <RelativeTime date={item.newest} /> : null}
-          action={<Button variant="ghost" size="icon-xs" aria-label={`Remove mirror on ${item.server.name}`} disabled={locked}
+          action={blocked ? null : <Button variant="ghost" size="icon-xs" aria-label={`Remove mirror on ${item.server.name}`} disabled={locked}
             onClick={() => edit({ kind: "remove_mirror", server: item.server.id })}><XIcon /></Button>} />)}
         {mirrorOn.length > 0 ? <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="outline" size="xs" aria-label="Add mirror" disabled={locked}
@@ -143,7 +147,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
       <FieldContent><FieldLabel>Detached</FieldLabel></FieldContent>
       <Chips label="Detached">
         {form.detached.map((item) => <Chip key={item.server.id} item={item} kind={kindOf(item)} note={null}
-          action={<Button variant="ghost" size="icon-xs" aria-label={`Delete copy on ${item.server.name}`} disabled={locked}
+          action={blocked ? null : <Button variant="ghost" size="icon-xs" aria-label={`Delete copy on ${item.server.name}`} disabled={locked}
             onClick={() => edit({ kind: "delete_copy", server: item.server.id })}><XIcon /></Button>} />)}
       </Chips>
     </Field> : null}

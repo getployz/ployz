@@ -15,8 +15,11 @@ refreshed. A change here waits for your next deploy, which runs it before your s
 then it shows in its colour: pink for a new primary, green for a new copy, red and struck through
 for one going away. It counts in the bottom bar and Details. Nothing runs on click.
 
-- **+ Add**, under Mirrors, offers only servers that run services on Ployz 0.2.5 or newer. A
-  volume has one mirror for now.
+Every server that can hold managed volumes must run Ployz 0.2.5 or newer before any volume moves.
+Until then Placement only shows, and names the servers to upgrade, for example "Upgrade db-1 to
+Ployz 0.2.5". **Use mirror**, **Drain**'s moves and the 15-minute refresh wait too.
+
+- **+ Add**, under Mirrors, offers only servers that run services. A volume has one mirror for now.
   The × on a mirror removes it.
 - Pick another server in **Primary** to move the volume there. The mirror stays. A move to the
   mirror's server promotes it. A move anywhere else copies the volume first, then stops your

@@ -5,7 +5,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { advancePlacement, type MemberInspector, refreshMirrors, stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
+import {
+  advancePlacement, type MemberInspector, refreshMirrors, stageOffServer, unlessPlacementRefused,
+} from "#/modules/volume-placement/volume-placement.deploy.server";
 import { listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -161,7 +163,8 @@ describe("deploying a Volume placement", () => {
 
   describe("refreshing mirrors", () => {
     const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
-    const refresh = (copies: CopyObservation["copies"]) => run(refreshMirrors(organizationId, null, () => Effect.succeed(copies)));
+    const refresh = (copies: CopyObservation["copies"], blockers: string[] = []) =>
+      run(refreshMirrors(organizationId, null, () => Effect.succeed(copies), () => Effect.succeed(blockers)));
     const requestedKinds = async () => (await harness.pool.query(`select kind from volume_run`)).rows.map((row) => row.kind);
 
     it("syncs a copy the dashboard has no record for, as the CLI made it a mirror", async () => {
@@ -182,6 +185,31 @@ describe("deploying a Volume placement", () => {
     it("leaves a Volume a Deploy is moving to that Deploy", async () => {
       await stageMove("web-2", ["web-2"]);
       expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toEqual([]);
+    });
+
+    it("skips an organization while a Server with storage runs an older daemon", async () => {
+      expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")], ["db-old"])).toEqual([]);
+      expect(await requestedKinds()).toEqual([]);
+    });
+  });
+
+  describe("gating a staged placement on every Server with storage", () => {
+    const stage = (read: () => Effect.Effect<readonly string[], string>) => run(unlessPlacementRefused(organizationId,
+      stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [] }), read));
+
+    it("refuses while one runs an older daemon, and stages nothing", async () => {
+      expect(await stage(() => Effect.succeed(["db-old"]))).toEqual({ ok: false, refusal: {
+        code: "upgrade_required", message: "Every Server with storage must run Ployz 0.2.5 or later. Upgrade db-old first.", details: { servers: ["db-old"] },
+      } });
+      expect(await run(listPlacements(organizationId))).toEqual([]);
+    });
+
+    it("refuses while the Servers can't say", async () => {
+      expect(await stage(() => Effect.fail("timeout"))).toMatchObject({ ok: false, refusal: { code: "unanswered" } });
+    });
+
+    it("stages once every one runs the verbs", async () => {
+      expect(await stage(() => Effect.succeed([]))).toMatchObject({ ok: true, placement: { staged: { primary: web("web-2") } } });
     });
   });
 

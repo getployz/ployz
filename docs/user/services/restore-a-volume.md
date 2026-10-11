@@ -7,8 +7,8 @@ A volume with a mirror has restore points: the copies the mirror took on each de
 15 minutes. Restoring one makes a new volume with that point's files and moves your service onto
 it. The original volume stays until you delete it.
 
-Restore works on managed volumes in Ployz Cloud, once the volume's primary server runs Ployz 0.2.5
-or newer. Until then the points list without **Restore**. A volume without a mirror has no points; add one
+Restore works on managed volumes in Ployz Cloud, once every server that can hold managed volumes
+runs Ployz 0.2.5 or newer. Until then the points list without **Restore**. A volume without a mirror has no points; add one
 under **Placement** in the volume's **Settings** tab, see [Move a volume](move-a-volume.md).
 
 ## In Ployz Cloud

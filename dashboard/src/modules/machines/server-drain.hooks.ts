@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { listNames } from "#/lib/plural";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { placementServers } from "#/modules/volume-placement/daemon-release";
+import { placementBlockers, placementServers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { stageOffServerServerFn } from "#/modules/volume-placement/volume-placement.functions";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
 import { drainView, type DrainView } from "./server-drain-view";
@@ -25,7 +25,8 @@ export type ServerDrain = {
  * Drain on a Server page: the row reads as starting at once, asks Cloud in the background under a request id this tab
  * minted, and settles when that Drain's row arrives. Cloud answers with the Drain it admitted, which is another tab's
  * when one was already active on this Server; the row then waits on that one. Cloud refusing toasts its words.
- * Each Volume primary here is staged to move off with it, for the next Deploy; one that nowhere takes toasts.
+ * Each Volume primary here is staged to move off with it, for the next Deploy; one that nowhere takes toasts, and so
+ * does a Server with storage on an older daemon, which keeps every primary where it is.
  */
 export function useServerDrain(
   organizationSlug: string,
@@ -63,6 +64,11 @@ export function useServerDrain(
         toast.error(toErrorMessage(error, `Could not drain ${server.name}`));
       },
     );
+    const upgrade = placementBlockers(machines);
+    if (upgrade.length > 0) {
+      toast.error(placementUpgradeMessage(upgrade));
+      return;
+    }
     const accepting = [...placementServers(machines)].filter((id) => id !== server.id);
     stageOffServerServerFn({ data: { organizationSlug, server: server.id, accepting } }).then(
       ({ stuck }) => {

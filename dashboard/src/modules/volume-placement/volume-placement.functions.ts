@@ -2,8 +2,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
+import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const Organization = Schema.Struct({ organizationSlug: Schema.NonEmptyString });
@@ -28,7 +29,10 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(StageInput))
   .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => stagePlacement(organization.id, data)),
+    // Clearing a staged placement starts no run, so it stays open while the gate is closed.
+    Effect.flatMap((organization) => data.staged === null
+      ? stagePlacement(organization.id, data)
+      : unlessPlacementRefused(organization.id, stagePlacement(organization.id, data))),
   )));
 
 export const discardPlacementServerFn = createServerFn({ method: "POST" })
@@ -43,12 +47,14 @@ export const stageRestoreServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ ...VolumeInput.fields, guid: Schema.NonEmptyString, name: Schema.NonEmptyString, at: Schema.Number })))
   .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => stageRestore(organization.id, context.actor.userId, data)),
+    Effect.flatMap((organization) => unlessPlacementRefused(organization.id, stageRestore(organization.id, context.actor.userId, data))),
   )));
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ ...Organization.fields, server: Machine, accepting: Schema.Array(Machine) })))
   .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => stageOffServer(organization.id, data.server, data.accepting)),
+    Effect.flatMap((organization) => placementRefusal(organization.id).pipe(Effect.flatMap((refusal) => refusal === null
+      ? stageOffServer(organization.id, data.server, data.accepting)
+      : Effect.fail(new Conflict({ userFacing: true, message: refusal.message }))))),
   )));

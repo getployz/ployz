@@ -10,7 +10,7 @@ import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/
 import { cn } from "#/lib/utils";
 import { requireView, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { placementServers } from "#/modules/volume-placement/daemon-release";
+import { placementBlockers, placementServers } from "#/modules/volume-placement/daemon-release";
 import { mirrorPanel, type MirrorPanel, type Placement, type PlacementVolume } from "#/modules/volume-placement/volume-placement";
 import { useStagePlacement } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -52,7 +52,8 @@ function MirrorDrawerData({ params, environment, volume, server }: {
     members.filter((member) => accepting.has(member.machine.id)).map((member) => member.machine.id));
   // A stale link, or the mirror went with a Deploy or a discard while open.
   if (panel === null) return <CanvasInspectorNotFound noun="Mirror" />;
-  return <MirrorDrawerView params={params} panel={panel} disabled={pending} stage={stage} />;
+  const blocked = placementBlockers(lens.machines).length > 0;
+  return <MirrorDrawerView params={params} panel={blocked ? { ...panel, promote: null, remove: null } : panel} disabled={pending} stage={stage} />;
 }
 
 /**
