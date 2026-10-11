@@ -11,6 +11,15 @@
 //!                                       scan has read past
 //!         first-set.json                FirstSeen, until max-file judges it
 //!         <seq>-<ino>.log               a hardlink to one Docker log file, raw
+//!     metrics/
+//!       raw/
+//!         <hour>.jsonl                  every metric row of one hour, one
+//!                                       per line; <hour> is its start in
+//!                                       Unix seconds
+//!       rollup/
+//!         <hour>.jsonl                  that hour folded to 5 minute points
+//!                                       per Service and Deployment, plus
+//!                                       the host
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -38,7 +47,12 @@ pub const SCANNED_FILE: &str = "scanned";
 pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
 pub const FIRST_SET_FILE: &str = "first-set.json";
 pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
+pub const METRICS_DIR: &str = "metrics";
+pub const RAW_DIR: &str = "raw";
+pub const ROLLUP_DIR: &str = "rollup";
 const LOG_SUFFIX: &str = ".log";
+const SEGMENT_SUFFIX: &str = ".jsonl";
+const HOUR_SECS: u64 = 60 * 60;
 
 /// The versioned root of the Log Store, `<DockerRootDir>/ployz-observe/v1`.
 #[derive(Clone, Debug)]
@@ -63,6 +77,16 @@ impl StoreRoot {
     #[must_use]
     pub fn container(&self, id: &ContainerId) -> PathBuf {
         self.containers().join(id.as_str())
+    }
+
+    #[must_use]
+    pub fn raw_metrics(&self) -> PathBuf {
+        self.0.join(METRICS_DIR).join(RAW_DIR)
+    }
+
+    #[must_use]
+    pub fn rollup_metrics(&self) -> PathBuf {
+        self.0.join(METRICS_DIR).join(ROLLUP_DIR)
     }
 
     /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.
@@ -170,6 +194,50 @@ impl fmt::Display for LogFileName {
     }
 }
 
+/// The name of one raw metric segment, `<start>.jsonl`, where `start` is
+/// the Unix second its hour begins.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SegmentName {
+    start_secs: u64,
+}
+
+impl SegmentName {
+    /// The segment holding a row stamped `ts` Unix nanoseconds, or `None`
+    /// before 1970.
+    #[must_use]
+    pub fn containing(ts: i64) -> Option<Self> {
+        let secs = u64::try_from(ts.div_euclid(1_000_000_000)).ok()?;
+        Some(Self {
+            start_secs: secs - secs % HOUR_SECS,
+        })
+    }
+
+    /// Parses a segment name. Only the exact form this type prints parses.
+    #[must_use]
+    pub fn parse(name: &[u8]) -> Option<Self> {
+        let name = std::str::from_utf8(name).ok()?;
+        let start_secs = canonical_u64(name.strip_suffix(SEGMENT_SUFFIX)?)?;
+        (start_secs % HOUR_SECS == 0).then_some(Self { start_secs })
+    }
+
+    #[must_use]
+    pub fn start_secs(self) -> u64 {
+        self.start_secs
+    }
+
+    /// The first Unix second after this segment's hour.
+    #[must_use]
+    pub fn end_secs(self) -> u64 {
+        self.start_secs.saturating_add(HOUR_SECS)
+    }
+}
+
+impl fmt::Display for SegmentName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{SEGMENT_SUFFIX}", self.start_secs)
+    }
+}
+
 /// What a container was, read from its labels when the store first saw it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -216,7 +284,7 @@ pub struct Gap {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogFileName, StoreRoot};
+    use super::{LogFileName, SegmentName, StoreRoot};
     use crate::test_dir::TestDir;
 
     #[test]
@@ -240,6 +308,36 @@ mod tests {
             b"99999999999999999999-1.log",
         ] {
             assert_eq!(LogFileName::parse(foreign), None, "{foreign:?}");
+        }
+    }
+
+    #[test]
+    fn segment_names_cover_one_hour_and_parse_only_in_their_printed_form() {
+        let name = SegmentName::containing(1_760_000_123_456_789_000).unwrap();
+        assert_eq!(name.to_string(), "1759996800.jsonl");
+        assert_eq!(
+            (name.start_secs(), name.end_secs()),
+            (1_759_996_800, 1_760_000_400)
+        );
+        assert_eq!(
+            SegmentName::containing(1_759_996_800_000_000_000),
+            Some(name)
+        );
+        assert_eq!(
+            SegmentName::containing(1_760_000_399_999_999_999),
+            Some(name)
+        );
+        assert_eq!(SegmentName::parse(b"1759996800.jsonl"), Some(name));
+        assert_eq!(SegmentName::containing(-1), None);
+        for foreign in [
+            &b"1759996801.jsonl"[..],
+            b"01759996800.jsonl",
+            b"1759996800.jsonl.tmp",
+            b"1759996800",
+            b".jsonl",
+            b"1-2.log",
+        ] {
+            assert_eq!(SegmentName::parse(foreign), None, "{foreign:?}");
         }
     }
 
