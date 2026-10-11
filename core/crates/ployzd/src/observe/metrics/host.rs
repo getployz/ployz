@@ -127,6 +127,9 @@ fn parse_kib(value: &str) -> Option<u64> {
     }
 }
 
+/// Counters on one `/proc/net/dev` row: eight received, eight sent.
+const NET_DEV_FIELDS: usize = 16;
+
 /// Every interface line of `/proc/net/dev`, headers and malformed lines dropped.
 pub(super) fn parse_net_dev(text: &str) -> Vec<InterfaceBytes> {
     text.lines()
@@ -136,7 +139,8 @@ pub(super) fn parse_net_dev(text: &str) -> Vec<InterfaceBytes> {
                 .split_whitespace()
                 .map(str::parse::<u64>)
                 .collect::<Result<Vec<_>, _>>()
-                .ok()?;
+                .ok()
+                .filter(|counters| counters.len() == NET_DEV_FIELDS)?;
             Some(InterfaceBytes {
                 name: name.trim().to_owned(),
                 rx: *counters.first()?,
@@ -226,6 +230,7 @@ Inter-|   Receive                                                |  Transmit
     lo: 9000      90    0    0    0     0          0         0     9000      90    0    0    0     0       0          0
   eth0:123456789 1000    0    0    0     0          0         0 987654321  2000    0    0    0     0       0          0
  ployz0: 42 1 0 0
+trunc0: 1 2 3 4 5 6 7 8 9 10
   wg0: 555       5    0    0    0     0          0         0      666       6    0    0    0     0       0          0
 ";
         assert_eq!(
