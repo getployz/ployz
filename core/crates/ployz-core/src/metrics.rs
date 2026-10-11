@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{ContainerId, MachineId, ServiceId};
+use crate::{ContainerId, MachineId, QualifiedService, ServiceId};
 
 /// One container's counters at one instant.
 ///
@@ -24,9 +24,11 @@ pub struct MetricSample {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub service_id: Option<ServiceId>,
+    /// The Service's Namespace and name, which is how history selects it.
+    /// Absent exactly when `service_id` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub namespace: Option<String>,
+    pub service: Option<QualifiedService>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deployment_id: Option<String>,
@@ -151,7 +153,7 @@ pub enum MetricScope {
     /// The answering Machine's host totals.
     Machine,
     /// Every container of one Service on the answering Machine, summed.
-    Service { service_id: ServiceId },
+    Service { service: QualifiedService },
 }
 
 /// `since_nanos` is inclusive and `until_nanos` exclusive.
@@ -259,7 +261,7 @@ mod tests {
             machine_id: MachineId::parse("a".repeat(32)).unwrap(),
             container_id: ContainerId::parse("b".repeat(64)).unwrap(),
             service_id: Some(ServiceId::parse("c".repeat(32)).unwrap()),
-            namespace: Some("prod".into()),
+            service: Some(QualifiedService::parse("prod/web").unwrap()),
             deployment_id: Some("d1".into()),
             replica: "web-1".into(),
             ts: 1_760_000_000_000_000_000,
@@ -302,7 +304,7 @@ mod tests {
 
         let request = MetricHistoryRequest {
             scope: MetricScope::Service {
-                service_id: sample.service_id.unwrap(),
+                service: sample.service.clone().unwrap(),
             },
             range: MetricRange {
                 since_nanos: 0,
@@ -312,6 +314,7 @@ mod tests {
         };
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json.pointer("/scope/kind"), Some(&"service".into()));
+        assert_eq!(json.pointer("/scope/service"), Some(&"prod/web".into()));
         assert_eq!(
             serde_json::from_value::<MetricHistoryRequest>(json).unwrap(),
             request
@@ -346,12 +349,13 @@ mod tests {
     fn missing_sources_stay_absent_in_json() {
         let sample = MetricSample {
             service_id: None,
+            service: None,
             cpu_usec: None,
             io_w: None,
             ..sample()
         };
         let json = serde_json::to_value(&sample).unwrap();
-        for field in ["service_id", "cpu_usec", "io_w"] {
+        for field in ["service_id", "service", "cpu_usec", "io_w"] {
             assert!(json.get(field).is_none(), "{field} must be absent: {json}");
         }
         assert_eq!(json.get("io_r"), Some(&5.into()));
