@@ -7,6 +7,7 @@ import { scaleLinear } from "@tanstack/charts/scales/linear";
 import { tooltip } from "@tanstack/charts/tooltip";
 import { portal } from "@tanstack/charts/tooltip/portal";
 import { scaleUtc } from "d3-scale";
+import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
 import { useTimeZone } from "#/utils/time-zone";
@@ -27,7 +28,7 @@ const isolated = (values: readonly (number | null)[], index: number) =>
  * One metric as a card: title and latest value on top, a thin line over a soft fill, incident bands, deploy rules and an
  * optional dashed limit. Every chart on the tab shares `cursor`, so hovering one lines them all up.
  */
-export function MetricChart({ id, title, value, times, series, format, limit, bands, deploys, from, to, cursor, onPick, renderTooltip, focusAt = [], dimmed = false, height = 120 }: {
+export function MetricChart({ id, title, value, times, series, format, limit, bands, deploys, from, to, cursor, incidentAt, renderTooltip, focusAt = [], dimmed = false, height = 120 }: {
   id: string;
   title: string;
   value: ReactNode;
@@ -40,8 +41,8 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
   from: number;
   to: number;
   cursor: ChartCursorController<Date, number>;
-  /** A click on the chart, with the time under it. */
-  onPick: (at: number) => void;
+  /** Opens the incident covering `at` from a click at (x, y), or null when none does. */
+  incidentAt: (at: number) => ((x: number, y: number) => void) | null;
   /** The tooltip for the step at `at`, in place of one line per series. */
   renderTooltip?: (at: number) => ReactNode;
   /** Times with no value drawn that still take hover, such as a step where every check failed. */
@@ -87,12 +88,16 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
       },
     },
     focus: "group-x",
-    cursor: { use: cursorHost, controller: cursor, mode: "focus", match: "x" },
+    // A click or tap pins the tooltip so it can be read, selected, and act on the incident under it.
+    cursor: { use: cursorHost, controller: cursor, mode: "focus", match: "x", pin: true },
     tooltip: {
       use: tooltip,
       // The Card clips its children, and the Response time tooltip is taller than the chart.
       portal,
-      sticky: false,
+      // Pinned to the top of the plot, the tooltip follows the cursor sideways only, not the line up and down.
+      anchor: { x: "group-center", y: "plot-top" },
+      placement: ["right", "left", "bottom"],
+      className: "metric-tooltip",
       formatGroup: (points) => {
         const row = points[0]?.datum;
         if (!row || !("values" in row)) return "";
@@ -104,15 +109,28 @@ export function MetricChart({ id, title, value, times, series, format, limit, ba
     },
   });
   return (
-    <Card size="sm" className="gap-2 px-3">
+    <Card size="sm" className="gap-2 px-3" data-metric-chart>
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="text-sm font-medium">{title}</h3>
         <span className="font-mono text-sm text-muted-foreground tabular-nums">{value}</span>
       </div>
       <Chart definition={definition} height={height} initialWidth={600} idPrefix={id} ariaLabel={title}
-        onSelect={(point) => { if (point?.xValue instanceof Date) onPick(point.xValue.getTime()); }}
-        renderTooltipBody={renderTooltip === undefined ? undefined
-          : ({ primaryPoint, defaultBody }) => primaryPoint?.xValue instanceof Date ? renderTooltip(primaryPoint.xValue.getTime()) : defaultBody}
+        renderTooltipBody={({ primaryPoint, defaultBody, pinned, dismiss }) => {
+          if (!(primaryPoint?.xValue instanceof Date)) return defaultBody;
+          const time = primaryPoint.xValue.getTime();
+          const open = pinned ? incidentAt(time) : null;
+          return (
+            <>
+              {renderTooltip?.(time) ?? defaultBody}
+              {open ? (
+                <Button variant="link" size="sm" className="h-auto px-0 pt-1"
+                  onClick={(event) => { dismiss(); open(event.clientX, event.clientY); }}>
+                  Incident details
+                </Button>
+              ) : null}
+            </>
+          );
+        }}
         className={cn("text-xs text-muted-foreground transition-opacity [--ts-chart-tooltip-background:var(--popover)] [--ts-chart-tooltip-color:var(--popover-foreground)]", dimmed && "opacity-50")} />
       {series.length > 1 ? (
         <div className="flex gap-3 text-xs text-muted-foreground">
