@@ -35,6 +35,8 @@ import { Route as ProtectedCloudOrganizationSlugProjectRouteRouteImport } from '
 import { Route as ApiAgentOrganizationSlugChatRouteImport } from './routes/api/agent/$organizationSlug/chat'
 import { Route as ApiBuildsBuildCheckInRouteImport } from './routes/api/builds/$build/check-in'
 import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
+import { Route as ApiCliAgentActRouteImport } from './routes/api/cli/agent/act'
+import { Route as ApiCliAgentAskRouteImport } from './routes/api/cli/agent/ask'
 import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/reset'
 import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
 import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/servers/enrollment'
@@ -189,6 +191,16 @@ const ApiBuildsBuildCheckInRoute = ApiBuildsBuildCheckInRouteImport.update({
 const ApiBuildsBuildStepsRoute = ApiBuildsBuildStepsRouteImport.update({
   id: '/api/builds/$build/steps',
   path: '/api/builds/$build/steps',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliAgentActRoute = ApiCliAgentActRouteImport.update({
+  id: '/api/cli/agent/act',
+  path: '/api/cli/agent/act',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliAgentAskRoute = ApiCliAgentAskRouteImport.update({
+  id: '/api/cli/agent/ask',
+  path: '/api/cli/agent/ask',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCliCloudResetRoute = ApiCliCloudResetRouteImport.update({
@@ -396,6 +408,8 @@ export interface FileRoutesByFullPath {
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
+  '/api/cli/agent/act': typeof ApiCliAgentActRoute
+  '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
@@ -443,6 +457,8 @@ export interface FileRoutesByTo {
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
+  '/api/cli/agent/act': typeof ApiCliAgentActRoute
+  '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
@@ -494,6 +510,8 @@ export interface FileRoutesById {
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
+  '/api/cli/agent/act': typeof ApiCliAgentActRoute
+  '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
@@ -545,6 +563,8 @@ export interface FileRouteTypes {
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
+    | '/api/cli/agent/act'
+    | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
@@ -592,6 +612,8 @@ export interface FileRouteTypes {
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
+    | '/api/cli/agent/act'
+    | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
@@ -642,6 +664,8 @@ export interface FileRouteTypes {
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
     | '/api/builds/$build/steps'
+    | '/api/cli/agent/act'
+    | '/api/cli/agent/ask'
     | '/api/cli/cloud/reset'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
@@ -689,6 +713,8 @@ export interface RootRouteChildren {
   ApiAgentOrganizationSlugChatRoute: typeof ApiAgentOrganizationSlugChatRoute
   ApiBuildsBuildCheckInRoute: typeof ApiBuildsBuildCheckInRoute
   ApiBuildsBuildStepsRoute: typeof ApiBuildsBuildStepsRoute
+  ApiCliAgentActRoute: typeof ApiCliAgentActRoute
+  ApiCliAgentAskRoute: typeof ApiCliAgentAskRoute
   ApiCliCloudResetRoute: typeof ApiCliCloudResetRoute
   ApiCliServersEnrollRoute: typeof ApiCliServersEnrollRoute
   ApiCliServersEnrollmentRoute: typeof ApiCliServersEnrollmentRoute
@@ -876,6 +902,20 @@ declare module '@tanstack/react-router' {
       path: '/api/builds/$build/steps'
       fullPath: '/api/builds/$build/steps'
       preLoaderRoute: typeof ApiBuildsBuildStepsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/agent/act': {
+      id: '/api/cli/agent/act'
+      path: '/api/cli/agent/act'
+      fullPath: '/api/cli/agent/act'
+      preLoaderRoute: typeof ApiCliAgentActRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/agent/ask': {
+      id: '/api/cli/agent/ask'
+      path: '/api/cli/agent/ask'
+      fullPath: '/api/cli/agent/ask'
+      preLoaderRoute: typeof ApiCliAgentAskRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/cli/cloud/reset': {
@@ -1268,6 +1308,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAgentOrganizationSlugChatRoute: ApiAgentOrganizationSlugChatRoute,
   ApiBuildsBuildCheckInRoute: ApiBuildsBuildCheckInRoute,
   ApiBuildsBuildStepsRoute: ApiBuildsBuildStepsRoute,
+  ApiCliAgentActRoute: ApiCliAgentActRoute,
+  ApiCliAgentAskRoute: ApiCliAgentAskRoute,
   ApiCliCloudResetRoute: ApiCliCloudResetRoute,
   ApiCliServersEnrollRoute: ApiCliServersEnrollRoute,
   ApiCliServersEnrollmentRoute: ApiCliServersEnrollmentRoute,
@@ -1275,13 +1317,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
