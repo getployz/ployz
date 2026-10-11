@@ -49,6 +49,13 @@ export function latestPageContext(messages: ReadonlyArray<ModelMessage>): string
   return undefined;
 }
 
+const unescape = (value: string) =>
+  value.replaceAll("&quot;", "\"").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+
+export function readPageContext(block: string): ReadonlyMap<string, string> {
+  return new Map([...block.matchAll(/(\w+)="([^"]*)"/g)].map(([, key = "", value = ""]) => [key, unescape(value)]));
+}
+
 /** `message` opening with `block`, its own text after it. */
 export function withPageContext(message: ModelMessage, block: string): ModelMessage {
   const own = Array.isArray(message.content)
