@@ -64,7 +64,8 @@ async fn the_load_returns_every_enabled_check_across_pages() {
 }
 
 /// Catches a tail that misses one kind of change: an insert, a revision bump, a disable that
-/// leaves the check held, a delete whose id is only in `deleted_ids`, or an incident write.
+/// leaves the check held, a delete whose id is only in `deleted_ids`, an incident write, or a probe
+/// request.
 #[tokio::test]
 async fn inserts_edits_disables_deletes_and_incidents_reach_the_map() {
     let (pg, admin) = postgres().await;
@@ -130,6 +131,21 @@ async fn inserts_edits_disables_deletes_and_incidents_reach_the_map() {
         .unwrap();
     assert_eq!(open.id, IncidentId(incident));
     assert_eq!(open.revision, Revision(2));
+
+    admin
+        .execute(
+            "UPDATE uptime_check SET probe_requested_at = now() WHERE id = $1",
+            &[&edited],
+        )
+        .await
+        .unwrap();
+    follow(&mut feed, &mut checks, |c| {
+        held(c, edited).is_some_and(|r| r.probe_requested.is_some())
+    })
+    .await;
+    let row = held(&checks, edited).unwrap();
+    assert_eq!(row.check.revision, Revision(2));
+    assert!(row.open_incident.is_some());
 
     let ids: HashSet<Uuid> = [edited, inserted].into();
     assert_eq!(checks.len(), 2);
