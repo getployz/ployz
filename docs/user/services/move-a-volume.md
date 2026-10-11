@@ -37,7 +37,12 @@ Cancel lets the step under way finish, and the rest waits for your next deploy.
 
 On the canvas each mirror hangs under its volume's tray as its own small card, for example
 `data-web-2` with "Mirror · 4 minutes ago". A staged mirror shows **New** in green and a staged
-removal shows **Removing** in red. Click one to open the volume.
+removal shows **Removing** in red. A mirror about to become the primary shows **Primary**.
+
+Click a mirror to open it. It shows its server, when it last refreshed, and a link to its volume for
+restore points. **Make primary** stages the same move as picking its server in **Primary**, and
+**Remove mirror** stages its removal; its copy is deleted on the next deploy. A staged mirror has
+neither: discard it in Details.
 
 Backups are not part of Placement. See [Back up a database](databases.md#back-up-a-database).
 
