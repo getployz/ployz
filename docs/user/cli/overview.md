@@ -72,8 +72,8 @@ the command runs. Leave Approve unticked and Ployz denies the approval; any reas
 back to the agent, which is told nothing changed. Declining or closing the dialog denies it
 too, without a reason. Answer within 30 minutes of the agent's call; a later answer isn't
 recorded and the approval stays pending in Ployz Cloud. An app that can't show this dialog gets
-an error instead, naming the approval, which you can approve in Ployz Cloud or by running the
-command yourself in a terminal.
+an error instead. The agent relays what the command would do and asks you to approve it in
+the Ployz Cloud sidebar or to run the command yourself in a terminal, then calls the tool again.
 
 Some commands are not tools. Local commands such as `login` and `ctx use` act on this computer.
 Servers are added with `ployz server add` from a terminal, not through MCP, because it installs

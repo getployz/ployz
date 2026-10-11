@@ -3,6 +3,8 @@ import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { AgentSidebar } from "./agent-sidebar/agent-sidebar";
+import { useAgentPage } from "./agent-sidebar/use-agent-page";
 import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
 import { HomeLink, PhoneSections, PhoneTabBar, Rail } from "./dashboard-rail";
 import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
@@ -15,9 +17,14 @@ import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_o
 
 export function DashboardShell({
   scope,
+  chat,
+  onChat,
   children,
 }: {
   scope: DashboardScope;
+  /** The agent thread open in the sidebar, if any. */
+  chat: string | undefined;
+  onChat: (thread: string | undefined) => void;
   children: ReactNode;
 }) {
   const collectionScope = useCollectionScope();
@@ -25,10 +32,11 @@ export function DashboardShell({
   const Crumb = useRouteCrumb();
   const { places, organization } = useDashboardNavigation(scope);
   const canvas = useCanvasShowing();
+  const page = useAgentPage(scope);
   // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
-    <div className="flex h-dvh min-h-0 overflow-hidden">
+    <div className="relative flex h-dvh min-h-0 overflow-hidden">
       <Rail organizationSlug={scope.organizationSlug} places={places} organization={organization} narrow={canvas}
         account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />} />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
@@ -69,6 +77,7 @@ export function DashboardShell({
         </div>
         <PhoneTabBar places={places} />
       </main>
+      <AgentSidebar scope={scope} collectionScope={collectionScope} page={page} canvas={canvas} chat={chat} onChat={onChat} />
     </div>
   );
 }

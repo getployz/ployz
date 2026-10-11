@@ -287,6 +287,16 @@ A node answers two questions in two places, and neither ever stands in for the o
 - The canvas's **Find** button and the `/` key open the resource finder; `/` never fires while typing in a field.
 - Icon-only controls always have an accessible name and a tooltip.
 
+### Agent sidebar
+
+The agent sidebar is a chat with Ployz Cloud that runs the same commands as `ployz mcp`. It sits on the right, outside the rail, and belongs to the Organization rather than a place, so navigating never remounts it.
+
+- **Amends the canvas-room bet.** Wherever the canvas shows, the sidebar starts collapsed to a thin strip over the canvas edge and the canvas keeps its width. Opening it overlays the canvas; it never pushes the canvas narrower. Elsewhere it opens beside the page.
+- **It asks only when a plan destroys something.** A destructive Publish or Deploy pauses on an **Approval card** in the thread: the destructive lines first, in the destructive color, the rest folded to a count. Approve and Deny sit on the card; Deny takes an optional reason that the agent hears. The card never uses Intent Pink, which stays staged intent.
+- The card is drawn from Cloud's Approval, read fresh each time it shows, so a reload, a second browser or a `ployz` CLI waiting on the same Approval all see one card, and a superseded Approval says the plan changed.
+- After Approve, or when nothing needed approving, the card becomes a **Run card** that follows the Deployment in the Deployments place's words and statuses and opens its Deployment Page.
+- While an Approval waits, the collapsed strip carries a badge.
+
 **The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
 
 ### Branches

@@ -25,5 +25,6 @@ export const dataSources = {
   "modules/github/github.queries.ts": { kind: "remote", freshness: "access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly; build workflow readiness cached 30s, refetched on focus and polled while a workflow commit is awaited" },
   "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens" },
   "modules/machines/namespace-cleanup.queries.ts": { kind: "remote", freshness: "keyed by the Namespaces the Servers report, so a new one is checked afresh; an Environment deleted elsewhere shows within a minute" },
+  "components/agent-sidebar/approvals.queries.ts": { kind: "remote", freshness: "approvals waiting on a human, and each one a chat names, polled every 2s while pending: any CLI, tab or device can ask or answer, and no change stream carries them" },
   "modules/config-store/store-pr-grants.queries.ts": { kind: "remote", freshness: "installation permissions cached a minute: an owner approves them in GitHub, not here" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;

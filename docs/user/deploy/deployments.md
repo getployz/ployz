@@ -137,3 +137,11 @@ Or click **Fix it on a branch** on the deployment's page to try the fix in a
 When a deploy would delete a volume's data, like a deleted volume or database, **Deploy deletes
 data** lists what goes. Type your `project/environment`, like `my-app/production`, and click
 **Deploy**. If you didn't mean it, cancel, then discard the deletion in **Details**.
+
+**Publish** asks the same way, under **Publishing deletes data on the next deploy**. Publishing
+deletes nothing and starts no deploy: it saves the deletion, and your next deploy takes it along.
+
+From the CLI, `ployz deploy` and `ployz publish` stop and print the command to run instead. It
+names each volume that loses data, like `ployz publish --accept-volume-loss postgres-data
+--version …`. Run it only if you mean it. If another server starts holding that data first,
+Ployz asks again.

@@ -12,6 +12,7 @@ import {
   type OperationAsked,
   type OperationDigest,
   operationDigest,
+  pendingApprovals,
   requestApproval,
   setOrganizationSettings,
   trustedApproval,
@@ -20,7 +21,9 @@ import { asTestDouble } from "#/lib/test-double";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
-import { cleanPlan, drainPlan, removePlan } from "#/modules/machines/server-operations.server";
+import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
+import { cleanPlan, drainPlan, freshApproval, freshPendingApprovals, removePlan } from "#/modules/machines/server-operations.server";
+import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { organization } from "#/modules/organization/tables";
@@ -124,7 +127,7 @@ it.live("a destructive CLI publish waits for a human to approve exactly what it 
     expect(yield* provided(decideApproval(caller, first.approval_id, { approve: { digest: first.approval } })))
       .toMatchObject({ ok: true, approval: { status: "approved" } });
     expect(yield* provided(decideApproval(caller, first.approval_id, { reject: {} })))
-      .toMatchObject({ ok: false, refusal: { code: "conflict" } });
+      .toMatchObject({ ok: false, refusal: { code: "conflict", message: "This approval was already decided elsewhere (approved)." } });
     const trusted = yield* provided(trustedApproval(ORGANIZATION, first.approval_id));
     expect(trusted).toEqual({ ok: true, approval: { approved: first.approval } });
     if (!trusted.ok) return;
@@ -156,7 +159,7 @@ it.live("an approval the plan moved past is superseded, and a denial answers the
       .toMatchObject({ ok: true, approval: { status: "denied", reason: "web still serves traffic" } });
     expect(yield* provided(trustedApproval(ORGANIZATION, fresh.approval_id))).toMatchObject({
       ok: false,
-      refusal: { code: "approval_denied", message: `A human denied approval ${fresh.approval_id}: web still serves traffic` },
+      refusal: { code: "approval_denied", message: "A human denied the request to publish production: web still serves traffic" },
     });
   }));
 
@@ -229,6 +232,20 @@ it.live("renaming the Project keeps a waiting approval, which still follows its 
     expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
   }));
 
+it.live("the pending list drops an approval the plan moved past and shows the one asked about now", () =>
+  Effect.gen(function* () {
+    const { provided, write, refusal, caller } = yield* shopRemovingWeb();
+    const stale = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    expect(yield* provided(pendingApprovals(ORGANIZATION))).toMatchObject([{ id: stale.approval_id, status: "pending", digest: stale.approval }]);
+
+    yield* write(addService(1));
+    expect(yield* provided(pendingApprovals(ORGANIZATION))).toEqual([]);
+    expect((yield* provided(getApproval(ORGANIZATION, stale.approval_id))).status).toBe("superseded");
+
+    const fresh = asked(yield* provided(requestApproval(caller, publish, yield* refusal)));
+    expect((yield* provided(pendingApprovals(ORGANIZATION))).map((approval) => approval.id)).toEqual([fresh.approval_id]);
+  }));
+
 it.live("a Store that can't answer leaves a waiting approval pending", () =>
   Effect.gen(function* () {
     const { provided, refusal, caller, store } = yield* shopRemovingWeb();
@@ -270,12 +287,13 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
     const unknown = yield* cli(publish, UNKNOWN_APPROVAL);
     expect(unknown.status).toBe(422);
     expect(unknown.json.error).toMatchObject({ code: "invalid_argument", details: { approval_id: UNKNOWN_APPROVAL } });
-    expect(unknown.json.error?.message).toContain(UNKNOWN_APPROVAL);
+    expect(unknown.json.error?.message).not.toContain(UNKNOWN_APPROVAL);
 
     yield* provided(decideApproval(caller, firstId, { reject: { reason: "not today" } }));
     const denied = yield* cli(publish, firstId);
     expect(denied.status).toBe(403);
-    expect(denied.json.error).toMatchObject({ code: "approval_denied", message: `A human denied approval ${firstId}: not today` });
+    expect(denied.json.error).toMatchObject({ code: "approval_denied", message: "A human denied the request to publish production: not today" });
+    expect(denied.json.error?.message).not.toContain(firstId);
 
     // A denial isn't remembered either: asking again opens a new approval.
     const second = yield* cli(publish);
@@ -303,7 +321,7 @@ const recorded = [
       return id;
     }),
     reachesStore: false,
-    answers: (id: string) => ({ status: 403, json: { error: { code: "approval_denied", message: `A human denied approval ${id}: web still serves traffic` } } }),
+    answers: () => ({ status: 403, json: { error: { code: "approval_denied", message: "A human denied the request to publish production: web still serves traffic" } } }),
   },
   {
     state: "a superseded approval",
@@ -533,6 +551,31 @@ it.live("asking about a Server's drain leaves its pending removal waiting", () =
     expect((yield* provided(getApproval(ORGANIZATION, drain.approval_id))).status).toBe("pending");
   }));
 
+const freshReads = {
+  "the pending list the sidebar and the CLI read": (id: string) =>
+    freshPendingApprovals(ORGANIZATION).pipe(Effect.map((approvals) => approvals.some((approval) => approval.id === id))),
+  "one approval the sidebar and the CLI read": (id: string) =>
+    freshApproval(ORGANIZATION, id).pipe(Effect.map((approval) => approval.status === "pending")),
+};
+
+for (const [read, stillWaiting] of Object.entries(freshReads)) {
+  it.live(`${read} drops a clean of a Namespace an Environment owns by now`, () =>
+    Effect.gen(function* () {
+      const { provided, caller } = yield* shopRemovingWeb();
+      const [owned = expect.fail("the Environment owns no Namespace")] = yield* provided(ownedNamespaces(ORGANIZATION));
+      const frame = asTestDouble<RuntimeWatchView>()({
+        services: [{ identity: `${owned}/web`, service_id: "web", containers: [slot(MACHINE, "running")] }],
+      });
+      const waiting = refusedWith(yield* provided(gateOperation(caller, null, cleanPlan(frame, owned, []))));
+      expect((yield* provided(pendingApprovals(ORGANIZATION))).map((approval) => approval.id)).toEqual([waiting.approval_id]);
+
+      const cluster = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        provided(effect.pipe(Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({}))));
+      expect(yield* cluster(stillWaiting(waiting.approval_id))).toBe(false);
+      expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
+    }));
+}
+
 it("a removal that resets the Server and one that keeps its data are different approvals", () => {
   expect(operationDigest(removePlan(MACHINE, "fra-1", []))).not.toBe(operationDigest(removePlan(MACHINE, "fra-1", null)));
 });
@@ -548,7 +591,7 @@ for (const verb of ["remove", "drain", "clean"] as const) {
           yield* provided(decideApproval(caller, asked.approval_id, { reject: { reason } }, answers(asked.approval)));
           yield* provided(setOrganizationSettings(caller, { organizationSlug: "shop", askBeforeDestructive: asking }));
 
-          const denied = { ok: false, refusal: { code: "approval_denied", message: `A human denied approval ${asked.approval_id}: ${reason}` } };
+          const denied = { ok: false, refusal: { code: "approval_denied", message: `A human denied the request to ${verb} fra-1: ${reason}` } };
           expect(yield* gate(plan, asked.approval_id)).toMatchObject(denied);
           expect(yield* gate({ ...plan, effects: [] }, asked.approval_id)).toMatchObject(denied);
           expect(yield* rows).toEqual([{ id: asked.approval_id, status: "denied", subject: `server:${MACHINE}` }]);
@@ -578,4 +621,13 @@ it.live("a pending approval named with asking off still waits on the human", () 
     expect(refusedWith(yield* gate(drainOf(["shop.web"]), waiting.approval_id)).approval_id).toBe(waiting.approval_id);
     expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
     expect(yield* rows).toEqual([{ id: waiting.approval_id, status: "pending", subject: `server:${MACHINE}` }]);
+  }));
+
+it.live("the pending list drops an operation approval whose Server is gone", () =>
+  Effect.gen(function* () {
+    const { provided, gate } = yield* operationCloud();
+    const waiting = refusedWith(yield* gate(drainOf(["shop.web"])));
+    expect((yield* provided(pendingApprovals(ORGANIZATION, answers(waiting.approval)))).map(({ id }) => id)).toEqual([waiting.approval_id]);
+    expect(yield* provided(pendingApprovals(ORGANIZATION, answers(null)))).toEqual([]);
+    expect((yield* provided(getApproval(ORGANIZATION, waiting.approval_id))).status).toBe("superseded");
   }));

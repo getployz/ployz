@@ -1,12 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, JsonValue } from "@ployz/sdk";
-import { and, eq, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
   type ApprovalReview,
+  approvalSubject,
   DEFAULT_ORGANIZATION_SETTINGS,
   type OperationVerb,
   type SetOrganizationSettingsInput,
@@ -154,6 +155,12 @@ function canonicalJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
+/** "the request to deploy production": a denial names what was asked, never the approval's ID. */
+const denied = (row: ApprovalRow) => {
+  const { verb, name } = approvalSubject(row.command, row.review);
+  return `the request to ${verb.toLowerCase()} ${name}`;
+};
+
 type Trusted = { ok: true; approval: Approval } | { ok: false; refusal: StoreRefusal };
 
 export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
@@ -167,7 +174,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   if (row === undefined) {
     return {
       ok: false,
-      refusal: { code: "invalid_argument", message: `No approval ${approvalId} in this Organization.`, details: { approval_id: approvalId } },
+      refusal: { code: "invalid_argument", message: "No such approval in this Organization.", details: { approval_id: approvalId } },
     };
   }
   switch (row.status) {
@@ -178,7 +185,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
         ok: false,
         refusal: {
           code: "approval_denied",
-          message: `A human denied approval ${row.id}${row.reason === null ? "." : `: ${row.reason}`}`,
+          message: `A human denied ${denied(row)}${row.reason === null ? "." : `: ${row.reason}`}`,
           details: { approval: approvalView(row) },
         },
       };
@@ -186,6 +193,12 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
     case "superseded":
       return { ok: true, approval: "required" };
   }
+});
+
+/** The Environment review a human was asked to approve as `approvalId`, whatever the Organization asks now. */
+export const reviewedDiff = Effect.fn("Approvals.reviewedDiff")(function* (organizationId: string, approvalId: string) {
+  const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
+  return row !== undefined && "diff" in row.review ? row.review.diff : null;
 });
 
 const RefusedReview = Schema.Struct({
@@ -301,6 +314,17 @@ export const getApproval = <R = never>(organizationId: string, id: string, opera
     return approvalView(yield* freshen(row, operationDigest));
   }).pipe(Effect.withSpan("Approvals.get"));
 
+/** Every approval still waiting on a human in the Organization, newest first. Each is freshened before it counts. */
+export const pendingApprovals = <R = never>(organizationId: string, operationDigest?: OperationDigest<R>) =>
+  Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const rows = yield* drizzle.select().from(operationApprovals)
+      .where(and(eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "pending")))
+      .orderBy(desc(operationApprovals.createdAt), desc(operationApprovals.id));
+    const fresh = yield* Effect.forEach(rows, (row) => freshen(row, operationDigest));
+    return fresh.filter((row) => row.status === "pending").map(approvalView);
+  }).pipe(Effect.withSpan("Approvals.pending"));
+
 type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: StoreRefusal };
 
 /**
@@ -323,7 +347,7 @@ export const decideApproval = <R = never>(
     }
     return current.status === "superseded"
       ? conflict("The plan changed since this was asked; run the command again to review it.", current)
-      : conflict(`This approval is already ${current.status}.`, current);
+      : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
   };
   const row = yield* freshen(found, operationDigest);
   if (row.status !== "pending") return settled(row);

@@ -147,6 +147,29 @@ export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryF
   },
 );
 
+/** What GitHub's contents API holds at `path`: a directory's entries, or one file, its base64 `content` absent past 1 MB. */
+export const readGithubRepositoryContents = Effect.fn("Github.readGithubRepositoryContents")(
+  function* (installationId: number | null, repositoryFullName: string, path: string, ref: string) {
+    const api = yield* GithubApi;
+    const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
+    const filePath = path.split("/").map(encodeURIComponent).join("/");
+    return yield* api.json({
+      installationId,
+      url: `https://api.github.com/repos/${repositoryPath}/contents/${filePath}?ref=${encodeURIComponent(ref)}`,
+      operation: "fetch_contents",
+      schema: Schema.Union([
+        Schema.Array(Schema.Struct({ path: Schema.String })),
+        Schema.Struct({
+          type: Schema.String,
+          size: Schema.Number,
+          encoding: Schema.optional(Schema.String),
+          content: Schema.optional(Schema.String),
+        }),
+      ]),
+    });
+  },
+);
+
 export const verifyWebhookSignature = Effect.fn("Github.verifyWebhookSignature")(
 function* (
   body: string,

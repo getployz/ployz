@@ -7,8 +7,8 @@ use std::path::Path;
 
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, EnvironmentRef,
-    OrganizationId, ProjectName, RemovalsQuery, SealingKey, Tell, Trusted, View, VolumeObservation,
-    Written,
+    OrganizationId, ProjectName, Publish, Published, RemovalsQuery, SealingKey, Tell, Trusted,
+    View, VolumeObservation, Written,
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
@@ -188,6 +188,21 @@ impl<'m> Store<'m> {
         }
     }
 
+    /// Publish Working State. Locally this CLI observes Volume loss; Cloud gathers its own evidence.
+    pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
+        let volumes = match &self.backend {
+            Backend::Local(..) => self.observe(&publish.environment, false)?,
+            Backend::Cloud(..) => None,
+        };
+        self.approved(
+            publish,
+            &Trusted {
+                volumes,
+                ..Trusted::default()
+            },
+        )
+    }
+
     /// Admit a Deployment. The in-process Store reviews Volume loss against the
     /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence.
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
@@ -228,9 +243,12 @@ impl<'m> Store<'m> {
             .into_iter()
             .map(|volume| volume.docker_volume)
             .collect();
+        // Publish takes no `--context`; it reaches the Cluster `--connect` or the current context names.
         let context = self
             .matches
-            .get_one::<String>("context")
+            .try_get_one::<String>("context")
+            .ok()
+            .flatten()
             .map(String::as_str);
         let Ok(runtime) = runtime() else {
             return Ok(None);
@@ -339,6 +357,15 @@ impl<'m> Store<'m> {
         })
     }
 
+    /// The flag this command passes a reviewed version with: Publish's `--version`,
+    /// or `--expect-version` elsewhere.
+    fn version_flag(&self) -> (&'static str, &'static str) {
+        match self.matches.try_get_one::<String>("version") {
+            Ok(_) => ("version", "--version"),
+            Err(_) => ("expect-version", "--expect-version"),
+        }
+    }
+
     fn carried(&self) -> Carried {
         let one = |id| {
             self.matches
@@ -349,7 +376,7 @@ impl<'m> Store<'m> {
         };
         Carried {
             accept: super::string_values(self.matches, "accept-volume-loss"),
-            version: one("expect-version"),
+            version: one(self.version_flag().0),
             approval: one("approval"),
         }
     }
@@ -360,7 +387,7 @@ impl<'m> Store<'m> {
             extra.extend(["--accept-volume-loss", name.as_str()]);
         }
         if let Some(version) = &carried.version {
-            extra.extend(["--expect-version", version.as_str()]);
+            extra.extend([self.version_flag().1, version.as_str()]);
         }
         if let Some(approval) = &carried.approval {
             extra.extend(["--approval", approval.as_str()]);
@@ -636,6 +663,81 @@ mod tests {
         assert_eq!(
             error.message,
             "This Deploy permanently deletes the data of data"
+        );
+    }
+
+    #[test]
+    fn a_publish_retry_keeps_its_version_flag_scope_names_and_approval() {
+        let typed = [
+            "ployz",
+            "publish",
+            "--project",
+            "shop",
+            "--env",
+            "production",
+            "--version",
+            "3:1:0.1",
+            "--approval",
+            "apr_1",
+        ];
+        let root = crate::cli::command().try_get_matches_from(typed).unwrap();
+        let key = SealingKey::new(&[7; 32]).unwrap();
+        let store = Store {
+            backend: Backend::Local(
+                std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+            ),
+            matches: leaf_matches(&root),
+            words: vec!["publish".to_owned()],
+        };
+        let refused = ployz_core::RpcError {
+            code: RpcErrorCode::ConfirmationRequired,
+            message: "This permanently deletes the data of pg-data, logs".into(),
+            details: json!({ "version": "3:1:0.1:9f2c", "accept": ["pg-data", "logs"] }),
+            cause: Vec::new(),
+        };
+        let loss = "ployz publish --accept-volume-loss pg-data --accept-volume-loss logs \
+                    --version 3:1:0.1:9f2c --approval apr_1 --project shop --env production";
+        assert_eq!(
+            store.accepting(StoreCallError::Refused(refused)).hints(),
+            [Hint::Retry(loss.into())]
+        );
+        let approval = store.approving("apr_2");
+        assert_eq!(
+            approval,
+            "ployz publish --version 3:1:0.1 --approval apr_2 --project shop --env production"
+        );
+        let reparsed = |retry: &str| {
+            let root = crate::cli::command()
+                .try_get_matches_from(shell_words::split(retry).unwrap())
+                .unwrap();
+            let leaf = leaf_matches(&root);
+            let mut words: Vec<String> = root
+                .subcommand_name()
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            for id in ["project", "env", "version", "approval"] {
+                words.extend(leaf.get_one::<String>(id).cloned());
+            }
+            words.extend(crate::handlers::string_values(leaf, "accept-volume-loss"));
+            words
+        };
+        assert_eq!(
+            reparsed(loss),
+            [
+                "publish",
+                "shop",
+                "production",
+                "3:1:0.1:9f2c",
+                "apr_1",
+                "pg-data",
+                "logs"
+            ]
+        );
+        assert_eq!(
+            reparsed(&approval),
+            ["publish", "shop", "production", "3:1:0.1", "apr_2"]
         );
     }
 

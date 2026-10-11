@@ -16,6 +16,7 @@ mod deployment;
 mod domain;
 mod error;
 mod git;
+mod github;
 mod id;
 mod policy;
 mod project;
@@ -72,6 +73,9 @@ pub use domain::{
     DomainView, DomainsQuery, DomainsView, PublishedHostname, RemoveDomain, SetGeneratedDomain,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
+pub use github::{
+    GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView,
+};
 pub use id::*;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;

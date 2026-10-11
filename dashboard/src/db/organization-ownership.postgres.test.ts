@@ -37,6 +37,9 @@ const notOrganizationOwned = {
   config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
   config_check_suite: "GitHub check-suite results only the Store's automation reads; no view reads them, so they need no change log.",
   config_waiting_deploy: "Auto-deploys waiting for CI, read only by the Store's automation; no view reads them, so they need no change log.",
+  agent_threads: "One member's private sidebar conversation, read only through the agent chat route; no view reads it, so it needs no change log.",
+  agent_runs: "A sidebar turn's run record, read only by its own conversation; no view reads it, so it needs no change log.",
+  agent_interrupts: "A sidebar turn's pending question, read only by its own conversation; no view reads it, so it needs no change log.",
   volume_run: "A volume command's run record, read only by its own run, the sweep and `volume runs`; no view reads it, so it needs no change log.",
 } satisfies Record<string, string>;
 

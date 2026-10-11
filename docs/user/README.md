@@ -69,6 +69,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 ## More
 
 - [Production checklist](production-checklist.md): before you move real users
+- [The Ployz agent](account/agent-sidebar.md): ask the dashboard's agent to look around or deploy, and approve what it would remove
 - [CLI and coding agents](cli/overview.md): install the CLI, set up your coding agent, MCP tools, tokens for CI
 - [Self-host Ployz Cloud](self-hosting.md): run the dashboard on your own infrastructure
 

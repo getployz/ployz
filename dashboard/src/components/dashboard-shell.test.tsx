@@ -85,7 +85,7 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug", component: () => (
     <DashboardShell scope={scope === "all"
       ? { kind: "all", organizationSlug: "acme" }
-      : { kind: "environment", organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" }}><Outlet /></DashboardShell>
+      : { kind: "environment", organizationSlug: "acme", projectSlug: "store", environmentSlug: "production" }} chat={undefined} onChat={() => {}}><Outlet /></DashboardShell>
   ) });
   const projectLayout = createRoute({ getParentRoute: () => organization, id: "_project" });
   const project = createRoute({ getParentRoute: () => projectLayout, path: "$projectSlug" });
@@ -222,4 +222,12 @@ it("resets its persistent scroll surface when navigating to a different environm
   await screen.findByText("Environment preferences");
   expect(container.querySelector(scrollSelector)).toBe(surface);
   await waitFor(() => expect(surface.scrollTop).toBe(0));
+});
+
+it("keeps the agent collapsed to a tab beside the canvas, outside the page", async () => {
+  await show({ path: "/cloud/acme/store/production" });
+  expect(await screen.findByText("Canvas nodes")).toBeTruthy();
+  const tab = screen.getByRole("button", { name: "Open agent" });
+  expect(screen.getByRole("main").contains(tab)).toBe(false);
+  expect(screen.queryByRole("region", { name: "Ployz agent" })).toBeNull();
 });

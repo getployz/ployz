@@ -228,10 +228,7 @@ export const searchGithubFiles = Effect.fn("Github.searchFiles")(
       return yield* new NotFound({ message: "The GitHub repository installation was not found." });
     }
     const files = yield* listGithubRepositoryFiles(input.installationId, repository.fullName, input.ref);
-    // Basic globs only: avoid unbounded brace expansion for user-supplied patterns.
-    const matcher = new Minimatch(input.pattern, {
-      dot: true, nobrace: true, noext: true, nonegate: true, nocomment: true,
-    });
+    const matcher = basicGlob(input.pattern);
     const paths = files.paths.filter((path) => matcher.match(path)).sort();
     return {
       paths: paths.slice(0, 200),
@@ -239,6 +236,13 @@ export const searchGithubFiles = Effect.fn("Github.searchFiles")(
     };
   },
 );
+
+/**
+ * A user-supplied glob over repository paths: `*` and `?` within a segment, `**` across them, dotfiles included. Basic
+ * globs only, so a pattern can't brace-expand without bound.
+ */
+export const basicGlob = (pattern: string) =>
+  new Minimatch(pattern, { dot: true, nobrace: true, noext: true, nonegate: true, nocomment: true });
 
 export const resolvePublicGithubRepository = Effect.fn("Github.resolvePublicRepository")(function* (input: string) {
   const name = normalizePublicGithubRepository(input);

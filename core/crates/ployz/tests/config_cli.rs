@@ -248,10 +248,37 @@ fn serve(
                 "repositories": [{ "repository": "acme/web", "private": true, "default_branch": "main", "installation": 7 }],
             }),
         ),
-        (Some(_), "/api/cli/github/branches?repository=acme/web") => (
+        (Some(_), "/api/cli/github/branches?repository=acme%2Fweb") => (
             200,
             json!({ "repository": "acme/web", "access": "installation", "default_branch": "main", "branches": ["dev", "main"] }),
         ),
+        (
+            Some(_),
+            "/api/cli/github/tree?match=**%2F*.rs&path=src&ref=dev&repository=acme%2Fweb",
+        ) => (
+            200,
+            json!({ "repository": "acme/web", "ref": "dev", "paths": ["src/main.rs"], "truncated": false }),
+        ),
+        (Some(_), "/api/cli/github/file?path=Dockerfile&repository=acme%2Fweb") => (
+            200,
+            json!({ "repository": "acme/web", "ref": "main", "path": "Dockerfile", "size": 12, "content": "FROM alpine\n" }),
+        ),
+        (Some(_), "/api/cli/github/file?path=src&repository=acme%2Fweb") => (
+            422,
+            json!({ "error": { "code": "invalid_argument", "message": "src is a directory: list it with github tree.", "details": null } }),
+        ),
+        (Some(_), route)
+            if route.starts_with("/api/cli/github/") && route.contains("acme%2Fnope") =>
+        {
+            (
+                404,
+                json!({ "error": {
+                "code": "not_found",
+                "message": "No repository by that name that this Organization can read.",
+                "details": { "valid_children": ["acme/web"] },
+            } }),
+            )
+        }
         (Some(_), "/api/cli/github/7") => (
             200,
             json!({
@@ -367,8 +394,10 @@ impl Approvals {
         match approval.map(|id| (id, self.status(id))) {
             Some((_, "approved")) => return None,
             Some((id, "denied")) => {
-                let message = format!("A human denied approval {id}: the worker still drains");
-                let error = json!({ "code": "approval_denied", "message": message, "details": {} });
+                let error = denied(
+                    id,
+                    "A human denied the request to publish production: the worker still drains",
+                );
                 return Some((403, json!({ "error": error })));
             }
             Some((_, "superseded")) => *asking += 1,
@@ -472,8 +501,12 @@ impl Approvals {
         started: &str,
     ) -> (u16, Value) {
         if let Some(id) = approval.filter(|id| self.status(id) == "denied") {
-            let message = format!("A human denied approval {id}: declined");
-            let error = json!({ "code": "approval_denied", "message": message, "details": {} });
+            let message = format!(
+                "A human denied the request to {} {}: declined",
+                operation["verb"].as_str().unwrap(),
+                operation["name"].as_str().unwrap()
+            );
+            let error = denied(id, &message);
             return (403, json!({ "error": error }));
         }
         let approved = approval.is_some_and(|id| self.status(id) == "approved");
@@ -502,6 +535,15 @@ impl Approvals {
             .push((method.to_owned(), id.to_owned(), decision));
         (200, json!({ "approval": { "id": id, "status": status } }))
     }
+}
+
+/// Cloud's `approval_denied` refusal keeps the approval in `details` and out of the message.
+fn denied(id: &str, message: &str) -> Value {
+    json!({
+        "code": "approval_denied",
+        "message": message,
+        "details": { "approval": { "id": id, "status": "denied" } },
+    })
 }
 
 fn asked(id: &str) -> Value {
@@ -2759,7 +2801,7 @@ fn a_repository_service_is_checked_by_cloud() {
 }
 
 #[test]
-fn github_lists_branches_and_disconnects_in_cloud() {
+fn github_lists_branches_reads_files_and_disconnects_in_cloud() {
     let [_, cloud] = targets();
     let listed = ok(&cloud, &["github", "ls"]);
     assert_eq!(listed["repositories"][0]["repository"], "acme/web");
@@ -2768,9 +2810,29 @@ fn github_lists_branches_and_disconnects_in_cloud() {
     assert_eq!(branches["branches"], json!(["dev", "main"]));
     let missing = error(&cloud, &["github", "ls", "acme/nope"]);
     assert_eq!(missing["code"], "not_found");
+    assert_eq!(missing["details"]["valid_children"], json!(["acme/web"]));
     assert_eq!(
         failed(&cloud, &["github", "ls", "not a repo"], 2)["code"],
         "invalid_argument"
+    );
+    let tree = ok(
+        &cloud,
+        &[
+            "github", "tree", "acme/web", "src", "--ref", "dev", "--match", "**/*.rs",
+        ],
+    );
+    assert_eq!(tree["paths"], json!(["src/main.rs"]));
+    let file = ok(&cloud, &["github", "cat", "acme/web", "Dockerfile"]);
+    assert_eq!(file["content"], "FROM alpine\n");
+    let directory = error(&cloud, &["github", "cat", "acme/web", "src"]);
+    assert_eq!(directory["code"], "invalid_argument", "{directory}");
+    assert_eq!(
+        directory["message"],
+        "src is a directory: list it with github tree."
+    );
+    assert_eq!(
+        error(&cloud, &["github", "cat", "acme/nope", "Dockerfile"])["code"],
+        "not_found"
     );
     let removed = ok(&cloud, &["github", "disconnect", "7"]);
     assert_eq!(removed["disconnected"]["account"], "acme");
@@ -3502,9 +3564,11 @@ fn without_a_terminal_a_denied_publish_fails_with_the_reason() {
     let (code, stderr) = person(&target, home.path(), &["publish"]);
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr.contains("A human denied approval apr_1: the worker still drains"),
+        stderr
+            .contains("A human denied the request to publish production: the worker still drains"),
         "{stderr}"
     );
+    assert!(!stderr.contains("apr_1"), "{stderr}");
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
     assert_eq!(diff["published"], json!(false), "nothing was published");
@@ -3541,7 +3605,7 @@ fn without_a_terminal_ctrl_c_stops_the_wait_and_publishes_nothing() {
     stderr.read_to_string(&mut seen).unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(130), "{seen}");
     assert!(
-        seen.contains("Stopped waiting; approval apr_1 stays pending in Ployz Cloud."),
+        seen.contains("Stopped waiting; the approval stays pending in Ployz Cloud."),
         "{seen}"
     );
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
@@ -3649,7 +3713,7 @@ fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
     assert_eq!(code, Some(130), "{screen}");
     assert!(screen.contains("Type production to continue"), "{screen}");
     assert!(
-        screen.contains("Nothing published; approval apr_1 stays pending."),
+        screen.contains("Nothing published; the approval stays pending in Ployz Cloud."),
         "{screen}"
     );
     assert!(approvals.calls().is_empty(), "nothing was decided in Cloud");
@@ -4064,25 +4128,34 @@ fn an_agent_gets_the_approval_a_drain_needs_and_a_person_waits_for_it() {
 
 #[test]
 fn a_denied_drain_or_cleanup_stops_with_the_reason_and_starts_nothing() {
-    for args in [
-        &["server", "drain", CLOUD_SERVER][..],
-        &[
-            "server",
-            "clean",
-            "--namespace",
-            "stray",
-            "--confirm",
-            "stray",
-        ],
+    for (args, subject) in [
+        (
+            &["server", "drain", CLOUD_SERVER][..],
+            format!("drain {CLOUD_SERVER}"),
+        ),
+        (
+            &[
+                "server",
+                "clean",
+                "--namespace",
+                "stray",
+                "--confirm",
+                "stray",
+            ],
+            "clean stray".to_owned(),
+        ),
     ] {
         let (target, approvals) = running(&[("apr_1", "denied")]);
         let home = tempfile::tempdir().unwrap();
         let (code, stderr) = person(&target, home.path(), args);
         assert_eq!(code, Some(1), "{args:?}: {stderr}");
         assert!(
-            stderr.contains("A human denied approval apr_1: declined"),
+            stderr.contains(&format!(
+                "A human denied the request to {subject}: declined"
+            )),
             "{stderr}"
         );
+        assert!(!stderr.contains("apr_1"), "{stderr}");
         let followed = approvals.runs().into_iter().any(|run| {
             run.starts_with("GET server-drains") || run.starts_with("GET namespace-cleanups")
         });

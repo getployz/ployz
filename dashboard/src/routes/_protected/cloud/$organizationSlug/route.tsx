@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { createFileRoute, Outlet, useParams } from "@tanstack/react-router";
+import { createFileRoute, Outlet, retainSearchParams, useNavigate, useParams } from "@tanstack/react-router";
+import { Schema } from "effect";
 import { useOrganizationChanges } from "#/collections/org-changes.stream";
 import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
 import { DashboardShell } from "#/components/dashboard-shell";
@@ -8,7 +9,12 @@ import { rememberSelectedOrganization } from "#/modules/organization/organizatio
 import { RuntimeProvider } from "#/providers/runtime-provider";
 import { setPostHogOrganization } from "#/modules/analytics/posthog";
 
+/** `chat` names the open agent thread; it rides along every Organization page so the sidebar stays put. */
+const OrganizationSearch = Schema.Struct({ chat: Schema.optional(Schema.String) });
+
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
+  validateSearch: Schema.toStandardSchemaV1(OrganizationSearch),
+  search: { middlewares: [retainSearchParams(["chat"])] },
   loader: async ({ params, context }) => {
     const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchOrgStore(context, params.organizationSlug);
@@ -40,8 +46,15 @@ function RouteComponent() {
 function OrganizationLayout() {
   const { organizationSlug } = Route.useParams();
   const { projectSlug, environmentSlug } = useParams({ strict: false });
+  const { chat } = Route.useSearch();
+  const navigate = useNavigate();
   const scope: DashboardScope = projectSlug && environmentSlug
     ? { kind: "environment", organizationSlug, projectSlug, environmentSlug }
     : { kind: "all", organizationSlug };
-  return <DashboardShell scope={scope}><Outlet /></DashboardShell>;
+  return (
+    <DashboardShell scope={scope} chat={chat}
+      onChat={(thread) => void navigate({ to: ".", search: (prev) => ({ ...prev, chat: thread }), replace: true })}>
+      <Outlet />
+    </DashboardShell>
+  );
 }

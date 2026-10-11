@@ -145,7 +145,7 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
 
 /**
  * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
- * of domains, for a Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
+ * of domains, for a Publish or Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
  * Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
  * can't answer.
  */
@@ -192,8 +192,11 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   yield* requestChecks(organizationId, written.checks);
 });
 
-/** Where a member's Store write came from, for product analytics: the dashboard, or the CLI and the coding agent it detected. */
-export type StoreSource = { readonly source: "dashboard" } | { readonly source: "cli"; readonly agent: string | null };
+/** Where a member's Store write came from, for product analytics: the dashboard, the CLI and the coding agent it detected, or the dashboard's own agent. */
+export type StoreSource =
+  | { readonly source: "dashboard" }
+  | { readonly source: "cli"; readonly agent: string | null }
+  | { readonly source: "agent" };
 
 /**
  * One Store read or write by user `userId` (null: Cloud itself) as `organizationId`: the answer, or the Store's refusal verbatim. It first

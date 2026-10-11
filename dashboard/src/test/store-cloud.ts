@@ -4,6 +4,7 @@ import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
 import { githubInstallation } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
@@ -21,11 +22,12 @@ import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret
 
 /**
  * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
- * (none by default), no Cluster paired, a self-hosted billing plan, and an Inngest client that sends nowhere. `env`
- * overrides configuration.
+ * (none by default), repository reads through it unless `repositories` stands in, no Cluster paired, a self-hosted
+ * billing plan, and an Inngest client that sends nowhere. `env` overrides configuration.
  */
 export const storeTestCloud = Effect.fn(function* (options: {
   readonly github?: GithubApiService;
+  readonly repositories?: GithubRepositories["Service"];
   readonly polar?: PolarService;
   readonly inngest?: Inngest;
   readonly env?: Readonly<Record<string, string>>;
@@ -34,12 +36,16 @@ export const storeTestCloud = Effect.fn(function* (options: {
   const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href, ...options.env };
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
   const database = DatabaseLive.pipe(Layer.provide(configLayer));
+  const github = options.github ?? fakeGithubApi().service;
   return Layer.mergeAll(
     configLayer,
     database,
     SecretEncryptionLive.pipe(Layer.provide(configLayer)),
     CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, database))),
-    Layer.succeed(GithubApi, options.github ?? fakeGithubApi().service),
+    Layer.succeed(GithubApi, github),
+    options.repositories === undefined
+      ? GithubRepositoriesLive.pipe(Layer.provide(Layer.merge(database, Layer.succeed(GithubApi, github))))
+      : Layer.succeed(GithubRepositories, options.repositories),
     Layer.succeed(Polar, options.polar ?? { mode: "self_hosted" }),
     Layer.succeed(InngestClient, options.inngest ?? new Inngest({ id: "store-test" })),
     // No Cluster is paired: domains read as unobserved.

@@ -1764,6 +1764,18 @@ export type GithubBuildId = string;
 
 export type GithubClaims = { repository_id: string, job_workflow_ref: string, run_id: string, event_name: string, };
 
+export type GithubFileQuery = { repository: RepositoryName, path: string,
+/**
+ * Branch, tag or commit; the default branch when omitted.
+ */
+ref?: string, };
+
+export type GithubFileView = { repository: RepositoryName, ref: string, path: string,
+/**
+ * Its size in bytes, as GitHub reports it.
+ */
+size: number, } & ({ content: string, } | { note: string, });
+
 export type GithubGrant = {
 /**
  * Its handle; not secret.
@@ -1789,6 +1801,30 @@ workflow_ref: string,
 repository: RepositoryName, installation_id: number, };
 
 export type GithubTimestamp = string;
+
+export type GithubTreeQuery = { repository: RepositoryName,
+/**
+ * Only files under this directory.
+ */
+path?: string,
+/**
+ * Branch, tag or commit; the default branch when omitted.
+ */
+ref?: string,
+/**
+ * Only paths matching this glob, like `*.rs` or `src/**`.
+ */
+match?: string, };
+
+export type GithubTreeView = { repository: RepositoryName,
+/**
+ * The ref read: the one asked for, or the default branch.
+ */
+ref: string, paths: Array<string>,
+/**
+ * Whether GitHub or Cloud cut the listing short.
+ */
+truncated: boolean, };
 
 export type HandOverRequest = { switch: Switch, name: DockerVolumeName, guid: SnapshotGuid, };
 

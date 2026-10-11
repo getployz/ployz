@@ -7,6 +7,7 @@ import { eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
+import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
@@ -40,9 +41,22 @@ import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
 
-/** GitHub: the private acme/web (through installation 7) has branches main and dev. */
+/** GitHub: the private acme/web (through installation 7) has branches main and dev, a Dockerfile and a src directory. */
 const github = fakeGithubApi({
   "https://api.github.com/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+  "https://api.github.com/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
+  [`https://api.github.com/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
+    truncated: false,
+    tree: [
+      { path: "Dockerfile", type: "blob", mode: "100644" },
+      { path: "src", type: "tree", mode: "040000" },
+      { path: "src/main.ts", type: "blob", mode: "100644" },
+    ],
+  },
+  "https://api.github.com/repos/acme/web/contents/Dockerfile?ref=main": {
+    type: "file", size: 12, encoding: "base64", content: Buffer.from("FROM alpine\n").toString("base64"),
+  },
+  "https://api.github.com/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
 });
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
@@ -115,7 +129,8 @@ const cliLayer = Effect.fn(function* (
   );
   const store = CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)));
   const runtime = overrides.runtime ?? OrganizationRuntimeLive.pipe(Layer.provide(services));
-  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), runtime, services, store);
+  const repositories = GithubRepositoriesLive.pipe(Layer.provide(services));
+  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), runtime, services, store, repositories);
 });
 
 /** The fields these tests read from `/api/cli` replies. */
@@ -139,6 +154,13 @@ type Reply = {
   readonly access?: string;
   readonly disconnected?: { readonly id: number; readonly account: string };
   readonly uninstall_url?: string;
+  readonly ref?: string;
+  readonly paths?: ReadonlyArray<string>;
+  readonly repository?: string;
+  readonly path?: string;
+  readonly size?: number;
+  readonly truncated?: boolean;
+  readonly content?: string | null;
   readonly organization?: string;
   readonly namespace?: string;
   readonly volumes?: ReadonlyArray<unknown>;
@@ -153,6 +175,7 @@ type Reply = {
       readonly channel?: string;
       readonly effects?: ReadonlyArray<{ readonly kind: string; readonly name: string }>;
       readonly operation?: { readonly verb: string; readonly name: string };
+      readonly valid_children?: ReadonlyArray<string>;
     };
   };
   readonly id?: string;
@@ -182,7 +205,8 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
     return { status: 200, json: JSON.parse(JSON.stringify(exit.value)) as Reply, text: JSON.stringify(exit.value) };
   }
   const empty: Reply = {};
-  return { status: statusForPublicError(encodePublicError(Cause.squash(exit.cause))), json: empty, text: "" };
+  const error = encodePublicError(Cause.squash(exit.cause));
+  return { status: statusForPublicError(error), json: empty, text: JSON.stringify(error) };
 });
 
 /** Signs a user up from the CLI, so its session counts as a signed-in device. */
@@ -500,6 +524,26 @@ it.live(
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
         assert.deepInclude(branches.json, { access: "installation", branches: ["dev", "main"] });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
+
+        const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
+        assert.deepInclude(tree.json, { repository: "acme/web", ref: "main", paths: ["src/main.ts"], truncated: false });
+        const dockerfiles = yield* cli("GET", "github/tree?repository=acme%2Fweb&match=**%2FDockerfile", alice);
+        assert.deepInclude(dockerfiles.json, { paths: ["Dockerfile"], truncated: false });
+        const file = yield* cli("GET", "github/file?repository=acme%2Fweb&path=Dockerfile", alice);
+        assert.deepInclude(file.json, { path: "Dockerfile", size: 12, content: "FROM alpine\n" });
+        const directory = yield* cli("GET", "github/file?repository=acme%2Fweb&path=src", alice);
+        assert.strictEqual(directory.status, 422);
+        assert.deepInclude(directory.json.error, { code: "invalid_argument", message: "src is a directory: list it with github tree." });
+        // A private repository the Organization can't read answers exactly as one that doesn't exist.
+        const hidden = yield* cli("GET", "github/file?repository=acme%2Fsecret&path=Dockerfile", alice);
+        const absent = yield* cli("GET", "github/tree?repository=nobody%2Fnothing", alice);
+        assert.strictEqual(hidden.status, 404);
+        assert.deepStrictEqual([absent.status, absent.text], [hidden.status, hidden.text]);
+        assert.deepStrictEqual(absent.json.error, {
+          code: "not_found",
+          message: "No repository by that name that this Organization can read.",
+          details: { valid_children: ["acme/web"] },
+        });
 
         const removed = yield* cli("DELETE", "github/7", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
@@ -881,9 +925,9 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
 });
 
 const operations = [
-  { verb: "remove", method: "DELETE", path: `servers/${fra1}`, body: { no_reset: true } },
-  { verb: "clean", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
-  { verb: "drain", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
+  { verb: "remove", name: "fra-1", method: "DELETE", path: `servers/${fra1}`, body: { no_reset: true } },
+  { verb: "clean", name: "left-behind", method: "POST", path: "namespaces/left-behind/clean", body: undefined },
+  { verb: "drain", name: "fra-1", method: "POST", path: `servers/${fra1}/drain`, body: undefined },
 ] as const;
 
 const ownNamespace = Effect.fn(function* (organizationId: string, userId: string) {
@@ -934,6 +978,12 @@ for (const operation of operations) {
               const approvalId = asked.json.error?.details.approval_id ?? assert.fail("no approval id");
               const denied = yield* cli("POST", `approvals/${approvalId}`, alice, { reject: { reason } });
               assert.strictEqual(denied.json.approval?.status, "denied", scenario);
+              const approvedLate = yield* cli("POST", `approvals/${approvalId}`, alice, { approve: { digest: asked.json.error?.details.approval ?? "" } });
+              assert.deepStrictEqual(
+                [approvedLate.status, approvedLate.json.error?.code, approvedLate.json.error?.message],
+                [409, "conflict", "This approval was already decided elsewhere (denied)."],
+                scenario,
+              );
               yield* ask(asking);
 
               const plans = operation.verb === "remove" ? [true] : [true, false];
@@ -942,7 +992,7 @@ for (const operation of operations) {
                 const retried = yield* cli(operation.method, operation.path, { ...alice, approval: approvalId }, operation.body);
                 assert.deepStrictEqual(
                   [retried.status, retried.json.error?.code, retried.json.error?.message],
-                  [403, "approval_denied", `A human denied approval ${approvalId}: ${reason}`],
+                  [403, "approval_denied", `A human denied the request to ${operation.verb} ${operation.name}: ${reason}`],
                   `${scenario}, destroys ${destroys}`,
                 );
               }

@@ -156,9 +156,8 @@ pub(crate) fn settle(
             asked.name(),
             || Failure::usage("Approving needs a terminal"),
             &format!(
-                "Nothing {}; approval {} stays pending.",
-                verb.past(),
-                asked.id
+                "Nothing {}; the approval stays pending in Ployz Cloud.",
+                verb.past()
             ),
         )
         .map_err(StoreCallError::Stopped)?;
@@ -183,7 +182,7 @@ pub(crate) fn settle(
                     return Err(StoreCallError::Stopped(
                         Failure::coded(
                             RpcErrorCode::Internal,
-                            format!("Stopped waiting; approval {} stays pending in Ployz Cloud.", asked.id),
+                            "Stopped waiting; the approval stays pending in Ployz Cloud.",
                         )
                         .interrupted()
                         .hint(crate::ui::Hint::Retry(retry)),
