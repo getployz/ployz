@@ -14,6 +14,10 @@ function run<A, E>(effect: Effect.Effect<A, E, GithubApi>, answers: Readonly<Rec
   return Effect.runPromise(Effect.result(effect).pipe(Effect.provide(Layer.succeed(GithubApi, fakeGithubApi(answers).service))));
 }
 
+function failure<A, E>(effect: Effect.Effect<A, E, GithubApi>, answers: Readonly<Record<string, JsonValue>>) {
+  return Effect.runPromise(Effect.flip(effect).pipe(Effect.provide(Layer.succeed(GithubApi, fakeGithubApi(answers).service))));
+}
+
 const head = { [`${base}/commits/main`]: { commit: { tree: { sha } } } };
 
 const tree = (paths: ReadonlyArray<string>, truncated = false) => ({
@@ -65,8 +69,7 @@ it("matches a glob against the whole path, within the named directory", async ()
 });
 
 it("names a ref GitHub doesn't have as not found", async () => {
-  const missing = await run(repositoryTree(web, { ref: "nope" }), tree([]));
-  expect(missing._tag === "Failure" && missing.failure).toMatchObject({ _tag: "NotFound", message: "No ref nope in acme/web." });
+  expect(await failure(repositoryTree(web, { ref: "nope" }), tree([]))).toMatchObject({ _tag: "NotFound", message: "No ref nope in acme/web." });
 });
 
 it("returns a text file decoded", async () => {
@@ -90,10 +93,8 @@ it("withholds a binary or oversized file, with a note and no content", async () 
 });
 
 it("refuses a directory, pointing at github tree", async () => {
-  const directory = await run(repositoryFile(web, { path: "src" }), contents("src", [{ path: "src/a.ts" }]));
-  expect(directory._tag === "Failure" && directory.failure).toMatchObject({
+  expect(await failure(repositoryFile(web, { path: "src" }), contents("src", [{ path: "src/a.ts" }]))).toMatchObject({
     _tag: "Validation", message: "src is a directory: list it with github tree.",
   });
-  const missing = await run(repositoryFile(web, { path: "nope" }), {});
-  expect(missing._tag === "Failure" && missing.failure).toMatchObject({ _tag: "NotFound", message: "No file nope at main in acme/web." });
+  expect(await failure(repositoryFile(web, { path: "nope" }), {})).toMatchObject({ _tag: "NotFound", message: "No file nope at main in acme/web." });
 });

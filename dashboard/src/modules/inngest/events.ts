@@ -85,6 +85,7 @@ export const serverDrainRequestedEvent = "server/drain.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
+export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
 export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
@@ -151,6 +152,9 @@ export type ServiceActRequestedEventData = {
 export type ClusterDomainSyncRequestedEventData = {
   organizationId: string;
 };
+
+/** Sync every Environment's uptime checks with its Applied State, for Services applied before checks existed. */
+export type UptimeBackfillRequestedEventData = Record<string, never>;
 
 /** The Organization's first Server joined: its published Environments deploy to it. */
 export type ConfigFirstServerJoinedEventData = {
@@ -283,6 +287,10 @@ export const configSweepRequestedEventType = eventType(
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
+);
+export const uptimeBackfillRequestedEventType = eventType(
+  uptimeBackfillRequestedEvent,
+  { schema: staticSchema<UptimeBackfillRequestedEventData>() },
 );
 export const inngestFunctionCancelledEventType = eventType(
   "inngest/function.cancelled",

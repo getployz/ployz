@@ -64,7 +64,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     assert!(certificate_bodies(&cluster, 0).contains("BEGIN CERTIFICATE"));
     wait_https(&cluster, 0, "app.example.com").await;
 
-    // A stopped Container keeps its site (answering 502); removal drops the hostname.
+    // A stopped Container keeps its site (answering 503 NOT_RUNNING); removal drops the hostname.
     client
         .call::<op::RemoveContainer>(
             RemoveContainerRequest {

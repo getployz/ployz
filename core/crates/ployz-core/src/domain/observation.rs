@@ -52,17 +52,27 @@ impl LastHealthCheck {
     /// Keeps only the first non-blank line of `output`, cut to a length a reason can quote.
     #[must_use]
     pub fn exited(code: i64, output: &str) -> Self {
-        let line = output
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .unwrap_or_default();
-        let mut output: String = line.chars().take(LAST_CHECK_OUTPUT_CHARS).collect();
-        if line.chars().nth(LAST_CHECK_OUTPUT_CHARS).is_some() {
-            output.push('…');
+        Self::Exited {
+            code,
+            output: check_output_line(output),
         }
-        Self::Exited { code, output }
     }
+}
+
+/// The first non-blank line of `output`, cut to a length a reason can quote. Ployz Cloud's uptime
+/// probes cut their error details with it too.
+#[must_use]
+pub fn check_output_line(output: &str) -> String {
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    let mut cut: String = line.chars().take(LAST_CHECK_OUTPUT_CHARS).collect();
+    if line.chars().nth(LAST_CHECK_OUTPUT_CHARS).is_some() {
+        cut.push('…');
+    }
+    cut
 }
 
 impl fmt::Display for LastHealthCheck {
