@@ -3,14 +3,15 @@
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
-use ployz_store::EnvironmentQuery;
+use ployz_core::ServiceName;
 use ployz_store::catalog::{self, Explained};
+use ployz_store::{EnvironmentQuery, NodeName};
 use serde::Serialize;
 use serde_json::Value;
 
 use super::{Error, Handler, leaf_matches};
 use crate::cli::positional;
-use crate::ui::{self, Fields};
+use crate::ui::{self, Fields, Table};
 
 /// Where agents find the catalog, stated as a fact at the end of `ployz --help`.
 pub(crate) const SIGNPOST: &str = "Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.";
@@ -27,10 +28,10 @@ pub(crate) fn schema_command() -> Command {
 
 pub(crate) fn explain_command() -> Command {
     Command::new("explain")
-        .about("Describe one Setting, with an example")
+        .about("Describe one Setting with an example, or list a Service's Settings")
         .arg(
             positional("path", true)
-                .help("SERVICE.SETTING, for example web.replicas")
+                .help("SERVICE.SETTING, for example web.replicas, or SERVICE")
                 .add(setting_paths()),
         )
 }
@@ -349,6 +350,10 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     let path = leaf_matches(root)
         .get_one::<String>("path")
         .expect("path is required");
+    if let Ok(NodeName::Service(service)) = NodeName::parse(path) {
+        let listing = listing(&service)?;
+        return ui::list(&listing, &listing.table());
+    }
     let explained = catalog::explain(path)?;
     let example = match explained.schema.pointer("/examples/0") {
         Some(Value::String(text)) => text.clone(),
@@ -394,6 +399,72 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     record.push("applies", text("x-ployz-apply"));
     record.push("example", &explanation.example);
     ui::fields(&explanation, &record)
+}
+
+/// Every Setting a Service takes, with its default, and where its domains are set.
+#[derive(Serialize)]
+struct Listing {
+    service: ServiceName,
+    settings: Vec<Listed>,
+    domains: String,
+}
+
+#[derive(Serialize)]
+struct Listed {
+    path: String,
+    title: String,
+    default: Option<Value>,
+    applies: String,
+}
+
+fn listing(service: &ServiceName) -> Result<Listing, Error> {
+    let schema = catalog::schema(Some(service.as_str()))?;
+    let text = |one: &Value, key: &str| {
+        one.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let settings = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .map(|(name, one)| Listed {
+            path: format!("{service}.{name}"),
+            title: text(one, "title"),
+            default: one.get("default").cloned(),
+            applies: text(one, "x-ployz-apply"),
+        })
+        .collect();
+    Ok(Listing {
+        domains: shell_words::join(["ployz", "domain", "add", service.as_str()]),
+        service: service.clone(),
+        settings,
+    })
+}
+
+impl Listing {
+    fn table(&self) -> Table {
+        let mut table = Table::new(["SETTING", "DEFAULT", "APPLIES", "TITLE"], "No Settings.");
+        for one in &self.settings {
+            table.row([
+                one.path.clone(),
+                one.default
+                    .as_ref()
+                    .map_or_else(|| "-".to_owned(), super::store::plain),
+                one.applies.clone(),
+                one.title.clone(),
+            ]);
+        }
+        table.row([
+            format!("{}.domains", self.service),
+            "-".to_owned(),
+            "staged".to_owned(),
+            format!("Domains, set with `{}`", self.domains),
+        ]);
+        table
+    }
 }
 
 /// A schema's type, or its alternatives' (`string or object`) when it has several.
@@ -472,6 +543,35 @@ fn stored_paths() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_service_lists_every_setting_with_its_default() {
+        let service = ServiceName::parse("web").unwrap();
+        let listing = listing(&service).unwrap();
+        let schema = catalog::schema(Some("web")).unwrap();
+        let properties = schema.get("properties").and_then(Value::as_object).unwrap();
+        assert_eq!(listing.settings.len(), properties.len());
+        for (name, one) in properties {
+            let listed = listing
+                .settings
+                .iter()
+                .find(|listed| listed.path == format!("web.{name}"))
+                .unwrap_or_else(|| panic!("web.{name} is listed"));
+            assert_eq!(listed.default.as_ref(), one.get("default"), "web.{name}");
+        }
+        let replicas = listing
+            .settings
+            .iter()
+            .find(|one| one.path == "web.replicas")
+            .unwrap();
+        assert_eq!(replicas.default, Some(serde_json::json!(1)));
+        let mut human = Vec::new();
+        listing.table().write(&mut human, false).unwrap();
+        let human = String::from_utf8(human).unwrap();
+        assert!(human.contains("web.domains"), "{human}");
+        assert!(human.contains("ployz domain add web"), "{human}");
+        assert!(!human.contains("managedHostnames"), "{human}");
+    }
 
     #[test]
     fn a_command_that_asks_for_confirmation_is_not_never() {
