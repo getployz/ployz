@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  barCount, causeText, checkSeries, checkState, formatSpan, historyBars, incidentWindow, observationText, rangeCovering, steps, unreachableHost,
-  uptimePercent, wrongPathIncident,
+  causeText, chartWindow, checkState, checkSteps, failureClass, formatSpan, historyBars, incidentRange, mergePoints,
+  observationText, regionLabel, steps, tally, unreachableHost, uptimePercent, wrongPathIncident,
 } from "./uptime";
-import type { IncidentObservation, ServiceUptime, UptimeIncidentEntry } from "./uptime-status";
+import { pointSource } from "./uptime-range";
+import {
+  FAILURE_CLASSES, type FailureClass, type IncidentObservation, PHASES, type ServiceUptime, type UptimeCheckResult,
+  type UptimeIncidentEntry, type UptimePoint,
+} from "./uptime-status";
 
 const at = "2026-10-11T00:00:00.000Z";
 const HOUR = 3_600_000;
@@ -13,13 +17,36 @@ const observation = (patch: Partial<IncidentObservation>): IncidentObservation =
 });
 const incident = (observations: IncidentObservation[], openedAt = at, closedAt: string | null = null): UptimeIncidentEntry =>
   ({ id: "inc", openedAt, closedAt, observations });
+/** One probe: passing in `ms` split evenly over the phases, or failing in `failed`. */
+const probe = (region: string, at: number, ms: number | null, failed: FailureClass | null = null): UptimePoint => ({
+  at: new Date(at).toISOString(),
+  region,
+  probes: 1,
+  failures: tally(FAILURE_CLASSES, (cls) => cls === failed ? 1 : 0),
+  medianMs: ms,
+  maxMs: ms,
+  phaseMsSum: tally(PHASES, () => (ms ?? 0) / 4),
+  lastError: failed === null ? null : { at: new Date(at).toISOString(), cls: failed, text: failed },
+});
 const uptime = (patch: Partial<ServiceUptime>): ServiceUptime => ({
   check: { id: "chk", url: "https://acme.com/health", intervalSeconds: 300 },
   status: "up",
   uptime: null,
   points: [],
+  checks: null,
   incidents: [],
+  regions: {},
+  probe: null,
   ...patch,
+});
+
+describe("regionLabel", () => {
+  it("names a region, falls back to its code, and labels nothing when one region is in view", () => {
+    const regions = { ams: "Amsterdam", sin: null };
+    expect(regionLabel(regions, "ams")).toEqual({ text: "Amsterdam", named: true });
+    expect(regionLabel(regions, "sin")).toEqual({ text: "sin", named: false });
+    expect(regionLabel({ ams: "Amsterdam" }, "ams")).toBeNull();
+  });
 });
 
 describe("observationText", () => {
@@ -30,6 +57,23 @@ describe("observationText", () => {
     expect(observationText(observation({ error: "other", failedPhase: "dns" }))).toBe("DNS");
     expect(observationText(observation({ failedPhase: "tls" }))).toBe("TLS");
     expect(observationText(observation({ error: "other", failedPhase: "request" }))).toBe("Error");
+  });
+});
+
+describe("failureClass", () => {
+  it("puts every failing probe in exactly one class, the HTTP status first", () => {
+    const seen = new Set<FailureClass>();
+    for (const status of [0, 503]) {
+      for (const error of [null, "connection_refused", "timed_out", "other"] as const) {
+        for (const failedPhase of [null, "dns", "connect", "tls", "request"] as const) {
+          const cls = failureClass({ status, error, failedPhase });
+          if (status !== 0) expect(cls).toBe("status");
+          seen.add(cls);
+        }
+      }
+    }
+    expect([...seen].sort()).toEqual([...FAILURE_CLASSES].sort());
+    expect(failureClass({ status: 503, error: null, failedPhase: null })).toBe("status");
   });
 });
 
@@ -82,91 +126,146 @@ describe("uptimePercent", () => {
   });
 });
 
-describe("rangeCovering", () => {
-  it("picks the shortest range that reaches the zoom's start", () => {
-    const to = Date.parse(at);
-    expect(rangeCovering(to - 3 * HOUR, to)).toBe("24h");
-    expect(rangeCovering(to - 2 * DAY, to)).toBe("7d");
-    expect(rangeCovering(to - 30 * DAY, to)).toBe("90d");
-    expect(rangeCovering(to - 200 * DAY, to)).toBe("90d");
-  });
-});
+describe("incidentRange", () => {
+  const to = Date.parse(at);
+  const closed = (opened: number, minutes: number) =>
+    incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + minutes * 60_000).toISOString());
 
-describe("incidentWindow", () => {
-  it("draws an unbroken line from the series its zoom reads, however old the incident", () => {
-    const to = Date.parse(at);
+  it("centres a short incident in three hours", () => {
+    const opened = to - 12 * DAY;
+    expect(incidentRange(closed(opened, 20), to)).toEqual({ from: opened - 80 * 60_000, to: opened + 100 * 60_000 });
+  });
+
+  it("shows five times a long incident and never runs past now", () => {
+    expect(incidentRange(incident([observation({ status: 502 })], new Date(to - 30 * DAY).toISOString()), to))
+      .toEqual({ from: to - 150 * DAY, to });
+  });
+
+  it("draws an unbroken line from the points the server reads for it, however old the incident", () => {
     for (const age of [2 * HOUR, 3 * DAY, 12 * DAY, 80 * DAY]) {
-      const opened = to - age;
-      const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
-      const stepMs = { "24h": 5 * 60_000, "7d": HOUR, "90d": 6 * HOUR }[rangeCovering(window.from, to)];
-      const series = steps({ ...window, stepMs }).map((step) => ({ at: new Date(step).toISOString(), region: "ams", ms: 100 }));
-      const line = checkSeries(series, window);
-      expect(line.length).toBeGreaterThanOrEqual(12);
+      const range = incidentRange(closed(to - age, 20), to);
+      const stepMs = { raw: 5 * 60_000, hourly: HOUR, sixHourly: 6 * HOUR }[pointSource(range, to)];
+      const window = chartWindow(range, to, 5 * 60_000);
+      const series = steps({ ...range, stepMs }).map((step) => probe("ams", step, 100));
+      const line = checkSteps(series, window).map((step) => step.medianMs);
+      expect(line.length).toBeGreaterThanOrEqual(3);
       expect(line).not.toContain(null);
-      expect(window.from).toBeLessThanOrEqual(opened);
     }
   });
+});
 
-  it("keeps a 20-minute incident 12 days old centred on it", () => {
+describe("chartWindow", () => {
+  it("cuts a range into at most 288 round steps, never finer than its points", () => {
     const to = Date.parse(at);
-    const opened = to - 12 * DAY;
-    const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
-    expect(window).toEqual({ from: opened - 3 * DAY + 6 * HOUR, to: opened + 3 * DAY + 6 * HOUR, stepMs: 6 * HOUR });
-  });
-
-  it("stays inside the 90 days for an incident in their oldest days", () => {
-    const to = Date.parse(at);
-    const opened = to - 89 * DAY;
-    const window = incidentWindow(incident([observation({ status: 502 })], new Date(opened).toISOString(), new Date(opened + 20 * 60_000).toISOString()), to);
-    expect(window.from).toBe(to - 90 * DAY);
-    expect(window.to).toBeLessThanOrEqual(to);
-    expect(window.from).toBeLessThanOrEqual(opened);
-    expect(window.to).toBeGreaterThanOrEqual(opened + 20 * 60_000);
-  });
-
-  it("shows all 90 days for an open incident 30 days long", () => {
-    const to = Date.parse(at);
-    const window = incidentWindow(incident([observation({ status: 502 })], new Date(to - 30 * DAY).toISOString()), to);
-    expect(window).toEqual({ from: to - 90 * DAY, to, stepMs: 18 * HOUR });
+    expect(chartWindow({ from: to - 15 * 60_000, to }, to, 60_000).stepMs).toBe(60_000);
+    expect(chartWindow({ from: to - 15 * 60_000, to }, to, 300_000).stepMs).toBe(300_000);
+    expect(chartWindow({ from: to - DAY, to }, to, 60_000).stepMs).toBe(5 * 60_000);
+    expect(chartWindow({ from: to - 7 * DAY, to }, to, 60_000).stepMs).toBe(HOUR);
+    expect(chartWindow({ from: to - 30 * DAY, to }, to, 60_000).stepMs).toBe(6 * HOUR);
+    expect(steps(chartWindow({ from: 0, to }, to, 60_000)).length).toBeLessThanOrEqual(288);
   });
 });
 
-describe("checkSeries", () => {
-  it("averages every region's passing points per step and breaks where none passed", () => {
+describe("mergePoints", () => {
+  it("adds counts and phase sums, keeps the larger max and the newer error, and averages medians by passing probes", () => {
+    const hour = { ...probe("ams", 0, 100), probes: 4, medianMs: 100, maxMs: 300, phaseMsSum: tally(PHASES, () => 10),
+      failures: tally(FAILURE_CLASSES, (cls) => cls === "tls" ? 1 : 0),
+      lastError: { at: new Date(60_000).toISOString(), cls: "tls" as const, text: "TLS · expired" } };
+    const later = { ...probe("ams", HOUR, 200), probes: 2, maxMs: 250,
+      failures: tally(FAILURE_CLASSES, (cls) => cls === "status" ? 1 : 0),
+      lastError: { at: new Date(HOUR + 60_000).toISOString(), cls: "status" as const, text: "503" } };
+    expect(mergePoints(hour, later)).toEqual({
+      at: hour.at,
+      region: "ams",
+      probes: 6,
+      failures: tally(FAILURE_CLASSES, (cls) => cls === "tls" || cls === "status" ? 1 : 0),
+      medianMs: (100 * 3 + 200 * 1) / 4,
+      maxMs: 300,
+      phaseMsSum: tally(PHASES, () => 60),
+      lastError: later.lastError,
+    });
+    expect(mergePoints(later, hour).lastError).toEqual(later.lastError);
+  });
+
+  it("has no median or max when no probe passed", () => {
+    const merged = mergePoints(probe("ams", 0, null, "timeout"), probe("ams", 1, null, "dns"));
+    expect(merged).toMatchObject({ probes: 2, medianMs: null, maxMs: null, lastError: { cls: "dns" } });
+    expect(mergePoints(merged, probe("ams", 2, 80)).medianMs).toBe(80);
+  });
+});
+
+describe("checkSteps", () => {
+  it("merges each region's probes per step and breaks the line where none passed", () => {
     const minute = 60_000;
     const window = { from: 0, to: 15 * minute, stepMs: 5 * minute };
     const points = [
-      { at: new Date(0).toISOString(), region: "ams", ms: 100 },
-      { at: new Date(minute).toISOString(), region: "sjc", ms: 200 },
-      { at: new Date(5 * minute).toISOString(), region: "ams", ms: null },
+      probe("sjc", minute, 300),
+      probe("ams", 0, 100),
+      probe("ams", 2 * minute, 200),
+      probe("ams", 5 * minute, null, "tls"),
+      { ...probe("ams", 10 * minute, null), probes: 0 },
     ];
-    expect(checkSeries(points, window)).toEqual([150, null, null]);
+    const [first, second, third] = checkSteps(points, window);
+    expect(first?.regions.map((point) => [point.region, point.at, point.probes, point.medianMs, point.maxMs])).toEqual([
+      ["ams", new Date(0).toISOString(), 2, 150, 200],
+      ["sjc", new Date(0).toISOString(), 1, 300, 300],
+    ]);
+    expect(first?.medianMs).toBe(200);
+    expect(second).toMatchObject({ medianMs: null, regions: [{ region: "ams", probes: 1, failures: { tls: 1 } }] });
+    expect(third).toEqual({ at: 10 * minute, regions: [], medianMs: null });
+  });
+
+  it("counts a point before the first step in that step", () => {
+    const minute = 60_000;
+    const window = { from: 2 * minute, to: 7 * minute, stepMs: 5 * minute };
+    expect(checkSteps([probe("ams", 3 * minute, 100)], window).map((step) => step.medianMs)).toEqual([100, null]);
+    expect(steps(window)).toEqual([2 * minute, 5 * minute]);
+  });
+
+  it("counts a point exactly at Until in the last step", () => {
+    const minute = 60_000;
+    const window = { from: 0, to: 10 * minute, stepMs: 5 * minute };
+    expect(checkSteps([probe("ams", 10 * minute, 100)], window).map((step) => step.medianMs)).toEqual([null, 100]);
+  });
+
+  it("draws one step for a range shorter than a step between round steps", () => {
+    const minute = 60_000;
+    const window = { from: minute, to: 4 * minute, stepMs: 5 * minute };
+    expect(checkSteps([probe("ams", 2 * minute, 100)], window).map((step) => step.medianMs)).toEqual([100]);
   });
 });
 
 describe("historyBars", () => {
   const to = Date.parse(at);
+  const result = (minutesAgo: number, patch: Partial<UptimeCheckResult> = {}): UptimeCheckResult => ({
+    at: new Date(to - minutesAgo * 60_000).toISOString(), region: "ams", kind: "routine", verdict: "pass", status: 200, ms: 120, ...patch,
+  });
 
-  it("marks each bar an incident touched, including one still open, as checked", () => {
+  it("draws one bar per result of any kind, toned by its verdict", () => {
+    const open = incident([observation({ status: 502 })], new Date(to - 10 * 60_000).toISOString());
+    const checks = [result(20), result(10, { verdict: "fail", status: 502 }), result(9, { kind: "confirm", verdict: "fail", status: 0 }), result(5, { verdict: "inconclusive" })];
+    const bars = historyBars({ from: to - HOUR, to }, uptime({ checks, incidents: [open] }));
+    expect(bars.map((bar) => [bar.start, bar.tone, bar.incidents.length, bar.result?.kind])).toEqual([
+      [to - 20 * 60_000, "up", 0, "routine"],
+      [to - 10 * 60_000, "down", 1, "routine"],
+      [to - 9 * 60_000, "down", 1, "confirm"],
+      [to - 5 * 60_000, "none", 1, "routine"],
+    ]);
+  });
+
+  it("cuts a window without results into spans, red where an incident touched, green where a point fell", () => {
     const open = incident([observation({ status: 502 })], new Date(to - 2 * HOUR - 1).toISOString());
-    const bars = historyBars("24h", to, { points: [], incidents: [open] });
-    expect(bars.map((bar) => [bar.checked, bar.incidents.length]).slice(-4)).toEqual([[false, 0], [true, 1], [true, 1], [true, 1]]);
+    const points = [probe("ams", to - 3 * HOUR + 1, null, "dns")];
+    const bars = historyBars({ from: to - DAY, to }, uptime({ points, checks: [], incidents: [open] }));
+    expect(bars).toHaveLength(48);
+    expect(bars.slice(-7).map((bar) => bar.tone)).toEqual(["none", "up", "down", "down", "down", "down", "down"]);
+    expect(bars.at(-6)?.start).toBe(to - 3 * HOUR);
   });
 
-  it("marks the bar of each point as checked", () => {
-    const points = [{ at: new Date(to - 3 * HOUR + 1).toISOString(), region: "ams", ms: null }];
-    const bars = historyBars("7d", to, { points, incidents: [] });
-    expect(bars.flatMap((bar, index) => bar.checked ? [index] : [])).toEqual([41]);
-    expect(bars[41]?.start).toBe(to - 4 * HOUR);
-  });
-
-  it("draws a grey bar per step of the range for a Service without a check", () => {
-    for (const [range, count] of [["24h", 24], ["7d", 42], ["90d", 90]] as const) {
-      const bars = historyBars(range, to + HOUR / 2, null);
-      expect(barCount(range)).toBe(count);
-      expect(bars).toHaveLength(count);
-      expect(bars.every((bar) => !bar.checked)).toBe(true);
-    }
+  it("draws grey spans for a Service without a check", () => {
+    const bars = historyBars({ from: to - 30 * 60_000, to }, null);
+    expect(bars).toHaveLength(6);
+    expect(bars.every((bar) => bar.tone === "none" && bar.result === null)).toBe(true);
   });
 });
 

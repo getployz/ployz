@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use super::catalog::{Approval::*, Runnable, cloud, local};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
 use crate::cli::{
@@ -500,19 +501,19 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
-pub(super) fn handler(path: &str) -> Option<super::Handler> {
+pub(super) fn handler(path: &str) -> Option<Runnable> {
     Some(match path {
-        "add" => enroll::add,
-        "build-cache-clear" => clear_build_cache,
-        "clean" => clean::clean,
-        "drain" => drain::drain,
-        "forget" => forget::forget,
-        "inspect" => inspect,
-        "logs" => super::operator::machine_logs,
-        "ls" => list,
-        "rm" => remove,
-        "set" => set,
-        "upgrade" => upgrade,
+        "add" => cloud(Depends, enroll::add),
+        "build-cache-clear" => local(Never, clear_build_cache),
+        "clean" => cloud(Depends, clean::clean),
+        "drain" => cloud(Depends, drain::drain),
+        "forget" => cloud(Always, forget::forget),
+        "inspect" => cloud(Never, inspect),
+        "logs" => cloud(Never, super::operator::machine_logs),
+        "ls" => cloud(Never, list),
+        "rm" => cloud(Always, remove),
+        "set" => cloud(Depends, set),
+        "upgrade" => cloud(Depends, upgrade),
         _ => return None,
     })
 }

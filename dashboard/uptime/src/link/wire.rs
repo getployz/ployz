@@ -216,6 +216,7 @@ fn kind_of(kind: &str) -> Result<ProbeKind, Malformed> {
         "routine" => Ok(ProbeKind::Routine),
         "confirm" => Ok(ProbeKind::Confirm),
         "recheck" => Ok(ProbeKind::Recheck),
+        "triggered" => Ok(ProbeKind::Triggered),
         _ => Err(Malformed("kind")),
     }
 }

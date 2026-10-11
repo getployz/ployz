@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{ConfigError, Mode, Secret};
+use super::{ConfigError, Mode, RegionConfig, Secret};
 
 fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs
@@ -14,9 +14,25 @@ fn parse(mode: &str, vars: &HashMap<String, String>) -> Result<Mode, ConfigError
     Mode::from(&args, &|k| vars.get(k).cloned())
 }
 
+fn named(regions: &[RegionConfig]) -> Vec<(&str, Option<&str>)> {
+    regions
+        .iter()
+        .map(|r| (r.region.as_str(), r.name.as_ref().map(|n| n.as_str())))
+        .collect()
+}
+
+fn control_regions(list: &str) -> Result<Vec<RegionConfig>, ConfigError> {
+    let mut vars = env(CONTROL);
+    vars.insert("UPTIME_REGIONS".to_owned(), list.to_owned());
+    match parse("control", &vars)? {
+        Mode::Control(control) => Ok(control.regions),
+        Mode::Agent(_) | Mode::All(..) => panic!("control mode expected"),
+    }
+}
+
 const CONTROL: &[(&str, &str)] = &[
     ("DATABASE_URL", "postgres://u:p@db/x"),
-    ("UPTIME_REGIONS", "ams, fra,ams"),
+    ("UPTIME_REGIONS", "ams, fra"),
     ("UPTIME_AGENT_TOKEN", "hunter2"),
 ];
 
@@ -86,12 +102,11 @@ fn every_missing_or_bad_variable_is_named_without_its_value() {
 }
 
 #[test]
-fn control_dedupes_regions_keeps_the_token_and_listens_on_port_by_default() {
+fn control_keeps_region_order_the_token_and_listens_on_port_by_default() {
     let Ok(Mode::Control(control)) = parse("control", &env(CONTROL)) else {
         panic!("control mode expected");
     };
-    let names: Vec<&str> = control.regions.iter().map(|r| r.as_str()).collect();
-    assert_eq!(names, ["ams", "fra"]);
+    assert_eq!(named(&control.regions), [("ams", None), ("fra", None)]);
     assert_eq!(
         control.listen.to_string(),
         "[::]:8080",
@@ -151,7 +166,7 @@ fn all_defaults_to_one_local_region_with_no_token() {
         panic!("all mode expected");
     };
     assert_eq!(control.regions.len(), 1);
-    assert_eq!(control.regions.first().map(|r| r.as_str()), Some("local"));
+    assert_eq!(named(&control.regions), [("local", None)]);
     assert!(control.agent_token.is_none());
     assert!(agent.token.is_none());
     assert_eq!(agent.control_url, "http://[::]:9000");
@@ -166,4 +181,45 @@ fn a_secret_never_shows_its_value() {
     assert!(secret.matches(b"hunter2"));
     assert!(!secret.matches(b"hunter3"));
     assert!(!secret.matches(b"hunter"));
+}
+
+#[test]
+fn regions_take_an_optional_display_name() {
+    let regions = control_regions(
+        "us-east4-eqdc4a=Virginia, europe-west4-drams3a = Amsterdam ,asia-southeast1-eqsg3a",
+    )
+    .unwrap();
+    assert_eq!(
+        named(&regions),
+        [
+            ("us-east4-eqdc4a", Some("Virginia")),
+            ("europe-west4-drams3a", Some("Amsterdam")),
+            ("asia-southeast1-eqsg3a", None),
+        ]
+    );
+    let regions = control_regions("sin=Singapore Central").unwrap();
+    assert_eq!(named(&regions), [("sin", Some("Singapore Central"))]);
+}
+
+#[test]
+fn an_empty_or_ambiguous_name_or_a_repeated_code_is_refused() {
+    for list in [
+        "ams=",
+        "ams=  ",
+        "ams=Amster=dam",
+        "=Amsterdam",
+        "ams,fra,ams",
+        "ams=Amsterdam,ams",
+    ] {
+        assert!(
+            matches!(
+                control_regions(list),
+                Err(ConfigError::Invalid {
+                    var: "UPTIME_REGIONS",
+                    ..
+                })
+            ),
+            "{list:?} must be refused"
+        );
+    }
 }
