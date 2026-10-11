@@ -160,10 +160,9 @@ pub(crate) enum Stdin {
     IfAbsent,
 }
 
-const STDIN: [(&str, &str, Stdin); 6] = [
+const STDIN: [(&str, &str, Stdin); 5] = [
     ("config put", "--from", Stdin::IfAbsent),
     ("env sync", "--value", Stdin::Only),
-    ("set", "--at-merge", Stdin::Only),
     ("set", "--from-env-file", Stdin::OnDash),
     ("set", "--patch", Stdin::OnDash),
     ("set", "--secret", Stdin::Only),
