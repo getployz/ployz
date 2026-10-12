@@ -595,33 +595,26 @@ pub struct KnownCopy {
     pub role: CopyRole,
 }
 
-/// Whether a plain Deploy may mount a Volume on this Machine. `held` is what the Machine
-/// holds and last admitted; `elsewhere` is every copy its replicated observation knows on
-/// other Machines.
+/// Whether a plain Deploy may mount a Volume on this Machine. `held` is the copy this
+/// Machine holds; `elsewhere` is every copy its replicated observation knows on other
+/// Machines.
 ///
-/// A Machine holding nothing mounts only a Volume no Machine holds and it never admitted a
-/// run for: a fresh Volume. Its own root mounts only while idle, closed and writable.
+/// A Machine holding nothing mounts a fresh Volume while no other Machine holds a copy.
+/// Its own root mounts while writable.
 ///
 /// # Errors
-/// `NoWriter` when the data lives elsewhere or was departed; `VolumeSwitching` when a run
-/// holds the root.
+/// `NoWriter` when the data lives elsewhere or only in this Machine's slot;
+/// `VolumeSwitching` when a run holds the root read-only.
 pub fn admit_plain_mount(
-    held: &VolumeCopyView,
+    held: Option<&VolumeCopy>,
     elsewhere: &[KnownCopy],
 ) -> Result<(), SwitchError> {
-    match &held.copy {
-        None if elsewhere.is_empty() && held.lease.is_none() => Ok(()),
+    match held {
+        None if elsewhere.is_empty() => Ok(()),
         None | Some(VolumeCopy::Slot { .. }) => Err(SwitchError::NoWriter),
         Some(VolumeCopy::Root {
-            writer: WriterMarker::Idle,
-            readonly: false,
-            ..
-        }) if held
-            .lease
-            .is_none_or(|record| record.cycle == Cycle::Closed) =>
-        {
-            Ok(())
-        }
+            readonly: false, ..
+        }) => Ok(()),
         Some(VolumeCopy::Root { .. }) => Err(SwitchError::VolumeSwitching),
     }
 }
@@ -656,9 +649,7 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
         );
     }
     match copies {
-        [] => format!(
-            "Volume {name} has no writer: no Server holds a copy and this Server recorded a run for it; restore it from a backup or remove it before deploying"
-        ),
+        [] => format!("Volume {name} has no writer and no Server holds a copy of it"),
         [only] => format!(
             "Volume {name} has no writer; {} holds its only copy. Make it the writer: ployz volume restore {name} --from {}",
             only.machine, only.machine
@@ -692,27 +683,20 @@ mod tests {
 
     #[test]
     fn plain_mount_admission_table() {
-        let record = |cycle| LeaseRecord {
-            lease: Lease(3),
-            pos: Pos::step(2),
-            cycle,
+        let root = |readonly| VolumeCopy::Root {
+            writer: WriterMarker::Idle,
+            readonly,
+            newest: None,
+            epoch: WriterEpoch::default(),
         };
-        let root = |writer, readonly| {
-            Some(VolumeCopy::Root {
-                writer,
-                readonly,
-                newest: None,
-                epoch: WriterEpoch::default(),
-            })
-        };
-        let slot = Some(VolumeCopy::Slot {
+        let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),
             mirror: MirrorMarker::Idle,
             readonly: true,
             newest: None,
             resume_token: None,
             pull: None,
-        });
+        };
         let known = |role| {
             vec![KnownCopy {
                 machine: name("fsn-2"),
@@ -720,69 +704,44 @@ mod tests {
             }]
         };
         let rows = [
-            (None, None, vec![], Ok(())),
+            ("nothing anywhere", None, vec![], Ok(())),
             (
-                None,
+                "a slot elsewhere",
                 None,
                 known(CopyRole::Slot),
                 Err(SwitchError::NoWriter),
             ),
             (
-                None,
+                "a writer elsewhere",
                 None,
                 known(CopyRole::Writer),
                 Err(SwitchError::NoWriter),
             ),
             (
-                None,
-                Some(record(Cycle::Closed)),
+                "a slot here",
+                Some(slot),
                 vec![],
                 Err(SwitchError::NoWriter),
             ),
-            (slot.clone(), None, vec![], Err(SwitchError::NoWriter)),
-            (root(WriterMarker::Idle, false), None, vec![], Ok(())),
+            ("a writable root", Some(root(false)), vec![], Ok(())),
             (
-                root(WriterMarker::Idle, false),
-                Some(record(Cycle::Closed)),
+                "a writable root beside a slot elsewhere",
+                Some(root(false)),
                 known(CopyRole::Slot),
                 Ok(()),
             ),
             (
-                root(WriterMarker::Idle, false),
-                Some(record(Cycle::Open)),
+                "a read-only root",
+                Some(root(true)),
                 vec![],
-                Err(SwitchError::VolumeSwitching),
-            ),
-            (
-                root(WriterMarker::Idle, true),
-                None,
-                vec![],
-                Err(SwitchError::VolumeSwitching),
-            ),
-            (
-                root(WriterMarker::Stopping, false),
-                None,
-                vec![],
-                Err(SwitchError::VolumeSwitching),
-            ),
-            (
-                root(
-                    WriterMarker::Handed {
-                        guid: SnapshotGuid(1),
-                    },
-                    true,
-                ),
-                Some(record(Cycle::Closed)),
-                known(CopyRole::Slot),
                 Err(SwitchError::VolumeSwitching),
             ),
         ];
-        for (copy, lease, elsewhere, expected) in rows {
-            let held = VolumeCopyView { copy, lease };
+        for (case, held, elsewhere, expected) in rows {
             assert_eq!(
-                admit_plain_mount(&held, &elsewhere),
+                admit_plain_mount(held.as_ref(), &elsewhere),
                 expected,
-                "held {held:?}, elsewhere {elsewhere:?}"
+                "{case}"
             );
         }
     }
@@ -813,7 +772,7 @@ mod tests {
         );
         assert_eq!(
             no_writer_message("data", &[]),
-            "Volume data has no writer: no Server holds a copy and this Server recorded a run for it; restore it from a backup or remove it before deploying"
+            "Volume data has no writer and no Server holds a copy of it"
         );
     }
 

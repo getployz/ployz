@@ -210,17 +210,15 @@ async fn participating() -> (Harness, MachineId) {
 
 #[tokio::test]
 async fn a_plain_deploy_mounts_only_on_the_writer() {
-    let root = |writer: &str, cycle: &str| {
+    let root = |readonly: bool| {
         json!({"Ok": {
-            "copy": {"kind": "root", "writer": {"phase": writer}, "readonly": false, "newest": null},
-            "lease": {"lease": 2, "pos": {"seq": 4, "round": 0, "sub": 0}, "cycle": cycle},
+            "copy": {"kind": "root", "writer": {"phase": "idle"}, "readonly": readonly, "newest": null},
         }})
     };
     let slot = json!({"Ok": {
         "copy": {"kind": "slot", "slot": "1", "mirror": {"phase": "idle"}, "readonly": true, "newest": null, "resume_token": null},
-        "lease": null,
     }});
-    let nothing = json!({"Ok": {"copy": null, "lease": null}});
+    let nothing = json!({"Ok": {"copy": null}});
     /// Case name, the plugin's inspection, a copy elsewhere (role, Machine still listed),
     /// and the refusal text when the mount is refused.
     type Case = (
@@ -231,7 +229,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
     );
     let cases: [Case; 7] = [
         ("fresh name", nothing.clone(), None, None),
-        ("idle writer", root("idle", "closed"), None, None),
+        ("writable root", root(false), None, None),
         (
             "slot elsewhere",
             nothing.clone(),
@@ -250,8 +248,13 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
             Some(("writer", true)),
             Some("Volume data's writer is on fsn-2, so this Server cannot mount it"),
         ),
-        ("slot held", slot, None, Some("no writer")),
-        ("open record", root("idle", "open"), None, Some("mid-run")),
+        (
+            "slot held",
+            slot,
+            None,
+            Some("ployz volume restore data --from local"),
+        ),
+        ("read-only root", root(true), None, Some("mid-run")),
     ];
     for (case, inspect, elsewhere, refusal) in cases {
         let (test, other) = participating().await;

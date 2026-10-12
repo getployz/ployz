@@ -80,14 +80,14 @@ impl LocalMachine {
         .await
     }
 
-    /// A plain Deploy mounts `name` only on its writer: a root nothing holds, or nothing at
-    /// all while no Machine holds a copy and this Machine never recorded a run for it.
+    /// A plain Deploy mounts `name` only on its writer: this Machine's writable root, or
+    /// nothing at all while no other Machine holds a copy.
     async fn admit_plain_mount(
         &self,
         me: &ployz_core::MachineId,
         name: &DockerVolumeName,
     ) -> Result<(), Error> {
-        use ployz_core::{DockerVolumeStorageObservation, KnownCopy, SwitchError};
+        use ployz_core::{CopyRole, DockerVolumeStorageObservation, KnownCopy, SwitchError};
         let held: ployz_core::VolumeCopyView = self
             .plugin()
             .call(
@@ -97,6 +97,11 @@ impl LocalMachine {
             .await?;
         let replicated = self.replicated()?;
         let machines = replicated.machines().await?.observations;
+        let machine_name =
+            |id: &ployz_core::MachineId| match machines.iter().find(|machine| machine.id == *id) {
+                Some(machine) => Some(machine.name.clone()),
+                None => ployz_core::MachineName::parse(id.as_str()).ok(),
+            };
         let elsewhere: Vec<KnownCopy> = replicated
             .volumes()
             .await?
@@ -108,27 +113,32 @@ impl LocalMachine {
                 else {
                     return None;
                 };
-                let machine = match machines
-                    .iter()
-                    .find(|machine| machine.id == volume.id.machine_id)
-                {
-                    Some(machine) => machine.name.clone(),
-                    None => ployz_core::MachineName::parse(volume.id.machine_id.as_str()).ok()?,
-                };
                 Some(KnownCopy {
-                    machine,
-                    role: role.unwrap_or(ployz_core::CopyRole::Writer),
+                    machine: machine_name(&volume.id.machine_id)?,
+                    role: role.unwrap_or(CopyRole::Writer),
                 })
             })
             .collect();
-        match ployz_core::admit_plain_mount(&held, &elsewhere) {
+        match ployz_core::admit_plain_mount(held.copy.as_ref(), &elsewhere) {
             Ok(()) => Ok(()),
-            Err(SwitchError::NoWriter) => Err(SwitchError::NoWriter
-                .rpc_error(ployz_core::no_writer_message(
-                    ployz_core::Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
-                    &elsewhere,
-                ))
-                .into()),
+            Err(SwitchError::NoWriter) => {
+                // This Server's own slot is a copy Restore can name, beside any elsewhere.
+                let mut copies = elsewhere;
+                if let Some(ployz_core::VolumeCopy::Slot { .. }) = held.copy
+                    && let Some(machine) = machine_name(me)
+                {
+                    copies.push(KnownCopy {
+                        machine,
+                        role: CopyRole::Slot,
+                    });
+                }
+                Err(SwitchError::NoWriter
+                    .rpc_error(ployz_core::no_writer_message(
+                        ployz_core::Namespace::declared_volume_name(name).unwrap_or(name.as_str()),
+                        &copies,
+                    ))
+                    .into())
+            }
             Err(reason) => Err(reason
                 .rpc_error(format!(
                     "Volume {name} is mid-run on this Machine; wait for the run to finish"
