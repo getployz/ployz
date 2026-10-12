@@ -165,6 +165,44 @@ instead: Ployz names it and says why, upgrades the rest, exits 3, and prints the
 upgrades the skipped servers once they're free. A server already upgrading isn't upgraded twice;
 the command follows the upgrade that's running.
 
+## Servers on different versions
+
+Ployz Cloud and the CLI keep working with servers that run an older Ployz release. The
+**Servers** page shows each one and offers its upgrade, as in
+[Upgrade Ployz on a server](#upgrade-ployz-on-a-server).
+
+When a server's release can't serve a feature, the feature names that server:
+
+- **Logs** show the lines from your other servers, with a note such as **web-2 needs an upgrade to
+  show its logs** and a link to web-2. When no server can send its logs, the log reads **Upgrade
+  web-2 to see its logs** with **Open web-2**, or **Upgrade 2 servers to see their logs** with
+  **Open Servers**. Upgrade the server from its page, then refresh the logs page. See
+  [Logs](../observe/logs.md).
+- **Placement** on a volume names the servers to upgrade before any volume moves. See
+  [Move a volume](../services/move-a-volume.md).
+- **`ployz volume move`** onto such a server fails. If the server already runs the newest release
+  on your channel, a later release brings the feature, and the message reads:
+
+  ```text
+  Volume move is not in Ployz 0.2.4 on web-2 yet.
+  ```
+
+From the CLI, `ployz logs` prints the logs from your other servers, names each server that can't
+send its own, and exits with code 3:
+
+```text
+$ ployz logs api
+! Server web-2 needs a newer Ployz. It cannot serve ployz.logs.history.v2.
+```
+
+With `--follow`, the command stops at the first server that can't stream its logs and exits with
+code 1. `ployz exec` into a container on such a server also exits with code 1 and names the
+server:
+
+```text
+Server web-2 needs a newer Ployz. It cannot serve ployz.container.exec.v1.
+```
+
 ## Remove a server
 
 > [!WARNING]
