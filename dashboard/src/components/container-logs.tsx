@@ -76,6 +76,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened || (historyPending && !loaded.length) ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
     : loaded.length ? <LogEmpty title="No logs match your filters">{stream.hasOlder ? "Scroll up or press Home to check older logs." : null}</LogEmpty>
+    : failures.length ? null
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
   return <div className="flex min-h-0 grow flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">

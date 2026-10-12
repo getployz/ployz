@@ -285,7 +285,7 @@ async function lackHarness(environmentSlug: string, failures: readonly object[])
   };
 }
 
-it("gives a Server that lacks the logs capability its own line and leaves every other failure in the alert", async () => {
+it("gives a Server that lacks the logs capability its own line, leaves every other failure in the alert, and claims no empty log", async () => {
   const harness = await lackHarness("mixed", [
     { machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." },
     { machineId: "old", machineName: "old", message: "Its stored logs are unreadable." },
@@ -300,6 +300,7 @@ it("gives a Server that lacks the logs capability its own line and leaves every 
     expect(screen.getByRole("alert").textContent).toContain("old: Its stored logs are unreadable.");
     expect(screen.getByRole("alert").textContent).not.toContain("unsupported");
     expect(screen.getByText("2 servers’ logs are missing")).toBeTruthy();
+    expect(screen.queryByText("No logs yet")).toBeNull();
   } finally {
     await harness.teardown();
   }
