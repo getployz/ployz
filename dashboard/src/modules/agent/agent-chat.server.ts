@@ -23,7 +23,7 @@ import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } fro
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { agentTracing, generationEvents } from "#/modules/agent/agent-telemetry.server";
+import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { AGENT, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
 import {
@@ -502,7 +502,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
       tools: agentTools(caller, run, request.runId, here),
       systemPrompts: [systemPrompt(caller, adapter.model)],
       middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run, here), limit.middleware,
-        agentTracing, generationEvents(posthog, caller)],
+        agentTracing, aiObservability(posthog, caller)],
       interrupts: [approvalInterrupt],
       agentLoopStrategy: maxIterations(STEP_LIMIT),
     };

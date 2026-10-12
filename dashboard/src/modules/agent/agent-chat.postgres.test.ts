@@ -1206,17 +1206,19 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
     yield* say("count them again", {}, model).pipe(Effect.provideService(PostHog, sink));
 
     expect(reported[1]?.promptTokensDetails?.cachedTokens).toBeGreaterThan(0);
-    expect(captured).toEqual(reported.map((usage, index) => {
+    expect(captured).toEqual(reported.flatMap((usage, index) => {
       const cacheRead = usage.promptTokensDetails?.cachedTokens ?? 0;
       const cacheWrite = usage.promptTokensDetails?.cacheWriteTokens ?? 0;
-      return {
+      const run = `run-${index + 1}`;
+      return [{
         userId: caller.userId,
         organizationId: ORGANIZATION,
         event: "$ai_generation",
         properties: {
-          $ai_trace_id: `run-${index + 1}`,
+          $ai_trace_id: run,
           $ai_session_id: THREAD,
           $ai_span_id: expect.any(String),
+          $ai_parent_id: run,
           $ai_provider: "fake",
           $ai_model: "fake-model",
           $ai_input_tokens: usage.promptTokens - cacheRead - cacheWrite,
@@ -1227,9 +1229,142 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
           $ai_latency: expect.any(Number),
           $ai_stream: true,
         },
-      };
+      }, {
+        userId: caller.userId,
+        organizationId: ORGANIZATION,
+        event: "$ai_trace",
+        properties: { $ai_trace_id: run, $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: false },
+      }];
     }));
     expect(JSON.stringify(captured)).not.toMatch(/count|services|two/i);
+  }));
+
+it.live("a turn's trace in PostHog nests each tool call under the model call that made it, and none of the words", () =>
+  Effect.gen(function* () {
+    const { caller, say } = yield* sidebar({ removeWeb: false });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "environment_show", input: { environment: "secretname" } }] }, { text: "All quiet." }]);
+    yield* say("look around", {}, model).pipe(Effect.provideService(PostHog, sink));
+
+    const envelope = { userId: caller.userId, organizationId: ORGANIZATION };
+    const generation = {
+      $ai_trace_id: "run-1",
+      $ai_session_id: THREAD,
+      $ai_parent_id: "run-1",
+      $ai_provider: "fake",
+      $ai_model: "fake-model",
+      $ai_input_tokens: expect.any(Number),
+      $ai_output_tokens: expect.any(Number),
+      $ai_cache_read_input_tokens: 0,
+      $ai_cache_creation_input_tokens: 0,
+      $ai_cache_reporting_exclusive: true,
+      $ai_latency: expect.any(Number),
+      $ai_stream: true,
+    };
+    expect(captured).toEqual([
+      { ...envelope, event: "$ai_generation", properties: { ...generation, $ai_span_id: expect.any(String), $ai_tools_called: "environment_show", $ai_tool_call_count: 1 } },
+      {
+        ...envelope,
+        event: "$ai_span",
+        properties: {
+          $ai_trace_id: "run-1",
+          $ai_session_id: THREAD,
+          $ai_span_id: expect.any(String),
+          $ai_parent_id: captured[0]?.properties?.["$ai_span_id"],
+          $ai_span_name: "environment_show",
+          $ai_latency: expect.any(Number),
+          $ai_is_error: true,
+        },
+      },
+      { ...envelope, event: "$ai_generation", properties: { ...generation, $ai_span_id: expect.any(String) } },
+      { ...envelope, event: "$ai_trace", properties: { $ai_trace_id: "run-1", $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: true } },
+    ]);
+    expect(captured[0]?.properties?.["$ai_span_id"]).not.toBe(captured[2]?.properties?.["$ai_span_id"]);
+    expect(JSON.stringify(captured)).not.toMatch(/look|around|quiet|secretname/i);
+  }));
+
+it.live("a refused tool call shows in PostHog as an error", () =>
+  Effect.gen(function* () {
+    const { say } = yield* sidebar({ removeWeb: true });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    yield* say("list services and deploy").pipe(Effect.provideService(PostHog, sink));
+
+    expect(captured.filter(({ event }) => event === "$ai_span").map(({ properties }) => [properties?.["$ai_span_name"], properties?.["$ai_is_error"]]))
+      .toEqual(expect.arrayContaining([["environment_show", false], ["deploy", true]]));
+    expect(captured.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_is_error: true } });
+  }));
+
+it.live("an approved call finished by a resumed run hangs under that run's trace in PostHog", () =>
+  Effect.gen(function* () {
+    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("publish"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    yield* resume("resolved").pipe(Effect.provideService(PostHog, sink));
+
+    const traced = captured.filter(({ event }) => event.startsWith("$ai_"));
+    expect(traced[0]).toMatchObject({
+      event: "$ai_span",
+      properties: { $ai_trace_id: "run-2", $ai_parent_id: "run-2", $ai_span_name: "publish", $ai_is_error: false },
+    });
+    expect(traced.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_trace_id: "run-2", $ai_is_error: false } });
+  }), 15_000);
+
+it.live("a tool name the catalog does not have reaches PostHog as unknown_tool, not as the model wrote it", () =>
+  Effect.gen(function* () {
+    const { provided, caller } = yield* sidebar({ removeWeb: false });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "my_password_is_hunter2", input: {} }] }, { text: "Done." }]);
+    yield* provided(agentChat(caller, { messages: [{ role: "user", content: "hello" }], threadId: THREAD, runId: "run-unknown" }, model))
+      .pipe(Effect.provideService(PostHog, sink), Effect.flatMap((stream) => Effect.promise(async () => { for await (const _ of stream); })));
+
+    expect(JSON.stringify(captured)).not.toMatch(/hunter2/);
+    expect(captured.find(({ event }) => event === "$ai_generation")?.properties).toMatchObject({ $ai_tools_called: "unknown_tool" });
+  }));
+
+it.live("a reply stopped mid-stream still closes its trace in PostHog", () =>
+  Effect.gen(function* () {
+    const { provided, caller } = yield* sidebar({ removeWeb: false });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const model = fakeText({ tokensPerSecond: 200 });
+    model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);
+    const abortController = new AbortController();
+    const stream = yield* provided(agentChat(caller, { messages: [{ role: "user", content: "explain" }], threadId: THREAD, runId: "run-stopped", abortController }, model))
+      .pipe(Effect.provideService(PostHog, sink));
+    yield* Effect.promise(async () => {
+      for await (const chunk of stream) if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) abortController.abort();
+    });
+
+    expect(captured.filter(({ event }) => event === "$ai_trace")).toEqual([
+      expect.objectContaining({ properties: { $ai_trace_id: "run-stopped", $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: false } }),
+    ]);
   }));
 
 it.live("Claude thinks as it sees fit and sends a summary of its thinking back", () =>
