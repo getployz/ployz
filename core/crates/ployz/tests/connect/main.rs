@@ -518,7 +518,28 @@ async fn a_refused_tail_names_the_capability_and_the_server() {
         "{stderr}"
     );
 
-    // The history already streamed lines, so the JSON stream ends partial with the sentence on stderr.
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_refused_tail_after_history_ends_the_json_stream_partial() {
+    let mut service = DiscoveryService::new(test_description());
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(listing_container(
+            'c',
+            'c',
+            "api",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ));
+    service.tail_failure = Some(Status::unimplemented(""));
+    let (address, server) = serve_discovery(service).await;
+
     let output = run_ployz(address, &["--json", "logs", "app/api", "--follow"]).await;
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();

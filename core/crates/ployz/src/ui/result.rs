@@ -293,7 +293,7 @@ impl Gaps {
     pub(crate) fn warn(&self) {
         for failure in &self.failures {
             if let Some(refusal) = crate::failure::Refusal::of(&failure.error) {
-                flag(&refusal.on(self.name(&failure.machine_id)).to_string());
+                flag(&refusal.naming(self.name(&failure.machine_id)).to_string());
                 continue;
             }
             flag(&format!(

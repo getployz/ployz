@@ -160,7 +160,6 @@ pub(super) struct DiscoveryService {
     pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
     pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
     pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
-    /// Every tail open answers this status instead of a stream.
     pub(super) tail_failure: Option<Status>,
     pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
     pub(super) metric_requests:

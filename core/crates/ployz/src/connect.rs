@@ -403,8 +403,6 @@ impl AsyncWrite for ChildIo {
     }
 }
 
-/// A bare refusal names the capability the target lacks. A domain refusal carries
-/// details already and passes through, as does every other error.
 #[must_use]
 pub fn name_refusal(mut error: RpcError, path: &str, target: &MachineTarget) -> RpcError {
     if error.code == RpcErrorCode::Unsupported
@@ -864,7 +862,6 @@ impl TransportError {
         self
     }
 
-    /// The refusal names the Machine as the reader knows it, not the id the call used.
     pub(crate) fn addressed_as(mut self, target: &str) -> Self {
         if let Some(details) = self
             .details

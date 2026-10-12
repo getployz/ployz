@@ -74,7 +74,6 @@ macro_rules! define_capabilities {
             matches!(path, $(concat!("/", $package, ".MachineRpc/", $unary_route))|+ | $(concat!("/", $package, ".MachineRpc/", $stream_route))|+)
         }
 
-        /// The capability that serves this exact RPC path.
         #[must_use]
         pub fn capability_of(path: &str) -> Option<&'static str> {
             match path {

@@ -252,7 +252,7 @@ impl Failure {
     #[must_use]
     pub fn report(&self) -> RpcError {
         let (code, mut details) = match &self.inner {
-            Inner::Command { error, .. } => match refusal(error.as_ref()) {
+            Inner::Command { error, .. } => match refusal_below_context(error.as_ref()) {
                 Some(refusal) => (RpcErrorCode::Unsupported, refusal.details),
                 None => classify(error.as_ref()),
             },
@@ -287,8 +287,7 @@ impl Failure {
     }
 }
 
-/// A refusal that names the capability its target lacks, anywhere below our own sentences.
-fn refusal(error: &(dyn Error + 'static)) -> Option<Refusal> {
+fn refusal_below_context(error: &(dyn Error + 'static)) -> Option<Refusal> {
     std::iter::successors(Some(error), |&link| link.source())
         .take_while(|link| !link.is::<Message>())
         .find_map(|link| {
@@ -297,7 +296,6 @@ fn refusal(error: &(dyn Error + 'static)) -> Option<Refusal> {
         })
 }
 
-/// A target that runs a Ployz too old to serve a capability.
 pub(crate) struct Refusal {
     target: String,
     capability: String,
@@ -309,8 +307,7 @@ impl Refusal {
         Self::new(&error.code, error.details.clone())
     }
 
-    /// The same refusal, naming the target as the reader knows it.
-    pub(crate) fn on(self, target: String) -> Self {
+    pub(crate) fn naming(self, target: String) -> Self {
         Self { target, ..self }
     }
 
@@ -778,7 +775,7 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command { error, .. } => match refusal(error.as_ref()) {
+            Inner::Command { error, .. } => match refusal_below_context(error.as_ref()) {
                 Some(refusal) => refusal.fmt(f),
                 None => error.fmt(f),
             },
