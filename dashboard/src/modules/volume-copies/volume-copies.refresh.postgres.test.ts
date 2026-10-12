@@ -24,6 +24,7 @@ vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 describe("Refresh now", () => {
   let harness: PostgresTestHarness;
   let blockers: string[];
+  let between: (() => Promise<void>) | null;
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
     Effect.provideService(InngestClient, inngest),
@@ -33,6 +34,9 @@ describe("Refresh now", () => {
         read: async (_: string, query: { query: string }) => {
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
           if (query.query === "deployment") return { status: "queued", in_flight: true, environment: { id: "env-1", project: "shop", name: "production" } };
+          const hook = between;
+          between = null;
+          await hook?.();
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
             volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }],
@@ -50,9 +54,11 @@ describe("Refresh now", () => {
   afterAll(async () => { await harness?.stop(); });
   beforeEach(async () => {
     blockers = [];
+    between = null;
     await harness.pool.query(`
       truncate table organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
+      insert into volume_placement (volume_id, organization_id, environment_id, mirrors) values ('${volumeId}', '${organizationId}', 'env-1', '["${web("web-2")}"]');
     `);
   });
 
@@ -76,7 +82,22 @@ describe("Refresh now", () => {
   it("leaves a Volume a Deploy is moving to that Deploy", async () => {
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
-    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "A deploy is moving this Volume", details: null } });
+    expect(await refresh()).toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
+    expect(await runs()).toEqual([]);
+  });
+
+  it("refuses when a Deploy stamps the Volume between the mirror check and the request", async () => {
+    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
+    between = async () => { await run(stampPlacements(organizationId, "env-1", "dep-1")); };
+    expect(await refresh()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+    expect(await runs()).toEqual([]);
+  });
+
+  it("refuses a Volume with no mirror", async () => {
+    await harness.pool.query(`update volume_placement set mirrors = '[]'`);
+    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "No mirror", details: null } });
+    await harness.pool.query(`delete from volume_placement`);
+    expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "No mirror", details: null } });
     expect(await runs()).toEqual([]);
   });
 
@@ -103,5 +124,17 @@ describe("Refresh now", () => {
     expect(await run(lastMirrorRefresh(organizationId, volumeId))).toMatchObject({ ended: { id: first.run.id }, done: { id: first.run.id } });
     await endRun(second.run.id, "lost");
     expect(await run(lastMirrorRefresh(organizationId, volumeId))).toMatchObject({ ended: { id: second.run.id, state: "lost" }, done: { id: first.run.id } });
+  });
+
+  it("finds the last good round behind more than 50 newer runs", async () => {
+    const first = await refresh();
+    if (!first.ok) throw new Error("expected a run");
+    await endRun(first.run.id, "done", "now() - interval '2 hours'");
+    await harness.pool.query(`
+      insert into volume_run (id, organization_id, environment_id, volume_id, volume_name, docker_volume, kind, args, state, finished_at, created_at)
+      select gen_random_uuid(), organization_id, environment_id, volume_id, volume_name, docker_volume, 'sync', args, 'failed', now(), now() + n * interval '1 second'
+      from volume_run, generate_series(1, 51) as n where id = $1
+    `, [first.run.id]);
+    expect(await run(lastMirrorRefresh(organizationId, volumeId))).toMatchObject({ ended: { state: "failed" }, done: { id: first.run.id } });
   });
 });

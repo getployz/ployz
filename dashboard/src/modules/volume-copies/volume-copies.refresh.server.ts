@@ -1,13 +1,15 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { type BlockerReader, placementRefusal, readPlacementBlockers } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { requestUnclaimedRun } from "#/modules/volume-placement/volume-placement.server";
+import { volumeRun } from "#/modules/volume-run/tables";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
-import { listVolumeRuns, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { listVolumeRuns, volumeRunView } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 const busy = (message: string): StoreRefusal => ({ code: "conflict", message, details: null });
@@ -25,10 +27,10 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   const refusal = yield* placementRefusal(caller.organizationId, read);
   if (refusal !== null) return { ok: false, refusal } as const;
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ deploymentId: volumePlacement.deploymentId }).from(volumePlacement)
+  const [row] = yield* drizzle.select({ mirrors: volumePlacement.mirrors }).from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, volumeId)));
-  if (row?.deploymentId != null) return { ok: false, refusal: busy("A deploy is moving this Volume") } as const;
-  const requested = yield* requestVolumeRun(caller, { volumeId, environment, kind: "sync", args: { full: false } });
+  if (!row?.mirrors?.length) return { ok: false, refusal: busy("No mirror") } as const;
+  const requested = yield* requestUnclaimedRun(caller, { volumeId, environment, kind: "sync", args: { full: false } });
   if (requested.ok) return requested;
   const runs = yield* listVolumeRuns(caller.organizationId, volumeId);
   const active = runs.find((run) => ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state));
@@ -41,7 +43,12 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
  * ended done, which ages a mirror whose Server stopped answering.
  */
 export const lastMirrorRefresh = Effect.fn("VolumeCopies.lastMirrorRefresh")(function* (organizationId: string, volumeId: string) {
-  const rounds = (yield* listVolumeRuns(organizationId, volumeId)).filter((run) => run.kind === "sync" && run.finished_at !== null);
-  return { ended: rounds[0] ?? null, done: rounds.find((run) => run.state === "done") ?? null };
+  const { drizzle } = yield* Database;
+  const newest = (filter: SQL) => Effect.map(
+    drizzle.select().from(volumeRun)
+      .where(and(eq(volumeRun.organizationId, organizationId), eq(volumeRun.volumeId, volumeId), eq(volumeRun.kind, "sync"), filter))
+      .orderBy(desc(volumeRun.createdAt), desc(volumeRun.id)).limit(1),
+    ([row]) => row === undefined ? null : volumeRunView(row),
+  );
+  return yield* Effect.all({ ended: newest(isNotNull(volumeRun.finishedAt)), done: newest(eq(volumeRun.state, "done")) });
 });
-
