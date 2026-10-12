@@ -37,6 +37,12 @@ pub(crate) struct FakeDocker {
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) reject_list: Arc<AtomicBool>,
+    /// Named mode: every stop fails and leaves the Container as it was.
+    pub(crate) refuse_stop: Arc<AtomicBool>,
+    /// Named mode: a stop lands and the next inspect sees it, then a restart policy
+    /// brings the Container back for every inspect after that.
+    pub(crate) restart_after_stop: Arc<AtomicBool>,
+    pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
 }
 
@@ -102,10 +108,34 @@ async fn fake_docker(
                     .into_response();
             };
             if method == Method::GET {
+                if fake.stopped_once.lock().unwrap().remove(&name) {
+                    containers.get_mut(&name).unwrap()["State"] =
+                        serde_json::json!({"Status": "running", "Running": true});
+                }
                 return Json(container).into_response();
             }
             if method == Method::DELETE {
                 containers.remove(&name);
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
+                if fake.refuse_stop.load(Ordering::SeqCst) && path.ends_with("/stop") {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"message":"cannot stop container"})),
+                    )
+                        .into_response();
+                }
+                let status = if path.ends_with("/start") {
+                    "running"
+                } else {
+                    if fake.restart_after_stop.load(Ordering::SeqCst) {
+                        fake.stopped_once.lock().unwrap().insert(name.clone());
+                    }
+                    "exited"
+                };
+                let container = containers.get_mut(&name).unwrap();
+                container["State"] = serde_json::json!({"Status": status, "ExitCode": 0});
                 return StatusCode::NO_CONTENT.into_response();
             }
             panic!("unexpected implicit lifecycle action: {method} {path}");

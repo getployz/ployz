@@ -7,7 +7,19 @@ pub use enabled::{hold_task, kill_after_record, kill_inside, leak_memory};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 4] = ["StartReceive", "Close", "Promote", "StartHandedContainer"];
+const LONG_EFFECTS: [&str; 11] = [
+    "StartReceive",
+    "Close",
+    "Promote",
+    "StartHandedContainer",
+    "SetVolumeCopy.WriterToMirror",
+    "SetVolumeCopy.WriterToSnapshot",
+    "SetVolumeCopy.WriterToForget",
+    "SetVolumeCopy.MirrorToWriter",
+    "SetVolumeCopy.MirrorToMirror",
+    "SetVolumeCopy.MirrorToForget",
+    "SetVolumeCopy.NoneToMirror",
+];
 
 #[cfg(not(feature = "verify-faults"))]
 pub(crate) async fn apply(_verb: &'static str) {}

@@ -796,6 +796,12 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn set_volume_copy(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn seed_volume(
         &self,
         _request: Request<OpaquePayload>,

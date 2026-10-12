@@ -287,6 +287,21 @@ impl ContainerRuntime {
         result
     }
 
+    /// The Container an earlier create under `key` left behind, so a resend adopts it
+    /// instead of making a second one.
+    pub(crate) async fn find_creation(
+        &self,
+        machine: &Machine,
+        namespace: &Namespace,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+        key: &str,
+    ) -> Result<Option<ContainerCreated>, Error> {
+        let name = creation_name(&machine.id, namespace, kind, key);
+        self.matching_creation(machine, namespace, kind, spec, &name, key)
+            .await
+    }
+
     async fn matching_creation(
         &self,
         machine: &Machine,

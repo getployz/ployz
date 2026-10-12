@@ -242,6 +242,18 @@ impl LocalMachine {
         .await?
     }
 
+    /// Run `work` holding the installation guard and no turn. `work` takes the turns it
+    /// needs itself, so a drain inside it never holds one. Detached like admitted work.
+    async fn finish_installed<T, F, Fut>(&self, work: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(crate::mutation::MutationGuard) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let installation = self.admit_installation()?;
+        tokio::spawn(work(installation)).await?
+    }
+
     #[cfg(test)]
     pub(crate) async fn hold_mutation_for_test(
         &self,

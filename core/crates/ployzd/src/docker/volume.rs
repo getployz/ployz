@@ -7,9 +7,9 @@ use bollard::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineId, Namespace, QualifiedService, ResolvedServiceSpec,
-    ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
+    ContainerId, CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId,
+    DockerVolumeName, DockerVolumeStorageObservation, MachineId, Namespace, QualifiedService,
+    ResolvedServiceSpec, ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -282,6 +282,32 @@ impl ContainerRuntime {
                 }
             }
         }
+    }
+
+    /// Every Container, running or not, that mounts the Docker Volume `name`.
+    pub(crate) async fn volume_holder_ids(
+        &self,
+        name: &DockerVolumeName,
+    ) -> Result<Vec<ContainerId>, Error> {
+        let filters = HashMap::from([("volume", vec![name.as_str()])]);
+        self.docker
+            .client
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default()
+                    .all(true)
+                    .filters(&filters)
+                    .build(),
+            ))
+            .await?
+            .into_iter()
+            .filter_map(|container| container.id)
+            .map(|id| {
+                ContainerId::parse(id).map_err(|source| Error::InvalidValue {
+                    field: "container ID",
+                    source,
+                })
+            })
+            .collect()
     }
 
     async fn volume_holders(

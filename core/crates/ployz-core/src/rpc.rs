@@ -1,9 +1,8 @@
 use crate::{
     CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
     InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SeedVolumeRequest, ServiceVolumeRequest,
-    SetVolumeCopyReply, SetVolumeCopyRequest,
-    SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
-    WarmRequest,
+    SetVolumeCopyReply, SetVolumeCopyRequest, SourceContainerRequest, StartReceiveRequest,
+    StorageCapacity, SwitchReply, VolumeCopyView, WarmRequest,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{

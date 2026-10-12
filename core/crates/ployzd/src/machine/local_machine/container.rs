@@ -3,10 +3,11 @@
 use std::sync::Arc;
 
 use ployz_core::{
-    ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
-    CreateVolumeRequest, DockerVolumeName, ImageIngestOpened, ImageIngestReason, ImagePulled,
-    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
-    PullImageFromMachineRequest, ResolvedServiceSpec, VolumeRemoved,
+    ContainerChanged, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, CopyRefusal, CreateVolumeReport, CreateVolumeRequest,
+    DockerVolumeName, Drain, ImageIngestOpened, ImageIngestReason, ImagePulled, ImagesRemoved,
+    LocalMachinePhase, MachineStorageObservation, Namespace, PullImageFromMachineRequest,
+    ResolvedServiceSpec, StopOptions, VolumeRemoved,
 };
 
 use super::super::ingress::admit_ingress_service;
@@ -241,6 +242,89 @@ impl LocalMachine {
         .await
     }
 
+    /// Take one running managed Container out of ingress, wait `drain`, stop it.
+    ///
+    /// Contract: the caller holds `installation` and no admission turn. The
+    /// helper takes the exclusive turn for the Docker stop itself, so a caller
+    /// already holding a turn deadlocks.
+    ///
+    /// The stopping mark is set without a turn so replication tells every proxy
+    /// while the drain sleeps. The stop clears the mark whether it succeeds or
+    /// fails, so a Container that failed to stop is routed again. A daemon
+    /// restart forgets the mark; a still-running Container returns to ingress
+    /// and the resend redoes the drain.
+    ///
+    /// Polls no proxy, takes no lease, reads no other Machine.
+    pub(crate) async fn stop_behind_ingress(
+        &self,
+        installation: &crate::mutation::MutationGuard,
+        container: &ContainerId,
+        drain: Drain,
+        stop: &StopOptions,
+    ) -> Result<ContainerObservation, Error> {
+        let _ = installation;
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let machine_id = self.record().id();
+        let observed = containers.inspect_managed(container, &machine_id).await?;
+        if !is_running(&observed) {
+            return Ok(observed);
+        }
+        containers.mark_stopping(*container);
+        tokio::time::sleep(drain.as_duration()).await;
+        let turn = self.owner.admission_lock().write_owned().await;
+        let stopped = containers
+            .stop(
+                container,
+                stop.signal.as_deref(),
+                stop.grace_period_seconds.map(i32::from),
+            )
+            .await;
+        drop(turn);
+        stopped?;
+        Ok(containers.inspect_managed(container, &machine_id).await?)
+    }
+
+    /// The cut's Container half: drain and stop every holder of the Volume, then run
+    /// `zfs` under the exclusive turn once no holder runs. A holder that still runs
+    /// under the turn, or that the stop left running, is `Busy` and the root stays a
+    /// writer.
+    ///
+    /// Detached from the RPC with the installation held, so a caller that hangs up
+    /// does not abandon a half-stopped Container.
+    pub(crate) async fn cut_volume_copy<Z, Fut>(
+        &self,
+        holders: Vec<ContainerId>,
+        drain: Drain,
+        zfs: Z,
+    ) -> Result<Result<(), CopyRefusal>, Error>
+    where
+        Z: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
+    {
+        let local = self.clone();
+        self.finish_installed(move |installation| async move {
+            let stop = StopOptions::default();
+            for holder in &holders {
+                let observed = local
+                    .stop_behind_ingress(&installation, holder, drain, &stop)
+                    .await?;
+                if is_running(&observed) {
+                    return Ok(Err(CopyRefusal::Busy));
+                }
+            }
+            let _turn = local.owner.admission_lock().write_owned().await;
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            let machine_id = local.record().id();
+            for holder in &holders {
+                if is_running(&containers.inspect_managed(holder, &machine_id).await?) {
+                    return Ok(Err(CopyRefusal::Busy));
+                }
+            }
+            zfs().await.map(Ok)
+        })
+        .await
+    }
+
     /// Create one local Docker Volume while holding Machine mutation admission.
     ///
     /// # Errors
@@ -396,6 +480,17 @@ impl LocalMachine {
             )
             .await
     }
+}
+
+/// Whether Docker still runs the Container's process. Paused and restarting count as
+/// running: both can write the Volume again without a start.
+fn is_running(observed: &ContainerObservation) -> bool {
+    matches!(
+        observed.runtime,
+        ContainerRuntimeObservation::Running { .. }
+            | ContainerRuntimeObservation::Paused
+            | ContainerRuntimeObservation::Restarting
+    )
 }
 
 #[cfg(test)]

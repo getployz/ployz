@@ -737,6 +737,13 @@ impl MachineRpc for MachineService {
         respond(reply)
     }
 
+    async fn set_volume_copy(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        self.set_copy(request).await
+    }
+
     async fn start_handed_container(
         &self,
         request: Request<OpaquePayload>,
@@ -1520,3 +1527,5 @@ fn internal_response(error: impl std::error::Error + 'static) -> Status {
 #[cfg(test)]
 #[path = "local_tests.rs"]
 mod tests;
+#[path = "local_volume_copy.rs"]
+mod volume_copy;

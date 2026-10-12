@@ -155,6 +155,10 @@ pub enum ExpectedCopy {
 /// The copy the sender wants this Machine to hold.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a Writer start carries the whole resolved spec; one request holds one"
+)]
 pub enum WantedCopy {
     /// A writable root whose newest snapshot is `at`, numbered `epoch`, with its
     /// Container running when `start` is given.
@@ -184,6 +188,11 @@ pub enum WantedCopy {
 /// The Container a Writer runs: one Docker already holds, or one to create under a key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(rename = "CopyStart")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a Create carries the whole resolved spec; one request holds one"
+)]
 pub enum Start {
     Kept {
         container_id: ContainerId,
@@ -239,7 +248,12 @@ impl SetVolumeCopyRefused {
     pub fn rpc_error(self, message: impl Into<String>) -> RpcError {
         let code = match self.reason {
             CopyRefusal::NoCapacity => RpcErrorCode::Unavailable,
-            _ => RpcErrorCode::Conflict,
+            CopyRefusal::Mismatch
+            | CopyRefusal::NoTransition
+            | CopyRefusal::Busy
+            | CopyRefusal::Behind
+            | CopyRefusal::Written
+            | CopyRefusal::NoSource => RpcErrorCode::Conflict,
         };
         RpcError {
             code,
@@ -358,10 +372,7 @@ pub fn plan(
             }
             Refuse(CopyRefusal::Behind)
         }
-        (
-            Some(VolumeCopy::Slot { newest, pull, .. }),
-            WantedCopy::Mirror { from, target, .. },
-        ) => {
+        (Some(VolumeCopy::Slot { newest, pull, .. }), WantedCopy::Mirror { from, target, .. }) => {
             if pull.is_none() && newest.as_ref().is_some_and(|newest| newest.name == *target) {
                 return AtWant;
             }
@@ -467,6 +478,15 @@ mod tests {
         newest: SnapshotGuid::new(10),
     };
 
+    type Row = (
+        &'static str,
+        Option<VolumeCopy>,
+        bool,
+        ExpectedCopy,
+        WantedCopy,
+        CopyPlan,
+    );
+
     #[test]
     fn plans_every_cell_of_the_table() {
         use CopyPlan::{AtWant, Refuse, Transition};
@@ -478,50 +498,331 @@ mod tests {
             target: "f-1".parse().unwrap(),
             failure: None,
         };
-        let table: &[(&str, Option<VolumeCopy>, bool, ExpectedCopy, WantedCopy, CopyPlan)] = &[
+        let table: &[Row] = &[
             // Writer wants.
-            ("writer at want", Some(root(1, false, Some(g.clone()))), false, WRITER_1, writer(10, 1, false), AtWant),
-            ("writer at want, start running", Some(root(1, false, Some(g.clone()))), true, ExpectedCopy::None, writer(10, 1, true), AtWant),
-            ("writer start stopped resumes whatever expect", Some(root(1, false, Some(g.clone()))), false, MIRROR_AT_10, writer(10, 1, true), Transition(WriterToWriter)),
-            ("readonly root at want resumes", Some(root(1, true, Some(g.clone()))), false, WRITER_1, writer(10, 1, false), Transition(WriterToWriter)),
-            ("writer other epoch refuses", Some(root(1, false, Some(g.clone()))), false, WRITER_1, writer(10, 2, false), Refuse(NoTransition)),
-            ("writer other epoch, expect mismatch", Some(root(1, false, Some(g.clone()))), false, ExpectedCopy::None, writer(10, 2, false), Refuse(Mismatch)),
-            ("writer behind", Some(root(1, false, Some(w.clone()))), false, WRITER_1, writer(10, 1, false), Refuse(Behind)),
-            ("writer no snapshot", Some(root(1, false, None)), false, WRITER_1, writer(10, 1, false), Refuse(Behind)),
-            ("mirror to writer", Some(slot(Some(g.clone()), None)), false, MIRROR_AT_10, writer(10, 2, true), Transition(MirrorToWriter)),
-            ("mirror to writer behind", Some(slot(Some(w.clone()), None)), false, ExpectedCopy::Mirror { newest: SnapshotGuid::new(9) }, writer(10, 2, true), Refuse(Behind)),
-            ("mirror to writer mismatch", Some(slot(Some(g.clone()), None)), false, ExpectedCopy::Mirror { newest: SnapshotGuid::new(9) }, writer(10, 2, true), Refuse(Mismatch)),
-            ("none to writer", None, false, ExpectedCopy::None, writer(10, 1, true), Refuse(NoTransition)),
-            ("none to writer mismatch", None, false, WRITER_1, writer(10, 1, true), Refuse(Mismatch)),
+            (
+                "writer at want",
+                Some(root(1, false, Some(g.clone()))),
+                false,
+                WRITER_1,
+                writer(10, 1, false),
+                AtWant,
+            ),
+            (
+                "writer at want, start running",
+                Some(root(1, false, Some(g.clone()))),
+                true,
+                ExpectedCopy::None,
+                writer(10, 1, true),
+                AtWant,
+            ),
+            (
+                "writer start stopped resumes whatever expect",
+                Some(root(1, false, Some(g.clone()))),
+                false,
+                MIRROR_AT_10,
+                writer(10, 1, true),
+                Transition(WriterToWriter),
+            ),
+            (
+                "readonly root at want resumes",
+                Some(root(1, true, Some(g.clone()))),
+                false,
+                WRITER_1,
+                writer(10, 1, false),
+                Transition(WriterToWriter),
+            ),
+            (
+                "writer other epoch refuses",
+                Some(root(1, false, Some(g.clone()))),
+                false,
+                WRITER_1,
+                writer(10, 2, false),
+                Refuse(NoTransition),
+            ),
+            (
+                "writer other epoch, expect mismatch",
+                Some(root(1, false, Some(g.clone()))),
+                false,
+                ExpectedCopy::None,
+                writer(10, 2, false),
+                Refuse(Mismatch),
+            ),
+            (
+                "writer behind",
+                Some(root(1, false, Some(w.clone()))),
+                false,
+                WRITER_1,
+                writer(10, 1, false),
+                Refuse(Behind),
+            ),
+            (
+                "writer no snapshot",
+                Some(root(1, false, None)),
+                false,
+                WRITER_1,
+                writer(10, 1, false),
+                Refuse(Behind),
+            ),
+            (
+                "mirror to writer",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                MIRROR_AT_10,
+                writer(10, 2, true),
+                Transition(MirrorToWriter),
+            ),
+            (
+                "mirror to writer behind",
+                Some(slot(Some(w.clone()), None)),
+                false,
+                ExpectedCopy::Mirror {
+                    newest: SnapshotGuid::new(9),
+                },
+                writer(10, 2, true),
+                Refuse(Behind),
+            ),
+            (
+                "mirror to writer mismatch",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                ExpectedCopy::Mirror {
+                    newest: SnapshotGuid::new(9),
+                },
+                writer(10, 2, true),
+                Refuse(Mismatch),
+            ),
+            (
+                "none to writer",
+                None,
+                false,
+                ExpectedCopy::None,
+                writer(10, 1, true),
+                Refuse(NoTransition),
+            ),
+            (
+                "none to writer mismatch",
+                None,
+                false,
+                WRITER_1,
+                writer(10, 1, true),
+                Refuse(Mismatch),
+            ),
             // Mirror wants.
-            ("the cut", Some(root(1, false, Some(w.clone()))), false, WRITER_1, mirror(false, "f-1"), Transition(WriterToMirror)),
-            ("the cut resumed on a readonly root", Some(root(1, true, Some(g.clone()))), false, WRITER_1, mirror(false, "f-1"), Transition(WriterToMirror)),
-            ("the cut mismatch", Some(root(2, false, Some(w.clone()))), false, WRITER_1, mirror(false, "f-1"), Refuse(Mismatch)),
-            ("mirror at want", Some(slot(Some(g.clone()), None)), false, ExpectedCopy::None, mirror(true, "f-1"), AtWant),
-            ("mirror landed but not pruned", Some(slot(Some(g.clone()), Some(pull.clone()))), false, MIRROR_AT_10, mirror(true, "f-1"), Transition(MirrorToMirror)),
-            ("mirror pull", Some(slot(Some(w.clone()), None)), false, ExpectedCopy::Mirror { newest: SnapshotGuid::new(9) }, mirror(true, "f-1"), Transition(MirrorToMirror)),
-            ("mirror pull mismatch", Some(slot(Some(w.clone()), None)), false, MIRROR_AT_10, mirror(true, "f-1"), Refuse(Mismatch)),
-            ("mirror pull no source", Some(slot(Some(w.clone()), None)), false, ExpectedCopy::Mirror { newest: SnapshotGuid::new(9) }, mirror(false, "f-1"), Refuse(NoSource)),
-            ("empty slot counts as none", Some(slot(None, None)), false, ExpectedCopy::None, mirror(true, "f-1"), Transition(MirrorToMirror)),
-            ("none to mirror", None, false, ExpectedCopy::None, mirror(true, "f-1"), Transition(NoneToMirror)),
-            ("none to mirror no source", None, false, ExpectedCopy::None, mirror(false, "f-1"), Refuse(NoSource)),
-            ("none to mirror mismatch", None, false, MIRROR_AT_10, mirror(true, "f-1"), Refuse(Mismatch)),
+            (
+                "the cut",
+                Some(root(1, false, Some(w.clone()))),
+                false,
+                WRITER_1,
+                mirror(false, "f-1"),
+                Transition(WriterToMirror),
+            ),
+            (
+                "the cut resumed on a readonly root",
+                Some(root(1, true, Some(g.clone()))),
+                false,
+                WRITER_1,
+                mirror(false, "f-1"),
+                Transition(WriterToMirror),
+            ),
+            (
+                "the cut mismatch",
+                Some(root(2, false, Some(w.clone()))),
+                false,
+                WRITER_1,
+                mirror(false, "f-1"),
+                Refuse(Mismatch),
+            ),
+            (
+                "mirror at want",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                ExpectedCopy::None,
+                mirror(true, "f-1"),
+                AtWant,
+            ),
+            (
+                "mirror landed but not pruned",
+                Some(slot(Some(g.clone()), Some(pull.clone()))),
+                false,
+                MIRROR_AT_10,
+                mirror(true, "f-1"),
+                Transition(MirrorToMirror),
+            ),
+            (
+                "mirror pull",
+                Some(slot(Some(w.clone()), None)),
+                false,
+                ExpectedCopy::Mirror {
+                    newest: SnapshotGuid::new(9),
+                },
+                mirror(true, "f-1"),
+                Transition(MirrorToMirror),
+            ),
+            (
+                "mirror pull mismatch",
+                Some(slot(Some(w.clone()), None)),
+                false,
+                MIRROR_AT_10,
+                mirror(true, "f-1"),
+                Refuse(Mismatch),
+            ),
+            (
+                "mirror pull no source",
+                Some(slot(Some(w.clone()), None)),
+                false,
+                ExpectedCopy::Mirror {
+                    newest: SnapshotGuid::new(9),
+                },
+                mirror(false, "f-1"),
+                Refuse(NoSource),
+            ),
+            (
+                "empty slot counts as none",
+                Some(slot(None, None)),
+                false,
+                ExpectedCopy::None,
+                mirror(true, "f-1"),
+                Transition(MirrorToMirror),
+            ),
+            (
+                "none to mirror",
+                None,
+                false,
+                ExpectedCopy::None,
+                mirror(true, "f-1"),
+                Transition(NoneToMirror),
+            ),
+            (
+                "none to mirror no source",
+                None,
+                false,
+                ExpectedCopy::None,
+                mirror(false, "f-1"),
+                Refuse(NoSource),
+            ),
+            (
+                "none to mirror mismatch",
+                None,
+                false,
+                MIRROR_AT_10,
+                mirror(true, "f-1"),
+                Refuse(Mismatch),
+            ),
             // Snapshot wants.
-            ("snapshot at want", Some(root(1, false, Some(g.clone()))), false, ExpectedCopy::None, snapshot_want("f-1"), AtWant),
-            ("snapshot", Some(root(1, false, Some(w.clone()))), false, WRITER_1, snapshot_want("f-1"), Transition(WriterToSnapshot)),
-            ("first snapshot", Some(root(1, false, None)), false, WRITER_1, snapshot_want("w-1-1"), Transition(WriterToSnapshot)),
-            ("snapshot mismatch", Some(root(1, false, Some(w.clone()))), false, ExpectedCopy::None, snapshot_want("f-1"), Refuse(Mismatch)),
-            ("snapshot on a mirror", Some(slot(Some(g.clone()), None)), false, MIRROR_AT_10, snapshot_want("f-2"), Refuse(NoTransition)),
-            ("snapshot on a mirror mismatch", Some(slot(Some(g.clone()), None)), false, WRITER_1, snapshot_want("f-2"), Refuse(Mismatch)),
-            ("snapshot on nothing", None, false, ExpectedCopy::None, snapshot_want("f-2"), Refuse(NoTransition)),
+            (
+                "snapshot at want",
+                Some(root(1, false, Some(g.clone()))),
+                false,
+                ExpectedCopy::None,
+                snapshot_want("f-1"),
+                AtWant,
+            ),
+            (
+                "snapshot",
+                Some(root(1, false, Some(w.clone()))),
+                false,
+                WRITER_1,
+                snapshot_want("f-1"),
+                Transition(WriterToSnapshot),
+            ),
+            (
+                "first snapshot",
+                Some(root(1, false, None)),
+                false,
+                WRITER_1,
+                snapshot_want("w-1-1"),
+                Transition(WriterToSnapshot),
+            ),
+            (
+                "snapshot mismatch",
+                Some(root(1, false, Some(w.clone()))),
+                false,
+                ExpectedCopy::None,
+                snapshot_want("f-1"),
+                Refuse(Mismatch),
+            ),
+            (
+                "snapshot on a mirror",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                MIRROR_AT_10,
+                snapshot_want("f-2"),
+                Refuse(NoTransition),
+            ),
+            (
+                "snapshot on a mirror mismatch",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                WRITER_1,
+                snapshot_want("f-2"),
+                Refuse(Mismatch),
+            ),
+            (
+                "snapshot on nothing",
+                None,
+                false,
+                ExpectedCopy::None,
+                snapshot_want("f-2"),
+                Refuse(NoTransition),
+            ),
             // Forget wants.
-            ("forget at want on a bare root", Some(root(1, false, None)), false, MIRROR_AT_10, WantedCopy::Forget, AtWant),
-            ("forget", Some(root(1, false, Some(g.clone()))), false, WRITER_1, WantedCopy::Forget, Transition(WriterToForget)),
-            ("forget mismatch", Some(root(1, false, Some(g.clone()))), false, ExpectedCopy::None, WantedCopy::Forget, Refuse(Mismatch)),
-            ("destroy the slot", Some(slot(Some(g.clone()), None)), false, MIRROR_AT_10, WantedCopy::Forget, Transition(MirrorToForget)),
-            ("destroy an empty slot", Some(slot(None, None)), false, ExpectedCopy::None, WantedCopy::Forget, Transition(MirrorToForget)),
-            ("destroy the slot mismatch", Some(slot(Some(g.clone()), None)), false, ExpectedCopy::None, WantedCopy::Forget, Refuse(Mismatch)),
-            ("forget nothing", None, false, WRITER_1, WantedCopy::Forget, AtWant),
+            (
+                "forget at want on a bare root",
+                Some(root(1, false, None)),
+                false,
+                MIRROR_AT_10,
+                WantedCopy::Forget,
+                AtWant,
+            ),
+            (
+                "forget",
+                Some(root(1, false, Some(g.clone()))),
+                false,
+                WRITER_1,
+                WantedCopy::Forget,
+                Transition(WriterToForget),
+            ),
+            (
+                "forget mismatch",
+                Some(root(1, false, Some(g.clone()))),
+                false,
+                ExpectedCopy::None,
+                WantedCopy::Forget,
+                Refuse(Mismatch),
+            ),
+            (
+                "destroy the slot",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                MIRROR_AT_10,
+                WantedCopy::Forget,
+                Transition(MirrorToForget),
+            ),
+            (
+                "destroy an empty slot",
+                Some(slot(None, None)),
+                false,
+                ExpectedCopy::None,
+                WantedCopy::Forget,
+                Transition(MirrorToForget),
+            ),
+            (
+                "destroy the slot mismatch",
+                Some(slot(Some(g.clone()), None)),
+                false,
+                ExpectedCopy::None,
+                WantedCopy::Forget,
+                Refuse(Mismatch),
+            ),
+            (
+                "forget nothing",
+                None,
+                false,
+                WRITER_1,
+                WantedCopy::Forget,
+                AtWant,
+            ),
         ];
         for (case, copy, start_running, expect, want, expected) in table {
             assert_eq!(
@@ -536,16 +837,22 @@ mod tests {
     fn wire_bounds_hold_at_deserialize() {
         assert!(serde_json::from_str::<Drain>("30000").is_ok());
         assert_eq!(
-            serde_json::from_str::<Drain>("30001").unwrap_err().to_string(),
+            serde_json::from_str::<Drain>("30001")
+                .unwrap_err()
+                .to_string(),
             "a drain must be at most 30000 ms; this one is 30001"
         );
         assert_eq!(
-            serde_json::from_str::<CreationKey>("\"\"").unwrap_err().to_string(),
+            serde_json::from_str::<CreationKey>("\"\"")
+                .unwrap_err()
+                .to_string(),
             "a creation key must not be empty"
         );
         let long = format!("\"{}\"", "k".repeat(513));
         assert_eq!(
-            serde_json::from_str::<CreationKey>(&long).unwrap_err().to_string(),
+            serde_json::from_str::<CreationKey>(&long)
+                .unwrap_err()
+                .to_string(),
             "a creation key must be at most 512 bytes; this one is 513"
         );
         assert_eq!(

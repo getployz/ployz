@@ -1652,3 +1652,286 @@ async fn a_handed_start_replayed_after_a_crash_inside_create_registers_the_volum
     server.abort();
     std::fs::remove_dir_all(data_dir).unwrap();
 }
+
+mod set_volume_copy {
+    //! The daemon half of SetVolumeCopy against a fake Docker and a fake plugin: the
+    //! Container side of the cut and of a Writer start, and the refusals that stop
+    //! before any ZFS effect.
+
+    use super::*;
+    use crate::{
+        docker::test_support::{FakeDocker, provisioned_source, spec_with_sources},
+        storage::test_support::FakePlugin,
+        volume_copy::{CUT_ROUTE, INSPECT_ROUTE, WRITER_ROUTE},
+    };
+    use ployz_core::{RpcError, RpcResponse, SetVolumeCopyReply};
+    use serde_json::{Value, json};
+
+    const VOLUME: &str = "app_data";
+
+    fn writer_root(epoch: u32, newest: Option<Value>) -> Value {
+        json!({"Ok": {"kind":"root", "writer":{"phase":"idle"}, "readonly":false,
+            "newest":newest, "epoch":epoch}})
+    }
+
+    fn slot(newest: Option<Value>) -> Value {
+        json!({"Ok": {"kind":"slot", "mirror":{"phase":"idle"}, "readonly":true,
+            "newest":newest, "resume_token":null, "pull":null}})
+    }
+
+    fn snapshot(name: &str, guid: u64) -> Value {
+        json!({"name":name, "guid":guid.to_string(), "created_unix_seconds":1_700_000_000})
+    }
+
+    fn spec() -> Value {
+        serde_json::to_value(spec_with_sources(vec![provisioned_source(
+            "data",
+            1_073_741_824,
+        )]))
+        .unwrap()
+    }
+
+    async fn set_copy(service: &MachineService, request: Value) -> RpcResponse {
+        service
+            .set_volume_copy(Request::new(
+                op::SetVolumeCopy::into_request(serde_json::from_value(request).unwrap())
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+    }
+
+    fn reply(response: &RpcResponse) -> SetVolumeCopyReply {
+        response
+            .clone()
+            .decode::<op::SetVolumeCopy>()
+            .unwrap_or_else(|error| panic!("{error}: {response:?}"))
+    }
+
+    fn refusal(response: &RpcResponse) -> RpcError {
+        let RpcResponseBody::Error(error) = &response.body else {
+            panic!("expected a refusal, got {response:?}");
+        };
+        error.clone()
+    }
+
+    fn cut(expect: Value) -> Value {
+        json!({"name":VOLUME, "expect":expect,
+            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0}})
+    }
+
+    /// A running Container that mounts the Volume, as Docker lists it for the cut.
+    async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+        use ployz_core::CreateContainerRequest;
+        let created = service
+            .create_container(Request::new(
+                op::CreateContainer::into_request(CreateContainerRequest {
+                    deployment_id: None,
+                    creation_key: None,
+                    kind: ContainerKind::ServiceContainer,
+                    namespace: Namespace::parse("app").unwrap(),
+                    registry_auth: None,
+                    resolved_spec: serde_json::from_value(spec()).unwrap(),
+                })
+                .encode()
+                .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::CreateContainer>()
+            .unwrap();
+        for container in fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            container["State"] = json!({"Status":"running", "Running":true});
+        }
+        fake.volume_users.lock().unwrap().insert(
+            VOLUME.into(),
+            vec![json!({"Id": created.container_id.to_string()})],
+        );
+        created.container_id
+    }
+
+    fn holder_status(fake: &FakeDocker) -> Vec<Value> {
+        fake.named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values()
+            .map(|container| {
+                container
+                    .pointer("/State/Status")
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn the_cut_stops_the_holder_and_keeps_it_once_the_root_is_parked() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-cut").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        plugin.on(CUT_ROUTE, move || {
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 7))));
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let first = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(holder_status(&fake), vec![json!("exited")]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
+        );
+
+        let again = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
+        assert_eq!(again, first);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cut_whose_stop_fails_leaves_the_writer_untouched() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-stop").await;
+        fake.refuse_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
+        assert_eq!(error.code, RpcErrorCode::Internal, "{error:?}");
+        assert!(
+            error
+                .cause
+                .iter()
+                .any(|cause| cause.contains("cannot stop container")),
+            "{error:?}"
+        );
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_holder_that_restarts_before_the_zfs_turn_refuses_busy() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-busy").await;
+        fake.restart_after_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        assert_eq!(error.details["reason"], json!("busy"));
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_mismatched_expect_refuses_before_any_effect() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-mismatch").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+
+        let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":1}))).await);
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        assert_eq!(error.details["reason"], json!("mismatch"));
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_replayed_writer_create_finds_the_same_container_by_its_key() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-create").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 900))));
+        plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+        let replies = plugin.replies.clone();
+        plugin.on(WRITER_ROUTE, move || {
+            replies.lock().unwrap().insert(
+                INSPECT_ROUTE.into(),
+                writer_root(1, Some(snapshot("f-1", 900))),
+            );
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let request = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900"},
+            "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "creation_key":"move-1"}}});
+
+        let first = reply(&set_copy(&service, request.clone()).await);
+        let again = reply(&set_copy(&service, request).await);
+        assert_eq!(first, again);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
+        );
+        let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
+        assert_eq!(containers.len(), 1, "{:?}", containers.keys());
+        let container = containers.values().next().unwrap();
+        assert_eq!(
+            container.pointer("/Config/Labels/ployz.creation.key"),
+            Some(&json!("move-1"))
+        );
+        assert_eq!(container["State"]["Status"], json!("running"));
+        drop(containers);
+        let creates = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.ends_with("/containers/create"))
+            .count();
+        assert_eq!(creates, 1);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}
