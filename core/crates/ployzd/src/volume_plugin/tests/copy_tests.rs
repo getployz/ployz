@@ -1806,3 +1806,24 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
     assert_eq!(cloud.running(Side::A), ["a1"]);
     assert!(cloud.running(Side::B).is_empty());
 }
+
+#[tokio::test]
+async fn a_snapshot_resent_at_its_want_prunes_past_the_newest_two() {
+    let (a, _b) = pair(&["root", "volume", "mounted"], &["root"]).await;
+    set_snapshots(&a.test, ROOT, &[("w-1-3", 3), ("w-1-2", 2), ("w-1-1", 1)]);
+    let set = Set {
+        side: Side::A,
+        expect: writer_expect(0),
+        want: snapshot_want("w-1-3"),
+        run: None,
+    };
+
+    let reply = set_copy(&a, &mut Docker::default(), &set).await;
+
+    assert_eq!(
+        reply.pointer("/Ok/newest/name"),
+        Some(&json!("w-1-3")),
+        "{reply}"
+    );
+    assert_eq!(snapshot_names(&a.test, ROOT), ["w-1-3", "w-1-2"]);
+}

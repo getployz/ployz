@@ -357,8 +357,9 @@ pub fn plan(
         }
         (Some(VolumeCopy::Root { .. }), WantedCopy::Mirror { .. }) => expected(WriterToMirror),
         (Some(VolumeCopy::Root { newest, .. }), WantedCopy::Snapshot { name }) => {
+            // A resend at the want still runs, so the route prunes past the newest two.
             if newest.as_ref().is_some_and(|newest| newest.name == *name) {
-                return AtWant;
+                return Transition(WriterToSnapshot);
             }
             expected(WriterToSnapshot)
         }
@@ -760,12 +761,12 @@ mod tests {
             ),
             // Snapshot wants.
             (
-                "snapshot at want",
+                "snapshot at want prunes whatever expect",
                 Some(root(1, false, Some(g.clone()))),
                 false,
                 ExpectedCopy::None,
                 snapshot_want("f-1"),
-                AtWant,
+                Transition(WriterToSnapshot),
             ),
             (
                 "snapshot",
