@@ -196,6 +196,10 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
     let (from_names, into_names) = (from.names(), into.names());
     let mut rows = Vec::new();
     for row in plan.rows() {
+        // A node removal waits for the merge to prune by Node Introductions.
+        if *row.id.at() == At::Node && row.from == Cell::Absent {
+            continue;
+        }
         let (ride, conflict, arrives) = match &row.verdict {
             Verdict::Moves {
                 ticked: true,
@@ -222,7 +226,7 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
                 };
                 (ride, false, Arrives::AsIs)
             }
-            Verdict::Moves { ticked: false, .. } | Verdict::Differs(_) => continue,
+            Verdict::Moves { ticked: false, .. } | Verdict::Differs(_) | Verdict::Kept => continue,
         };
         let at = named(&[&from.working, &saved], &row.id)
             .ok_or_else(|| error::corrupt("On merge row"))?;

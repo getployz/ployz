@@ -252,6 +252,7 @@ fn summary(plan: &Plan) -> Vec<String> {
         .map(|row| match row.verdict {
             Verdict::Moves { conflict, .. } => format!("{} move conflict={conflict}", row.id),
             Verdict::Differs(why) => format!("{} differ {}", row.id, json!(why).as_str().unwrap()),
+            Verdict::Kept => format!("{} kept", row.id),
         })
         .collect()
 }
@@ -465,7 +466,7 @@ fn the_policy_table_per_way() {
                     "{} {arrives:?} conflict={conflict}",
                     row.id.to_string().split_once(':').unwrap().1
                 )),
-                Verdict::Differs(_) => None,
+                Verdict::Differs(_) | Verdict::Kept => None,
             })
             .collect::<Vec<_>>()
     };
@@ -543,7 +544,7 @@ fn only_the_senders_own_changes_start_ticked() {
     let plan = compare_with(Some(&parent()), &from, &parent(), Way::Sync, opts);
     let ticked = |id: &str| match row(&plan, id).verdict {
         Verdict::Moves { ticked, .. } => ticked,
-        Verdict::Differs(_) => panic!("{id} differs"),
+        Verdict::Differs(_) | Verdict::Kept => panic!("{id} differs"),
     };
     assert!(ticked(&format!("{API}:startCommand")));
     assert!(!ticked(&format!("{API}:preDeployCommand")));
@@ -1816,6 +1817,7 @@ fn ticked(plan: &Plan, id: &str) -> bool {
     match row(plan, id).verdict {
         Verdict::Moves { ticked, .. } => ticked,
         Verdict::Differs(why) => panic!("{id} differs: {why:?}"),
+        Verdict::Kept => panic!("{id} is kept"),
     }
 }
 

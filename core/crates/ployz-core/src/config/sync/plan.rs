@@ -112,6 +112,8 @@ pub enum Verdict {
     },
     /// It differs, but never moves.
     Differs(Why),
+    /// A merge removed a Volume the receiver keeps: its data never leaves with a merge.
+    Kept,
 }
 
 /// How a moving row lands.
@@ -404,8 +406,48 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     Verdict::Differs(why),
                 );
             }
-            // ponytail: a node `from` lacks never leaves `into`; a Copy or Follow of a
-            // deleted node shows it as left out. Add node removal when someone asks.
+            (None, Some(&into_node)) if policy.way == Way::Merge && in_base => {
+                let id = RowId::node(lineage);
+                let verdict = match into_node {
+                    // Protection beats marks: no mark makes a merge delete data.
+                    NodeRef::Volume(_) => Some(Verdict::Kept),
+                    NodeRef::Service(_) | NodeRef::Config(_) if uses(from, lineage) => {
+                        Some(Verdict::Differs(Why::Live))
+                    }
+                    NodeRef::Service(_) | NodeRef::Config(_) => {
+                        let [b, f, i] = node_cells(lineage);
+                        policy
+                            .verdict(&id, &b, &f, &i)
+                            .map(|verdict| match verdict {
+                                // The node cell holds only what a new node carries, so a
+                                // removal conflicts on a change to any cell of the node.
+                                Verdict::Moves {
+                                    ticked, arrives, ..
+                                } => Verdict::Moves {
+                                    conflict: std::iter::once(&id)
+                                        .chain(
+                                            base_cells
+                                                .iter()
+                                                .flat_map(|c| c.places(lineage))
+                                                .map(|(row, _)| row),
+                                        )
+                                        .chain(into_cells.places(lineage).map(|(row, _)| row))
+                                        .any(|row| {
+                                            let [base, _, into] = cells_at(row);
+                                            base != into
+                                        }),
+                                    ticked,
+                                    arrives,
+                                },
+                                Verdict::Differs(_) | Verdict::Kept => verdict,
+                            })
+                    }
+                };
+                if let Some(verdict) = verdict {
+                    push(id, node_cells(lineage), None, verdict);
+                }
+            }
+            // A Copy, Follow or Sync of a deleted node shows it as left out.
             (None, Some(_)) if uses(from, lineage) || in_base => {
                 let why = if uses(from, lineage) {
                     Why::Live
