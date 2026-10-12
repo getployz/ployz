@@ -134,6 +134,12 @@ export function useStorageSteps(organizationSlug: string) {
   return (deploymentId: string) => storageStep(deploymentId, rows, runs);
 }
 
+/** Whether the Environment holds copy changes no Deploy has taken yet. */
+export function useCopiesWait(organizationSlug: string, environmentId: string) {
+  return (useVolumePlacements(organizationSlug).data ?? [])
+    .some((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
+}
+
 /** How many Volume primaries on `server` are staged to move off it. */
 export function useStagedOffServer(organizationSlug: string, server: string) {
   const rows = useVolumePlacements(organizationSlug).data ?? [];
