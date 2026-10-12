@@ -9,8 +9,8 @@ import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { lossTime, oldCopies, observePlacement, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
-import { dockerVolumeName, parseDockerVolumeName } from "#/modules/volume-run/volume-run";
-import { inspectVolumeCopies, planVolumeRun, requestVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 type Row = typeof volumePlacement.$inferSelect;
@@ -26,7 +26,7 @@ const view = (row: Row): PlacementRow => ({
   deploymentId: row.deploymentId,
 });
 
-const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
+export const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
 const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check the Deploy that took this Volume. Try again.", details: null };
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
 const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belongs to another Environment.", details: null };
@@ -248,9 +248,29 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   if (!oldCopies(observePlacement(members), row === undefined ? null : view(row)).some((copy) => copy.server.name === input.server)) {
     return { ok: false, refusal: { message: "Not an old copy" } } as const;
   }
+  if (row?.deploymentId != null) return { ok: false, refusal: { message: DEPLOYING.message } } as const;
   const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null } } as const;
   const planned = yield* planVolumeRun(organizationId, run);
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
-  const requested = yield* requestVolumeRun({ userId, organizationId }, run);
-  return requested.ok ? { ok: true } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
+  const requested = yield* requestUnclaimedRun({ userId, organizationId }, run);
+  return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
+});
+
+/**
+ * Requests `run` unless a Deploy holds the Volume's placement. The row lock makes the check and the insert one step
+ * against stampPlacements: a Deploy stamped after it finds the run going and waits for it.
+ */
+export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
+  caller: { readonly userId: string | null; readonly organizationId: string },
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "sync" | "delete_mirror" }>,
+) {
+  const database = yield* Database;
+  const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.select({ deploymentId: volumePlacement.deploymentId }).from(volumePlacement)
+      .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, input.volumeId))).for("update");
+    if (row?.deploymentId != null) return { ok: false, refusal: DEPLOYING } as const;
+    return yield* insertRun(caller, input, volume, randomUUID());
+  }));
 });
