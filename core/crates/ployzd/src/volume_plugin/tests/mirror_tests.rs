@@ -58,6 +58,7 @@ async fn declare_mirror_creates_a_read_only_bounded_slot_parent() {
                 "readonly": true,
                 "newest": null,
                 "resume_token": null,
+                "pull": null,
             },
         }})
     );
@@ -155,6 +156,7 @@ async fn begin_round_aborts_a_partial_receive_and_clears_the_record() {
             "readonly": true,
             "newest": null,
             "resume_token": null,
+            "pull": null,
         })
     );
     let log = commands(&test);

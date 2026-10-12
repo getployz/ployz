@@ -12,10 +12,8 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, VolumeStorage,
-    lease::{
-        Admitted, MIRROR_PROPERTY, RESUME_TOKEN_PROPERTY, internal, root_dataset, slot_parent,
-    },
-    storage::HeldMutation,
+    lease::{Admitted, MIRROR_PROPERTY, internal},
+    storage::{HeldMutation, RESUME_TOKEN_PROPERTY, root_dataset, slot_parent},
     transfer::RECEIVE_PROPERTY,
 };
 
@@ -343,7 +341,7 @@ impl VolumeStorage {
         })
     }
 
-    async fn destroy_snapshots(
+    pub(super) async fn destroy_snapshots(
         &self,
         dataset: &str,
         snapshots: &[Snapshot],

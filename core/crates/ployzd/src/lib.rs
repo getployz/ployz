@@ -41,4 +41,5 @@ mod storage;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]
 mod test_dir;
+pub mod volume_copy;
 pub mod volume_send;

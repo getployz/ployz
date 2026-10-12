@@ -21,6 +21,7 @@ use tower_service::Service;
 
 mod capacity;
 mod container_step;
+mod copy;
 mod departure;
 mod lease;
 mod mirror;
@@ -205,6 +206,13 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Volume.ForgetSnapshots", post(mirror::forget))
         .route("/Volume.ForgetLease", post(mirror::forget_lease))
         .route("/Volume.Demote", post(departure::demote_volume))
+        .route("/Volume.Copy.Inspect", post(copy::inspect))
+        .route("/Volume.Copy.Cut", post(copy::cut))
+        .route("/Volume.Copy.Snapshot", post(copy::snapshot))
+        .route("/Volume.Copy.Forget", post(copy::forget))
+        .route("/Volume.Copy.Writer", post(copy::writer))
+        .route("/Volume.Copy.Pull", post(copy::pull))
+        .route("/Volume.Copy.Destroy", post(copy::destroy))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -394,6 +402,8 @@ mod tests {
     #[path = "mirror_tests.rs"]
     mod mirror_tests;
 
+    #[path = "copy_tests.rs"]
+    mod copy_tests;
     #[path = "receive_tests.rs"]
     mod receive_tests;
     mod seed_tests;

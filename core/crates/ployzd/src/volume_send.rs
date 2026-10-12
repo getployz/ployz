@@ -18,11 +18,11 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use ployz_core::{DATASET_ROOT, MIRROR_ROOT, SendSource, SendStream};
+use ployz_core::{DATASET_ROOT, DockerVolumeName, MIRROR_ROOT, SendSource, SendStream};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
-use crate::machine_pool;
+use crate::{machine_pool, volume_copy::BOUND_PATH_PREFIX};
 
 #[derive(Clone)]
 struct Programs {
@@ -52,6 +52,12 @@ pub async fn serve(
 async fn send(State(programs): State<Programs>, request: Request) -> Response {
     if request.method() != axum::http::Method::GET {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
+    }
+    if let Some(name) = request.uri().path().strip_prefix(BOUND_PATH_PREFIX) {
+        return match name.parse::<DockerVolumeName>() {
+            Ok(name) => bound(&programs, &name).await.into_response(),
+            Err(_) => (StatusCode::NOT_FOUND, "no such Volume").into_response(),
+        };
     }
     let Some(stream) = SendStream::parse(request.uri().path(), request.uri().query()) else {
         return (StatusCode::NOT_FOUND, "no such send stream").into_response();
@@ -83,8 +89,7 @@ async fn send(State(programs): State<Programs>, request: Request) -> Response {
             });
             Body::from_stream(ReaderStream::new(stdout)).into_response()
         }
-        Err(Refusal::Unknown(what)) => (StatusCode::NOT_FOUND, what).into_response(),
-        Err(Refusal::Zfs(error)) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+        Err(refusal) => refusal.into_response(),
     }
 }
 
@@ -93,8 +98,36 @@ enum Refusal {
     Zfs(String),
 }
 
-/// The `zfs send` arguments for `stream`, once its names resolve on this Machine.
-async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<String>, Refusal> {
+impl IntoResponse for Refusal {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Unknown(what) => (StatusCode::NOT_FOUND, what).into_response(),
+            Self::Zfs(error) => (StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+        }
+    }
+}
+
+/// The bound in bytes of the copy this Machine holds for `name`, so a Machine about to
+/// pull it can size its slot before any stream flows.
+async fn bound(programs: &Programs, name: &DockerVolumeName) -> Result<String, Refusal> {
+    let root = resolve_root(programs, name).await?;
+    let mut output = lines(
+        &programs.zfs,
+        &["get", "-Hp", "-o", "value", "refquota", &root],
+    )
+    .await?;
+    match output.pop() {
+        Some(value) if value.parse::<u64>().is_ok() => Ok(value),
+        other => Err(Refusal::Zfs(format!(
+            "{root} reports refquota {other:?}, not a byte count"
+        ))),
+    }
+}
+
+/// The dataset holding this Machine's copy of `name`. A stopped writer parks its root in
+/// the slot until the target promotes, and the target still pulls the final increment
+/// from there.
+async fn resolve_root(programs: &Programs, name: &DockerVolumeName) -> Result<String, Refusal> {
     let pools = lines(
         &programs.zpool,
         &[
@@ -115,19 +148,18 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
         &["list", "-H", "-o", "name", "-t", "filesystem"],
     )
     .await?;
-    // A stopped writer parks its root in the slot until the target promotes,
-    // and the target still pulls the final increment from there.
-    let Some(root) = [
-        format!("{}/{DATASET_ROOT}/{}", pool.name(), stream.name),
-        format!("{}/{MIRROR_ROOT}/{}/fs", pool.name(), stream.name),
+    [
+        format!("{}/{DATASET_ROOT}/{name}", pool.name()),
+        format!("{}/{MIRROR_ROOT}/{name}/fs", pool.name()),
     ]
     .into_iter()
-    .find(|dataset| filesystems.contains(dataset)) else {
-        return Err(Refusal::Unknown(format!(
-            "Volume {} has no writer on this Machine",
-            stream.name
-        )));
-    };
+    .find(|dataset| filesystems.contains(dataset))
+    .ok_or_else(|| Refusal::Unknown(format!("Volume {name} has no writer on this Machine")))
+}
+
+/// The `zfs send` arguments for `stream`, once its names resolve on this Machine.
+async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<String>, Refusal> {
+    let root = resolve_root(programs, &stream.name).await?;
     let snapshots = lines(
         &programs.zfs,
         &[
@@ -259,6 +291,8 @@ case "$*" in
   'send -nvP -t token-child') printf 'resume token contents:\n\ttoname = tank/ployz/data/child@w-1-2\n' ;;
   'send -t token-other') printf 'unrelated stream' ;;
   'send -t token-1') printf 'resumed stream' ;;
+  'get -Hp -o value refquota tank/ployz/data') printf '1073741824\n' ;;
+  'get -Hp -o value refquota tank/ployz-mirror/slotted/fs') printf 'none\n' ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
 "#,
@@ -294,6 +328,23 @@ esac
             get(&base, "/volume-send/data?target=w-1-2&token=token-1").await,
             (StatusCode::OK, "resumed stream".to_owned())
         );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn answers_the_bound_of_the_copy_it_holds() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, POOLS).await;
+        assert_eq!(
+            get(&base, "/volume-bound/data").await,
+            (StatusCode::OK, "1073741824".to_owned())
+        );
+        let (status, body) = get(&base, "/volume-bound/slotted").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        assert!(body.contains("not a byte count"), "{body}");
+        let (status, body) = get(&base, "/volume-bound/missing").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body.contains("has no writer on this Machine"), "{body}");
         shutdown.cancel();
     }
 

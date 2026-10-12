@@ -94,7 +94,24 @@ exists() {{
 require() {{
   exists "${{1%%@*}}" || {{ echo "cannot open '${{1%%@*}}': dataset does not exist" >&2; exit 1; }}
 }}
+# A test writes the exact argument line of the one command that must fail next into
+# props/fail-command; the command fails once and the marker goes with it.
+if [ -e '{props}/fail-command' ] && [ "$(cat '{props}/fail-command')" = "$*" ]; then
+  rm -f '{props}/fail-command'
+  echo "injected failure: $*" >&2
+  exit 1
+fi
 case "$*" in
+  'list -H -o name -t filesystem')
+    for d in tank tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/seed tank/ployz-mirror tank/ployz-mirror/copy tank/ployz-mirror/copy/fs tank/ployz-mirror/data tank/ployz-mirror/data/fs tank/ployz-mirror/seed tank/ployz-mirror/seed/fs; do
+      ! exists "$d" || printf '%s\n' "$d"
+    done
+    ;;
+  'list -H -o name,guid -t snapshot -d 1 '*)
+    require "$9"
+    f='{props}'/"$9/snapshots"
+    [ ! -e "$f" ] || cut -f1,2 "$f"
+    ;;
   'list -Hp -o name,refquota,used,usedbydataset,mountpoint,mounted,readonly -r tank')
     if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
     if [ -e '{hold_list}' ]; then
@@ -164,6 +181,14 @@ case "$*" in
   'get -Hp -o value written@'*)
     require "$6"
     prop "$6" "$5" 1
+    ;;
+  'get -Hp -o value refquota tank/ployz/data')
+    require "$6"
+    if [ -e '{unbounded_volume}' ]; then echo none; else echo 1073741824; fi
+    ;;
+  'get -Hp -o value refquota tank/ployz-mirror/data/fs')
+    require "$6"
+    prop "$6" "$5" {slot_bound}
     ;;
   'get -Hp -o value '*)
     require "$6"
@@ -251,7 +276,7 @@ case "$*" in
       sed 's#^tank/ployz-mirror/data/fs@#tank/ployz/data@#' "$f" > '{props}'/tank/ployz/data/"${{f##*/}}"
     done
     rm -rf '{props}/tank/ployz-mirror/data/fs'
-    if [ "$(prop tank/ployz/data readonly off)" = on ]; then touch '{readonly_volume}'; fi
+    if [ "$(prop tank/ployz/data readonly on)" = on ]; then touch '{readonly_volume}'; fi
     rm -f '{mirror_fs}'
     touch '{volume}'
     ;;
@@ -280,11 +305,23 @@ case "$*" in
   'destroy -r tank/ployz-mirror/seed')
     rm -rf '{seed_slot}' '{seed_fs}' '{props}/tank/ployz-mirror/seed'
     ;;
-  'send tank/ployz/data@'*)
+  'send tank/ployz/data@'*|'send tank/ployz-mirror/data/fs@'*)
     require "$2"
-    f='{props}/tank/ployz/data/snapshots'
+    f='{props}'/"${{2%%@*}}/snapshots"
     line=$(grep "^$2	" "$f" 2>/dev/null) || {{ echo "cannot open '$2': snapshot does not exist" >&2; exit 1; }}
     printf 'snapshot %s %s\n' "${{2#*@}}" "$(printf '%s' "$line" | cut -f2)"
+    ;;
+  'send -i '*)
+    require "$3"
+    require "$4"
+    f='{props}'/"${{4%%@*}}/snapshots"
+    grep -q "^$3	" "$f" 2>/dev/null || {{ echo "cannot open '$3': snapshot does not exist" >&2; exit 1; }}
+    line=$(grep "^$4	" "$f" 2>/dev/null) || {{ echo "cannot open '$4': snapshot does not exist" >&2; exit 1; }}
+    printf 'snapshot %s %s\n' "${{4#*@}}" "$(printf '%s' "$line" | cut -f2)"
+    ;;
+  'destroy -r tank/ployz-mirror/data/fs')
+    require tank/ployz-mirror/data/fs
+    rm -rf '{mirror_fs}' '{props}/tank/ployz-mirror/data/fs'
     ;;
   'destroy -r tank/ployz/data')
     if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi

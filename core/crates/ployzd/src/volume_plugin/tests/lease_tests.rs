@@ -110,6 +110,7 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
                 "writer": {"phase": "frozen", "guid": "42"},
                 "readonly": false,
                 "newest": {"name": "f-2", "guid": "42", "created_unix_seconds": 1_700_000_000},
+                "epoch": 0,
             },
             "lease": {"lease": 2, "pos": {"seq": 6, "round": 0, "sub": 0}, "cycle": "open"},
         }})
@@ -137,6 +138,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
             "readonly": true,
             "newest": null,
             "resume_token": null,
+            "pull": null,
         })
     );
     let response = post(&socket, "/Volume.Inspect", json!({"name": "missing"})).await;

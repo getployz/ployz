@@ -19,6 +19,32 @@ use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage, transfer::
 
 pub(super) use ployz_core::{DATASET_ROOT, MIRROR_ROOT};
 pub(super) const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
+/// Set on a root renamed into place until Docker's Create registers it with its labels.
+/// Get and List hide a marked root, so Docker never records it without them.
+pub(super) const PROMOTE_PROPERTY: &str = "ployz:promote";
+/// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
+pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
+/// On a root: the SetVolumeCopy run of writes it belongs to. Missing reads as 0.
+pub(super) const EPOCH_PROPERTY: &str = "ployz:epoch";
+/// Set on a root the cut renames into its slot, so the rename carries it to the slot's
+/// `fs`. It means Docker on this Machine still holds a record for the Volume, and plugin
+/// Get keeps answering for it until a Writer want makes the root writable again.
+pub(super) const CUT_PROPERTY: &str = "ployz:cut";
+/// On a slot parent: the target of the SetVolumeCopy pull in flight, from its start until
+/// its prune is done.
+pub(super) const PULL_PROPERTY: &str = "ployz:pull";
+
+pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/{MIRROR_ROOT}/{name}", pool.name())
+}
+
+pub(super) fn slot_fs(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/fs", slot_parent(pool, name))
+}
+
+pub(super) fn root_dataset(pool: &MachinePool, name: &DockerVolumeName) -> String {
+    format!("{}/{DATASET_ROOT}/{name}", pool.name())
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum Place<'name> {
@@ -226,14 +252,14 @@ impl VolumeStorage {
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_requested(name, requested)?;
             if self.unregistered(&existing.name).await? {
-                self.zfs(&["inherit", super::lease::PROMOTE_PROPERTY, &existing.name])
+                self.zfs(&["inherit", PROMOTE_PROPERTY, &existing.name])
                     .await?;
                 ployzd::faults::kill_inside("Create");
             }
             return Ok(());
         }
 
-        let slot = super::lease::slot_parent(pool, name);
+        let slot = slot_parent(pool, name);
         if datasets.iter().any(|dataset| dataset.name == slot) {
             return Err(VolumeError::from(format!(
                 "Volume {name} is held in slot {slot}; promote or restore it before creating it again"

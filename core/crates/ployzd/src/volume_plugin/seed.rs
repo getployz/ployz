@@ -10,8 +10,9 @@ use tokio::process::Command;
 
 use super::{
     VolumeStorage,
-    lease::{internal, root_dataset, slot_fs, slot_parent},
+    lease::internal,
     mirror,
+    storage::{root_dataset, slot_fs, slot_parent},
     transfer::{RECEIVE_PROPERTY, ReceiveRecord},
 };
 

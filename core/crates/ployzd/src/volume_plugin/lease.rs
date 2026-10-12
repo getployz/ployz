@@ -2,24 +2,23 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    Cycle, FenceDecision, InspectVolumeCopyRequest, LeaseRecord, MirrorMarker, RpcError,
+    Cycle, FenceDecision, InspectVolumeCopyRequest, LeaseRecord, MirrorMarker, Pull, RpcError,
     RpcErrorCode, Snapshot, SnapshotGuid, SnapshotName, Switch, SwitchError, SwitchReply,
-    VolumeCopy, VolumeCopyView, WriterMarker,
+    VolumeCopy, VolumeCopyView, WriterEpoch, WriterMarker,
 };
 use ployzd::machine_pool::MachinePool;
 
 use super::{
-    DATASET_ROOT, Dataset, DockerVolumeName, MIRROR_ROOT, Result, VolumeError, VolumeStorage,
+    DATASET_ROOT, Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
+    storage::{
+        EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs,
+        slot_parent,
+    },
 };
 
 pub(super) const LEASE_PROPERTY_PREFIX: &str = "ployz:lease.";
 pub(super) const WRITER_PROPERTY: &str = "ployz:writer";
 pub(super) const MIRROR_PROPERTY: &str = "ployz:mirror";
-/// Set on a root renamed into place until Docker's Create registers it with its labels.
-/// Get and List hide a marked root, so Docker never records it without them.
-pub(super) const PROMOTE_PROPERTY: &str = "ployz:promote";
-/// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise.
-pub(super) const RESUME_TOKEN_PROPERTY: &str = "receive_resume_token";
 
 /// `ployz:lease.<name>`, each uppercase letter written as `:` and its lowercase. ZFS refuses
 /// uppercase in a user property name, and a Docker Volume name never holds `:`, so the
@@ -223,6 +222,39 @@ impl VolumeStorage {
         Ok(self.snapshots(dataset).await?.into_iter().next())
     }
 
+    /// The run of writes a root belongs to; a root SetVolumeCopy never numbered reads 0.
+    pub(super) async fn epoch(&self, root: &str) -> Result<WriterEpoch> {
+        match self.property(root, EPOCH_PROPERTY).await? {
+            None => Ok(WriterEpoch::default()),
+            Some(value) => value.parse().map(WriterEpoch::new).map_err(|error| {
+                VolumeError::from(format!(
+                    "{root} carries an unreadable {EPOCH_PROPERTY} {value:?}: {error}"
+                ))
+            }),
+        }
+    }
+
+    /// The SetVolumeCopy pull in flight on a slot, with the failure its last receive hit.
+    pub(super) async fn pull(
+        &self,
+        slot: &Dataset,
+        name: &DockerVolumeName,
+    ) -> Result<Option<Pull>> {
+        let Some(target) = self.property(&slot.name, PULL_PROPERTY).await? else {
+            return Ok(None);
+        };
+        let target = target.parse().map_err(|error| {
+            VolumeError::from(format!(
+                "{} carries an unreadable {PULL_PROPERTY} {target:?}: {error}",
+                slot.name
+            ))
+        })?;
+        Ok(Some(Pull {
+            target,
+            failure: self.receives.failure(name),
+        }))
+    }
+
     pub(super) async fn copy(
         &self,
         datasets: &[Dataset],
@@ -235,6 +267,7 @@ impl VolumeStorage {
                 writer: self.writer_marker(root).await?,
                 readonly: root.readonly,
                 newest: self.newest_snapshot(&root.name).await?,
+                epoch: self.epoch(&root.name).await?,
             }));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
@@ -254,6 +287,7 @@ impl VolumeStorage {
             readonly,
             newest,
             resume_token,
+            pull: self.pull(slot, name).await?,
         }))
     }
 
@@ -362,18 +396,6 @@ pub(super) struct Admitted {
     pub(super) decision: FenceDecision,
     pub(super) lease: LeaseRecord,
     pub(super) recorded: Option<LeaseRecord>,
-}
-
-pub(super) fn slot_parent(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/{MIRROR_ROOT}/{name}", pool.name())
-}
-
-pub(super) fn slot_fs(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/fs", slot_parent(pool, name))
-}
-
-pub(super) fn root_dataset(pool: &MachinePool, name: &DockerVolumeName) -> String {
-    format!("{}/{DATASET_ROOT}/{name}", pool.name())
 }
 
 pub(super) async fn inspect(

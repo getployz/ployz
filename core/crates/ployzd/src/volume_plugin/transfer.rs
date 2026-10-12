@@ -20,8 +20,9 @@ use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{
     Dataset, DockerVolumeName, VolumeStorage,
-    lease::{RESUME_TOKEN_PROPERTY, internal, slot_fs},
+    lease::internal,
     mirror::name,
+    storage::{RESUME_TOKEN_PROPERTY, slot_fs},
 };
 
 /// On the slot parent: `<lease>:<seq>.<round>.<sub>:<target>` of the receive last started.
@@ -94,7 +95,7 @@ impl Receives {
             .is_some_and(|task| task.outcome.lock().expect("outcome lock").is_none())
     }
 
-    fn failure(&self, name: &DockerVolumeName) -> Option<String> {
+    pub(super) fn failure(&self, name: &DockerVolumeName) -> Option<String> {
         self.0
             .lock()
             .expect("receive registry is not poisoned")
@@ -103,7 +104,7 @@ impl Receives {
             .and_then(Result::err)
     }
 
-    fn forget(&self, name: &DockerVolumeName) {
+    pub(super) fn forget(&self, name: &DockerVolumeName) {
         self.0
             .lock()
             .expect("receive registry is not poisoned")
@@ -122,6 +123,22 @@ impl Receives {
                 },
             );
         outcome
+    }
+}
+
+/// Why a receive did not land its stream.
+#[derive(Debug)]
+pub(super) enum ReceiveFailure {
+    /// The writer has no such stream: the base or the token is gone from it.
+    NoStream(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for ReceiveFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoStream(message) | Self::Failed(message) => f.write_str(message),
+        }
     }
 }
 
@@ -204,7 +221,10 @@ impl VolumeStorage {
         let storage = self.clone();
         let from = request.from;
         tokio::spawn(async move {
-            let result = storage.receive(from, &stream, &fs, bound).await;
+            let result = storage
+                .receive(from, &stream, &fs, bound, "StartReceive")
+                .await
+                .map_err(|failure| failure.to_string());
             if let Err(error) = &result {
                 tracing::warn!(%fs, error, "Volume receive failed");
             }
@@ -214,14 +234,16 @@ impl VolumeStorage {
     }
 
     /// Pulls one stream into `fs`, then re-asserts and verifies the slot's bound and
-    /// read-only state, which ZFS drops on an interrupted first receive.
-    async fn receive(
+    /// read-only state, which ZFS drops on an interrupted first receive. `fault` names
+    /// the kill point that fires once the stream passes [`KILL_AFTER_BYTES`].
+    pub(super) async fn receive(
         &self,
         from: ManagementAddress,
         stream: &SendStream,
         fs: &str,
         bound: u64,
-    ) -> Result<(), String> {
+        fault: &'static str,
+    ) -> Result<(), ReceiveFailure> {
         let url = format!(
             "http://[{}]:{}{}",
             from.0,
@@ -232,13 +254,21 @@ impl VolumeStorage {
             .connect_timeout(self.receive_stall)
             .read_timeout(self.receive_stall)
             .build()
-            .map_err(|error| format!("could not build the receive client: {error}"))?;
+            .map_err(|error| {
+                ReceiveFailure::Failed(format!("could not build the receive client: {error}"))
+            })?;
         let response = client
             .get(&url)
             .send()
             .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(|error| format!("GET {url}: {error}"))?;
+            .map_err(|error| ReceiveFailure::Failed(format!("GET {url}: {error}")))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            let reason = response.text().await.unwrap_or_default();
+            return Err(ReceiveFailure::NoStream(format!("GET {url}: {reason}")));
+        }
+        let response = response
+            .error_for_status()
+            .map_err(|error| ReceiveFailure::Failed(format!("GET {url}: {error}")))?;
         let refquota = format!("refquota={bound}");
         let mut child = Command::new(&self.zfs)
             .args([
@@ -256,7 +286,9 @@ impl VolumeStorage {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| format!("could not run zfs receive: {error}"))?;
+            .map_err(|error| {
+                ReceiveFailure::Failed(format!("could not run zfs receive: {error}"))
+            })?;
         let mut stdin = child.stdin.take().expect("zfs receive stdin is piped");
         let mut body = response.bytes_stream();
         let mut received = 0u64;
@@ -271,15 +303,15 @@ impl VolumeStorage {
                             break;
                         }
                         Err(_) => {
-                            return Err(format!(
+                            return Err(ReceiveFailure::Failed(format!(
                                 "zfs receive into {fs} stalled writing after {received} bytes"
-                            ));
+                            )));
                         }
                     }
                     let before = received;
                     received += bytes.len() as u64;
                     if before < KILL_AFTER_BYTES && received >= KILL_AFTER_BYTES {
-                        ployzd::faults::kill_inside("StartReceive");
+                        ployzd::faults::kill_inside(fault);
                     }
                 }
                 Err(error) => {
@@ -291,22 +323,30 @@ impl VolumeStorage {
         drop(stdin);
         let output = tokio::time::timeout(self.receive_stall, child.wait_with_output())
             .await
-            .map_err(|_| format!("zfs receive into {fs} stalled finishing after {received} bytes"))?
-            .map_err(|error| format!("zfs receive did not finish: {error}"))?;
+            .map_err(|_| {
+                ReceiveFailure::Failed(format!(
+                    "zfs receive into {fs} stalled finishing after {received} bytes"
+                ))
+            })?
+            .map_err(|error| {
+                ReceiveFailure::Failed(format!("zfs receive did not finish: {error}"))
+            })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
+            return Err(ReceiveFailure::Failed(format!(
                 "zfs receive into {fs} failed after {received} bytes: {}{}",
                 stderr.trim(),
                 broke.map_or(String::new(), |error| format!(" (stream: {error})"))
-            ));
+            )));
         }
         if let Some(error) = broke {
-            return Err(format!(
+            return Err(ReceiveFailure::Failed(format!(
                 "stream from {url} broke after {received} bytes: {error}"
-            ));
+            )));
         }
-        self.finish_copy(fs, bound).await
+        self.finish_copy(fs, bound)
+            .await
+            .map_err(ReceiveFailure::Failed)
     }
 
     pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {

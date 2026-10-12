@@ -10,10 +10,9 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     DATASET_ROOT, Dataset, DockerVolumeName, Place, VolumeStorage,
-    lease::{
-        LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal, slot_fs, slot_parent,
-    },
+    lease::{LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal},
     mirror::name,
+    storage::{slot_fs, slot_parent},
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.

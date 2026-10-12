@@ -12,8 +12,9 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, VolumeStorage,
-    lease::{Admitted, MIRROR_PROPERTY, PROMOTE_PROPERTY, WRITER_PROPERTY, internal, root_dataset},
+    lease::{Admitted, MIRROR_PROPERTY, WRITER_PROPERTY, internal},
     mirror::{Leased, name},
+    storage::{PROMOTE_PROPERTY, root_dataset},
     switch_source::{HOLDER_PROPERTY, MountGrant, precondition},
 };
 

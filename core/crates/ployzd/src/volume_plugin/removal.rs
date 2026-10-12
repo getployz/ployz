@@ -5,12 +5,12 @@ use axum::{
     extract::{State, rejection::JsonRejection},
 };
 use ployz_core::WriterMarker;
-use ployzd::VolumePluginStatus;
+use ployzd::{VolumePluginStatus, machine_pool::MachinePool};
 use serde::Serialize;
 
 use super::{
     DATASET_ROOT, DockerVolumeName, ErrorResponse, HangUp, Result, VolumeRequest, VolumeStorage,
-    error_response,
+    error_response, storage::CUT_PROPERTY,
 };
 
 impl VolumeStorage {
@@ -50,13 +50,38 @@ impl VolumeStorage {
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
         let Some(dataset) = Self::dataset(&datasets, &pool, name)? else {
-            return Ok(None);
+            return self.inspect_cut(&datasets, &pool, name).await;
         };
         dataset.require_provisioned(name)?;
         if self.unregistered(&dataset.name).await? {
             return Ok(None);
         }
         Ok(Some(PluginVolume::new(name, dataset)))
+    }
+
+    /// A root that SetVolumeCopy cut into the slot keeps Docker's record for the Volume
+    /// while it is away, so Get answers from the slot with no mountpoint. Mount still
+    /// refuses until the root is back.
+    async fn inspect_cut(
+        &self,
+        datasets: &[super::Dataset],
+        pool: &MachinePool,
+        name: &DockerVolumeName,
+    ) -> Result<Option<PluginVolume>> {
+        let Some(fs) = Self::slot_fs(datasets, pool, name) else {
+            return Ok(None);
+        };
+        if self.property(&fs.name, CUT_PROPERTY).await?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(PluginVolume {
+            name: name.to_string(),
+            mountpoint: String::new(),
+            status: VolumePluginStatus {
+                bound_bytes: fs.refquota,
+                used_bytes: fs.used_bytes,
+            },
+        }))
     }
 
     async fn list(&self) -> Result<Vec<PluginVolume>> {

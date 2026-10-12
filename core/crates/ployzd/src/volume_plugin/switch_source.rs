@@ -10,9 +10,9 @@ use ployz_core::{
 
 use super::{
     Dataset, DockerVolumeName, VolumeStorage, checked_command,
-    lease::{MIRROR_PROPERTY, WRITER_PROPERTY, internal, slot_parent},
+    lease::{MIRROR_PROPERTY, WRITER_PROPERTY, internal},
     mirror::{Leased, name},
-    storage::HeldMutation,
+    storage::{HeldMutation, slot_parent},
 };
 
 pub(super) const HOLDER_PROPERTY: &str = "ployz:source-container";
