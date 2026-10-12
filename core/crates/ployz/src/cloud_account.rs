@@ -403,9 +403,29 @@ pub(crate) async fn keyed_answer<T: DeserializeOwned>(
     approval: Option<&str>,
     request_key: Option<&str>,
 ) -> Result<T, StoreCallError> {
+    keyed_reply(credential, method, path, body, approval, request_key)
+        .await
+        .0
+}
+
+/// [`keyed_answer`] with the manifest revision the reply named, for a caller that
+/// holds its own copy of the published commands rather than reading [`revision_seen`].
+pub(crate) async fn keyed_reply<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: &serde_json::Value,
+    approval: Option<&str>,
+    request_key: Option<&str>,
+) -> (Result<T, StoreCallError>, Option<String>) {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    let response = send_approved(credential, method, &url, body, approval, request_key).await?;
-    store_answer(credential, response).await
+    let response = match send_approved(credential, method, &url, body, approval, request_key).await
+    {
+        Ok(response) => response,
+        Err(error) => return (Err(error.into()), None),
+    };
+    let revision = revision_of(response.headers());
+    (store_answer(credential, response).await, revision)
 }
 
 /// Read the Cloud run at `/api/cli/<path>` every second until its `state` is neither
@@ -821,14 +841,18 @@ pub(crate) const REVISION_HEADER: &str = "x-ployz-manifest";
 /// Keep the revision a reply names, so a command can refresh the published
 /// commands after it prints when Cloud moved on.
 pub(crate) fn notice_revision(headers: &reqwest::header::HeaderMap) {
-    if let Some(revision) = headers
-        .get(REVISION_HEADER)
-        .and_then(|value| value.to_str().ok())
-    {
+    if let Some(revision) = revision_of(headers) {
         *REVISION
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(revision.to_owned());
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(revision);
     }
+}
+
+fn revision_of(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(REVISION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
 }
 
 /// The revision the latest `/api/cli` reply named, if one did.

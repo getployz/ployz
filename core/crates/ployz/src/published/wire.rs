@@ -71,8 +71,8 @@ pub(super) struct Cached {
 /// One run's reply: `output` as the entry's output schema shapes it, and the
 /// sentence a `message` render prints.
 #[derive(Debug, Deserialize)]
-pub(super) struct Ran {
-    pub(super) output: Value,
+pub(crate) struct Ran {
+    pub(crate) output: Value,
     #[serde(default)]
-    pub(super) message: Option<String>,
+    pub(crate) message: Option<String>,
 }

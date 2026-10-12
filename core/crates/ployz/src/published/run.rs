@@ -6,6 +6,7 @@ use ployz_core::RpcError;
 use reqwest::Method;
 use serde_json::{Map, Value};
 
+use super::wire::Ran;
 use super::{ArgKind, PublishError, PublishedCommand, Render, Setup, Typed, UNKNOWN_COMMAND};
 use crate::cloud_account::{self, StoreCallError};
 use crate::failure::Failure;
@@ -57,18 +58,37 @@ pub(crate) fn run(
         )?;
     }
     let key = uuid::Uuid::new_v4().to_string();
-    let body = serde_json::json!({ "input": input });
-    let ran: super::wire::Ran = runtime
-        .block_on(cloud_account::keyed_answer(
+    let ran = runtime
+        .block_on(run_on(
             &credential,
-            Method::POST,
-            &format!("run/{}", command.name),
-            &body,
+            &command.name,
+            input,
             approval.as_deref(),
-            Some(&key),
+            &key,
         ))
+        .0
         .map_err(|error| refused(error, command, setup))?;
     print(command, ran.output, ran.message)
+}
+
+/// Post `input` to Cloud's run route for the entry named `name`, under `key` so a
+/// retry runs it once. The second half is the manifest revision the reply named.
+pub(crate) async fn run_on(
+    credential: &cloud_account::Credential,
+    name: &str,
+    input: Value,
+    approval: Option<&str>,
+    key: &str,
+) -> (Result<Ran, StoreCallError>, Option<String>) {
+    cloud_account::keyed_reply(
+        credential,
+        Method::POST,
+        &format!("run/{name}"),
+        &serde_json::json!({ "input": input }),
+        approval,
+        Some(key),
+    )
+    .await
 }
 
 fn refused(error: StoreCallError, command: &PublishedCommand, setup: &Setup) -> Failure {

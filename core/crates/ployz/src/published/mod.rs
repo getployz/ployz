@@ -8,7 +8,8 @@ mod run;
 mod wire;
 
 pub(crate) use graft::attach;
-pub(crate) use run::run;
+pub(crate) use run::{run, run_on};
+pub(crate) use wire::Ran;
 
 use std::collections::BTreeSet;
 use std::io;
@@ -149,7 +150,7 @@ pub(crate) struct Setup {
 /// How long a refresh may hold a command up.
 pub(crate) const REFRESH_BUDGET: Duration = Duration::from_secs(2);
 
-const UNKNOWN_COMMAND: &str = "unknown_command";
+pub(crate) const UNKNOWN_COMMAND: &str = "unknown_command";
 const FEATURE_UNAVAILABLE: &str = "feature_unavailable";
 
 impl Setup {

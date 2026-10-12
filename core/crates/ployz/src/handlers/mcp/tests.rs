@@ -95,6 +95,7 @@ fn outcome(transcript: &Transcript) -> (Value, bool) {
 struct Seen {
     path: String,
     approval: Option<String>,
+    key: Option<String>,
     bearer: String,
     body: Value,
 }
@@ -119,7 +120,7 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
     let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
     let mut request = String::new();
     reader.read_line(&mut request).unwrap();
-    let (mut length, mut bearer, mut approval) = (0, String::new(), None);
+    let (mut length, mut bearer, mut approval, mut key) = (0, String::new(), None, None);
     loop {
         let mut header = String::new();
         reader.read_line(&mut header).unwrap();
@@ -136,6 +137,9 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
         if let Some(value) = header.strip_prefix("x-ployz-approval:") {
             approval = Some(value.trim().to_owned());
         }
+        if let Some(value) = header.strip_prefix("x-ployz-request-key:") {
+            key = Some(value.trim().to_owned());
+        }
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body).unwrap();
@@ -146,6 +150,7 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
             .unwrap_or_default()
             .to_owned(),
         approval,
+        key,
         bearer,
         body: match body.as_slice() {
             [] => Value::Null,
@@ -168,6 +173,7 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>, slow: Duration) 
             let Seen {
                 path,
                 approval,
+                key,
                 bearer,
                 body,
             } = incoming(&stream);
@@ -199,6 +205,7 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>, slow: Duration) 
             let _ = saw.send(Seen {
                 path,
                 approval,
+                key,
                 bearer,
                 body,
             });
@@ -1672,4 +1679,400 @@ async fn each_local_call_sweeps_the_store_first() {
         done["result"]["structuredContent"]["code"], "not_found",
         "{done}"
     );
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+mod published {
+    use std::path::Path;
+
+    use super::*;
+
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/published-manifest.json");
+
+    /// A Ployz Cloud that publishes `manifest` and answers every run with `run`. While
+    /// `down`, every request fails as a Cloud that cannot answer does.
+    struct Publisher {
+        manifest: Value,
+        run: (&'static str, Value),
+        down: bool,
+    }
+
+    fn publisher() -> Arc<Mutex<Publisher>> {
+        Arc::new(Mutex::new(Publisher {
+            manifest: serde_json::from_str(FIXTURE).unwrap(),
+            run: ("200 OK", json!({ "output": {} })),
+            down: false,
+        }))
+    }
+
+    fn fake_publisher(state: Arc<Mutex<Publisher>>) -> Fake {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (saw, seen) = channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let seen = incoming(&stream);
+                let (status, reply, revision) = {
+                    let state = state.lock().unwrap();
+                    let revision = state.manifest["revision"].as_str().unwrap().to_owned();
+                    let (status, reply) = if state.down {
+                        ("503 Service Unavailable", "down".to_owned())
+                    } else if seen.path == "/api/cli/manifest" {
+                        ("200 OK", state.manifest.to_string())
+                    } else if seen.path.starts_with("/api/cli/run/") {
+                        (state.run.0, state.run.1.to_string())
+                    } else {
+                        (
+                            "500 Internal Server Error",
+                            json!({ "error": { "code": "internal", "message": format!("unscripted {}", seen.path) } })
+                                .to_string(),
+                        )
+                    };
+                    (status, reply, revision)
+                };
+                let _ = saw.send(seen);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                     x-ployz-manifest: {revision}\r\ncontent-length: {}\r\n\
+                     connection: close\r\n\r\n{reply}",
+                    reply.len()
+                )
+                .unwrap();
+            }
+        });
+        Fake { url, seen }
+    }
+
+    async fn on_published(fake: &Fake, home: &Path) -> Server {
+        let place = transcript("deploy", in_org()).place;
+        let setup = Setup::beside(&home.join("config.yaml"), Some(fake.url.clone()));
+        on_cloud(fake, place).publishing(setup).await
+    }
+
+    fn entries() -> Vec<Value> {
+        serde_json::from_str::<Value>(FIXTURE).unwrap()["commands"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    fn agent_facing() -> Vec<Value> {
+        entries()
+            .into_iter()
+            .filter(|entry| entry["agents"] == true)
+            .collect()
+    }
+
+    fn name(entry: &Value) -> &str {
+        entry["name"].as_str().unwrap()
+    }
+
+    /// One value of each input property, as its schema allows.
+    fn arguments(entry: &Value) -> Value {
+        let properties = entry["input"]["properties"].as_object().unwrap();
+        properties
+            .iter()
+            .map(|(name, schema)| {
+                let value = match schema["type"].as_str().unwrap() {
+                    "string" => schema["enum"]
+                        .as_array()
+                        .and_then(|choices| choices.first().cloned())
+                        .unwrap_or_else(|| json!("typed")),
+                    "integer" => json!(3),
+                    "boolean" => json!(true),
+                    "array" => json!(["one", "two"]),
+                    other => panic!("{other} is outside the flat subset"),
+                };
+                (name.clone(), value)
+            })
+            .collect()
+    }
+
+    async fn listed(client: &mut Client, id: u64) -> Vec<Value> {
+        client.send(&request(id, "tools/list", json!({}))).await;
+        client.reply().await["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    fn named<'a>(tools: &'a [Value], name: &str) -> Option<&'a Value> {
+        tools.iter().find(|tool| tool["name"] == name)
+    }
+
+    fn cached_names(home: &Path) -> Vec<String> {
+        let dir = home.join("published");
+        let file = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .expect("one cache file");
+        let cached: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+        cached["manifest"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| name(entry).to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cloud_store_lists_each_agent_facing_published_command_with_its_schemas() {
+        let fake = fake_publisher(publisher());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let tools = listed(&mut client, 2).await;
+        let (entries, agent_facing) = (entries(), agent_facing());
+        assert!(
+            !agent_facing.is_empty() && agent_facing.len() < entries.len(),
+            "the fixture has entries of both kinds"
+        );
+        assert_eq!(tools.len(), tools::catalog().len() + agent_facing.len());
+        for entry in &entries {
+            let Some(tool) = named(&tools, name(entry)) else {
+                assert_eq!(entry["agents"], false, "{entry} is listed");
+                continue;
+            };
+            assert_eq!(entry["agents"], true, "{tool} is not for agents");
+            assert_eq!(tool["description"], entry["about"]);
+            assert_eq!(tool["inputSchema"], entry["input"], "{tool}");
+            assert_eq!(tool["outputSchema"], entry["output"], "{tool}");
+            assert_eq!(
+                tool["annotations"]["readOnlyHint"],
+                entry["kind"] == "read",
+                "{tool}"
+            );
+            assert_eq!(
+                tool["annotations"]["destructiveHint"],
+                entry["gate"] == "ask",
+                "{tool}"
+            );
+        }
+        assert_eq!(cached_names(home.path()).len(), entries.len());
+    }
+
+    #[tokio::test]
+    async fn a_published_call_posts_its_input_under_the_call_s_key_and_returns_the_output() {
+        let publisher = publisher();
+        publisher.lock().unwrap().run = ("200 OK", json!({ "output": { "answer": 42 } }));
+        let fake = fake_publisher(publisher);
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing().into_iter().next().unwrap();
+        let arguments = arguments(&entry);
+        let done = client.call(2, name(&entry), arguments.clone()).await;
+        assert_eq!(
+            done["result"]["structuredContent"],
+            json!({ "answer": 42 }),
+            "{done}"
+        );
+        assert_ne!(done["result"]["isError"], true, "{done}");
+        let seen = fake.requests();
+        let run = seen
+            .iter()
+            .find(|seen| seen.path.starts_with("/api/cli/run/"))
+            .expect("one run");
+        assert_eq!(run.path, format!("/api/cli/run/{}", name(&entry)));
+        assert_eq!(run.body, json!({ "input": arguments }));
+        assert_eq!(
+            run.key.as_deref(),
+            Some(format!("call-{}", name(&entry)).as_str())
+        );
+        assert_eq!(run.bearer, "ployz_acme");
+        assert_eq!(run.approval, None);
+    }
+
+    #[tokio::test]
+    async fn a_reply_naming_a_newer_revision_rereads_the_list_and_tells_the_host() {
+        let publisher = publisher();
+        let fake = fake_publisher(publisher.clone());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let mut agent_facing = agent_facing().into_iter();
+        let (kept, dropped) = (agent_facing.next().unwrap(), agent_facing.next().unwrap());
+        {
+            let mut state = publisher.lock().unwrap();
+            state.manifest["revision"] = json!("later");
+            state.manifest["commands"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|entry| name(entry) != name(&dropped));
+        }
+        client
+            .send(&request(
+                2,
+                "tools/call",
+                json!({ "name": name(&kept), "arguments": arguments(&kept) }),
+            ))
+            .await;
+        let changed = client.reply().await;
+        assert_eq!(
+            changed["method"], "notifications/tools/list_changed",
+            "{changed}"
+        );
+        let done = client.reply().await;
+        assert_eq!(done["id"], 2, "{done}");
+        assert_ne!(done["result"]["isError"], true, "{done}");
+        let tools = listed(&mut client, 3).await;
+        assert!(named(&tools, name(&kept)).is_some());
+        assert!(named(&tools, name(&dropped)).is_none(), "{tools:?}");
+        assert!(!cached_names(home.path()).contains(&name(&dropped).to_owned()));
+        let paths: Vec<String> = fake.requests().into_iter().map(|seen| seen.path).collect();
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| *path == "/api/cli/manifest")
+                .count(),
+            2,
+            "{paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_naming_the_held_revision_costs_no_reread_and_no_notice() {
+        let fake = fake_publisher(publisher());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing().into_iter().next().unwrap();
+        let done = client.call(2, name(&entry), arguments(&entry)).await;
+        assert_eq!(done["id"], 2, "{done}");
+        let paths: Vec<String> = fake.requests().into_iter().map(|seen| seen.path).collect();
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| *path == "/api/cli/manifest")
+                .count(),
+            1,
+            "{paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_command_drops_the_tool_from_the_list_and_the_cache() {
+        let publisher = publisher();
+        publisher.lock().unwrap().run = (
+            "404 Not Found",
+            json!({ "error": { "code": "unknown_command", "message": "Ployz Cloud no longer has it" } }),
+        );
+        let fake = fake_publisher(publisher);
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing().into_iter().next().unwrap();
+        client
+            .send(&request(
+                2,
+                "tools/call",
+                json!({ "name": name(&entry), "arguments": arguments(&entry) }),
+            ))
+            .await;
+        let changed = client.reply().await;
+        assert_eq!(
+            changed["method"], "notifications/tools/list_changed",
+            "{changed}"
+        );
+        let done = client.reply().await;
+        assert_eq!(done["result"]["isError"], true, "{done}");
+        assert_eq!(
+            done["result"]["structuredContent"]["code"], "unknown_command",
+            "{done}"
+        );
+        let tools = listed(&mut client, 3).await;
+        assert!(named(&tools, name(&entry)).is_none(), "{tools:?}");
+        assert!(!cached_names(home.path()).contains(&name(&entry).to_owned()));
+        let gone = client.call(4, name(&entry), arguments(&entry)).await;
+        assert_eq!(gone["error"]["code"], -32602, "{gone}");
+    }
+
+    #[tokio::test]
+    async fn a_published_command_that_is_not_for_agents_is_no_tool() {
+        let fake = fake_publisher(publisher());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = entries()
+            .into_iter()
+            .find(|entry| entry["agents"] == false)
+            .unwrap();
+        let refused = client.call(2, name(&entry), arguments(&entry)).await;
+        assert_eq!(refused["error"]["code"], -32602, "{refused}");
+        assert_eq!(
+            refused["error"]["message"],
+            format!("no tool named {}", name(&entry))
+        );
+        assert!(
+            fake.requests()
+                .iter()
+                .all(|seen| seen.path == "/api/cli/manifest"),
+            "nothing ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_typed_published_command_is_refused_before_cloud_is_asked() {
+        let publisher = publisher();
+        let typed = {
+            let mut state = publisher.lock().unwrap();
+            let entry = state.manifest["commands"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|entry| entry["typed"] == "organization")
+                .expect("the fixture carries a typed entry");
+            entry["agents"] = json!(true);
+            entry.clone()
+        };
+        let fake = fake_publisher(publisher);
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let refused = client.call(2, name(&typed), arguments(&typed)).await;
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        let text = refused["result"]["content"][0]["text"].as_str().unwrap();
+        let path = typed["path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|segment| segment.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains(&format!("ployz {path}")), "{text}");
+        assert!(
+            fake.requests()
+                .iter()
+                .all(|seen| seen.path == "/api/cli/manifest"),
+            "nothing ran"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cloud_that_cannot_answer_at_start_lists_the_cached_commands() {
+        let publisher = publisher();
+        let fake = fake_publisher(publisher.clone());
+        let home = tempfile::tempdir().unwrap();
+        drop(on_published(&fake, home.path()).await);
+        assert_eq!(cached_names(home.path()).len(), entries().len());
+        publisher.lock().unwrap().down = true;
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let tools = listed(&mut client, 2).await;
+        assert_eq!(tools.len(), tools::catalog().len() + agent_facing().len());
+    }
+
+    #[tokio::test]
+    async fn a_cloud_without_published_commands_lists_the_catalog_alone() {
+        let fake = fake_cloud(Vec::new(), None, Duration::ZERO);
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let tools = listed(&mut client, 2).await;
+        assert_eq!(tools.len(), tools::catalog().len());
+        assert!(!home.path().join("published").exists());
+    }
 }
