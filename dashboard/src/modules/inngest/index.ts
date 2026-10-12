@@ -26,6 +26,7 @@ import {
   createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
   createStoreSweepRequested,
 } from "#/modules/config-store/store-github.inngest";
+import { createRefreshVolumeMirrors } from "#/modules/volume-placement/volume-placement.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 
@@ -56,6 +57,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createStoreSweep(inngest),
     createStoreSweepRequested(inngest),
     ...createVolumeRunFunctions(inngest),
+    createRefreshVolumeMirrors(inngest),
     ...createUptimeMaintenanceFunctions(inngest),
   ];
 }

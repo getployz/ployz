@@ -1,11 +1,11 @@
 import type { DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { closesIn, goesLive, syncButtonState, syncLine, syncPicks, syncSections } from "./store-sync";
+import { closesIn, flipRow, flipsMoved, syncButtonState, syncLine, syncPicks, syncSections, type Flips } from "./store-sync";
 
 // A row by its RowId, node and name in the node; no name brings the node whole.
 const row = (id: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
-  row: id as RowId, node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, ...extra,
+  row: id as RowId, node, kind: "service", name, change: "changed", from: null, into: null, ticked: true, requires: null, secret: null, held_by: null, ...extra,
 });
 const secret = { held: false };
 
@@ -42,11 +42,22 @@ describe("the Sync dialog over the Store", () => {
 
   it("picks the defaults, then what the user flipped; a new node left out leaves its settings out", () => {
     const rows = [image, appEnv, cache, cacheMode];
-    expect(syncPicks(rows, new Set()).map((one) => one.row)).toEqual(["a:source", "c:node", "c:variables.MODE"]);
-    expect(syncPicks(rows, new Set([image.row, appEnv.row, cache.row])).map((one) => one.row))
+    const flipped = (...flips: SyncRow[]) => flips.reduce<Flips>(flipRow, new Map());
+    expect(syncPicks(rows, flipped()).map((one) => one.row)).toEqual(["a:source", "c:node", "c:variables.MODE"]);
+    expect(syncPicks(rows, flipped(image, appEnv, cache)).map((one) => one.row))
       .toEqual(["a:variables.APP_ENV"]);
     // A new node's setting can be left out on its own.
-    expect(syncPicks(rows, new Set([cacheMode.row])).map((one) => one.row)).toEqual(["a:source", "c:node"]);
+    expect(syncPicks(rows, flipped(cacheMode)).map((one) => one.row)).toEqual(["a:source", "c:node"]);
+    // Flipped twice, it is back at its default.
+    expect(syncPicks(rows, flipped(image, image)).map((one) => one.row)).toEqual(["a:source", "c:node", "c:variables.MODE"]);
+  });
+
+  it("drops a flip whose row changed since it was reviewed", () => {
+    const flips = flipRow(new Map(), image);
+    const moved = { ...image, from: { image: "web:3" } };
+    expect(flipsMoved([image], flips)).toBe(false);
+    expect(flipsMoved([moved], flips)).toBe(true);
+    expect(syncPicks([moved], flips).map((one) => one.row)).toEqual(["a:source"]);
   });
 });
 
@@ -68,28 +79,11 @@ describe("the Sync button", () => {
       { label: "Shutdown failed", count: null },
       { label: "Off", count: null },
       { label: "Closing", count: null },
-      { label: "Sync to production", count: 4 },
-      { label: "In sync with production", count: null },
+      { label: "Sync", count: 4 },
+      { label: "In sync", count: null },
     ]);
     // Where its Sync goes, and what that carries, whatever it says.
     expect(syncButtonState(pr, removal("applied", false))).toMatchObject({ into: "production", changes: 4 });
-  });
-
-  it("reads a PR Environment's Destination: Goes live once its Conditional Sync stands, after Off", () => {
-    const pr = { parent: "staging", to_parent: 1, pull_request: { repository_id: 1, number: 142 } };
-    const merge = { number: 142, into: "production", changes: 3, standing: null };
-    const off = asTestDouble<DeploymentSummary>()({ status: "applied", in_flight: false });
-    expect([
-      syncButtonState(pr, null, merge),
-      syncButtonState(pr, null, { ...merge, standing: "cs-1" }),
-      syncButtonState(pr, off, { ...merge, standing: "cs-1" }),
-      goesLive(1, "production", 142),
-    ]).toEqual([
-      { label: "Sync to production", into: "production", changes: 3, count: 3 },
-      { label: "Goes live with #142", into: "production", changes: 3, count: null },
-      { label: "Off", into: "production", changes: 3, count: null },
-      "1 change goes live in production when #142 merges",
-    ]);
   });
 
   it("says in whole days when an idle Branch closes", () => {

@@ -27,7 +27,7 @@ const here = { project: null, environment: null };
 type Healthcheck = { type: "none" } | { type: "http"; path: string; timeoutSeconds: number };
 type CheckRow = {
   id: string; name: string; url: string; source: string; interval_seconds: number; timeout_ms: number; expect: string;
-  enabled: boolean; revision: number; environment_id: string; service_id: string; updated_at: string;
+  enabled: boolean; revision: number; environment_id: string; service_id: string; updated_at: string; probe_requested_at: string | null;
 };
 
 /**
@@ -69,7 +69,8 @@ const setup = Effect.fn(function* () {
       on conflict (environment_id, node_id) do update set deployment_id = excluded.deployment_id, node = excluded.node`);
   };
   const sync = syncUptimeChecks(ORGANIZATION, ENVIRONMENT).pipe(Effect.provide(services));
-  const checks = query<CheckRow>(sql`select *, updated_at::text from uptime_check order by created_at`);
+  const syncProbing = (deployment: string) => syncUptimeChecks(ORGANIZATION, ENVIRONMENT, deployment).pipe(Effect.provide(services));
+  const checks = query<CheckRow>(sql`select *, updated_at::text, probe_requested_at::text from uptime_check order by created_at`);
   const runner: Parameters<typeof createRunStoreDeployment>[1] =
     makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
   const worker = createRunStoreDeployment(new Inngest({ id: "uptime-sync-test" }), runner);
@@ -95,7 +96,7 @@ const setup = Effect.fn(function* () {
   /** `program` inside one open transaction, as a sync that has not committed yet. */
   const inTransaction = <A, E>(program: Effect.Effect<A, E, Database>) =>
     Effect.gen(function* () { return yield* (yield* Database).transaction(program); }).pipe(Effect.provide(services));
-  return { query, apply, sync, checks, deliver, runBackfill, inTransaction };
+  return { query, apply, sync, syncProbing, checks, deliver, runBackfill, inTransaction };
 });
 
 const none: Healthcheck = { type: "none" };
@@ -204,11 +205,13 @@ it.live("a retried delivery converges on one check", () => Effect.gen(function* 
   const { apply, checks, deliver } = yield* setup();
   yield* apply({ prefixes: ["web-shop"], healthcheck: http("/up") });
   yield* deliver(true);
-  const first = yield* checks;
+  // Each delivery asks for a probe again, which only moves the request.
+  const withoutProbe = Effect.map(checks, (rows) => rows.map(({ probe_requested_at: _, ...row }) => row));
+  const first = yield* withoutProbe;
   yield* deliver(true);
   yield* deliver(true);
   expect(first).toHaveLength(1);
-  expect(yield* checks).toEqual(first);
+  expect(yield* withoutProbe).toEqual(first);
 }));
 
 // A Service applied before the uptime rollout has no Deployment to trigger its sync.
@@ -238,4 +241,23 @@ it.live("a sync waits for an uncommitted sync of the same Environment, then read
   yield* Fiber.join(first);
   yield* Fiber.join(second);
   expect(yield* checks).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/up`, revision: 2 })]);
+}));
+
+it.live("an applied Deployment asks for a probe of its Services' checks, and a failed one does not", () => Effect.gen(function* () {
+  const { apply, sync, checks, deliver } = yield* setup();
+  yield* apply({ prefixes: ["web-shop"], healthcheck: none });
+  yield* sync;
+  yield* deliver(false);
+  expect(yield* checks).toEqual([expect.objectContaining({ probe_requested_at: null })]);
+  yield* deliver(true);
+  expect(yield* checks).toEqual([expect.objectContaining({ probe_requested_at: expect.any(String) })]);
+}));
+
+it.live("a sync probes only the checks of Services the given Deployment applied", () => Effect.gen(function* () {
+  const { apply, syncProbing, checks } = yield* setup();
+  yield* apply({ prefixes: ["web-shop"], healthcheck: none });
+  yield* syncProbing(randomUUID());
+  expect(yield* checks).toEqual([expect.objectContaining({ probe_requested_at: null })]);
+  yield* syncProbing(DEPLOYED);
+  expect(yield* checks).toEqual([expect.objectContaining({ probe_requested_at: expect.any(String) })]);
 }));

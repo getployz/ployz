@@ -883,6 +883,12 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
+    async fn seed_volume(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
     async fn declare_mirror(
         &self,
         _request: Request<OpaquePayload>,
@@ -938,6 +944,12 @@ impl MachineRpc for JoinDaemon {
         unused()
     }
     async fn forget_lease(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn demote_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -1060,6 +1072,12 @@ impl MachineRpc for JoinDaemon {
         unused()
     }
     async fn publish_certificate_material(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        unused()
+    }
+    async fn metric_history(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

@@ -55,6 +55,8 @@ pub struct EnvironmentListing {
     pub parent: Option<EnvironmentName>,
     /// Its latest Deployment, when that removes it from the Servers.
     pub removal: Option<DeploymentSummary>,
+    /// Whether it is a PR Environment whose pull request merged.
+    pub merged: bool,
     /// What a new Branch of it runs when it names no Setup Commands.
     pub branch_setup: Vec<crate::SetupCommand>,
 }
@@ -164,6 +166,7 @@ pub(crate) fn environments(
             name: row.parse::<EnvironmentName>(1, "Environment")?,
             parent,
             removal: removal(tx, &id)?,
+            merged: merged(tx, who, &id)?,
             branch_setup: match row.optional_text(3)? {
                 Some(_) => row.json(3, "Branch setup")?,
                 None => Vec::new(),
@@ -178,6 +181,17 @@ pub(crate) fn environments(
         },
         environments,
     })
+}
+
+/// Whether `id` is a PR Environment whose pull request merged.
+fn merged(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
+    let Some(pull_request) = crate::pull_request::of(tx, id)? else {
+        return Ok(false);
+    };
+    Ok(
+        crate::pull_request::facts(tx, who, pull_request.repository_id, pull_request.number)?
+            .is_some_and(|facts| facts.merge_commit.is_some()),
+    )
 }
 
 pub(crate) fn set_default(
@@ -570,6 +584,7 @@ pub(crate) fn remove_organization(
         "config_check_suite",
         "config_build_order",
         "config_pull_request",
+        "config_sync_receipt",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),

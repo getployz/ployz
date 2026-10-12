@@ -2,11 +2,12 @@ import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Option } from "effect";
+import { storePrCheckRun } from "./store-pull-requests";
 import { volumeLoss } from "./store-volumes";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
-import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
+import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
+import { fetchInstallationPullRequest, postInstallationCheckRun } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { member } from "#/modules/identity/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
@@ -15,9 +16,6 @@ import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData
 import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-
-/** The check Ployz posts on a PR Environment's pull request. It never blocks a deploy; GitHub may require it to merge. */
-const PR_CHECK_NAME = "Ployz · ready to merge";
 
 /** What an observation left Cloud to do: runs to dispatch, Branches to take off the Servers, a check to publish. */
 export type StoreOutcome = {
@@ -43,24 +41,15 @@ const collect = Effect.fn("StorePullRequest.collect")(function* (organizationId:
  * closed one. The Store makes, retracks and closes PR Environments.
  */
 export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(function* (payload: GithubPullRequestReceivedEventData) {
-  const store = yield* cloudStore;
   const done: StoreOutcome = { deployments: [], closing: [], check: false };
   const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
   if (organizations.length === 0) return done;
   const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, payload.number);
   const { updatedAt } = live;
   if (updatedAt === null) return yield* new StoreGithubFailure({ message: "GitHub sent a pull request without updated_at." });
-  const merge = live.open ? null : live.mergeCommitSha;
-  const repository = merge === null ? null : yield* resolveGithubRepository(payload.installationId, payload.repositoryId);
+  const targetHead = yield* mergedInto(payload.installationId, payload.repositoryId, live);
+  const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, targetHead);
   for (const organizationId of organizations) {
-    // Merged: whether the head the Store last saw of the target branch already has the merge commit, so its
-    // Conditional Syncs land with what that push deployed.
-    let reached: string | null = null;
-    if (merge !== null && repository !== null) {
-      const head = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, live.targetBranch));
-      if (head !== null && (yield* descendsFrom(payload.installationId, repository, merge, head))) reached = head;
-    }
-    const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, reached);
     yield* collect(organizationId, yield* storeSystem(organizationId, event), done);
   }
   return done;
@@ -135,9 +124,9 @@ export const publishRequestedStorePrCheck = Effect.fn("StorePullRequest.publishR
 });
 
 /**
- * Publish the pull request's "Ployz · ready to merge" check from the Store's views, as they are now: every
- * Organization's PR Environments for it count toward the one check. Nothing is posted for a closed pull request, one
- * without PR Environments, or an installation without Checks: write.
+ * Publish the pull request's "Ployz · ready to merge" check from the Store's views, as they are now. Nothing is posted
+ * when no Store has a word (no PR Environments, closed unmerged, or everything landed), or for an installation without
+ * Checks: write.
  */
 export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(function* (payload: {
   installationId: number; repositoryId: number; number: number;
@@ -148,26 +137,20 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
   const views: { organizationId: string; view: PullRequestView }[] = [];
   for (const organizationId of organizations) {
     const view = yield* storeTry(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
-    if (view.pull_request?.open && view.environments.length > 0) views.push({ organizationId, view });
+    if (view.check) views.push({ organizationId, view });
   }
-  const [first] = views;
-  if (!first?.view.pull_request) return "skipped" as const;
+  if (views.length === 0) return "skipped" as const;
   const { drizzle } = yield* Database;
   const slugs = yield* drizzle.select({ id: organization.id, slug: organization.slug }).from(organization)
     .where(inArray(organization.id, views.map((entry) => entry.organizationId)));
-  const failing = views.find((entry) => !entry.view.passing);
-  const [environment] = first.view.environments;
-  const slug = slugs.find((row) => row.id === first.organizationId)?.slug ?? "";
-  const summary = views.flatMap(({ view }) => view.environments.map((pr) =>
-    `- ${pr.environment.project}/${pr.environment.name}: ${pr.deployment ? `Deployment #${pr.deployment.number} ${pr.deployment.status}` : "not deployed"}`));
+  const run = storePrCheckRun(
+    views.map(({ organizationId, view }) => ({ slug: slugs.find((row) => row.id === organizationId)?.slug ?? "", view })),
+    config.app.url.href,
+  );
+  if (!run) return "skipped" as const;
   return yield* postInstallationCheckRun(payload.installationId, payload.repositoryId, {
-    headSha: first.view.pull_request.head,
-    name: PR_CHECK_NAME,
+    ...run,
     externalId: `${payload.repositoryId}:${payload.number}`,
-    conclusion: failing ? "action_required" : "success",
-    detailsUrl: new URL(`cloud/${slug}/${environment?.environment.project ?? ""}/${environment?.environment.name ?? ""}`, config.app.url).href,
-    title: (failing ?? first).view.reason,
-    summary: summary.join("\n"),
   }).pipe(
     Effect.as("posted" as const),
     Effect.catchIf((error) => error.status === 403 && !error.retriable, (error) =>

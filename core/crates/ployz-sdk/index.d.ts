@@ -7,6 +7,7 @@ import type {
   ConfigView,
   ConfigWritten,
   ConfigCommitted,
+  Converted,
   PullRequestRef,
   OrganizationRemoved,
   AppliedVolume,
@@ -34,6 +35,8 @@ import type {
   MachineUpdate,
   MachineUpdated,
   MachineUpgradeAttempt,
+  MetricHistory,
+  MetricHistoryInput,
   RequestMachineUpgradeRequest,
   InspectMachineUpgradeRequest,
   ObservedDataLoss,
@@ -65,6 +68,7 @@ import type {
   InspectVolumeCopyRequest,
   MirrorRequest,
   ReceiveView,
+  SeedVolumeRequest,
   ServiceVolumeRequest,
   SnapshotGuid,
   SourceContainerRequest,
@@ -97,6 +101,7 @@ export type VolumeSwitchRequest =
   | { command: "destroy_mirror"; payload: MirrorRequest }
   | { command: "forget_snapshots"; payload: MirrorRequest }
   | { command: "forget_lease"; payload: MirrorRequest }
+  | { command: "demote_volume"; payload: MirrorRequest }
   | { command: "withdraw"; payload: SourceContainerRequest }
   | { command: "freeze"; payload: SourceContainerRequest }
   | { command: "hand_over"; payload: HandOverRequest }
@@ -105,7 +110,9 @@ export type VolumeSwitchRequest =
   | { command: "accept_hand_off"; payload: HandOverRequest }
   | { command: "promote"; payload: ServiceVolumeRequest }
   | { command: "start_handed_container"; payload: ServiceVolumeRequest }
-  | { command: "clear_final"; payload: MirrorRequest };
+  | { command: "clear_final"; payload: MirrorRequest }
+  | { command: "restore"; payload: ServiceVolumeRequest }
+  | { command: "seed_volume"; payload: SeedVolumeRequest };
 
 /** The reply payload of one Volume run verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
@@ -295,6 +302,8 @@ export declare class Client {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options?: LogOptions): AsyncIterable<LogEvent>;
     logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
+    /** Sums a Service across the Machines that answered; names each Machine that did not. */
+    metricHistory(input: MetricHistoryInput): Promise<MetricHistory>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewNamespaceRemoval(
@@ -382,6 +391,8 @@ export interface ConfigStore {
    * as readable repositories; never the caller's.
    */
   write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted, principal?: string | null): Promise<ConfigCommitted>;
+  /** What converting Conditional Syncs to offers did, when opening this Store converted them; null once an earlier open did. */
+  converted(): Converted | null;
   /** Cloud only: the pull requests whose checks a change in Environment `environment` (its ID) may move. */
   checks(environment: string): Promise<PullRequestRef[]>;
   /** Cloud's worker only: the Git Services the Deployment builds, each with its pinned commit, if any. */
@@ -419,11 +430,10 @@ export interface ConfigStore {
   /** Cloud's GitHub workers only: the branch head the Store last saw, which a new head is compared from. */
   branchHead(organization: string, repositoryId: number, branch: string): Promise<string | null>;
   /**
-   * Cloud's GitHub workers only: before a push reaches the Store, the pull requests into the branch with a Conditional
-   * Sync standing (report each that merged first) and the merge commits of frozen ones (pass those the new head
-   * contains as the branch head's `merged`).
+   * Cloud's GitHub workers only: before a push reaches the Store, the open pull requests into the branch with a PR
+   * Environment, not known to have merged (report each that did, so its merge lands first).
    */
-  pendingSyncs(organization: string, repositoryId: number, branch: string): Promise<{ standing: number[]; merged: string[] }>;
+  awaitingMerge(organization: string, repositoryId: number, branch: string): Promise<number[]>;
   /**
    * Cloud's worker only: start GitHub build `build` (`DEPLOYMENT.SERVICE`). An earlier image may serve it (`reused`);
    * GitHub may be unable to take it (`skipped`, recorded for the next Builder); else dispatch on `runner`.

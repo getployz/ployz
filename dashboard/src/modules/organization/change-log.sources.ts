@@ -20,11 +20,15 @@ export const storeChangeSources = {
   config_never_sync: { key: ["environment_id"] },
   // ponytail: logs the receiver only; another tab on the sender sees what it synced once the sender changes too.
   config_sync_arrival: { key: ["environment_id"] },
+  config_proposal: { key: ["environment_id"] },
+  config_merge_value: { key: ["environment_id"] },
+  // No family: Cloud never reads a merge's deferred deploy; the next push to the branch does.
+  config_merge_deploy: { key: ["environment_id"] },
+  // No family: a receipt outlives its Environments and no view reads it.
+  config_sync_receipt: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"] },
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },
-  config_conditional_sync: { key: ["environment_id"] },
-  config_held_secret: { key: ["environment_id"] },
   config_pull_request: { key: ["repository_id", "number"] },
 } satisfies Record<string, { key: readonly string[] }>;
 
@@ -48,6 +52,8 @@ export const changeSources = {
   organization_machine: { key: ["machine_id"] },
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
+  volume_run: { key: ["id"] },
+  volume_placement: { key: ["volume_id"] },
   namespace_cleanup: { key: ["id"] },
   organization_server_upgrades: { key: ["organization_id"] },
   organization_settings: { key: ["organization_id"] },

@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::{Notify, mpsc};
+use tokio_postgres::Client;
 use uuid::Uuid;
 
-use super::{Deps, Engine, Tempo, What};
-use crate::control::detect::Health;
+use super::{Deps, Engine, FeedCmd, Tempo, What};
+use crate::control::detect::{Health, RoundId};
 use crate::control::feed::{CheckRow, FeedEvent, Snapshot};
-use crate::control::incidents::IncidentWriter;
+use crate::control::incidents::{IncidentWriter, Written};
 use crate::control::results::{self, Results};
 use crate::control::test_pg;
 use crate::domain::{
@@ -196,56 +197,384 @@ async fn a_probe_request_triggers_one_round_only_while_fresh() {
     drop(pg);
 }
 
-/// A statement that touches many rows reloads the whole org; a request already acted on must not
-/// fire again because its check came back in that reload.
-#[tokio::test(flavor = "multi_thread")]
-async fn an_org_reload_does_not_fire_a_request_already_acted_on() {
-    let (pg, _admin) = test_pg::postgres().await;
-    let region = Region::parse("local").unwrap();
-    let (written, _written_rx) = mpsc::channel(8);
-    let (feed_cmds, _cmds_rx) = mpsc::channel(2);
+/// The receivers stay with the test so the engine's reports and reloads have somewhere to go.
+async fn engine(
+    pg: &test_pg::Postgres,
+    regions: &[Region],
+) -> (Engine, mpsc::Receiver<Written>, mpsc::Receiver<FeedCmd>) {
+    let (written, written_rx) = mpsc::channel(8);
+    let (feed_cmds, cmds_rx) = mpsc::channel(2);
     let deps = Deps {
         writer: IncidentWriter::spawn(pg.pg().await, 8, written),
         results: Results::spawn(pg.pg().await, results::Config::PRODUCTION),
         feed_cmds,
-        wake: HashMap::from([(region.clone(), Arc::new(Notify::new()))]),
-    };
-    let mut engine = Engine::new(vec![region.clone()], deps);
-    let requested = CheckRow {
-        probe_requested: Some(UnixMs::now()),
-        ..row(1)
-    };
-    let org = requested.check.org;
-    let triggered = |engine: &mut Engine, replaced_orgs: Vec<OrgId>| {
-        engine.feed(FeedEvent::Changed {
-            reloaded: vec![requested.clone()],
-            gone: Vec::new(),
-            replaced_orgs,
-            skipped: Vec::new(),
-        });
-        engine.tick();
-        engine
-            .take(&region, 100)
-            .jobs
+        wake: regions
             .iter()
-            .filter(|job| job.key.kind == ProbeKind::Triggered)
-            .count()
+            .map(|region| (region.clone(), Arc::new(Notify::new())))
+            .collect(),
     };
+    let engine = Engine::new(regions.to_vec(), deps).with_tempo(Tempo { divisor: 30 });
+    (engine, written_rx, cmds_rx)
+}
 
+async fn stored_check(admin: &Client) -> CheckRow {
+    let org = test_pg::org(admin).await;
+    let id = test_pg::check(admin, org, "https://example.com/").await;
+    let mut row = row(1);
+    row.check.id = CheckId(id);
+    row.check.org = OrgId(org);
+    row
+}
+
+fn request(engine: &mut Engine, row: &CheckRow, at: UnixMs) {
+    engine.feed(FeedEvent::Changed {
+        reloaded: vec![CheckRow {
+            probe_requested: Some(at),
+            ..row.clone()
+        }],
+        gone: Vec::new(),
+        replaced_orgs: Vec::new(),
+        skipped: Vec::new(),
+    });
+}
+
+async fn answered(admin: &Client, check: CheckId) -> Option<SystemTime> {
+    admin
+        .query_one(
+            "SELECT probe_answered_at FROM uptime_check WHERE id = $1",
+            &[&check.0],
+        )
+        .await
+        .unwrap()
+        .get(0)
+}
+
+/// The writer is a FIFO a few milliseconds deep, so this long without an answer means none was
+/// queued.
+async fn assert_unanswered(admin: &Client, check: CheckId, why: &str) {
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(answered(admin, check).await, None, "{why}");
+}
+
+async fn assert_answered(admin: &Client, check: CheckId, at: UnixMs, why: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let got = answered(admin, check).await;
+        if got == Some(at.to_system_time()) {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{why}: {got:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn observe(engine: &mut Engine, region: &Region, key: &ProbeKey, status: u16) {
+    let observation = Observation {
+        key: key.clone(),
+        started_at: UnixMs::now(),
+        outcome: Outcome::Http { status },
+        timings: Timings::default(),
+        remote_ip: None,
+        cert_not_after: None,
+        agent: AgentName("local".into()),
+    };
+    engine.observed(region, Uuid::now_v7(), vec![observation]);
+}
+
+fn health(engine: &Engine, check: CheckId) -> &Health {
+    &engine
+        .entries
+        .get(&check)
+        .expect("the check is held")
+        .health
+}
+
+fn round_probes(engine: &Engine, check: CheckId) -> Vec<ProbeKey> {
+    match health(engine, check) {
+        Health::Suspect(round) => round.expected.clone(),
+        health @ (Health::Reachable | Health::Unreachable(_)) => {
+            panic!("no round out: {health:?}")
+        }
+    }
+}
+
+/// One-region mode sends two probes 30 s apart: the first result alone must not end Checking.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_probe_request_is_answered_when_its_round_is_judged_not_at_its_first_result() {
+    let (pg, admin) = test_pg::postgres().await;
+    let region = Region::parse("local").unwrap();
+    let (mut engine, _written, _cmds) = engine(&pg, std::slice::from_ref(&region)).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
     engine.feed(FeedEvent::Loaded(Snapshot {
-        rows: vec![row(1)],
+        rows: vec![row.clone()],
         skipped: Vec::new(),
     }));
-    assert!(triggered(&mut engine, Vec::new()) > 0, "fresh request");
-    let deadline = engine
-        .timers
-        .iter()
-        .map(|due| due.0)
-        .find(|due| matches!(due.what, What::RoundDeadline { .. }))
-        .expect("the request started a triggered round");
-    engine.fire_timer(deadline, deadline.at);
+    let _ = engine.take(&region, 0);
 
-    assert_eq!(triggered(&mut engine, vec![org]), 0, "org reload");
+    let at = UnixMs::now();
+    request(&mut engine, &row, at);
+    let probes = round_probes(&engine, check);
+    let [first, second] = probes.as_slice() else {
+        panic!("one-region mode sends two probes: {probes:?}")
+    };
+    assert!(probes.iter().all(|p| p.kind == ProbeKind::Triggered));
+    observe(&mut engine, &region, first, 200);
+    assert_unanswered(&admin, check, "one of two results").await;
+    observe(&mut engine, &region, second, 200);
+    assert!(matches!(health(&engine, check), Health::Reachable));
+    assert_answered(&admin, check, at, "both results judged").await;
+    drop(pg);
+}
+
+/// A request made while a confirm round is out joins it, so no triggered row ever lands for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_joining_a_confirm_round_is_answered_when_that_round_ends() {
+    let (pg, admin) = test_pg::postgres().await;
+    let region = Region::parse("local").unwrap();
+    let (mut engine, _written, _cmds) = engine(&pg, std::slice::from_ref(&region)).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
+    engine.feed(FeedEvent::Loaded(Snapshot {
+        rows: vec![row.clone()],
+        skipped: Vec::new(),
+    }));
+    let _ = engine.take(&region, 0);
+    let routine = ProbeKey {
+        check,
+        region: region.clone(),
+        scheduled_at: UnixMs::now(),
+        kind: ProbeKind::Routine,
+    };
+    observe(&mut engine, &region, &routine, 503);
+    let confirm = round_probes(&engine, check);
+    assert!(confirm.iter().all(|p| p.kind == ProbeKind::Confirm));
+
+    let at = UnixMs::now();
+    request(&mut engine, &row, at);
+    assert_eq!(
+        round_probes(&engine, check),
+        confirm,
+        "joined, not replaced"
+    );
+    assert_unanswered(&admin, check, "confirm round still out").await;
+    for probe in &confirm {
+        observe(&mut engine, &region, probe, 200);
+    }
+    assert!(matches!(health(&engine, check), Health::Reachable));
+    assert_answered(&admin, check, at, "confirm round rejected").await;
+    drop(pg);
+}
+
+/// With no region nothing can probe, so waiting would show Checking for nothing. A request too old
+/// to act on is never answered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_no_region_can_run_is_answered_at_once_and_a_stale_one_never() {
+    let (pg, admin) = test_pg::postgres().await;
+    let (mut engine, _written, _cmds) = engine(&pg, &[]).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
+    engine.feed(FeedEvent::Loaded(Snapshot {
+        rows: vec![row.clone()],
+        skipped: Vec::new(),
+    }));
+
+    request(&mut engine, &row, UnixMs(UnixMs::now().0 - 5 * 60 * 1000));
+    assert_unanswered(&admin, check, "stale request").await;
+
+    let at = UnixMs::now();
+    request(&mut engine, &row, at);
+    assert!(matches!(health(&engine, check), Health::Reachable));
+    assert_answered(&admin, check, at, "no region").await;
+    drop(pg);
+}
+
+fn org_reload(engine: &mut Engine, row: &CheckRow, at: UnixMs) {
+    engine.feed(FeedEvent::Changed {
+        reloaded: vec![CheckRow {
+            probe_requested: Some(at),
+            ..row.clone()
+        }],
+        gone: Vec::new(),
+        replaced_orgs: vec![row.check.org],
+        skipped: Vec::new(),
+    });
+}
+
+/// A statement that touches many rows reloads the whole org: a request already acted on must not
+/// fire again because its check came back in that reload.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_org_reload_does_not_fire_a_request_already_acted_on() {
+    let (pg, admin) = test_pg::postgres().await;
+    let region = Region::parse("local").unwrap();
+    let (mut engine, _written, _cmds) = engine(&pg, std::slice::from_ref(&region)).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
+    engine.feed(FeedEvent::Loaded(Snapshot {
+        rows: vec![row.clone()],
+        skipped: Vec::new(),
+    }));
+    let _ = engine.take(&region, 0);
+
+    let at = UnixMs::now();
+    request(&mut engine, &row, at);
+    for probe in round_probes(&engine, check) {
+        observe(&mut engine, &region, &probe, 200);
+    }
+    assert_answered(&admin, check, at, "round judged").await;
+
+    org_reload(&mut engine, &row, at);
+    assert!(
+        matches!(health(&engine, check), Health::Reachable),
+        "org reload fired the request again"
+    );
+    drop(pg);
+}
+
+/// The reload keeps the round the request is waiting on, so it is still answered when that round
+/// ends rather than dropped or started over.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_org_reload_mid_round_keeps_the_request_waiting_on_it() {
+    let (pg, admin) = test_pg::postgres().await;
+    let region = Region::parse("local").unwrap();
+    let (mut engine, _written, _cmds) = engine(&pg, std::slice::from_ref(&region)).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
+    engine.feed(FeedEvent::Loaded(Snapshot {
+        rows: vec![row.clone()],
+        skipped: Vec::new(),
+    }));
+    let _ = engine.take(&region, 0);
+
+    let at = UnixMs::now();
+    request(&mut engine, &row, at);
+    let probes = round_probes(&engine, check);
+    org_reload(&mut engine, &row, at);
+    assert_eq!(round_probes(&engine, check), probes, "kept, not replaced");
+    assert_unanswered(&admin, check, "round still out").await;
+    for probe in &probes {
+        observe(&mut engine, &region, probe, 200);
+    }
+    assert_answered(&admin, check, at, "round judged after the reload").await;
+    drop(pg);
+}
+
+fn round_id(engine: &Engine, check: CheckId) -> RoundId {
+    match health(engine, check) {
+        Health::Suspect(round) => round.id,
+        health @ (Health::Reachable | Health::Unreachable(_)) => {
+            panic!("no round out: {health:?}")
+        }
+    }
+}
+
+fn revise(engine: &mut Engine, row: &CheckRow, revision: i32, at: UnixMs) {
+    let mut revised = row.clone();
+    revised.check.revision = Revision(revision);
+    revised.probe_requested = Some(at);
+    engine.feed(FeedEvent::Changed {
+        reloaded: vec![revised],
+        gone: Vec::new(),
+        replaced_orgs: Vec::new(),
+        skipped: Vec::new(),
+    });
+}
+
+/// A sync that edits the check without a newer request cancels the round the request waits on.
+/// Nothing judged it, so the new config is probed and only that round answers.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_mid_round_probes_the_new_config_before_answering() {
+    let (pg, admin) = test_pg::postgres().await;
+    let region = Region::parse("local").unwrap();
+    let (mut engine, _written, _cmds) = engine(&pg, std::slice::from_ref(&region)).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
+    engine.feed(FeedEvent::Loaded(Snapshot {
+        rows: vec![row.clone()],
+        skipped: Vec::new(),
+    }));
+    let _ = engine.take(&region, 0);
+
+    let at = UnixMs::now();
+    request(&mut engine, &row, at);
+    let before = round_id(&engine, check);
+    revise(&mut engine, &row, 2, at);
+    assert_ne!(
+        round_id(&engine, check),
+        before,
+        "a fresh round for the new config"
+    );
+    let after = round_probes(&engine, check);
+    assert!(after.iter().all(|p| p.kind == ProbeKind::Triggered));
+    assert_unanswered(&admin, check, "the edit judged nothing").await;
+    for probe in &after {
+        observe(&mut engine, &region, probe, 200);
+    }
+    assert_answered(&admin, check, at, "the new config's round judged").await;
+    drop(pg);
+}
+
+/// A deploy that edits the check and requests again fires one round, answering the newer request.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_with_a_newer_request_mid_round_fires_one_round() {
+    let (pg, admin) = test_pg::postgres().await;
+    let region = Region::parse("local").unwrap();
+    let (mut engine, _written, _cmds) = engine(&pg, std::slice::from_ref(&region)).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
+    engine.feed(FeedEvent::Loaded(Snapshot {
+        rows: vec![row.clone()],
+        skipped: Vec::new(),
+    }));
+    let _ = engine.take(&region, 0);
+
+    let first_at = UnixMs::now();
+    request(&mut engine, &row, first_at);
+    let first = round_id(&engine, check);
+    let at = UnixMs(first_at.0 + 1);
+    revise(&mut engine, &row, 2, at);
+    assert_ne!(round_id(&engine, check), first);
+    engine.tick();
+    // After the tick: a release a millisecond late shifts the round's probe times with its jobs.
+    let round = round_probes(&engine, check);
+    let handed: Vec<ProbeKey> = engine
+        .take(&region, 100)
+        .jobs
+        .into_iter()
+        .map(|job| job.key)
+        .filter(|key| key.kind == ProbeKind::Triggered)
+        .collect();
+    assert_eq!(handed, round, "exactly one round's jobs");
+    assert_unanswered(&admin, check, "the edit judged nothing").await;
+    for probe in &round {
+        observe(&mut engine, &region, probe, 200);
+    }
+    assert_answered(&admin, check, at, "the newer request's round judged").await;
+    drop(pg);
+}
+
+/// An edit after the request has gone stale drops it unanswered: the dashboard's own cap ends
+/// Checking.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edit_mid_round_drops_a_request_gone_stale() {
+    let (pg, admin) = test_pg::postgres().await;
+    let region = Region::parse("local").unwrap();
+    let (mut engine, _written, _cmds) = engine(&pg, std::slice::from_ref(&region)).await;
+    let row = stored_check(&admin).await;
+    let check = row.check.id;
+    engine.feed(FeedEvent::Loaded(Snapshot {
+        rows: vec![row.clone()],
+        skipped: Vec::new(),
+    }));
+    let _ = engine.take(&region, 0);
+
+    let at = UnixMs(UnixMs::now().0 - 59_000);
+    request(&mut engine, &row, at);
+    let _ = round_id(&engine, check);
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    revise(&mut engine, &row, 2, at);
+    assert!(matches!(health(&engine, check), Health::Reachable));
+    assert_unanswered(&admin, check, "stale request").await;
     drop(pg);
 }
 

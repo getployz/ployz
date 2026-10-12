@@ -199,7 +199,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     if matches!(args.command, Some(Command::Observe { command: None })) {
-        ployzd::observe::run(&run_dir).await?;
+        ployzd::observe::run(&run_dir, &args.data_dir).await?;
         return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::VolumePlugin)) {
