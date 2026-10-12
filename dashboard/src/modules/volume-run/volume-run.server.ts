@@ -169,6 +169,7 @@ const refusalCode = {
   no_mirror: "conflict",
   no_copy: "conflict",
   another_copy: "conflict",
+  server_lacks: "unsupported",
 } satisfies Record<RefusalCode, string>;
 
 const deletesCopy = (volume: ResolvedVolume, member: AnsweredMember): DestructiveEffect => ({
