@@ -243,20 +243,23 @@ impl ContainerRuntime {
         if local.phase() != LocalMachinePhase::Participating || local.id() != machine_id {
             return Ok(());
         }
-        if local
+        let stranded = local
             .machine()
             .is_some_and(|machine| machine.accepts_ingress)
-            && let Some(container_id) =
-                stranded_ingress(&observed, observed.len() == container_ids.len())
-        {
-            self.start_stranded(&container_id).await;
-        }
+            .then(|| stranded_ingress(&observed, observed.len() == container_ids.len()))
+            .flatten();
         let existing = publication.local_containers(&machine_id).await?;
         let changes = local_container_changes(&existing, &live);
         publication
             .apply_container_rows(&machine_id, &changes.deletions, &changes.upserts)
-            .await
-            .map_err(Error::from)
+            .await?;
+        // Started after the guard drops, so a slow Docker start never stalls publication.
+        // A reset that takes the guard meanwhile removes the container anyway.
+        drop(publication);
+        if let Some(container_id) = stranded {
+            self.start_stranded(&container_id).await;
+        }
+        Ok(())
     }
 
     async fn sync_volume_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
