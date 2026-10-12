@@ -9,6 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "sdk-types", "macos-cli", "cloud", "release-contracts"}
+NORMAL = JOBS - {"release-contracts"}
 RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
     "check-layer3-runner.sh",
@@ -20,6 +21,29 @@ CONTRACT_SCRIPTS = {
 
 
 def select(paths):
+    selected = select_normal(paths)
+    # Only release builds exercise the release profile, features, linker flags, and native dependencies on every target.
+    cargo_changed = any(
+        path.startswith("core/.cargo/") or (path.startswith("core/") and Path(path).name in {"Cargo.toml", "Cargo.lock"})
+        for path in paths
+    )
+    if cargo_changed or release_inputs_changed(paths):
+        selected.add("release-contracts")
+    return selected
+
+
+def release_inputs_changed(paths):
+    # Batches keep a huge diff under the kernel's argument length limit.
+    return any(
+        subprocess.check_output(
+            ["bash", str(ROOT / "core/scripts/release-artifacts-needed.sh"), "pull_request", *paths[i : i + 1000]],
+            text=True,
+        ).strip() == "true"
+        for i in range(0, len(paths), 1000)
+    )
+
+
+def select_normal(paths):
     selected = {"contracts"}
     for path in paths:
         if path.endswith(".md") or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "core/site/")):
@@ -29,7 +53,7 @@ def select(paths):
             selected.add("uptime")
             continue
         if path.startswith(".github/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}:
-            return JOBS.copy()
+            return NORMAL.copy()
         if path.startswith("dashboard/"):
             selected.add("cloud")
             # The uptime tests apply every migration and read the dashboard's incident fence.
@@ -37,7 +61,7 @@ def select(paths):
                 selected.add("uptime")
         elif path.startswith("core/crates/"):
             if path.count("/") < 3:
-                return JOBS.copy()
+                return NORMAL.copy()
             _, _, crate, relative = path.split("/", 3)
             selected |= RUST
             if crate == "ployz-core" and not relative.startswith("tests/"):
@@ -48,7 +72,7 @@ def select(paths):
             if crate == "ployz-testkit":
                 continue
             if crate not in {"ployz", "ployz-core", "ployz-build", "ployz-sdk", "ployz-config-wasm"}:
-                return JOBS.copy()
+                return NORMAL.copy()
             if not relative.startswith("tests/") or crate == "ployz-sdk":
                 selected |= {"cloud", "sdk-types"}
         elif path == "core/install.sh" or path.startswith("core/relay/"):
@@ -61,13 +85,8 @@ def select(paths):
             selected |= RUST
         elif path.startswith(("scripts/", "core/scripts/")) and Path(path).name in CONTRACT_SCRIPTS:
             continue
-        else:
-            artifacts = subprocess.check_output(
-                ["bash", str(ROOT / "core/scripts/release-artifacts-needed.sh"), "pull_request", path], text=True
-            ).strip()
-            if artifacts != "true":
-                return JOBS.copy()
-            selected.add("release-contracts")
+        elif not release_inputs_changed([path]):
+            return NORMAL.copy()
     return selected
 
 
@@ -104,7 +123,7 @@ def main():
     args = parser.parse_args()
     if args.command == "select":
         # A manual quick run covers every normal check, without release/cluster work.
-        selected = select(changed_paths(args.base, args.head)) if args.base and set(args.base) != {"0"} else JOBS - {"release-contracts"}
+        selected = select(changed_paths(args.base, args.head)) if args.base and set(args.base) != {"0"} else NORMAL
         output = json.dumps(sorted(selected))
         print(output)
         if os.environ.get("GITHUB_OUTPUT"):
