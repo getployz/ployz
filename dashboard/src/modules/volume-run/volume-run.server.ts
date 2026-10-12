@@ -457,7 +457,7 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
           const thrown = options.onRefusal === "throw" && reason !== "stale_lease" && reason !== "stale_step";
           return thrown ? Effect.fail(new NonRetriableError(clip(message))) : failRun(ctx, inngestRunId, message);
         }
-        return Effect.fail(new SwitchAttemptError(reason, `${request.command} on ${machine.name}: ${sdkFailureMessage(error)}`));
+        return Effect.fail(new SwitchAttemptError(reason, `${request.command} on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       }),
     );
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
@@ -511,7 +511,7 @@ export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunCon
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   yield* session.copyContainerImage(from.id, holder.containerId, to.id).pipe(
-    Effect.mapError((error) => new Error(`copying ${holder.redactedSpec.name}'s image to ${to.name}: ${sdkFailureMessage(error)}`)),
+    Effect.mapError((error) => new Error(`copying ${holder.redactedSpec.name}'s image to ${to.name}: ${sdkFailureMessage(error, [from, to])}`)),
   );
 }, Effect.scoped);
 
@@ -528,7 +528,7 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(from.id, holder.containerId).pipe(
-    Effect.mapError((error) => new Error(`reading ${holder.redactedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error)}`)),
+    Effect.mapError((error) => new Error(`reading ${holder.redactedSpec.name}'s spec on ${from.name}: ${sdkFailureMessage(error, [from])}`)),
   );
   const spec = container.resolved_spec;
   yield* sendSwitch(ctx, inngestRunId, to, {

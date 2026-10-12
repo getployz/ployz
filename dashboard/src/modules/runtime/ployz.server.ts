@@ -207,8 +207,13 @@ export function rpcErrorMessage(error: PloyzSdkError) {
   return Option.isSome(rpc) ? rpc.value.message : undefined;
 }
 
-export function sdkFailureMessage(error: PloyzSdkError) {
-  if (error instanceof ServerLacks) return `${requirementFor(error.capability)?.feature ?? "This step"} needs a newer Ployz on one of your Servers.`;
+/** A failure as one sentence; a Server the call reached is named from `servers` when its daemon lacks the step. */
+export function sdkFailureMessage(error: PloyzSdkError, servers: readonly { readonly id: string; readonly name: string }[] = []) {
+  if (error instanceof ServerLacks) {
+    const requirement = requirementFor(error.capability);
+    const server = servers.find((candidate) => candidate.id === error.machineId)?.name ?? "one of your Servers";
+    return requirement === null ? `This step needs a newer Ployz on ${server}.` : `${requirement.feature} ${requirement.plural ? "need" : "needs"} a newer Ployz on ${server}.`;
+  }
   const cause = "cause" in error ? error.cause : error;
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String, message: Schema.String }))(cause);
   return Option.isSome(rpc) ? `${rpc.value.code}: ${rpc.value.message}` : describeFailureCause(cause);
