@@ -32,10 +32,7 @@ def catalog(names):
     return "\n".join(kept + docker + moves) + "\n"
 
 
-MAIN_MOVES = ["InspectVolumeCopy", "Withdraw", "Freeze", "HandOver", "Thaw", "Close", "AcceptHandOff", "ClearFinal",
-              "Promote", "StartHandedContainer", "Restore", "SeedVolume", "DeclareMirror", "BeginRound",
-              "CommitSnapshots", "WarmSnapshot", "StartReceive", "InspectReceive", "PruneMirror", "DestroyMirror",
-              "ForgetSnapshots", "ForgetLease", "DemoteVolume"]
+OLD_MOVES = ["InspectVolumeCopy", "SeedVolume", "Withdraw", "Freeze"]
 
 
 def state(readonly, containers=(), snapshots=0):
@@ -204,9 +201,9 @@ class VolumeMoveTests(unittest.TestCase):
             summary = checks.run_all(cases)
         return summary, model
 
-    def test_catalog_on_main_names_every_extra_verb_and_the_missing_one(self):
-        diff = volume_move.catalog_diff(catalog(MAIN_MOVES))
-        self.assertEqual(len(diff["extra"]), 21)
+    def test_catalog_with_old_verbs_names_every_extra_verb_and_the_missing_one(self):
+        diff = volume_move.catalog_diff(catalog(OLD_MOVES))
+        self.assertEqual(diff["extra"], ["Freeze", "Withdraw"])
         self.assertEqual(diff["missing"], ["SetVolumeCopy"])
         self.assertEqual(diff["kept_missing"], [])
 

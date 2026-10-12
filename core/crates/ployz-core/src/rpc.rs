@@ -1,8 +1,6 @@
 use crate::{
-    CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
-    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SeedVolumeRequest, ServiceVolumeRequest,
-    SetVolumeCopyReply, SetVolumeCopyRequest, SourceContainerRequest, StartReceiveRequest,
-    StorageCapacity, SwitchReply, VolumeCopyView, WarmRequest,
+    InspectVolumeCopyRequest, SeedVolumeRequest, SetVolumeCopyReply, SetVolumeCopyRequest,
+    StorageCapacity, SwitchReply, VolumeCopyView,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{
@@ -1070,7 +1068,6 @@ define_responses! {
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
     SwitchReply(crate::SwitchReply) => "switch_reply";
-    ReceiveView(crate::ReceiveView) => "receive_view";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";
@@ -1532,8 +1529,8 @@ mod streaming_routing_tests {
             Some("ployz.build.v1")
         );
         assert_eq!(
-            super::capability_of("/ployz.rpc.v1.MachineRpc/DeclareMirror"),
-            Some("ployz.volume.mirror.declare.v1")
+            super::capability_of("/ployz.rpc.v1.MachineRpc/SetVolumeCopy"),
+            Some("ployz.volume.copy.set.v1")
         );
         for path in [
             "/ployz.rpc.v1.MachineRpc/Nope",

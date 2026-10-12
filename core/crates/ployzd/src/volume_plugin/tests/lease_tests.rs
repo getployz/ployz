@@ -29,65 +29,6 @@ fn commands(test: &TestDir) -> String {
     fs::read_to_string(test.0.join("commands")).unwrap()
 }
 
-fn declare(name: &str, lease: u64) -> Value {
-    json!({
-        "switch": {"lease": lease, "pos": {"seq": 3, "round": 0, "sub": 0}},
-        "name": name,
-        "refquota_bytes": 1_073_741_824_u64,
-    })
-}
-
-#[tokio::test]
-async fn a_first_switch_verb_creates_the_managed_root_to_hold_the_record() {
-    let test = TestDir::new();
-    let (socket, server) = start(&test, USABLE_POOL, &[]);
-
-    let response = post(&socket, "/Volume.DeclareMirror", declare("data", 1)).await;
-    assert_eq!(
-        response.pointer("/Ok/decision"),
-        Some(&json!("adopt")),
-        "{response}"
-    );
-    let log = commands(&test);
-    assert!(
-        log.contains("zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz"),
-        "{log}"
-    );
-    assert!(
-        log.contains("zfs set ployz:lease.data=1:3.0.0:closed tank/ployz"),
-        "{log}"
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn lease_records_keep_apart_names_that_differ_only_in_case() {
-    let test = TestDir::new();
-    let (socket, server) = start(&test, USABLE_POOL, &["root"]);
-    let names = [("data", 1), ("Data", 2), ("DATA", 3), ("dAta-B_1.x", 4)];
-
-    for (name, lease) in names {
-        let response = post(
-            &socket,
-            "/Volume.DestroyMirror",
-            json!({"switch": {"lease": lease, "pos": {"seq": 3, "round": 0, "sub": 0}}, "name": name}),
-        )
-        .await;
-        assert!(response.get("Ok").is_some(), "{name}: {response}");
-    }
-    for (name, lease) in names {
-        let response = post(&socket, "/Volume.Inspect", json!({"name": name})).await;
-        assert_eq!(
-            response.pointer("/Ok/lease"),
-            Some(
-                &json!({"lease": lease, "pos": {"seq": 3, "round": 0, "sub": 0}, "cycle": "closed"})
-            ),
-            "{name}: {response}"
-        );
-    }
-    server.abort();
-}
-
 #[tokio::test]
 async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
     let test = TestDir::new();
@@ -192,4 +133,22 @@ async fn remove_refuses_handed_root() {
     );
     assert!(commands(&test).contains("zfs destroy -r tank/ployz/data"));
     server.abort();
+}
+
+/// A request at `lease`, step `seq.round.sub`, with the verb's own fields merged in.
+pub(super) fn at(lease: u64, seq: u16, round: u32, sub: u8, fields: Value) -> Value {
+    let mut request = json!({
+        "switch": {
+            "lease": lease,
+            "pos": {"seq": seq, "round": round, "sub": sub},
+        },
+        "name": "data",
+    });
+    for (key, value) in fields.as_object().unwrap() {
+        request
+            .as_object_mut()
+            .unwrap()
+            .insert(key.clone(), value.clone());
+    }
+    request
 }

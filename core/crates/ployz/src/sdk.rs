@@ -126,29 +126,7 @@ pub struct ObservedCopy {
 fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     use RpcRequestBody as Body;
     match body {
-        Body::InspectVolumeCopy(_)
-        | Body::DeclareMirror(_)
-        | Body::BeginRound(_)
-        | Body::CommitSnapshots(_)
-        | Body::WarmSnapshot(_)
-        | Body::StartReceive(_)
-        | Body::InspectReceive(_)
-        | Body::PruneMirror(_)
-        | Body::DestroyMirror(_)
-        | Body::ForgetSnapshots(_)
-        | Body::ForgetLease(_)
-        | Body::DemoteVolume(_)
-        | Body::Withdraw(_)
-        | Body::Freeze(_)
-        | Body::HandOver(_)
-        | Body::Thaw(_)
-        | Body::Close(_)
-        | Body::AcceptHandOff(_)
-        | Body::Promote(_)
-        | Body::StartHandedContainer(_)
-        | Body::SeedVolume(_)
-        | Body::SetVolumeCopy(_)
-        | Body::Restore(_) => body
+        Body::InspectVolumeCopy(_) | Body::SeedVolume(_) | Body::SetVolumeCopy(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -161,13 +139,12 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
 /// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the switch verbs answer with four reply kinds; any other kind is a Machine fault"
+    reason = "the switch verbs answer with three reply kinds; any other kind is a Machine fault"
 )]
 fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
     let payload = match body {
         RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
-        RpcResponseBody::ReceiveView(view) => serde_json::to_value(view),
         RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::Error(error) => return Err(error),
         other => {

@@ -8,35 +8,12 @@ fn body(command: &str, payload: Value) -> RpcRequestBody {
         .unwrap_or_else(|error| panic!("{command} parses: {error}"))
 }
 
-fn resolved_spec() -> Value {
-    let requested: ployz_core::RequestedServiceSpec = serde_json::from_value(json!({
-        "name": "web",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "nginx", "pull_policy": "missing" },
-    }))
-    .unwrap_or_else(|error| panic!("the spec parses: {error}"));
-    let resolved = requested
-        .to_resolved(
-            ployz_core::ServiceId::random(),
-            ployz_core::ResolvedUpdateConfig {
-                order: ployz_core::UpdateOrder::StartFirst,
-                monitor_millis: None,
-            },
-        )
-        .unwrap_or_else(|error| panic!("the spec resolves: {error}"));
-    serde_json::to_value(resolved).unwrap_or_else(|error| panic!("the spec serializes: {error}"))
-}
-
 fn switch() -> Value {
     json!({ "lease": 3, "pos": { "seq": 4, "round": 0, "sub": 0 } })
 }
 
 #[test]
-fn every_volume_run_verb_is_sent_on_its_own_path() {
-    let leased = json!({ "switch": switch(), "name": "data" });
-    let handed = json!({ "switch": switch(), "name": "data", "guid": "7" });
-    let source = json!({ "switch": switch(), "name": "data", "container_id": "a".repeat(64) });
-    let service = json!({ "switch": switch(), "name": "data", "namespace": "app-prod", "resolved_spec": resolved_spec() });
+fn every_volume_copy_verb_is_sent_on_its_own_path() {
     let cases = [
         (
             "inspect_volume_copy",
@@ -44,49 +21,19 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
             "InspectVolumeCopy",
         ),
         (
-            "declare_mirror",
-            json!({ "switch": switch(), "name": "data", "refquota_bytes": 1024 }),
-            "DeclareMirror",
-        ),
-        ("begin_round", leased.clone(), "BeginRound"),
-        (
-            "commit_snapshots",
-            json!({ "switch": switch(), "name": "data", "mirror_newest": "7" }),
-            "CommitSnapshots",
-        ),
-        ("warm_snapshot", leased.clone(), "WarmSnapshot"),
-        (
-            "start_receive",
-            json!({ "switch": switch(), "name": "data", "from": "fd00::1", "base": null, "target": "w-3-0", "resume_token": null }),
-            "StartReceive",
+            "seed_volume",
+            json!({ "switch": switch(), "name": "data", "into": "data2", "guid": "7" }),
+            "SeedVolume",
         ),
         (
-            "inspect_receive",
-            json!({ "name": "data", "round": 0 }),
-            "InspectReceive",
+            "set_volume_copy",
+            json!({ "name": "data", "expect": { "kind": "none" }, "want": { "kind": "forget" } }),
+            "SetVolumeCopy",
         ),
-        ("prune_mirror", leased.clone(), "PruneMirror"),
-        ("destroy_mirror", leased.clone(), "DestroyMirror"),
-        ("forget_snapshots", leased.clone(), "ForgetSnapshots"),
-        ("forget_lease", leased.clone(), "ForgetLease"),
-        ("demote_volume", leased.clone(), "DemoteVolume"),
-        ("withdraw", source.clone(), "Withdraw"),
-        ("freeze", source.clone(), "Freeze"),
-        ("thaw", source, "Thaw"),
-        ("hand_over", handed.clone(), "HandOver"),
-        ("accept_hand_off", handed, "AcceptHandOff"),
-        ("promote", service.clone(), "Promote"),
-        (
-            "start_handed_container",
-            service.clone(),
-            "StartHandedContainer",
-        ),
-        ("close", leased, "Close"),
-        ("restore", service, "Restore"),
     ];
     for (command, payload, route) in cases {
         let path = volume_switch_path(&body(command, payload))
-            .unwrap_or_else(|error| panic!("{command} is a Volume run verb: {error:?}"));
+            .unwrap_or_else(|error| panic!("{command} is a Volume copy verb: {error:?}"));
         assert!(path.ends_with(&format!("/{route}")), "{command} -> {path}");
     }
 }

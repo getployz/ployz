@@ -12,7 +12,7 @@ use std::{
 use ployzd::machine_pool::MachinePool;
 use tokio::{
     process::Command,
-    sync::{Mutex, OwnedMutexGuard, watch},
+    sync::{Mutex, OwnedMutexGuard},
 };
 
 use super::{DockerVolumeName, Result, VolumeError, pool::PoolStorage, transfer::RECEIVE_STALL};
@@ -79,9 +79,6 @@ impl<'name> Place<'name> {
 pub(super) struct VolumeStorage {
     pub(super) pool: PoolStorage,
     pub(super) zfs: PathBuf,
-    pub(super) docker: PathBuf,
-    pub(super) mount_grant: Arc<std::sync::Mutex<Option<super::switch_source::MountGrant>>>,
-    pub(super) steps: super::container_step::ContainerSteps,
     pub(super) mutation: MutationLock,
     pub(super) installation: ployzd::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
@@ -102,59 +99,20 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
     }
 }
 
-/// A lock whose waiters can refuse instead of queueing while the holder calls Docker.
-#[derive(Clone)]
+/// The plugin's one mutation lock: every storage change runs under it.
+#[derive(Clone, Default)]
 pub(super) struct MutationLock {
     lock: Arc<Mutex<()>>,
-    docker_bound: Arc<watch::Sender<bool>>,
-}
-
-impl Default for MutationLock {
-    fn default() -> Self {
-        Self {
-            lock: Arc::default(),
-            docker_bound: Arc::new(watch::Sender::new(false)),
-        }
-    }
 }
 
 pub(super) struct HeldMutation {
     _guard: OwnedMutexGuard<()>,
-    docker_bound: Arc<watch::Sender<bool>>,
-}
-
-impl Drop for HeldMutation {
-    fn drop(&mut self) {
-        self.docker_bound.send_replace(false);
-    }
 }
 
 impl MutationLock {
     pub(super) async fn lock(&self) -> HeldMutation {
-        self.held(Arc::clone(&self.lock).lock_owned().await)
-    }
-
-    pub(super) async fn lock_unless_docker_bound(&self) -> Option<HeldMutation> {
-        if let Ok(guard) = Arc::clone(&self.lock).try_lock_owned() {
-            return Some(self.held(guard));
-        }
-        let mut docker_bound = self.docker_bound.subscribe();
-        tokio::select! {
-            biased;
-            guard = Arc::clone(&self.lock).lock_owned() => Some(self.held(guard)),
-            _ = docker_bound.wait_for(|bound| *bound) => None,
-        }
-    }
-
-    pub(super) fn raise_docker_bound(&self) {
-        self.docker_bound.send_replace(true);
-    }
-
-    fn held(&self, guard: OwnedMutexGuard<()>) -> HeldMutation {
-        self.docker_bound.send_replace(false);
         HeldMutation {
-            _guard: guard,
-            docker_bound: Arc::clone(&self.docker_bound),
+            _guard: Arc::clone(&self.lock).lock_owned().await,
         }
     }
 }
@@ -169,9 +127,6 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
-            docker: "docker".into(),
-            mount_grant: Arc::default(),
-            steps: Default::default(),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
@@ -191,9 +146,6 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
-            docker: fixture.join("docker"),
-            mount_grant: Arc::default(),
-            steps: Default::default(),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(
                 fixture.join("admission-run"),
@@ -209,28 +161,6 @@ impl VolumeStorage {
         &self,
     ) -> Result<(HeldMutation, ployzd::mutation::MutationGuard)> {
         let local = self.mutation.lock().await;
-        let installation = self
-            .installation
-            .try_mutation()
-            .map_err(|error| VolumeError::from(ployz_core::error_chain::inline(&error)))?;
-        Ok((local, installation))
-    }
-
-    /// Docker holds its per-Volume lock across a plugin Mount or Remove, so those refuse
-    /// rather than wait behind a holder that is calling Docker for the same Volume.
-    pub(super) async fn admit_docker_request(
-        &self,
-        name: &DockerVolumeName,
-    ) -> Result<(HeldMutation, ployzd::mutation::MutationGuard)> {
-        let local = self
-            .mutation
-            .lock_unless_docker_bound()
-            .await
-            .ok_or_else(|| {
-                VolumeError::from(format!(
-                    "VolumeSwitching: Volume {name} has an active storage mutation"
-                ))
-            })?;
         let installation = self
             .installation
             .try_mutation()
@@ -320,10 +250,7 @@ impl VolumeStorage {
     }
 
     pub(super) async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
-        if let Some(granted) = self.granted_mountpoint(name).await? {
-            return Ok(granted);
-        }
-        let _guard = self.admit_docker_request(name).await?;
+        let _guard = self.admit_mutation().await?;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
         let dataset = Self::dataset(&datasets, &pool, name)?

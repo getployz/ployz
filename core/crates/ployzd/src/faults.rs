@@ -3,15 +3,11 @@
 #[cfg(feature = "verify-faults")]
 pub(crate) use enabled::{apply, check_env};
 #[cfg(feature = "verify-faults")]
-pub use enabled::{hold_task, kill_after_record, kill_inside, leak_memory};
+pub use enabled::{kill_after_record, kill_inside, leak_memory};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
-const LONG_EFFECTS: [&str; 11] = [
-    "StartReceive",
-    "Close",
-    "Promote",
-    "StartHandedContainer",
+const LONG_EFFECTS: [&str; 7] = [
     "SetVolumeCopy.WriterToMirror",
     "SetVolumeCopy.WriterToSnapshot",
     "SetVolumeCopy.WriterToForget",
@@ -29,9 +25,6 @@ pub fn kill_inside(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub fn kill_after_record(_verb: &'static str) {}
-
-#[cfg(not(feature = "verify-faults"))]
-pub async fn hold_task(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub fn leak_memory() {}
@@ -60,11 +53,6 @@ mod enabled {
         KillAfterRecord {
             verb: String,
         },
-        /// Holds `verb`'s spawned task for `secs` before it takes the mutation lock.
-        HoldTask {
-            verb: String,
-            secs: u64,
-        },
         Unanswered,
         /// Grows the process by `mib_per_sec` MiB of touched memory every second, forever.
         LeakMemory {
@@ -74,7 +62,7 @@ mod enabled {
 
     #[derive(Debug, thiserror::Error)]
     #[error(
-        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, hold-task:<verb>:<secs>, unanswered, leak-memory:<mib-per-sec>)"
+        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, unanswered, leak-memory:<mib-per-sec>)"
     )]
     pub(crate) struct FaultParseError(String);
 
@@ -99,12 +87,6 @@ mod enabled {
                 (Some("kill-after-record"), Some(verb), None, None) if !verb.is_empty() => {
                     FaultPoint::KillAfterRecord {
                         verb: verb.to_owned(),
-                    }
-                }
-                (Some("hold-task"), Some(verb), Some(secs), None) if !verb.is_empty() => {
-                    FaultPoint::HoldTask {
-                        verb: verb.to_owned(),
-                        secs: secs.parse().map_err(|_| malformed())?,
                     }
                 }
                 (Some("unanswered"), None, None, None) => FaultPoint::Unanswered,
@@ -157,7 +139,6 @@ mod enabled {
             FaultPoint::DelayRpc { .. }
             | FaultPoint::KillDaemon { .. }
             | FaultPoint::KillAfterRecord { .. }
-            | FaultPoint::HoldTask { .. }
             | FaultPoint::LeakMemory { .. } => {}
         }
     }
@@ -175,16 +156,6 @@ mod enabled {
                 std::thread::sleep(Duration::from_secs(1));
             }
         });
-    }
-
-    /// Sleeps inside `verb`'s spawned task when `hold-task:<verb>:<secs>` names it.
-    pub async fn hold_task(verb: &'static str) {
-        if let Ok(Some(FaultPoint::HoldTask { verb: wanted, secs })) = FaultPoint::from_env()
-            && wanted == verb
-        {
-            tracing::warn!(verb, secs, "fault: holding the task");
-            tokio::time::sleep(Duration::from_secs(secs)).await;
-        }
     }
 
     /// Aborts the process running `verb`'s effect when `kill-daemon:<verb>` names it.
@@ -218,9 +189,9 @@ mod enabled {
         fn fault_points_parse_their_env_form() {
             for (value, fault) in [
                 (
-                    "delay-rpc:Freeze:30",
+                    "delay-rpc:SetVolumeCopy:30",
                     FaultPoint::DelayRpc {
-                        verb: "Freeze".into(),
+                        verb: "SetVolumeCopy".into(),
                         secs: 30,
                     },
                 ),
@@ -231,16 +202,9 @@ mod enabled {
                     },
                 ),
                 (
-                    "kill-after-record:WarmSnapshot",
+                    "kill-after-record:SeedVolume",
                     FaultPoint::KillAfterRecord {
-                        verb: "WarmSnapshot".into(),
-                    },
-                ),
-                (
-                    "hold-task:Promote:610",
-                    FaultPoint::HoldTask {
-                        verb: "Promote".into(),
-                        secs: 610,
+                        verb: "SeedVolume".into(),
                     },
                 ),
                 ("unanswered", FaultPoint::Unanswered),
@@ -251,16 +215,15 @@ mod enabled {
             for value in [
                 "",
                 "delay-rpc",
-                "delay-rpc:Freeze",
-                "delay-rpc:Freeze:soon",
+                "delay-rpc:SetVolumeCopy",
+                "delay-rpc:SetVolumeCopy:soon",
                 "delay-rpc::3",
                 "kill-daemon",
-                "kill-daemon:Freeze:extra",
+                "kill-daemon:SetVolumeCopy:extra",
                 "kill-after-record",
-                "hold-task:Promote",
-                "hold-task:Promote:later",
+                "hold-task:SetVolumeCopy:610",
                 "busy-mount:data",
-                "unanswered:Freeze",
+                "unanswered:SetVolumeCopy",
                 "leak-memory",
                 "leak-memory:0",
                 "leak-memory:lots",

@@ -12,7 +12,7 @@ use super::{
     VolumeStorage,
     lease::internal,
     mirror,
-    storage::{root_dataset, slot_fs, slot_parent},
+    storage::{PROMOTE_PROPERTY, root_dataset, slot_fs, slot_parent},
     transfer::{RECEIVE_PROPERTY, ReceiveRecord},
 };
 
@@ -142,8 +142,14 @@ impl VolumeStorage {
         self.zfs(&["set", &format!("{SEED_PROPERTY}={}", request.guid), fs])
             .await
             .map_err(internal)?;
-        self.rename_unregistered(fs, root, request.switch.lease)
-            .await?;
+        self.zfs(&[
+            "set",
+            &format!("{PROMOTE_PROPERTY}={}", request.switch.lease),
+            fs,
+        ])
+        .await
+        .map_err(internal)?;
+        self.zfs(&["rename", fs, root]).await.map_err(internal)?;
         self.finish_landing(root, Some(parent), snapshot).await
     }
 

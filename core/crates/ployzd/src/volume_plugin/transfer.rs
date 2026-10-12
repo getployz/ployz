@@ -10,25 +10,16 @@ use std::{
     time::Duration,
 };
 
-use axum::{Json, extract::State};
 use futures_util::StreamExt as _;
-use ployz_core::{
-    InspectReceiveRequest, Lease, ManagementAddress, Pos, ReceiveStatus, ReceiveView, RpcError,
-    SendSource, SendStream, SnapshotName, StartReceiveRequest, SwitchError, SwitchReply,
-};
+use ployz_core::{Lease, ManagementAddress, Pos, SendStream, SnapshotName};
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
-use super::{
-    Dataset, DockerVolumeName, VolumeStorage,
-    lease::internal,
-    mirror::name,
-    storage::{RESUME_TOKEN_PROPERTY, slot_fs},
-};
+use super::{DockerVolumeName, VolumeStorage};
 
 /// On the slot parent: `<lease>:<seq>.<round>.<sub>:<target>` of the receive last started.
 pub(super) const RECEIVE_PROPERTY: &str = "ployz:receive";
 
-/// `kill-daemon:StartReceive` fires once this much of the stream is in, so ZFS holds a
+/// A receive's `kill-daemon` fault fires once this much of the stream is in, so ZFS holds a
 /// partial receive to resume.
 const KILL_AFTER_BYTES: u64 = 1 << 20;
 
@@ -143,96 +134,6 @@ impl std::fmt::Display for ReceiveFailure {
 }
 
 impl VolumeStorage {
-    pub(super) async fn receive_record(
-        &self,
-        slot: &Dataset,
-    ) -> Result<Option<ReceiveRecord>, RpcError> {
-        match self
-            .property(&slot.name, RECEIVE_PROPERTY)
-            .await
-            .map_err(internal)?
-        {
-            None => Ok(None),
-            Some(value) => value
-                .parse()
-                .map(Some)
-                .map_err(|error: String| internal(format!("{error} on {}", slot.name).into())),
-        }
-    }
-
-    async fn start_receive(&self, request: &StartReceiveRequest) -> Result<SwitchReply, RpcError> {
-        let name = name(&request.name)?;
-        let mut scope = self.leased(&name, &request.switch).await?;
-        let slot = scope.require_slot(&name)?;
-        let (slot, bound) = (slot.name.clone(), slot.refquota);
-        self.require_no_receive(&name)?;
-        let fs = slot_fs(&scope.pool, &name);
-        if bound == 0 {
-            return Err(
-                SwitchError::Precondition.rpc_error(format!("mirror slot {slot} carries no bound"))
-            );
-        }
-        // The plugin can die after recording and before the receive creates `fs`, so a
-        // replay looks for the landed target in ZFS and otherwise starts the receive again.
-        if scope.replayed()
-            && let Some(received) = scope.fs(&name)
-            && let Some(newest) = self
-                .snapshots(&received.name)
-                .await
-                .map_err(internal)?
-                .first()
-            && newest.name == request.target
-        {
-            self.finish_copy(&received.name, bound)
-                .await
-                .map_err(|error| internal(error.into()))?;
-            self.receives.forget(&name);
-            return self.reply(&scope.pool, &name, scope.admitted).await;
-        }
-        let record = ReceiveRecord {
-            lease: request.switch.lease,
-            pos: request.switch.pos,
-            target: request.target.clone(),
-        };
-        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
-            .await?;
-        ployzd::faults::kill_after_record("StartReceive");
-        self.zfs(&["set", &format!("{RECEIVE_PROPERTY}={record}"), &slot])
-            .await
-            .map_err(internal)?;
-        let source = match (&request.resume_token, request.base) {
-            (Some(token), _) => SendSource::Resume {
-                token: token.clone(),
-                target: request.target.clone(),
-            },
-            (None, Some(base)) => SendSource::Incremental {
-                base,
-                target: request.target.clone(),
-            },
-            (None, None) => SendSource::Full {
-                target: request.target.clone(),
-            },
-        };
-        let stream = SendStream {
-            name: request.name.clone(),
-            source,
-        };
-        let outcome = self.receives.start(&name);
-        let storage = self.clone();
-        let from = request.from;
-        tokio::spawn(async move {
-            let result = storage
-                .receive(from, &stream, &fs, bound, "StartReceive")
-                .await
-                .map_err(|failure| failure.to_string());
-            if let Err(error) = &result {
-                tracing::warn!(%fs, error, "Volume receive failed");
-            }
-            *outcome.lock().expect("outcome lock") = Some(result);
-        });
-        self.reply(&scope.pool, &name, scope.admitted).await
-    }
-
     /// Pulls one stream into `fs`, then re-asserts and verifies the slot's bound and
     /// read-only state, which ZFS drops on an interrupted first receive. `fault` names
     /// the kill point that fires once the stream passes [`KILL_AFTER_BYTES`].
@@ -359,82 +260,6 @@ impl VolumeStorage {
         self.verify_copy(fs, bound).await
     }
 
-    async fn inspect_receive(
-        &self,
-        request: &InspectReceiveRequest,
-    ) -> Result<ReceiveView, RpcError> {
-        let name = name(&request.name)?;
-        let idle = Ok(ReceiveView {
-            round: None,
-            status: ReceiveStatus::Idle,
-        });
-        let _guard = self.mutation.lock().await;
-        let Some(pool) = self.pool.one_usable().await.map_err(internal)? else {
-            return idle;
-        };
-        let datasets = self.datasets(&pool).await.map_err(internal)?;
-        let Some(slot) = Self::slot(&datasets, &pool, &name) else {
-            return idle;
-        };
-        let Some(record) = self.receive_record(slot).await? else {
-            return idle;
-        };
-        let round = Some(record.pos.round);
-        if record.pos.round != request.round {
-            return Ok(ReceiveView {
-                round,
-                status: ReceiveStatus::Idle,
-            });
-        }
-        let target = record.target;
-        if self.receives.running(&name) {
-            return Ok(ReceiveView {
-                round,
-                status: ReceiveStatus::Running { target },
-            });
-        }
-        let fs = Self::slot_fs(&datasets, &pool, &name);
-        if let Some(fs) = fs
-            && let Some(token) = self
-                .property(&fs.name, RESUME_TOKEN_PROPERTY)
-                .await
-                .map_err(internal)?
-        {
-            return Ok(ReceiveView {
-                round,
-                status: ReceiveStatus::Resumable { target, token },
-            });
-        }
-        if let Some(reason) = self.receives.failure(&name) {
-            return Ok(ReceiveView {
-                round,
-                status: ReceiveStatus::Failed { target, reason },
-            });
-        }
-        if let Some(fs) = fs
-            && let Some(newest) = self.snapshots(&fs.name).await.map_err(internal)?.first()
-            && newest.name == target
-        {
-            // The task that landed it may have died before its own check ran.
-            return Ok(ReceiveView {
-                round,
-                status: match self.verify_copy(&fs.name, slot.refquota).await {
-                    Ok(()) => ReceiveStatus::Done {
-                        newest: newest.clone(),
-                    },
-                    Err(reason) => ReceiveStatus::Failed { target, reason },
-                },
-            });
-        }
-        Ok(ReceiveView {
-            round,
-            status: ReceiveStatus::Failed {
-                target,
-                reason: "the receive did not complete".to_owned(),
-            },
-        })
-    }
-
     /// The copy is read-only and carries the slot's bound, whatever the stream said.
     /// `-p` keeps the bound in bytes; `zfs get` rounds it to `3G` otherwise.
     async fn verify_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
@@ -452,18 +277,4 @@ impl VolumeStorage {
         }
         Ok(())
     }
-}
-
-pub(super) async fn start_receive(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<StartReceiveRequest>,
-) -> Json<Result<SwitchReply, RpcError>> {
-    Json(storage.start_receive(&request).await)
-}
-
-pub(super) async fn inspect_receive(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<InspectReceiveRequest>,
-) -> Json<Result<ReceiveView, RpcError>> {
-    Json(storage.inspect_receive(&request).await)
 }

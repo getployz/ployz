@@ -5,13 +5,12 @@
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{Cycle, LeaseRecord, MirrorMarker, MirrorRequest, Pos, RpcError, SwitchReply};
+use ployz_core::{Cycle, LeaseRecord, MirrorMarker, Pos, RpcError};
 use ployzd::machine_pool::MachinePool;
 
 use super::{
     DATASET_ROOT, Dataset, DockerVolumeName, Place, VolumeStorage,
     lease::{LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal},
-    mirror::name,
     storage::{slot_fs, slot_parent},
 };
 
@@ -55,30 +54,6 @@ impl VolumeStorage {
         }
         self.close_lease_records(&pool, &datasets).await?;
         Ok(demoted)
-    }
-
-    /// Demotes this Machine's copy of one Volume, the old copy Cloud found beside a newer
-    /// writer. The root turns read-only before it moves, so a Container still writing to
-    /// it fails at once. The record closes at the request's step only once the root is a
-    /// slot: Cloud tells the old copy by its lower record, so a demote cut short by a busy
-    /// mount must not raise it above the writer's. The retry redoes what is left.
-    async fn demote_volume(
-        &self,
-        request: &MirrorRequest,
-        now_unix_seconds: i64,
-    ) -> Result<SwitchReply, RpcError> {
-        let name = name(&request.name)?;
-        let mut scope = self.leased(&name, &request.switch).await?;
-        scope.admitted.lease.cycle = Cycle::Closed;
-        if let Some(root) = Self::dataset(&scope.datasets, &scope.pool, &name).map_err(internal)? {
-            self.zfs(&["set", "readonly=on", &root.name])
-                .await
-                .map_err(internal)?;
-        }
-        self.demote_copy(&scope.pool, &scope.datasets, &name, now_unix_seconds)
-            .await
-            .map_err(internal)?;
-        self.reply(&scope.pool, &name, scope.admitted).await
     }
 
     /// Turns `name`'s root into a sealed slot with an idle marker. Answers whether it
@@ -245,12 +220,4 @@ pub(super) async fn demote(
 ) -> Json<Result<Vec<String>, RpcError>> {
     let now = chrono::Utc::now().timestamp();
     Json(storage.demote_all(now).await.map_err(internal))
-}
-
-pub(super) async fn demote_volume(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<MirrorRequest>,
-) -> Json<Result<SwitchReply, RpcError>> {
-    let now = chrono::Utc::now().timestamp();
-    Json(storage.demote_volume(&request, now).await)
 }

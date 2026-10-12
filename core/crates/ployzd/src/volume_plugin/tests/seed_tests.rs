@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
+use super::lease_tests::at;
 use super::lease_tests::{set_property, start};
-use super::mirror_tests::{at, commands, property, snapshot_names};
 use super::*;
 
 const POINT: &str = "tank/ployz/data@w-1-1\t77\t1700000000";

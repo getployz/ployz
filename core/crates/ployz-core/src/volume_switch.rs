@@ -5,9 +5,7 @@ use std::{fmt, str::FromStr, time::Duration};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{
-    CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError, RpcErrorCode, WriterEpoch,
-};
+use crate::{CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, WriterEpoch};
 
 /// How long a Machine waits on one call to its volume plugin, such as the call that
 /// mounts a handed-over Volume and starts its Container.
@@ -464,76 +462,6 @@ pub struct InspectVolumeCopyRequest {
     pub name: DockerVolumeName,
 }
 
-/// `03-declare`: create the slot parent for a mirror bounded by `refquota_bytes`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DeclareMirrorRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub refquota_bytes: u64,
-}
-
-/// A leased verb that needs only the Volume name: BeginRound, Prune, Destroy, Forget.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct MirrorRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-}
-
-/// A source switch that stops or restarts the Container holding this Volume.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct SourceContainerRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub container_id: crate::ContainerId,
-}
-
-/// Irreversibly hand the frozen source snapshot to the target.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct HandOverRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub guid: SnapshotGuid,
-}
-
-/// A target verb that leaves Docker holding the Volume as `resolved_spec` declares it:
-/// Promote, Restore, and StartHandedContainer, which also creates the Service Container
-/// under the creation key `handoff-<guid>` and starts it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct ServiceVolumeRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub namespace: crate::Namespace,
-    pub resolved_spec: crate::ResolvedServiceSpec,
-}
-
-/// Commit on the writer: drop run snapshots older than the mirror's newest.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct CommitRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub mirror_newest: SnapshotGuid,
-}
-
-/// Warm on the writer: take `w-<lease>-<round>` unless the newest warm snapshot already
-/// captures every write.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct WarmRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-}
-
-/// StartReceive on the mirror: pull `target` from the writer Machine at `from`, as a full
-/// stream, an increment over `base`, or a resume of an interrupted stream.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StartReceiveRequest {
-    pub switch: Switch,
-    pub name: DockerVolumeName,
-    pub from: ManagementAddress,
-    pub base: Option<SnapshotGuid>,
-    pub target: SnapshotName,
-    pub resume_token: Option<String>,
-}
-
 /// SeedVolume on the writer: a new Volume `into` holding the restore point `guid` of
 /// `name`, received locally from the writer's own snapshot. Leased on `name`; converges
 /// on retry, replying once `into` is a root here.
@@ -543,43 +471,6 @@ pub struct SeedVolumeRequest {
     pub name: DockerVolumeName,
     pub into: DockerVolumeName,
     pub guid: SnapshotGuid,
-}
-
-/// Ask a mirror Machine how the receive of `round` is going. Carries no lease.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct InspectReceiveRequest {
-    pub name: DockerVolumeName,
-    pub round: u32,
-}
-
-/// What the last admitted receive left on the slot.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum ReceiveStatus {
-    /// No receive of the asked round was admitted on this slot.
-    Idle,
-    Running {
-        target: SnapshotName,
-    },
-    Done {
-        newest: Snapshot,
-    },
-    /// The stream broke; StartReceive again with `token` at the same position.
-    Resumable {
-        target: SnapshotName,
-        token: String,
-    },
-    Failed {
-        target: SnapshotName,
-        reason: String,
-    },
-}
-
-/// Answer to `InspectReceive`: the round the slot last admitted and its state.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct ReceiveView {
-    pub round: Option<u32>,
-    pub status: ReceiveStatus,
 }
 
 /// Which stream a mirror asks its writer Machine for over the mesh.

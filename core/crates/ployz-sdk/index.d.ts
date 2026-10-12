@@ -62,70 +62,27 @@ import type {
 export * from "./generated/payloads";
 export type { CapabilityName } from "./generated/capabilities";
 import type {
-  CommitRequest,
   CopyObservation,
-  DeclareMirrorRequest,
-  HandOverRequest,
-  InspectReceiveRequest,
   InspectVolumeCopyRequest,
-  MirrorRequest,
-  ReceiveView,
   SeedVolumeRequest,
-  ServiceVolumeRequest,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
-  SnapshotGuid,
-  SourceContainerRequest,
   SwitchReply,
-  Switch,
   VolumeCopyView,
-  WarmRequest,
 } from "./generated/payloads";
 
-/** StartReceive on a mirror: pull `target` from the writer Machine at management address `from`. */
-export type StartReceiveRequest = {
-  switch: Switch;
-  name: string;
-  from: string;
-  base: SnapshotGuid | null;
-  target: string;
-  resume_token: string | null;
-};
-
-/** One request `Client.volumeSwitch` sends: a Volume run verb and its payload. */
+/** One request `Client.volumeSwitch` sends: a Volume copy verb and its payload. */
 export type VolumeSwitchRequest =
   | { command: "inspect_volume_copy"; payload: InspectVolumeCopyRequest }
-  | { command: "declare_mirror"; payload: DeclareMirrorRequest }
-  | { command: "begin_round"; payload: MirrorRequest }
-  | { command: "commit_snapshots"; payload: CommitRequest }
-  | { command: "warm_snapshot"; payload: WarmRequest }
-  | { command: "start_receive"; payload: StartReceiveRequest }
-  | { command: "inspect_receive"; payload: InspectReceiveRequest }
-  | { command: "prune_mirror"; payload: MirrorRequest }
-  | { command: "destroy_mirror"; payload: MirrorRequest }
-  | { command: "forget_snapshots"; payload: MirrorRequest }
-  | { command: "forget_lease"; payload: MirrorRequest }
-  | { command: "demote_volume"; payload: MirrorRequest }
-  | { command: "withdraw"; payload: SourceContainerRequest }
-  | { command: "freeze"; payload: SourceContainerRequest }
-  | { command: "hand_over"; payload: HandOverRequest }
-  | { command: "thaw"; payload: SourceContainerRequest }
-  | { command: "close"; payload: MirrorRequest }
-  | { command: "accept_hand_off"; payload: HandOverRequest }
-  | { command: "promote"; payload: ServiceVolumeRequest }
-  | { command: "start_handed_container"; payload: ServiceVolumeRequest }
-  | { command: "restore"; payload: ServiceVolumeRequest }
   | { command: "seed_volume"; payload: SeedVolumeRequest }
   | { command: "set_volume_copy"; payload: SetVolumeCopyRequest };
 
-/** The reply payload of one Volume run verb. */
+/** The reply payload of one Volume copy verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> = C extends "inspect_volume_copy"
   ? VolumeCopyView
-  : C extends "inspect_receive"
-    ? ReceiveView
-    : C extends "set_volume_copy"
-      ? SetVolumeCopyReply
-      : SwitchReply;
+  : C extends "set_volume_copy"
+    ? SetVolumeCopyReply
+    : SwitchReply;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (

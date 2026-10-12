@@ -449,8 +449,6 @@ export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" }
 
 export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
-export type CommitRequest = { switch: Switch, name: DockerVolumeName, mirror_newest: SnapshotGuid, };
-
 export type CommitSha = string;
 
 export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironmentNode>, variableProducers: Array<SavedVariableProducer>, };
@@ -969,8 +967,6 @@ export type DataEffect = "deleted" | "kept";
 export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 
 export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
-
-export type DeclareMirrorRequest = { switch: Switch, name: DockerVolumeName, refquota_bytes: number, };
 
 export type DeleteConfig = {
 /**
@@ -1922,8 +1918,6 @@ ref: string, paths: Array<string>,
  */
 truncated: boolean, };
 
-export type HandOverRequest = { switch: Switch, name: DockerVolumeName, guid: SnapshotGuid, };
-
 export type Health = "starting" | "healthy" | "unhealthy";
 
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out", last_check?: LastHealthCheck, } | { "type": "runtime", observation: ContainerRuntimeObservation, last_check?: LastHealthCheck, };
@@ -2080,8 +2074,6 @@ export type InspectMachineUpgradeRequest = {
  * Required attempt identity, or the latest local attempt when absent.
  */
 attempt_id?: MachineUpgradeAttemptId | null, };
-
-export type InspectReceiveRequest = { name: DockerVolumeName, round: number, };
 
 export type InspectVolumeCopyRequest = { name: DockerVolumeName, };
 
@@ -2526,8 +2518,6 @@ repository: BuildGrantRepository, };
 export type Mirror = { server: ServerRef, synced_at: Timestamp | null, };
 
 export type MirrorMarker = { "phase": "idle" } | { "phase": "handed_in", guid: SnapshotGuid, } | { "phase": "promoting" };
-
-export type MirrorRequest = { switch: Switch, name: DockerVolumeName, };
 
 export type MissingLiveValue = { lineageId: string, key: string, };
 
@@ -3147,10 +3137,6 @@ gid?: number | null, };
 export type QualifiedService = string;
 
 export type Receipt = "yes" | "no" | "unknown";
-
-export type ReceiveStatus = { "state": "idle" } | { "state": "running", target: SnapshotName, } | { "state": "done", newest: Snapshot, } | { "state": "resumable", target: SnapshotName, token: string, } | { "state": "failed", target: SnapshotName, reason: string, };
-
-export type ReceiveView = { round: number | null, status: ReceiveStatus, };
 
 export type Refusal = { code: RpcErrorCode, message: string, field?: string | null, expected?: JsonValue | null, example?: JsonValue | null, did_you_mean?: string | null, valid?: Array<string>, retry: Call, writes: Writes, next: Array<Call>, details?: JsonValue, };
 
@@ -3866,8 +3852,6 @@ export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeS
 
 export type ServiceVolumeReference = string;
 
-export type ServiceVolumeRequest = { switch: Switch, name: DockerVolumeName, namespace: Namespace, resolved_spec: ResolvedServiceSpec, };
-
 export type ServicesQuery = {
 /**
  * The Environment to list.
@@ -4057,8 +4041,6 @@ export type SnapshotName = string;
 
 export type Source = "server" | "cloud_cache";
 
-export type SourceContainerRequest = { switch: Switch, name: DockerVolumeName, container_id: ContainerId, };
-
 export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
 export type StageHistory = { environment: EnvironmentRef, revision: Revision, action: HistoryAction, version: string, accept_overwrite?: boolean, };
@@ -4137,8 +4119,6 @@ export type Sweep = {
  * Cloud's clock, in seconds since the Unix epoch.
  */
 now: number, };
-
-export type Switch = { lease: Lease, pos: Pos, };
 
 export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "restore_point_gone" } | { "reason": "no_capacity" };
 
@@ -4655,8 +4635,6 @@ volumes: Array<VolumeListing>, };
 export type Waiting = { server: string, why: string, fix: Fix, };
 
 export type WantedCopy = { "kind": "writer", at: SnapshotGuid, epoch: WriterEpoch, start: CopyStart | null, } | { "kind": "mirror", from: string | null, target: SnapshotName, drain: Drain, } | { "kind": "snapshot", name: SnapshotName, } | { "kind": "forget" };
-
-export type WarmRequest = { switch: Switch, name: DockerVolumeName, };
 
 export type WireGuardPublicKey = Array<number>;
 

@@ -19,7 +19,7 @@ mod integration_tests;
 pub(crate) mod test_support;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeSet, HashMap},
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::Arc,
@@ -128,18 +128,12 @@ impl LocalDocker {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Withdrawal {
-    Stop,
-    Source(ployz_core::Lease),
-}
-
 #[derive(Clone)]
 pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
     sink: Option<ObservationSink>,
-    stopping: watch::Sender<BTreeMap<ContainerId, Withdrawal>>,
+    stopping: watch::Sender<BTreeSet<ContainerId>>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
 }
 
@@ -150,7 +144,7 @@ impl ContainerRuntime {
             docker,
             specs,
             sink: None,
-            stopping: watch::Sender::new(BTreeMap::new()),
+            stopping: watch::Sender::new(BTreeSet::new()),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
         }
     }
@@ -158,44 +152,13 @@ impl ContainerRuntime {
     /// Report this Container as `stopping` until its stop runs,
     /// so the Ingress Proxies stop routing to it before it stops.
     pub fn mark_stopping(&self, container_id: ContainerId) {
-        self.mark_withdrawn(container_id, Withdrawal::Stop);
-    }
-
-    /// Withdraw source ingress for this lease without superseding an ordinary stop.
-    pub(crate) fn mark_source_stopping(&self, container_id: ContainerId, lease: ployz_core::Lease) {
-        self.mark_withdrawn(container_id, Withdrawal::Source(lease));
-    }
-
-    fn mark_withdrawn(&self, container_id: ContainerId, withdrawal: Withdrawal) {
-        self.stopping.send_if_modified(|stopping| {
-            if stopping.get(&container_id) == Some(&withdrawal)
-                || stopping.get(&container_id) == Some(&Withdrawal::Stop)
-            {
-                return false;
-            }
-            stopping.insert(container_id, withdrawal);
-            true
-        });
-    }
-
-    /// Clear source withdrawals through this lease, preserving ordinary stops.
-    pub(crate) fn clear_source_stopping(
-        &self,
-        container_id: &ContainerId,
-        lease: ployz_core::Lease,
-    ) {
-        self.stopping.send_if_modified(|stopping| {
-            if !matches!(stopping.get(container_id), Some(Withdrawal::Source(withdrawn)) if *withdrawn <= lease) {
-                return false;
-            }
-            stopping.remove(container_id);
-            true
-        });
+        self.stopping
+            .send_if_modified(|stopping| stopping.insert(container_id));
     }
 
     fn clear_stopping(&self, container_id: &ContainerId) {
         self.stopping
-            .send_if_modified(|stopping| stopping.remove(container_id).is_some());
+            .send_if_modified(|stopping| stopping.remove(container_id));
     }
 
     fn forget_checks(&self, container_id: &ContainerId) {
@@ -383,7 +346,7 @@ impl ContainerRuntime {
                     ),
             };
         }
-        let runtime = withdrawn(runtime, self.stopping.borrow().contains_key(container_id));
+        let runtime = withdrawn(runtime, self.stopping.borrow().contains(container_id));
         let container =
             ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
                 container_id: *container_id,

@@ -12,7 +12,6 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use super::lease_tests::{set_property, start};
-use super::mirror_tests::{commands, property, snapshot_names};
 use super::*;
 
 const ROOT: &str = "tank/ployz/data";
@@ -524,6 +523,15 @@ impl Source {
 }
 
 fn puller(test: &TestDir, markers: &[&str], port: u16) -> (PathBuf, Server) {
+    puller_stalling_after(test, markers, port, Duration::from_secs(60))
+}
+
+fn puller_stalling_after(
+    test: &TestDir,
+    markers: &[&str],
+    port: u16,
+    stall: Duration,
+) -> (PathBuf, Server) {
     for marker in markers {
         fs::write(test.0.join(marker), "").unwrap();
     }
@@ -532,7 +540,7 @@ fn puller(test: &TestDir, markers: &[&str], port: u16) -> (PathBuf, Server) {
     let listener = UnixListener::bind(&socket).unwrap();
     let mut storage = VolumeStorage::with_programs(zpool, zfs);
     storage.send_port = port;
-    storage.receive_stall = Duration::from_secs(60);
+    storage.receive_stall = stall;
     (socket, tokio::spawn(serve(listener, storage)))
 }
 
@@ -590,6 +598,50 @@ async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target
         ["/volume-bound/data", "/volume-send/data?target=w-1-1"]
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_that_leaves_the_copy_writable_fails() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "readonly-lost"], source.port);
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    let copy = landed(&socket, "w-1-1").await;
+    let failure = copy.pointer("/Ok/pull/failure").unwrap().as_str().unwrap();
+    assert!(failure.contains("readonly=off"), "{failure}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_stalled_receive_process_fails_the_pull_and_dies() {
+    for marker in ["stall-read", "stall-exit"] {
+        let source = Source::start(Some(BOUND), &"x".repeat(2 * 1024 * 1024)).await;
+        let test = TestDir::new();
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        fs::write(test.0.join("props").join(marker), "").unwrap();
+        let (socket, server) =
+            puller_stalling_after(&test, &["root"], source.port, Duration::from_millis(200));
+
+        post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+        let copy = landed(&socket, "w-1-1").await;
+        let failure = copy.pointer("/Ok/pull/failure").unwrap().as_str().unwrap();
+        assert!(failure.contains("stalled"), "{marker}: {failure}");
+        let pid = fs::read_to_string(test.0.join("props/receive-pid")).unwrap();
+        for _ in 0..100 {
+            if !Path::new(&format!("/proc/{}", pid.trim())).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "{marker}: receive child survived its deadline"
+        );
+        let reply = post(&socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await;
+        assert!(reply.get("Ok").is_some(), "{marker}: {reply}");
+        server.abort();
+    }
 }
 
 #[tokio::test]
