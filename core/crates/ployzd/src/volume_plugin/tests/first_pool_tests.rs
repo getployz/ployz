@@ -22,7 +22,10 @@ async fn first_create_builds_the_pool_and_bounded_volume_in_one_request() {
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert_eq!(log.matches("fallocate -l 2147483648 ").count(), 1);
     assert_eq!(log.matches("zpool create ").count(), 1);
-    assert!(log.contains("-o ashift=13 -O canmount=off ployz"));
+    assert!(log.contains(
+        "-o ashift=13 -o autotrim=off -O canmount=off -O org.debian:periodic-trim=disable ployz"
+    ));
+    assert!(!log.contains("zfs set org.debian:periodic-trim"), "{log}");
     assert_eq!(
         log.matches("zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz")
             .count(),
@@ -280,6 +283,42 @@ async fn sparse_growth_is_refused_before_the_pool_or_dataset_claims_it() {
     let log = fs::read_to_string(test.0.join("commands")).unwrap();
     assert!(!log.contains("zpool online -e"));
     assert!(!test.0.join("other").exists());
+}
+
+#[tokio::test]
+async fn admission_refills_a_trimmed_backing_file_and_opts_the_pool_out_of_periodic_trim() {
+    let test = TestDir::new();
+    let (socket, server) = start_pool_with_data(&test).await;
+    let length = fs::read_to_string(test.0.join("allocated")).unwrap();
+    fs::remove_file(test.0.join("trim-disabled")).unwrap();
+    fs::write(test.0.join("trimmed"), "").unwrap();
+    fs::write(test.0.join("commands"), "").unwrap();
+
+    let response = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":"1m"}}),
+    )
+    .await;
+    server.abort();
+
+    assert_eq!(response, json!({"Err":""}));
+    let log = fs::read_to_string(test.0.join("commands")).unwrap();
+    assert!(
+        log.contains(&format!(
+            "fallocate -l {} {}",
+            length.trim(),
+            test.0.join(POOL_BACKING_FILE).display()
+        )),
+        "{log}"
+    );
+    assert!(!test.0.join("trimmed").exists());
+    assert_eq!(
+        log.matches("zfs set org.debian:periodic-trim=disable ployz")
+            .count(),
+        1
+    );
+    assert!(test.0.join("other").exists());
 }
 
 #[tokio::test]
@@ -694,7 +733,7 @@ async fn initial_capacity_uses_ten_percent_when_it_exceeds_one_gibibyte() {
     assert_eq!(log.matches("fallocate -l 12992276070 ").count(), 1);
     assert_eq!(log.matches("fallocate -l ").count(), 1);
     assert!(!log.contains("zpool online -e"));
-    assert!(log.contains("-o ashift=12 -O canmount=off ployz"));
+    assert!(log.contains("-o ashift=12 -o autotrim=off -O canmount=off"));
 }
 
 #[tokio::test]
@@ -785,6 +824,8 @@ pub(super) fn fake_first_pool(directory: &Path, physical_block_size: u64) -> Vol
     let claimed = directory.join("claimed");
     let insufficient = directory.join("insufficient");
     let sparse = directory.join("sparse");
+    let trimmed = directory.join("trimmed");
+    let trim_disabled = directory.join("trim-disabled");
     let fail_pool = directory.join("fail-pool");
     let fail_online_once = directory.join("fail-online-once");
     let underclaim_growth = directory.join("underclaim-growth");
@@ -815,11 +856,13 @@ case "$name" in
       printf 'Size Avail\n107374182400 96636764160\n'
     fi
     ;;
-  fallocate) touch "$3"; printf '%s\n' "$2" > '{allocated}' ;;
+  fallocate) touch "$3"; rm -f '{trimmed}'; printf '%s\n' "$2" > '{allocated}' ;;
   stat)
     bytes=$(cat '{allocated}')
     if [ -e '{sparse}' ]; then
       printf '%s 0 512\n' "$bytes"
+    elif [ -e '{trimmed}' ]; then
+      printf '%s %s 512\n' "$bytes" "$((bytes / 1024))"
     else
       printf '%s %s 512\n' "$bytes" "$(((bytes + 511) / 512))"
     fi
@@ -850,7 +893,9 @@ case "$name" in
         fi
         ;;
       'list -H -o name') [ ! -e '{pool}' ] || printf 'ployz\n' ;;
-      create*) touch '{pool}'; cp '{allocated}' '{claimed}'; [ ! -e '{fail_pool}' ] || exit 2 ;;
+      create*)
+        case "$*" in *'-O org.debian:periodic-trim=disable'*) touch '{trim_disabled}' ;; esac
+        touch '{pool}'; cp '{allocated}' '{claimed}'; [ ! -e '{fail_pool}' ] || exit 2 ;;
       'online -e ployz {backing}')
         if [ -e '{fail_online_once}' ]; then
           rm '{fail_online_once}'
@@ -899,6 +944,10 @@ case "$name" in
         printf '%s\n' "${{3#refquota=}}" > '{other_bound}'
         touch '{other}'
         ;;
+      'get -H -o value org.debian:periodic-trim ployz')
+        if [ -e '{trim_disabled}' ]; then echo disable; else echo '-'; fi
+        ;;
+      'set org.debian:periodic-trim=disable ployz') touch '{trim_disabled}' ;;
       'get -H -o value ployz:writer '*) echo '-' ;;
       'get -H -o value ployz:lease'*) echo '-' ;;
       'get -H -o value ployz:promote '*) echo '-' ;;
@@ -918,6 +967,8 @@ esac
         volume_bound = volume_bound.display(),
         insufficient = insufficient.display(),
         sparse = sparse.display(),
+        trimmed = trimmed.display(),
+        trim_disabled = trim_disabled.display(),
         fail_pool = fail_pool.display(),
         fail_online_once = fail_online_once.display(),
         underclaim_growth = underclaim_growth.display(),
