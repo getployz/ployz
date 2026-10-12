@@ -625,16 +625,49 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn local_runtime_capabilities_match_a_contract_with_every_group() {
-        use ployz_core::CapabilityAdvertisement::{Always, Cluster, Container, Ingress};
+    #[tokio::test]
+    async fn served_capabilities_match_a_contract_with_every_group() {
+        use ployz_core::{MachineRpc, op};
 
-        let contract: std::collections::BTreeSet<String> = [Always, Container, Ingress, Cluster]
-            .into_iter()
-            .flat_map(ployz_core::CapabilityAdvertisement::capabilities)
+        let root = std::env::temp_dir().join(format!(
+            "ployzd-served-capabilities-{}",
+            ployz_core::MachineId::random()
+        ));
+        let store =
+            RecordOwner::spawn(LocalMachineStore::open(root.join("data")).unwrap()).unwrap();
+        let (containers, _) =
+            crate::docker::test_support::fake_runtime_with(Default::default()).await;
+        let (replicated, server) = crate::corrosion::fake_cluster::store().await;
+        let contract = crate::machine_api::MachineService::with_cluster(
+            store,
+            Some((
+                replicated,
+                crate::corrosion::AdminClient::new("/no/such/admin.sock"),
+            )),
+        )
+        .with_optional_containers(Some(containers))
+        .with_ingress_data_dir(root.join("ingress"))
+        .describe_contract(tonic::Request::new(
+            op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
+                .encode()
+                .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::DescribeContract>()
+        .unwrap();
+        server.abort();
+        let _ = fs::remove_dir_all(root);
+
+        let advertised: std::collections::BTreeSet<String> = contract
+            .capabilities
+            .iter()
             .map(|name| name.as_str().to_owned())
             .collect();
-        assert_eq!(local_runtime().capabilities, contract);
+        assert_eq!(ployz_core::served_capabilities(), advertised);
     }
 
     #[tokio::test]

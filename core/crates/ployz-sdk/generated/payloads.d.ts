@@ -2259,7 +2259,8 @@ memory_total_bytes?: number | null,
 running_builds: number,
 /**
  * Every capability name the daemon binary serves. Empty from a daemon
- * that predates the field, which claims nothing.
+ * that predates the field, and when an older entry relays a newer peer's
+ * record, so empty claims nothing.
  */
 capabilities?: Array<string>, };
 

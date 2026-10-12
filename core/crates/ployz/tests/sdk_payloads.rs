@@ -43,15 +43,12 @@ fn generated_catalog_matches_checked_in_file() {
     );
 }
 
-/// `ployz-sdk/generated/capabilities.{d.ts,js}` name every capability the daemon binary
+/// `ployz-sdk/generated/capabilities.{d.ts,mjs,js}` name every capability the daemon binary
 /// serves, for `@ployz/sdk/capabilities`. Regenerate with the same `PLOYZ_WRITE_SDK_PAYLOADS=1` run.
 #[test]
 fn generated_capabilities_match_checked_in_file() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ployz-sdk/generated");
-    for (file, generated) in [
-        ("capabilities.d.ts", ployz::sdk::capabilities_declarations()),
-        ("capabilities.js", ployz::sdk::capabilities_module()),
-    ] {
+    for (file, generated) in ployz::sdk::capabilities_files() {
         let path = dir.join(file);
         if env::var_os("PLOYZ_WRITE_SDK_PAYLOADS").is_some() {
             fs::write(&path, &generated).expect("write capabilities file");

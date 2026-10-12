@@ -1,4 +1,4 @@
-// Generated from the Rust wire types by `cargo test -p ployz --test sdk_payloads`.
+// Generated from the daemon's capability catalog by `cargo test -p ployz --test sdk_payloads`.
 // Do not edit.
 
 export type CapabilityName =

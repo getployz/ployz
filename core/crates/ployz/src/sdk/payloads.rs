@@ -180,28 +180,39 @@ pub fn typescript_declarations() -> String {
     out
 }
 
-/// `generated/capabilities.d.ts`: the `CapabilityName` union and the array's type.
-#[must_use]
-pub fn capabilities_declarations() -> String {
-    let names = ployz_core::served_capabilities();
-    let mut out = String::from(HEADER);
-    out.push_str("export type CapabilityName =\n");
-    for name in &names {
-        out.push_str(&format!("  | \"{name}\"\n"));
-    }
-    out.push_str(";\n\nexport declare const capabilities: readonly CapabilityName[];\n");
-    out
-}
+const CAPABILITIES_HEADER: &str = "// Generated from the daemon's capability catalog by `cargo test -p ployz --test sdk_payloads`.\n// Do not edit.\n\n";
 
-/// `generated/capabilities.js`: every capability name the daemon binary serves.
+/// Each `generated/` file behind `@ployz/sdk/capabilities`, by file name: the `CapabilityName`
+/// union, an ES module, and a CommonJS module, all listing every capability the daemon serves.
 #[must_use]
-pub fn capabilities_module() -> String {
+pub fn capabilities_files() -> [(&'static str, String); 3] {
     let names = ployz_core::served_capabilities();
-    let mut out = String::from(HEADER);
-    out.push_str("\"use strict\";\n\nexports.capabilities = Object.freeze([\n");
-    for name in &names {
-        out.push_str(&format!("  \"{name}\",\n"));
-    }
-    out.push_str("]);\n");
-    out
+    let union: String = names
+        .iter()
+        .map(|name| format!("  | \"{name}\"\n"))
+        .collect();
+    let list: String = names
+        .iter()
+        .map(|name| format!("  \"{name}\",\n"))
+        .collect();
+    [
+        (
+            "capabilities.d.ts",
+            format!(
+                "{CAPABILITIES_HEADER}export type CapabilityName =\n{union};\n\nexport declare const capabilities: readonly CapabilityName[];\n"
+            ),
+        ),
+        (
+            "capabilities.mjs",
+            format!(
+                "{CAPABILITIES_HEADER}export const capabilities = Object.freeze([\n{list}]);\n"
+            ),
+        ),
+        (
+            "capabilities.js",
+            format!(
+                "{CAPABILITIES_HEADER}\"use strict\";\n\nexports.capabilities = Object.freeze([\n{list}]);\n"
+            ),
+        ),
+    ]
 }

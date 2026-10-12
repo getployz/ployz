@@ -136,7 +136,8 @@ pub struct MachineRuntime {
     /// Builds this Machine's daemon is running now; live, never persisted.
     pub running_builds: u32,
     /// Every capability name the daemon binary serves. Empty from a daemon
-    /// that predates the field, which claims nothing.
+    /// that predates the field, and when an older entry relays a newer peer's
+    /// record, so empty claims nothing.
     #[ts(as = "Option<BTreeSet<String>>", optional)]
     pub capabilities: BTreeSet<String>,
 }
