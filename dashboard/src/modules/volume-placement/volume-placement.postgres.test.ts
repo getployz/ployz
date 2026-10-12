@@ -327,6 +327,20 @@ describe("volume placement", () => {
       expect(await holder()).toBeNull();
     });
 
+    it("refuses a snapshot restore that drops writes until it accepts the Volume, as a loss of writes", async () => {
+      const restoring = (losesBytes: number) => run(stagePlacement(organizationId, { environment, volumeId, mirrors: ["web-2"].map(web), staged: {
+        primary: web("web-1"), mirrors: [web("web-2")], deletes: [], restore: { from: "s1", at: 1_760_000_000, losesBytes, save: "b1", expect: 4 },
+      } }));
+      await restoring(5e6);
+      expect(await admission(admit([]))).toMatchObject({ ok: false, refusal: {
+        code: "confirmation_required", details: { volumes: [{ name: "data", deletes: [], loss: "writes", after: 1_760_000_000 }], accept: ["data"] },
+      } });
+      expect(await admission(admit(["data"], await shown()))).toEqual({ ok: true, command: admit([]) });
+      await harness.pool.query("update volume_placement set deployment_id = null");
+      expect(await restoring(0)).toMatchObject({ ok: true });
+      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+    });
+
     it("leaves the name with the Store when the Deploy deletes the Volume there too", async () => {
       await stage("web-1");
       deleting = true;
