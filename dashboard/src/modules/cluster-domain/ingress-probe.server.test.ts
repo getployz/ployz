@@ -42,6 +42,15 @@ describe("probeIngress", () => {
     expect(await Effect.runPromise(probeIngress(origin, machineId))).toBe("taken");
   });
 
+  it("hears something else when a response is cut off mid-body", async () => {
+    const origin = await listen((_request, response) => {
+      response.writeHead(200, { "content-length": "100" });
+      response.write("partial", () => response.socket?.destroy());
+    });
+
+    expect(await Effect.runPromise(probeIngress(origin, machineId))).toBe("taken");
+  });
+
   it("hears nothing when the port refuses the connection", async () => {
     const origin = await listen(() => {});
     await Promise.all(servers.splice(0).map(close));

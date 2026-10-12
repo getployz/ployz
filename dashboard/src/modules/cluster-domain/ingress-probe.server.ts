@@ -14,5 +14,8 @@ export const probeIngress = (origin: string, machineId: MachineId) => Effect.try
     redirect: "manual",
     signal: AbortSignal.any([signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)]),
   });
-  return response.status === 200 && (await response.text()).trim() === machineId ? "ployz" : "taken";
+  if (response.status !== 200) return "taken";
+  // A response that arrived proves something answers, even if its body then fails.
+  const body = await response.text().catch(() => "");
+  return body.trim() === machineId ? "ployz" : "taken";
 }).pipe(Effect.orElseSucceed((): IngressAnswer => "closed"));
