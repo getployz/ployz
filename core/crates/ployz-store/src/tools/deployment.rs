@@ -198,7 +198,7 @@ impl Tool for DeploymentShow {
             object.insert("progress".into(), progress(&view));
             object.insert(
                 "next".into(),
-                json!(Call::new(Self::NAME, Value::Object(input))),
+                json!([Call::new(Self::NAME, Value::Object(input))]),
             );
         } else if let Some(calls) = diagnose(&view, cx.call()) {
             object.insert("next".into(), json!(calls));

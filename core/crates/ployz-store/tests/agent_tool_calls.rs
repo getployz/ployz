@@ -430,10 +430,10 @@ fn a_service_goes_from_staged_to_deployed() {
     assert_eq!(shown["in_flight"], true);
     assert_eq!(
         shown["next"],
-        json!({
+        json!([{
             "tool": "deployment_show",
             "input": { "deployment": deployed["deployment"], "wait_seconds": 120 },
-        })
+        }])
     );
 
     let waited = call(
@@ -909,7 +909,7 @@ fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
     assert_eq!(running["progress"]["servers_done"], 0);
     assert_eq!(running["progress"]["servers_total"], 1);
     assert!(!running["progress"]["phase"].is_null(), "{running}");
-    assert_eq!(running["next"]["tool"], "deployment_show");
+    assert_eq!(running["next"][0]["tool"], "deployment_show");
 
     let error = json!({
         "type": "machine", "action": "RemoveContainer",
