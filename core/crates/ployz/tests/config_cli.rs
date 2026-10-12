@@ -1001,30 +1001,25 @@ fn an_agent_adds_checks_and_removes_domains() {
             assert_eq!(refused["code"], json!("invalid_argument"), "{edit:?}");
             assert_eq!(refused["details"]["next"], json!("ployz domain add web"), "{edit:?}");
         }
-        let staged = ok(store, &["diff"]);
-        assert!(
-            staged["domain_changes"]
-                .as_array()
-                .unwrap()
-                .contains(&json!({ "path": "web.domains", "change": "added app.example.com" })),
-            "{staged}"
-        );
-        let planned = ok(store, &["deploy", "--plan"]);
-        assert!(
-            planned["domain_changes"]
-                .as_array()
-                .unwrap()
-                .contains(&json!({ "path": "web.domains", "change": "added app.example.com" })),
-            "{planned}"
-        );
-        let inspected = ok(store, &["service", "inspect", "web"]);
-        assert!(
-            inspected["domain_changes"]
-                .as_array()
-                .unwrap()
-                .contains(&json!({ "path": "web.domains", "change": "added app.example.com" })),
-            "{inspected}"
-        );
+        // A generated domain reads as its full hostname, under a placeholder until a
+        // Cluster Domain is known.
+        let generated = if cloud {
+            "added web.acme.ployz.app on port 8080"
+        } else {
+            "added web.<cluster domain> on port 8080"
+        };
+        let reads = [
+            ok(store, &["diff"]),
+            ok(store, &["deploy", "--plan"]),
+            ok(store, &["service", "inspect", "web"]),
+        ];
+        for read in reads {
+            let changes = read["domain_changes"].as_array().unwrap();
+            for change in ["added app.example.com", generated] {
+                let line = json!({ "path": "web.domains", "change": change });
+                assert!(changes.contains(&line), "{read}");
+            }
+        }
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];
