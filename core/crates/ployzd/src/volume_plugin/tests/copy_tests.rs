@@ -7,8 +7,8 @@ use std::{
     time::Duration,
 };
 
-use axum::{Router, extract::Request, http::StatusCode, response::IntoResponse};
-use tokio::net::TcpListener;
+use axum::{Router, body::Body, extract::Request, http::StatusCode, response::IntoResponse};
+use tokio::{net::TcpListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::inspect_tests::{set_property, start};
@@ -513,24 +513,40 @@ async fn the_writer_route_reopens_a_read_only_root_of_its_own_epoch() {
 }
 
 /// A writer Machine's send port, answering the bound and a stream text per request:
-/// the first answer whose key the request URI contains, else the default one.
+/// the first answer whose key the request URI contains, else the default one. A held
+/// answer sends its headers at once and its stream only after `release`.
 struct Source {
     requests: Arc<StdMutex<Vec<String>>>,
-    answers: Arc<StdMutex<Vec<(String, StatusCode, String)>>>,
+    answers: Arc<StdMutex<Vec<Answer>>>,
+    gate: Arc<Semaphore>,
     port: u16,
+}
+
+#[derive(Clone)]
+struct Answer {
+    key: String,
+    status: StatusCode,
+    stream: String,
+    held: bool,
 }
 
 impl Source {
     async fn start(bound: Option<u64>, stream: &str) -> Self {
         let requests = Arc::new(StdMutex::new(Vec::new()));
-        let answers = Arc::new(StdMutex::new(vec![(
-            String::new(),
-            StatusCode::OK,
-            stream.to_owned(),
-        )]));
-        let state = (Arc::clone(&requests), Arc::clone(&answers));
+        let answers = Arc::new(StdMutex::new(vec![Answer {
+            key: String::new(),
+            status: StatusCode::OK,
+            stream: stream.to_owned(),
+            held: false,
+        }]));
+        let gate = Arc::new(Semaphore::new(0));
+        let state = (
+            Arc::clone(&requests),
+            Arc::clone(&answers),
+            Arc::clone(&gate),
+        );
         let router = Router::new().fallback(move |request: Request| {
-            let (requests, answers) = state.clone();
+            let (requests, answers, gate) = state.clone();
             async move {
                 let uri = request.uri().to_string();
                 requests.lock().unwrap().push(uri.clone());
@@ -540,13 +556,22 @@ impl Source {
                         None => (StatusCode::NOT_FOUND, "no writer here").into_response(),
                     };
                 }
-                let answers = answers.lock().unwrap();
-                let (_, status, body) = answers
+                let answer = answers
+                    .lock()
+                    .unwrap()
                     .iter()
                     .rev()
-                    .find(|(key, ..)| uri.contains(key.as_str()))
+                    .find(|answer| uri.contains(answer.key.as_str()))
+                    .cloned()
                     .unwrap();
-                (*status, body.clone()).into_response()
+                if !answer.held {
+                    return (answer.status, answer.stream).into_response();
+                }
+                let body = futures_util::stream::once(async move {
+                    let _permit = gate.acquire().await;
+                    Ok::<_, std::convert::Infallible>(answer.stream)
+                });
+                (answer.status, Body::from_stream(body)).into_response()
             }
         });
         let listener = TcpListener::bind("[::1]:0").await.unwrap();
@@ -555,16 +580,32 @@ impl Source {
         Self {
             requests,
             answers,
+            gate,
             port,
         }
     }
 
     /// Answer requests whose URI contains `key` with `status` and `stream` from now on.
     fn answer(&self, key: &str, status: StatusCode, stream: &str) {
-        self.answers
-            .lock()
-            .unwrap()
-            .push((key.to_owned(), status, stream.to_owned()));
+        self.push(key, status, stream, false);
+    }
+
+    /// Like `answer`, but holding each stream until `release`.
+    fn hold(&self, key: &str, stream: &str) {
+        self.push(key, StatusCode::OK, stream, true);
+    }
+
+    fn release(&self) {
+        self.gate.add_permits(Semaphore::MAX_PERMITS);
+    }
+
+    fn push(&self, key: &str, status: StatusCode, stream: &str, held: bool) {
+        self.answers.lock().unwrap().push(Answer {
+            key: key.to_owned(),
+            status,
+            stream: stream.to_owned(),
+            held,
+        });
     }
 
     fn requests(&self) -> Vec<String> {
@@ -839,6 +880,48 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
             "/volume-send/data?target=w-1-2",
         ]
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_the_slot() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.hold("target=w-1-2", "snapshot w-1-2 12\n");
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 11 is not on tank/ployz/data",
+    );
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    let machine = Machine { test, socket };
+    let expect = mirror_expect(&machine.copy().await);
+
+    machine.call("/Volume.Copy.Pull", pull("w-1-2")).await;
+    for _ in 0..300 {
+        if commands(&machine.test).contains("zfs destroy -r tank/ployz-mirror/data/fs") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let copy = machine.copy().await;
+    assert_eq!(copy.pointer("/Ok/newest"), Some(&Value::Null), "{copy}");
+
+    let reply = set_mirror(&machine, &expect, "w-1-2").await;
+    assert_eq!(
+        reply.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-2")),
+        "{reply}"
+    );
+    source.release();
+    let copy = landed(&machine.socket, "w-1-2").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("12")),
+        "{copy}"
+    );
+    finished(&machine.socket, "w-1-2").await;
     server.abort();
 }
 

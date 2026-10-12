@@ -378,14 +378,22 @@ pub fn plan(
             }
             Refuse(CopyRefusal::Behind)
         }
-        (Some(VolumeCopy::Slot { newest, pull, .. }), WantedCopy::Mirror { from, target, .. }) => {
+        (
+            Some(VolumeCopy::Slot {
+                slot, newest, pull, ..
+            }),
+            WantedCopy::Mirror { from, target, .. },
+        ) => {
             let landed = newest.as_ref().is_some_and(|newest| newest.name == *target);
             if landed && pull.is_none() {
                 return AtWant;
             }
-            // This request's own pull landed and moved `newest` past its expect: finish it.
-            if landed && from.is_some() && pull.as_ref().is_some_and(|pull| pull.target == *target)
-            {
+            // This request's own pull moves `newest` past its expect: it lands, or a Full
+            // fallback empties the slot first. A resend continues it on the same slot.
+            let pulling = pull.as_ref().is_some_and(|pull| pull.target == *target);
+            let same_slot =
+                matches!(expect, ExpectedCopy::Mirror { slot: expected, .. } if expected == slot);
+            if from.is_some() && pulling && (landed || same_slot) {
                 return Transition(MirrorToMirror);
             }
             if from.is_none() {
@@ -894,6 +902,35 @@ mod tests {
                 plan(Some(&again), false, &MIRROR_AT_10, &want),
                 CopyPlan::Refuse(CopyRefusal::Mismatch),
                 "{want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mirror_want_continues_its_own_pull_after_the_slot_newest_moved() {
+        let pull = |target: &str| Pull {
+            target: target.parse().unwrap(),
+            failure: None,
+        };
+        let restarted = slot(None, Some(pull("f-1")));
+        let moved = slot(Some(snapshot("w-1-1", 9)), Some(pull("f-1")));
+        for copy in [&restarted, &moved] {
+            assert_eq!(
+                plan(Some(copy), false, &MIRROR_AT_10, &mirror(true, "f-1")),
+                CopyPlan::Transition(CopyTransition::MirrorToMirror),
+                "{copy:?}"
+            );
+        }
+        let mut again = restarted.clone();
+        if let VolumeCopy::Slot { slot, .. } = &mut again {
+            *slot = SlotId::new(2);
+        }
+        let other = slot(None, Some(pull("f-2")));
+        for copy in [&again, &other] {
+            assert_eq!(
+                plan(Some(copy), false, &MIRROR_AT_10, &mirror(true, "f-1")),
+                CopyPlan::Refuse(CopyRefusal::Mismatch),
+                "{copy:?}"
             );
         }
     }
