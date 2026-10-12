@@ -1742,7 +1742,7 @@ export type EnvironmentsView = { project: ProjectSummary, environments: Array<En
 
 export type ExecutionError = { "type": "machine", action: MachineAction, error: RpcError, } | { "type": "health", container_id: ContainerId, failure: HealthFailure, } | { "type": "dependency_health", dependency: QualifiedService, failure: DependencyHealthFailure, } | { "type": "hook", container_id: ContainerId, failure: HookFailure, } | { "type": "cancelled" };
 
-export type ExpectedCopy = { "kind": "writer", epoch: WriterEpoch, } | { "kind": "mirror", newest: SnapshotGuid, } | { "kind": "none" };
+export type ExpectedCopy = { "kind": "writer", epoch: WriterEpoch, } | { "kind": "mirror", newest: SnapshotGuid, slot: SlotId, } | { "kind": "none" };
 
 export type ExtraHost = string;
 
@@ -4047,6 +4047,8 @@ export type Skipped = { environment: EnvironmentId,
  */
 reason: string, };
 
+export type SlotId = string;
+
 export type Snapshot = { name: SnapshotName, guid: SnapshotGuid, created_unix_seconds: number, };
 
 export type SnapshotGuid = string;
@@ -4443,7 +4445,11 @@ export type VolumeCopy = { "kind": "root", writer: WriterMarker, readonly: boole
 /**
  * The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
  */
-epoch: WriterEpoch, } | { "kind": "slot", mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, resume_token: string | null,
+epoch: WriterEpoch, } | { "kind": "slot",
+/**
+ * The slot parent's guid, which changes when the slot is destroyed and created again.
+ */
+slot: SlotId, mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, resume_token: string | null,
 /**
  * The `SetVolumeCopy` pull in flight, from its start until its prune is done.
  */
