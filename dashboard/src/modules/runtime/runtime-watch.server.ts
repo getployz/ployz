@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { Effect, Exit, Scope } from "effect";
-import { authorizeRuntimeOrganization } from "#/modules/runtime/authorize-runtime-organization.server";
+import { authorizeRequest } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzProviderError } from "#/modules/runtime/ployz.server";
 
@@ -23,13 +23,10 @@ export const openRuntimeWatch = Effect.fn("Runtime.openWatch")(function* (input:
   request: Request;
   organizationSlug: string;
 }) {
-  const authorized = yield* authorizeRuntimeOrganization({
-    headers: input.request.headers,
-    organizationSlug: input.organizationSlug,
-  });
+  const access = yield* authorizeRequest(input.request.headers, input.organizationSlug, "operate");
   return yield* openRuntimeWatchForOrganization({
     request: input.request,
-    organizationId: authorized.organizationId,
+    organizationId: access.organization.id,
   });
 });
 

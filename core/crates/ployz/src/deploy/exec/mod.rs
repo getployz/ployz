@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::cluster::ContainerObservationCondition;
+use crate::cluster::{ContainerObservationCondition, POLL_INTERVAL};
 use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 use ployz_core::{EnvironmentValues, ListContainersRequest};
 
@@ -28,7 +28,6 @@ mod health;
 use health::{monitor_container, wait_healthy};
 
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
 

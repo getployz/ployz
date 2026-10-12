@@ -14,7 +14,7 @@ start. Builds run on it too, so give it 2 GB of memory or more.
 ## Sign in
 
 1. Go to [ployz.dev](https://ployz.dev) and click **Deploy**.
-2. Click **Continue with GitHub** and approve Ployz on GitHub.
+2. GitHub opens. Approve Ployz there.
 
 Ployz creates your organization and opens **Add your app**.
 

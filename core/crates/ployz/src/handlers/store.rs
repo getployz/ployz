@@ -719,7 +719,7 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
 }
 
 /// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
-/// one line per domain, `web.domains: added shop`, never as the field storing it.
+/// one line per domain, `web.domains: added shop.acme.ployz.app`, never as the field storing it.
 pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
     let Some(domains) = ployz_store::DomainChange::of(row) else {
         return vec![format!(
@@ -777,15 +777,13 @@ pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
     }
 }
 
-/// A value on one line: text unquoted, nothing as `-`.
+/// A value on one line as JSON writes it, text quoted, so `""` and `"-"` never read as
+/// unset, which alone shows as `-`.
 pub(crate) fn plain(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.escape_debug().to_string(),
-        serde_json::Value::Null => "-".to_owned(),
-        serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::Array(_)
-        | serde_json::Value::Object(_) => value.to_string(),
+    if value.is_null() {
+        "-".to_owned()
+    } else {
+        value.to_string()
     }
 }
 
@@ -887,7 +885,17 @@ mod tests {
             "after": [{ "prefix": "web", "targetPort": null }, { "prefix": "shop", "targetPort": null }],
         }))
         .unwrap();
-        assert_eq!(changed(&row), ["web.domains: added shop"]);
+        assert_eq!(changed(&row), ["web.domains: added shop.<cluster domain>"]);
+        let named: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
+            "path": "web.managedHostnames", "kind": "update", "canRestore": false,
+            "before": [], "after": [{ "prefix": "shop", "targetPort": 8080 }],
+            "hostnames": { "shop": "shop.acme.ployz.app" },
+        }))
+        .unwrap();
+        assert_eq!(
+            changed(&named),
+            ["web.domains: added shop.acme.ployz.app on port 8080"]
+        );
         let route: ployz_core::config::ServiceSettingChange =
             serde_json::from_value(serde_json::json!({
                 "path": "web.routes.r1", "kind": "remove", "canRestore": false,
@@ -961,11 +969,17 @@ mod tests {
         };
         assert_eq!(
             valued(&row("web.startCommand", json!("npm start"))),
-            "npm start (default -)"
+            "\"npm start\" (default -)"
         );
         assert_eq!(valued(&row("web.startCommand", json!(null))), "- (default)");
-        assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "3000");
-        assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "/data");
+        assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "\"3000\"");
+        assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "\"/data\"");
+    }
+
+    #[test]
+    fn empty_text_a_dash_and_unset_read_differently() {
+        let shown = [plain(&json!("")), plain(&json!("-")), plain(&json!(null))];
+        assert_eq!(shown, ["\"\"", "\"-\"", "-"]);
     }
 
     #[test]

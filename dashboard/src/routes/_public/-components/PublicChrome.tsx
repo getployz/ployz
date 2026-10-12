@@ -1,32 +1,43 @@
-import { cn } from "#/lib/utils";
+import { useSuspenseQuery } from "@tanstack/react-query";
+import { Button } from "#/components/ui/button";
+import { marketingSiteQueryOptions } from "#/modules/marketing/marketing-site.queries";
 
-// The frame around /auth (the _public layout): the wordmark, the header and the footer. The marketing pages
-// live on the marketing site, proxied on this origin (see marketing-proxy.server.ts).
-
-function Wordmark({ className }: { className?: string }) {
-  return <span className={cn("font-bold tracking-[-0.04em]", className)}>ployz</span>;
-}
+// The marketing site's header (ployz-site's chrome/Header.astro) without its Product menu, so /auth reads as part of
+// that site. Every link is a full page load: the marketing pages are proxied on this origin (marketing-proxy.server.ts),
+// and /auth/github is a server redirect. A Self-hosted Cloud has no marketing pages, so it keeps only the wordmark
+// (to /, which signs in there) and the sign-in links.
+const LINKS = [
+  { label: "Pricing", href: "/home#pricing" },
+  { label: "Docs", href: "/docs" },
+  { label: "Blog", href: "/blog" },
+];
 
 export function PublicHeader() {
+  const { data: marketingSite } = useSuspenseQuery(marketingSiteQueryOptions());
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-5">
-        {/* A full page load: / is the marketing site, served by the server, not a client route. */}
-        <a href="/" className="text-xl">
-          <Wordmark />
+      <div className="mx-auto flex h-14 max-w-6xl items-center gap-4 px-5 sm:gap-6 md:grid md:grid-cols-3">
+        <a href={marketingSite ? "/home" : "/"} className="relative -top-0.5 text-xl font-bold tracking-tighter md:justify-self-start">
+          ployz
         </a>
+        {marketingSite && (
+          <nav aria-label="Sections" className="hidden items-center gap-6 text-sm text-muted-foreground sm:flex md:justify-self-center">
+            {LINKS.map((link) => (
+              <a key={link.href} href={link.href} className="hover:text-foreground">
+                {link.label}
+              </a>
+            ))}
+          </nav>
+        )}
+        <div className="ml-auto flex items-center gap-4 md:col-start-3 md:justify-self-end">
+          <a href="/auth/github" className="hidden text-sm text-muted-foreground hover:text-foreground sm:inline">
+            Sign in
+          </a>
+          <Button variant="ink" nativeButton={false} render={<a href="/auth/github" />}>
+            Deploy
+          </Button>
+        </div>
       </div>
     </header>
-  );
-}
-
-export function PublicFooter() {
-  return (
-    <footer className="border-t border-border px-5 pt-12 pb-10">
-      <div className="mx-auto flex max-w-6xl flex-col gap-8">
-        <Wordmark className="text-7xl leading-none md:text-9xl" />
-        <div className="font-mono text-xs text-muted-foreground">Keep the platform. Drop the bill.</div>
-      </div>
-    </footer>
   );
 }

@@ -146,6 +146,10 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const restartPolicy = state.rows.get("restartPolicy");
   const buildMethod = settingText(state.rows.get("buildMethod")?.value ?? state.rows.get("buildMethod")?.default);
   const field = (name: ServiceSettingName) => <StoreSettingField key={name} state={state} name={name} />;
+  const healthcheck = {
+    value: state.rows.get("healthcheck")?.value, change: state.changes.get("healthcheck"),
+    set: (value: JsonValue | null) => state.set("healthcheck", value),
+  };
   const bodies = {
     source: <StoreSourceSection state={state} />,
     // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
@@ -174,8 +178,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       <FieldGroup>
         {field("startCommand")}
         {field("preDeployCommand")}
-        <HealthcheckField value={state.rows.get("healthcheck")?.value} change={state.changes.get("healthcheck")}
-          set={(value) => state.set("healthcheck", value)} />
+        <HealthcheckField {...healthcheck} />
         {field("restartPolicy")}
         {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
       </FieldGroup>
@@ -236,12 +239,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
                       Add domain
                     </Button>
                   )}
-                  fixPath={(
-                    <Button variant="outline" size="sm" nativeButton={false}
-                      render={<Link to={SERVICE_ROUTE_TO} params={params} search={(prev) => ({ ...prev, tab: "settings" as const })} hash="healthcheck" replace />}>
-                      Fix path
-                    </Button>
-                  )} />
+                  healthcheck={healthcheck} />
               </div>
             </div>
           </TabsContent>

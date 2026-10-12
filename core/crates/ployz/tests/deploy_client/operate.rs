@@ -168,6 +168,58 @@ async fn restart_stops_then_starts_and_reports_a_start_that_failed() {
 }
 
 #[tokio::test]
+async fn restart_returns_once_a_slow_start_passes_its_healthcheck() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone())
+        .turn_healthy_after(std::time::Duration::from_millis(1_500));
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(running_container(&machine, &spec("web")));
+    let (address, server) = listening(service).await;
+    let begun = std::time::Instant::now();
+
+    let (code, restarted) = ployz(None, &address.to_string(), &["service", "restart", "web"]).await;
+    assert_eq!(code, 0, "{restarted}");
+    assert!(begun.elapsed() >= std::time::Duration::from_millis(1_500));
+    server.abort();
+}
+
+#[tokio::test]
+async fn restart_reports_a_start_that_never_passes_its_healthcheck() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone())
+        .hold_health()
+        .with_effective_healthcheck(ployz_core::HealthcheckSpec::Configured(
+            ployz_core::ConfiguredHealthcheck {
+                test: ployz_core::HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+                interval_millis: None,
+                timeout_millis: None,
+                start_period_millis: None,
+                start_interval_millis: None,
+                retries: None,
+                deadline_millis: Some(1_000),
+            },
+        ));
+    service
+        .listed_containers()
+        .lock()
+        .unwrap()
+        .push(running_container(&machine, &spec("web")));
+    let (address, server) = listening(service).await;
+
+    let (code, restarted) = ployz(None, &address.to_string(), &["service", "restart", "web"]).await;
+    assert_eq!(code, 3, "{restarted}");
+    assert_eq!(
+        restarted["container_failures"][0]["error"]["details"]["type"], "timed_out",
+        "{restarted}"
+    );
+    assert_eq!(restarted["next"], "ployz ps", "{restarted}");
+    server.abort();
+}
+
+#[tokio::test]
 async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     let store = tempfile::tempdir().unwrap();
     let db = store.path().join("store.db");

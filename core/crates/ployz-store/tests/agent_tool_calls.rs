@@ -45,6 +45,12 @@ fn shop() -> ConfigStore {
     store
 }
 
+fn in_org() -> StoreAt {
+    StoreAt::Cloud {
+        organization: OrganizationId::parse("org").unwrap(),
+    }
+}
+
 fn place(store: StoreAt) -> Place {
     Place {
         project: Some(ProjectName::parse("shop").unwrap()),
@@ -92,12 +98,13 @@ fn no_cloud(cloud: Cloud) -> Result<Value, RpcError> {
 
 fn answer(
     store: &ConfigStore,
+    who: &Actor,
     cloud: &mut dyn FnMut(Cloud) -> Result<Value, RpcError>,
     ask: Ask,
 ) -> Result<Value, RpcError> {
     match ask {
         Ask::Store(query) => store
-            .read(&who(), &query)
+            .read(who, &query)
             .map(|view| serde_json::to_value(view).unwrap()),
         Ask::Cloud(query) => cloud(Cloud::Ask(query)),
     }
@@ -113,6 +120,18 @@ fn drive(
     call_key: &str,
     cloud: &mut dyn FnMut(Cloud) -> Result<Value, RpcError>,
 ) -> Run {
+    drive_as(store, &who(), at, tool, input, call_key, cloud)
+}
+
+fn drive_as(
+    store: &ConfigStore,
+    who: &Actor,
+    at: StoreAt,
+    tool: &str,
+    input: Value,
+    call_key: &str,
+    cloud: &mut dyn FnMut(Cloud) -> Result<Value, RpcError>,
+) -> Run {
     let (mut step, mut state) = start(tool, input, &place(at), call_key);
     let (mut reads, mut writes, mut waited_ms) = (0, 0, 0);
     let result = loop {
@@ -120,13 +139,13 @@ fn drive(
             Step::Read { asks } => {
                 reads += 1;
                 asks.into_iter()
-                    .map(|ask| answer(store, cloud, ask))
+                    .map(|ask| answer(store, who, cloud, ask))
                     .collect()
             }
             Step::Wait { ms, then } => {
                 waited_ms += ms;
                 then.into_iter()
-                    .map(|ask| answer(store, cloud, ask))
+                    .map(|ask| answer(store, who, cloud, ask))
                     .collect()
             }
             Step::Write { write } => {
@@ -134,7 +153,7 @@ fn drive(
                 match *write {
                     Write::Store(command) => vec![
                         store
-                            .write(&who(), &command)
+                            .write(who, &command)
                             .map(|written| serde_json::to_value(written).unwrap()),
                     ],
                     Write::Act(act) => vec![cloud(Cloud::Act(act))],
@@ -165,7 +184,7 @@ fn drive(
 fn call(store: &ConfigStore, tool: &str, input: Value, call_key: &str) -> Run {
     let run = drive(
         store,
-        StoreAt::Cloud,
+        in_org(),
         tool,
         input.clone(),
         call_key,
@@ -187,6 +206,7 @@ fn the_catalog_has_the_agreed_tools() {
         names,
         [
             "environment_show",
+            "project_create",
             "service_inspect",
             "service_add",
             "service_update",
@@ -281,7 +301,7 @@ fn no_tool_text_names_the_cli() {
 fn every_example_decodes() {
     for def in catalog() {
         let input = example(def.name).unwrap();
-        let (step, _) = start(def.name, input, &place(StoreAt::Cloud), "call-1");
+        let (step, _) = start(def.name, input, &place(in_org()), "call-1");
         if let Step::Done {
             result: ToolResult::Refused(refusal),
         } = step
@@ -352,7 +372,9 @@ fn review_reads_domain_changes_as_domains() {
     let review = call(&store, "review", json!({}), "review-1").ok();
     let lines = review["lines"].as_array().unwrap();
     assert!(
-        lines.iter().any(|line| line == "  web.domains: added shop"),
+        lines
+            .iter()
+            .any(|line| line == "  web.domains: added shop.<cluster domain>"),
         "{review}"
     );
     assert!(
@@ -460,6 +482,64 @@ fn discard_drops_a_staged_service() {
     assert_eq!(discarded["discarded"], "service web");
     let review = call(&store, "review", json!({}), "review-1").ok();
     assert_eq!(review["lines"], json!([]), "{review}");
+}
+
+#[test]
+fn project_create_makes_a_project_once_per_key() {
+    let store = shop();
+    let input = json!({ "name": "docs", "request_key": "project-docs-0001" });
+    let created = call(&store, "project_create", input.clone(), "create-1").ok();
+    assert_eq!(created["at"], "docs/production");
+    assert_eq!(created["next"]["tool"], "environment_show");
+    let again = call(&store, "project_create", input, "create-2").ok();
+    assert_eq!(again, created, "the same key replays the same Project");
+    let shown = call(
+        &store,
+        "environment_show",
+        json!({ "project": "docs" }),
+        "show-1",
+    )
+    .ok();
+    assert_eq!(shown["at"], "docs/production", "{shown}");
+
+    let refusal = call(
+        &store,
+        "project_create",
+        json!({ "name": "docs", "request_key": "project-docs-0002" }),
+        "create-3",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert_eq!(refusal.writes, Writes::None);
+}
+
+#[test]
+fn two_organizations_create_with_the_same_key() {
+    let store = shop();
+    let input = json!({ "name": "docs", "request_key": "k7Qm2xVpR4tN" });
+    let create = |organization: &str, call_key: &str| {
+        let organization = OrganizationId::parse(organization).unwrap();
+        let who = Actor::system(organization.clone());
+        let at = StoreAt::Cloud { organization };
+        drive_as(
+            &store,
+            &who,
+            at,
+            "project_create",
+            input.clone(),
+            call_key,
+            &mut no_cloud,
+        )
+        .ok()
+    };
+    let acme = create("acme", "acme-1");
+    assert_eq!(acme["at"], "docs/production");
+    assert_eq!(create("globex", "globex-1")["at"], "docs/production");
+    assert_eq!(
+        create("acme", "acme-2"),
+        acme,
+        "a retry replays its own Project"
+    );
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
@@ -654,7 +734,7 @@ fn a_lost_reply_retries_with_the_key_that_names_the_same_attempt() {
 
     let refusal = drive(
         &store,
-        StoreAt::Cloud,
+        in_org(),
         "server_drain",
         json!({ "server": "web-2" }),
         "drain-1",
@@ -670,7 +750,7 @@ fn a_lost_reply_retries_with_the_key_that_names_the_same_attempt() {
 
     let drained = drive(
         &store,
-        StoreAt::Cloud,
+        in_org(),
         "server_drain",
         refusal.retry.input,
         "drain-2",
@@ -704,7 +784,7 @@ fn a_second_mirror_is_refused_rather_than_replacing_the_first() {
 
     let run = drive(
         &store,
-        StoreAt::Cloud,
+        in_org(),
         "volume_mirror",
         json!({ "volume": "pgdata", "server": "db-2" }),
         "mirror-1",
@@ -738,7 +818,7 @@ fn a_release_after_the_handover_retries_as_the_move() {
 
     let refusal = drive(
         &store,
-        StoreAt::Cloud,
+        in_org(),
         "volume_release",
         json!({ "volume": "pgdata" }),
         "release-1",
@@ -901,7 +981,7 @@ fn renaming_a_referenced_variable_asks_to_update_its_references() {
     });
     let refused = drive(
         &store,
-        StoreAt::Cloud,
+        in_org(),
         "service_update",
         rename.clone(),
         "rename-1",

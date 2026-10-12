@@ -212,15 +212,12 @@ pub(crate) fn edit(
         let (changed, apply) = match (path.target(), value) {
             // A Private DNS name addresses one Service: none other has it as a name.
             (Some(Target::Setting(setting @ ServiceSetting::PrivateDns)), value) => {
-                let node = environment.service(service)?;
-                let name = match value {
-                    Some(Value::String(text)) => ployz_core::ServiceName::parse(text.trim())
-                        .map_err(|_| setting.invalid("expected a lowercase DNS label"))?,
-                    Some(_) => return Err(setting.invalid("expected a lowercase DNS label")),
-                    None => ployz_core::ServiceName::parse(node.slug.as_str())
-                        .map_err(|_| error::corrupt("Service name"))?,
-                };
-                let id = node.id.clone();
+                let name = value
+                    .unwrap_or_else(|| setting.default(Some(service)))
+                    .as_str()
+                    .and_then(|text| ployz_core::ServiceName::parse(text.trim()).ok())
+                    .ok_or_else(|| setting.invalid("expected a lowercase DNS label"))?;
+                let id = environment.service(service)?.id.clone();
                 crate::service::refuse_taken(&environment, &name, Some(&id))?;
                 let config = &mut environment.service_mut(service)?.config;
                 let changed = config.private_dns != name;
@@ -238,6 +235,9 @@ pub(crate) fn edit(
                     setting.value(config, &Policy::default()) != was,
                     setting.apply(),
                 )
+            }
+            (Some(Target::Domains), _) => {
+                return Err(super::domains_are_read_only(&path, service));
             }
             (Some(Target::Description(_)), _) => {
                 return Err(error::invalid(

@@ -9,9 +9,7 @@ import {
 } from "#/modules/billing/billing";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import {
-  getOrganizationForUserBySlug,
-} from "#/modules/organization/organization-state.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import type { Actor } from "#/modules/identity/actor";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -100,28 +98,12 @@ export const persistOrganizationBillingStateSnapshot = Effect.fn(
   return snapshot;
 });
 
-export const getAuthorizedBillingScope = Effect.fn("Billing.authorizeScope")(
-  function* (actor: Actor, organizationSlug: string) {
-    const organization = yield* getOrganizationForUserBySlug(
-      actor.userId,
-      organizationSlug,
-    );
-    if (organization === null) {
-      return yield* new BillingNotFound({ resource: "Organization" });
-    }
-    return organization;
-  },
-);
-
 export const getBillingState = Effect.fn("Billing.getState")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
   yield* requireHostedPolar();
-  const organization = yield* getAuthorizedBillingScope(
-    actor,
-    input.organizationSlug,
-  );
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const database = yield* Database;
   const rows = yield* database.drizzle
     .select({
@@ -149,7 +131,7 @@ const billingPage = (appUrl: URL, organizationSlug: string) =>
 export const createCustomerPortal = Effect.fn("Billing.createPortal")(
   function* (actor: Actor, input: { readonly organizationSlug: string }) {
     const polar = yield* requireHostedPolar();
-    yield* getAuthorizedBillingScope(actor, input.organizationSlug);
+    yield* requireAccess(actor, input.organizationSlug, "operate");
     const config = yield* AppConfig;
     return yield* polar.createCustomerPortal({
       externalCustomerId: actor.userId,

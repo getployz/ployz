@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::Session;
-use crate::cluster::ContainerObservationCondition;
+use crate::cluster::{ContainerObservationCondition, HealthWaitError};
 use crate::connect::TARGET_RPC_TIMEOUT;
 use crate::operator::DEPLOYMENT_LABEL;
 
@@ -298,16 +298,31 @@ pub async fn stop_one(
         .await
 }
 
-/// What a committed start reached within the bounded wait `ployz service start` uses.
+/// What a committed start reached, waiting for it the way a Deploy does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Started {
     /// The Container serves traffic, or no Machine can report whether it does.
     Serving,
     /// The Container started but was not seen serving before the wait ended.
     Unconfirmed,
+    /// The Container started but failed its healthcheck, or did not pass it in time.
+    Unhealthy,
 }
 
-/// Start Container `container` on `machine` and wait, bounded, until it serves.
+impl Started {
+    /// The wire name the dashboard reads.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Serving => "serving",
+            Self::Unconfirmed => "unconfirmed",
+            Self::Unhealthy => "unhealthy",
+        }
+    }
+}
+
+/// Start Container `container` on `machine`, wait until it is healthy or past its
+/// healthcheck deadline, then wait, bounded, until it serves.
 ///
 /// # Errors
 /// Returns the Machine's refusal, or the transport's error when it did not answer.
@@ -328,12 +343,21 @@ pub async fn start_one(
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
+            let cancellation = CancellationToken::new();
+            match client
+                .wait_until_ready(&machine, &container, &cancellation)
+                .await
+            {
+                Ok(()) => {}
+                Err(HealthWaitError::Health(_)) => return Ok(Started::Unhealthy),
+                Err(HealthWaitError::Inspect(_)) => return Ok(Started::Unconfirmed),
+            }
             Ok(
                 match client
                     .wait_for_container_observations(
                         &[container],
                         ContainerObservationCondition::Serving,
-                        &CancellationToken::new(),
+                        &cancellation,
                     )
                     .await
                 {

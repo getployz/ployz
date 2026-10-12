@@ -77,16 +77,16 @@ describe("nodeIssues", () => {
   const domain = (status: DomainRow["status"], hostname: string | null = "acme.com") => ({ status, hostname });
 
   it("counts what the user can fix, red when a Service is down", () => {
-    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "bad" });
-    expect(nodeIssues(runtimeLine(service, runtime(), seen), [])).toEqual({ count: 1, tone: "bad" });
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "bad", uptime: false });
+    expect(nodeIssues(runtimeLine(service, runtime(), seen), [])).toEqual({ count: 1, tone: "bad", uptime: false });
     expect(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")]))
-      .toEqual({ count: 1, tone: "warn" });
+      .toEqual({ count: 1, tone: "warn", uptime: false });
   });
 
   it("counts one amber warning for a failing healthcheck, however many replicas fail it", () => {
     const failing = runtime(container("running", "failing"), container("running", "failing"));
-    expect(nodeIssues(runtimeLine(service, failing, seen), [])).toEqual({ count: 1, tone: "warn" });
-    expect(nodeIssues(runtimeLine(service, failing, seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "warn" });
+    expect(nodeIssues(runtimeLine(service, failing, seen), [])).toEqual({ count: 1, tone: "warn", uptime: false });
+    expect(nodeIssues(runtimeLine(service, failing, seen), [domain("needs_attention")])).toEqual({ count: 2, tone: "warn", uptime: false });
     expect(nodeIssues(runtimeLine(service, failing, watch({ status: "unavailable" })), [])).toBeNull();
   });
 
@@ -101,17 +101,17 @@ describe("nodeIssues", () => {
     const healthy = runtimeLine(service, runtime(container("running", "healthy")), seen);
 
     it("adds one red issue", () => {
-      expect(nodeIssues(healthy, [], "acme.com")).toEqual({ count: 1, tone: "bad" });
-      expect(nodeIssues(runtimeLine(service, runtime(container("running", "failing")), seen), [], "acme.com")).toEqual({ count: 2, tone: "bad" });
+      expect(nodeIssues(healthy, [], "acme.com")).toEqual({ count: 1, tone: "bad", uptime: true });
+      expect(nodeIssues(runtimeLine(service, runtime(container("running", "failing")), seen), [], "acme.com")).toEqual({ count: 2, tone: "bad", uptime: true });
     });
 
     it("adds nothing when the Service is already down", () => {
-      expect(nodeIssues(runtimeLine(service, runtime(), seen), [], "acme.com")).toEqual({ count: 1, tone: "bad" });
+      expect(nodeIssues(runtimeLine(service, runtime(), seen), [], "acme.com")).toEqual({ count: 1, tone: "bad", uptime: false });
     });
 
     it("shares one issue with a domain needing attention on the same hostname", () => {
-      expect(nodeIssues(healthy, [domain("needs_attention")], "acme.com")).toEqual({ count: 1, tone: "bad" });
-      expect(nodeIssues(healthy, [domain("needs_attention", "web.acme.ployz.app")], "acme.com")).toEqual({ count: 2, tone: "bad" });
+      expect(nodeIssues(healthy, [domain("needs_attention")], "acme.com")).toEqual({ count: 1, tone: "bad", uptime: false });
+      expect(nodeIssues(healthy, [domain("needs_attention", "web.acme.ployz.app")], "acme.com")).toEqual({ count: 2, tone: "bad", uptime: true });
     });
   });
 });

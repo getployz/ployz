@@ -93,7 +93,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         // `conflict` (a taken name, a referenced variable) says its own.
         // A refusal the caller says it handles (`confirmation_required`, a question it puts to the user) is its to show.
         if (isUnauthorized(error)) {
-          toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign("/auth") } });
+          toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign(signInHere()) } });
         } else if (!(error instanceof StoreRefused && handled.includes(error.code))) {
           toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : error.message);
         }
@@ -156,4 +156,10 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
 
 export function useStoreWriter(organizationSlug: string) {
   return getStoreWriter(organizationSlug, useCollectionScope());
+}
+
+/** GitHub sign-in that returns the user to the page they were on. */
+function signInHere() {
+  const callbackURL = window.location.pathname + window.location.search;
+  return `/auth/github?${new URLSearchParams({ callbackURL })}`;
 }

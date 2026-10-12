@@ -1,14 +1,16 @@
 import "@tanstack/react-start/server-only";
 import type { CopyObservation, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, isNotNull } from "drizzle-orm";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
+import {
+  placementLacking, placementUnknown, placementUnknownMessage, placementUpgradeMessage, type StorageServer,
+} from "#/modules/volume-placement/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
-import { stagePlacement } from "#/modules/volume-placement/volume-placement.server";
+import { restoreSettled, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import {
   appliedMirrors, drainPlacement, nextPlacementStep, observePlacement, placementChanges, type PlacementRow,
 } from "#/modules/volume-placement/volume-placement";
@@ -100,16 +102,26 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     if (waited.mirrors !== null) yield* settle(waited.volumeId, { mirrors: [...waited.mirrors] });
   }
   const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(volumePlacement)
+  const stamped = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
+  const settled = new Set<string>();
+  for (const row of stamped) if (row.staged?.seed !== undefined && (yield* restoreSettled(row.volumeId))) settled.add(row.volumeId);
+  const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
+  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  const listed = (row: { readonly volumeId: string }) => volumes.some((volume) => volume.id === row.volumeId);
+  // A settled restore whose Volume is gone was discarded from the Store: nothing is left to restore into. It goes first,
+  // so a Server that can't take part fails no Deploy over it.
+  const rows: typeof stamped = [];
+  for (const row of stamped) {
+    if (listed(row) || !settled.has(row.volumeId)) rows.push(row);
+    else yield* drizzle.delete(volumePlacement).where(and(eq(volumePlacement.volumeId, row.volumeId), eq(volumePlacement.deploymentId, deploymentId)));
+  }
   // A Server that joined on an older daemon since these were staged, or one that isn't answering, can't take part in a run.
   const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId, read);
   if (refusal !== null) {
     yield* release(organizationId, deploymentId);
     return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
   }
-  const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
-  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
   const ordered = [...rows].sort((a, b) => Number(b.staged?.seed !== undefined) - Number(a.staged?.seed !== undefined));
   // Sources of restores whose Volume isn't in the Store yet: a move on one waits, so the restore point stays.
@@ -117,8 +129,8 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   for (const row of ordered) {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     if (volume === undefined) {
-      // A restore's Volume can be still on its way into the Store; only staging or discarding the restore drops its row.
       const seed = row.staged?.seed;
+      // A restore still being staged: its Volume can be on its way into the Store; only staging or discarding it drops its row.
       if (seed !== undefined) waiting.add(seed.sourceVolumeId);
       yield* settleClaimed(row.volumeId, deploymentId, seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
       continue;
@@ -149,21 +161,37 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   return { kind: "done" } satisfies PlacementAdvance;
 });
 
-/** The names of the Servers with storage that hold placement back. Fails unless every Server answers: a silent one may run anything. */
+/** Servers with storage whose records say neither their capabilities nor a readable version: placement stays closed, but no Upgrade is claimed. */
+export class SupportUnknown extends Data.TaggedError("SupportUnknown")<{ readonly servers: readonly string[] }> {}
+
+/**
+ * The names of the Servers with storage that lack the volume verbs. Fails unless every Server answers, since a silent one
+ * may run anything, and with SupportUnknown when a Server's record cannot say.
+ */
 export type BlockerReader = (organizationId: string) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
 
+const lackingOrUnknown = (servers: readonly StorageServer[]): Effect.Effect<readonly string[], SupportUnknown> => {
+  const lacking = placementLacking(servers);
+  const unknown = placementUnknown(servers);
+  return lacking.length === 0 && unknown.length > 0 ? Effect.fail(new SupportUnknown({ servers: unknown })) : Effect.succeed(lacking);
+};
+
 export const readPlacementBlockers: BlockerReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
-  Effect.flatMap((frame) => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : Effect.succeed(placementBlockers(frame.machines.map((entry) => ({
-    name: entry.machine.name, storage: entry.storage?.state ?? null, daemonVersion: entry.machine.runtime.daemon_version,
-  }))))),
+  Effect.flatMap((frame): Effect.Effect<readonly string[], SupportUnknown | string> => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : lackingOrUnknown(frame.machines.map((entry) => ({
+    name: entry.machine.name, storage: entry.storage?.state ?? null, daemonVersion: entry.machine.runtime.daemon_version, capabilities: entry.machine.runtime.capabilities ?? [],
+  })))),
 );
 
 const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
 
 /** Why the organization can't stage a placement or restore yet, or null when it can. */
 export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string, read: BlockerReader = readPlacementBlockers) {
-  const blockers = yield* read(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
+  const blockers = yield* read(organizationId).pipe(Effect.catch((error) => Effect.succeed(error instanceof SupportUnknown ? error : null)));
   if (blockers === null) return UNANSWERED;
+  if (blockers instanceof SupportUnknown) {
+    const refusal: StoreRefusal = { code: "support_unknown", message: placementUnknownMessage(blockers.servers), details: { servers: [...blockers.servers] } };
+    return refusal;
+  }
   if (blockers.length === 0) return null;
   const refusal: StoreRefusal = { code: "upgrade_required", message: placementUpgradeMessage(blockers), details: { servers: [...blockers] } };
   return refusal;

@@ -30,8 +30,6 @@ export type Seed = {
   readonly dockerVolume: string;
   /** `at` in Unix seconds, as the jsonb row keeps it. */
   readonly point: { readonly guid: string; readonly name: string; readonly at: number };
-  /** The Store has the new Volume: one missing now was discarded there, not still being staged. */
-  readonly committed?: true;
 };
 
 /** Where the user wants the Volume. `deletes` names detached copies to delete. */

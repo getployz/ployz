@@ -127,7 +127,7 @@ const PLANS: readonly PlanDetails[] = [
     name: "Free",
     price: "$0",
     per: "/ month",
-    pitch: "The whole platform, on servers you own. No card.",
+    pitch: "The whole platform, on servers you own.",
     features: [
       "Unlimited servers and projects",
       "Dashboard and git push deploys",

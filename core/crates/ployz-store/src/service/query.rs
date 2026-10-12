@@ -114,6 +114,7 @@ pub(crate) fn services(
 pub(crate) fn service(
     tx: &mut dyn Tx,
     who: &Actor,
+    trusted: &crate::Trusted,
     query: &ServiceQuery,
 ) -> Result<ServiceView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
@@ -122,13 +123,17 @@ pub(crate) fn service(
         .into_iter()
         .filter(|listed| listed.listing.service.name == query.service)
         .min_by_key(|listed| listed.listing.change == Some(ReviewLifecycleKind::Delete));
-    let Some(listed) = found else {
+    let Some(mut listed) = found else {
         return Err(scope::no_service(
             &query.service,
             &environment.summary.name,
             &environment.working,
         ));
     };
+    let head = crate::deployment::head(tx, &environment)?;
+    let id = listed.node.id.clone();
+    let rows = listed.changes.iter_mut().map(|row| (id.as_str(), row));
+    crate::domain::name_generated(tx, &environment, &head, trusted, rows)?;
     let values = crate::settings::query::values(tx, &environment, &listed.node)?;
     Ok(ServiceView {
         environment: environment.summary,

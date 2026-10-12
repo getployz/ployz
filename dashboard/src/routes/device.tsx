@@ -1,5 +1,5 @@
 import { useState, useTransition, type FormEvent } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { authClient } from "#/auth/auth-client";
 import { useAuth } from "#/auth/auth.hooks";
@@ -25,10 +25,15 @@ function DevicePage() {
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
         {/* Signed out: LoginPanel returns here, code included, after sign-in. */}
-        {session ? <DeviceApproval email={session.user.email} organization={session.session.activeOrganizationSlug ?? null} /> : <LoginPanel />}
+        {session ? <DeviceApproval email={session.user.email} organization={session.session.activeOrganizationSlug ?? null} /> : <DeviceSignIn />}
       </div>
     </main>
   );
+}
+
+function DeviceSignIn() {
+  const callbackURL = useLocation({ select: (location) => location.href });
+  return <LoginPanel title="Sign in to Ployz" description="Push-to-deploy on your own servers." action="Continue with GitHub" callbackURL={callbackURL} />;
 }
 
 function DeviceApproval({ email, organization }: { email: string; organization: string | null }) {

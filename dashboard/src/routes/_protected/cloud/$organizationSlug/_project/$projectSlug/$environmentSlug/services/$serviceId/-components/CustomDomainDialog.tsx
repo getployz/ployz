@@ -22,6 +22,9 @@ import { domainPortSchema } from "./domain-port";
 /** A public DNS name with a dot: labels of letters, digits and inner hyphens. The Store checks the rest. */
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/u;
 
+/** ASCII-only, so a non-ASCII letter such as the Kelvin sign never folds into a valid name. */
+const lowercase = (hostname: string) => hostname.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
+
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
 
@@ -29,7 +32,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
   Schema.Struct({
     hostname: Schema.Trim.check(
       Schema.isNonEmpty({ message: "Enter a hostname." }),
-      Schema.makeFilter<string>((hostname) => HOSTNAME.test(hostname.toLowerCase())
+      Schema.makeFilter<string>((hostname) => HOSTNAME.test(lowercase(hostname))
         ? undefined : "Enter a domain you own, like api.example.com."),
     ),
     port: domainPortSchema,
@@ -43,7 +46,8 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
-          hostname,
+          // The Store keeps hostnames lowercase; the staged row should match it.
+          hostname: lowercase(hostname),
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({

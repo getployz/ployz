@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { requireOrganizationForMember } from "#/modules/organization/organization-state.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { Database } from "#/server/database.server";
 import type { UpdateCanvasPositionInput } from "./canvas-positions";
@@ -13,7 +13,7 @@ import { environmentCanvasNodePosition } from "./tables";
  * the Store creates it, in an Environment only the Store knows.
  */
 export const updateCanvasPosition = Effect.fn("Canvas.updatePosition")(function* (actor: Actor, input: UpdateCanvasPositionInput) {
-  const organization = yield* requireOrganizationForMember(actor, input.organizationSlug);
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   return yield* withMutationResult(Effect.gen(function* () {
     const database = yield* Database;
     const x = Math.round(input.x);

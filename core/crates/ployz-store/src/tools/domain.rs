@@ -14,7 +14,7 @@ use crate::{
     DomainsView, EnvironmentName, Hostname, ProjectName, RemoveDomain, SetGeneratedDomain,
 };
 
-const HOSTNAME: &str = "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$";
+const HOSTNAME: &str = "^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$";
 
 /// A domain as a result shows it.
 fn domain(domain: &Domain) -> Value {

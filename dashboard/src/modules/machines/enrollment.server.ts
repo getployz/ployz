@@ -14,7 +14,7 @@ import {
 } from "#/modules/machines/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { Ployz, PloyzProviderError, ployzVersion, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -69,10 +69,7 @@ function credentialsMatch(expected: string, actual: string) {
 const authorizeEnrollmentOrganization = Effect.fn(
   "MachineEnrollment.authorizeOrganization",
 )(function* (actor: Actor, organizationSlug: string) {
-  const organization = yield* requireInfrastructureOrganization(
-    actor,
-    organizationSlug,
-  );
+  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
   return { organization, userId: actor.userId };
 });
 

@@ -160,6 +160,7 @@ pub(super) struct DiscoveryService {
     pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
     pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
     pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
+    pub(super) tail_failure: Option<Status>,
     pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
     pub(super) metric_requests:
         Arc<Mutex<Vec<(MachineId, ployz_core::metrics::MetricHistoryRequest)>>>,
@@ -221,6 +222,7 @@ impl DiscoveryService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: Arc::new(Mutex::new(BTreeMap::new())),
             history_blocked: None,
+            tail_failure: None,
             metric_replies: Arc::default(),
             metric_requests: Arc::default(),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
@@ -1336,6 +1338,9 @@ impl MachineRpc for DiscoveryService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<Self::TailLogsStream>, Status> {
         self.stream_opens.fetch_add(1, Ordering::SeqCst);
+        if let Some(status) = &self.tail_failure {
+            return Err(status.clone());
+        }
         Ok(Response::new(tokio_stream::empty()))
     }
 
