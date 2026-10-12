@@ -33,7 +33,6 @@ export function copiesFromPlacement(input: {
 
   const busyOn = (server: MachineName): string | null => {
     if (active === null) return null;
-    if (active.kind === "sync") return "Refreshing";
     if (active.kind === "mirror" && target === server) return "Seeding";
     if (active.kind === "delete_mirror" && target === server) return "Removing";
     return null;
@@ -48,7 +47,7 @@ export function copiesFromPlacement(input: {
       refreshedAt: quiet ? doneAt : item.newest,
       skipped: skipped || quiet,
       staged,
-      busy: busyOn(item.server.name),
+      busy: active?.kind === "sync" ? "Refreshing" : busyOn(item.server.name),
     };
   };
   const old = (item: PlacementItem): OldCopy => ({
