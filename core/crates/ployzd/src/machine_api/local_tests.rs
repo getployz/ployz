@@ -1851,7 +1851,10 @@ mod set_volume_copy {
             set_copy(&service, draining),
         )
         .await;
-        assert!(hung_up.is_err(), "the cut finished inside its drain: {hung_up:?}");
+        assert!(
+            hung_up.is_err(),
+            "the cut finished inside its drain: {hung_up:?}"
+        );
         let undo = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
             "want":{"kind":"writer", "at":"7", "epoch":1,
                 "start":{"kind":"kept", "container_id":holder.to_string()}}});
@@ -2064,7 +2067,10 @@ mod set_volume_copy {
             .iter()
             .filter(|(_, path)| path.ends_with("/containers/create"))
             .count();
-        assert_eq!(creates, 2, "the late step 5 created the old Container again");
+        assert_eq!(
+            creates, 2,
+            "the late step 5 created the old Container again"
+        );
         assert_eq!(
             plugin.routes_called(),
             vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]

@@ -208,18 +208,20 @@ impl MachineService {
             }
         };
         let observed = match container_id {
-            Some(container_id) => match containers
-                .inspect_managed(&container_id, &machine_id)
-                .await
-            {
-                Ok(observed) => Some(observed),
-                Err(crate::docker::Error::ContainerNotFound(_)) => None,
-                Err(error) => return Err(error.into()),
-            },
+            Some(container_id) => {
+                match containers.inspect_managed(&container_id, &machine_id).await {
+                    Ok(observed) => Some(observed),
+                    Err(crate::docker::Error::ContainerNotFound(_)) => None,
+                    Err(error) => return Err(error.into()),
+                }
+            }
             None => None,
         };
         if observed.as_ref().is_some_and(|observed| {
-            matches!(observed.runtime, ContainerRuntimeObservation::Running { .. })
+            matches!(
+                observed.runtime,
+                ContainerRuntimeObservation::Running { .. }
+            )
         }) || self.local.volume_holder_running(name).await?
         {
             return Ok(StartState::Running);
