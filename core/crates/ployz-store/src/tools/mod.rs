@@ -30,8 +30,9 @@ pub use schema::{lint, portable};
 pub use status::{ServiceStatus, service_status};
 pub use step::{
     AcceptedLoss, Act, Action, Answer, Ask, AttemptId, BodyDigest, CloudQuery, DashboardPage, Fix,
-    Freshness, Gate, LogsQuery, OperationsQuery, RequestKey, ServerName, ServerRef, ServiceVerb,
-    Source, Step, Subject, Timestamp, VolumeRun, Write, WriteSlot,
+    Freshness, Gate, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, OperationsQuery,
+    RequestKey, ServerName, ServerRef, ServiceVerb, Source, Step, Subject, Timestamp, VolumeRun,
+    Write, WriteSlot,
 };
 
 use machine::{Entry, entry};

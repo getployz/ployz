@@ -13,6 +13,8 @@ use crate::{sdk::MetricHistory, ui::Table};
 /// A newest bucket older than this many steps is history, not the current value.
 const FRESH_STEPS: i64 = 3;
 
+pub(crate) const NOT_MEASURED: &str = "not measured";
+
 /// What the human output says about one history.
 #[derive(Debug)]
 pub(crate) struct Report {
@@ -45,9 +47,6 @@ impl Window<'_> {
 
 /// Lay out `history` for `subject`, the name the user selected it by.
 pub(crate) fn report(history: &MetricHistory, subject: &str, window: Window<'_>) -> Report {
-    let fresh_since = history.step_nanos.map_or(i64::MAX, |step| {
-        window.until_nanos.saturating_sub(FRESH_STEPS * step)
-    });
     let heading = format!("{subject} · {}", window.label());
     let mut table = Table::new(
         ["METRIC", "NOW", "AVG", "PEAK"],
@@ -57,33 +56,25 @@ pub(crate) fn report(history: &MetricHistory, subject: &str, window: Window<'_>)
             format!("No readings for {subject} {}.", window.label())
         },
     );
+    let rows = rows(history, window.until_nanos);
     let mut notes = Vec::new();
-    let no_readings = match &history.points {
-        MetricPoints::Service(points) => points.is_empty(),
-        MetricPoints::Machine(points) => points.is_empty(),
-    };
-    if no_readings {
+    if rows.is_empty() {
         return Report {
             heading,
             table,
             notes,
         };
     }
+    for row in rows {
+        table.row(row.map(|cell| cell.unwrap_or_default()));
+    }
     let markers = history
         .machines
         .iter()
         .flat_map(|machine| &machine.value.markers);
     match &history.points {
-        MetricPoints::Service(points) => {
-            for metric in service_metrics() {
-                table.row(metric.row(points, fresh_since));
-            }
-            notes.extend(marker_note(markers, None));
-        }
-        MetricPoints::Machine(points) => {
-            for metric in host_metrics(points) {
-                table.row(metric.row(points, fresh_since));
-            }
+        MetricPoints::Service(_) => notes.extend(marker_note(markers, None)),
+        MetricPoints::Machine(_) => {
             notes.extend(gap_notes(history));
             let mut by_service: BTreeMap<String, Vec<&MetricMarker>> = BTreeMap::new();
             for marker in markers {
@@ -101,6 +92,26 @@ pub(crate) fn report(history: &MetricHistory, subject: &str, window: Window<'_>)
         heading,
         table,
         notes,
+    }
+}
+
+/// METRIC, NOW, AVG and PEAK for each metric in `history`, read at `until_nanos`;
+/// empty when no Server reported a reading. A metric with no reading has only
+/// its label and `not measured` in NOW, so a table shows why the row is blank.
+pub(crate) fn rows(history: &MetricHistory, until_nanos: i64) -> Vec<[Option<String>; 4]> {
+    let fresh_since = history.step_nanos.map_or(i64::MAX, |step| {
+        until_nanos.saturating_sub(FRESH_STEPS * step)
+    });
+    match &history.points {
+        MetricPoints::Service(points) if !points.is_empty() => service_metrics()
+            .iter()
+            .map(|metric| metric.row(points, fresh_since))
+            .collect(),
+        MetricPoints::Machine(points) if !points.is_empty() => host_metrics(points)
+            .iter()
+            .map(|metric| metric.row(points, fresh_since))
+            .collect(),
+        MetricPoints::Service(_) | MetricPoints::Machine(_) => Vec::new(),
     }
 }
 
@@ -153,14 +164,14 @@ impl<P: Bucket> Metric<P> {
         self
     }
 
-    fn row(&self, points: &[P], fresh_since: i64) -> [String; 4] {
+    fn row(&self, points: &[P], fresh_since: i64) -> [Option<String>; 4] {
         let mut values = points.iter().filter_map(|point| (self.value)(point));
         let Some(first) = values.next() else {
             return [
-                self.label.clone(),
-                "not measured".into(),
-                String::new(),
-                String::new(),
+                Some(self.label.clone()),
+                Some(NOT_MEASURED.into()),
+                None,
+                None,
             ];
         };
         let (mut sum, mut count, mut peak) = (first, 1_u32, first);
@@ -178,13 +189,12 @@ impl<P: Bucket> Metric<P> {
                     Some(of) => format!("{value} / {}", self.unit.show(of)),
                     None => value,
                 })
-            })
-            .unwrap_or_default();
+            });
         [
-            self.label.clone(),
+            Some(self.label.clone()),
             now,
-            self.unit.show(sum / f64::from(count)),
-            self.unit.show(peak),
+            Some(self.unit.show(sum / f64::from(count))),
+            Some(self.unit.show(peak)),
         ]
     }
 }
@@ -318,7 +328,7 @@ fn host_metrics(points: &[HostPoint]) -> Vec<Metric<HostPoint>> {
 }
 
 /// One note per gap reason a Server reported, with the time it covers.
-fn gap_notes(history: &MetricHistory) -> Vec<String> {
+pub(crate) fn gap_notes(history: &MetricHistory) -> Vec<String> {
     let mut spans: BTreeMap<&'static str, i64> = BTreeMap::new();
     for gap in history
         .machines

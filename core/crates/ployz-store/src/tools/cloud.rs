@@ -2,6 +2,7 @@
 //! [`CloudQuery`](super::CloudQuery) and for an [`Act`](super::Act). Plans decode
 //! these and never see a Machine directly.
 
+use ployz_core::metrics::MarkerKind;
 use ployz_core::{MachineId, Namespace, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -112,6 +113,46 @@ pub struct LogsAnswer {
 pub struct ServerLog {
     pub server: ServerName,
     pub text: LogText,
+}
+
+/// The answer to `CloudQuery::Metrics`: what `ployz metrics` prints.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct MetricsAnswer {
+    pub since: Timestamp,
+    pub until: Timestamp,
+    /// Empty when no Server reported a reading in the range.
+    pub metrics: Vec<MetricRow>,
+    pub oom_kills: u32,
+    pub exits: u32,
+    pub restarts: u32,
+    /// The newest OOM kills, exits and restarts, newest first.
+    pub events: Vec<MetricEvent>,
+    /// Spans with no readings, and why a Server did not answer.
+    pub notes: Vec<String>,
+    pub seen: Freshness,
+}
+
+/// One metric over the range. A metric with no reading has none of the three.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct MetricRow {
+    pub metric: String,
+    /// Absent when the newest reading is too old to be current.
+    pub now: Option<String>,
+    pub avg: Option<String>,
+    pub peak: Option<String>,
+}
+
+/// Something Docker did to a Service container.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct MetricEvent {
+    pub at: Timestamp,
+    pub server: ServerName,
+    pub namespace: Namespace,
+    pub service: ServiceName,
+    pub deployment: Option<DeploymentId>,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub kind: MarkerKind,
 }
 
 /// The answer to `CloudQuery::Copies`.

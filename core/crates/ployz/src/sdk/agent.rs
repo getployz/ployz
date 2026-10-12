@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::future::join_all;
+use ployz_core::QualifiedService;
+use ployz_core::metrics::{MarkerKind, MetricMarker, MetricRange};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
     EnvironmentValues, HealthObservation, LogHistoryRequest, MachineId, MachineObservation,
@@ -10,11 +12,12 @@ use ployz_core::{
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
-    ContainerReport, ContainerState, ContainersAnswer, Disk, Health, LogsAnswer, ServerLog,
-    ServerReport, ServerState, ServersAnswer,
+    ContainerReport, ContainerState, ContainersAnswer, Disk, Health, LogsAnswer, MetricEvent,
+    MetricRow, MetricsAnswer, ServerLog, ServerReport, ServerState, ServersAnswer,
 };
 use ployz_store::tools::{
-    CloudQuery, Freshness, LogsQuery, ServerName, ServerRef, Source, Timestamp,
+    CloudQuery, Freshness, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerName,
+    ServerRef, Source, Timestamp,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -37,6 +40,7 @@ pub async fn ask(session: &Session, query: CloudQuery) -> Result<Value, RpcError
             encode(&containers(session, &namespace, service.as_ref()).await?)
         }
         CloudQuery::Logs(query) => encode(&logs(session, query).await?),
+        CloudQuery::Metrics(query) => encode(&metrics(session, query).await?),
         CloudQuery::Copies { .. } => Err(unsupported(
             "Copies join the Config Store; Ployz Cloud answers them",
         )),
@@ -246,6 +250,130 @@ async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcErro
             })
         })
         .await
+}
+
+/// How many OOM kills, exits and restarts a metrics answer lists one by one.
+const METRIC_EVENTS: usize = 20;
+
+const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
+async fn metrics(session: &Session, query: MetricsQuery) -> Result<MetricsAnswer, RpcError> {
+    let mut client = session.client()?;
+    session
+        .until_closed(async {
+            let machines = client.machines().await.map_err(RpcError::from)?;
+            let until_nanos = now_nanos();
+            let until = Timestamp(until_nanos / NANOS_PER_SECOND);
+            let since = match query.since {
+                MetricsSince::MinutesAgo { minutes } => {
+                    Timestamp(until.0.saturating_sub(i64::from(minutes) * 60))
+                }
+                MetricsSince::At { at } => at.min(Timestamp(until.0.saturating_sub(1))),
+            };
+            let subject = match query.subject {
+                MetricsSubject::Service { namespace, service } => super::MetricSubject::Service {
+                    service: QualifiedService {
+                        namespace,
+                        name: service,
+                    },
+                },
+                MetricsSubject::Server { server } => super::MetricSubject::Machine {
+                    machine_id: server.machine,
+                },
+            };
+            let range = MetricRange {
+                since_nanos: since.0.saturating_mul(NANOS_PER_SECOND),
+                until_nanos,
+            };
+            let history = super::metric_history(&client, subject, range, None).await?;
+            Ok(summarize(
+                &history,
+                &machines,
+                query.deployment.as_ref(),
+                (since, until_nanos),
+            ))
+        })
+        .await
+}
+
+fn summarize(
+    history: &super::MetricHistory,
+    machines: &[MachineObservation],
+    deployment: Option<&DeploymentId>,
+    (since, until_nanos): (Timestamp, i64),
+) -> MetricsAnswer {
+    let names: BTreeMap<MachineId, &ServerName> = machines
+        .iter()
+        .map(|machine| (machine.machine.id, &machine.machine.name))
+        .collect();
+    let mut markers: Vec<&MetricMarker> = history
+        .machines
+        .iter()
+        .flat_map(|machine| &machine.value.markers)
+        .filter(|marker| {
+            deployment.is_none_or(|id| marker.deployment_id.as_deref() == Some(id.as_str()))
+        })
+        .collect();
+    markers.sort_by_key(|marker| std::cmp::Reverse(marker.ts));
+    let count = |kind: fn(&MarkerKind) -> bool| {
+        u32::try_from(markers.iter().filter(|marker| kind(&marker.kind)).count())
+            .unwrap_or(u32::MAX)
+    };
+    let mut notes = crate::cli::metrics::gap_notes(history);
+    notes.extend(history.unanswered.iter().map(|failure| {
+        let name = names
+            .get(&failure.machine_id)
+            .map_or_else(|| failure.machine_id.to_string(), ToString::to_string);
+        format!("{name} did not answer: {}", failure.error.message)
+    }));
+    let unanswered = history
+        .unanswered
+        .iter()
+        .map(|failure| failure.machine_id)
+        .collect();
+    MetricsAnswer {
+        since,
+        until: Timestamp(until_nanos / NANOS_PER_SECOND),
+        metrics: crate::cli::metrics::rows(history, until_nanos)
+            .into_iter()
+            .map(|[metric, now, avg, peak]| MetricRow {
+                metric: metric.unwrap_or_default(),
+                now: now.filter(|now| now != crate::cli::metrics::NOT_MEASURED),
+                avg,
+                peak,
+            })
+            .collect(),
+        oom_kills: count(|kind| matches!(kind, MarkerKind::Oom)),
+        exits: count(|kind| matches!(kind, MarkerKind::Exit { .. })),
+        restarts: count(|kind| matches!(kind, MarkerKind::Restart)),
+        events: markers
+            .iter()
+            .filter_map(|marker| {
+                Some(MetricEvent {
+                    at: Timestamp(marker.ts / NANOS_PER_SECOND),
+                    server: (*names.get(&marker.machine_id)?).clone(),
+                    namespace: marker.service.namespace.clone(),
+                    service: marker.service.name.clone(),
+                    deployment: marker
+                        .deployment_id
+                        .clone()
+                        .and_then(|id| DeploymentId::parse(id).ok()),
+                    kind: marker.kind.clone(),
+                })
+            })
+            .take(METRIC_EVENTS)
+            .collect(),
+        notes,
+        seen: seen(machines, &unanswered),
+    }
+}
+
+fn now_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX)
+        })
 }
 
 /// One Container of a Service as its Server reports it: what an act stops and starts.
