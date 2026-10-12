@@ -459,11 +459,6 @@ export function dropChange(volume: PlacementVolume, members: readonly Member[], 
   return undoPlacement(volume, members, row, change);
 }
 
-/** A restore's steps; Download only when the restore point is offsite. */
-export const restoreSteps = (download: boolean): readonly string[] =>
-  [...download ? ["Download"] : [], "Save current", "Stop", "Swap", "Start"];
-
-/** What a Deploy does for the change, in the words its steps show. */
 export function changeSteps(change: PlacementChange, now: Date): readonly string[] {
   const clears = "clears" in change && change.clears.length > 0 ? ["Delete"] : [];
   switch (change.kind) {
@@ -478,7 +473,7 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
     case "delete_copy":
       return ["Delete"];
     case "seed":
-      return restoreSteps(false);
+      return ["Save current", "Stop", "Swap", "Start"];
   }
 }
 
@@ -547,7 +542,6 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
   }
 }
 
-/** Details' group for a Volume's staged changes. */
 export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[], now: Date, unreached = false): ChangeGroup {
   return {
     owner: "placement",

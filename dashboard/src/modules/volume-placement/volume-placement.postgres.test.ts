@@ -34,7 +34,6 @@ describe("volume placement", () => {
   let harness: PostgresTestHarness;
   let inFlight: boolean;
   let unreadable: boolean;
-  /** The Store lists the Volume as one the next Deploy deletes. */
   let deleting: boolean;
   // Runs once, as the Store answers `query`: a Deploy admitted while the edit is between its check and its write.
   let between: { readonly query: string; readonly run: () => Promise<void> } | null;

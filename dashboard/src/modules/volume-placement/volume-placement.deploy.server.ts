@@ -45,7 +45,6 @@ const release = Effect.fn("VolumePlacement.release")(function* (organizationId: 
   }).where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId)));
 });
 
-/** A change on Volume `volumeId` failed: `remaining` is what stays staged on it, and the Deploy gives back the rest. */
 const fail = Effect.fn("VolumePlacement.fail")(function* (
   organizationId: string, deploymentId: string, volumeId: string, remaining: Placement | null, message: string,
 ) {
@@ -56,8 +55,7 @@ const fail = Effect.fn("VolumePlacement.fail")(function* (
   return { kind: "failed", message } satisfies PlacementAdvance;
 });
 
-/** What stays staged on Volume `volumeId` once its run for `step` failed, from what its Servers hold now. */
-const afterFailure = Effect.fn("VolumePlacement.afterFailure")(function* (
+const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")(function* (
   organizationId: string, deploymentId: string, environment: EnvironmentRef, volumes: readonly PlacementVolume[], volumeId: string,
   step: PlacementStep, inspect: MemberInspector,
 ) {
@@ -123,7 +121,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const run = yield* getVolumeRun(organizationId, waited.runId);
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
     if (waited.step !== null && run.state !== "done") {
-      const remaining = yield* afterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
+      const remaining = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
       return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, `${run.volume_name}: ${run.message ?? run.state}`);
     }
     // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
