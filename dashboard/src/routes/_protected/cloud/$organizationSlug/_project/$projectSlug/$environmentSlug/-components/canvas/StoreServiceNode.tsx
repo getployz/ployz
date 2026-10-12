@@ -13,14 +13,14 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { deployChip, nodeIssues, restartedServices, publicDomain, runtimeLine, stagedSurface } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
-import { MirrorNodes } from "./MirrorNode";
-import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
+import { CopyHang } from "./MirrorNode";
+import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
-import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { deploymentQuery, useCachedStoreView, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
 
@@ -38,7 +38,9 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const inFlight = useInFlightDeployments(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
-  const chip = deployChip(service, changeCount, inFlight);
+  const running = inFlight.find((deployment) => deployment.status !== "queued") ?? null;
+  const plan = useCachedStoreView(params.organizationSlug, running === null ? null : deploymentQuery(running.id));
+  const chip = deployChip(service, changeCount, inFlight, plan?.ok ? restartedServices(plan.value) : null);
   const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploying: chip?.kind === "deploying" });
   const unreachable = useUnreachableHost({ organizationSlug: params.organizationSlug, environmentId }, service.id);
   const issues = nodeIssues(status, domains, unreachable);
@@ -106,12 +108,12 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   );
 }
 
-export function StoreServiceNode({ data }: { data: StoreCanvasService & { mirrors: readonly CanvasMirror[] } }) {
+export function StoreServiceNode({ data }: { data: StoreCanvasService & { hang: readonly VolumeCopies[] } }) {
   const pick = useNodePick(data.service.name);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const trays = <>
     <ServiceTrays trays={data.trays} configTrays={data.configTrays} selectedNodeId={selectedNodeId} />
-    <MirrorNodes mirrors={data.mirrors} />
+    <CopyHang hang={data.hang} />
   </>;
   if (pick) {
     return <>

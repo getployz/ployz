@@ -11,6 +11,7 @@ import {
   SERVICE_NODE_WIDTH,
   SERVICE_NODE_HEIGHT,
 } from "./constants";
+import { hangOverhang } from "./nodes";
 import type { CanvasResourceNode, FlowPosition } from "./types";
 
 import { prefersReducedMotion } from "#/lib/motion";
@@ -122,6 +123,18 @@ export function viewportShowing(viewport: Viewport, box: Box, width: number, hei
   };
 }
 
+/** The flow box `nodes` cover, with each node's row of copies, which reaches past the sides of its card when it is wider. */
+export function nodesBox(nodes: readonly CanvasResourceNode[]): Box {
+  const overhang = (node: CanvasResourceNode) => "hang" in node.data ? hangOverhang(node.data.hang) : 0;
+  const x = Math.min(...nodes.map((node) => node.position.x - overhang(node)));
+  const y = Math.min(...nodes.map((node) => node.position.y));
+  return {
+    x, y,
+    width: Math.max(...nodes.map((node) => node.position.x + (node.measured?.width ?? SERVICE_NODE_WIDTH) + overhang(node))) - x,
+    height: Math.max(...nodes.map((node) => node.position.y + (node.measured?.height ?? SERVICE_NODE_HEIGHT))) - y,
+  };
+}
+
 /**
  * The viewport, from `from`, that brings nodes into the canvas area the inspector pane leaves visible; `from` itself when
  * there are none. Null while no pane leaves room for them.
@@ -136,14 +149,7 @@ function revealNodes(nodes: readonly CanvasResourceNode[], from: Viewport): View
   }
   const controls = wrapper.closest(".environment-canvas-scene")
     ?.querySelector<HTMLElement>(".bottom-bar");
-  const x = Math.min(...nodes.map((node) => node.position.x));
-  const y = Math.min(...nodes.map((node) => node.position.y));
-  const box = {
-    x, y,
-    width: Math.max(...nodes.map((node) => node.position.x + (node.measured?.width ?? SERVICE_NODE_WIDTH))) - x,
-    height: Math.max(...nodes.map((node) => node.position.y + (node.measured?.height ?? SERVICE_NODE_HEIGHT))) - y,
-  };
-  return viewportShowing(from, box, wrapper.clientWidth - pane.offsetWidth,
+  return viewportShowing(from, nodesBox(nodes), wrapper.clientWidth - pane.offsetWidth,
     wrapper.clientHeight - (controls?.offsetHeight ?? 0), CANVAS_MIN_ZOOM);
 }
 
