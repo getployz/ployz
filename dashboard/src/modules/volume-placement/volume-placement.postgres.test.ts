@@ -148,6 +148,16 @@ describe("volume placement", () => {
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
   });
 
+  it("requests a run once the Deploy that stamped the Volume has ended, as staging does, and not while it runs", async () => {
+    await stage("web-1", ["web-2"]);
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    const sync = () => run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
+    expect(await sync()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+    inFlight = false;
+    expect(await sync()).toMatchObject({ ok: true });
+    expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 1 }]);
+  });
+
   it("refuses a run when a Deploy stamps the Volume between the caller's check and the insert", async () => {
     await stage("web-1", ["web-2"]);
     between = { query: "volumes", run: () => run(stampPlacements(organizationId, "env-1", "dep-1")) };
