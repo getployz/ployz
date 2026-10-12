@@ -87,6 +87,7 @@ describe("volume runs", () => {
   let machines: FakeMachine[];
   let verbs: string[];
   let failNext: Map<string, unknown>;
+  let startsAs: Map<string, "unhealthy" | "unconfirmed">;
   let sent: VolumeSwitchRequest[];
   let holders: string[];
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
@@ -179,7 +180,7 @@ describe("volume runs", () => {
     const key = `${verb}@${machine(target).name}`;
     verbs.push(`${key}(${container})`);
     const failure = failNext.get(key);
-    if (failure === undefined) return Effect.succeed("serving" as const);
+    if (failure === undefined) return Effect.succeed(startsAs.get(key) ?? "serving");
     failNext.delete(key);
     return Effect.fail(new PloyzProviderError({ operation: verb, cause: failure }));
   });
@@ -282,6 +283,7 @@ describe("volume runs", () => {
   beforeEach(async () => {
     verbs = [];
     failNext = new Map();
+    startsAs = new Map();
     sent = [];
     holders = ["fsn-1"];
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
@@ -1130,6 +1132,18 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["stop_container@fsn-1(web-fsn-1)", "set_volume_snapshot@fsn-1", "start_container@fsn-1(web-fsn-1)"]);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data moved since its snapshots were listed; restore again" }]);
     });
+
+    it("a Service that starts unhealthy after the swap fails the run and says so", async () => {
+      startsAs.set("start_container@fsn-1", "unhealthy");
+      const run = await requested(restoring(null));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toMatchObject({ name: "NonRetriableError" });
+      expect(swaps()).toHaveLength(1);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data is restored, but web-fsn-1 on fsn-1 isn't healthy" }]);
+    });
+
   });
 
   describe("requireOwner and SwitchError", () => {

@@ -311,8 +311,11 @@ async function restoreSnapshot({ step, runEffect, run, runId }: RestoreSteps, ph
     refused = error instanceof Error ? error.message : String(error);
   }
   // The Service starts again on whatever data the writer holds, so a refused swap leaves it serving the old data.
+  const unwell: string[] = [];
   for (const [index, container] of running.entries()) {
-    await step.run(`05-start-${index}`, () => runEffect(holderVerb(run, runId, writer, container, "start")));
+    const started = await step.run(`05-start-${index}`, () => runEffect(holderVerb(run, runId, writer, container, "start")));
+    if (started === "unhealthy") unwell.push(`${container} on ${writer.name} isn't healthy`);
+    if (started === "unconfirmed") unwell.push(`${container} on ${writer.name} isn't serving`);
   }
   if (refused !== null) {
     await step.run("05-refused", () => runEffect(endRun(run, runId, "failed", refused)));
@@ -324,6 +327,11 @@ async function restoreSnapshot({ step, runEffect, run, runId }: RestoreSteps, ph
     const steps: RunSteps = { step, runEffect, run, runId, at, mirrorRequest: (pos) => ({ switch: at(pos), name: run.dockerVolume }) };
     await resetMirror(steps, writer, phase.mirror.machine);
     await runRounds(steps, { A: writer, B: phase.mirror.machine, writerAddress: phase.writer.address });
+  }
+  if (unwell.length > 0) {
+    const reason = `${run.volumeName} is restored, but ${unwell.join("; ")}`;
+    await step.run("07-unwell", () => runEffect(endRun(run, runId, "failed", reason)));
+    throw new NonRetriableError(reason);
   }
   await step.run("07-finish", () => runEffect(endRun(run, runId, "done", null)));
   return { runId: run.id, restored: args.from };

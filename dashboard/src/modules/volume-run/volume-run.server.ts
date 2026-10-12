@@ -507,8 +507,8 @@ export const holderVerb = Effect.fn("VolumeRun.holderVerb")(function* (
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
-  const sent = verb === "stop" ? session.stopContainer(writer.id, container) : session.startContainer(writer.id, container).pipe(Effect.asVoid);
-  yield* sent.pipe(Effect.mapError((error) => new Error(`${verb} ${container} on ${writer.name}: ${sdkFailureMessage(error, [writer])}`)));
+  const sent = verb === "stop" ? session.stopContainer(writer.id, container).pipe(Effect.as("stopped" as const)) : session.startContainer(writer.id, container);
+  return yield* sent.pipe(Effect.mapError((error) => new Error(`${verb} ${container} on ${writer.name}: ${sdkFailureMessage(error, [writer])}`)));
 }, Effect.scoped);
 
 const decodeSnapshotRefusal = Schema.decodeUnknownOption(Schema.Struct({
