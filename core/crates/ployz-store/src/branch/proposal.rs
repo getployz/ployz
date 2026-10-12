@@ -534,6 +534,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
     // from one of its Syncs, still pending) is an edit Remove would lose; so is a node
     // one of its Syncs brought that the draft edited, which the draft can't keep
     // without what it was brought with. An earlier, saved proposal's rows are not its.
+    // Its Syncs name them, not their source: a rebind moves the source to a new preview.
     let nodes: BTreeSet<&str> = landed
         .iter()
         .filter(|landed| *landed.row.at() == At::Node)
@@ -547,7 +548,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         .iter()
         .map(|row| row.parse(0, "Sync receipt"))
         .collect::<Result<_, _>>()?;
-    let released = pair::arrived(tx, &id, Which::From(&proposal.source))?
+    let released = pair::arrived(tx, &id, Which::Pending)?
         .into_iter()
         .find(|arrived| {
             matches!(
