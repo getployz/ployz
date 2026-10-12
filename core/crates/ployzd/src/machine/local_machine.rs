@@ -14,8 +14,7 @@ use ployz_core::{
     MachineList, MachineObservation, MachineRemoved, MachineToken, MachineTokenRequest,
     MachineUpdated, ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest,
     Registered, RemoveLocalMachineRequest, RemoveMachineRequest, ResetAccepted, RttObservation,
-    RttStatistics, SelectedEndpoint, UpdateMachineRequest, WireGuardInspected,
-    associate_wireguard_peers, synthesize_membership,
+    RttStatistics, SelectedEndpoint, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 
@@ -28,7 +27,7 @@ use crate::{
     corrosion::{AdminClient, MembershipState, ReplicatedStore, membership_states_by_address},
     docker::ContainerRuntime,
     host_capacity,
-    network::{NetworkError, discover_network, inspect_wireguard_device},
+    network::{NetworkError, discover_network},
 };
 
 /// Live Observation and membership operations for this Machine.
@@ -384,49 +383,6 @@ impl LocalMachine {
             memory_total_bytes: capacity.memory_total_bytes,
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,
-        })
-    }
-
-    /// Live Observation of the WireGuard device, enriched with Membership
-    /// Observation when a Cluster is available.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Network`] when the device cannot be inspected.
-    pub async fn inspect_wireguard(&self) -> Result<WireGuardInspected, Error> {
-        let device = inspect_wireguard_device()?;
-        let Some(cluster) = &self.cluster else {
-            return Ok(WireGuardInspected { device });
-        };
-        let machines = match cluster.replicated.machines().await {
-            Ok(snapshot) => snapshot.observations,
-            Err(error) => {
-                eprintln!(
-                    "WireGuard Machine enrichment is unavailable: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                Vec::new()
-            }
-        };
-        let rtts = match machine_rtts(&cluster.admin, &cluster.replicated).await {
-            Ok(rtts) => rtts,
-            Err(error) => {
-                eprintln!(
-                    "WireGuard RTT enrichment is unavailable: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                Vec::new()
-            }
-        }
-        .into_iter()
-        .filter_map(|observation| {
-            observation
-                .machine
-                .map(|machine| (machine.id, observation.statistics))
-        })
-        .collect();
-        Ok(WireGuardInspected {
-            device: associate_wireguard_peers(device, &machines, &rtts),
         })
     }
 

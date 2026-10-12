@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, HealthObservation, Machine, MachinePath, MembershipObservation,
-    Namespace, ServiceId, ServiceName, WireGuardPublicKey,
+    AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, DockerVolumeStorageObservation, HealthObservation, Machine, MachinePath,
+    MembershipObservation, Namespace, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 

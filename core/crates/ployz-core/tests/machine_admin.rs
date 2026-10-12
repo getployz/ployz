@@ -1,11 +1,9 @@
 use std::{collections::BTreeMap, net::IpAddr};
 
-use ipnet::IpNet;
 use ployz_core::{
-    AdvertisedEndpoint, Machine, MachineId, MachineIdentity, MachineName, MachineRuntime,
-    MachineUpdate, MachineUpdateError, MembershipObservation, PublicIpUpdate, RttStatistics,
-    WireGuardDevice, WireGuardPeer, WireGuardPublicKey, apply_machine_update,
-    associate_wireguard_peers, rtt_statistics, synthesize_membership,
+    AdvertisedEndpoint, Machine, MachineId, MachineName, MachineRuntime, MachineUpdate,
+    MachineUpdateError, MembershipObservation, PublicIpUpdate, RttStatistics, WireGuardPublicKey,
+    apply_machine_update, rtt_statistics, synthesize_membership,
 };
 
 #[test]
@@ -143,72 +141,6 @@ fn rtt_statistics_keep_sub_millisecond_samples() {
             population_stddev_ns: 0,
         })
     );
-}
-
-#[test]
-fn wireguard_projection_keeps_unknown_peers_and_optional_live_fields() {
-    let known = machine('2', "known", 2);
-    let known_key = known.public_key;
-    let unknown_key = WireGuardPublicKey([9; 32]);
-    let known_rtt = RttStatistics {
-        median_ns: 10,
-        population_stddev_ns: 2,
-    };
-    let device = WireGuardDevice {
-        interface_name: "ployz-wg".into(),
-        public_key: WireGuardPublicKey([1; 32]),
-        listen_port: 51820,
-        peers: vec![
-            WireGuardPeer {
-                public_key: known_key,
-                endpoint: Some("203.0.113.2:51820".parse().unwrap()),
-                last_handshake_unix_seconds: Some(100),
-                received_bytes: 7,
-                sent_bytes: 8,
-                allowed_ips: vec!["fdcc::2/128".parse::<IpNet>().unwrap()],
-                machine: None,
-                rtt: None,
-            },
-            WireGuardPeer {
-                public_key: unknown_key,
-                endpoint: None,
-                last_handshake_unix_seconds: None,
-                received_bytes: 0,
-                sent_bytes: 0,
-                allowed_ips: Vec::new(),
-                machine: None,
-                rtt: None,
-            },
-        ],
-    };
-
-    let projected = associate_wireguard_peers(
-        device.clone(),
-        std::slice::from_ref(&known),
-        &BTreeMap::from([(known.id, known_rtt.clone())]),
-    );
-
-    let [known_peer, unknown_peer] = projected.peers.as_slice() else {
-        panic!("expected known and unknown WireGuard peers")
-    };
-    assert_eq!(
-        known_peer.machine,
-        Some(MachineIdentity {
-            id: known.id,
-            name: known.name.clone(),
-        })
-    );
-    assert_eq!(known_peer.rtt, Some(known_rtt));
-    assert_eq!(unknown_peer.public_key, unknown_key);
-    assert_eq!(unknown_peer.machine, None);
-    assert_eq!(unknown_peer.endpoint, None);
-
-    let mut duplicate = machine('3', "duplicate-key", 3);
-    duplicate.public_key = known_key;
-    let ambiguous = associate_wireguard_peers(device, &[known, duplicate], &BTreeMap::new());
-    let ambiguous_peer = ambiguous.peers.first().unwrap();
-    assert_eq!(ambiguous_peer.machine, None);
-    assert_eq!(ambiguous_peer.rtt, None);
 }
 
 fn machine(id: char, name: &str, seed: u8) -> Machine {

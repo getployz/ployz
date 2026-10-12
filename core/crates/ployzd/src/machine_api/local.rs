@@ -420,14 +420,6 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn create_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::CreateVolume>(request)?;
-        finish(self.local.create_volume(request).await)
-    }
-
     async fn inspect_storage(
         &self,
         request: Request<OpaquePayload>,
@@ -464,22 +456,6 @@ impl MachineRpc for MachineService {
         };
         match containers.list_volumes(&machine_id).await {
             Ok(inventory) => respond(inventory),
-            Err(error) => respond(RpcError::from(&error)),
-        }
-    }
-
-    async fn inspect_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::InspectVolume>(request)?;
-        let machine_id = self.local_record().id();
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(error) => return respond(error),
-        };
-        match containers.inspect_volume(&machine_id, &request.name).await {
-            Ok(volume) => respond(volume),
             Err(error) => respond(RpcError::from(&error)),
         }
     }
@@ -675,14 +651,6 @@ impl MachineRpc for MachineService {
                 .remove_peer(expect::<op::RemoveMachine>(request)?)
                 .await,
         )
-    }
-
-    async fn inspect_wireguard(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::InspectWireguard>(request)?;
-        finish(self.local.inspect_wireguard().await)
     }
 
     async fn list_images(

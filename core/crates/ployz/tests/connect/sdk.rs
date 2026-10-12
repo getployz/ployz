@@ -521,7 +521,6 @@ async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
         volumes: Default::default(),
         copies: Default::default(),
     });
-    let created = service.created_volumes.clone();
     let target_id = service.machines.first().unwrap().machine.id;
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
@@ -557,7 +556,6 @@ async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
             .iter()
             .any(|suggestion| suggestion == "Expand the disk")
     );
-    assert!(created.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -616,7 +614,6 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
         }],
     );
     service.recover_volume_on_storage_inspect = Some(volume);
-    let created = service.created_volumes.clone();
     let _machine = session.spawn_machine(description.machine_id, service).await;
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
         .await
@@ -635,7 +632,6 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
         0
     );
     assert!(preview.volumes_to_create.is_empty());
-    assert!(created.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

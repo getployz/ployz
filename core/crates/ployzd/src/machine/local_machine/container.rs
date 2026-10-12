@@ -4,10 +4,9 @@ use std::sync::Arc;
 
 use ployz_core::{
     ContainerChanged, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, CopyRefusal, CreateVolumeReport, CreateVolumeRequest,
-    DockerVolumeName, Drain, ImageIngestOpened, ImageIngestReason, ImagePulled, ImagesRemoved,
-    LocalMachinePhase, MachineStorageObservation, Namespace, PullImageFromMachineRequest,
-    ResolvedServiceSpec, StopOptions, VolumeRemoved,
+    ContainerRuntimeObservation, CopyRefusal, DockerVolumeName, Drain, ImageIngestOpened,
+    ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
+    Namespace, PullImageFromMachineRequest, ResolvedServiceSpec, StopOptions, VolumeRemoved,
 };
 
 use super::super::ingress::admit_ingress_service;
@@ -348,29 +347,6 @@ impl LocalMachine {
             }
         }
         Ok(false)
-    }
-
-    /// Create one local Docker Volume while holding Machine mutation admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns when local state or Docker is unavailable, admission is busy, or Docker cannot
-    /// create the Volume.
-    pub(crate) async fn create_volume(
-        &self,
-        request: CreateVolumeRequest,
-    ) -> Result<CreateVolumeReport, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            let machine_id = local.record().id();
-            Ok(local
-                .containers
-                .as_ref()
-                .ok_or(Error::DockerUnavailable)?
-                .create_volume(&machine_id, request)
-                .await?)
-        })
-        .await
     }
 
     /// Remove one local Docker Volume while holding Machine mutation admission.

@@ -651,12 +651,6 @@ impl MachineRpc for JoinDaemon {
             containers: self.inner.containers.lock().unwrap().clone(),
         })
     }
-    async fn create_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
     async fn inspect_container(
         &self,
         request: Request<OpaquePayload>,
@@ -712,12 +706,6 @@ impl MachineRpc for JoinDaemon {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(VolumeInventory::default())
-    }
-    async fn inspect_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
     }
     async fn create_container(
         &self,
@@ -987,12 +975,6 @@ impl MachineRpc for JoinDaemon {
         unused()
     }
     async fn remove_machine(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn inspect_wireguard(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

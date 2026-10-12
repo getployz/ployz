@@ -16,10 +16,10 @@ use ployz::{
 };
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
-    CreateVolumeReport, CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume,
-    DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
-    LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
-    MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
+    CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, LocalMachineRemoved,
+    MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
+    MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
     MachineStorageObservation, MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss,
     OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
     RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
@@ -173,14 +173,10 @@ pub(super) struct DiscoveryService {
         Arc<Mutex<BTreeMap<MachineId, Vec<VolumeObservationFailure>>>>,
     pub(super) listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     pub(super) exec_frames: Option<Vec<ployz_core::ExecResponseFrame>>,
-    pub(super) accept_volume_creates: bool,
-    pub(super) existing_created_volume: Option<DockerVolume>,
-    pub(super) created_volume_verification_error: Option<RpcError>,
     pub(super) inspect_container_result: Option<ployz_core::ContainerDetails>,
     pub(super) create_container_error: Option<RpcError>,
     pub(super) create_container_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) list_machines_blocked: Option<Arc<tokio::sync::Notify>>,
-    pub(super) created_volumes: Arc<Mutex<Vec<(MachineId, CreateVolumeRequest)>>>,
     pub(super) created_containers: Arc<Mutex<Vec<ployz_core::CreateContainerRequest>>>,
     pub(super) removed_volumes: Arc<Mutex<Vec<DockerVolumeId>>>,
     pub(super) reset_warning: Arc<Mutex<Option<String>>>,
@@ -233,14 +229,10 @@ impl DiscoveryService {
             volume_observation_failures: Arc::new(Mutex::new(BTreeMap::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             exec_frames: None,
-            accept_volume_creates: false,
-            existing_created_volume: None,
-            created_volume_verification_error: None,
             inspect_container_result: None,
             create_container_error: None,
             create_container_blocked: None,
             list_machines_blocked: None,
-            created_volumes: Arc::new(Mutex::new(Vec::new())),
             created_containers: Arc::default(),
             removed_volumes: Arc::new(Mutex::new(Vec::new())),
             reset_warning: Arc::new(Mutex::new(None)),
@@ -743,37 +735,6 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn create_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        if !self.accept_volume_creates {
-            return Err(Status::unimplemented("unused"));
-        }
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
-        let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::CreateVolume(create) = request.body else {
-            return Err(Status::invalid_argument("expected create_volume"));
-        };
-        self.created_volumes
-            .lock()
-            .unwrap()
-            .push((machine_id, create.clone()));
-        let volume = self
-            .existing_created_volume
-            .clone()
-            .unwrap_or_else(|| created_volume(machine_id, create));
-        let report = match self.created_volume_verification_error.clone() {
-            Some(error) => CreateVolumeReport::Unverified {
-                id: volume.id,
-                error,
-            },
-            None => CreateVolumeReport::Verified { volume },
-        };
-        Ok(Response::new(RpcResponse::from(report).encode().unwrap()))
-    }
-
     async fn request_machine_upgrade(
         &self,
         request: Request<OpaquePayload>,
@@ -922,38 +883,6 @@ impl MachineRpc for DiscoveryService {
                 failures: Vec::new(),
             })
         };
-        Ok(Response::new(response.encode().unwrap()))
-    }
-
-    async fn inspect_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.inspect_calls.fetch_add(1, Ordering::SeqCst);
-        let machine_id =
-            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
-        let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::InspectVolume(inspect) = request.body else {
-            return Err(Status::invalid_argument("expected inspect_volume"));
-        };
-        let response = self
-            .listed_volumes
-            .lock()
-            .unwrap()
-            .get(&machine_id)
-            .and_then(|volumes| volumes.iter().find(|volume| volume.id.name == inspect.name))
-            .cloned()
-            .map_or_else(
-                || {
-                    RpcResponse::from(RpcError {
-                        code: RpcErrorCode::NotFound,
-                        message: format!("Docker Volume {:?} was not found", inspect.name),
-                        details: Value::Null,
-                        cause: Vec::new(),
-                    })
-                },
-                RpcResponse::from,
-            );
         Ok(Response::new(response.encode().unwrap()))
     }
 
@@ -1385,13 +1314,6 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(
             RpcResponse::from(MachineRemoved {}).encode().unwrap(),
         ))
-    }
-
-    async fn inspect_wireguard(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
 }
 

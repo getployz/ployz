@@ -17,14 +17,14 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, CapabilityName, ContainerAddress, ContainerCreated, ContainerDetails,
     ContainerId, ContainerKind, ContainerList, ContainerObservationMap, ContainerPath,
-    ContainerRuntimeObservation, ContractDescription, CreateVolumeReport, DockerVolume,
-    DockerVolumeId, DockerVolumeName, ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-    HealthObservation, HealthcheckSpec, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
-    MachineObservation, MachineRpc, MachineRpcServer, MembershipObservation, Namespace,
-    OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    ContainerRuntimeObservation, ContractDescription, DockerVolume, DockerVolumeName,
+    ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY, HealthObservation, HealthcheckSpec,
+    LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId,
+    MachineImages, MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
+    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -416,65 +416,6 @@ impl MachineRpc for DeployService {
         }))
     }
 
-    async fn create_volume(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        if let Some(error) = &self.create_volume_error {
-            return encoded(RpcResponse::from(error.clone()));
-        }
-        let machine_id = machine_from_metadata(&request)?;
-        let RpcRequestBody::CreateVolume(create) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected create_volume"));
-        };
-        let storage = if create.driver == "ployz" {
-            let bound_bytes = create
-                .options
-                .get("size")
-                .and_then(|size| size.strip_suffix('b'))
-                .unwrap()
-                .parse()
-                .unwrap();
-            ployz_core::DockerVolumeStorageObservation::Provisioned {
-                mountpoint: ployz_core::MachinePath::parse(format!(
-                    "/var/lib/ployz-volumes/{}",
-                    create.name
-                ))
-                .unwrap(),
-                bound_bytes,
-                used_bytes: 0,
-                role: None,
-            }
-        } else {
-            ployz_core::DockerVolumeStorageObservation::Plain {
-                driver: create.driver,
-            }
-        };
-        let volume = DockerVolume {
-            id: DockerVolumeId {
-                machine_id,
-                name: create.name,
-            },
-            options: create.options,
-            labels: create.labels,
-            storage,
-        };
-        self.volumes.lock().unwrap().push(volume.clone());
-        let report = self.create_volume_verification_error.clone().map_or(
-            CreateVolumeReport::Verified {
-                volume: volume.clone(),
-            },
-            |error| CreateVolumeReport::Unverified {
-                id: volume.id,
-                error,
-            },
-        );
-        encoded(RpcResponse::from(report))
-    }
-
     async fn create_container(
         &self,
         request: Request<OpaquePayload>,
@@ -729,12 +670,6 @@ impl MachineRpc for DeployService {
             })
             .collect();
         encoded(RpcResponse::from(ContainerObservationMap { containers }))
-    }
-    async fn inspect_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
     }
     async fn inspect_volume_copy(
         &self,
@@ -1003,12 +938,6 @@ impl MachineRpc for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
-    }
-    async fn inspect_wireguard(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
 }

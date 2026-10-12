@@ -330,32 +330,25 @@ async fn updates_removes_and_inspects_machine_network_state() {
     }
 
     for (index, local, peer) in [(0, &first, &second), (1, &second, &first)] {
-        let device = cluster.inspect_wireguard(index).await.unwrap();
-        assert_eq!(device.public_key, local.public_key);
+        let device = cluster.wireguard_dump(index).unwrap();
+        assert_eq!(device.public_key, local.public_key.to_string());
         assert_eq!(device.listen_port, 51820);
         let wireguard_peer = device
             .peers
             .iter()
-            .find(|wireguard_peer| wireguard_peer.public_key == peer.public_key)
+            .find(|wireguard_peer| wireguard_peer.public_key == peer.public_key.to_string())
             .unwrap();
         assert!(
-            wireguard_peer.allowed_ips.iter().any(
-                |address| address.to_string() == format!("{}/128", peer.management_address().0)
-            )
+            wireguard_peer
+                .allowed_ips
+                .contains(&format!("{}/128", peer.management_address().0))
         );
-        assert!(wireguard_peer.allowed_ips.contains(&peer.subnet.into()));
+        assert!(
+            wireguard_peer
+                .allowed_ips
+                .contains(&peer.subnet.to_string())
+        );
     }
-    let unknown = WireGuardPublicKey([9; 32]);
-    cluster.inject_wireguard_peer(0, unknown).unwrap();
-    assert!(
-        cluster
-            .inspect_wireguard(0)
-            .await
-            .unwrap()
-            .peers
-            .iter()
-            .any(|peer| peer.public_key == unknown && peer.machine.is_none())
-    );
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {

@@ -23,10 +23,9 @@ use thiserror::Error;
 
 use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
-    ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
-    MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ManagementCapability,
-    ManagementClientLabel, Namespace, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice,
-    WireGuardDevice, WireGuardPublicKey,
+    ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
+    MachineRuntime, MachineToken, MachineUpdate, ManagementCapability, ManagementClientLabel,
+    Namespace, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -681,9 +680,6 @@ pub struct RemoveMachineRequest {
     pub machine_id: MachineId,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InspectWireGuardRequest {}
-
 macro_rules! define_request_body {
     (
         package $package:literal
@@ -971,11 +967,6 @@ pub struct LocalMachineRemoved {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MachineRemoved {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WireGuardInspected {
-    pub device: WireGuardDevice,
-}
-
 /// Envelope identity: one row is the wire kind and the payload stored in that
 /// variant. Callers lift with [`RpcResponse::decode`] and read fields on the envelope.
 trait FromResponseBody: Sized {
@@ -1060,8 +1051,6 @@ define_responses! {
     ContainerObservationMap(ContainerObservationMap) => "container_observation_map";
     ContainerCreated(ContainerCreated) => "container_created";
     ContainerChanged(ContainerChanged) => "container_changed";
-    DockerVolume(DockerVolume) => "docker_volume";
-    CreateVolumeReport(CreateVolumeReport) => "create_volume_report";
     StorageCapacity(crate::StorageCapacity) => "storage_capacity";
     PreparedVolumes(PreparedVolumes) => "prepared_volumes";
     VolumeInventory(VolumeInventory) => "volume_inventory";
@@ -1079,7 +1068,6 @@ define_responses! {
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
     LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed";
     MachineRemoved(MachineRemoved) => "machine_removed";
-    WireGuardInspected(WireGuardInspected) => "wireguard_inspected";
     ResetAccepted(ResetAccepted) => "reset_accepted";
     MetricHistoryReply(MetricHistoryReply) => "metric_history";
     Error(RpcError) => "error";

@@ -8,17 +8,16 @@ use futures_util::future::join_all;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAction, ContainerCreated, ContainerId, ContainerKind,
     ContainerObservation, CopyRole, CreateContainerRequest, DataLoss, DataLossConfirmation,
-    DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName, EnvironmentValues,
-    InspectRequest, InspectStorageRequest, InspectVolumeRequest, ListContainersRequest,
-    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
-    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
-    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
-    MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveContainerRequest, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc,
-    RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
-    StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
-    derive_live_services, op,
+    DescribeContractRequest, DockerVolumeId, DockerVolumeName, EnvironmentValues, InspectRequest,
+    InspectStorageRequest, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
+    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
+    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
+    Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
+    RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
+    StartContainerRequest, StopContainerRequest, StorageCapacity, UnconfirmedDataLoss,
+    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
     rpc::{BUILD_PATH, EXEC_PATH},
 };
 use serde::Serialize;
@@ -319,7 +318,7 @@ impl Client {
     }
 
     /// One-shot targeted RPC. No retry — mutating operations must not
-    /// re-issue CreateContainer or CreateVolume after a dropped response.
+    /// re-issue CreateContainer after a dropped response.
     pub(crate) async fn invoke<T: Rpc>(
         &self,
         request: T::Request,
@@ -490,46 +489,6 @@ impl Client {
             match outcome {
                 Ok(success) => result.successes.push(success),
                 Err(failure) => result.failures.push(failure),
-            }
-        }
-        result
-    }
-
-    /// Inspect one named Docker Volume on each Machine that invites an RPC.
-    pub async fn inspect_volumes(
-        &self,
-        machines: &[MachineObservation],
-        name: &DockerVolumeName,
-    ) -> PartialResult<DockerVolume, RpcError> {
-        let mut requests = Vec::new();
-        let mut omissions = Vec::new();
-        for machine in machines {
-            if !machine.invites_rpc() {
-                omissions.push(machine.machine.id);
-                continue;
-            }
-            let mut client = self.clone();
-            let machine_id = machine.machine.id;
-            let name = name.clone();
-            requests.push(async move {
-                let result = client
-                    .read::<op::InspectVolume>(
-                        InspectVolumeRequest { name },
-                        &MachineTarget::from(&machine_id),
-                    )
-                    .await;
-                (machine_id, result)
-            });
-        }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions,
-        };
-        for (machine_id, outcome) in join_all(requests).await {
-            match outcome {
-                Ok(value) => result.successes.push(MachineSuccess { machine_id, value }),
-                Err(error) => result.failures.push(MachineFailure { machine_id, error }),
             }
         }
         result

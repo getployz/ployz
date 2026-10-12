@@ -14,18 +14,17 @@ use ployz_core::{
     GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
     ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig,
-    InspectMachineUpgradeRequest, InspectWireGuardRequest, LIST_IMAGES_CAPABILITY,
-    ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages,
-    MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
-    PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveImagesRequest,
-    RemoveLocalMachineRequest, RemoveMachineRequest, RequestMachineUpgradeRequest, ResetAccepted,
-    ResetRequest, ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody,
-    RpcResponse, RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource,
-    encode_grpc_frame, grpc_frames, op,
+    InspectMachineUpgradeRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
+    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachineRelease,
+    MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
+    ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PublicIpDiscovery,
+    PublicIpUpdate, PublishCertificateMaterialRequest, PullImageFromMachineRequest,
+    RESET_MACHINE_CAPABILITY, RemoveImagesRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    RequestMachineUpgradeRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
+    UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -1500,27 +1499,12 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-        InspectVolumeRequest, ListVolumesRequest, RemoveVolumeRequest, VolumeInventory,
+        DockerVolume, DockerVolumeId, DockerVolumeName, ListVolumesRequest, RemoveVolumeRequest,
+        VolumeInventory,
     };
 
     assert!(DockerVolumeName::parse("").is_err());
     let name = DockerVolumeName::parse("data").unwrap();
-    let create = CreateVolumeRequest {
-        name: name.clone(),
-        driver: "local".into(),
-        options: BTreeMap::from([("type".into(), "none".into())]),
-        labels: BTreeMap::from([("purpose".into(), "database".into())]),
-    };
-    assert_eq!(
-        op::CreateVolume::into_request(create.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap()
-            .body,
-        RpcRequestBody::CreateVolume(create)
-    );
     assert_eq!(
         op::ListVolumes::into_request(ListVolumesRequest {})
             .encode()
@@ -1529,15 +1513,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
             .unwrap()
             .body,
         RpcRequestBody::ListVolumes(ListVolumesRequest {})
-    );
-    assert_eq!(
-        op::InspectVolume::into_request(InspectVolumeRequest { name: name.clone() })
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap()
-            .body,
-        RpcRequestBody::InspectVolume(InspectVolumeRequest { name: name.clone() })
     );
     assert_eq!(
         op::RemoveVolume::into_request(RemoveVolumeRequest {
@@ -1566,22 +1541,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
             driver: "local".into(),
         },
     };
-    let volume_response = RpcResponse::from(CreateVolumeReport::Verified {
-        volume: volume.clone(),
-    });
-    assert_eq!(volume_response.kind(), ResponseKind::CreateVolumeReport);
-    assert_eq!(
-        volume_response.decode::<op::CreateVolume>().unwrap(),
-        CreateVolumeReport::Verified {
-            volume: volume.clone()
-        }
-    );
-    assert_eq!(
-        RpcResponse::from(volume.clone())
-            .decode::<op::InspectVolume>()
-            .unwrap(),
-        volume
-    );
     assert_eq!(
         RpcResponse::from(VolumeInventory {
             volumes: vec![volume.clone()],
@@ -1674,7 +1633,6 @@ fn machine_administration_requests_round_trip_as_typed_payloads() {
         op::RemoveMachine::into_request(RemoveMachineRequest {
             machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         }),
-        op::InspectWireguard::into_request(InspectWireGuardRequest {}),
     ];
     for request in requests {
         assert_eq!(

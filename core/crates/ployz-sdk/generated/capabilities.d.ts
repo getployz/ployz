@@ -44,12 +44,9 @@ export type CapabilityName =
   | "ployz.storage.prepare.v1"
   | "ployz.volume.copy.inspect.v1"
   | "ployz.volume.copy.set.v1"
-  | "ployz.volume.create.v1"
-  | "ployz.volume.inspect.v1"
   | "ployz.volume.list.v1"
   | "ployz.volume.remove.v1"
   | "ployz.volume.seed.v1"
-  | "ployz.wireguard.inspect.v1"
 ;
 
 export declare const capabilities: readonly CapabilityName[];
