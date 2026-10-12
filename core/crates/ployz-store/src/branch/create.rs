@@ -290,7 +290,7 @@ pub(crate) fn copy_node(
         .map(|row| row.id.clone())
         .collect();
     let none = BTreeMap::new();
-    let staged = checked.apply(tx, who, &mut branch, &picks, &none, None)?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, Owner::None)?;
     Ok(Branched {
         branch: view(tx, &branch)?,
         staged,

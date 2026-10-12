@@ -117,6 +117,17 @@ impl ConfigStore {
             .await
     }
 
+    /// What retiring Conditional Syncs did (`Converted`) when opening this
+    /// Store converted them, for Cloud to log; null after an earlier open did.
+    ///
+    /// # Errors
+    /// Returns an error if the receipt can't be serialized.
+    #[napi]
+    pub fn converted(&self) -> Result<serde_json::Value> {
+        serde_json::to_value(self.store.converted())
+            .map_err(|error| Error::from_reason(error.to_string()))
+    }
+
     /// The pull requests (`PullRequestRef[]`) whose checks a change in Environment
     /// `environment` may move, such as a Deployment of it ending. Only Cloud calls this.
     ///
@@ -310,13 +321,13 @@ impl ConfigStore {
             .await
     }
 
-    /// The Conditional Syncs a push to a GitHub branch may freeze or carry:
-    /// `{standing: [number], merged: [commit]}`. Only Cloud's GitHub workers call this.
+    /// The open pull requests into a GitHub branch whose merge would land config:
+    /// `[number]`. Only Cloud's GitHub workers call this.
     ///
     /// # Errors
     /// Returns a storage error.
     #[napi]
-    pub async fn pending_syncs(
+    pub async fn awaiting_merge(
         &self,
         organization: String,
         repository_id: i64,
@@ -324,7 +335,7 @@ impl ConfigStore {
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         let (repository_id, branch) = github_branch(repository_id, &branch)?;
-        self.run(move |store| store.pending_syncs(&who.organization, repository_id, &branch))
+        self.run(move |store| store.awaiting_merge(&who.organization, repository_id, &branch))
             .await
     }
 }

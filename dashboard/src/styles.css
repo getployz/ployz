@@ -58,6 +58,7 @@
   --chart-3: hsl(152 38% 42%);
   --chart-4: hsl(44 74% 52%);
   --chart-5: hsl(1 62% 44%);
+  --chart-6: hsl(265 60% 68%);
   --z-safe-area: 60;
   --radius: 0.75rem;
   --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
@@ -122,6 +123,7 @@
   --chart-3: hsl(152 38% 42%);
   --chart-4: hsl(44 74% 52%);
   --chart-5: hsl(1 62% 44%);
+  --chart-6: hsl(265 60% 68%);
   --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
   --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
   --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
@@ -182,6 +184,7 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -242,11 +245,12 @@
    then its actions, sized to them. Its lines truncate, and values live in Details. */
 .bottom-bar {
   position: absolute; bottom: 1rem; left: 50%; translate: -50% 0; z-index: 30;
-  display: flex; width: max-content; max-width: min(36rem, calc(100% - 2rem)); overflow: hidden;
+  display: flex; flex-direction: column; width: max-content; max-width: min(36rem, calc(100% - 2rem)); overflow: hidden;
   border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--background); box-shadow: var(--shadow-md);
   white-space: nowrap;
 }
 .bottom-bar-row { display: flex; flex: 1 1 auto; align-items: center; gap: 0.5rem; min-width: 0; padding: 0.875rem 0.875rem 0.875rem 1.125rem; }
+.bottom-bar-row + .bottom-bar-row { border-top: 1px solid var(--border); }
 /* Changes to deploy: their row takes the staged-intent surface. */
 .bottom-bar-row[data-staged] { background: var(--changed-soft); }
 .bottom-bar:has(> [data-staged]) { border-color: var(--changed-border); }

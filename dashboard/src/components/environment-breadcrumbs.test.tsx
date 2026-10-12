@@ -22,19 +22,20 @@ function TopBar() {
 }
 
 const listing = (name: string, extra: Partial<EnvironmentListing> = {}): EnvironmentListing =>
-  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, branch_setup: [], ...extra });
+  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], ...extra });
 
 async function renderAt(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const seed = (query: ConfigQuery, value: ConfigView) =>
     queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", query], { ok: true, value });
   seed(projectsQuery(), { view: "projects", projects: [
-    { id: "store", name: "store", default_environment: "production", environments: ["fix-web", "pr-142", "production", "staging"] },
+    { id: "store", name: "store", default_environment: "production", environments: ["fix-web", "pr-142", "pr-146", "production", "staging"] },
     { id: "docs", name: "docs", default_environment: "preview", environments: ["preview", "production"] },
   ] });
   seed(environmentsQuery("store"), { view: "environments", project: { id: "store", name: "store" }, environments: [
     listing("fix-web", { parent: "production" }),
     listing("pr-142", { parent: "staging", removal: { id: "d", number: 3, status: "running", saved: 0, services: [], runner: null, upload: null, remove: true, admitted_by: null, admitted_at: 0, started_at: null, ended_at: null, message: null, environment_id: "pr-142", in_flight: true, outcome: null } }),
+    listing("pr-146", { parent: "production", merged: true }),
     listing("production", { default: true }),
     listing("staging"),
   ] });
@@ -100,12 +101,13 @@ it("switches between this project's Environments and keeps the place", async () 
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/logs"));
 });
 
-it("lists Environments as a tree, each Branch under its Parent, noting the default and a removal under way", async () => {
+it("lists Environments as a tree, each Branch under its Parent, noting the default, a merged PR Environment and a removal under way", async () => {
   await using _app = await renderAt("/cloud/acme/store/production/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: production" }));
   await screen.findByRole("option", { name: "production, default" });
   expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
-    "production, default", "fix-web, branch of production", "staging", "pr-142, branch of staging, deleting",
+    "production, default", "fix-web, branch of production", "pr-146, branch of production, merged", "staging",
+    "pr-142, branch of staging, deleting",
     "New branch of production", "Manage environments",
   ]);
 });

@@ -17,7 +17,8 @@ pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
     RenameProject,
 };
-pub use crate::review::publish::{Discard, Discarded, Publish, Published};
+pub use crate::review::history::{HistoryStaged, StageHistory};
+pub use crate::review::publish::{Discard, DiscardTarget, Discarded, Publish, Published};
 pub use crate::service::{
     CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,
 };
@@ -238,6 +239,9 @@ commands! {
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
         => crate::review::publish::publish(tx, who, c, trusted);
+    /// Stage a guarded Restore or Undo of an immutable Saved revision.
+    StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
+        => crate::review::history::stage(tx, who, c);
     /// Return Working State, or part of it, to what is deployed.
     Discard(Discard) -> Discarded(Discarded) => crate::review::publish::discard(tx, who, c);
     /// Freeze Saved State into a queued Deployment, publishing Working State first,
@@ -265,19 +269,22 @@ commands! {
     /// Sync one Environment's changes into another of its Project: staged there,
     /// never deleting or deploying.
     Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, sealing, c);
-    /// Undo a Sync while what it staged is undeployed and unchanged, or withdraw the
-    /// Conditional Sync it made.
+    /// Undo a Sync while what it staged is undeployed and unchanged, or forget the
+    /// offer it made.
     UndoSync(crate::UndoSync) -> Undone(crate::Undone) => crate::branch::undo(tx, who, c);
-    /// Stage the hints a Conditional Sync or a Parent left in an Environment.
+    /// Remove a source included in a draft: what it still owns there goes back.
+    RemoveProposal(crate::RemoveProposal) -> Removed(crate::Removed)
+        => crate::branch::remove_proposal(tx, who, c);
+    /// Stage the hints a Parent left in an Environment.
     Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
-    /// Hold a Destination's value for a secret a pull request brings it by name.
-    HoldSecret(crate::HoldSecret) -> SecretHeld(crate::SecretHeld)
-        => crate::conditional_sync::hold(tx, who, sealing, c);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
     /// Mark rows of an Environment Never sync, or sync them again.
     NeverSync(crate::NeverSync) -> NeverSynced(crate::NeverSynced)
         => crate::branch::never_sync(tx, who, c);
+    /// Give a row of a PR Environment's On merge list the value it lands with.
+    SetMergeValue(crate::SetMergeValue) -> OnMerge(crate::OnMerge)
+        => crate::pull_request::set_merge_value(tx, who, sealing, c);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
         => crate::branch::keep_branch(tx, who, c);
@@ -495,13 +502,15 @@ impl Written {
             Self::Edited(edited) => Some(&edited.environment.id),
             Self::Published(published) => Some(&published.environment.id),
             Self::Discarded(discarded) => Some(&discarded.environment.id),
+            Self::HistoryStaged(staged) => Some(&staged.environment.id),
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
-            Self::SecretHeld(held) => Some(&held.environment.id),
             Self::Synced(synced) => Some(&synced.into.id),
             Self::Undone(undone) => Some(&undone.into.id),
+            Self::Removed(removed) => Some(&removed.environment.id),
             Self::NeverSynced(marked) => Some(&marked.environment.id),
+            Self::OnMerge(on_merge) => Some(&on_merge.environment.id),
             Self::Batch(batched) => batched.results.last().and_then(Self::environment),
             // A new Project or Branch has no pull request yet; the rest write no
             // Environment's config, or delete it.
@@ -561,6 +570,8 @@ pub enum Written {
     Published(Published),
     /// Changes were discarded.
     Discarded(Discarded),
+    /// A Saved revision was restored or undone into the draft.
+    HistoryStaged(HistoryStaged),
     /// A Deployment admitted, started or cancelled, or what its runner recorded.
     Deployment(crate::DeploymentSummary),
     /// A public domain was added or removed.
@@ -573,14 +584,16 @@ pub enum Written {
     BuildOrder(crate::BuildOrderView),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
-    /// A Sync was undone, or its Conditional Sync withdrawn.
+    /// A Sync was undone.
     Undone(crate::Undone),
+    /// A proposal was removed from its draft, or was gone already.
+    Removed(crate::Removed),
     /// Hints were staged.
     Taken(crate::Taken),
-    /// A secret's value was held for a pull request's merge.
-    SecretHeld(crate::SecretHeld),
     /// An Environment's settings marked Never sync changed.
     NeverSynced(crate::NeverSynced),
+    /// A PR Environment's On merge list after an Edit.
+    OnMerge(crate::OnMerge),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.

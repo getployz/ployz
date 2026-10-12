@@ -160,16 +160,15 @@ pub(crate) enum Stdin {
     IfAbsent,
 }
 
-const STDIN: [(&str, &str, Stdin); 6] = [
+const STDIN: [(&str, &str, Stdin); 5] = [
     ("config put", "--from", Stdin::IfAbsent),
     ("env sync", "--value", Stdin::Only),
-    ("set", "--at-merge", Stdin::Only),
     ("set", "--from-env-file", Stdin::OnDash),
     ("set", "--patch", Stdin::OnDash),
     ("set", "--secret", Stdin::Only),
 ];
 
-const KEEPS_RUNNING_ARGS: [(&str, &str); 9] = [
+const KEEPS_RUNNING_ARGS: [(&str, &str); 10] = [
     ("github connect", "--wait"),
     ("logs", "--follow"),
     ("server add", "--wait"),
@@ -178,6 +177,7 @@ const KEEPS_RUNNING_ARGS: [(&str, &str); 9] = [
     ("volume mirror rm", "--wait"),
     ("volume move", "--wait"),
     ("volume release", "--wait"),
+    ("volume restore", "--wait"),
     ("volume sync", "--wait"),
 ];
 
@@ -192,9 +192,9 @@ pub(crate) enum ArgType {
 }
 
 /// Every visible command with a handler, in path order, with its own arguments; the
-/// global connection flags every command shares are left out.
+/// root's global connection flags every command shares are left out.
 pub(crate) fn commands() -> Vec<CommandEntry> {
-    fn walk(command: &Command, parent: &str, out: &mut Vec<CommandEntry>) {
+    fn walk(command: &Command, parent: &str, shared: &[&str], out: &mut Vec<CommandEntry>) {
         for child in command
             .get_subcommands()
             .filter(|child| !child.is_hide_set() && child.get_name() != "help")
@@ -210,17 +210,22 @@ pub(crate) fn commands() -> Vec<CommandEntry> {
                     approval: runnable.approval,
                     surface: runnable.surface,
                     keeps_running: KEEPS_RUNNING_COMMANDS.contains(&path.as_str()),
-                    args: args(&path, child),
+                    args: args(&path, child, shared),
                     command: path.clone(),
                 });
             }
-            walk(child, &format!("{path} "), out);
+            walk(child, &format!("{path} "), shared, out);
         }
     }
     let mut root = crate::cli::command();
     root.build();
+    let shared: Vec<&str> = root
+        .get_arguments()
+        .filter(|arg| arg.is_global_set())
+        .map(|arg| arg.get_id().as_str())
+        .collect();
     let mut out = Vec::new();
-    walk(&root, "", &mut out);
+    walk(&root, "", &shared, &mut out);
     out.sort_by(|a, b| a.command.cmp(&b.command));
     out
 }
@@ -232,9 +237,9 @@ pub fn commands_json() -> String {
     format!("{json}\n")
 }
 
-fn args(path: &str, command: &Command) -> Vec<ArgEntry> {
+fn args(path: &str, command: &Command, shared: &[&str]) -> Vec<ArgEntry> {
     let visible = |arg: &&Arg| {
-        !arg.is_global_set()
+        !shared.contains(&arg.get_id().as_str())
             && !arg.is_hide_set()
             && !matches!(
                 arg.get_action(),

@@ -125,15 +125,31 @@ pub struct DeploymentSummary {
     pub warnings: Vec<DeploymentWarning>,
 }
 
-/// A Config file whose resolved variable may break the file's syntax: it holds a
-/// newline or a quote inside quotes, or a newline in YAML. The Deployment still
-/// ships it.
+/// What a Deployment ships despite. It still ships.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct DeploymentWarning {
-    pub config: ConfigName,
-    pub file: ConfigFileName,
-    /// The variable as the file references it, such as `api.TOKEN`.
-    pub variable: String,
+#[serde(untagged)]
+pub enum DeploymentWarning {
+    /// A Config file whose resolved variable may break the file's syntax: it holds
+    /// a newline or a quote inside quotes, or a newline in YAML.
+    Fragile {
+        config: ConfigName,
+        file: ConfigFileName,
+        /// The variable as the file references it, such as `api.TOKEN`.
+        variable: String,
+    },
+    /// A Service variable left out: it is, or reads, a secret without a value.
+    NotSet {
+        service: ServiceName,
+        /// The variable's key, such as `TOKEN`.
+        variable: String,
+    },
+    /// A Config file reference left empty: it is, or reads, a secret without a value.
+    NotSetInFile {
+        config: ConfigName,
+        file: ConfigFileName,
+        /// The variable as the file references it, such as `api.TOKEN`.
+        secret: String,
+    },
 }
 
 /// The most characters a Deployment message has.

@@ -1,4 +1,4 @@
-//! Volume runs: a Mirror, Sync, Mirror removal, Move or Release of one Volume,
+//! Volume runs: a Mirror, Sync, Mirror removal, Move, Release or Restore of one Volume,
 //! which Ployz Cloud runs across its Servers. The CLI starts one, reads them back, and with `--wait`
 //! follows one until it ends. Without Cloud there are none: Volumes stay put.
 
@@ -57,6 +57,7 @@ pub(crate) enum VolumeRunKind {
     DeleteMirror,
     Move,
     Release,
+    Restore,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -100,6 +101,9 @@ pub(crate) struct VolumeRunArgs {
     /// Mirror removal: the Volume name typed to confirm losing the last copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) confirmed_name: Option<String>,
+    /// Restore: the Server whose copy becomes the writer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) from: Option<MachineName>,
 }
 
 /// One Volume run as Cloud keeps it.
@@ -141,6 +145,8 @@ pub(crate) struct RunRequest {
     pub(crate) slot: Option<MachineName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) confirm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) from: Option<MachineName>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -289,6 +295,20 @@ pub(super) fn release_command() -> Command {
     .arg(wait_flag())
 }
 
+pub(super) fn restore_command() -> Command {
+    store::scoped(Command::new("restore").about(
+        "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
+    ))
+    .arg(positional("volume", true))
+    .arg(
+        value("from", None)
+            .value_name("SERVER")
+            .required(true)
+            .help("The Server whose copy becomes the writer; it must hold the Volume's only copy"),
+    )
+    .arg(wait_flag())
+}
+
 pub(super) fn runs_command() -> Command {
     store::scoped(Command::new("runs").about("List a Volume's runs, or show one (Ployz Cloud)"))
         .arg(positional("volume", true))
@@ -329,6 +349,7 @@ pub(super) fn mirror(root: &ArgMatches) -> Result<(), Error> {
         full: None,
         slot: None,
         confirm: None,
+        from: None,
     })
 }
 
@@ -348,6 +369,7 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         full: Some(full),
         slot: None,
         confirm: None,
+        from: None,
     })
 }
 
@@ -363,6 +385,7 @@ pub(super) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
         full: None,
         slot: None,
         confirm: None,
+        from: None,
     })
 }
 
@@ -377,6 +400,23 @@ pub(super) fn release(root: &ArgMatches) -> Result<(), Error> {
         full: None,
         slot: None,
         confirm: None,
+        from: None,
+    })
+}
+
+pub(super) fn restore(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = store::volume_name(matches, "volume")?;
+    let from = server_name(matches, "from")?;
+    let started = format!("Restore of Volume {volume} from {from}");
+    request(root, &volume, started, |environment| RunRequest {
+        environment,
+        kind: VolumeRunKind::Restore,
+        to: None,
+        full: None,
+        slot: None,
+        confirm: None,
+        from: Some(from.clone()),
     })
 }
 
@@ -403,6 +443,7 @@ pub(super) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
         full: None,
         slot: Some(slot.clone()),
         confirm: confirm.clone(),
+        from: None,
     })
 }
 
@@ -609,6 +650,9 @@ fn asked(args: &VolumeRunArgs) -> String {
     }
     if args.confirmed_name.is_some() {
         words.push("confirmed".to_owned());
+    }
+    if let Some(from) = &args.from {
+        words.push(format!("from {from}"));
     }
     words.join(", ")
 }

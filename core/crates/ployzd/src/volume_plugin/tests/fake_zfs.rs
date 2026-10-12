@@ -45,6 +45,9 @@ pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let mirror = directory.join("mirror");
     let mirror_fs = directory.join("mirror-fs");
     let readonly_lost = directory.join("readonly-lost");
+    let seed_slot = directory.join("seed-slot");
+    let seed_fs = directory.join("seed-fs");
+    let seed_volume = directory.join("seed-volume");
     let props = directory.join("props");
     let script_body = format!(
         r#"#!/bin/sh
@@ -64,7 +67,12 @@ check_property() {{
 prop() {{
   check_property "$2"
   f='{props}'/"$1/$2"
-  if [ -e "$f" ]; then cat "$f"; else printf '%s\n' "$3"; fi
+  # A write truncates before it fills, so a concurrent read can catch the file empty; no property is.
+  if [ -e "$f" ]; then
+    value=$(cat "$f")
+    while [ -z "$value" ]; do sleep 0.01; value=$(cat "$f"); done
+    printf '%s\n' "$value"
+  else printf '%s\n' "$3"; fi
 }}
 exists() {{
   case "$1" in
@@ -73,10 +81,13 @@ exists() {{
     tank/ployz/data) [ -e '{volume}' ] ;;
     tank/ployz/data/child) [ -e '{descendant}' ] ;;
     tank/ployz/sibling) [ -e '{sibling}' ] ;;
-    tank/ployz-mirror) [ -e '{slot}' ] || [ -e '{mirror_root}' ] || [ -e '{mirror}' ] ;;
+    tank/ployz/seed) [ -e '{seed_volume}' ] ;;
+    tank/ployz-mirror) [ -e '{slot}' ] || [ -e '{mirror_root}' ] || [ -e '{mirror}' ] || [ -e '{seed_slot}' ] ;;
     tank/ployz-mirror/copy|tank/ployz-mirror/copy/fs) [ -e '{slot}' ] ;;
     tank/ployz-mirror/data) [ -e '{mirror}' ] ;;
     tank/ployz-mirror/data/fs) [ -e '{mirror}' ] && [ -e '{mirror_fs}' ] ;;
+    tank/ployz-mirror/seed) [ -e '{seed_slot}' ] ;;
+    tank/ployz-mirror/seed/fs) [ -e '{seed_slot}' ] && [ -e '{seed_fs}' ] ;;
     *) false ;;
   esac
 }}
@@ -109,7 +120,10 @@ case "$*" in
     if [ -e '{sibling}' ]; then
       printf 'tank/ployz/sibling\t1073741824\t0\t0\t/var/lib/ployz-volumes/sibling\tno\toff\n'
     fi
-    if [ -e '{slot}' ] || [ -e '{mirror_root}' ] || [ -e '{mirror}' ]; then
+    if [ -e '{seed_volume}' ]; then
+      printf 'tank/ployz/seed\t%s\t0\t0\t/var/lib/ployz-volumes/seed\tno\t%s\n' "$(prop tank/ployz/seed refquota 1073741824)" "$(prop tank/ployz/seed readonly off)"
+    fi
+    if [ -e '{slot}' ] || [ -e '{mirror_root}' ] || [ -e '{mirror}' ] || [ -e '{seed_slot}' ]; then
       printf 'tank/ployz-mirror\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
     fi
     if [ -e '{slot}' ]; then
@@ -120,6 +134,12 @@ case "$*" in
       printf 'tank/ployz-mirror/data\t%s\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(prop tank/ployz-mirror/data refquota {slot_bound})"
       if [ -e '{mirror_fs}' ]; then
         printf 'tank/ployz-mirror/data/fs\t%s\t0\t0\t/var/lib/ployz-mirror/data/fs\tno\t%s\n' "$(prop tank/ployz-mirror/data/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/data/fs readonly on)"
+      fi
+    fi
+    if [ -e '{seed_slot}' ]; then
+      printf 'tank/ployz-mirror/seed\t%s\t0\t0\t/var/lib/ployz-mirror/seed\tno\ton\n' "$(prop tank/ployz-mirror/seed refquota {slot_bound})"
+      if [ -e '{seed_fs}' ]; then
+        printf 'tank/ployz-mirror/seed/fs\t%s\t0\t0\t/var/lib/ployz-mirror/seed/fs\tno\t%s\n' "$(prop tank/ployz-mirror/seed/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/seed/fs readonly on)"
       fi
     fi
     ;;
@@ -193,6 +213,12 @@ case "$*" in
     mkdir -p '{props}/tank/ployz-mirror/data'
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/data/refquota'
     ;;
+  'create -o canmount=off -o readonly=on -o refquota='*' tank/ployz-mirror/seed')
+    if [ -e '{seed_slot}' ]; then echo "cannot create 'tank/ployz-mirror/seed': dataset already exists" >&2; exit 1; fi
+    touch '{seed_slot}'
+    mkdir -p '{props}/tank/ployz-mirror/seed'
+    printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/seed/refquota'
+    ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
   'unmount tank/ployz/data')
     if [ -e '{props}/busy-mount' ]; then echo 'filesystem is busy' >&2; exit 1; fi
@@ -234,6 +260,32 @@ case "$*" in
     if [ -e '{mirror_fs}' ]; then echo 'filesystem has children' >&2; exit 1; fi
     rm -rf '{mirror}' '{props}/tank/ployz-mirror/data'
     ;;
+  'rename tank/ployz-mirror/seed/fs tank/ployz/seed')
+    require tank/ployz-mirror/seed/fs
+    rm -rf '{props}/tank/ployz/seed'
+    mkdir -p '{props}/tank/ployz/seed'
+    for f in '{props}'/tank/ployz-mirror/seed/fs/*; do
+      [ -f "$f" ] || continue
+      sed 's#^tank/ployz-mirror/seed/fs@#tank/ployz/seed@#' "$f" > '{props}'/tank/ployz/seed/"${{f##*/}}"
+    done
+    rm -rf '{props}/tank/ployz-mirror/seed/fs'
+    rm -f '{seed_fs}'
+    touch '{seed_volume}'
+    ;;
+  'destroy tank/ployz-mirror/seed')
+    require tank/ployz-mirror/seed
+    if [ -e '{seed_fs}' ]; then echo 'filesystem has children' >&2; exit 1; fi
+    rm -rf '{seed_slot}' '{props}/tank/ployz-mirror/seed'
+    ;;
+  'destroy -r tank/ployz-mirror/seed')
+    rm -rf '{seed_slot}' '{seed_fs}' '{props}/tank/ployz-mirror/seed'
+    ;;
+  'send tank/ployz/data@'*)
+    require "$2"
+    f='{props}/tank/ployz/data/snapshots'
+    line=$(grep "^$2	" "$f" 2>/dev/null) || {{ echo "cannot open '$2': snapshot does not exist" >&2; exit 1; }}
+    printf 'snapshot %s %s\n' "${{2#*@}}" "$(printf '%s' "$line" | cut -f2)"
+    ;;
   'destroy -r tank/ployz/data')
     if [ -e '{destroy_fails}' ]; then echo 'dataset is busy' >&2; exit 1; fi
     rm -f '{volume}' '{mounted}'
@@ -251,19 +303,22 @@ case "$*" in
     require tank/ployz-mirror/data/fs
     rm -f '{props}/tank/ployz-mirror/data/fs/receive_resume_token'
     ;;
-  'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/data/fs')
+  'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/data/fs'|'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/seed/fs')
     echo $$ > '{props}/receive-pid'
     if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
-    touch '{mirror_fs}'
-    d='{props}/tank/ployz-mirror/data/fs'
+    case "$8" in
+      tank/ployz-mirror/data/fs) touch '{mirror_fs}' ;;
+      *) touch '{seed_fs}' ;;
+    esac
+    d='{props}'/"$8"
     mkdir -p "$d"
     case "$verb" in
       snapshot)
         rm -f "$d/receive_resume_token"
         count=0; [ ! -e "$d/snapshots" ] || count=$(wc -l < "$d/snapshots")
-        {{ printf 'tank/ployz-mirror/data/fs@%s\t%s\t%s\n' "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
+        {{ printf '%s@%s\t%s\t%s\n' "$8" "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
         mv "$d/snapshots.new" "$d/snapshots"
         # A first receive lands the stream's properties; a lost connection loses them.
         if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
@@ -307,6 +362,9 @@ esac
         mirror = mirror.display(),
         mirror_fs = mirror_fs.display(),
         readonly_lost = readonly_lost.display(),
+        seed_slot = seed_slot.display(),
+        seed_fs = seed_fs.display(),
+        seed_volume = seed_volume.display(),
         slot_bound = SLOT_BOUND_BYTES,
         props = props.display(),
     );
