@@ -11,6 +11,9 @@ type Properties = Record<string, string | number | boolean | null>;
 // A refused or cancelled call still finishes without throwing, so its outcome says it failed.
 const refused = Schema.is(Schema.Struct({ ok: Schema.Literal(false) }));
 
+// The model names the tool it calls, so a name outside the catalog could be the member's own words.
+const toolLabel = (ctx: ChatMiddlewareContext, name: string) => ctx.toolNames?.includes(name) === true ? name : "unknown_tool";
+
 /** A span for each turn, model call and tool call on Cloud's tracer, without prompt or reply text. */
 export const agentTracing = otelMiddleware({ tracer: trace.getTracer("ployz-agent") });
 
@@ -43,8 +46,8 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
       spanId = messageId;
       toolsCalled = [];
     },
-    onChunk: (_ctx, chunk) => {
-      if (chunk.type === "TOOL_CALL_START") toolsCalled.push(chunk.toolCallName);
+    onChunk: (ctx, chunk) => {
+      if (chunk.type === "TOOL_CALL_START") toolsCalled.push(toolLabel(ctx, chunk.toolCallName));
     },
     onUsage: (ctx, usage) => {
       const cacheRead = usage.promptTokensDetails?.cachedTokens ?? 0;
@@ -76,7 +79,7 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
         $ai_session_id: ctx.threadId,
         $ai_span_id: toolCallId,
         $ai_parent_id: spanId ?? ctx.runId,
-        $ai_span_name: toolName,
+        $ai_span_name: toolLabel(ctx, toolName),
         $ai_latency: duration / 1000,
         $ai_is_error: failed,
       });

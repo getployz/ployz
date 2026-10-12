@@ -1305,6 +1305,24 @@ it.live("a refused tool call shows in PostHog as an error", () =>
     expect(captured.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_is_error: true } });
   }));
 
+it.live("a tool name the catalog does not have reaches PostHog as unknown_tool, not as the model wrote it", () =>
+  Effect.gen(function* () {
+    const { provided, caller } = yield* sidebar({ removeWeb: false });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "my_password_is_hunter2", input: {} }] }, { text: "Done." }]);
+    yield* provided(agentChat(caller, { messages: [{ role: "user", content: "hello" }], threadId: THREAD, runId: "run-unknown" }, model))
+      .pipe(Effect.provideService(PostHog, sink), Effect.flatMap((stream) => Effect.promise(async () => { for await (const _ of stream); })));
+
+    expect(JSON.stringify(captured)).not.toMatch(/hunter2/);
+    expect(captured.find(({ event }) => event === "$ai_generation")?.properties).toMatchObject({ $ai_tools_called: "unknown_tool" });
+  }));
+
 it.live("a reply stopped mid-stream still closes its trace in PostHog", () =>
   Effect.gen(function* () {
     const { provided, caller } = yield* sidebar({ removeWeb: false });
