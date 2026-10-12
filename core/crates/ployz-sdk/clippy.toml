@@ -1,0 +1,9 @@
+disallowed-methods = [
+    { path = "ployz_core::decode::decode", reason = "decode a JS value with crate::from_js: napi hands whole numbers above u32::MAX over as floats" },
+    { path = "serde_json::from_value", reason = "decode a JS value with crate::from_js: napi hands whole numbers above u32::MAX over as floats" },
+    { path = "ployz_store::Query::decode", reason = "pass whole_numbers(value): napi hands whole numbers above u32::MAX over as floats" },
+    { path = "ployz_store::Command::decode", reason = "pass whole_numbers(value): napi hands whole numbers above u32::MAX over as floats" },
+    { path = "ployz_store::tools::start", reason = "pass whole_numbers(value): napi hands whole numbers above u32::MAX over as floats" },
+    { path = "ployz::sdk::github_report", reason = "pass whole_numbers(value): napi hands whole numbers above u32::MAX over as floats" },
+    { path = "ployz::sdk::Session::volume_switch", reason = "pass whole_numbers(value): napi hands whole numbers above u32::MAX over as floats" },
+]

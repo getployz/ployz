@@ -88,6 +88,10 @@ impl ConfigStore {
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "whole numbers first, as `from_js`"
+        )]
         let query = ployz_store::Query::decode(whole_numbers(query))
             .map_err(|error| refused("Expected a Config Store query", &error))?;
         let trusted = evidence(trusted)?;
@@ -110,6 +114,10 @@ impl ConfigStore {
         principal: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, principal)?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "whole numbers first, as `from_js`"
+        )]
         let command = ployz_store::Command::decode(whole_numbers(command))
             .map_err(|error| refused("Expected a Config Store command", &error))?;
         let trusted = evidence(trusted)?;
@@ -431,7 +439,18 @@ impl ConfigStore {
         report: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
-        to_json(ployz::sdk::github_report(Arc::clone(&self.store), build, claims, report).await)
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "whole numbers first, as `from_js`"
+        )]
+        let reported = ployz::sdk::github_report(
+            Arc::clone(&self.store),
+            build,
+            claims,
+            whole_numbers(report),
+        )
+        .await;
+        to_json(reported)
     }
 
     /// End a build whose run reported its end, completed or ran out of time:
@@ -484,7 +503,7 @@ fn repository(repository_id: i64) -> Result<u64> {
 /// Decode what JavaScript sent, its whole numbers as integers first; `refusal` names
 /// what was expected.
 fn decode<T: DeserializeOwned>(value: serde_json::Value, refusal: &str) -> Result<T> {
-    ployz_core::decode::decode(&whole_numbers(value)).map_err(|error| refused(refusal, &error))
+    crate::from_js(value).map_err(|error| refused(refusal, &error))
 }
 
 /// `refusal`, then where and why the input did not fit, never a value it holds.
