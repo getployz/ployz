@@ -33,8 +33,9 @@ the result is in, and the status line moves with it.
   without one. At the path, any answer below 400 counts as up. At `/`, any answer below 500
   counts, so a 404 still shows the service is up. A service with no public address shows
   **Not checked** and **Add domain**.
-- **A 4xx points at the path.** If the check has never passed and gets a 4xx, **Fix path** opens
-  the health check setting.
+- **A 4xx points at the path.** If the check has never passed and your app answers its health
+  check path with a 4xx, the **Monitoring** tab shows the **Healthcheck path** field with what
+  the app answered. Change it there, then deploy. The check uses the new path from then on.
 - **A failed deployment isn't checked at once.** The regular check still runs, against what
   that deployment did apply.
 - **Uptime counts every check.** The ones after a deploy and from **Check now** count toward the
