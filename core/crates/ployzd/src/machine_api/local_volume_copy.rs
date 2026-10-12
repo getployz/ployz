@@ -25,12 +25,24 @@ impl MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SetVolumeCopy>(request)?;
-        let _guard = self.switch_mutation.lock().await;
+        let guard = std::sync::Arc::clone(&self.switch_mutation)
+            .lock_owned()
+            .await;
         if let Err(error) = self.require_joined() {
             return respond(error);
         }
         crate::faults::apply("SetVolumeCopy").await;
-        match self.set_copy_admitted(request).await {
+        // Detached with the switch guard, so a caller that hangs up mid-drain does not
+        // free the next request to plan against a cut still running.
+        let service = self.clone();
+        let admitted = tokio::spawn(async move {
+            let _guard = guard;
+            service.set_copy_admitted(request).await
+        })
+        .await
+        .map_err(LocalMachineError::from)
+        .and_then(|copy| copy);
+        match admitted {
             Ok(copy) => respond(SetVolumeCopyReply { copy }),
             Err(error) => local_error(error),
         }

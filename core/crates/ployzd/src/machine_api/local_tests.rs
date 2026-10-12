@@ -1820,6 +1820,49 @@ mod set_volume_copy {
     }
 
     #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn an_undo_sent_after_the_cut_caller_hung_up_waits_for_the_cut_then_refuses() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-hangup").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, Some(snapshot("w-1-1", 7))));
+        plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 8))));
+        plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("w-1-1", 7))));
+        let replies = plugin.replies.clone();
+        plugin.on(CUT_ROUTE, move || {
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 8))));
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let draining = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":400}});
+
+        let hung_up = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            set_copy(&service, draining),
+        )
+        .await;
+        assert!(hung_up.is_err(), "the cut finished inside its drain: {hung_up:?}");
+        let undo = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+            "want":{"kind":"writer", "at":"7", "epoch":1,
+                "start":{"kind":"kept", "container_id":holder.to_string()}}});
+        let error = refusal(&set_copy(&service, undo).await);
+
+        assert_eq!(error.details["reason"], json!("mismatch"), "{error:?}");
+        assert_eq!(error.details["copy"], slot(Some(snapshot("f-1", 8)))["Ok"]);
+        assert_eq!(holder_status(&fake), vec![json!("exited")]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_cut_whose_stop_fails_leaves_the_writer_untouched() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-stop").await;
         fake.refuse_stop
