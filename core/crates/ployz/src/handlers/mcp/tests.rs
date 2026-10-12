@@ -1698,6 +1698,8 @@ mod published {
         run: (&'static str, Value),
         down: bool,
         slow: Duration,
+        /// The revision replies name, when it is not the manifest's own.
+        named: Option<&'static str>,
     }
 
     fn publisher() -> Arc<Mutex<Publisher>> {
@@ -1706,6 +1708,7 @@ mod published {
             run: ("200 OK", json!({ "output": {} })),
             down: false,
             slow: Duration::ZERO,
+            named: None,
         }))
     }
 
@@ -1719,7 +1722,10 @@ mod published {
                 let seen = incoming(&stream);
                 let (status, reply, revision, slow) = {
                     let state = state.lock().unwrap();
-                    let revision = state.manifest["revision"].as_str().unwrap().to_owned();
+                    let revision = state.named.map_or_else(
+                        || state.manifest["revision"].as_str().unwrap().to_owned(),
+                        str::to_owned,
+                    );
                     let (status, reply) = if state.down {
                         ("503 Service Unavailable", "down".to_owned())
                     } else if seen.path == "/api/cli/manifest" {
@@ -1994,6 +2000,40 @@ mod published {
             assert_eq!(done["id"], id, "{done}");
         }
         assert_eq!(manifest_reads(&fake), 2);
+    }
+
+    #[tokio::test]
+    async fn a_revision_the_reread_does_not_reach_is_not_reread_again() {
+        let publisher = publisher();
+        let fake = fake_publisher(publisher.clone());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing().into_iter().next().unwrap();
+        {
+            let mut state = publisher.lock().unwrap();
+            state.manifest["revision"] = json!("behind");
+            state.named = Some("ahead");
+        }
+        let mut frames = Vec::new();
+        for id in [2, 3] {
+            client
+                .send(&request(
+                    id,
+                    "tools/call",
+                    json!({ "name": name(&entry), "arguments": arguments(&entry) }),
+                ))
+                .await;
+            loop {
+                let frame = client.reply().await;
+                let answered = frame["id"] == id;
+                frames.push(frame);
+                if answered {
+                    break;
+                }
+            }
+        }
+        assert_eq!(manifest_reads(&fake), 2, "{frames:?}");
     }
 
     #[tokio::test]

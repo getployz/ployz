@@ -432,7 +432,7 @@ impl Server {
     }
 
     /// Reread the published commands when `revision` is not the one held, and tell the
-    /// host the list changed. A revision whose reread failed is tried once.
+    /// host the list changed. A revision the reread failed or did not reach is tried once.
     async fn follow(&self, revision: Option<String>, context: &RequestContext<RoleServer>) {
         let (Some(revision), Some(setup)) = (revision, &self.setup) else {
             return;
@@ -459,6 +459,9 @@ impl Server {
             unread().insert(revision);
             return;
         };
+        if refreshed.revision != revision {
+            unread().insert(revision);
+        }
         *self.held() = Some(refreshed);
         let _ = context.peer.notify_tool_list_changed().await;
     }
