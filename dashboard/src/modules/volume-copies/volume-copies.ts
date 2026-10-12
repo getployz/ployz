@@ -84,9 +84,10 @@ export function lastAt(copy: VolumeCopy): Date | null {
   }
 }
 
+/** A mirror that has never refreshed protects nothing yet, so it reads as behind. */
 export function isStale(copy: VolumeCopy, now: Date): boolean {
-  return copy.kind === "mirror" && copy.staged !== "new" && copy.refreshedAt !== null
-    && now.getTime() - copy.refreshedAt.getTime() > STALE_AFTER_MS;
+  return copy.kind === "mirror" && copy.staged !== "new"
+    && (copy.refreshedAt === null || now.getTime() - copy.refreshedAt.getTime() > STALE_AFTER_MS);
 }
 
 export const hangingCopies = (copies: VolumeCopies): readonly (MirrorCopy | OffsiteCopy)[] =>
@@ -106,8 +107,8 @@ export function safetyLine(copies: VolumeCopies, now: Date): SafetyLine {
     return { tone: "warn", words: "No copies", detail: snapshots === null ? null : `${count(snapshots.length, "snapshot")}${on}` };
   }
   const mirror = places.find((copy) => copy.kind === "mirror");
-  if (mirror !== undefined && isStale(mirror, now) && mirror.refreshedAt !== null) {
-    return { tone: "warn", words: "Mirror behind", detail: age(mirror.refreshedAt, now) };
+  if (mirror !== undefined && isStale(mirror, now)) {
+    return { tone: "warn", words: "Mirror behind", detail: mirror.refreshedAt === null ? null : age(mirror.refreshedAt, now) };
   }
   const words = [count(places.length, "copy", "copies"), snapshots === null ? null : count(snapshots.length, "snapshot")];
   return { tone: "ok", words: words.filter(Boolean).join(" · "), detail: null };

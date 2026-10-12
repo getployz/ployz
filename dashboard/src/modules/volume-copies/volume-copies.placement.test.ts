@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
-import { member, run } from "#/modules/volume-run/volume-run.test-fixture";
+import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
 import { copiesFromPlacement } from "./volume-copies.placement";
 import { cardLine, safetyLine, traySpeech } from "./volume-copies";
 
@@ -74,6 +74,21 @@ describe("copiesFromPlacement", () => {
   it("marks a silent mirror skipped with no age when no round ever ended done", () => {
     const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "unanswered")]);
     expect(model.elsewhere[0]).toMatchObject({ kind: "mirror", skipped: true, refreshedAt: null });
+  });
+
+  it("marks only the mirror Refreshing while a refresh runs, leaving an old copy free", () => {
+    const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")], run("sync", { full: false }, "running"));
+    expect(summary(model)).toEqual(["mirror web-2 - Refreshing", "old web-3 - -"]);
+  });
+
+  it("reads a recorded mirror that never refreshed as behind, not as protection", () => {
+    const now = new Date("2026-10-09T03:02:00.000Z");
+    const fresh = { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: null } } };
+    const model = copies(row(["web-2"]), [member("web-1", "writer"), fresh]);
+    const [mirror] = model.elsewhere;
+    expect(mirror).toMatchObject({ kind: "mirror", refreshedAt: null });
+    expect(safetyLine(model, now)).toEqual({ tone: "warn", words: "Mirror behind", detail: null });
+    expect(mirror && cardLine(mirror, now).stale).toBe(true);
   });
 
   it("has no snapshots until the Servers serve them", () => {
