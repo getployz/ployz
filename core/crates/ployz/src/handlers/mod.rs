@@ -144,11 +144,9 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             &config_path(leaf_matches(matches))?,
             std::env::var(crate::cli::env::CLOUD_URL).ok(),
         );
-        if let Some(published) = setup
-            .cached()
-            .filter(|published| published.find(&path).is_some())
+        if let Some(cached) = setup.cached()
+            && let Some(published) = cached.find(&path)
         {
-            let published = published.find(&path).expect("checked");
             if context_above_leaf(matches) {
                 return Err(Error::usage(format!("ployz {path} doesn't use a context")));
             }

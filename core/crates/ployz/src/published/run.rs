@@ -100,14 +100,14 @@ fn refused(error: StoreCallError, command: &PublishedCommand, setup: &Setup) -> 
             })
             .hint(Hint::Inspect("ployz --help".to_owned()))
         }
-        StoreCallError::Refused(refusal) if crate::approval::Asked::of(&refusal).is_some() => {
-            let asked = crate::approval::Asked::of(&refusal).expect("checked");
-            let retry = format!("ployz {} --approval {}", command.path(), asked.id);
-            Failure::from(refusal).hint(Hint::Retry(retry))
-        }
-        error @ (StoreCallError::Refused(_)
-        | StoreCallError::Cloud(_)
-        | StoreCallError::Stopped(_)) => error.into(),
+        StoreCallError::Refused(refusal) => match crate::approval::Asked::of(&refusal) {
+            Some(asked) => {
+                let retry = format!("ployz {} --approval {}", command.path(), asked.id);
+                Failure::from(refusal).hint(Hint::Retry(retry))
+            }
+            None => StoreCallError::Refused(refusal).into(),
+        },
+        error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_)) => error.into(),
     }
 }
 
