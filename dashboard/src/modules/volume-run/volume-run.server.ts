@@ -506,9 +506,19 @@ export const holderVerb = Effect.fn("VolumeRun.holderVerb")(function* (
   verb: "stop" | "start",
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
+  const { drizzle } = yield* Database;
+  const stopped = volumeRun.stoppedHolders;
+  // Recorded before the stop is sent, so a run cancelled mid-stop still starts it again.
+  if (verb === "stop") {
+    yield* drizzle.update(volumeRun)
+      .set({ stoppedHolders: sql`case when ${container} = any(${stopped}) then ${stopped} else array_append(${stopped}, ${container}) end` })
+      .where(eq(volumeRun.id, ctx.id));
+  }
   const session = yield* openSession(ctx.organizationId);
   const sent = verb === "stop" ? session.stopContainer(writer.id, container).pipe(Effect.as("stopped" as const)) : session.startContainer(writer.id, container);
-  return yield* sent.pipe(Effect.mapError((error) => new Error(`${verb} ${container} on ${writer.name}: ${sdkFailureMessage(error, [writer])}`)));
+  const answer = yield* sent.pipe(Effect.mapError((error) => new Error(`${verb} ${container} on ${writer.name}: ${sdkFailureMessage(error, [writer])}`)));
+  if (verb === "start") yield* drizzle.update(volumeRun).set({ stoppedHolders: sql`array_remove(${stopped}, ${container})` }).where(eq(volumeRun.id, ctx.id));
+  return answer;
 }, Effect.scoped);
 
 const decodeSnapshotRefusal = Schema.decodeUnknownOption(Schema.Struct({
@@ -700,22 +710,23 @@ export const closeVolumeRun = Effect.fn("VolumeRun.close")(function* (
       : ended("failed", end.error.trim().length > 0 ? end.error : "the run failed");
   const rows = yield* drizzle.update(volumeRun).set(closing)
     .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")))
-    .returning({ kind: volumeRun.kind, organizationId: volumeRun.organizationId, dockerVolume: volumeRun.dockerVolume });
+    .returning({ kind: volumeRun.kind, organizationId: volumeRun.organizationId, dockerVolume: volumeRun.dockerVolume, stoppedHolders: volumeRun.stoppedHolders });
   for (const row of rows) {
-    if (row.kind === "restore_snapshot") yield* startStoppedHolders(row.organizationId, row.dockerVolume);
+    if (row.kind === "restore_snapshot" && row.stoppedHolders.length > 0) yield* startStoppedHolders(row.organizationId, row.dockerVolume, row.stoppedHolders);
   }
   return rows.length;
 });
 
 /**
- * A snapshot restore stops the Service for its swap, so one that ends between Stop and Start starts it again here.
- * Best effort: the run is already closed, and a Service left stopped shows as stopped.
+ * A snapshot restore stops the Service for its swap, so one that ends between Stop and Start starts again here the
+ * containers it stopped, and only those. Best effort: the run is already closed, and a Service left stopped shows as stopped.
  */
-const startStoppedHolders = (organizationId: string, dockerVolume: string) => Effect.gen(function* () {
+const startStoppedHolders = (organizationId: string, dockerVolume: string, holders: readonly string[]) => Effect.gen(function* () {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   const stopped = frame.containers.filter((container) =>
     container.kind === "service_container"
+    && holders.includes(container.container_id)
     && container.runtime.state !== "running"
     && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
   for (const container of stopped) yield* session.startContainer(container.machine_id, container.container_id);

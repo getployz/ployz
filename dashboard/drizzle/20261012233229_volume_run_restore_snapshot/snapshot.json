@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "7e1c163d-8c81-4e54-9a28-8f8ecbcb4a91",
+  "id": "4909b764-4a4b-4803-8989-b75b6f2911ae",
   "prevIds": [
-    "3fc74f63-2964-47ef-a7ea-5147ed7649ef"
+    "54f05ff7-8e13-430b-bf35-bb2ab6c4e2ab"
   ],
   "ddl": [
     {
@@ -177,6 +177,12 @@
     {
       "isRlsEnabled": false,
       "name": "volume_run",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "failed_restore",
       "entityType": "tables",
       "schema": "public"
     },
@@ -3682,6 +3688,19 @@
     {
       "type": "text",
       "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "stopped_holders",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,
@@ -3756,6 +3775,45 @@
       "entityType": "columns",
       "schema": "public",
       "table": "volume_run"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "volume_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "failed_restore"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "failed_restore"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "failed_restore"
     },
     {
       "type": "text",
@@ -7910,6 +7968,23 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "failed_restore_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "failed_restore"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "volume_placement_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -8558,6 +8633,16 @@
       "name": "volume_run_pkey",
       "schema": "public",
       "table": "volume_run",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "volume_id"
+      ],
+      "nameExplicit": false,
+      "name": "failed_restore_pkey",
+      "schema": "public",
+      "table": "failed_restore",
       "entityType": "pks"
     },
     {

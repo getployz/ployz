@@ -1,4 +1,4 @@
-import type { ConfigStore, CopyObservation, LeaseRecord, MachineId, ReceiveView, Snapshot, SwitchReply, VolumeCopy, VolumeCopyView, VolumeSnapshots, VolumeSwitchRequest } from "@ployz/sdk";
+import type { ConfigStore, ContainerId, CopyObservation, LeaseRecord, MachineId, ReceiveView, Snapshot, SwitchReply, VolumeCopy, VolumeCopyView, VolumeSnapshots, VolumeSwitchRequest } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
@@ -15,6 +15,7 @@ import { createCancelVolumeRun, createCloseFinishedVolumeRun, createCloseStaleVo
 import {
   closeStaleVolumeRuns,
   closeVolumeRun,
+  holderVerb,
   orphanSlotNames,
   requestVolumeRun,
   requireOwner,
@@ -1139,20 +1140,43 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data moved since its snapshots were listed; restore again" }]);
     });
 
+    const cancel = () => new InngestTestEngine({
+      function: createCancelVolumeRun(new Inngest({ id: "test" }), runEffect),
+      events: [{ name: "inngest/function.cancelled", data: { function_id: "test-run-volume", run_id: "run-1" } }],
+    }).execute();
+
     it("a restore cancelled after Stop starts the Service again", async () => {
       const run = await requested(restoring(null));
       await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
-      stopped.add("web-fsn-1");
+      await runEffect(holderVerb(context(run.id), "run-1", { id: idOf("fsn-1"), name: "fsn-1" }, "web-fsn-1" as ContainerId, "stop"));
 
-      const cancelled = await new InngestTestEngine({
-        function: createCancelVolumeRun(new Inngest({ id: "test" }), runEffect),
-        events: [{ name: "inngest/function.cancelled", data: { function_id: "test-run-volume", run_id: "run-1" } }],
-      }).execute();
+      const cancelled = await cancel();
 
       expect(cancelled.result).toEqual({ closed: 1 });
       expect(verbs.at(-1)).toBe("start_container@fsn-1(web-fsn-1)");
       expect(stopped.size).toBe(0);
       expect(await rows()).toMatchObject([{ state: "cancelled" }]);
+    });
+
+    it("a restore cancelled before Stop leaves a container the user stopped stopped", async () => {
+      const run = await requested(restoring(null));
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
+      stopped.add("web-fsn-1");
+
+      const cancelled = await cancel();
+
+      expect(cancelled.result).toEqual({ closed: 1 });
+      expect(verbs).not.toContain("start_container@fsn-1(web-fsn-1)");
+      expect([...stopped]).toEqual(["web-fsn-1"]);
+      expect(await rows()).toMatchObject([{ state: "cancelled" }]);
+    });
+
+    it("a finished restore keeps no container to start again", async () => {
+      const run = await requested(restoring(null));
+
+      expect((await execute(run.id)).error).toBeUndefined();
+      const { rows: [row] } = await harness.pool.query(`select stopped_holders from volume_run where id = $1`, [run.id]);
+      expect(row).toEqual({ stopped_holders: [] });
     });
 
     it("a Service that starts unhealthy after the swap fails the run and says so", async () => {
