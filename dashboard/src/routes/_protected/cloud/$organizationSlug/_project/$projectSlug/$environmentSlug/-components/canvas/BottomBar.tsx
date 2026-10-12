@@ -95,16 +95,11 @@ export function BottomBar({
   const hasChanges = totalChanges > 0 || canPublish;
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
-  const [watched, setWatched] = useState<ReadonlySet<string>>(new Set());
+  // Seen in flight here: how a Deployment ends shows only when this bar watched it run.
+  const watched = useRef(new Set<string>());
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
-  // Watched: seen in flight here, and still listed. One `ended` no longer lists is past showing, so it goes.
-  useEffect(() => {
-    const listed = new Set([...active, ...ended].map((deployment) => deployment.id));
-    const next = new Set([...active.map((deployment) => deployment.id), ...[...watched].filter((id) => listed.has(id))]);
-    if (next.size === watched.size && [...next].every((id) => watched.has(id))) return;
-    setWatched(next);
-  }, [active, ended, watched]);
-  const latest = ended.find((deployment) => watched.has(deployment.id));
+  useEffect(() => { for (const deployment of active) watched.current.add(deployment.id); }, [active]);
+  const latest = ended.find((deployment) => watched.current.has(deployment.id));
   const outcome = shown || latest === undefined || dismissed.has(latest.id) || latest.id === viewedId ? undefined : latest;
   const dismiss = (id: string) => setDismissed((ids) => new Set([...ids, id]));
   const deployed = outcome?.status === "applied" ? outcome.id : null;
@@ -216,7 +211,6 @@ export function BottomBar({
   );
 }
 
-/** A Deployment, the CLI's or this dashboard's. */
 function AttemptState({ deployment, storage, onDismiss }: { deployment: DeploymentSummary; storage: string | null; onDismiss?: () => void }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const deploys = deploysLabel(deployment);
