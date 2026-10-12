@@ -524,6 +524,35 @@ async fn a_refused_tail_names_the_capability_and_the_server() {
 }
 
 #[tokio::test]
+async fn a_refused_exec_names_the_capability_and_the_server() {
+    let service = DiscoveryService::new(test_description());
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(listing_container(
+            'a',
+            'a',
+            "web",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ));
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["exec", "-T", "app/web", "true"]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("one needs a newer Ployz. It cannot serve ployz.container.exec.v1."),
+        "{stderr}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_refused_tail_after_history_ends_the_json_stream_partial() {
     let mut service = DiscoveryService::new(test_description());
     service

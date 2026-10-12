@@ -413,7 +413,10 @@ pub async fn open_exec(
     container_selector: Option<&ContainerSelector>,
     options: ExecOptions,
 ) -> Result<ExecSession, OperatorError> {
-    let live = client.live_services(EnvironmentValues::Redacted).await?;
+    let machines = client.machines().await?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
     let services = live.services();
     let service = select_service(&services, service_selector)?;
     let container = select_exec_container(service, container_selector)?.as_observation();
@@ -434,9 +437,18 @@ pub async fn open_exec(
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )
         .await
-        .map_err(|source| OperatorError::StartExec {
-            container: container.display_name.clone(),
-            source,
+        .map_err(|source| {
+            let server = machines
+                .iter()
+                .find(|machine| machine.machine.id == machine_id)
+                .map_or_else(
+                    || machine_id.to_string(),
+                    |machine| machine.machine.name.to_string(),
+                );
+            OperatorError::StartExec {
+                container: container.display_name.clone(),
+                source: source.addressed_as(&server),
+            }
         })?;
     Ok(ExecSession {
         input: sender,
