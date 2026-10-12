@@ -46,12 +46,56 @@ pub fn run() -> Result<(), Error> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let before_parse = crate::ui::Mode::resolve(crate::ui::Surroundings::of_process(false));
     crate::ui::Color::requested(&command, &args).apply(before_parse);
-    let matches = command.clone().try_get_matches().map_err(usage_failure)?;
+    let matches = match command.clone().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => {
+            // A word the tree lacks may be a command Cloud published since the
+            // cache was written, or one never cached: one refresh, then parse again.
+            let Some(published) = published_after_miss(&error) else {
+                return Err(usage_failure(error));
+            };
+            command = crate::published::attach(crate::cli::compiled(), &published);
+            command.clone().try_get_matches().map_err(usage_failure)?
+        }
+    };
     let color = matches
         .get_one::<String>("color")
         .map_or("", String::as_str);
     crate::ui::init(matches.get_flag("json"), crate::ui::Color::named(color));
-    dispatch(&matches, &mut command)
+    let result = dispatch(&matches, &mut command);
+    follow_cloud_revision();
+    result
+}
+
+/// Every `/api/cli` reply names Cloud's manifest revision. One the cache lacks means
+/// the next `--help` would be stale, so fetch it now, after the command's own output.
+fn follow_cloud_revision() {
+    let Some(seen) = crate::cloud_account::revision_seen() else {
+        return;
+    };
+    let setup = crate::published::Setup::from_env();
+    if setup
+        .cached()
+        .is_some_and(|published| published.revision == seen)
+    {
+        return;
+    }
+    let _ = setup.refresh_now();
+}
+
+fn published_after_miss(error: &clap::Error) -> Option<crate::published::Published> {
+    use clap::error::ErrorKind;
+    if !matches!(
+        error.kind(),
+        ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument
+    ) {
+        return None;
+    }
+    let setup = crate::published::Setup::from_env();
+    if !setup.configured {
+        return None;
+    }
+    setup.refresh_now().ok()
 }
 
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
@@ -93,9 +137,23 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         return Ok(());
     }
     let path = command_path(matches);
-    // Every leaf has a handler, so a missing one means a group without its
-    // subcommand: its help, as a bare `ployz` shows the top level's.
+    // Every compiled leaf has a handler, so a missing one is a published leaf or a
+    // group without its subcommand: its help, as a bare `ployz` shows the top level's.
     let Some(runnable) = handler_for(&path) else {
+        let setup = crate::published::Setup::beside(
+            &config_path(leaf_matches(matches))?,
+            std::env::var(crate::cli::env::CLOUD_URL).ok(),
+        );
+        if let Some(published) = setup
+            .cached()
+            .filter(|published| published.find(&path).is_some())
+        {
+            let published = published.find(&path).expect("checked");
+            if context_above_leaf(matches) {
+                return Err(Error::usage(format!("ployz {path} doesn't use a context")));
+            }
+            return crate::published::run(matches, published, &setup);
+        }
         if matches.get_flag("json") {
             return Err(Error::usage(format!("ployz {path} requires a subcommand")));
         }

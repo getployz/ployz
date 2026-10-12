@@ -4,9 +4,11 @@
 //! its name when a published one collides.
 
 mod graft;
+mod run;
 mod wire;
 
 pub(crate) use graft::attach;
+pub(crate) use run::run;
 
 use std::collections::BTreeSet;
 use std::io;
@@ -27,7 +29,6 @@ use crate::cloud_login::{self, CredentialStore, DEFAULT_CLOUD, LoginError};
 pub(crate) struct Published {
     pub(crate) commands: Vec<PublishedCommand>,
     pub(crate) revision: String,
-    pub(crate) cloud: String,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +109,8 @@ pub(crate) enum PublishError {
         #[source]
         source: io::Error,
     },
+    #[error("could not start a runtime")]
+    Runtime(#[source] io::Error),
     /// Cloud answered `unknown_command`: the entry is gone from the manifest.
     #[error("Ployz Cloud no longer has the command ployz {path}")]
     Gone { path: String },
@@ -123,7 +126,9 @@ impl PublishError {
             Self::Unavailable(_) => RpcErrorCode::Unavailable,
             Self::Refused(error) => error.code.clone(),
             Self::Cloud(error) => crate::failure::login_code(error),
-            Self::Malformed { .. } | Self::Cache { .. } => RpcErrorCode::Internal,
+            Self::Malformed { .. } | Self::Cache { .. } | Self::Runtime(_) => {
+                RpcErrorCode::Internal
+            }
             Self::Gone { .. } => RpcErrorCode::NotFound,
             Self::NeedsTerminal { .. } => RpcErrorCode::ConfirmationRequired,
         }
@@ -134,6 +139,10 @@ impl PublishError {
 #[derive(Debug, Clone)]
 pub(crate) struct Setup {
     pub(crate) cloud: String,
+    /// Whether anything names a Cloud: `PLOYZ_CLOUD_URL`, `PLOYZ_TOKEN`, or a sign-in.
+    /// Without one, a command line that misses never costs a network round trip.
+    pub(crate) configured: bool,
+    config: PathBuf,
     dir: PathBuf,
 }
 
@@ -146,14 +155,48 @@ const FEATURE_UNAVAILABLE: &str = "feature_unavailable";
 impl Setup {
     /// `PLOYZ_CLOUD_URL`, else the signed-in Cloud beside `config`, else the default.
     pub(crate) fn beside(config: &Path, cloud: Option<String>) -> Self {
-        let cloud = cloud
+        let named = cloud
             .filter(|cloud| !cloud.trim().is_empty())
-            .or_else(|| CredentialStore::beside(config).cloud().ok().flatten())
-            .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
+            .or_else(|| CredentialStore::beside(config).cloud().ok().flatten());
+        let configured = named.is_some()
+            || std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+        let cloud = named.unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
         Self {
             cloud: crate::cloud_enroll::cloud_origin(&cloud),
+            configured,
+            config: config.to_path_buf(),
             dir: config.with_file_name("published"),
         }
+    }
+
+    /// The credential for the Cloud, if the process has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a sign-in that exists but cannot be used; signed out is `None`.
+    pub(crate) async fn credential(&self) -> Result<Option<Credential>, LoginError> {
+        match cloud_account::from_env(&CredentialStore::beside(&self.config)).await {
+            Ok(credential) => Ok(Some(credential)),
+            Err(LoginError::SignedOut) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Refresh on a runtime of its own, for the parse path that has none yet. Fails
+    /// are the caller's to ignore: the cache, or the compiled tree, still answers.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Setup::refresh`] does, or a credential that cannot be used.
+    pub(crate) fn refresh_now(&self) -> Result<Published, PublishError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(PublishError::Runtime)?;
+        runtime.block_on(async {
+            let credential = self.credential().await?;
+            self.refresh(credential.as_ref()).await
+        })
     }
 
     /// The setup the process environment names, as `cli::command()` reads it before
@@ -179,7 +222,7 @@ impl Setup {
     pub(crate) fn cached(&self) -> Option<Published> {
         let bytes = std::fs::read(self.path()).ok()?;
         let cached: wire::Cached = serde_json::from_slice(&bytes).ok()?;
-        (cached.cloud == self.cloud).then(|| Published::from_wire(&self.cloud, cached.manifest))
+        (cached.cloud == self.cloud).then(|| Published::from_wire(cached.manifest))
     }
 
     fn keep(&self, manifest: &wire::Manifest) -> Result<(), PublishError> {
@@ -295,7 +338,7 @@ impl Setup {
             });
         }
         self.keep(&manifest)?;
-        Ok(Published::from_wire(&self.cloud, manifest))
+        Ok(Published::from_wire(manifest))
     }
 }
 
@@ -304,16 +347,13 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 impl Published {
-    /// The manifest from JSON text, as a test or the cache holds it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the JSON decoding error.
-    pub(crate) fn parse(cloud: &str, json: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(json).map(|manifest| Self::from_wire(cloud, manifest))
+    /// The manifest from JSON text, as a test holds it.
+    #[cfg(test)]
+    pub(crate) fn parse(json: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(json).map(Self::from_wire)
     }
 
-    fn from_wire(cloud: &str, manifest: wire::Manifest) -> Self {
+    fn from_wire(manifest: wire::Manifest) -> Self {
         let compiled: BTreeSet<&str> = ployz_store::tools::catalog()
             .iter()
             .map(|def| def.name)
@@ -329,7 +369,6 @@ impl Published {
         Self {
             commands,
             revision: manifest.revision,
-            cloud: cloud.to_owned(),
         }
     }
 
@@ -349,7 +388,10 @@ impl PublishedCommand {
     }
 
     fn from_wire(entry: wire::Entry) -> Option<Self> {
-        if !tool_name(&entry.name) || entry.path.is_empty() || !entry.path.iter().all(noun) {
+        if !tool_name(&entry.name)
+            || entry.path.is_empty()
+            || !entry.path.iter().all(|segment| noun(segment))
+        {
             return None;
         }
         let args = args(&entry.input, &entry.positional)?;
@@ -386,7 +428,7 @@ fn tool_name(name: &str) -> bool {
         && chars.all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '_')
 }
 
-fn noun(segment: &String) -> bool {
+fn noun(segment: &str) -> bool {
     let mut chars = segment.chars();
     chars.next().is_some_and(|first| first.is_ascii_lowercase())
         && chars.all(|char| char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-')

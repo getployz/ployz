@@ -83,7 +83,7 @@ impl From<&String> for Cell {
 /// Rows under an UPPERCASE header, and the sentence that stands in for no rows.
 #[derive(Debug)]
 pub struct Table {
-    header: Vec<&'static str>,
+    header: Vec<Cow<'static, str>>,
     rows: Vec<Vec<Cell>>,
     empty: String,
 }
@@ -92,9 +92,12 @@ impl Table {
     /// `empty` is the sentence a person reads when there are no rows, such as
     /// `No Services in production yet.`
     #[must_use]
-    pub fn new(header: impl IntoIterator<Item = &'static str>, empty: impl Into<String>) -> Self {
+    pub fn new<H: Into<Cow<'static, str>>>(
+        header: impl IntoIterator<Item = H>,
+        empty: impl Into<String>,
+    ) -> Self {
         Self {
-            header: header.into_iter().collect(),
+            header: header.into_iter().map(Into::into).collect(),
             rows: Vec::new(),
             empty: empty.into(),
         }

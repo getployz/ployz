@@ -328,7 +328,7 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
 ) -> Result<T, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    let response = send_approved(credential, Method::POST, &url, &body, approval).await?;
+    let response = send_approved(credential, Method::POST, &url, &body, approval, None).await?;
     store_answer(credential, response).await
 }
 
@@ -338,10 +338,14 @@ async fn send_approved(
     url: &str,
     body: &serde_json::Value,
     approval: Option<&str>,
+    request_key: Option<&str>,
 ) -> Result<reqwest::Response, LoginError> {
     let mut request = request(credential, method, url, Some(body))?;
     if let Some(approval) = approval {
         request = request.header("x-ployz-approval", approval);
+    }
+    if let Some(key) = request_key {
+        request = request.header("x-ployz-request-key", key);
     }
     request
         .send()
@@ -382,8 +386,25 @@ pub(crate) async fn approved_answer<T: DeserializeOwned>(
     body: &serde_json::Value,
     approval: Option<&str>,
 ) -> Result<T, StoreCallError> {
+    keyed_answer(credential, method, path, body, approval, None).await
+}
+
+/// [`approved_answer`] with `x-ployz-request-key`, so a retried call of a Cloud
+/// command runs once.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, or a Cloud failure.
+pub(crate) async fn keyed_answer<T: DeserializeOwned>(
+    credential: &Credential,
+    method: Method,
+    path: &str,
+    body: &serde_json::Value,
+    approval: Option<&str>,
+    request_key: Option<&str>,
+) -> Result<T, StoreCallError> {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    let response = send_approved(credential, method, &url, body, approval).await?;
+    let response = send_approved(credential, method, &url, body, approval, request_key).await?;
     store_answer(credential, response).await
 }
 

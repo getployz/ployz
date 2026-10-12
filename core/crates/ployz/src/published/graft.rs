@@ -40,6 +40,9 @@ fn leaf(name: &str, command: &PublishedCommand) -> Command {
     let mut leaf = Command::new(name.to_owned())
         .about(command.about.clone())
         .args(command.args.iter().map(arg));
+    if command.asks() && !command.args.iter().any(|arg| arg.name == "approval") {
+        leaf = leaf.arg(crate::cli::approval());
+    }
     if !command.examples.is_empty() {
         let examples = command
             .examples
@@ -85,7 +88,7 @@ mod tests {
     const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/published-manifest.json");
 
     fn published() -> Published {
-        Published::parse("https://cloud.test", FIXTURE).unwrap()
+        Published::parse(FIXTURE).unwrap()
     }
 
     fn leaf<'a>(root: &'a Command, path: &[String]) -> &'a Command {
@@ -112,7 +115,11 @@ mod tests {
                 .get_arguments()
                 .filter(|arg| !arg.is_global_set() && arg.get_long() != Some("help"))
                 .collect();
-            let properties = command.input["properties"].as_object().unwrap();
+            let properties = command
+                .input
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .unwrap();
             assert_eq!(own.len(), properties.len(), "{}", command.path());
             for arg in own {
                 let name = arg.get_id().as_str();
@@ -130,7 +137,7 @@ mod tests {
     #[test]
     fn a_published_leaf_that_a_compiled_one_already_owns_is_dropped() {
         let mut published = published();
-        let first = &mut published.commands[0];
+        let first = published.commands.first_mut().unwrap();
         first.path = vec!["server".into(), "ls".into()];
         first.about = "published impostor".into();
         let root = attach(crate::cli::compiled(), &published);
