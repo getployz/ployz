@@ -112,8 +112,8 @@ async fn accept_refuses_a_mirror_without_the_handed_over_snapshot() {
 }
 
 #[tokio::test]
-async fn accept_marks_the_final_mirror_handed_in_and_replays() {
-    let (test, socket, server) = mirror("final:900", 900);
+async fn accept_marks_the_idle_mirror_handed_in_and_replays() {
+    let (test, socket, server) = mirror("idle", 900);
     for decision in ["adopt", "replay"] {
         let response = post(
             &socket,
@@ -133,31 +133,6 @@ async fn accept_marks_the_final_mirror_handed_in_and_replays() {
         Some("handed_in:900")
     );
     assert_eq!(property(&test, FS, "readonly").as_deref(), Some("on"));
-    server.abort();
-}
-
-#[tokio::test]
-async fn clear_final_returns_a_final_mirror_to_idle_and_refuses_a_handed_in_one() {
-    let (test, socket, server) = mirror("final:900", 900);
-    for decision in ["adopt", "replay"] {
-        let response = post(&socket, "/Volume.ClearFinal", at(1, 9, 0, 0, json!({}))).await;
-        assert_eq!(
-            response.pointer("/Ok/decision"),
-            Some(&json!(decision)),
-            "{response}"
-        );
-    }
-    assert_eq!(
-        property(&test, SLOT, "ployz:mirror").as_deref(),
-        Some("idle")
-    );
-    set_property(&test, SLOT, "ployz:mirror", "handed_in:900");
-    let response = post(&socket, "/Volume.ClearFinal", at(1, 10, 0, 0, json!({}))).await;
-    assert_eq!(
-        reason(&response),
-        Some(&json!("precondition")),
-        "{response}"
-    );
     server.abort();
 }
 
@@ -472,7 +447,7 @@ async fn start_admission_refuses_a_root_whose_newest_snapshot_is_not_handed_over
 
 #[tokio::test]
 async fn restore_makes_the_mirror_the_writable_root_with_one_restore_snapshot() {
-    let (test, socket, server) = mirror("final:900", 900);
+    let (test, socket, server) = mirror("idle", 900);
     set_property(
         &test,
         FS,
@@ -576,7 +551,6 @@ async fn every_target_verb_finishes_after_a_real_kill_after_record() {
 
     for verb in [
         "AcceptHandOff",
-        "ClearFinal",
         "Promote",
         "StartHandedContainer",
         "Restore",
@@ -589,7 +563,7 @@ async fn every_target_verb_finishes_after_a_real_kill_after_record() {
         let marker = if verb == "Promote" {
             "handed_in:900"
         } else {
-            "final:900"
+            "idle"
         };
         let (test, socket, server) = if verb == "StartHandedContainer" {
             promoted()
@@ -633,12 +607,6 @@ async fn every_target_verb_finishes_after_a_real_kill_after_record() {
                 property(&test, SLOT, "ployz:mirror").as_deref(),
                 Some("handed_in:900")
             ),
-            "ClearFinal" => {
-                assert_eq!(
-                    property(&test, SLOT, "ployz:mirror").as_deref(),
-                    Some("idle")
-                );
-            }
             "Promote" => {
                 finish_promote(&socket).await;
                 assert_eq!(property(&test, ROOT, "readonly").as_deref(), Some("off"));

@@ -81,8 +81,7 @@ fn every_volume_run_verb_is_sent_on_its_own_path() {
             service.clone(),
             "StartHandedContainer",
         ),
-        ("close", leased.clone(), "Close"),
-        ("clear_final", leased, "ClearFinal"),
+        ("close", leased, "Close"),
         ("restore", service, "Restore"),
     ];
     for (command, payload, route) in cases {

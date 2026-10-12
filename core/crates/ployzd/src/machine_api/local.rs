@@ -424,25 +424,6 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::MarkContainerStopping>(request)?;
         let _guard = self.switch_mutation.lock().await;
-        if let Some(volume) = &request.volume {
-            if let Err(error) = self.require_joined() {
-                return respond(error);
-            }
-            crate::faults::apply("MarkContainerStopping").await;
-            let source = ployz_core::SourceContainerRequest {
-                switch: volume.switch,
-                name: volume.name.clone(),
-                container_id: request.container_id,
-            };
-            if let Err(error) = self
-                .local
-                .plugin()
-                .call::<ployz_core::SwitchReply>("Volume.MarkContainerStopping", &source)
-                .await
-            {
-                return respond(error);
-            }
-        }
         let containers = match self.containers() {
             Ok(containers) => containers,
             Err(error) => return respond(error),
@@ -453,11 +434,7 @@ impl MachineRpc for MachineService {
             .await
         {
             Ok(details) => {
-                if let Some(volume) = request.volume {
-                    containers.mark_source_stopping(request.container_id, volume.switch.lease);
-                } else {
-                    containers.mark_stopping(request.container_id);
-                }
+                containers.mark_stopping(request.container_id);
                 respond(details)
             }
             Err(error) => respond(RpcError::from(&error)),
@@ -832,15 +809,6 @@ impl MachineRpc for MachineService {
             }),
             Err(error) => respond(error),
         }
-    }
-
-    async fn clear_final(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::ClearFinal>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("ClearFinal", "Volume.ClearFinal", &request)
-            .await
     }
 
     async fn restore(

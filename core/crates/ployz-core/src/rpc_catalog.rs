@@ -72,7 +72,6 @@ macro_rules! rpc_catalog {
                 AcceptHandOff: (accept_hand_off, "AcceptHandOff", HandOverRequest, "accept_hand_off", SwitchReply, ACCEPT_HAND_OFF_CAPABILITY, "ployz.volume.accept-hand-off.v1", Container),
                 Promote: (promote, "Promote", ServiceVolumeRequest, "promote", SwitchReply, PROMOTE_VOLUME_CAPABILITY, "ployz.volume.promote.v1", Container),
                 StartHandedContainer: (start_handed_container, "StartHandedContainer", ServiceVolumeRequest, "start_handed_container", SwitchReply, START_HANDED_CONTAINER_CAPABILITY, "ployz.volume.start-handed-container.v1", Container),
-                ClearFinal: (clear_final, "ClearFinal", MirrorRequest, "clear_final", SwitchReply, CLEAR_FINAL_CAPABILITY, "ployz.volume.clear-final.v1", Container),
                 Restore: (restore, "Restore", ServiceVolumeRequest, "restore", SwitchReply, RESTORE_VOLUME_CAPABILITY, "ployz.volume.restore.v1", Container),
                 SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", SwitchReply, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
                 DeclareMirror: (declare_mirror, "DeclareMirror", DeclareMirrorRequest, "declare_mirror", SwitchReply, DECLARE_MIRROR_CAPABILITY, "ployz.volume.mirror.declare.v1", Container),

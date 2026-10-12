@@ -88,7 +88,12 @@ async fn departure_on_a_machine_without_zfs_demotes_nothing() {
 #[tokio::test]
 async fn departure_idles_a_slot_marker_and_keeps_its_data() {
     let test = TestDir::new();
-    set_property(&test, "tank/ployz-mirror/copy", "ployz:mirror", "final");
+    set_property(
+        &test,
+        "tank/ployz-mirror/copy",
+        "ployz:mirror",
+        "handed_in:9",
+    );
     let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;

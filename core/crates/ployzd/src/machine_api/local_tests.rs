@@ -949,7 +949,6 @@ async fn marking_an_unknown_container_stopping_is_not_found() {
         .mark_container_stopping(Request::new(
             op::MarkContainerStopping::into_request(ployz_core::MarkContainerStoppingRequest {
                 container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
-                volume: None,
             })
             .encode()
             .unwrap(),
@@ -1129,7 +1128,6 @@ async fn thaw_waits_for_withdraw_to_publish_stopping_then_restores_ingress() {
         .mark_container_stopping(Request::new(
             op::MarkContainerStopping::into_request(ployz_core::MarkContainerStoppingRequest {
                 container_id: created.container_id,
-                volume: None,
             })
             .encode()
             .unwrap(),

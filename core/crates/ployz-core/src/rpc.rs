@@ -366,8 +366,6 @@ pub struct StopContainerRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MarkContainerStoppingRequest {
     pub container_id: ContainerId,
-    #[serde(default)]
-    pub volume: Option<MirrorRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

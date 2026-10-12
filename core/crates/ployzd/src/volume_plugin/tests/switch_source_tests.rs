@@ -102,28 +102,26 @@ fn source(seq: u16) -> Value {
 }
 
 #[tokio::test]
-async fn withdraw_and_mark_stopping_open_the_cycle_and_replay() {
-    for route in ["/Volume.Withdraw", "/Volume.MarkContainerStopping"] {
-        let (test, socket, server) = setup("idle", false);
-        for decision in ["adopt", "replay"] {
-            let response = post(&socket, route, source(5)).await;
-            assert_eq!(
-                response.pointer("/Ok/decision"),
-                Some(&json!(decision)),
-                "{response}"
-            );
-            assert_eq!(response.pointer("/Ok/lease/cycle"), Some(&json!("open")));
-            assert_eq!(
-                response.pointer("/Ok/copy/writer/phase"),
-                Some(&json!("stopping"))
-            );
-        }
+async fn withdraw_opens_the_cycle_and_replays() {
+    let (test, socket, server) = setup("idle", false);
+    for decision in ["adopt", "replay"] {
+        let response = post(&socket, "/Volume.Withdraw", source(5)).await;
         assert_eq!(
-            property(&test, "tank/ployz/data", "ployz:source-container").as_deref(),
-            Some(CONTAINER)
+            response.pointer("/Ok/decision"),
+            Some(&json!(decision)),
+            "{response}"
         );
-        server.abort();
+        assert_eq!(response.pointer("/Ok/lease/cycle"), Some(&json!("open")));
+        assert_eq!(
+            response.pointer("/Ok/copy/writer/phase"),
+            Some(&json!("stopping"))
+        );
     }
+    assert_eq!(
+        property(&test, "tank/ployz/data", "ployz:source-container").as_deref(),
+        Some(CONTAINER)
+    );
+    server.abort();
 }
 
 #[tokio::test]
@@ -547,14 +545,6 @@ async fn every_source_verb_finishes_after_a_real_kill_after_record() {
 
     for (verb, writer, readonly, request, phase, cycle) in [
         ("Withdraw", "idle", false, source(5), "stopping", "open"),
-        (
-            "MarkContainerStopping",
-            "idle",
-            false,
-            source(5),
-            "stopping",
-            "open",
-        ),
         ("Freeze", "stopping", false, source(6), "frozen", "open"),
         (
             "HandOver",

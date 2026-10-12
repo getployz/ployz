@@ -162,11 +162,8 @@ impl VolumeStorage {
             .map_err(internal)?;
         match marker {
             MirrorMarker::Idle => {}
-            MirrorMarker::Final { guid } | MirrorMarker::HandedIn { guid }
-                if guid == request.guid => {}
-            MirrorMarker::Final { .. }
-            | MirrorMarker::HandedIn { .. }
-            | MirrorMarker::Promoting => {
+            MirrorMarker::HandedIn { guid } if guid == request.guid => {}
+            MirrorMarker::HandedIn { .. } | MirrorMarker::Promoting => {
                 return Err(precondition(format!(
                     "the mirror of Volume {name} cannot accept the hand-off from {marker}"
                 )));
@@ -186,34 +183,6 @@ impl VolumeStorage {
         ])
         .await
         .map_err(internal)?;
-        self.reply(&scope.pool, &name, scope.admitted).await
-    }
-
-    async fn clear_final(&self, request: &MirrorRequest) -> Result<SwitchReply, RpcError> {
-        let name = name(&request.name)?;
-        let mut scope = self.leased(&name, &request.switch).await?;
-        let slot = scope.require_slot(&name)?;
-        match self.mirror_marker(slot).await.map_err(internal)? {
-            MirrorMarker::Idle => {}
-            MirrorMarker::Final { .. } => {
-                let slot = slot.name.clone();
-                self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
-                    .await?;
-                ployzd::faults::kill_after_record("ClearFinal");
-                self.zfs(&[
-                    "set",
-                    &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
-                    &slot,
-                ])
-                .await
-                .map_err(internal)?;
-            }
-            marker @ (MirrorMarker::HandedIn { .. } | MirrorMarker::Promoting) => {
-                return Err(precondition(format!(
-                    "the mirror of Volume {name} is {marker}; it is no longer a final copy"
-                )));
-            }
-        }
         self.reply(&scope.pool, &name, scope.admitted).await
     }
 
@@ -546,13 +515,6 @@ pub(super) async fn accept_hand_off(
     Json(request): Json<HandOverRequest>,
 ) -> Json<Result<SwitchReply, RpcError>> {
     Json(storage.accept_hand_off(&request).await)
-}
-
-pub(super) async fn clear_final(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<MirrorRequest>,
-) -> Json<Result<SwitchReply, RpcError>> {
-    Json(storage.clear_final(&request).await)
 }
 
 pub(super) async fn promote(

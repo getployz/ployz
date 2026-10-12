@@ -112,7 +112,6 @@ export type VolumeSwitchRequest =
   | { command: "accept_hand_off"; payload: HandOverRequest }
   | { command: "promote"; payload: ServiceVolumeRequest }
   | { command: "start_handed_container"; payload: ServiceVolumeRequest }
-  | { command: "clear_final"; payload: MirrorRequest }
   | { command: "restore"; payload: ServiceVolumeRequest }
   | { command: "seed_volume"; payload: SeedVolumeRequest };
 

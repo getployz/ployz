@@ -297,7 +297,6 @@ impl fmt::Display for WriterMarker {
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum MirrorMarker {
     Idle,
-    Final { guid: SnapshotGuid },
     HandedIn { guid: SnapshotGuid },
     Promoting,
 }
@@ -306,7 +305,6 @@ impl fmt::Display for MirrorMarker {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Idle => formatter.write_str("idle"),
-            Self::Final { guid } => write!(formatter, "final:{guid}"),
             Self::HandedIn { guid } => write!(formatter, "handed_in:{guid}"),
             Self::Promoting => formatter.write_str("promoting"),
         }
@@ -365,9 +363,6 @@ impl FromStr for MirrorMarker {
         Ok(match marker_parts(value) {
             ("idle", None) => Self::Idle,
             ("promoting", None) => Self::Promoting,
-            ("final", guid) => Self::Final {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
             ("handed_in", guid) => Self::HandedIn {
                 guid: parse_guid(guid).ok_or_else(invalid)?,
             },
@@ -990,12 +985,6 @@ mod tests {
         }
         for (text, marker) in [
             ("idle", MirrorMarker::Idle),
-            (
-                "final:9",
-                MirrorMarker::Final {
-                    guid: SnapshotGuid(9),
-                },
-            ),
             (
                 "handed_in:9",
                 MirrorMarker::HandedIn {

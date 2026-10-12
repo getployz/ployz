@@ -120,7 +120,12 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
 #[tokio::test]
 async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
     let test = TestDir::new();
-    set_property(&test, "tank/ployz-mirror/copy", "ployz:mirror", "final:9");
+    set_property(
+        &test,
+        "tank/ployz-mirror/copy",
+        "ployz:mirror",
+        "handed_in:9",
+    );
     let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
 
     let response = post(&socket, "/Volume.Inspect", json!({"name": "copy"})).await;
@@ -128,7 +133,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
         response.pointer("/Ok/copy").unwrap(),
         &json!({
             "kind": "slot",
-            "mirror": {"phase": "final", "guid": "9"},
+            "mirror": {"phase": "handed_in", "guid": "9"},
             "readonly": true,
             "newest": null,
             "resume_token": null,

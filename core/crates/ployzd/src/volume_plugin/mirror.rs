@@ -213,17 +213,6 @@ impl VolumeStorage {
                 .await
                 .map_err(internal)?;
         }
-        // The run reaches a round only once the writer is idle again, so a final
-        // snapshot the writer still holds is an ordinary synced mirror.
-        if let MirrorMarker::Final { .. } = self.mirror_marker(slot).await.map_err(internal)? {
-            self.zfs(&[
-                "set",
-                &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
-                &slot.name,
-            ])
-            .await
-            .map_err(internal)?;
-        }
         self.reply(&scope.pool, &name, scope.admitted).await
     }
 

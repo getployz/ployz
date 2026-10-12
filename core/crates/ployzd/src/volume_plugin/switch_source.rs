@@ -465,17 +465,6 @@ pub(super) async fn withdraw(
     Json(storage.withdraw_source(&request, "Withdraw").await)
 }
 
-pub(super) async fn mark_stopping(
-    State(storage): State<VolumeStorage>,
-    Json(request): Json<SourceContainerRequest>,
-) -> Json<Result<SwitchReply, RpcError>> {
-    Json(
-        storage
-            .withdraw_source(&request, "MarkContainerStopping")
-            .await,
-    )
-}
-
 pub(super) async fn freeze(
     State(storage): State<VolumeStorage>,
     Json(request): Json<SourceContainerRequest>,

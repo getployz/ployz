@@ -146,7 +146,6 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::AcceptHandOff(_)
         | Body::Promote(_)
         | Body::StartHandedContainer(_)
-        | Body::ClearFinal(_)
         | Body::SeedVolume(_)
         | Body::Restore(_) => body
             .unary_path()

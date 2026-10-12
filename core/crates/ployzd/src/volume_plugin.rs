@@ -173,10 +173,6 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Demote", post(departure::demote))
         .route("/Volume.Inspect", post(lease::inspect))
         .route("/Volume.Withdraw", post(switch_source::withdraw))
-        .route(
-            "/Volume.MarkContainerStopping",
-            post(switch_source::mark_stopping),
-        )
         .route("/Volume.Freeze", post(switch_source::freeze))
         .route("/Volume.HandOver", post(switch_source::hand_over))
         .route("/Volume.Thaw", post(switch_source::thaw))
@@ -185,7 +181,6 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
             "/Volume.AcceptHandOff",
             post(switch_target::accept_hand_off),
         )
-        .route("/Volume.ClearFinal", post(switch_target::clear_final))
         .route("/Volume.Promote", post(switch_target::promote))
         .route("/Volume.FinishPromote", post(switch_target::finish_promote))
         .route("/Volume.Unregister", post(switch_target::unregister))

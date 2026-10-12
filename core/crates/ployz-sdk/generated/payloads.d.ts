@@ -2515,7 +2515,7 @@ repository: BuildGrantRepository, };
 
 export type Mirror = { server: ServerRef, synced_at: Timestamp | null, };
 
-export type MirrorMarker = { "phase": "idle" } | { "phase": "final", guid: SnapshotGuid, } | { "phase": "handed_in", guid: SnapshotGuid, } | { "phase": "promoting" };
+export type MirrorMarker = { "phase": "idle" } | { "phase": "handed_in", guid: SnapshotGuid, } | { "phase": "promoting" };
 
 export type MirrorRequest = { switch: Switch, name: DockerVolumeName, };
 

@@ -131,7 +131,6 @@ async fn declare_mirror_refuses_the_writer_machine_and_a_full_pool() {
 async fn begin_round_aborts_a_partial_receive_and_clears_the_record() {
     let test = TestDir::new();
     set_property(&test, "tank/ployz", "ployz:lease.data", "1:4.0.5:closed");
-    set_property(&test, "tank/ployz-mirror/data", "ployz:mirror", "final:9");
     set_property(
         &test,
         "tank/ployz-mirror/data",
@@ -390,7 +389,6 @@ async fn prune_without_a_receive_keeps_only_the_newest() {
 #[tokio::test]
 async fn destroy_removes_the_slot_and_is_idempotent() {
     let test = TestDir::new();
-    set_property(&test, "tank/ployz-mirror/data", "ployz:mirror", "final:9");
     let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
 
     let response = post(&socket, "/Volume.DestroyMirror", at(1, 5, 0, 0, json!({}))).await;
