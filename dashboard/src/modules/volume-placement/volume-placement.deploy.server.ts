@@ -318,7 +318,7 @@ const NO_COPIES: CopyObservation["copies"] = [];
 
 type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string };
 
-const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(function* (organizationId: string, onlyEnvironmentId: string | null) {
+export const environmentVolumes = Effect.fn("VolumePlacement.environmentVolumes")(function* (organizationId: string, onlyEnvironmentId: string | null) {
   const found: EnvironmentVolume[] = [];
   const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
   for (const owned of namespaces) {

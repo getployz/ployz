@@ -45,7 +45,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} unknown={[]} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
-    snapshots={snapshots} snapshotClock={snapshotClock("UTC")} open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
+    snapshots={snapshots} schedule={{ policy: null, pending: false, save: vi.fn(() => Promise.resolve(true)) }} snapshotClock={snapshotClock("UTC")} open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
   return { stage, deleteCopy, restore, onOpen, refresh, snapshots };
 }
 const group = (label: string) => within(screen.getByRole("list", { name: label }));

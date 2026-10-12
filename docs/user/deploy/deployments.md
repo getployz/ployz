@@ -180,6 +180,10 @@ the dropped change leaves behind depends on how far it got:
 - A deploy that shipped a restore it couldn't claim fails before it copies anything, with "the
   restore waits for the next Deploy." The restore stays staged, so deploy again.
 
+When the deploy took a **Before** snapshot of a volume, its page shows **Restore data**. Each row
+names the volume and how much was written since. **Restore** stages that snapshot for your next
+deploy, as in [Snapshots](../services/volumes.md#snapshots). Use it to undo what a migration did.
+
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a
 [branch](../environments/environments.md) first.

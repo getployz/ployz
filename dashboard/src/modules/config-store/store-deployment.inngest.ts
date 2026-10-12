@@ -15,6 +15,7 @@ import {
 import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { advancePlacement, type PlacementAdvance, type PlacementWait, refreshMirrors } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { deploySnapshots } from "#/modules/volume-copies/snapshot-schedule.server";
 import { syncUptimeChecks } from "#/modules/uptime/uptime-sync.server";
 import { cleanOrphanSlots } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
@@ -45,6 +46,8 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await step.run("record-run", () => runEffect(recordStoreDeploymentRun(runId, event.data)));
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
+      await step.run("snapshot-before", () =>
+        runEffect(deploySnapshots(event.data.organizationId, event.data.environmentId, event.data.deploymentId, "before")));
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
         return step.run("storage-failed", () => runEffect(failStoreDeploymentStorage(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
@@ -54,6 +57,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       }
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       const applied = "ran" in ran && ran.ran.status === "applied";
+      if (applied) {
+        await step.run("snapshot-after", () =>
+          runEffect(deploySnapshots(event.data.organizationId, event.data.environmentId, event.data.deploymentId, "after")));
+      }
       // A failed Deployment can still have advanced Applied State, so the checks follow it either way. Only an applied
       // one is probed: a failed one may have stopped partway, and the schedule still checks what it reached.
       await step.run("sync-uptime", () =>

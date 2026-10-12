@@ -27,6 +27,7 @@ import {
   createStoreSweepRequested,
 } from "#/modules/config-store/store-github.inngest";
 import { createRefreshVolumeMirrors } from "#/modules/volume-placement/volume-placement.inngest";
+import { createSnapshotScheduleFunctions } from "#/modules/volume-copies/snapshot-schedule.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.inngest";
 import { createSweepOperationOutbox } from "#/modules/operations/outbox.server";
@@ -62,6 +63,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     ...createServiceActFunctions(inngest),
     createSweepOperationOutbox(inngest),
     createRefreshVolumeMirrors(inngest),
+    ...createSnapshotScheduleFunctions(inngest),
     ...createUptimeMaintenanceFunctions(inngest),
   ];
 }
