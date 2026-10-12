@@ -3,7 +3,7 @@ import type { MachineId } from "@ployz/sdk";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
 import { member, run } from "#/modules/volume-run/volume-run.test-fixture";
 import { copiesFromPlacement } from "./volume-copies.placement";
-import { traySpeech } from "./volume-copies";
+import { cardLine, safetyLine, traySpeech } from "./volume-copies";
 
 const volume = { id: "v1", name: "pg-data" };
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
@@ -15,8 +15,8 @@ const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; d
   deploymentId: null,
 });
 type Run = ReturnType<typeof run> | null;
-const copies = (placement: PlacementRow | null, members = [member("web-1", "writer"), member("web-2", "mirror")], active: Run = null, lastSync: Run = null) => {
-  const model = copiesFromPlacement({ volume, members, row: placement, active, lastSync });
+const copies = (placement: PlacementRow | null, members = [member("web-1", "writer"), member("web-2", "mirror")], active: Run = null, lastSync: Run = null, lastDone: Run = null) => {
+  const model = copiesFromPlacement({ volume, members, row: placement, active, lastSync, lastDone });
   if (model === null) throw new Error("no primary");
   return model;
 };
@@ -58,6 +58,22 @@ describe("copiesFromPlacement", () => {
 
   it("marks the mirror skipped when its last refresh failed", () => {
     expect(copies(row(["web-2"]), undefined, null, run("sync", { full: false }, "failed")).elsewhere[0]).toMatchObject({ skipped: true });
+  });
+
+  it("ages a mirror whose Server is silent from the last round that ended done, and marks it skipped", () => {
+    const now = new Date("2026-10-09T03:02:00.000Z");
+    const done = { ...run("sync", { full: false }, "done"), finished_at: "2026-10-09T00:00:00.000Z" };
+    const failed = run("sync", { full: false }, "failed");
+    const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "unanswered")], null, failed, done);
+    const [mirror] = model.elsewhere;
+    expect(mirror).toMatchObject({ kind: "mirror", skipped: true, refreshedAt: new Date("2026-10-09T00:00:00.000Z") });
+    expect(safetyLine(model, now)).toEqual({ tone: "warn", words: "Mirror behind", detail: "3 hours ago" });
+    expect(mirror && cardLine(mirror, now).stale).toBe(true);
+  });
+
+  it("marks a silent mirror skipped with no age when no round ever ended done", () => {
+    const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "unanswered")]);
+    expect(model.elsewhere[0]).toMatchObject({ kind: "mirror", skipped: true, refreshedAt: null });
   });
 
   it("has no snapshots until the Servers serve them", () => {
