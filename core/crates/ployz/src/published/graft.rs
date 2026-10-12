@@ -6,8 +6,8 @@ use clap::{Arg, ArgAction, Command};
 
 use super::{ArgKind, Published, PublishedArg, PublishedCommand};
 
-/// Graft every published entry under its path, creating groups on the way. A leaf
-/// that already exists keeps its compiled form and the entry is dropped.
+/// Graft every published entry under its path, creating groups on the way. A path
+/// that meets a compiled leaf, at its end or on the way, is dropped.
 pub(crate) fn attach(root: Command, published: &Published) -> Command {
     published
         .commands
@@ -15,25 +15,18 @@ pub(crate) fn attach(root: Command, published: &Published) -> Command {
         .fold(root, |root, command| graft(root, &command.path, command))
 }
 
-fn graft(mut parent: Command, path: &[String], command: &PublishedCommand) -> Command {
+fn graft(parent: Command, path: &[String], command: &PublishedCommand) -> Command {
     let [name, rest @ ..] = path else {
         return parent;
     };
-    let exists = parent
-        .get_subcommands()
-        .any(|child| child.get_name() == name);
-    if rest.is_empty() {
-        if exists {
-            return parent;
+    match parent.find_subcommand(name).map(Command::has_subcommands) {
+        None if rest.is_empty() => parent.subcommand(leaf(name, command)),
+        None => parent.subcommand(graft(Command::new(name.clone()), rest, command)),
+        Some(true) if !rest.is_empty() => {
+            parent.mut_subcommand(name.clone(), |group| graft(group, rest, command))
         }
-        return parent.subcommand(leaf(name, command));
+        Some(_) => parent,
     }
-    if exists {
-        parent = parent.mut_subcommand(name.clone(), |group| graft(group, rest, command));
-    } else {
-        parent = parent.subcommand(graft(Command::new(name.clone()), rest, command));
-    }
-    parent
 }
 
 fn leaf(name: &str, command: &PublishedCommand) -> Command {
@@ -151,6 +144,20 @@ mod tests {
                 .map(ToString::to_string)
         };
         assert_eq!(ls(&root), ls(&compiled));
+    }
+
+    #[test]
+    fn a_published_path_through_a_compiled_leaf_is_dropped() {
+        let mut published = published();
+        let first = published.commands.first_mut().unwrap();
+        first.path = vec!["server".into(), "ls".into(), "extra".into()];
+        let root = attach(crate::cli::compiled(), &published);
+        let ls = root
+            .find_subcommand("server")
+            .unwrap()
+            .find_subcommand("ls")
+            .unwrap();
+        assert!(!ls.has_subcommands(), "a compiled leaf takes no subcommand");
     }
 
     #[test]
