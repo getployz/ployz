@@ -387,6 +387,49 @@ async fn a_private_image_is_created_with_its_services_credentials_only() {
 }
 
 #[tokio::test]
+async fn removing_a_container_keeps_its_anonymous_volumes() {
+    use ployz_core::{
+        ContainerChanged, OpaquePayload, RemoveContainerRequest, RpcRequestBody, RpcResponse,
+    };
+    use std::sync::Arc;
+    use tonic::{Request, Response};
+
+    let captured = Arc::new(Mutex::new(Vec::<RemoveContainerRequest>::new()));
+    let requests = captured.clone();
+    let (client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let requests = requests.clone();
+            async move {
+                let RpcRequestBody::RemoveContainer(request) =
+                    rpc.into_inner().decode_request().unwrap().body
+                else {
+                    panic!("only remove is expected");
+                };
+                let container_id = request.container_id;
+                requests.lock().unwrap().push(request);
+                Ok(Response::new(
+                    RpcResponse::from(ContainerChanged { container_id })
+                        .encode()
+                        .unwrap(),
+                ))
+            }
+        })
+        .await;
+    MachineOperations::remove_container(&client, &machine('1'), &container('a'))
+        .await
+        .unwrap();
+    server.abort();
+    assert_eq!(
+        *captured.lock().unwrap(),
+        [RemoveContainerRequest {
+            container_id: container('a'),
+            remove_volumes: false,
+            force: false,
+        }]
+    );
+}
+
+#[tokio::test]
 async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replicas() {
     use ployz_core::{
         CreateContainerRequest, OpaquePayload, RpcRequestBody, RpcResponse, ServiceMode,

@@ -15,8 +15,8 @@ use crate::{
     HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, PlanOptions,
     PortPublication, PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource,
     RequestedServiceSpec, RestartPolicy, ServiceAttempt, ServiceConfigGraph, ServiceContainerSpec,
-    ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph,
-    VolumeDriver,
+    ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceRemovals, ServiceVolume,
+    ServiceVolumeGraph, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -56,6 +56,10 @@ pub struct LowerDeploymentInput {
     pub lineages: BTreeMap<String, String>,
     /// Omitted preserves partial-deploy behavior; empty reconciles the complete target.
     pub selected: Option<Vec<ServiceAttempt>>,
+    /// Services this targeted Deploy retires, each also in `selected`. Written only
+    /// when there are some.
+    #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
+    pub removals: ServiceRemovals,
 }
 
 /// One Service's captured settings and the runtime inputs resolved for it.
@@ -423,6 +427,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             skip_health_monitor: false,
             placement_seed: 0,
             selected,
+            removals: input.removals,
         },
     )
     .with_dependencies(dependencies)
