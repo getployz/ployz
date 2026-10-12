@@ -24,7 +24,19 @@ pub mod env {
 }
 
 #[must_use]
+/// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
+/// from the cache beside the config. Completion and `--help` read this; a refresh
+/// happens only when a command line misses it.
 pub fn command() -> Command {
+    let setup = crate::published::Setup::from_env();
+    match setup.cached() {
+        Some(published) => crate::published::attach(compiled(), &published),
+        None => compiled(),
+    }
+}
+
+/// The commands this binary carries on its own.
+pub(crate) fn compiled() -> Command {
     let command = base("ployz", "Manage Ployz machines, services, and volumes")
         .styles(crate::ui::clap_styles())
         .after_help(handlers::catalog::SIGNPOST)

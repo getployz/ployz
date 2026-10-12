@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn every_leaf_has_a_handler_and_every_visible_handler_is_in_the_catalog() {
-        let mut command = command();
+        let mut command = crate::cli::compiled();
         command.build();
         let mut leaves = BTreeSet::new();
         let mut runnable = BTreeSet::new();

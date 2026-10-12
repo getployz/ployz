@@ -3,7 +3,10 @@
 //! its noun path, and runs it by posting the arguments back. A compiled command keeps
 //! its name when a published one collides.
 
+mod graft;
 mod wire;
+
+pub(crate) use graft::attach;
 
 use std::collections::BTreeSet;
 use std::io;
