@@ -131,7 +131,7 @@ def pair_cloud(private, commands, owns):
     """Start this checkout's dashboard verify instance, or attach to the one that started this run."""
     if owns:
         environment = {key: value for key, value in os.environ.items() if key != "SERVERS"}
-        commands([DASHBOARD / "scripts" / "verify" / "up.sh"], env={**environment, "VERIFY_REAL_SERVERS": "1"}, timeout=1800)
+        commands([DASHBOARD / "scripts" / "verify" / "up.sh"], env={**environment, "VERIFY_REAL_SERVERS": "1", "VERIFY_IDLE_TIMEOUT": "0"}, timeout=1800)
     url, seed = dashboard_state(DASHBOARD)
     (private / "cloud-token").write_text(seed["cliToken"])
     (private / "cloud-token").chmod(0o600)
