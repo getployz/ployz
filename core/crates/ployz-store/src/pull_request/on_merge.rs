@@ -415,21 +415,28 @@ pub(crate) fn set_merge_value(
 /// Whether closing PR Environment `id` would lose something: its pull request is
 /// open, or merged and some Destination didn't take it, and it holds a row for
 /// some Destination, riding or not. Once the merge landed everywhere, nothing
-/// else of it lands.
+/// else of it lands. Merged into a branch no Environment tracks, it landed
+/// nowhere: it holds what it would sync into its Parent.
 pub(crate) fn holds(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<bool, RpcError> {
     let Some(pull_request) = of(tx, id)? else {
         return Ok(false);
     };
     let open = facts(tx, who, pull_request.repository_id, pull_request.number)?
         .is_some_and(|facts| facts.open);
-    if !open
-        && !unlanded(tx, who, &pull_request)?
-            .is_some_and(|unlanded| unlanded.iter().any(|destination| !destination.saved))
+    let unlanded = unlanded(tx, who, &pull_request)?;
+    let from = scope::load_by_id(tx, id)?;
+    let (_, mut landings) = landings(tx, who, &from)?;
+    if landings.is_empty() && unlanded.is_some() {
+        let Some(branch) = crate::branch::row(tx, id)? else {
+            return Ok(false);
+        };
+        let parent = scope::load_by_id(tx, &branch.parent)?;
+        landings.push(landing(tx, &from, parent)?);
+    } else if !open
+        && !unlanded.is_some_and(|unlanded| unlanded.iter().any(|destination| !destination.saved))
     {
         return Ok(false);
     }
-    let from = scope::load_by_id(tx, id)?;
-    let (_, landings) = landings(tx, who, &from)?;
     Ok(landings.iter().any(|landing| !landing.rows.is_empty()))
 }
 

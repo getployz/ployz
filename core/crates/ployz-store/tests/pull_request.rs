@@ -1328,6 +1328,67 @@ fn an_idle_kept_preview_edited_after_its_merge_landed_closes() {
     assert_eq!(listed(&store, &who), ["production"]);
 }
 
+/// Pull request #5 onto `release`, which no Environment tracks.
+fn onto_release(open: bool, updated: &str) -> PullRequest {
+    PullRequest {
+        target_branch: backend::git_branch("release"),
+        ..facts(open, updated)
+    }
+}
+
+/// Pull request #5 merged onto `release` with pr-5 deployed, `changes` set there first.
+fn merged_onto_release(changes: &[(&str, serde_json::Value)]) -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, onto_release(true, "2026-09-29T10:00:00Z"));
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    for (path, value) in changes {
+        set(&store, &who, "pr-5", path, value.clone());
+    }
+    let merged = pull(
+        &store,
+        &who,
+        PullRequest {
+            merge_commit: Some(backend::sha("3333333333333333333333333333333333333333")),
+            ..onto_release(false, "2026-09-29T11:00:00Z")
+        },
+    );
+    assert!(
+        merged.closing.is_empty() && merged.removed.is_empty(),
+        "{merged:?}"
+    );
+    (store, who)
+}
+
+#[test]
+fn an_idle_preview_merged_where_nothing_deploys_keeps_its_changes() {
+    let (store, who) = merged_onto_release(&[("web.env.A", json!("2"))]);
+
+    // Its merge landed nowhere, so a week idle only shuts it down: A stays.
+    let idle = sweep(&store, &who, now() + 8 * DAY);
+    assert_eq!(idle.closing.len(), 1, "{idle:?}");
+    let off = remove(&store, &who, "pr-5");
+    run(&store, &off, &[]);
+    let swept = sweep(&store, &who, now() + 8 * DAY);
+    assert!(
+        swept.closing.is_empty() && swept.removed.is_empty(),
+        "{swept:?}"
+    );
+    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
+}
+
+#[test]
+fn an_idle_preview_merged_where_nothing_deploys_with_no_changes_closes() {
+    let (store, who) = merged_onto_release(&[]);
+
+    let idle = sweep(&store, &who, now() + 8 * DAY);
+    assert_eq!(idle.closing.len(), 1, "{idle:?}");
+    let off = remove(&store, &who, "pr-5");
+    run(&store, &off, &[]);
+    sweep(&store, &who, now() + 8 * DAY);
+    assert_eq!(listed(&store, &who), ["production"]);
+}
+
 #[test]
 fn a_merge_reported_after_its_close_still_lands() {
     let (store, who) = shop();
