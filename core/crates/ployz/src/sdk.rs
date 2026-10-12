@@ -12,7 +12,9 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
-use crate::connect::{Client, ConnectError, Connector, TransportError, connect_selected_with};
+use crate::connect::{
+    Client, ConnectError, Connector, TransportError, connect_selected_with, name_refusal,
+};
 use crate::context::{Connection, ConnectionSource, SelectedConnections};
 use crate::deploy::{DeployIntent, DeployPlan, VolumeFate};
 use ployz_core::{
@@ -411,13 +413,18 @@ impl Session {
     pub async fn watch(&self) -> Result<Watch, RpcError> {
         let description = self.about().await?;
         let client = self.client()?;
+        let entry = MachineTarget::from(&description.machine_id);
         if !description.supports(RUNTIME_WATCH_CAPABILITY) {
-            return Err(RpcError {
-                code: RpcErrorCode::Unsupported,
-                message: format!("{RUNTIME_WATCH_CAPABILITY} is not advertised"),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
+            return Err(name_refusal(
+                RpcError {
+                    code: RpcErrorCode::Unsupported,
+                    message: format!("{RUNTIME_WATCH_CAPABILITY} is not advertised"),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+                op::RuntimeWatch::PATH,
+                &entry,
+            ));
         }
         let payload = op::RuntimeWatch::into_request(RuntimeWatchRequest {})
             .encode()
@@ -425,7 +432,8 @@ impl Session {
         let stream = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
-            stream = client.runtime_watch_stream(payload) => stream.map_err(ConnectError::Rpc)?,
+            stream = client.runtime_watch_stream(payload) => stream
+                .map_err(|error| ConnectError::Rpc(error.name_refusal(op::RuntimeWatch::PATH, &entry)))?,
         };
         let cancel = self.inner.cancel.child_token();
         let stream = Arc::new(Mutex::new(Some(stream)));

@@ -403,6 +403,33 @@ impl AsyncWrite for ChildIo {
     }
 }
 
+/// A bare refusal names the capability the target lacks. A domain refusal carries
+/// details already and passes through, as does every other error.
+#[must_use]
+pub fn name_refusal(mut error: RpcError, path: &str, target: &MachineTarget) -> RpcError {
+    if error.code == RpcErrorCode::Unsupported && error.details.is_null() {
+        if let Some(details) = refusal_details(path, target) {
+            error.details = details;
+        }
+    }
+    error
+}
+
+fn refusal_details(path: &str, target: &MachineTarget) -> Option<Value> {
+    ployz_core::capability_of(path)
+        .map(|capability| json!({ "capability": capability, "target": target.as_str() }))
+}
+
+impl ConnectError {
+    pub(crate) fn name_refusal(self, path: &str, target: &MachineTarget) -> Self {
+        match self {
+            Self::Rpc(error) => Self::Rpc(error.name_refusal(path, target)),
+            Self::Remote(error) => Self::Remote(name_refusal(error, path, target)),
+            other => other,
+        }
+    }
+}
+
 pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
         ConnectError::AllFailed {
@@ -822,6 +849,27 @@ impl TransportError {
             error.code = tonic::Code::Unavailable;
         }
         error
+    }
+
+    pub(crate) fn name_refusal(mut self, path: &str, target: &MachineTarget) -> Self {
+        if self.code == tonic::Code::Unimplemented && self.details.is_null() {
+            if let Some(details) = refusal_details(path, target) {
+                self.details = details;
+            }
+        }
+        self
+    }
+
+    /// The refusal names the Machine as the reader knows it, not the id the call used.
+    pub(crate) fn addressed_as(mut self, target: &str) -> Self {
+        if let Some(details) = self
+            .details
+            .as_object_mut()
+            .filter(|details| details.contains_key("capability"))
+        {
+            details.insert("target".into(), target.into());
+        }
+        self
     }
 
     #[must_use]

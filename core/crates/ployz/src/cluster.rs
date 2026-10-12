@@ -19,6 +19,7 @@ use ployz_core::{
     RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
     StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
     derive_live_services, op,
+    rpc::{BUILD_PATH, EXEC_PATH},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -33,7 +34,7 @@ use tonic::{
 use crate::{
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
-        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout,
+        TransportError, UNARY_RETRY_DELAYS, apply_timeout, name_refusal, rpc_error, stop_rpc_timeout,
         target_request,
     },
     context::{Connection, ConnectionSource},
@@ -356,6 +357,7 @@ impl Client {
                 .decode_response()?)
         })
         .await
+        .map_err(|error| name_refusal(error, path, target))
     }
 
     fn machine_rpc(&self) -> MachineRpcClient<Channel> {
@@ -371,7 +373,8 @@ impl Client {
         Ok(self
             .machine_rpc()
             .build(target_request(input, Some(target)))
-            .await?
+            .await
+            .map_err(|status| TransportError::from(status).name_refusal(BUILD_PATH, target))?
             .into_inner())
     }
 
@@ -383,7 +386,8 @@ impl Client {
         let mut rpc = self.machine_rpc();
         Ok(rpc
             .exec(target_request(input, Some(target)))
-            .await?
+            .await
+            .map_err(|status| TransportError::from(status).name_refusal(EXEC_PATH, target))?
             .into_inner())
     }
 
@@ -395,7 +399,10 @@ impl Client {
         let mut rpc = self.machine_rpc();
         Ok(rpc
             .tail_logs(target_request(request, Some(target)))
-            .await?
+            .await
+            .map_err(|status| {
+                TransportError::from(status).name_refusal(op::TailLogs::PATH, target)
+            })?
             .into_inner())
     }
 
@@ -410,7 +417,10 @@ impl Client {
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
         Ok(rpc
             .log_history(target_request(request, Some(target)))
-            .await?
+            .await
+            .map_err(|status| {
+                TransportError::from(status).name_refusal(op::LogHistory::PATH, target)
+            })?
             .into_inner())
     }
 
@@ -429,6 +439,18 @@ impl Client {
     }
 
     async fn call_once<T: Rpc>(
+        &self,
+        payload: OpaquePayload,
+        target: Option<&MachineTarget>,
+    ) -> Result<T::Response, ConnectError> {
+        let result = self.call_once_unnamed::<T>(payload, target).await;
+        match target {
+            Some(target) => result.map_err(|error| error.name_refusal(T::PATH, target)),
+            None => result,
+        }
+    }
+
+    async fn call_once_unnamed<T: Rpc>(
         &self,
         payload: OpaquePayload,
         target: Option<&MachineTarget>,

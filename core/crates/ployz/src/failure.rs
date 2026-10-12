@@ -252,7 +252,10 @@ impl Failure {
     #[must_use]
     pub fn report(&self) -> RpcError {
         let (code, mut details) = match &self.inner {
-            Inner::Command { error, .. } => classify(error.as_ref()),
+            Inner::Command { error, .. } => match refusal(error.as_ref()) {
+                Some(refusal) => (RpcErrorCode::Unsupported, refusal.details),
+                None => classify(error.as_ref()),
+            },
             Inner::Partial | Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
         };
         Hint::into_details(self.own_hints(), &mut details);
@@ -284,7 +287,45 @@ impl Failure {
     }
 }
 
-fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value) {
+/// A refusal that names the capability its target lacks, anywhere below our own sentences.
+fn refusal(error: &(dyn Error + 'static)) -> Option<Refusal> {
+    std::iter::successors(Some(error), |&link| link.source())
+        .take_while(|link| !link.is::<Message>())
+        .find_map(|link| match classify(link) {
+            (RpcErrorCode::Unsupported, details) => Refusal::from_details(details),
+            _ => None,
+        })
+}
+
+struct Refusal {
+    target: String,
+    capability: String,
+    details: Value,
+}
+
+impl Refusal {
+    fn from_details(details: Value) -> Option<Self> {
+        let target = details.get("target")?.as_str()?.to_owned();
+        let capability = details.get("capability")?.as_str()?.to_owned();
+        Some(Self {
+            target,
+            capability,
+            details,
+        })
+    }
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} needs a newer Ployz. It cannot serve {}.",
+            self.target, self.capability
+        )
+    }
+}
+
+fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {
     if let Some(message) = error.downcast_ref::<Message>() {
         return (message.code.clone(), message.details.clone());
     }
@@ -724,7 +765,10 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command { error, .. } => error.fmt(f),
+            Inner::Command { error, .. } => match refusal(error.as_ref()) {
+                Some(refusal) => refusal.fmt(f),
+                None => error.fmt(f),
+            },
             Inner::Partial => f.write_str("partial result"),
             Inner::Exit(code) => write!(f, "exit {code}"),
         }

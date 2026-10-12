@@ -658,18 +658,19 @@ pub async fn open_service_logs(
             })
             .await
             {
+                let server = scope
+                    .unanswered
+                    .names
+                    .iter()
+                    .find(|(id, _)| *id == observation.machine_id)
+                    .map_or_else(
+                        || observation.machine_id.to_string(),
+                        |(_, name)| name.to_string(),
+                    );
                 return Err(OperatorError::OpenContainerLogs {
                     container: observation.display_name.clone(),
-                    server: scope
-                        .unanswered
-                        .names
-                        .iter()
-                        .find(|(id, _)| *id == observation.machine_id)
-                        .map_or_else(
-                            || observation.machine_id.to_string(),
-                            |(_, name)| name.to_string(),
-                        ),
-                    source: Box::new(error.into()),
+                    source: Box::new(error.addressed_as(&server).into()),
+                    server,
                 });
             }
         }
@@ -883,7 +884,7 @@ pub async fn open_machine_logs(
                 return Err(OperatorError::OpenMachineLogs {
                     service,
                     machine_name: machine.machine.name.clone(),
-                    source: Box::new(error.into()),
+                    source: Box::new(error.addressed_as(machine.machine.name.as_str()).into()),
                 });
             }
         }

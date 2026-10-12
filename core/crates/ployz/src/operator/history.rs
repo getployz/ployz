@@ -278,7 +278,9 @@ async fn read_page(
     let mut stream = client
         .log_history_stream(&MachineTarget::from(&source.machine_id), payload)
         .await
-        .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
+        .map_err(|error| {
+            RpcError::from(ConnectError::Rpc(error.addressed_as(source.machine.as_str())))
+        })?;
     loop {
         let message = tokio::time::timeout(ROW_DEADLINE, stream.message())
             .await
