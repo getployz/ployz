@@ -9,7 +9,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
-import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createConfigDeploymentAdmittedEvent,
@@ -20,7 +20,6 @@ import {
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import { NotFound } from "#/server/public-error";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { stampPlacements } from "#/modules/volume-placement/volume-placement.server";
@@ -253,18 +252,12 @@ export const callStore = <C extends StoreCall>(
   );
 }).pipe(Effect.withSpan("ConfigStore.call"));
 
-const memberOrganization = Effect.fn("ConfigStore.memberOrganization")(function* (actor: Actor, organizationSlug: string) {
-  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
-  if (!organization) return yield* new NotFound({ message: "Organization not found." });
-  return organization;
-});
-
 /**
  * The dashboard's way into the Store: one read or write as `actor`, in the Organization named by `organizationSlug`
  * when the actor is a member of it (the same Organization gate as the Org Store's reads).
  */
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
-  return yield* callStore((yield* memberOrganization(actor, organizationSlug)).id, actor.userId, call);
+  return yield* callStore((yield* requireAccess(actor, organizationSlug, "operate")).organization.id, actor.userId, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 /**
@@ -273,7 +266,7 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
  * out (the writer's refetch brings it); a command naming no Environment, or several (a Sync), carries none.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
-  const organization = yield* memberOrganization(actor, organizationSlug);
+  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
   const result = yield* callStore(organization.id, actor.userId, { operation: "write", command });
   const environment = commandEnvironment(command);
   if (!result.ok || environment === null) return result satisfies StoreWriteResult;

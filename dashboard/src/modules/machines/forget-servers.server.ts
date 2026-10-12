@@ -1,17 +1,16 @@
 import "@tanstack/react-start/server-only";
 import type { AppliedVolume, MachineId } from "@ployz/sdk";
-import { and, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
-import { member } from "#/modules/identity/tables";
 import { decryptPairingSecret, foundingClaimFresh, SERVER_REACH_TIMEOUT_MS } from "#/modules/machines/connections.server";
 import { RemovalEndpoints } from "#/modules/machines/pairing-removal";
 import { forgetCluster, seeCluster } from "#/modules/machines/pairing-removal.server";
 import { enrollmentAllocation, organizationMachine } from "#/modules/machines/tables";
-import { requireOrganizationForMember } from "#/modules/organization/organization-state.server";
+import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 
@@ -23,26 +22,23 @@ type ObservedServer = { id: string; name: string; reach: "didnt_answer" | "no_co
 type ForgetServersCheck = { servers: ObservedServer[]; volumes: AppliedVolume[] };
 type ServersForgotten = ForgetServersCheck & { cancelled: string[] };
 
-/** Who forgets: a member of the Organization, which only an owner or admin may do. */
+/** Who forgets: someone who may operate the Organization; only those who may manage it get past the check. */
 type Forgetter = { readonly userId: string; readonly organizationId: string };
 
-/** The dashboard's forgetter: `actor`, in the Organization named by `organizationSlug`, which they must be a member of. */
+/** The dashboard's forgetter: `actor`, in the Organization named by `organizationSlug`, which they must reach. */
 export const forgetterFor = Effect.fn("ForgetServers.forgetterFor")(function* (actor: Actor, organizationSlug: string) {
-  const organization = yield* requireOrganizationForMember(actor, organizationSlug);
+  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
   return { userId: actor.userId, organizationId: organization.id } satisfies Forgetter;
 });
 
 const refused = (refusal: StoreRefusal) => ({ ok: false as const, refusal });
 
-const requireAdmin = Effect.fn("ForgetServers.requireAdmin")(function* ({ userId, organizationId }: Forgetter) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ role: member.role }).from(member).where(and(
-    eq(member.userId, userId), eq(member.organizationId, organizationId), inArray(member.role, ["owner", "admin"]),
-  )).limit(1);
-  return row === undefined
-    ? refused({ code: "forbidden", message: "Only an owner or admin of this Organization can forget its Servers.", details: null })
-    : null;
-});
+const mayManage = (forgetter: Forgetter) => requireAccessById(forgetter, forgetter.organizationId, "manage").pipe(
+  Effect.as(null),
+  Effect.catchTag("Forbidden", () => Effect.succeed(
+    refused({ code: "forbidden", message: "Only an owner or admin of this Organization can forget its Servers.", details: null }),
+  )),
+);
 
 /**
  * Every Server Cloud knows in the Organization's Cluster: its published connections, the Machines a stuck removal still
@@ -89,7 +85,7 @@ const reachServers = Effect.fn("ForgetServers.reach")(function* (known: Readonly
 
 /** Tries every Server; refuses while one is still joining or any answers, naming those that did. */
 const check = Effect.fn("ForgetServers.checkReach")(function* (forgetter: Forgetter) {
-  const denied = yield* requireAdmin(forgetter);
+  const denied = yield* mayManage(forgetter);
   if (denied) return { result: denied, seen: null };
   const { known, seen, joining } = yield* knownServers(forgetter.organizationId);
   if (joining) {

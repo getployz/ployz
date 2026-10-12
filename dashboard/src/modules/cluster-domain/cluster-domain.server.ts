@@ -7,7 +7,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
 import { organization as schemaOrganization } from "#/modules/organization/tables";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -79,7 +79,7 @@ export const checkClusterDomainNow = Effect.fn("ClusterDomain.checkNow")(functio
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const { id } = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+  const { organization: { id } } = yield* requireAccess(actor, input.organizationSlug, "operate");
   yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: id })).pipe(
     Effect.catchTag("InngestEventSendError", (error) => Effect.logWarning("Cluster Domain sync request failed.", error).pipe(
       Effect.andThen(Effect.fail(new Conflict({ message: "The domain couldn’t be checked. Try again shortly." }))),

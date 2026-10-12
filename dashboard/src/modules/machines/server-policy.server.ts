@@ -14,7 +14,7 @@ import {
   type RequestServerPolicyChangeInput,
   type ServerPolicyChange,
 } from "#/modules/machines/server-policy";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Conflict, Validation } from "#/server/public-error";
 
@@ -50,10 +50,7 @@ export const requestServerPolicyChange = Effect.fn(
       message: "A Server Policy change must set at least one value.",
     });
   }
-  const organization = yield* requireInfrastructureOrganization(
-    actor,
-    input.organizationSlug,
-  );
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   yield* refuseWhileDraining(organization.id, input.machineId, input.change);
   yield* sendInngestEvent(
     createServerPolicyChangeRequestedEvent({

@@ -2,6 +2,7 @@ import type { CollectionName, CollectionRead } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
+import type { SupportAccessRow } from "#/modules/support-access/support-access";
 import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
@@ -28,6 +29,8 @@ export const getOrganizationEnrollmentCollection = changeCollection<Organization
 export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
 /** The Organization's Server upgrade settings: no row reads as the defaults. */
 export const getServerUpgradeSettingsCollection = changeCollection<ServerUpgradeSettingsRow>("organization_server_upgrades", (row) => row.id);
+/** Whether the Organization lets Ployz support open it: no row reads as off. */
+export const getSupportAccessCollection = changeCollection<SupportAccessRow>("organization_support_access", (row) => row.id);
 
 /**
  * Every Org Store table by the name the Organization change stream sends.
@@ -38,4 +41,5 @@ export const orgStoreTables = {
   organization_enrollment: getOrganizationEnrollmentCollection,
   organization_cluster_domain: getClusterDomainCollection,
   organization_server_upgrades: getServerUpgradeSettingsCollection,
+  organization_support_access: getSupportAccessCollection,
 } satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;

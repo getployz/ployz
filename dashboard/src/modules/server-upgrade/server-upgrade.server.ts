@@ -11,7 +11,7 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { createCliServerUpgradeRequestedEvent, createServerUpgradeRequestedEvent, type ServerUpgradeRequestedEventData } from "#/modules/inngest/events";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
@@ -86,7 +86,7 @@ export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(fu
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const { drizzle } = yield* Database;
   const inOrganization = eq(serverUpgradeAttempt.organizationId, organization.id);
   const rows = yield* drizzle.selectDistinctOn([serverUpgradeAttempt.machineId], {
@@ -112,7 +112,7 @@ export const requestServerUpgrade = Effect.fn("ServerUpgrade.request")(function*
   actor: Actor,
   input: RequestServerUpgradeInput,
 ) {
-  const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   yield* sendInngestEvent(createServerUpgradeRequestedEvent({
     organizationId: organization.id,
     machineId: input.machineId,
@@ -396,7 +396,7 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
   actor: Actor,
   { organizationSlug, ...settings }: SetServerUpgradeSettingsInput,
 ) {
-  const { id: organizationId } = yield* requireInfrastructureOrganization(actor, organizationSlug);
+  const { organization: { id: organizationId } } = yield* requireAccess(actor, organizationSlug, "operate");
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, ...settings })
     .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: new Date() } })

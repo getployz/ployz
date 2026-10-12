@@ -11,8 +11,9 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { ServerUpgradeSettingsRow } from "#/modules/server-upgrade/server-upgrade";
+import type { SupportAccessRow } from "#/modules/support-access/support-access";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
-import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 
 export class CollectionReadFailure extends Data.TaggedError("CollectionReadFailure")<{
@@ -33,11 +34,11 @@ export const readCollection = Effect.fn("Collections.read")(function* (
   if (actor.userId !== data.userId) {
     return yield* new CollectionReadDenied({ message: "Collection not found." });
   }
-  const organization = yield* getOrganizationForUserBySlug(actor.userId, data.organizationSlug)
-    .pipe(Effect.mapError((cause) => new CollectionReadFailure({ cause })));
-  if (!organization) {
-    return yield* new CollectionReadDenied({ message: "Organization not found." });
-  }
+  const { organization } = yield* requireAccess(actor, data.organizationSlug, "operate").pipe(
+    Effect.mapError((cause) => cause._tag === "NotFound" || cause._tag === "Forbidden"
+      ? new CollectionReadDenied({ message: "Organization not found." })
+      : new CollectionReadFailure({ cause })),
+  );
   const database = yield* Database;
   // `keys` narrows a read to the rows its change window names, by the key its key table logs.
   const readRows = (keys?: string[]) => Effect.gen(function* () {
@@ -71,6 +72,12 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         const settings = tables.organizationServerUpgrades;
         const rows: ServerUpgradeSettingsRow[] = yield* database.drizzle.select({ id: settings.organizationId, automatic: settings.automatic, channel: settings.channel })
           .from(settings).where(scoped(settings));
+        return rows;
+      }
+      case "organization_support_access": {
+        const support = tables.organizationSupportAccess;
+        const rows: SupportAccessRow[] = yield* database.drizzle.select({ id: support.organizationId, allowed: support.allowed })
+          .from(support).where(scoped(support));
         return rows;
       }
     }
