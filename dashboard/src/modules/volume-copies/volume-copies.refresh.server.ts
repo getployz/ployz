@@ -36,9 +36,6 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   observe: CopyObserver = observeOrganizationCopies,
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
-  const refusal = yield* placementRefusal(caller.organizationId, read);
-  if (refusal !== null) return { ok: false, refusal } as const;
-  const { dockerVolume } = yield* resolveVolume(caller.organizationId, environment, volumeId);
   const named = (fallback: StoreRefusal) => Effect.map(
     inspect(caller.organizationId, environment, volumeId).pipe(Effect.orElseSucceed(() => [])),
     (members) => {
@@ -46,6 +43,10 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
       return { ok: false, refusal: names.length === 0 ? fallback : silent(names) } as const;
     },
   );
+  const refusal = yield* placementRefusal(caller.organizationId, read);
+  if (refusal === UNANSWERED) return yield* named(UNANSWERED);
+  if (refusal !== null) return { ok: false, refusal } as const;
+  const { dockerVolume } = yield* resolveVolume(caller.organizationId, environment, volumeId);
   const copies = yield* observe(caller.organizationId).pipe(Effect.option);
   if (Option.isNone(copies)) return yield* named(UNANSWERED);
   const { drizzle } = yield* Database;
