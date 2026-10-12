@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
-/// on the root and compares it by equality only. A root without one reads as 0.
+/// on the root and only ever raises it. A root without one reads as 0.
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
 )]
@@ -216,7 +216,7 @@ pub struct SetVolumeCopyReply {
 pub enum CopyRefusal {
     /// The copy is neither at the want nor what `expect` says.
     Mismatch,
-    /// The table has no cell from this copy to the want, or the want changes the epoch.
+    /// The table has no cell from this copy to the want, or the want lowers the epoch.
     NoTransition,
     /// A Container runs on the root, or a pull into the slot is still receiving.
     Busy,
@@ -267,7 +267,8 @@ impl SetVolumeCopyRefused {
 /// One cell of the transition table with an effect.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CopyTransition {
-    /// Make the root writable again if a cut left it read-only, then resume the start.
+    /// Raise the root's epoch, make it writable again if a cut left it read-only, then
+    /// resume the start.
     WriterToWriter,
     /// The cut.
     WriterToMirror,
@@ -345,10 +346,13 @@ pub fn plan(
             if !expect_matches(copy, expect) {
                 return Refuse(CopyRefusal::Mismatch);
             }
-            if held != epoch {
+            if held > epoch {
                 return Refuse(CopyRefusal::NoTransition);
             }
-            Refuse(CopyRefusal::Behind)
+            if !at_snapshot {
+                return Refuse(CopyRefusal::Behind);
+            }
+            Transition(WriterToWriter)
         }
         (Some(VolumeCopy::Root { .. }), WantedCopy::Mirror { .. }) => expected(WriterToMirror),
         (Some(VolumeCopy::Root { newest, .. }), WantedCopy::Snapshot { name }) => {
@@ -540,15 +544,33 @@ mod tests {
                 Transition(WriterToWriter),
             ),
             (
-                "writer other epoch refuses",
+                "writer higher epoch at the snapshot raises it",
                 Some(root(1, false, Some(g.clone()))),
                 false,
                 WRITER_1,
-                writer(10, 2, false),
+                writer(10, 2, true),
+                Transition(WriterToWriter),
+            ),
+            (
+                "writer lower epoch refuses",
+                Some(root(2, false, Some(g.clone()))),
+                false,
+                ExpectedCopy::Writer {
+                    epoch: WriterEpoch::new(2),
+                },
+                writer(10, 1, false),
                 Refuse(NoTransition),
             ),
             (
-                "writer other epoch, expect mismatch",
+                "writer higher epoch behind",
+                Some(root(1, false, Some(w.clone()))),
+                false,
+                WRITER_1,
+                writer(10, 2, false),
+                Refuse(Behind),
+            ),
+            (
+                "writer higher epoch, expect mismatch",
                 Some(root(1, false, Some(g.clone()))),
                 false,
                 ExpectedCopy::None,

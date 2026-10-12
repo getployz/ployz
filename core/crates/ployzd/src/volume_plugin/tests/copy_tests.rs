@@ -383,11 +383,49 @@ async fn the_writer_route_refuses_a_slot_behind_the_wanted_snapshot() {
 }
 
 #[tokio::test]
-async fn the_writer_route_refuses_a_root_of_another_epoch() {
+async fn the_writer_route_refuses_a_root_of_a_later_epoch() {
+    let test = TestDir::new();
+    let (socket, server) = writer(&test, &[("f-1", 13)]);
+    set_property(&test, ROOT, "ployz:epoch", "2");
+    fs::write(test.0.join("readonly-volume"), "").unwrap();
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Writer",
+        json!({"name": "data", "at": "13", "epoch": 1}),
+    )
+    .await;
+    assert_eq!(reason(&reply), "no_transition");
+    assert!(effects(&commands(&test)).is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn the_writer_route_raises_the_epoch_of_a_root_at_the_snapshot() {
     let test = TestDir::new();
     let (socket, server) = writer(&test, &[("f-1", 13)]);
     set_property(&test, ROOT, "ployz:epoch", "1");
-    fs::write(test.0.join("readonly-volume"), "").unwrap();
+
+    let request = json!({"name": "data", "at": "13", "epoch": 2});
+    let reply = post(&socket, "/Volume.Copy.Writer", request.clone()).await;
+    assert_eq!(reply.pointer("/Ok/epoch"), Some(&json!(2)), "{reply}");
+    assert_eq!(reply.pointer("/Ok/readonly"), Some(&json!(false)));
+    assert_eq!(
+        effects(&commands(&test)),
+        ["zfs set ployz:epoch=2 tank/ployz/data"]
+    );
+
+    let before = commands(&test);
+    assert_eq!(post(&socket, "/Volume.Copy.Writer", request).await, reply);
+    assert!(effects(&commands(&test)[before.len()..]).is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn the_writer_route_refuses_to_raise_the_epoch_of_a_root_behind_the_snapshot() {
+    let test = TestDir::new();
+    let (socket, server) = writer(&test, &[("w-1-2", 12)]);
+    set_property(&test, ROOT, "ployz:epoch", "1");
 
     let reply = post(
         &socket,
@@ -395,7 +433,7 @@ async fn the_writer_route_refuses_a_root_of_another_epoch() {
         json!({"name": "data", "at": "13", "epoch": 2}),
     )
     .await;
-    assert_eq!(reason(&reply), "no_transition");
+    assert_eq!(reason(&reply), "behind");
     assert!(effects(&commands(&test)).is_empty());
     server.abort();
 }

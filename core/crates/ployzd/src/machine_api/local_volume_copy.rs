@@ -59,7 +59,11 @@ impl MachineService {
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
                 let copy = match copy {
-                    Some(VolumeCopy::Root { readonly: true, .. }) => {
+                    Some(VolumeCopy::Root {
+                        readonly,
+                        epoch: held,
+                        ..
+                    }) if readonly || held != epoch => {
                         self.plugin_copy(WRITER_ROUTE, &WriterRequest { name, at, epoch })
                             .await?
                     }

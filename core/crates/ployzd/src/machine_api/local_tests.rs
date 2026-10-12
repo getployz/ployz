@@ -1888,6 +1888,50 @@ mod set_volume_copy {
 
     #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_raised_epoch_refuses_a_cut_that_expected_the_old_one() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-epoch").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(1, Some(snapshot("f-1", 7))));
+        plugin.reply(WRITER_ROUTE, writer_root(2, Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        plugin.on(WRITER_ROUTE, move || {
+            replies.lock().unwrap().insert(
+                INSPECT_ROUTE.into(),
+                writer_root(2, Some(snapshot("f-1", 7))),
+            );
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let holder = running_holder(&service, &fake).await;
+        let raise = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+            "want":{"kind":"writer", "at":"7", "epoch":2,
+                "start":{"kind":"kept", "container_id":holder.to_string()}}});
+
+        let raised = reply(&set_copy(&service, raise.clone()).await);
+        assert_eq!(
+            serde_json::to_value(&raised).unwrap(),
+            json!({"copy": writer_root(2, Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(reply(&set_copy(&service, raise).await), raised);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
+        );
+
+        let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":1}))).await);
+        assert_eq!(error.details["reason"], json!("mismatch"), "{error:?}");
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_replayed_writer_create_finds_the_same_container_by_its_key() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-create").await;
         let plugin = FakePlugin::default();

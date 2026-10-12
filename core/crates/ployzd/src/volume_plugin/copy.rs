@@ -310,8 +310,8 @@ impl VolumeStorage {
         }
     }
 
-    /// Writer at `at` numbered `epoch`. A read-only root becomes writable again; a slot
-    /// whose newest snapshot is `at` is promoted to the root first.
+    /// Writer at `at` numbered `epoch`. A root takes the higher epoch and becomes writable
+    /// again; a slot whose newest snapshot is `at` is promoted to the root first.
     async fn copy_writer(&self, request: &WriterRequest) -> Result<Copy, RpcError> {
         let scope = self.scope(&request.name).await?;
         let name = &scope.name;
@@ -319,19 +319,27 @@ impl VolumeStorage {
         if let Some(root) = scope.root()? {
             let (readonly, mountpoint) = (root.readonly, root.mountpoint.clone());
             let epoch = self.epoch(&root_name).await.map_err(internal)?;
-            if epoch != request.epoch {
+            if epoch > request.epoch {
                 return Err(self
                     .refuse_found(
                         &scope,
                         CopyRefusal::NoTransition,
                         format!(
-                            "Volume {name} is writer epoch {epoch}, not {}",
+                            "Volume {name} is writer epoch {epoch}, past {}",
                             request.epoch
                         ),
                     )
                     .await);
             }
             self.require_at(&scope, &root_name, request).await?;
+            if epoch < request.epoch {
+                self.z(&[
+                    "set",
+                    &format!("{EPOCH_PROPERTY}={}", request.epoch),
+                    &root_name,
+                ])
+                .await?;
+            }
             if scope.slot().is_some() && scope.fs().is_none() {
                 self.z(&["destroy", &slot_parent(&scope.pool, name)])
                     .await?;
