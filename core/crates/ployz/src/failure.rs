@@ -228,12 +228,14 @@ impl Failure {
         hints
     }
 
-    /// The `cause:` lines: each error below our sentence.
+    /// The `cause:` lines under our sentence. A refusal's sentence stands alone.
     #[must_use]
     pub fn causes(&self) -> Vec<String> {
         match &self.inner {
-            Inner::Command { error, .. } => ui::causes(error.as_ref()),
-            Inner::Partial | Inner::Exit(_) => Vec::new(),
+            Inner::Command { error, .. } if refusal_before_context(error.as_ref()).is_none() => {
+                ui::causes(error.as_ref())
+            }
+            Inner::Command { .. } | Inner::Partial | Inner::Exit(_) => Vec::new(),
         }
     }
 
@@ -252,7 +254,7 @@ impl Failure {
     #[must_use]
     pub fn report(&self) -> RpcError {
         let (code, mut details) = match &self.inner {
-            Inner::Command { error, .. } => match refusal_below_context(error.as_ref()) {
+            Inner::Command { error, .. } => match refusal_before_context(error.as_ref()) {
                 Some(refusal) => (RpcErrorCode::Unsupported, refusal.details),
                 None => classify(error.as_ref()),
             },
@@ -287,7 +289,7 @@ impl Failure {
     }
 }
 
-fn refusal_below_context(error: &(dyn Error + 'static)) -> Option<Refusal> {
+fn refusal_before_context(error: &(dyn Error + 'static)) -> Option<Refusal> {
     std::iter::successors(Some(error), |&link| link.source())
         .take_while(|link| !link.is::<Message>())
         .find_map(|link| {
@@ -775,7 +777,7 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command { error, .. } => match refusal_below_context(error.as_ref()) {
+            Inner::Command { error, .. } => match refusal_before_context(error.as_ref()) {
                 Some(refusal) => refusal.fmt(f),
                 None => error.fmt(f),
             },
@@ -1020,10 +1022,13 @@ mod tests {
                     .addressed_as("beta"),
             )),
         };
+        let failure = Failure::from(error);
         assert_eq!(
-            Failure::from(error).to_string(),
+            failure.to_string(),
             "beta needs a newer Ployz. It cannot serve ployz.logs.tail.v1."
         );
+        assert_eq!(failure.causes(), Vec::<String>::new());
+        assert_eq!(failure.report().cause, Vec::<String>::new());
     }
 
     #[test]

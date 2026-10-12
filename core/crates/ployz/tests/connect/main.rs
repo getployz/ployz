@@ -517,6 +517,8 @@ async fn a_refused_tail_names_the_capability_and_the_server() {
         stderr.contains("one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
         "{stderr}"
     );
+    assert!(!stderr.contains("Machine RPC failed"), "{stderr}");
+    assert!(!stderr.contains("cause:"), "{stderr}");
 
     server.abort();
 }
