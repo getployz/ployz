@@ -728,15 +728,20 @@ pub fn no_writer_message(name: &str, copies: &[KnownCopy]) -> String {
             "Volume {name} has no writer; {} holds its only copy. Make it the writer: ployz volume restore {name} --from {}",
             only.machine, only.machine
         ),
-        [first, others @ ..] => {
-            let removals = others
+        // Copies carry no age, so the operator picks which one to keep.
+        _ => {
+            let removals = copies
                 .iter()
-                .map(|copy| format!("ployz volume mirror rm {name}-{}", copy.machine))
+                .map(|copy| {
+                    format!(
+                        "ployz volume mirror rm {name}-{} --confirm {name}",
+                        copy.machine
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
-                "Volume {name} has no writer; it is held as {listed}. Restore needs a single copy: remove the others with {removals} first, then run ployz volume restore {name} --from {}",
-                first.machine
+                "Volume {name} has no writer; it is held as {listed}. Restore needs a single copy: keep the newest, remove each other one ({removals}), then run ployz volume restore {name} --from <server you kept>"
             )
         }
     }
@@ -866,7 +871,7 @@ mod tests {
                     copy("nbg-3", CopyRole::Slot),
                 ]
             ),
-            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: remove the others with ployz volume mirror rm data-hel-1, ployz volume mirror rm data-nbg-3 first, then run ployz volume restore data --from fsn-2"
+            "Volume data has no writer; it is held as fsn-2 (copy), hel-1 (copy), nbg-3 (copy). Restore needs a single copy: keep the newest, remove each other one (ployz volume mirror rm data-fsn-2 --confirm data, ployz volume mirror rm data-hel-1 --confirm data, ployz volume mirror rm data-nbg-3 --confirm data), then run ployz volume restore data --from <server you kept>"
         );
         assert_eq!(
             no_writer_message("data", &[]),

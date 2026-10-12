@@ -733,7 +733,7 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
             "slots on both",
             vec![('1', CopyRole::Slot), ('2', CopyRole::Slot)],
             vec![],
-            "Restore needs a single copy: remove the others with ployz volume mirror rm data-second first, then run ployz volume restore data --from first",
+            "Restore needs a single copy: keep the newest, remove each other one (ployz volume mirror rm data-first --confirm data, ployz volume mirror rm data-second --confirm data), then run ployz volume restore data --from <server you kept>",
         ),
     ] {
         let error = preview_deploy(&intent, &copies_snapshot(&copies, rows)).unwrap_err();
