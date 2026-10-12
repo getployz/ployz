@@ -158,6 +158,35 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
     }
 }
 
+/// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "the switch verbs answer with four reply kinds; any other kind is a Machine fault"
+)]
+fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
+    let payload = match body {
+        RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
+        RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
+        RpcResponseBody::ReceiveView(view) => serde_json::to_value(view),
+        RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
+        RpcResponseBody::Error(error) => return Err(error),
+        other => {
+            return Err(RpcError {
+                code: RpcErrorCode::Internal,
+                message: format!("Machine answered {command} with {}", other.kind().as_str()),
+                details: Value::Null,
+                cause: Vec::new(),
+            });
+        }
+    };
+    payload.map_err(|error| RpcError {
+        code: RpcErrorCode::Internal,
+        message: "Volume switch reply could not be encoded".into(),
+        details: Value::Null,
+        cause: vec![error.to_string()],
+    })
+}
+
 struct SessionInner {
     client: std::sync::Mutex<Option<Client>>,
     cancel: CancellationToken,
@@ -673,11 +702,8 @@ impl Session {
     ///
     /// Returns `invalid_argument` when `request` is not one of the Volume switch
     /// commands or `machine` is not a Machine Target, and the Machine's [`RpcError`]
-    /// otherwise, its `details` a `SwitchError` when the fence refused.
-    #[expect(
-        clippy::wildcard_enum_match_arm,
-        reason = "the switch verbs answer with three reply kinds; any other kind is a Machine fault"
-    )]
+    /// otherwise, its `details` a `SwitchError` when the fence refused or a
+    /// `SetVolumeCopyRefused` when SetVolumeCopy refused.
     pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
@@ -694,30 +720,7 @@ impl Session {
                 Some(crate::connect::TARGET_RPC_TIMEOUT),
             ))
             .await?;
-        let payload = match response.body {
-            RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
-            RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
-            RpcResponseBody::ReceiveView(view) => serde_json::to_value(view),
-            RpcResponseBody::Error(error) => return Err(error),
-            other => {
-                return Err(RpcError {
-                    code: RpcErrorCode::Internal,
-                    message: format!(
-                        "Machine answered {} with {}",
-                        request.body.command(),
-                        other.kind().as_str()
-                    ),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                });
-            }
-        };
-        payload.map_err(|error| RpcError {
-            code: RpcErrorCode::Internal,
-            message: "Volume switch reply could not be encoded".into(),
-            details: Value::Null,
-            cause: vec![error.to_string()],
-        })
+        volume_switch_payload(request.body.command(), response.body)
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.

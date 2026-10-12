@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
     EnvironmentValues, HealthObservation, MachineId, MachineObservation, MachineStorageObservation,
-    MachineTarget, Namespace, RpcError, RpcErrorCode, ServiceName, StartContainerRequest,
-    StopContainerRequest, op,
+    MachineTarget, Namespace, RemoveContainerRequest, RpcError, RpcErrorCode, ServiceName,
+    StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -296,6 +296,35 @@ pub async fn stop_one(
             None,
         ))
         .await
+}
+
+/// Remove stopped Container `container` from `machine`, keeping its Volumes. A Container
+/// the Machine no longer has answers Ok, so a resend after a crash converges.
+///
+/// # Errors
+/// Returns the Machine's refusal, or the transport's error when it did not answer.
+pub async fn remove_one(
+    session: &Session,
+    machine: MachineId,
+    container: ContainerId,
+) -> Result<(), RpcError> {
+    let client = session.client()?;
+    let removed = session
+        .until_closed(client.invoke::<op::RemoveContainer>(
+            RemoveContainerRequest {
+                container_id: container,
+                remove_volumes: false,
+                force: false,
+            },
+            &MachineTarget::from(&machine),
+            Some(TARGET_RPC_TIMEOUT),
+        ))
+        .await;
+    match removed {
+        Ok(_) => Ok(()),
+        Err(error) if error.code == RpcErrorCode::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// What a committed start reached, waiting for it the way a Deploy does.

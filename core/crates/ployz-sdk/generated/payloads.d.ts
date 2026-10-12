@@ -792,7 +792,11 @@ expect: Revision | null, };
 
 export type CopyObservation = { copies: Array<ObservedCopy>, unanswered: Array<MachineId>, };
 
+export type CopyRefusal = "mismatch" | "no_transition" | "busy" | "no_capacity" | "behind" | "written" | "no_source";
+
 export type CopyRole = "writer" | "slot" | "switching";
+
+export type CopyStart = { "kind": "kept", container_id: ContainerId, } | { "kind": "create", namespace: Namespace, resolved_spec: ResolvedServiceSpec, creation_key: CreationKey, };
 
 export type CpuNanos = number;
 
@@ -953,6 +957,8 @@ shared_writes?: boolean,
  * Fix its storage now, as a Deploy would. A restored Volume keeps the storage of the copy it lands on.
  */
 storage_locked?: boolean, };
+
+export type CreationKey = string;
 
 export type Cycle = "open" | "closed";
 
@@ -1525,6 +1531,8 @@ service: ServiceName | null, };
 
 export type DomainsView = { environment: EnvironmentSummary, domains: Array<DomainRow>, };
 
+export type Drain = number;
+
 export type DrainReport = {
 /**
  * The drained Server's record as selected, before this Drain changed its role.
@@ -1733,6 +1741,8 @@ project: ProjectName | null, };
 export type EnvironmentsView = { project: ProjectSummary, environments: Array<EnvironmentListing>, };
 
 export type ExecutionError = { "type": "machine", action: MachineAction, error: RpcError, } | { "type": "health", container_id: ContainerId, failure: HealthFailure, } | { "type": "dependency_health", dependency: QualifiedService, failure: DependencyHealthFailure, } | { "type": "hook", container_id: ContainerId, failure: HookFailure, } | { "type": "cancelled" };
+
+export type ExpectedCopy = { "kind": "writer", epoch: WriterEpoch, } | { "kind": "mirror", newest: SnapshotGuid, } | { "kind": "none" };
 
 export type ExtraHost = string;
 
@@ -3044,6 +3054,8 @@ namespace: Namespace,
  */
 service: ServiceName, };
 
+export type Pull = { target: SnapshotName, failure: string | null, };
+
 export type PullPolicy = "always" | "missing" | "never";
 
 export type PullRequest = { repository_id: RepositoryId, number: PullRequestNumber, title: string,
@@ -3951,6 +3963,12 @@ remove_on_close: boolean | null,
  */
 include_bots: boolean | null, };
 
+export type SetVolumeCopyRefused = { reason: CopyRefusal, copy: VolumeCopy | null, };
+
+export type SetVolumeCopyReply = { copy: VolumeCopy | null, };
+
+export type SetVolumeCopyRequest = { name: DockerVolumeName, expect: ExpectedCopy, want: WantedCopy, };
+
 export type SetVolumeSharedWrites = {
 /**
  * The Environment containing the Volume.
@@ -4421,7 +4439,15 @@ export type VolumeCopies = { volume: VolumeName,
  */
 writer: ServerRef | null, mirror: Mirror | null, };
 
-export type VolumeCopy = { "kind": "root", writer: WriterMarker, readonly: boolean, newest: Snapshot | null, } | { "kind": "slot", mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, resume_token: string | null, };
+export type VolumeCopy = { "kind": "root", writer: WriterMarker, readonly: boolean, newest: Snapshot | null,
+/**
+ * The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
+ */
+epoch: WriterEpoch, } | { "kind": "slot", mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, resume_token: string | null,
+/**
+ * The `SetVolumeCopy` pull in flight, from its start until its prune is done.
+ */
+pull: Pull | null, };
 
 export type VolumeCopyView = { copy: VolumeCopy | null, lease: LeaseRecord | null, };
 
@@ -4622,6 +4648,8 @@ volumes: Array<VolumeListing>, };
 
 export type Waiting = { server: string, why: string, fix: Fix, };
 
+export type WantedCopy = { "kind": "writer", at: SnapshotGuid, epoch: WriterEpoch, start: CopyStart | null, } | { "kind": "mirror", from: string | null, target: SnapshotName, drain: Drain, } | { "kind": "snapshot", name: SnapshotName, } | { "kind": "forget" };
+
 export type WarmRequest = { switch: Switch, name: DockerVolumeName, };
 
 export type WireGuardPublicKey = Array<number>;
@@ -4629,6 +4657,8 @@ export type WireGuardPublicKey = Array<number>;
 export type Withheld = "no_secret_context" | "unanswered";
 
 export type Write = { "at": "store", "write": ConfigCommand } | { "at": "act", "write": Act };
+
+export type WriterEpoch = number;
 
 export type WriterMarker = { "phase": "idle" } | { "phase": "stopping" } | { "phase": "frozen", guid: SnapshotGuid, } | { "phase": "thawing" } | { "phase": "handed", guid: SnapshotGuid, };
 

@@ -72,6 +72,8 @@ import type {
   ReceiveView,
   SeedVolumeRequest,
   ServiceVolumeRequest,
+  SetVolumeCopyReply,
+  SetVolumeCopyRequest,
   SnapshotGuid,
   SourceContainerRequest,
   SwitchReply,
@@ -113,11 +115,17 @@ export type VolumeSwitchRequest =
   | { command: "promote"; payload: ServiceVolumeRequest }
   | { command: "start_handed_container"; payload: ServiceVolumeRequest }
   | { command: "restore"; payload: ServiceVolumeRequest }
-  | { command: "seed_volume"; payload: SeedVolumeRequest };
+  | { command: "seed_volume"; payload: SeedVolumeRequest }
+  | { command: "set_volume_copy"; payload: SetVolumeCopyRequest };
 
 /** The reply payload of one Volume run verb. */
-export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
-  C extends "inspect_volume_copy" ? VolumeCopyView : C extends "inspect_receive" ? ReceiveView : SwitchReply;
+export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> = C extends "inspect_volume_copy"
+  ? VolumeCopyView
+  : C extends "inspect_receive"
+    ? ReceiveView
+    : C extends "set_volume_copy"
+      ? SetVolumeCopyReply
+      : SwitchReply;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (
@@ -363,6 +371,11 @@ export declare class Client {
   /** Stop one Container. A rejection with `unavailable` means the stop may have happened. */
   stopContainer(machine: string, container: string): Promise<void>;
   /**
+   * Remove one stopped Container, keeping its Volumes. A Container the Machine no longer
+   * has resolves too, so a retry after a crash converges.
+   */
+  removeContainer(machine: string, container: string): Promise<void>;
+  /**
    * Start one Container and wait for it the way a Deploy does: `serving` once it serves,
    * `unconfirmed` when it started but wasn't seen serving in time, `unhealthy` when it
    * failed its healthcheck or didn't pass it before its deadline.
@@ -378,7 +391,8 @@ export declare class Client {
   /**
    * Send one Volume switch request to one Machine and answer its reply payload. Only the Volume
    * run verbs are accepted; any other command rejects `invalid_argument`. Not retried. A fence
-   * refusal rejects with an `RpcError` whose `details` is a `SwitchError`.
+   * refusal rejects with an `RpcError` whose `details` is a `SwitchError`; a `set_volume_copy`
+   * refusal rejects with one whose `details` is a `SetVolumeCopyRefused`.
    */
   volumeSwitch<R extends VolumeSwitchRequest>(
     machine: MachineTarget,
