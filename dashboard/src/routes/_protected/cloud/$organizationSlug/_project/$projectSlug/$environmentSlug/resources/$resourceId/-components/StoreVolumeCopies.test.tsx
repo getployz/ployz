@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
-import type { Member } from "#/modules/volume-run/volume-run";
-import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
+import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
+import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
 import { type CopyServer, SafetyLine, VolumeCopiesPanel } from "./StoreVolumeCopies";
 
 const NOW = new Date("2026-10-12T12:00:00Z");
@@ -26,17 +26,21 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 };
 const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServer => ({ id: id(name), name, storage });
 
-function panel(members: Member[], placement: PlacementRow | null, options: { open?: string; upgrade?: string[]; servers?: CopyServer[]; deploying?: boolean } = {}) {
+function panel(members: Member[], placement: PlacementRow | null, options: {
+  open?: string; upgrade?: string[]; servers?: CopyServer[]; lastDone?: VolumeRunView; refreshing?: boolean; deploying?: boolean;
+} = {}) {
   const stage = vi.fn();
+  const refresh = vi.fn();
   const deleteCopy = vi.fn(() => Promise.resolve());
   const restore = vi.fn();
   const onOpen = vi.fn();
-  const copies = copiesFromPlacement({ volume, members, row: placement, active: null, lastSync: null, lastDone: null });
+  const copies = copiesFromPlacement({ volume, members, row: placement, active: null, lastSync: null, lastDone: options.lastDone ?? null });
   render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
-    upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore} deleteCopy={deleteCopy}
+    upgrade={options.upgrade ?? []} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
+    deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false} clock={(at) => at.toISOString().slice(11, 16)}
     open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
-  return { stage, deleteCopy, restore, onOpen };
+  return { stage, deleteCopy, restore, onOpen, refresh };
 }
 const group = (label: string) => within(screen.getByRole("list", { name: label }));
 const rows = (label: string) => group(label).queryAllByRole("listitem").map((item) => item.textContent);
@@ -152,6 +156,35 @@ describe("mirror detail", () => {
     const { restore } = panel(fresh(), row(["web-2"]), { open: "web-2" });
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
     expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-2" }));
+  });
+
+  const silent = () => [member("web-1", "writer"), member("web-2", "unanswered")];
+  const doneAgo = (minutes: number) => ({ ...run("sync", { full: false }, "done"), finished_at: new Date(NOW.getTime() - minutes * 60_000).toISOString() });
+  const refreshNow = () => screen.getByRole("button", { name: "Refresh now" }) as HTMLButtonElement;
+
+  it("runs a round on Refresh now", () => {
+    const { refresh } = panel(fresh(), row(["web-2"]), { open: "web-2" });
+    expect(screen.getByText("5 minutes ago")).toBeTruthy();
+    fireEvent.click(refreshNow());
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("reads Refreshing from the click until the round ends, and can't be clicked again", () => {
+    panel(fresh(), row(["web-2"]), { open: "web-2", refreshing: true });
+    expect(screen.getByText("Refreshing")).toBeTruthy();
+    expect(refreshNow().disabled).toBe(true);
+  });
+
+  it("says why a silent mirror's refresh was skipped", () => {
+    panel(silent(), row(["web-2"]), { open: "web-2", lastDone: doneAgo(135) });
+    expect(screen.getByText("Refresh skipped")).toBeTruthy();
+    expect(screen.getByText(/^web-2 stopped answering at 10:00\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
+    expect(refreshNow().disabled).toBe(false);
+  });
+
+  it("hides the skipped prose while a round runs", () => {
+    panel(silent(), row(["web-2"]), { open: "web-2", lastDone: doneAgo(135), refreshing: true });
+    expect(screen.queryByText("Refresh skipped")).toBeNull();
   });
 
   it("falls back to the list when the copy is gone", () => {
