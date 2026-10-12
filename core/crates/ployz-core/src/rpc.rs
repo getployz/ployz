@@ -1,9 +1,10 @@
 use crate::{
-    CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
-    InspectVolumeCopyRequest, ListVolumeSnapshotsRequest, MirrorRequest, ReceiveView,
-    SeedVolumeRequest, ServiceVolumeRequest, SetVolumeSnapshotRequest, SourceContainerRequest,
-    StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView, VolumeSnapshots,
-    WarmRequest,
+    CheckOffsiteRequest, CommitRequest, DeclareMirrorRequest, HandOverRequest,
+    InspectReceiveRequest, InspectVolumeCopyRequest, InspectVolumeOffsiteRequest,
+    ListVolumeSnapshotsRequest, MirrorRequest, OffsiteChecked, ReceiveView, SeedVolumeRequest,
+    ServiceVolumeRequest, SetVolumeOffsiteReply, SetVolumeOffsiteRequest, SetVolumeSnapshotRequest,
+    SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
+    VolumeOffsiteView, VolumeSnapshots, WarmRequest,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{
@@ -1072,6 +1073,9 @@ define_responses! {
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
     VolumeSnapshots(VolumeSnapshots) => "volume_snapshots";
+    SetVolumeOffsiteReply(SetVolumeOffsiteReply) => "set_volume_offsite_reply";
+    VolumeOffsiteView(VolumeOffsiteView) => "volume_offsite_view";
+    OffsiteChecked(OffsiteChecked) => "offsite_checked";
     SwitchReply(crate::SwitchReply) => "switch_reply";
     ReceiveView(crate::ReceiveView) => "receive_view";
     MachineImages(MachineImages) => "machine_images";

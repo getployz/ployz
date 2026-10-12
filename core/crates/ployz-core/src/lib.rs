@@ -23,6 +23,7 @@ pub mod service;
 mod storage_capacity;
 pub mod stream;
 pub mod value;
+mod volume_offsite;
 mod volume_snapshot;
 mod volume_switch;
 
@@ -42,6 +43,7 @@ pub use service::*;
 pub use storage_capacity::*;
 pub use stream::*;
 pub use value::*;
+pub use volume_offsite::*;
 pub use volume_snapshot::*;
 pub use volume_switch::*;
 

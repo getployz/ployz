@@ -647,6 +647,31 @@ impl MachineRpc for MachineService {
         ))
     }
 
+    async fn set_volume_offsite(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "SetVolumeOffsite lands with its handler",
+        ))
+    }
+
+    async fn inspect_volume_offsite(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "InspectVolumeOffsite lands with its handler",
+        ))
+    }
+
+    async fn check_offsite(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("CheckOffsite lands with its handler"))
+    }
+
     async fn withdraw(
         &self,
         request: Request<OpaquePayload>,

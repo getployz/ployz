@@ -126,6 +126,10 @@ checks: Array<PullRequestRef>,
  */
 cancelled: Array<DeploymentId>, };
 
+export type BackupId = string;
+
+export type BackupNote = string;
+
 export type Batch = {
 /**
  * The Environment every command writes. A command naming another is refused.
@@ -276,6 +280,8 @@ staged: Array<NodeName>, };
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
+export type BucketName = string;
+
 export type BuildConcurrency = number;
 
 export type BuildConcurrencyUpdate = { "action": "keep" } | { "action": "automatic" } | { "action": "set", "value": BuildConcurrency };
@@ -424,6 +430,8 @@ export type ChangeKind = "add" | "update" | "remove";
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
 export type CheckConclusion = "success" | "neutral" | "skipped" | "failure" | "cancelled" | "timed_out" | "action_required" | "stale" | "startup_failure" | "other";
+
+export type CheckOffsiteRequest = { bucket: OffsiteBucket, };
 
 export type CheckStatus = "queued" | "in_progress" | "completed" | "other";
 
@@ -2075,6 +2083,8 @@ export type InspectReceiveRequest = { name: DockerVolumeName, round: number, };
 
 export type InspectVolumeCopyRequest = { name: DockerVolumeName, };
 
+export type InspectVolumeOffsiteRequest = { name: DockerVolumeName, bucket: OffsiteBucket, };
+
 export type Instead = { "kind": "reference", value: string, } | { "kind": "sealed" };
 
 export type InterfaceRate = { rx: number, tx: number, };
@@ -2680,6 +2690,33 @@ export type ObservationKind = "container" | "volume";
 export type ObservedCopy = { machine_id: MachineId, name: DockerVolumeName, role: CopyRole, };
 
 export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
+
+export type OffsiteBackup = { id: BackupId,
+/**
+ * When the snapshot it holds was taken.
+ */
+taken_unix_seconds: number,
+/**
+ * Size of the stored stream, which a restore downloads.
+ */
+bytes: number, note: BackupNote, };
+
+export type OffsiteBucket = {
+/**
+ * `http://` or `https://` base URL of the S3 API, without the bucket. Requests use
+ * path-style addressing, which every S3-compatible store accepts.
+ */
+endpoint: string, region: string, bucket: BucketName,
+/**
+ * Keys start with `<prefix>/<volume>/<backup>/`.
+ */
+prefix: OffsitePrefix, access_key: string, secret_key: SecretKey, };
+
+export type OffsiteChecked = Record<symbol, never>;
+
+export type OffsitePrefix = string;
+
+export type OffsiteStatus = { "kind": "running", bytes: number, } | { "kind": "done" } | { "kind": "failed", reason: string, };
 
 export type OnMerge = {
 /**
@@ -3559,6 +3596,8 @@ sharedWrites?: boolean, };
 
 export type ScopedVolumeSource = { namespace: Namespace, logical_name: DockerVolumeName, };
 
+export type SecretKey = string;
+
 export type SecretRow = Record<symbol, never>;
 
 export type SelectedEndpoint = string;
@@ -3963,6 +4002,10 @@ remove_on_close: boolean | null,
  * Make PR Environments for bots' pull requests too.
  */
 include_bots: boolean | null, };
+
+export type SetVolumeOffsiteReply = { status: OffsiteStatus, };
+
+export type SetVolumeOffsiteRequest = { name: DockerVolumeName, bucket: OffsiteBucket, backup: BackupId, want: WantedOffsite, };
 
 export type SetVolumeSharedWrites = {
 /**
@@ -4524,6 +4567,16 @@ held: Array<DockerVolumeId>,
  */
 unanswered: Array<MachineId>, };
 
+export type VolumeOffsiteView = {
+/**
+ * Complete backups, newest first. An upload still running is not listed.
+ */
+backups: Array<OffsiteBackup>,
+/**
+ * The backup this Machine holds downloaded for a restore not yet swapped in.
+ */
+replacement: BackupId | null, };
+
 export type VolumeQuery = {
 /**
  * The Environment it is in.
@@ -4666,6 +4719,8 @@ environment: EnvironmentSummary,
 volumes: Array<VolumeListing>, };
 
 export type Waiting = { server: string, why: string, fix: Fix, };
+
+export type WantedOffsite = { "kind": "uploaded", from: SnapshotGuid, note: BackupNote, } | { "kind": "downloaded", save: SnapshotId, } | { "kind": "restored", expect: WriterEpoch, save: SnapshotId, label: SnapshotLabel, } | { "kind": "gone" };
 
 export type WantedSnapshot = { "kind": "taken", id: SnapshotId, label: SnapshotLabel, kept: boolean, } | { "kind": "kept", id: SnapshotId, kept: boolean, } | { "kind": "deleted", id: SnapshotId, } | { "kind": "restored", from: SnapshotId, save: SnapshotId, label: SnapshotLabel, };
 
