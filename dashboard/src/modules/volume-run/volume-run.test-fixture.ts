@@ -6,16 +6,16 @@ export const lease = (cycle: LeaseRecord["cycle"], number = 4): LeaseRecord => (
 
 /** Each copy a Machine can answer with, by what it is mid-run. */
 export const COPIES = {
-  writer: { kind: "root", writer: { phase: "idle" }, readonly: false, newest: snapshot },
-  switching: { kind: "root", writer: { phase: "frozen", guid: "11" }, readonly: true, newest: snapshot },
-  handed: { kind: "root", writer: { phase: "handed", guid: "11" }, readonly: true, newest: snapshot },
-  mirror: { kind: "slot", mirror: { phase: "idle" }, readonly: true, newest: snapshot, resume_token: null },
-  stale: { kind: "slot", mirror: { phase: "handed_in", guid: "11" }, readonly: true, newest: snapshot, resume_token: null },
-  promoting: { kind: "slot", mirror: { phase: "promoting" }, readonly: true, newest: snapshot, resume_token: null },
-  stopping: { kind: "root", writer: { phase: "stopping" }, readonly: false, newest: snapshot },
-  thawing: { kind: "root", writer: { phase: "thawing" }, readonly: true, newest: snapshot },
-  behind: { kind: "slot", mirror: { phase: "idle" }, readonly: true, newest: { ...snapshot, guid: "10" }, resume_token: null },
-  promoted: { kind: "root", writer: { phase: "idle" }, readonly: true, newest: snapshot },
+  writer: { kind: "root", writer: { phase: "idle" }, readonly: false, newest: snapshot, epoch: 0 },
+  switching: { kind: "root", writer: { phase: "frozen", guid: "11" }, readonly: true, newest: snapshot, epoch: 0 },
+  handed: { kind: "root", writer: { phase: "handed", guid: "11" }, readonly: true, newest: snapshot, epoch: 0 },
+  mirror: { kind: "slot", slot: "1", mirror: { phase: "idle" }, readonly: true, newest: snapshot, resume_token: null, pull: null },
+  stale: { kind: "slot", slot: "1", mirror: { phase: "handed_in", guid: "11" }, readonly: true, newest: snapshot, resume_token: null, pull: null },
+  promoting: { kind: "slot", slot: "1", mirror: { phase: "promoting" }, readonly: true, newest: snapshot, resume_token: null, pull: null },
+  stopping: { kind: "root", writer: { phase: "stopping" }, readonly: false, newest: snapshot, epoch: 0 },
+  thawing: { kind: "root", writer: { phase: "thawing" }, readonly: true, newest: snapshot, epoch: 0 },
+  behind: { kind: "slot", slot: "1", mirror: { phase: "idle" }, readonly: true, newest: { ...snapshot, guid: "10" }, resume_token: null, pull: null },
+  promoted: { kind: "root", writer: { phase: "idle" }, readonly: true, newest: snapshot, epoch: 0 },
 } satisfies Record<string, VolumeCopy>;
 
 export type Copy = keyof typeof COPIES | "empty" | "unanswered";

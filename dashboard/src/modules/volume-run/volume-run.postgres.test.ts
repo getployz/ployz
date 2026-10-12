@@ -53,14 +53,15 @@ type FakeMachine = {
 
 const snap = (guid: string): Snapshot => ({ name: `ployz-${guid}`, guid, created_unix_seconds: 1_790_000_000 });
 const writerCopy = (guid: string | null): VolumeCopy =>
-  ({ kind: "root", writer: { phase: "idle" }, readonly: false, newest: guid === null ? null : snap(guid) });
+  ({ kind: "root", writer: { phase: "idle" }, readonly: false, newest: guid === null ? null : snap(guid), epoch: 0 });
 const slotCopy = (guid: string | null, phase: "idle" | "handed_in" = "idle"): VolumeCopy =>
-  ({ kind: "slot", mirror: phase === "idle" ? { phase } : { phase, guid: guid ?? "1" }, readonly: true, newest: guid === null ? null : snap(guid), resume_token: null });
+  ({ kind: "slot", slot: "1", mirror: phase === "idle" ? { phase } : { phase, guid: guid ?? "1" }, readonly: true, newest: guid === null ? null : snap(guid), resume_token: null, pull: null });
 const sourceCopy = (phase: "stopping" | "frozen" | "handed", guid = "30"): VolumeCopy => ({
   kind: "root",
   writer: phase === "stopping" ? { phase } : { phase, guid },
   readonly: phase !== "stopping",
   newest: { name: "f-1", guid, created_unix_seconds: 1_790_000_000 },
+  epoch: 0,
 });
 const busy = { code: "unavailable", message: "busy", details: { reason: "busy" } };
 const refused = { code: "failed_precondition", message: "precondition", details: { reason: "precondition" } };
