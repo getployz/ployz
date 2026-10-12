@@ -162,9 +162,9 @@ queries! {
     Environment(EnvironmentQuery) -> EnvironmentView
         => crate::settings::query::environment(tx, who, q);
     /// What Publish would save and Deploy would apply.
-    Diff(DiffQuery) -> crate::DiffView => crate::review::diff::diff(tx, who, q);
+    Diff(DiffQuery) -> crate::DiffView => crate::review::diff::diff(tx, who, trusted, q);
     /// What a Deploy would ship, from authored state alone.
-    Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, q);
+    Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, trusted, q);
     /// One page of an Environment's Deployments.
     Deployments(DeploymentsQuery) -> DeploymentsView
         => crate::deployment::query::page(tx, who, q);
@@ -180,7 +180,8 @@ queries! {
     /// An Environment's Services.
     Services(ServicesQuery) -> ServicesView => crate::service::query::services(tx, who, q);
     /// One Service.
-    Service(ServiceQuery) -> ServiceView => crate::service::query::service(tx, who, q);
+    Service(ServiceQuery) -> ServiceView
+        => crate::service::query::service(tx, who, trusted, q);
     /// Where an Environment runs on the Servers.
     Namespace(NamespaceQuery) -> NamespaceView
         => crate::deployment::query::namespace(tx, who, q);

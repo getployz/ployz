@@ -7,7 +7,7 @@
 use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use crate::Actor;
@@ -103,6 +103,7 @@ pub(crate) fn environment(
                     )?),
                     Target::Setting(_)
                     | Target::Source
+                    | Target::Domains
                     | Target::Exported(_)
                     | Target::Mount(_)
                     | Target::ConfigMount(_) => None,
@@ -122,16 +123,10 @@ pub(crate) fn environment(
             if !setting.applies(&service.config) {
                 continue;
             }
-            // Unset, a Private DNS name is the Service's own.
-            let default = if matches!(setting, ServiceSetting::PrivateDns) {
-                json!(service.slug)
-            } else {
-                setting.default()
-            };
             row(
                 Target::Setting(setting),
                 setting.value(&service.config, &policy),
-                default,
+                setting.default(Some(&name)),
                 setting.apply(),
             )?;
         }

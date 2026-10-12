@@ -304,6 +304,19 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     Ok(Review { view, saved, head })
 }
 
+/// Each Service's Setting changes among `changes`, with the Service's node ID.
+pub(crate) fn service_rows(
+    changes: &mut [NodeChange],
+) -> impl Iterator<Item = (&str, &mut ServiceSettingChange)> {
+    changes
+        .iter_mut()
+        .filter(|change| change.node.node_type == EnvironmentNodeType::Service)
+        .flat_map(|NodeChange { node, settings, .. }| {
+            let id = node.id.as_str();
+            settings.iter_mut().map(move |row| (id, row))
+        })
+}
+
 /// What the destructive review gates.
 pub(crate) enum Shipping<'a> {
     /// Deploying these Services of Working State; none deploys all of it.
@@ -372,6 +385,7 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
             can_restore: false,
             row: None,
             config_name: None,
+            hostnames: None,
         };
         view.total_count += 1;
         match view

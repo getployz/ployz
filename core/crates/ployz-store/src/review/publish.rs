@@ -195,6 +195,9 @@ fn restore(
     saved: Option<&SavedEnvironmentIntent>,
     head: SavedEnvironmentIntent,
 ) -> Result<(SavedEnvironmentIntent, Option<SavedEnvironmentIntent>), RpcError> {
+    if let (Some(Target::Domains), Some(service)) = (path.target(), path.service()) {
+        return Err(crate::settings::domains_are_read_only(path, service));
+    }
     let working = &environment.working;
     let node = match path.node() {
         NodeName::Service(name) => [working, &head]
@@ -396,7 +399,7 @@ fn restore_part(
                 service.config_attachments.push(mount.clone());
             }
         }
-        Target::Setting(_) | Target::Source => {}
+        Target::Setting(_) | Target::Source | Target::Domains => {}
     }
     Ok(())
 }
@@ -439,7 +442,7 @@ fn part_of<'a>(
                 .map(Part::ConfigMount)
         }
         // A Setting compares through core's rows (see `setting_follows`).
-        Target::Setting(_) | Target::Source => None,
+        Target::Setting(_) | Target::Source | Target::Domains => None,
     }
 }
 
@@ -456,6 +459,10 @@ fn mounted(
             .find(|node| node.name == volume.as_str())
             .map(|node| node.resource_id.clone()),
         Target::ConfigMount(config) => Some(config.resolve(intents)?.resource_id.clone()),
-        Target::Setting(_) | Target::Source | Target::Variable(_) | Target::Exported(_) => None,
+        Target::Setting(_)
+        | Target::Source
+        | Target::Domains
+        | Target::Variable(_)
+        | Target::Exported(_) => None,
     })
 }

@@ -9,6 +9,7 @@
 
 use ployz_core::config::{
     SavedEnvironmentIntent, SavedServiceIntent, ServiceManagedHostname, ServiceRoute,
+    ServiceSettingChange,
 };
 use ployz_core::{
     CertificateAvailability, CertificateFailureKind, CertificateObservation, DomainPrefix,
@@ -656,6 +657,42 @@ fn cluster_of(
         Some(cluster) => Ok(Some(cluster.name.clone())),
         None => crate::deployment::cluster_domain(tx, &environment.summary.id),
     }
+}
+
+/// Fills in the full hostname of each generated domain the Service changes in
+/// `changes` stage: as `head` deploys it, else under the Cluster Domain.
+pub(crate) fn name_generated<'a>(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+    head: &crate::review::Head,
+    trusted: &Trusted,
+    changes: impl IntoIterator<Item = (&'a str, &'a mut ServiceSettingChange)>,
+) -> Result<(), RpcError> {
+    let rows = changes
+        .into_iter()
+        .filter(|(_, row)| row.path.ends_with(".managedHostnames"))
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let deployed = crate::deployment::cluster_domains(tx, &environment.summary.id, head)?;
+    let cluster = cluster_of(tx, environment, trusted)?;
+    for (service, row) in rows {
+        let hostnames = [&row.before, &row.after]
+            .into_iter()
+            .filter_map(serde_json::Value::as_array)
+            .flatten()
+            .filter_map(|managed| managed.get("prefix")?.as_str())
+            .filter_map(|prefix| {
+                let cluster = deployed
+                    .get(&(service.to_owned(), prefix.to_owned()))
+                    .or(cluster.as_ref())?;
+                Some((prefix.to_owned(), format!("{prefix}.{cluster}")))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        row.hostnames = (!hostnames.is_empty()).then_some(hostnames);
+    }
+    Ok(())
 }
 
 /// What other Namespaces than `own` publish: no hostname of `own`'s Environment

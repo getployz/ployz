@@ -355,7 +355,10 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
         Some(value) => value.to_string(),
         None => String::new(),
     };
-    let example = shell_words::join(["ployz", "set", &format!("{}={example}", explained.path)]);
+    let example = match explained.path.domains_of() {
+        Some(service) => shell_words::join(["ployz", "domain", "add", service.as_str()]),
+        None => shell_words::join(["ployz", "set", &format!("{}={example}", explained.path)]),
+    };
     let explanation = Explanation { explained, example };
     let schema = &explanation.explained.schema;
     let text = |key: &str| schema.get(key).and_then(Value::as_str).unwrap_or_default();
@@ -429,11 +432,7 @@ fn listing(service: &ServiceName) -> Result<Listing, Error> {
         .map(|(name, one)| Listed {
             path: format!("{service}.{name}"),
             title: text(one, "title"),
-            // The Store names a Service's private DNS after the Service, so unsetting it restores the slug.
-            default: match name.as_str() {
-                "privateDns" => Some(Value::String(service.to_string())),
-                _ => one.get("default").cloned(),
-            },
+            default: one.get("default").cloned(),
             applies: text(one, "x-ployz-apply"),
         })
         .collect();
@@ -557,11 +556,7 @@ mod tests {
                 .iter()
                 .find(|listed| listed.path == format!("web.{name}"))
                 .unwrap_or_else(|| panic!("web.{name} is listed"));
-            if name == "privateDns" {
-                assert_eq!(listed.default, Some(serde_json::json!("web")));
-            } else {
-                assert_eq!(listed.default.as_ref(), one.get("default"), "web.{name}");
-            }
+            assert_eq!(listed.default.as_ref(), one.get("default"), "web.{name}");
         }
         let replicas = listing
             .settings
