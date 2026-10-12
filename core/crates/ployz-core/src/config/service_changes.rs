@@ -28,6 +28,11 @@ pub struct ServiceSettingChange {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub config_name: Option<crate::ConfigName>,
+    /// The full hostname of each generated domain it stores, by prefix; the Store's to
+    /// fill, as deployed or under the Cluster Domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hostnames: Option<BTreeMap<String, String>>,
     pub kind: ChangeKind,
     pub before: Value,
     pub after: Value,
@@ -257,6 +262,7 @@ pub(super) fn change(
         can_restore,
         row: None,
         config_name: None,
+        hostnames: None,
     };
     (change, at)
 }

@@ -24,7 +24,8 @@ pub enum DomainEdit {
 /// One domain a staged change adds, removes or repoints.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DomainChange {
-    /// Its hostname, or a generated domain's prefix.
+    /// Its full hostname; a generated domain without a known Cluster Domain reads
+    /// `PREFIX.<cluster domain>`.
     pub domain: String,
     pub edit: DomainEdit,
 }
@@ -56,8 +57,24 @@ impl DomainChange {
         } else {
             return None;
         };
-        let before = read(&row.before);
-        let after = read(&row.after);
+        let named = |domains: BTreeMap<String, Option<u16>>| -> BTreeMap<String, Option<u16>> {
+            if field != "managedHostnames" {
+                return domains;
+            }
+            domains
+                .into_iter()
+                .map(|(prefix, port)| {
+                    let hostname = row
+                        .hostnames
+                        .as_ref()
+                        .and_then(|hostnames| hostnames.get(&prefix).cloned())
+                        .unwrap_or_else(|| format!("{prefix}.<cluster domain>"));
+                    (hostname, port)
+                })
+                .collect()
+        };
+        let before = named(read(&row.before));
+        let after = named(read(&row.after));
         let removed = before
             .keys()
             .filter(|domain| !after.contains_key(*domain))
@@ -123,15 +140,27 @@ mod tests {
     }
 
     #[test]
-    fn generated_domains_read_by_prefix() {
-        let row = row(
+    fn generated_domains_read_by_their_full_hostname() {
+        let mut row = row(
             "web.managedHostnames",
             json!([{ "prefix": "web", "targetPort": null }, { "prefix": "old", "targetPort": 80 }]),
             json!([{ "prefix": "web", "targetPort": 3000 }, { "prefix": "shop", "targetPort": null }]),
         );
+        row.hostnames = Some(
+            [
+                ("old", "old.acme.ployz.app"),
+                ("shop", "shop.acme.ployz.app"),
+            ]
+            .map(|(prefix, hostname)| (prefix.to_owned(), hostname.to_owned()))
+            .into(),
+        );
         assert_eq!(
             lines(&row),
-            ["removed old", "added shop", "web now reaches port 3000"]
+            [
+                "removed old.acme.ployz.app",
+                "added shop.acme.ployz.app",
+                "web.<cluster domain> now reaches port 3000",
+            ]
         );
     }
 
@@ -151,7 +180,7 @@ mod tests {
             Value::Null,
             json!([{ "prefix": "web", "targetPort": null }]),
         );
-        assert_eq!(lines(&row), ["added web"]);
+        assert_eq!(lines(&row), ["added web.<cluster domain>"]);
     }
 
     #[test]

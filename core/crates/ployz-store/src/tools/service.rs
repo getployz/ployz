@@ -222,7 +222,7 @@ pub(crate) struct ServiceUpdate {
 
 /// The Service Settings, without the credential an agent cannot set.
 fn set_schema(_: &mut SchemaGenerator) -> Schema {
-    let mut set = schema::portable(crate::catalog::service());
+    let mut set = schema::portable(crate::catalog::service(None));
     if let Some(object) = set.as_object_mut() {
         object.remove("title");
         object.insert(
@@ -237,7 +237,7 @@ fn set_schema(_: &mut SchemaGenerator) -> Schema {
 }
 
 fn unset_schema(_: &mut SchemaGenerator) -> Schema {
-    let service = crate::catalog::service();
+    let service = crate::catalog::service(None);
     let mut settings = service
         .get("properties")
         .and_then(Value::as_object)

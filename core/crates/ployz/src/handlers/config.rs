@@ -109,11 +109,12 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let environment = environment(matches)?;
     // Domains are no Setting: `get` reads them beside a Service's or the Environment's
-    // Settings, and never beside one Setting.
+    // Settings, alone at `SERVICE.domains`, and never beside one Setting.
+    let only = path.as_ref().and_then(SettingPath::domains_of).cloned();
     let (service, every) = match path.as_ref().map(|path| NodeName::parse(&path.to_string())) {
         None => (Some(None), all),
         Some(Ok(NodeName::Service(service))) => (Some(Some(service)), true),
-        Some(_) => (None, false),
+        Some(_) => (only.clone().map(Some), false),
     };
     let read = || -> Result<_, Error> {
         let domains = service
@@ -134,17 +135,23 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     };
     let (view, domains) = super::store::at_one_revision("get", read, torn)?;
     let domains = domains.map(|domains| domains.domains);
-    let lines = got(
-        &view.settings,
-        domains.as_deref().unwrap_or_default(),
-        every,
-    );
+    let lines = match &only {
+        Some(service) => vec![format!(
+            "{service}.domains = {}",
+            super::store::domain_list(domains.as_deref().unwrap_or_default(), service.as_str())
+        )],
+        None => got(
+            &view.settings,
+            domains.as_deref().unwrap_or_default(),
+            every,
+        ),
+    };
     let got = Got {
         view: &view,
         domains: domains.as_deref(),
     };
     crate::ui::finish(&got, || {
-        if view.settings.is_empty() {
+        if view.settings.is_empty() && only.is_none() {
             ui::note(format_args!(
                 "No Services in {}/{} yet.",
                 view.environment.project, view.environment.name
@@ -553,9 +560,9 @@ mod tests {
             got(&settings, &domains, true),
             [
                 "web.replicas = 3 (default 1)",
-                "web.restartPolicy = always (default)",
+                "web.restartPolicy = \"always\" (default)",
                 "web.domains = shop.acme.ployz.app (port 3000)",
-                "volumes.data.name = data",
+                "volumes.data.name = \"data\"",
                 "worker.replicas = 1 (default)",
                 "worker.domains = -",
                 "api.domains = api.acme.ployz.app",

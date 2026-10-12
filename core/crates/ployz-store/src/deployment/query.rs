@@ -144,9 +144,16 @@ pub(crate) fn numbered(
     deployment::view(tx, who, &id)
 }
 
-pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {
+pub(crate) fn plan(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    trusted: &crate::Trusted,
+    query: &PlanQuery,
+) -> Result<PlanView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
-    let review = review::review(tx, &environment)?;
+    let mut review = review::review(tx, &environment)?;
+    let rows = review::service_rows(&mut review.view.changes);
+    crate::domain::name_generated(tx, &environment, &review.head, trusted, rows)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
     let target = canonicalize_environment_intent(environment.working.clone());
     // Which Docker Volumes a removal deletes only the Servers can say.

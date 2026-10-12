@@ -3740,7 +3740,12 @@ export type ServiceSettingChange = { path: string,
 /**
  * The mounted Config's friendly name; its path keeps the exact identity.
  */
-configName?: ConfigName, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
+configName?: ConfigName,
+/**
+ * The full hostname of each generated domain it stores, by prefix; the Store's to
+ * fill, as deployed or under the Cluster Domain.
+ */
+hostnames?: { [key in string]: string }, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean,
 /**
  * The Sync row it falls in, which joins it to what moved it; the Store's to fill
  * from the `At` its comparison hands alongside and the node's lineage.

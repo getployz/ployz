@@ -33,8 +33,9 @@ and click **Generate Domain**. The pencil on each domain changes only that one.
 From the CLI, name the subdomain: `ployz domain add web --prefix shop`. Without `--prefix`, a
 service that has a generated domain keeps it, and the CLI suggests a free subdomain. To change
 one of several, name it: `ployz domain set web store --domain shop`.
-`ployz get web` lists a service's domains, and `ployz diff` shows a staged one as
-`web.domains: added shop`.
+`ployz get web` or `ployz get web.domains` lists a service's domains, and `ployz diff` shows a staged one by
+its full hostname, `web.domains: added shop.acme.ployz.app`. Before the cluster domain is known, it
+reads `shop.<cluster domain>`.
 
 ## Choose the port
 
