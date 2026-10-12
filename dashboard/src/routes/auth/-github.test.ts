@@ -39,7 +39,7 @@ describe("GET /auth/github", () => {
     expect(response.headers.has("content-type")).toBe(false);
   });
 
-  it.each([["//attacker.example"], ["https://attacker.example"], [null]])(
+  it.each([["//attacker.example"], ["https://attacker.example"], ["/\\attacker.example"], ["/\t/attacker.example"], ["/\n/attacker.example"], [null]])(
     "falls back to /cloud for callback %s",
     async (callbackURL) => {
       await handleGithubSignIn(request(callbackURL));
@@ -61,9 +61,17 @@ describe("GET /auth/github", () => {
   it("keeps a signed-in visitor on this origin", async () => {
     getSession.mockImplementation(() => Effect.succeed(SESSION));
 
-    const response = await handleGithubSignIn(request("//evil.com"));
+    const response = await handleGithubSignIn(request("/\\evil.com"));
 
     expect(response.headers.get("location")).toBe("/cloud");
+  });
+
+  it("returns the callback as given, since /.//evil.com normalizes to //evil.com", async () => {
+    getSession.mockImplementation(() => Effect.succeed(SESSION));
+
+    const response = await handleGithubSignIn(request("/.//evil.com"));
+
+    expect(response.headers.get("location")).toBe("/.//evil.com");
   });
 
   it("shows the failed sign-in page when better-auth refuses", async () => {

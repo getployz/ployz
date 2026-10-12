@@ -19,7 +19,7 @@ class GithubSignInRefused extends Data.TaggedError("GithubSignInRefused")<{
 }> {}
 
 const githubSignIn = Effect.fn("Auth.githubSignIn")(function* (request: Request) {
-  const callbackURL = safeCallbackURL(new URL(request.url).searchParams.get("callbackURL"));
+  const callbackURL = safeCallbackURL(new URL(request.url));
   const session = yield* getAuthSessionEffect(request.headers);
   if (session !== null) return seeOther(callbackURL);
 
@@ -45,6 +45,8 @@ function seeOther(location: string) {
   return new Response(null, { status: 303, headers: { location, "cache-control": "no-store" } });
 }
 
-function safeCallbackURL(value: string | null) {
-  return value !== null && value.startsWith("/") && !value.startsWith("//") ? value : "/cloud";
+// Browsers parse Location the way URL does: `/\evil.com` and `/<tab>/evil.com` start with one slash and still leave.
+function safeCallbackURL(url: URL) {
+  const value = url.searchParams.get("callbackURL");
+  return value?.startsWith("/") && URL.parse(value, url)?.origin === url.origin ? value : "/cloud";
 }
