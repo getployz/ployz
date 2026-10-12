@@ -791,7 +791,7 @@
           "hostname": {
             "description": "A hostname the member owns, e.g. app.example.com. Not with prefix.",
             "maxLength": 253,
-            "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$",
+            "pattern": "^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$",
             "type": "string"
           },
           "port": {
