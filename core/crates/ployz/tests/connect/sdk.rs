@@ -384,6 +384,14 @@ async fn node_store_seams_refuse_malformed_input() {
 }
 
 #[tokio::test]
+async fn node_agent_sweep_answers_every_tool_past_u32() {
+    UnixSession::start()
+        .await
+        .assert_sdk_script("node_agent_sweep.js", MachineId::random(), &[])
+        .await;
+}
+
+#[tokio::test]
 async fn node_agent_asks_the_servers() {
     let description = advertised_description();
     let session = UnixSession::start().await;

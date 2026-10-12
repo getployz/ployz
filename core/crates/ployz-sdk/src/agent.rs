@@ -4,7 +4,7 @@ use ployz_core::{ContainerId, MachineId, Namespace, ServiceName};
 use ployz_store::tools::{self, Act, Answer, CloudQuery, Place};
 use serde::{Deserialize, Serialize};
 
-use crate::{Client, invalid_argument, rpc_to_napi, to_json, whole_numbers};
+use crate::{Client, from_js, invalid_argument, rpc_to_napi, to_json, whole_numbers};
 
 /// What a model is told: `{ instructions, tools }`.
 ///
@@ -31,8 +31,11 @@ pub fn agent_start(
     place: serde_json::Value,
     call_key: String,
 ) -> Result<serde_json::Value> {
-    let place: Place =
-        ployz_core::decode::decode(&whole_numbers(place)).map_err(invalid_argument)?;
+    let place: Place = from_js(place).map_err(invalid_argument)?;
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "whole numbers first, as `from_js`"
+    )]
     let (step, state) = tools::start(&tool, whole_numbers(input), &place, &call_key);
     turn(&step, &state)
 }
@@ -46,10 +49,8 @@ pub fn agent_resume(
     state: serde_json::Value,
     answers: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let state: tools::State =
-        ployz_core::decode::decode(&whole_numbers(state)).map_err(invalid_argument)?;
-    let answers: Vec<Answer> =
-        ployz_core::decode::decode(&whole_numbers(answers)).map_err(invalid_argument)?;
+    let state: tools::State = from_js(state).map_err(invalid_argument)?;
+    let answers: Vec<Answer> = from_js(answers).map_err(invalid_argument)?;
     let (step, state) = tools::resume(state, answers.into_iter().map(Into::into).collect());
     turn(&step, &state)
 }
@@ -68,8 +69,7 @@ enum CloudCall {
 /// Returns `invalid_argument` naming what is malformed.
 #[napi]
 pub fn agent_cloud_call(call: serde_json::Value) -> Result<serde_json::Value> {
-    let call: CloudCall =
-        ployz_core::decode::decode(&whole_numbers(call)).map_err(invalid_argument)?;
+    let call: CloudCall = from_js(call).map_err(invalid_argument)?;
     to_json(&call)
 }
 
@@ -87,8 +87,7 @@ impl Client {
     /// Cloud answers, or the session's error.
     #[napi]
     pub async fn agent_ask(&self, query: serde_json::Value) -> Result<serde_json::Value> {
-        let query: CloudQuery =
-            ployz_core::decode::decode(&whole_numbers(query)).map_err(invalid_argument)?;
+        let query: CloudQuery = from_js(query).map_err(invalid_argument)?;
         ployz::sdk::agent::ask(&self.inner, query)
             .await
             .map_err(rpc_to_napi)
