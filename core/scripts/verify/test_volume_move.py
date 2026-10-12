@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 spec = importlib.util.spec_from_file_location("volume_move", Path(__file__).resolve().parents[1] /
@@ -57,6 +58,8 @@ class ClusterModel:
         self.fault = {"machine-1": None, "machine-2": None}
         self.fired = False
         self.acks = []
+        self.asks = set()
+        self.started = []
 
     def other(self, machine):
         return "machine-2" if machine == "machine-1" else "machine-1"
@@ -73,6 +76,10 @@ class ClusterModel:
         return subprocess.CompletedProcess(args, code, output, "")
 
     def cli(self, args):
+        if args[0] == "volume" and args[1] in self.asks and "--approval" not in args:
+            details = dict(approval=f"{args[1]}:digest", approval_id="approval-1")
+            return 1, json.dumps(dict(error=dict(code="approval_required", details=details)))
+        self.started.append(args)
         if args[:2] == ["volume", "inspect"]:
             return 0, json.dumps(dict(id="1", environment=dict(project="verify", name="production")))
         if args[:2] == ["volume", "runs"]:
@@ -175,7 +182,7 @@ class VolumeMoveTests(unittest.TestCase):
         (self.root / "evidence").mkdir()
         self.manifest = self.root / "manifest.json"
         self.manifest.write_text(json.dumps(dict(
-            provider="incus", state="ready", cloud=dict(dashboard=str(self.root / "dashboard")),
+            provider="incus", state="ready", cloud=dict(dashboard=str(self.root / "dashboard"), url="http://cloud"),
             machines=[dict(name="machine-1"), dict(name="machine-2")])))
 
     def tearDown(self):
@@ -360,6 +367,26 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertTrue(summary["passed"], summary)
         self.assertTrue(model.fired)
         self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
+
+    def test_a_release_that_asks_a_human_is_approved_and_retried_but_a_move_is_not(self):
+        checks, model = self.checks()
+        model.asks = {"release", "move"}
+        (self.root / "private").mkdir()
+        (self.root / "private" / "cloud-token").write_text("token\n")
+        posts = []
+
+        def http(method, url, body=None, token=None):
+            posts.append((method, url, body, token))
+            return 200, "{}"
+        with mock.patch.object(volume_move, "http", http), redirect_stdout(io.StringIO()):
+            released = checks.start_op("release", "machine-2")
+            moved = checks.start_op("move", "machine-2")
+        self.assertEqual(released["state"], "done")
+        self.assertEqual(released["approved"], "approval-1")
+        self.assertEqual(posts, [("POST", "http://cloud/api/cli/approvals/approval-1",
+                                  {"approve": {"digest": "release:digest"}}, "token")])
+        self.assertEqual(model.started, [["volume", "release", volume_move.VOLUME, "--approval", "approval-1"]])
+        self.assertEqual(moved["state"], "refused")
 
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):

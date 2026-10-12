@@ -476,8 +476,24 @@ class VolumeMove:
                     release=["volume", "release", VOLUME])
         args["mirror-rm"] = ["volume", "mirror", "rm", f"{VOLUME}-{destination}"]
         code, data = self.cli(*args[op], check=False)
+        approval = self.approve(data) if op == "release" else None
+        if approval:
+            code, data = self.cli(*args[op], "--approval", approval, check=False)
         rows = run_rows(data) if code == 0 else []
-        return rows[0] if rows else dict(state="refused", reply=data)
+        row = rows[0] if rows else dict(state="refused", reply=data)
+        return dict(row, approved=approval) if approval else row
+
+    def approve(self, reply):
+        """Approve as the operator would in Cloud. A Release after the cut forgets the new copy, so Cloud asks."""
+        error = reply.get("error") if isinstance(reply, dict) else None
+        if not error or error.get("code") != "approval_required":
+            return None
+        details = error["details"]
+        token = (self.manifest.parent / "private" / "cloud-token").read_text().strip()
+        status, text = http("POST", f"{self.run['cloud']['url']}/api/cli/approvals/{details['approval_id']}",
+                            dict(approve=dict(digest=details["approval"])), token=token)
+        print(json.dumps(dict(approve=details["approval_id"], status=status, reply=text[:200])), flush=True)
+        return details["approval_id"] if 200 <= status < 300 else None
 
     def wait_run(self, row, limit=1800):
         if row.get("state") in TERMINAL | {"refused"}:
@@ -485,7 +501,7 @@ class VolumeMove:
         deadline = self.clock() + limit
         last = row
         while self.clock() < deadline:
-            last = next((found for found in self.runs() if found["id"] == row["id"]), last)
+            last = next((dict(row, **found) for found in self.runs() if found["id"] == row["id"]), last)
             if last.get("state") in TERMINAL:
                 return last
             self.sleep(4)
@@ -656,9 +672,10 @@ class VolumeMove:
         return summary
 
 
-def http(method, url, body=None):
+def http(method, url, body=None, token=None):
     data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(url, data=data, method=method, headers={"content-type": "application/json"})
+    headers = {"content-type": "application/json"} | ({"authorization": f"Bearer {token}"} if token else {})
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return response.status, response.read().decode()[:600]
