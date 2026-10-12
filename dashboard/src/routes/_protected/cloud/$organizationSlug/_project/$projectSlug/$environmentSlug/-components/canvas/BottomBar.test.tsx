@@ -24,12 +24,14 @@ const onDiscardAll = vi.fn();
 const onPublish = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
+let ended: DeploymentSummary[] = [];
 let storage: (deploymentId: string) => string | null = () => null;
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
 let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] }) => void = () => {};
 
 beforeEach(() => {
   active = [];
+  ended = [];
   storage = () => null;
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
@@ -43,7 +45,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", component: Outlet });
   const canvas = createRoute({ getParentRoute: () => environment, id: "_canvas", component: function Canvas() {
     const [slot, setSlot] = useState<HTMLElement | null>(null);
-    const [lists, setLists] = useState({ active, ended: [] as DeploymentSummary[] });
+    const [lists, setLists] = useState({ active, ended });
     settle = setLists;
     return (
       <BottomBarSlot.Provider value={slot}>
@@ -173,6 +175,22 @@ it("never shows a Deployment that ended before it was watched", async () => {
   open(canvasUrl);
   act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
   await act(async () => {});
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("shows how a Deployment ended when this tab opened its page before it was listed, as Deploy does", async () => {
+  const router = open(`${canvasUrl}/deployments/${running}`);
+  await screen.findByText("Deployment Page");
+  act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
+  await act(async () => router.history.push(canvasUrl));
+  expect((await bar()).getByText("Failed · Deployment #1")).toBeTruthy();
+});
+
+it("shows nothing after closing the page of a Deployment that had already ended", async () => {
+  ended = [deployment(running, "failed", 1)];
+  const router = open(`${canvasUrl}/deployments/${running}`);
+  await screen.findByText("Deployment Page");
+  await act(async () => router.history.push(canvasUrl));
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });
 

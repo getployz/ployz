@@ -27,6 +27,8 @@ import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_or
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
 const DEPLOYED_SHOWS_MS = 6_000;
+/** Far more Deployments than one bar shows, so the oldest ids it forgets are long ended. */
+const WATCHED_LIMIT = 100;
 
 type BottomBarProps = {
   groups: ChangeGroup[];
@@ -95,10 +97,16 @@ export function BottomBar({
   const hasChanges = totalChanges > 0 || canPublish;
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
-  // Seen in flight here: how a Deployment ends shows only when this bar watched it run.
+  // Seen in flight here, or its page opened before it was listed (as Deploy does): how a Deployment ends shows only
+  // when this bar watched it run.
   const watched = useRef(new Set<string>());
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
-  useEffect(() => { for (const deployment of active) watched.current.add(deployment.id); }, [active]);
+  useEffect(() => {
+    const seen = watched.current;
+    for (const deployment of active) seen.add(deployment.id);
+    if (viewedId !== null && !ended.some((deployment) => deployment.id === viewedId)) seen.add(viewedId);
+    for (const id of seen) if (seen.size > WATCHED_LIMIT) seen.delete(id);
+  }, [active, ended, viewedId]);
   const latest = ended.find((deployment) => watched.current.has(deployment.id));
   const outcome = shown || latest === undefined || dismissed.has(latest.id) || latest.id === viewedId ? undefined : latest;
   const dismiss = (id: string) => setDismissed((ids) => new Set([...ids, id]));
