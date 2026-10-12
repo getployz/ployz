@@ -27,7 +27,8 @@ pub(crate) fn diff(
     let environment = scope::environment(tx, who, &query.environment)?;
     let review = review::review(tx, &environment)?;
     let mut view = review.view;
-    let rows = review::service_rows(&mut view.changes);
+    let rows = review::service_rows(&mut view.changes)
+        .chain(review::service_rows(&mut view.draft_changes));
     crate::domain::name_generated(tx, &environment, &review.head, trusted, rows)?;
     view.incoming = crate::branch::incoming(tx, &environment)?;
     view.follow_hints = crate::branch::hints(tx, &environment)?;

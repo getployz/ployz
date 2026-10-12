@@ -608,6 +608,43 @@ fn a_staged_generated_domain_reads_by_the_hostname_it_runs_under() {
 }
 
 #[test]
+fn a_restored_generated_domain_reads_by_its_full_hostname() {
+    let (store, who) = deployed_generated_domain();
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "web".into(),
+            },
+            &cloud(),
+        )
+        .unwrap();
+    let publish = Publish {
+        environment: EnvironmentRef::default(),
+        version: None,
+        message: None,
+        accept_volume_loss: Vec::new(),
+    };
+    store.write_trusted(&who, &publish, &cloud()).unwrap();
+    store
+        .write_trusted(&who, &add(None, None), &cloud())
+        .unwrap();
+    let diff: DiffView = store
+        .read_trusted(&who, &DiffQuery::default(), &cloud())
+        .unwrap();
+    let domains: Vec<String> = diff
+        .review_changes()
+        .iter()
+        .flat_map(|change| &change.settings)
+        .filter_map(DomainChange::of)
+        .flatten()
+        .map(|domain| domain.to_string())
+        .collect();
+    assert_eq!(domains, ["added web.acme.ployz.app"]);
+}
+
+#[test]
 fn a_generated_domain_added_in_flight_is_named_under_its_deployments_cluster_domain() {
     let (store, who) = shop();
     admit(&store, &who, 1, &cloud()).unwrap();
