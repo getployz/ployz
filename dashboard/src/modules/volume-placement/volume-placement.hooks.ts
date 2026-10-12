@@ -11,7 +11,7 @@ import {
   appliedMirrors, type CanvasMirror, canvasMirrors, mirroredVolumes, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
-import { discardPlacementServerFn, markCommittedRestoresServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
+import { discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
 type PlacementResult = { readonly ok: true } | { readonly ok: false; readonly refusal: { readonly message: string } };
@@ -55,7 +55,7 @@ export type StagedPlacements = {
   readonly count: number;
   readonly discard: (volumeId: string) => void;
   readonly undo: (volumeId: string, path: string) => void;
-  /** Discards every group after `discardStore`, which takes the Store's half, including each staged restore's Volume. */
+  /** Discards every staged row after `discardStore`, which takes the Store's half, including each staged restore's Volume. */
   readonly discardAll: (discardStore: () => Promise<ConfigWritten | undefined>) => void;
 };
 
@@ -94,14 +94,9 @@ export function useStagedPlacements(
         organizationSlug, volumeId, environment, staged: undoPlacement(entry.volume, entry.members, entry.row, change), mirrors: [...mirrors],
       } })]);
     },
+    // Every staged row, not just the groups shown: a restore whose Volume the Store discard takes may not have answered yet.
     discardAll: (discardStore) => {
-      // A restore's row is discardable after the Store drops its Volume only once marked committed.
-      const restoring = staged.some(({ row }) => row.staged?.seed !== undefined);
-      const marked = restoring ? markCommittedRestoresServerFn({ data: { organizationSlug, environment } }) : Promise.resolve();
-      marked.then(
-        () => discardStore().then(() => settle(groups.map((group) => discardOf(group.nodeId))), () => undefined),
-        (error: Error) => toast.error(toErrorMessage(error, failure)),
-      );
+      discardStore().then(() => settle(rows.map((row) => discardOf(row.volumeId))), () => undefined);
     },
   };
 }
