@@ -152,7 +152,9 @@ jobs:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
       # Last: installing Docker restarts dockerd, which stops the Postgres service.
+      # Main pushes only: it mostly catches drift in the newest Docker release, and costs 2 minutes per run.
       - name: Decode the latest Docker's local log files as docker logs prints them
+        if: github.event_name == 'push'
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
         run: |
