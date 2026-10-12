@@ -81,7 +81,8 @@ and settings ride too; a removed service doesn't. Replicas, CPU and memory limit
 Ployz posts a **Ployz · ready to merge** check on the pull request that mirrors the list, like
 `3 config changes · TOKEN not set`. It's green, or neutral when a secret is Not set or production
 changed the same setting. It never fails, so it never blocks a merge. Its **Details** link opens
-the list.
+the list. A pull request into a branch no Environment deploys from reads **Nothing deploys from
+release**: its changes stay in the preview.
 
 When the pull request merges, production gets one saved change, **Merged #142 · 3 changes**, and
 the merge commit's push deploys it with the code. To take it back, click **Undo** beside it in

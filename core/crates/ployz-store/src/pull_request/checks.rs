@@ -44,7 +44,8 @@ pub(crate) fn view(
 }
 
 /// What the pull request's GitHub check says, if it says anything: while it is open,
-/// what its merge lands; once merged, only what the merge recorded it didn't do.
+/// what its merge lands, or that it lands nowhere; once merged, only what the merge
+/// recorded it didn't do.
 pub(super) fn check(
     pull_request: &PullRequest,
     environments: &[PrEnvironment],
@@ -65,6 +66,18 @@ pub(super) fn check(
                 .map(move |into| (environment, into))
         })
         .collect();
+    if sections.is_empty() {
+        let target = &pull_request.target_branch;
+        return Some(OnMergeCheck {
+            conclusion: OnMergeConclusion::Neutral,
+            title: format!("Nothing deploys from {target}"),
+            summary: format!(
+                "No Environment deploys from `{target}`, so the merge lands nowhere. \
+                 Changes stay in the preview."
+            ),
+            merged_into: None,
+        });
+    }
     let riding: Vec<&MergeRow> = sections
         .iter()
         .flat_map(|(_, into)| &into.rows)
@@ -206,7 +219,7 @@ fn lands(row: &MergeRow) -> String {
     if is_file(row) {
         return file_move(&row.production, &row.lands);
     }
-    if is_secret(&row.lands) || is_secret(&row.production) {
+    if !row.lands.is_null() && (is_secret(&row.lands) || is_secret(&row.production)) {
         return shown(&row.lands);
     }
     let over = if row.conflict { "production " } else { "" };

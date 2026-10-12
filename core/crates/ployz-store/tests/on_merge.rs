@@ -1176,6 +1176,43 @@ fn the_check_names_a_missing_secret_without_its_value_and_what_stays_here() {
     assert!(!format!("{edited:?}").contains("prod-token"));
 }
 
+#[test]
+fn the_check_reads_a_secret_the_preview_removed_as_removed() {
+    let (store, who) = shop_with(|store, who| {
+        set(
+            store,
+            who,
+            "production",
+            &[("web.env.TOKEN", json!({ "secret": "prod-token" }))],
+        );
+        save(store, who, "production");
+    });
+    unset(&store, &who, "pr-5", "web.env.TOKEN");
+    let removed = check(&store, &who).unwrap();
+    assert_eq!(
+        removed.summary, "- `web · TOKEN`: set → removed",
+        "{removed:?}"
+    );
+}
+
+#[test]
+fn the_check_says_nothing_deploys_from_a_branch_no_environment_tracks() {
+    let (store, who) = shop();
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    pull(&store, &who, "release", "2026-09-29T10:00:01Z");
+    assert_eq!(
+        check(&store, &who),
+        Some(OnMergeCheck {
+            conclusion: OnMergeConclusion::Neutral,
+            title: "Nothing deploys from release".into(),
+            summary: "No Environment deploys from `release`, so the merge lands nowhere. \
+                      Changes stay in the preview."
+                .into(),
+            merged_into: None,
+        })
+    );
+}
+
 // Review findings.
 
 /// Pull request `number` from `head_branch` onto `target`, as GitHub said at `updated`.
