@@ -1,7 +1,7 @@
 //! Container log text that is safe to show: scrubbed of every secret the Store and the
 //! Machine know, and withheld when they could not say which values are secret.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::LazyLock;
 
@@ -18,13 +18,24 @@ const LINE_BYTES: usize = 500;
 const TOTAL_BYTES: usize = 16 * 1024;
 const CUT_MARKER: &str = " [cut]";
 
-/// Secret names and values for one Container. Built from the Store's view of its env, then
-/// the Machine's real env. Never serialized or cloned, and its Debug prints names only.
+/// Secret names and values for the Containers whose logs are scrubbed together. Built from
+/// the Store's view of their env, then each Machine's real env. Never serialized or cloned,
+/// and its Debug prints names only.
 pub struct SecretSet {
-    secrets: BTreeMap<String, String>,
+    /// Name and value pairs, so Containers sharing a name keep every value.
+    secrets: BTreeSet<(String, String)>,
     plain: BTreeMap<String, String>,
     store: bool,
-    machine: bool,
+    machine: MachineEnv,
+}
+
+/// Whether every Container's env has been read from its Machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MachineEnv {
+    Unread,
+    Read,
+    /// One could not be read, so the set stays incomplete whatever is read after it.
+    Unreadable,
 }
 
 impl SecretSet {
@@ -32,10 +43,10 @@ impl SecretSet {
     #[must_use]
     pub const fn unknown() -> Self {
         Self {
-            secrets: BTreeMap::new(),
+            secrets: BTreeSet::new(),
             plain: BTreeMap::new(),
             store: false,
-            machine: false,
+            machine: MachineEnv::Unread,
         }
     }
 
@@ -50,37 +61,44 @@ impl SecretSet {
             secrets: secrets.into_iter().collect(),
             plain: plain.into_iter().collect(),
             store: true,
-            machine: false,
+            machine: MachineEnv::Unread,
         }
     }
 
-    /// Add the Container's env as its Machine reports it. `None` means it could not be read,
-    /// which leaves the set incomplete. Every entry is a secret except one the Store knows as
-    /// plain with the identical value.
+    /// Add a Container's env as its Machine reports it. `None` means it could not be read,
+    /// which leaves the set incomplete for good. Every entry is a secret except one the Store
+    /// knows as plain with the identical value.
     pub fn add_machine_env(&mut self, env: Option<&BTreeMap<String, String>>) {
         let Some(env) = env else {
-            self.machine = false;
+            self.machine = MachineEnv::Unreadable;
             return;
         };
         for (name, value) in env {
             if self.plain.get(name) != Some(value) {
-                self.secrets
-                    .entry(name.clone())
-                    .or_insert_with(|| value.clone());
+                self.secrets.insert((name.clone(), value.clone()));
             }
         }
-        self.machine = true;
+        if self.machine == MachineEnv::Unread {
+            self.machine = MachineEnv::Read;
+        }
     }
 
-    const fn complete(&self) -> bool {
-        self.store && self.machine
+    fn complete(&self) -> bool {
+        self.store && self.machine == MachineEnv::Read
     }
 }
 
 impl fmt::Debug for SecretSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretSet")
-            .field("secrets", &self.secrets.keys().collect::<Vec<_>>())
+            .field(
+                "secrets",
+                &self
+                    .secrets
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
             .field("complete", &self.complete())
             .finish()
     }

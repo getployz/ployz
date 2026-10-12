@@ -6,7 +6,10 @@ use ployz_core::{
 };
 use ployz_store::{
     EnvironmentId,
-    tools::{LineCap, LogText, LogsQuery, ServerRef, cloud::ContainerState},
+    tools::{
+        LineCap, LogText, LogsQuery, ServerRef,
+        cloud::{ContainerState, LogsAnswer},
+    },
 };
 use tokio::time::Instant;
 
@@ -107,7 +110,7 @@ async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline(
     );
 }
 
-fn logs_query(server: Option<ServerRef>) -> LogsQuery {
+fn logs_query(server: Option<ServerRef>, plain: &[(&str, &str)]) -> LogsQuery {
     LogsQuery {
         environment: EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap(),
         namespace: Namespace::parse("app").unwrap(),
@@ -116,17 +119,27 @@ fn logs_query(server: Option<ServerRef>) -> LogsQuery {
         server,
         lines: LineCap::new(3).unwrap(),
         since: Some(Duration::from_secs(600)),
+        plain: plain
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect(),
     }
 }
 
-// Catches a logs ask that leaks a Container's env value, ignores `lines`, `since` or the
-// Service, or reads Servers the ask didn't name.
-#[tokio::test]
-async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
-    let one = support::machine('a', "one");
-    let two = support::machine('b', "two");
-    let service = support::DeployService::new(one.clone()).with_machines(vec![one.clone(), two]);
-    let requests = Arc::clone(&service.history_requests);
+fn shown(answer: &LogsAnswer) -> Vec<(String, Vec<String>)> {
+    answer
+        .servers
+        .iter()
+        .map(|log| {
+            let LogText::Shown(excerpt) = &log.text else {
+                panic!("{:?} withheld its tail: {:?}", log.server, log.text);
+            };
+            (log.server.to_string(), excerpt.lines().to_vec())
+        })
+        .collect()
+}
+
+async fn ask_logs(service: support::DeployService, queries: Vec<LogsQuery>) -> Vec<LogsAnswer> {
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
         vec![crate::context::Connection::tcp(address)],
@@ -134,46 +147,53 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
     )
     .await
     .unwrap();
-
-    let every = logs(&session, logs_query(None)).await.unwrap();
-    let only = logs(
-        &session,
-        logs_query(Some(ServerRef {
-            machine: one.machine.id,
-            name: one.machine.name.clone(),
-        })),
-    )
-    .await
-    .unwrap();
+    let mut answers = Vec::new();
+    for query in queries {
+        answers.push(logs(&session, query).await.unwrap());
+    }
     session.close().await;
     server.abort();
+    answers
+}
 
-    let tails = |answer: &ployz_store::tools::cloud::LogsAnswer| {
-        answer
-            .servers
-            .iter()
-            .map(|log| {
-                let LogText::Shown(excerpt) = &log.text else {
-                    panic!("{:?} withheld its tail: {:?}", log.server, log.text);
-                };
-                (log.server.to_string(), excerpt.lines().to_vec())
-            })
-            .collect::<Vec<_>>()
+// Catches a logs ask that leaks a Container's env value, scrubs one the Store shows as
+// plain, caps lines per Container rather than per Server, ignores `lines`, `since` or the
+// Service, or reads Servers the ask didn't name.
+#[tokio::test]
+async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
+    let one = support::machine('a', "one");
+    let two = support::machine('b', "two");
+    let service = support::DeployService::new(one.clone()).with_machines(vec![one.clone(), two]);
+    let requests = Arc::clone(&service.history_requests);
+    let plain = [("PLAIN", "from-docker")];
+    let only = ServerRef {
+        machine: one.machine.id,
+        name: one.machine.name.clone(),
     };
+
+    let [every, only] = ask_logs(
+        service,
+        vec![logs_query(None, &plain), logs_query(Some(only), &plain)],
+    )
+    .await
+    .try_into()
+    .unwrap();
+
     let tail = vec![
         "line 10".to_owned(),
-        "line 11".to_owned(),
+        "plain from-docker".to_owned(),
         "token [secret TOKEN]".to_owned(),
     ];
     assert_eq!(
-        tails(&every),
+        shown(&every),
         [
             ("one".to_owned(), tail.clone()),
             ("two".to_owned(), tail.clone())
         ]
     );
     assert!(every.seen.unanswered.is_empty());
-    assert_eq!(tails(&only), [("one".to_owned(), tail)]);
+    assert!(every.notes.is_empty());
+    assert_eq!(shown(&only), [("one".to_owned(), tail)]);
 
     let requests = requests.lock().unwrap();
     assert!(!requests.is_empty());
@@ -192,4 +212,66 @@ async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
                 .contains(&ago)
         );
     }
+}
+
+// Catches a logs ask that shows an env value the Store does not show as plain with that
+// same value.
+#[tokio::test]
+async fn a_logs_ask_scrubs_env_values_the_store_does_not_show_as_plain() {
+    let one = support::machine('a', "one");
+    let service = support::DeployService::new(one.clone());
+
+    let answers = ask_logs(
+        service,
+        vec![
+            logs_query(None, &[]),
+            logs_query(None, &[("PLAIN", "staged-value")]),
+        ],
+    )
+    .await;
+
+    for answer in &answers {
+        assert_eq!(
+            shown(answer),
+            [(
+                "one".to_owned(),
+                vec![
+                    "line 10".to_owned(),
+                    "plain [secret PLAIN]".to_owned(),
+                    "token [secret TOKEN]".to_owned(),
+                ]
+            )]
+        );
+    }
+}
+
+// Catches a logs ask that drops why a Server's Log Store did not answer, or that lets the
+// failure hide the other Servers' lines.
+#[tokio::test]
+async fn a_server_whose_log_store_fails_is_unanswered_with_its_reason() {
+    let one = support::machine('a', "one");
+    let two = support::machine('b', "two");
+    let mut service =
+        support::DeployService::new(one.clone()).with_machines(vec![one, two.clone()]);
+    service
+        .history_failures
+        .insert(two.machine.id, "log store is rebuilding".to_owned());
+
+    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer)
+            .into_iter()
+            .map(|(server, _)| server)
+            .collect::<Vec<_>>(),
+        ["one"]
+    );
+    assert_eq!(answer.seen.unanswered, [two.machine.name]);
+    assert_eq!(
+        answer.notes,
+        ["two did not answer: log store is rebuilding"]
+    );
 }

@@ -26,7 +26,7 @@ use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
 use crate::{
     DeploymentsQuery, EnvironmentName, NamespaceQuery, NamespaceView, NumberedDeploymentQuery,
-    ProjectName, ServicesQuery, SourceKind,
+    ProjectName, ServiceQuery, ServicesQuery, SourceKind,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
@@ -262,9 +262,15 @@ impl Tool for ServiceLogs {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let mut asks = vec![store(&NamespaceQuery {
-            environment: scope.clone(),
-        })?];
+        let mut asks = vec![
+            store(&NamespaceQuery {
+                environment: scope.clone(),
+            })?,
+            store(&ServiceQuery {
+                environment: scope.clone(),
+                service: self.service.clone(),
+            })?,
+        ];
         let numbered = self.deployment.map(|number| NumberedDeploymentQuery {
             environment: scope,
             number,
@@ -277,6 +283,10 @@ impl Tool for ServiceLogs {
         }
         let mut answers = cx.read(asks)?.into_iter();
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
+        // Unread variables leave nothing plain, so every env value is scrubbed.
+        let plain = cx
+            .view::<ServiceQuery>(answers.next())
+            .map_or_else(|_| BTreeMap::new(), |view| plain_env(&view.values));
         let deployment = match numbered {
             Some(_) => Some(cx.view::<NumberedDeploymentQuery>(answers.next())?),
             None => None,
@@ -306,6 +316,7 @@ impl Tool for ServiceLogs {
             since: self
                 .since_minutes
                 .map(|minutes| Duration::from_secs(u64::from(minutes) * 60)),
+            plain,
         };
         let mut answers = cx
             .read(vec![Ask::Cloud(CloudQuery::Logs(query))])?
@@ -315,8 +326,23 @@ impl Tool for ServiceLogs {
             "at": at(&namespace.environment),
             "servers": logs.servers,
             "seen": logs.seen,
+            "notes": logs.notes,
         }))
     }
+}
+
+/// The variables a Service's Settings `values` show as plain text. A secret shows no value
+/// and a template shows its `${{ … }}`, so neither ever matches a Container's env.
+fn plain_env(values: &serde_json::Map<String, Value>) -> BTreeMap<String, String> {
+    let Some(Value::Object(env)) = values.get("env") else {
+        return BTreeMap::new();
+    };
+    env.iter()
+        .filter_map(|(name, shown)| {
+            let value = shown.get("value").unwrap_or(shown);
+            Some((name.clone(), value.as_str()?.to_owned()))
+        })
+        .collect()
 }
 
 /// Restart, start or stop `service`'s containers, on one server or all.

@@ -2168,9 +2168,18 @@ export type LogOrigin = { "origin": "service", service_id: ServiceId, service_na
 
 export type LogText = { "status": "shown" } & LogExcerpt | { "status": "withheld", why: Withheld, };
 
-export type LogsAnswer = { servers: Array<ServerLog>, seen: Freshness, };
+export type LogsAnswer = { servers: Array<ServerLog>, seen: Freshness,
+/**
+ * Why each unanswered Server did not answer.
+ */
+notes: Array<string>, };
 
-export type LogsQuery = { environment: EnvironmentId, namespace: Namespace, service: ServiceName, deployment: DeploymentId | null, server: ServerRef | null, lines: LineCap, since: { secs: number, nanos: number } | null, };
+export type LogsQuery = { environment: EnvironmentId, namespace: Namespace, service: ServiceName, deployment: DeploymentId | null, server: ServerRef | null, lines: LineCap, since: { secs: number, nanos: number } | null,
+/**
+ * The Service's plain variables as the Store shows them. A Container's env value stays
+ * readable only when it is here under the same name; every other value is scrubbed.
+ */
+plain: { [key in string]: string }, };
 
 export type Machine = {
 /**

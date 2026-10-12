@@ -1,4 +1,5 @@
 //! On-demand Container log transport for SDK readers.
+use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, HistoryContainer, HistoryGapReason, HistoryRow, HistoryStream, LiveLogTarget,
     LogBody, LogDirection, LogEntry, LogHistoryRequest, LogLevel, LogMetadata, LogsOptions,
@@ -368,15 +369,15 @@ pub(crate) async fn failed_tail(
             ..LogHistoryRequest::default()
         };
         let newest = newest_lines(client, &target, selector, TAIL_FETCH).await?;
-        Some(frames(newest.into_iter().map(|(_, text)| text)))
+        Ok::<_, RpcError>(frames(newest.into_iter().map(|(_, text)| text)))
     };
     match tokio::time::timeout(TAIL_READ, read).await {
-        Ok(Some(frames)) => LogExcerpt::scrub(
+        Ok(Ok(frames)) => LogExcerpt::scrub(
             frames,
             &secrets,
             LineCap::new(TAIL_KEEP).unwrap_or_default(),
         ),
-        Ok(None) | Err(_) => LogText::Withheld {
+        Ok(Err(_)) | Err(_) => LogText::Withheld {
             why: Withheld::Unanswered,
         },
     }
@@ -385,39 +386,50 @@ pub(crate) async fn failed_tail(
 /// How long reading one Machine's lines for an agent may take, env included.
 const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
 
-/// The newest lines `selector` picks from `machine`'s Log Store, one text per Container
-/// that wrote them, newest Container first. Each is scrubbed of its Container's env as
-/// the Machine reports it. `None` when the Machine did not answer in time.
+/// The newest `cap` lines `selector` picks from `machine`'s Log Store, across every
+/// Container that wrote them, scrubbed of each one's env as the Machine reports it. Env
+/// values stay readable only where `plain` holds the same value under the same name. The
+/// error says why the Machine did not answer in time.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
     selector: LogHistoryRequest,
     cap: LineCap,
-) -> Option<Vec<LogText>> {
+    plain: &BTreeMap<String, String>,
+) -> Result<LogText, RpcError> {
     let target = MachineTarget::from(&machine);
     let read = async {
         let newest = newest_lines(client, &target, selector, LineCap::MAX).await?;
-        let mut by_container: Vec<(ContainerId, Vec<Vec<u8>>)> = Vec::new();
-        for (container, text) in newest {
-            match by_container.iter_mut().find(|(id, _)| *id == container) {
-                Some((_, lines)) => lines.push(text),
-                None => by_container.push((container, vec![text])),
+        let mut containers: Vec<ContainerId> = Vec::new();
+        for (container, _) in &newest {
+            if !containers.contains(container) {
+                containers.push(*container);
             }
         }
-        let mut texts = Vec::with_capacity(by_container.len());
-        for (container, lines) in by_container {
-            // No Store here, so every value in the Container's env counts as secret,
-            // the plain ones included.
-            let mut secrets = SecretSet::from_store([], []);
-            secrets.add_machine_env(container_env(client, &target, container).await.as_ref());
-            texts.push(LogExcerpt::scrub(frames(lines.into_iter()), &secrets, cap));
+        let envs = join_all(
+            containers
+                .iter()
+                .map(|container| container_env(client, &target, *container)),
+        )
+        .await;
+        let mut secrets = SecretSet::from_store([], plain.clone());
+        for env in &envs {
+            secrets.add_machine_env(env.as_ref());
         }
-        Some(texts)
+        let frames = frames(newest.into_iter().map(|(_, text)| text));
+        Ok(LogExcerpt::scrub(frames, &secrets, cap))
     };
     tokio::time::timeout(SERVICE_TAIL_READ, read)
         .await
-        .ok()
-        .flatten()
+        .map_err(|_| RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "its Log Store did not answer within {}s",
+                SERVICE_TAIL_READ.as_secs()
+            ),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        })?
 }
 
 async fn container_env(
@@ -438,14 +450,14 @@ async fn container_env(
         .and_then(|details| details.environment)
 }
 
-/// The newest `fetch` lines `selector` picks, newest first. `None` when the Log Store
-/// could not be read.
+/// The newest `fetch` lines `selector` picks, newest first. The error says why the Log
+/// Store could not be read.
 async fn newest_lines(
     client: &Client,
     target: &MachineTarget,
     selector: LogHistoryRequest,
     fetch: u16,
-) -> Option<Vec<(ContainerId, Vec<u8>)>> {
+) -> Result<Vec<(ContainerId, Vec<u8>)>, RpcError> {
     let mut newest = Vec::new();
     let mut cursor = None;
     loop {
@@ -456,15 +468,31 @@ async fn newest_lines(
             ..selector.clone()
         })
         .encode()
-        .ok()?;
-        let mut stream = client.log_history_stream(target, request).await.ok()?;
-        while let Some(payload) = stream.message().await.ok()? {
-            match HistoryRow::decode(&payload).ok()? {
+        .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+        let mut stream = client
+            .log_history_stream(target, request)
+            .await
+            .map_err(|error| RpcError::from(ConnectError::Rpc(error)))?;
+        while let Some(payload) = stream
+            .message()
+            .await
+            .map_err(|error| RpcError::from(ConnectError::from(error)))?
+        {
+            let row = HistoryRow::decode(&payload)
+                .map_err(|error| crate::ui::rpc_error(RpcErrorCode::InvalidArgument, &error))?;
+            match row {
                 HistoryRow::Line {
                     container_id, text, ..
                 } => newest.push((container_id, text)),
                 HistoryRow::End { next } => cursor = next,
-                HistoryRow::Error(_) => return None,
+                HistoryRow::Error(message) => {
+                    return Err(RpcError {
+                        code: RpcErrorCode::Unavailable,
+                        message,
+                        details: serde_json::Value::Null,
+                        cause: Vec::new(),
+                    });
+                }
                 HistoryRow::Container(_)
                 | HistoryRow::Gap { .. }
                 | HistoryRow::Exit { .. }
@@ -476,7 +504,7 @@ async fn newest_lines(
         }
     }
     newest.truncate(usize::from(fetch));
-    Some(newest)
+    Ok(newest)
 }
 
 /// Newest-first lines as frames in the order they were written.

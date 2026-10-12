@@ -212,23 +212,36 @@ async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcErro
                 .filter(|machine| !unanswered.contains(&machine.machine.id))
                 .collect();
             let reads = join_all(invited.iter().map(|machine| {
-                super::service_tail(&client, machine.machine.id, selector.clone(), query.lines)
+                super::service_tail(
+                    &client,
+                    machine.machine.id,
+                    selector.clone(),
+                    query.lines,
+                    &query.plain,
+                )
             }))
             .await;
             let mut servers = Vec::new();
+            let mut notes = Vec::new();
             for (machine, read) in invited.iter().zip(reads) {
-                let Some(texts) = read else {
-                    unanswered.insert(machine.machine.id);
-                    continue;
-                };
-                servers.extend(texts.into_iter().map(|text| ServerLog {
-                    server: machine.machine.name.clone(),
-                    text,
-                }));
+                match read {
+                    Ok(text) => servers.push(ServerLog {
+                        server: machine.machine.name.clone(),
+                        text,
+                    }),
+                    Err(error) => {
+                        unanswered.insert(machine.machine.id);
+                        notes.push(format!(
+                            "{} did not answer: {}",
+                            machine.machine.name, error.message
+                        ));
+                    }
+                }
             }
             Ok(LogsAnswer {
                 servers,
                 seen: seen(&machines, &unanswered),
+                notes,
             })
         })
         .await

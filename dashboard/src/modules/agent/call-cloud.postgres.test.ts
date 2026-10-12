@@ -43,10 +43,12 @@ describe("callCloud", () => {
     server: null,
     lines: 50,
     since: { secs: 600, nanos: 0 },
+    plain: { PORT: "8080" },
   };
   const TAIL: LogsAnswer = {
     servers: [{ server: "server-1", text: { status: "shown", lines: ["listening on :8080\n", "token [secret TOKEN]\n"], cut: false, redacted: 1 } }],
     seen: { seen_by: null, observed_at: 1, read_at: 1, age_seconds: 0, from: "server", unanswered: [] },
+    notes: [],
   };
   const member: Caller = { userId: "user-1", organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null };
 
