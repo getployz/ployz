@@ -20,6 +20,15 @@ runs:
           ~/.cargo/git/db
         key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: cargo-downloads-
+    # Main pushes are the only cache writers, so a missing write path empties the cache silently.
+    - name: Require compiler cache writes on main
+      if: github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      shell: bash
+      run: |
+        if [ -z "$KACHE_S3_BUCKET" ]; then
+          echo "::error::Main push has no R2 write credentials, so the compiler cache would not be saved."
+          exit 1
+        fi
     - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
       with:
         version: 0.18.0
@@ -36,5 +45,5 @@ runs:
         cache-c-cpp: true
         warm: true
         sync: false
-        save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected }}
+        save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         pr-comment: false
