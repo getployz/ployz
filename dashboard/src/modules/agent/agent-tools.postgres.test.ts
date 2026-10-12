@@ -12,7 +12,7 @@ const ORGANIZATION = "00000000-0000-4000-8000-00000000a701";
 const SHOP: ConfigCommand = {
   command: "create_project", id: "00000000-0000-4000-8000-00000000a702", name: "shop", default_environment: "00000000-0000-4000-8000-00000000a703",
 };
-const place: Place = { project: "shop", environment: "production", store: "cloud" };
+const place: Place = { project: "shop", environment: "production", store: { at: "cloud", organization: ORGANIZATION } };
 
 type Step = { readonly tool: string; readonly input: JsonValue; readonly callKey?: string; readonly hears: object };
 
