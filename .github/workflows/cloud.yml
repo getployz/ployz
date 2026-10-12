@@ -62,15 +62,9 @@ jobs:
         run: pnpm pr:check lint
 
   sdk:
-    name: Prepare matching SDK${{ matrix.features && format(' ({0})', matrix.features) || '' }}
+    name: Prepare matching SDK
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # The image ships the default addon. Tests get `eval`, which also dials the fake fleet's unix sockets.
-    strategy:
-      matrix:
-        features: ["", eval]
-    env:
-      PLOYZ_SDK_FEATURES: ${{ matrix.features }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -85,7 +79,7 @@ jobs:
             core/crates/ployz-sdk/ployz-sdk.node
             core/crates/ployz-sdk/generated/config-wasm.mjs
           # No restore prefix: a binding from different source is not valid evidence.
-          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.features }}-${{ hashFiles('core/Cargo.toml', 'core/Cargo.lock', 'core/.cargo/**', 'core/crates/**', '!core/crates/*/tests/**', '!core/crates/ployzd/**', '!core/crates/ployz-testkit/**', 'core/scripts/build-cloud-sdk.sh', 'core/scripts/build-config-wasm.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
+          key: cloud-sdk-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('core/Cargo.toml', 'core/Cargo.lock', 'core/.cargo/**', 'core/crates/**', '!core/crates/*/tests/**', '!core/crates/ployzd/**', '!core/crates/ployz-testkit/**', 'core/scripts/build-cloud-sdk.sh', 'core/scripts/build-config-wasm.sh', '.github/actions/setup-rust/action.yml', '.github/workflows/cloud.yml') }}
       - uses: ./.github/actions/setup-rust
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         with:
@@ -108,33 +102,11 @@ jobs:
           key: ${{ steps.sdk-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
-          name: cloud-sdk${{ matrix.features && format('-{0}', matrix.features) || '' }}
+          name: cloud-sdk
           path: |
             core/crates/ployz-sdk/ployz-sdk.node
             core/crates/ployz-sdk/generated/config-wasm.mjs
           compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
-
-  fake-fleet:
-    name: Build the fake fleet
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    # The agent evals in `pnpm test` dial this binary; the eval SDK alone answers nothing.
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.release-tag }}
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: cloud-fake-fleet
-      - name: Build ployz-fake-fleet
-        working-directory: core
-        run: cargo build -p ployz-testkit --bin ployz-fake-fleet --locked
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ployz-fake-fleet
-          path: core/target/debug/ployz-fake-fleet
           retention-days: 1
           if-no-files-found: error
 
@@ -181,7 +153,7 @@ jobs:
 
 
   test:
-    needs: [sdk, fake-fleet]
+    needs: [sdk]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The suite is CPU-bound on a 4-vCPU runner; shards keep each job's tests under a minute.
@@ -196,18 +168,11 @@ jobs:
       - uses: ./.github/actions/setup-cloud
       - uses: actions/download-artifact@v4
         with:
-          name: cloud-sdk-eval
+          name: cloud-sdk
           path: core/crates/ployz-sdk
-      - uses: actions/download-artifact@v4
-        with:
-          name: ployz-fake-fleet
-          path: ${{ runner.temp }}/fake-fleet
-      - name: Make the fake fleet executable
-        run: chmod +x "$RUNNER_TEMP/fake-fleet/ployz-fake-fleet"
       - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
-          PLOYZ_FAKE_FLEET: ${{ runner.temp }}/fake-fleet/ployz-fake-fleet
         run: pnpm test --shard=${{ matrix.shard }}/3 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
       - uses: actions/upload-artifact@v4
         if: always()

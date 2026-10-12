@@ -39,8 +39,8 @@ class CiTest(unittest.TestCase):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
 
-    def test_tier_1_agent_replays_run_wherever_the_agent_surface_changes(self):
-        # Cloud's `pnpm test` replays the sidebar's golden trajectories; rust-tests replays them through `ployz mcp`.
+    def test_agent_tool_changes_run_the_tool_tests(self):
+        # Cloud's `pnpm test` drives the sidebar's tools against the Store; rust-tests drives them through `ployz mcp`.
         for path in ["core/crates/ployz-store/src/tools/mod.rs", "core/crates/ployz/src/handlers/mcp.rs", "dashboard/src/modules/agent/agent-tools.ts"]:
             with self.subTest(path=path):
                 self.assertIn("cloud", ci["select"]([path]))
