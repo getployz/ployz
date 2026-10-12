@@ -119,17 +119,18 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
-    /// Start Container `container` on `machine`. True once it serves; false when it
-    /// started but was not seen serving within the bounded wait.
+    /// Start Container `container` on `machine` and wait for it the way a Deploy does.
+    /// Answers `serving`, `unconfirmed` when it started but was not seen serving, or
+    /// `unhealthy` when it failed its healthcheck or did not pass it in time.
     ///
     /// # Errors
     /// Returns the Machine's refusal, or the transport's error when it did not answer.
     #[napi]
-    pub async fn start_container(&self, machine: String, container: String) -> Result<bool> {
+    pub async fn start_container(&self, machine: String, container: String) -> Result<String> {
         let (machine, container) = ids(&machine, &container)?;
         ployz::sdk::agent::start_one(&self.inner, machine, container)
             .await
-            .map(|started| started == ployz::sdk::agent::Started::Serving)
+            .map(|started| started.as_str().to_owned())
             .map_err(rpc_to_napi)
     }
 }
