@@ -31,6 +31,7 @@ mod build;
 mod deploy;
 mod github_build;
 mod logs;
+mod metrics;
 mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
@@ -57,6 +58,7 @@ pub use logs::{
     ContainerLogInput, ContainerLogRecord, ContainerLogStream, LogHistoryInput, LogHistoryRecord,
     LogHistoryStream,
 };
+pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,
@@ -133,6 +135,7 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::DestroyMirror(_)
         | Body::ForgetSnapshots(_)
         | Body::ForgetLease(_)
+        | Body::DemoteVolume(_)
         | Body::Withdraw(_)
         | Body::Freeze(_)
         | Body::HandOver(_)
@@ -141,7 +144,9 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::AcceptHandOff(_)
         | Body::Promote(_)
         | Body::StartHandedContainer(_)
-        | Body::ClearFinal(_) => body
+        | Body::ClearFinal(_)
+        | Body::SeedVolume(_)
+        | Body::Restore(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(

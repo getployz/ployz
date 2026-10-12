@@ -530,6 +530,7 @@ fn with_volume() -> ConfigStore {
         .write(
             &who(),
             &CreateVolume {
+                storage_locked: false,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: VolumeName::parse("pgdata").unwrap(),

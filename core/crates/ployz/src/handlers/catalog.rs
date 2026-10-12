@@ -170,7 +170,7 @@ const STDIN: [(&str, &str, Stdin); 6] = [
     ("set", "--secret", Stdin::Only),
 ];
 
-const KEEPS_RUNNING_ARGS: [(&str, &str); 9] = [
+const KEEPS_RUNNING_ARGS: [(&str, &str); 10] = [
     ("github connect", "--wait"),
     ("logs", "--follow"),
     ("server add", "--wait"),
@@ -179,6 +179,7 @@ const KEEPS_RUNNING_ARGS: [(&str, &str); 9] = [
     ("volume mirror rm", "--wait"),
     ("volume move", "--wait"),
     ("volume release", "--wait"),
+    ("volume restore", "--wait"),
     ("volume sync", "--wait"),
 ];
 

@@ -90,6 +90,7 @@ fn volume(store: &ConfigStore, who: &Actor, n: u8, name: &str) {
         .write(
             who,
             &CreateVolume {
+                storage_locked: false,
                 shared_writes: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(uuid(n)).unwrap(),
