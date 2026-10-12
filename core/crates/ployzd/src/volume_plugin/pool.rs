@@ -20,6 +20,11 @@ use super::{
 #[cfg(test)]
 pub(super) const POOL_BACKING_FILE: &str = "machine-pool";
 const POOL_NAME: &str = "ployz";
+/// Debian's monthly zfsutils cron trims Pools it misreads as NVMe-only, which
+/// punches holes in a file vdev. A trimmed backing file can no longer hold the
+/// Pool's size when the host root fills up.
+const PERIODIC_TRIM: &str = "org.debian:periodic-trim";
+const PERIODIC_TRIM_DISABLED: &str = "org.debian:periodic-trim=disable";
 
 /// Whether recovery may reclaim a verified unlabeled backing file.
 pub(super) enum UnlabeledBacking {
@@ -58,6 +63,32 @@ impl CreatedPool<'_> {
 }
 
 impl VolumeStorage {
+    /// Grows the Pool for `commitment` after opting a managed Pool out of periodic trim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the trim opt-out or growth fails.
+    pub(super) async fn ensure_pool_capacity(
+        &self,
+        pool: &MachinePool,
+        commitment: u64,
+        unmanaged_used_bytes: u64,
+    ) -> Result<()> {
+        if pool.name() == POOL_NAME
+            && self
+                .zfs(&["get", "-H", "-o", "value", PERIODIC_TRIM, POOL_NAME])
+                .await?
+                .trim()
+                != "disable"
+        {
+            self.zfs(&["set", PERIODIC_TRIM_DISABLED, POOL_NAME])
+                .await?;
+        }
+        self.pool
+            .ensure_capacity(pool, commitment, unmanaged_used_bytes)
+            .await
+    }
+
     /// Creates a bounded Volume, creating its Machine Pool first when absent.
     ///
     /// # Errors
@@ -317,8 +348,12 @@ impl PoolStorage {
                 "none",
                 "-o",
                 &ashift,
+                "-o",
+                "autotrim=off",
                 "-O",
                 "canmount=off",
+                "-O",
+                PERIODIC_TRIM_DISABLED,
                 POOL_NAME,
                 backing,
             ],
@@ -369,6 +404,15 @@ impl PoolStorage {
         let minimum = ployz_core::storage_with_headroom(commitment)?
             .checked_add(unmanaged_used_bytes)
             .ok_or("Pool occupancy overflows u64")?;
+        if pool.name() == POOL_NAME {
+            let backing = self.backing_text()?;
+            let (length, allocated) = self.backing_allocation(backing).await?;
+            if allocated < length {
+                self.check_host_root(length - allocated).await?;
+                checked_command(&self.fallocate, &["-l", &length.to_string(), backing]).await?;
+                self.verify_preallocation(backing, length).await?;
+            }
+        }
         if pool.size_bytes().get() >= minimum {
             return Ok(());
         }

@@ -264,13 +264,12 @@ impl VolumeStorage {
             .map(|dataset| dataset.active_used_bytes)
             .try_fold(0u64, u64::checked_add)
             .ok_or("Dataset occupancy overflows u64")?;
-        self.pool
-            .ensure_capacity(
-                pool,
-                commitment,
-                pool.used_bytes().saturating_sub(managed_used),
-            )
-            .await?;
+        self.ensure_pool_capacity(
+            pool,
+            commitment,
+            pool.used_bytes().saturating_sub(managed_used),
+        )
+        .await?;
         Ok(())
     }
 
