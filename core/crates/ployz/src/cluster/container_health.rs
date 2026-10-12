@@ -72,7 +72,10 @@ pub(crate) async fn wait_until_ready<E, F: Future<Output = Result<ContainerDetai
             &observed.runtime,
             last_check.as_ref(),
             now,
-            if matches!(healthcheck, Some(HealthcheckSpec::Http(_))) {
+            if matches!(
+                healthcheck.or(observed.effective_healthcheck.as_ref()),
+                Some(HealthcheckSpec::Http(_))
+            ) {
                 health_deadline.unwrap_or(monitor_deadline)
             } else {
                 monitor_deadline
@@ -137,7 +140,13 @@ pub(crate) fn classify_health(
         ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
         } if expectation == HealthExpectation::ContainerReady && health_deadline.is_none() => {
-            HealthPoll::Complete
+            // Without a healthcheck, staying up through the monitor window is the
+            // only sign a crash loop did not start.
+            if now >= monitor_deadline {
+                HealthPoll::Complete
+            } else {
+                HealthPoll::PendingUntil(monitor_deadline)
+            }
         }
         ContainerRuntimeObservation::Running {
             health:
@@ -214,8 +223,8 @@ pub(crate) fn health_deadline_for(
         None => observed
             .effective_healthcheck
             .as_ref()
-            .and_then(HealthcheckSpec::as_configured)
-            .map(|check| started + healthcheck_deadline(Some(check)))
+            .and_then(HealthcheckSpec::deadline)
+            .map(|deadline| started + deadline)
             .or_else(|| {
                 matches!(
                     &observed.runtime,
@@ -230,7 +239,9 @@ pub(crate) fn health_deadline_for(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{ConfiguredHealthcheck, HealthcheckCommand};
+    use std::num::NonZeroU16;
+
+    use ployz_core::{ConfiguredHealthcheck, HealthcheckCommand, HttpHealthcheck};
 
     use super::*;
     use crate::global_fixtures::{machine, running_on};
@@ -315,5 +326,55 @@ mod tests {
             Err(HealthWaitError::Health(HealthFailure::TimedOut { .. }))
         ));
         assert_eq!(waited, healthcheck_deadline(None));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_container_without_a_healthcheck_is_ready_once_it_outlives_the_monitor_window() {
+        let (result, waited) = wait(|_| details(HealthObservation::NotConfigured, None)).await;
+        assert!(result.is_ok());
+        assert_eq!(waited, DEFAULT_HEALTH_MONITOR);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_container_without_a_healthcheck_that_dies_inside_the_monitor_window_fails() {
+        let (result, waited) = wait(|elapsed| {
+            let mut details = details(HealthObservation::NotConfigured, None);
+            if elapsed >= Duration::from_secs(2) {
+                details
+                    .container
+                    .try_update(|parts| {
+                        parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
+                    })
+                    .unwrap();
+            }
+            details
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(HealthWaitError::Health(HealthFailure::Runtime { .. }))
+        ));
+        assert_eq!(waited, Duration::from_secs(2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_observed_http_healthcheck_sets_the_deadline() {
+        let healthcheck = HealthcheckSpec::Http(HttpHealthcheck {
+            path: "/health".into(),
+            port: NonZeroU16::new(8080).unwrap(),
+            timeout_seconds: 300,
+        });
+        let (result, waited) = wait(|_| {
+            details(
+                HealthObservation::Unrecognized("probe address unavailable".into()),
+                Some(healthcheck.clone()),
+            )
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(HealthWaitError::Health(HealthFailure::TimedOut { .. }))
+        ));
+        assert_eq!(waited, Duration::from_secs(300));
     }
 }
