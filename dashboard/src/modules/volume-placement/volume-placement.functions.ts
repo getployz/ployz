@@ -3,8 +3,7 @@ import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
 import { placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
-import { planVolumeRun, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { deleteOldCopy, discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -60,19 +59,9 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
       : Effect.fail(new Conflict({ userFacing: true, message: refusal.message }))))),
   )));
 
-/**
- * Deletes an old copy now, not on Deploy: the user's confirm is the approval. Planned first, so a refusal (the copy is
- * the only one, or a run holds the Volume) returns before any run exists.
- */
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ ...VolumeInput.fields, server: Schema.NonEmptyString })))
   .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => unlessPlacementRefused(organization.id, Effect.gen(function* () {
-      const run = { volumeId: data.volumeId, environment: data.environment, kind: "delete_mirror", args: { slot: data.server, confirmed_name: null } } as const;
-      const planned = yield* planVolumeRun(organization.id, run);
-      if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
-      const requested = yield* requestVolumeRun({ userId: context.actor.userId, organizationId: organization.id }, run);
-      return requested.ok ? { ok: true } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
-    }))),
+    Effect.flatMap((organization) => unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, context.actor.userId, data))),
   )));
