@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { ConfigStore, CreateVolume, Mount } from "@ployz/sdk";
+import type { ConfigCommand, ConfigStore, CreateVolume, Mount } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { expect, vi } from "vitest";
@@ -9,7 +9,9 @@ import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-s
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { lossTime, type PlacementRow } from "#/modules/volume-placement/volume-placement";
 import { advancePlacement, type MemberInspector } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, listPlacements, stageRestore, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import {
+  discardPlacement, listPlacements, stageRestore, stampPlacements, writeAdmitted, type PlacementWrite,
+} from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
@@ -321,4 +323,33 @@ it.live("stages a restore when its committed marker can't be written", () => Eff
     .pipe(Effect.provideService(CloudStore, { open: Effect.succeed(proxy) }), Effect.provide(services));
   expect(staged).toMatchObject({ ok: true, placement: { staged: { seed: { sourceVolumeId: SOURCE } } } });
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toHaveLength(1);
+}));
+
+it.live("holds a restore staged while a Deploy is admitted until the Deploy is written, so it rides no Deploy unstamped", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  const deployment = "00000000-0000-4000-8000-00000000d00d";
+  const waiting = () => Effect.runPromise(Effect.gen(function* () {
+    const [row] = yield* (yield* Database).drizzle.execute<{ waiting: number }>(
+      sql`select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted`, "objects");
+    return (row?.waiting ?? 0) > 0;
+  }).pipe(Effect.provide(services)));
+  let restoring: Promise<PlacementWrite> | undefined;
+  const write = (command: ConfigCommand) => storeTry(async () => {
+    restoring = Effect.runPromise(stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+      .pipe(Effect.provide(services)));
+    let done = false;
+    void restoring.finally(() => { done = true; });
+    while (!done && !(await waiting())) await new Promise((resolve) => setTimeout(resolve, 10));
+    return store.write(ORGANIZATION, command, { ...acmeWeb(), servers: 1 });
+  });
+
+  yield* writeAdmitted(ORGANIZATION, {
+    command: "admit", admit: "deploy", id: deployment, environment: shop, services: [], version: null, accept_volume_loss: [],
+  }, write).pipe(Effect.provide(services));
+  const restored = yield* Effect.promise(() => restoring ?? Promise.reject(new Error("no restore started")));
+
+  const { nodes } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deployment }));
+  expect(nodes.flatMap((node) => node.type === "volume" ? [node.name] : [])).toEqual(["data"]);
+  expect(restored).toMatchObject({ ok: true, placement: { deploymentId: null } });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toMatchObject([{ deploymentId: null, staged: { seed: { sourceVolumeId: SOURCE } } }]);
 }));
