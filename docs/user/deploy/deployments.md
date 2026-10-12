@@ -100,7 +100,7 @@ header. Each service it included has a tab with its **Build** and **Deploy**
 | **Deployed** | Every change applied |
 | **Failed** | Something stopped it. A service marked **Not attempted** never started. |
 | **Cancelled** | Someone cancelled it |
-| **Unknown** | Ployz can't tell what applied. Retry it. |
+| **Unknown** | Ployz can't tell what applied. Redeploy it. |
 
 To inspect per-server progress from the CLI, run:
 
@@ -118,9 +118,9 @@ when you deploy again. Unchanged services have no rows because no server work ra
 If the runner stops reporting, unfinished rows read `unknown`. Completed and failed rows keep
 their recorded outcomes.
 
-## Retry or cancel a deployment
+## Redeploy or cancel a deployment
 
-- **Retry**, on a failed, cancelled or unknown deployment, ships the same commit and settings
+- **Redeploy**, on a failed, cancelled or unknown deployment, ships the same commit and settings
   again. To ship a fix, change it and deploy instead.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
@@ -157,15 +157,23 @@ was already replaced keeps the new version, and services later in the order stay
 > Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
 > database keeps the change while the old version of your app runs against it.
 
+While a deployment runs, the bottom bar shows it. Once it ends, the bar shows **Deployed** for a
+few seconds, or **Failed** until you dismiss it, with **Logs** to open its page.
+
+A failed deploy drops the volume change it failed on, so the volume stays where it was. Volume
+changes it never got to go back to your staged changes, and **Details** marks them **Not
+reached**. Deploy again to run them.
+
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a
 [branch](../environments/environments.md) first.
 
 ## Confirm a deploy that deletes data
 
-When a deploy would delete a volume's data, like a deleted volume or database, **Deploy deletes
-data** lists what goes. Type your `project/environment`, like `my-app/production`, and click
-**Deploy**. If you didn't mean it, cancel, then discard the deletion in **Details**.
+When a deploy would delete a volume's data, like a deleted volume or database, a removed mirror or
+a detached copy, **Deletes data** lists what goes. When it uses a mirror because the primary
+isn't answering, the title is **Data loss**: changes after the mirror's last refresh are lost.
+Type your `project/environment`, like `my-app/production`, and click **Deploy**. If you didn't mean it, cancel, then discard the deletion in **Details**.
 
 **Publish** asks the same way, under **Publishing deletes data on the next deploy**. Publishing
 deletes nothing and starts no deploy: it saves the deletion, and your next deploy takes it along.

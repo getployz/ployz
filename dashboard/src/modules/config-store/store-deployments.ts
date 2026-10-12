@@ -33,6 +33,8 @@ export type ChangeRow = {
   detail?: string;
   /** What the change loses, which Details shows in red. */
   loss?: string;
+  /** A placement change's steps, in the order the Deploy runs them. */
+  steps?: readonly string[];
 };
 
 /** One changed node in Details, with its changed Settings. */
@@ -53,6 +55,8 @@ export type ChangeGroup = {
   canDiscard: boolean;
   discardTarget?: DiscardTarget;
   serviceSourceType?: ServiceListing["source"];
+  /** A failed Deploy gave its changes back before it got to them. */
+  unreached?: boolean;
 };
 
 /** A Setting the catalog doesn't title: a variable, a mount, a route, or a Volume's own. */

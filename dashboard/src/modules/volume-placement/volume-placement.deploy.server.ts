@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { CopyObservation, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
@@ -36,24 +36,43 @@ const rowView = (row: typeof volumePlacement.$inferSelect): PlacementRow => ({
   volumeId: row.volumeId, environmentId: row.environmentId, mirrors: row.mirrors, staged: row.staged, deploymentId: row.deploymentId,
 });
 
-/** The Deploy gives back what it took: the rows stay staged for the next one. */
-const release = Effect.fn("VolumePlacement.release")(function* (organizationId: string, deploymentId: string) {
+/**
+ * The Deploy gives back what it took: the rows stay staged for the next one. A failed Deploy marks them unreached, so
+ * Details can say the failure never got to them.
+ */
+const release = Effect.fn("VolumePlacement.release")(function* (organizationId: string, deploymentId: string, failed = false) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(volumePlacement).set({ deploymentId: null, updatedAt: new Date() })
-    .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId)));
+  yield* drizzle.update(volumePlacement).set({
+    deploymentId: null,
+    staged: failed ? sql`${volumePlacement.staged} || '{"unreached":true}'::jsonb` : sql`${volumePlacement.staged}`,
+    updatedAt: new Date(),
+  }).where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId)));
 });
 
 /**
- * Deployment `deploymentId` ended without settling its Volumes: they go back to staged for the next Deploy. One still in
- * flight keeps them, so a duplicate run stopping can't take them from the live one. A Volume run already going is its
- * own Inngest function and keeps running; the next Deploy waits on it before planning again.
+ * The change on Volume `volumeId` failed, so the Deploy drops it and gives back the rest. A restore stays staged: its
+ * Volume waits in the Store for the data, and only discarding it drops the row.
+ */
+const fail = Effect.fn("VolumePlacement.fail")(function* (organizationId: string, deploymentId: string, volumeId: string, message: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumePlacement).set({ staged: null, deploymentId: null, updatedAt: new Date() }).where(and(
+    eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId), sql`${volumePlacement.staged} -> 'seed' is null`,
+  ));
+  yield* release(organizationId, deploymentId, true);
+  return { kind: "failed", message } satisfies PlacementAdvance;
+});
+
+/**
+ * Deployment `deploymentId` ended without settling its Volumes: they go back to staged for the next Deploy, unreached if it
+ * failed. One still in flight keeps them, so a duplicate run stopping can't take them from the live one. A Volume run
+ * already going is its own Inngest function and keeps running; the next Deploy waits on it before planning again.
  */
 export const releasePlacementClaims = Effect.fn("VolumePlacement.releaseClaims")(function* (organizationId: string, deploymentId: string) {
-  const inFlight = yield* readStore(organizationId, { query: "deployment", id: deploymentId }).pipe(
-    Effect.map((deployment) => deployment.in_flight),
-    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(false)),
+  const deployment = yield* readStore(organizationId, { query: "deployment", id: deploymentId }).pipe(
+    Effect.map((found) => ({ inFlight: found.in_flight, failed: found.status === "failed" })),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed({ inFlight: false, failed: false })),
   );
-  if (!inFlight) yield* release(organizationId, deploymentId);
+  if (!deployment.inFlight) yield* release(organizationId, deploymentId, deployment.failed);
 });
 
 const settle = Effect.fn("VolumePlacement.settle")(function* (volumeId: string, values: Partial<typeof volumePlacement.$inferInsert>) {
@@ -78,7 +97,7 @@ const settleClaimed = Effect.fn("VolumePlacement.settleClaimed")(function* (
 /**
  * One step of Deploy `deploymentId`'s storage, before its Services: settle the run it waited on, then start the next run
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
- * Volumes stay staged. A run that fails fails the Deploy, its Volumes still staged.
+ * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the Volumes it never reached stay staged.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -93,8 +112,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const run = yield* getVolumeRun(organizationId, waited.runId);
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
     if (waited.mirrors !== null && run.state !== "done") {
-      yield* release(organizationId, deploymentId);
-      return { kind: "failed", message: `${run.volume_name}: ${run.message ?? run.state}` } satisfies PlacementAdvance;
+      return yield* fail(organizationId, deploymentId, waited.volumeId, `${run.volume_name}: ${run.message ?? run.state}`);
     }
     // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
     if (waited.mirrors !== null) yield* settle(waited.volumeId, { mirrors: [...waited.mirrors] });
@@ -117,7 +135,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   // A Server that joined on an older daemon since these were staged, or one that isn't answering, can't take part in a run.
   const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId, read);
   if (refusal !== null) {
-    yield* release(organizationId, deploymentId);
+    yield* release(organizationId, deploymentId, true);
     return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
   }
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
@@ -153,8 +171,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
     const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run });
     if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, mirrors: step.mirrors } } satisfies PlacementAdvance;
-    yield* release(organizationId, deploymentId);
-    return { kind: "failed", message: `${volume.name}: ${requested.refusal.message}` } satisfies PlacementAdvance;
+    return yield* fail(organizationId, deploymentId, row.volumeId, `${volume.name}: ${requested.refusal.message}`);
   }
   return { kind: "done" } satisfies PlacementAdvance;
 });

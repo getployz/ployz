@@ -21,6 +21,7 @@ import {
   parseMirrorResourceId,
   mergeRestoreGroups,
   placementGroup,
+  placementLoss,
   restorePoints,
   stagedOffServer,
   storageStep,
@@ -47,7 +48,7 @@ const mirrorAsOf = (server: string, when: Date): Member => {
   return { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: { name: "s", guid: "12", created_unix_seconds: when.getTime() / 1000 } } } };
 };
 const changes = (members: Member[], placement: PlacementRow | null) => placementChanges(volume, members, placement);
-const review = (members: Member[], placement: PlacementRow | null) => placementGroup(volume, changes(members, placement)).rows
+const review = (members: Member[], placement: PlacementRow | null) => placementGroup(volume, changes(members, placement), at).rows
   .map(({ kind, name, currentValue, newValue, detail, loss }) => ({ kind, name, currentValue, newValue, detail, loss }));
 const primaryMove = (from: string, to: string, loss?: string) =>
   ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail: undefined, loss });
@@ -456,6 +457,53 @@ describe("mirroredVolumes", () => {
   });
 });
 
+describe("changeSteps", () => {
+  const minutesAfter = (minutes: number) => new Date(at.getTime() + minutes * 60_000);
+  const stepsOf = (members: Member[], placement: PlacementRow | null, now = at) =>
+    placementGroup(volume, changes(members, placement), now).rows.map((line) => line.steps);
+
+  it("catches up first only when the mirror is more than 60 minutes behind", () => {
+    const members = [member("web-1", "writer"), mirrorAsOf("web-2", at)];
+    const promote = row(["web-2"], { primary: "web-2" });
+    expect(stepsOf(members, promote, minutesAfter(60))).toEqual([["Final sync", "Stop", "Start"]]);
+    expect(stepsOf(members, promote, minutesAfter(61))).toEqual([["Catch up", "Final sync", "Stop", "Start"]]);
+  });
+
+  it("seeds a Server that holds nothing before the hand-over", () => {
+    expect(stepsOf([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-3" }))).toEqual([["Seed", "Final sync", "Stop", "Start"]]);
+  });
+
+  it("restarts on the mirror when the primary does not answer", () => {
+    expect(stepsOf([member("web-1", "unanswered"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" }))).toEqual([["Stop", "Start"]]);
+  });
+
+  it("seeds an added mirror, deleting the detached copy it replaces first", () => {
+    const members = [member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")];
+    expect(stepsOf(members, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual([["Delete", "Seed"]]);
+  });
+
+  it("deletes a removed mirror and a deleted copy", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(stepsOf(members, row(["web-2"], { primary: "web-1" }))).toEqual([["Delete"]]);
+    expect(stepsOf(members, row([], { primary: "web-1", deletes: ["web-2"] }))).toEqual([["Delete"]]);
+  });
+});
+
+describe("placementLoss", () => {
+  const lossOf = (members: Member[], placement: PlacementRow) => placementLoss(changes(members, placement));
+
+  it("names each copy a Deploy deletes, and asks nothing of a move that keeps every copy", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    expect(lossOf(members, row(["web-2"], { primary: "web-1" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-2" }], losesWrites: false });
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [], losesWrites: false });
+  });
+
+  it("says a restore drops the unanswered primary's writes", () => {
+    const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true });
+  });
+});
+
 describe("restore into a new Volume", () => {
   const point = { guid: "11", name: "ployz-1", at: at.getTime() / 1000 };
   const seeded: PlacementRow = {
@@ -474,9 +522,10 @@ describe("restore into a new Volume", () => {
   it("reviews as a created Volume that says what it leaves out, and has no inline undo", () => {
     const [change] = changes([], seeded);
     if (change === undefined) throw new Error("fixture");
-    const group = placementGroup(volume, [change]);
+    const group = placementGroup(volume, [change], at);
     expect(group.lifecycle).toBe("create");
     expect(group.rows).toMatchObject([{
+      steps: ["Save current", "Stop", "Swap", "Start"],
       kind: "add", name: "From", currentValue: "", newValue: "data · 10:36",
       loss: "Changes after 10:36 are not in pg-data", detail: "Volume data, not database point-in-time.",
     }]);

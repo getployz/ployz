@@ -8,7 +8,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
-  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, type RestorePoint,
+  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
 import { deleteCopyServerFn, discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
@@ -68,6 +68,7 @@ export function useDeleteCopy(organizationSlug: string, environment: Environment
 
 export type StagedPlacements = {
   readonly groups: readonly ChangeGroup[];
+  readonly loss: PlacementLoss;
   readonly count: number;
   readonly discard: (volumeId: string) => void;
   readonly undo: (volumeId: string, path: string) => void;
@@ -94,10 +95,12 @@ export function useStagedPlacements(
     const changes = placementChanges(volume, answered, row);
     return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
   });
-  const groups = staged.map(({ volume, changes }) => placementGroup(volume, changes));
+  const now = new Date();
+  const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.staged?.unreached === true));
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
   return {
     groups,
+    loss: placementLoss(staged.flatMap(({ changes }) => changes)),
     count: groups.reduce((total, group) => total + group.changeCount, 0),
     discard: (volumeId) => settle([discardOf(volumeId)]),
     undo: (volumeId, path) => {
