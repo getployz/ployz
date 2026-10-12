@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { Deferred, Effect, Fiber } from "effect";
+import { Deferred, Effect, Fiber, Semaphore } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
@@ -34,11 +34,14 @@ const STAGING: StoreRefusal = { code: "conflict", message: "This restore is stil
 
 const restoreLock = (volumeId: string) => sql`hashtext(${`volume-restore:${volumeId}`})`;
 
+/** Each lock holder keeps a pooled connection while its `body` takes more: one at a time can't drain the pool. */
+const holders = Semaphore.makeUnsafe(1);
+
 /**
  * Runs `body` while restore `volumeId`'s lock is held, on a connection of its own so `body`'s queries stay outside its
  * transaction. `body` can't be interrupted: a Store write it stopped awaiting could still commit after the lock goes.
  */
-const whileStaging = <A, E, R>(volumeId: string, body: Effect.Effect<A, E, R>) => Effect.gen(function* () {
+const whileStaging = <A, E, R>(volumeId: string, body: Effect.Effect<A, E, R>) => holders.withPermits(1)(Effect.gen(function* () {
   const database = yield* Database;
   const locked = yield* Deferred.make<void>();
   const staged = yield* Deferred.make<void>();
@@ -49,7 +52,7 @@ const whileStaging = <A, E, R>(volumeId: string, body: Effect.Effect<A, E, R>) =
   })).pipe(Effect.orDie, Effect.onError((cause) => Deferred.failCause(locked, cause)), Effect.forkChild);
   yield* Deferred.await(locked);
   return yield* Effect.uninterruptible(body).pipe(Effect.ensuring(Deferred.succeed(staged, undefined).pipe(Effect.andThen(Fiber.await(holder)))));
-});
+}));
 
 /**
  * Whether no stageRestore still holds restore `volumeId`: its Store write has then landed or never will, so a missing
