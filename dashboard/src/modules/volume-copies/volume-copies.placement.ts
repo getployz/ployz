@@ -17,7 +17,7 @@ export function copiesFromPlacement(input: {
   readonly active: VolumeRunView | null;
   /** The newest mirror round that ended, whatever its end. */
   readonly lastSync: VolumeRunView | null;
-  /** The newest mirror round that ended done: a silent mirror's last good refresh. */
+  /** The newest mirror round that ended done: every mirror held the primary's data as of its end. */
   readonly lastDone: VolumeRunView | null;
 }): VolumeCopies | null {
   const { volume, members, row, active } = input;
@@ -44,7 +44,7 @@ export function copiesFromPlacement(input: {
       id: item.server.id,
       server: item.server,
       name: copyName(volume.name, item.server.name),
-      refreshedAt: quiet ? doneAt : item.newest,
+      refreshedAt: quiet ? doneAt : syncedAt(item.newest, doneAt),
       skipped: skipped || quiet,
       staged,
       busy: active?.kind === "sync" ? "Refreshing" : busyOn(item.server.name),
@@ -77,6 +77,15 @@ export function copiesFromPlacement(input: {
       ...form.detached.map(old),
     ],
   };
+}
+
+/**
+ * A sync with nothing to send makes no snapshot, yet the mirror still matches the primary as of that sync. A mirror
+ * with no snapshot has never received data, so an older done sync says nothing about it.
+ */
+function syncedAt(newest: Date | null, doneAt: Date | null): Date | null {
+  if (newest === null || doneAt === null) return newest;
+  return doneAt > newest ? doneAt : newest;
 }
 
 function stagedOf(change: ChangeKind | null): StagedCopy | null {

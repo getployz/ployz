@@ -71,6 +71,17 @@ describe("copiesFromPlacement", () => {
     expect(mirror && cardLine(mirror, now).stale).toBe(true);
   });
 
+  it("ages an answering mirror from its last done sync when that sync made no new snapshot", () => {
+    const snapshotAt = new Date(1_790_000_000 * 1000);
+    const now = new Date(snapshotAt.getTime() + 2 * 3_600_000);
+    const done = { ...run("sync", { full: false }, "done"), finished_at: new Date(now.getTime() - 5 * 60_000).toISOString() };
+    const model = copies(row(["web-2"]), undefined, null, done, done);
+    const [mirror] = model.elsewhere;
+    expect(mirror).toMatchObject({ kind: "mirror", skipped: false, refreshedAt: new Date(now.getTime() - 5 * 60_000) });
+    expect(safetyLine(model, now).tone).not.toBe("warn");
+    expect(mirror && cardLine(mirror, now)).toMatchObject({ stale: false, age: "5 minutes ago" });
+  });
+
   it("marks a silent mirror skipped with no age when no round ever ended done", () => {
     const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "unanswered")]);
     expect(model.elsewhere[0]).toMatchObject({ kind: "mirror", skipped: true, refreshedAt: null });
@@ -84,7 +95,8 @@ describe("copiesFromPlacement", () => {
   it("reads a recorded mirror that never refreshed as behind, not as protection", () => {
     const now = new Date("2026-10-09T03:02:00.000Z");
     const fresh = { ...member("web-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: null }, lease: null } };
-    const model = copies(row(["web-2"]), [member("web-1", "writer"), fresh]);
+    const done = { ...run("sync", { full: false }, "done"), finished_at: "2026-10-09T03:00:00.000Z" };
+    const model = copies(row(["web-2"]), [member("web-1", "writer"), fresh], null, done, done);
     const [mirror] = model.elsewhere;
     expect(mirror).toMatchObject({ kind: "mirror", refreshedAt: null });
     expect(safetyLine(model, now)).toEqual({ tone: "warn", words: "Mirror behind", detail: null });
