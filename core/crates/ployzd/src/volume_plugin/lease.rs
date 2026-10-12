@@ -1,37 +1,22 @@
-//! The per-Volume lease record on the managed root and the fence every switch verb passes.
+//! What this Machine holds for one Volume name: its root or slot, the markers on it, and its newest snapshot.
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, LeaseRecord, MirrorMarker, Pull, RpcError, RpcErrorCode, SlotId,
-    Snapshot, SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch, WriterMarker,
+    InspectVolumeCopyRequest, MirrorMarker, Pull, RpcError, RpcErrorCode, SlotId, Snapshot,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch, WriterMarker,
 };
 use ployzd::machine_pool::MachinePool;
 
 use super::{
-    DATASET_ROOT, Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
+    Dataset, DockerVolumeName, Result, VolumeError, VolumeStorage,
     storage::{
         EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY, slot_fs,
         slot_parent,
     },
 };
 
-pub(super) const LEASE_PROPERTY_PREFIX: &str = "ployz:lease.";
 pub(super) const WRITER_PROPERTY: &str = "ployz:writer";
 pub(super) const MIRROR_PROPERTY: &str = "ployz:mirror";
-
-/// `ployz:lease.<name>`, each uppercase letter written as `:` and its lowercase. ZFS refuses
-/// uppercase in a user property name, and a Docker Volume name never holds `:`, so the
-/// escape keeps `Data` and `data` apart.
-fn lease_property(name: &DockerVolumeName) -> String {
-    let mut property = LEASE_PROPERTY_PREFIX.to_owned();
-    for character in name.0.chars() {
-        if character.is_ascii_uppercase() {
-            property.push(':');
-        }
-        property.push(character.to_ascii_lowercase());
-    }
-    property
-}
 
 pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
@@ -53,25 +38,6 @@ impl VolumeStorage {
             .await?;
         let value = value.trim_end_matches('\n');
         Ok((value != "-").then(|| value.to_owned()))
-    }
-
-    pub(super) async fn lease_record(
-        &self,
-        datasets: &[Dataset],
-        pool: &MachinePool,
-        name: &DockerVolumeName,
-    ) -> Result<Option<LeaseRecord>> {
-        let root = format!("{}/{DATASET_ROOT}", pool.name());
-        if !datasets.iter().any(|dataset| dataset.name == root) {
-            return Ok(None);
-        }
-        let Some(value) = self.property(&root, &lease_property(name)).await? else {
-            return Ok(None);
-        };
-        value
-            .parse::<LeaseRecord>()
-            .map(Some)
-            .map_err(|error| format!("{error} on {root}").into())
     }
 
     pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
@@ -260,15 +226,11 @@ impl VolumeStorage {
     async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
         let Some(pool) = self.pool.one_usable().await? else {
-            return Ok(VolumeCopyView {
-                copy: None,
-                lease: None,
-            });
+            return Ok(VolumeCopyView { copy: None });
         };
         let datasets = self.datasets(&pool).await?;
         Ok(VolumeCopyView {
             copy: self.copy(&datasets, &pool, name).await?,
-            lease: self.lease_record(&datasets, &pool, name).await?,
         })
     }
 }

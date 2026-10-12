@@ -1,4 +1,4 @@
-//! Lease, position, markers and switch verbs shared by a Volume run and the Machines it drives.
+//! Snapshots, markers and copies shared by a Volume run and the Machines it drives.
 
 use std::{fmt, str::FromStr, time::Duration};
 
@@ -10,153 +10,6 @@ use crate::{CopyRole, DockerVolumeName, MachineName, RpcError, RpcErrorCode, Wri
 /// How long a Machine waits on one call to its volume plugin, such as the call that
 /// mounts a handed-over Volume and starts its Container.
 pub const VOLUME_PLUGIN_CALL_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Lease number of one Volume run, numbered by the operator driving the run.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-#[serde(transparent)]
-pub struct Lease(u64);
-
-impl Lease {
-    #[must_use]
-    pub const fn new(lease: u64) -> Self {
-        Self(lease)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-impl fmt::Display for Lease {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-/// Position of a request in its run: step, round and verb within the round, ordered in that order.
-///
-/// `06-freeze` is `(6, 0, 0)`; round verbs are `(4, round, sub)` with one `sub` per verb.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
-pub struct Pos {
-    pub seq: u16,
-    pub round: u32,
-    pub sub: u8,
-}
-
-impl Pos {
-    /// Where departure leaves a record: past every step a run can send, so each late
-    /// request of that run meets `stale_step` and only a newer lease is admitted.
-    pub const DEPARTED: Self = Self {
-        seq: u16::MAX,
-        round: u32::MAX,
-        sub: u8::MAX,
-    };
-
-    #[must_use]
-    pub const fn step(seq: u16) -> Self {
-        Self {
-            seq,
-            round: 0,
-            sub: 0,
-        }
-    }
-}
-
-impl fmt::Display for Pos {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.seq, self.round, self.sub)
-    }
-}
-
-/// Whether a run is mid-switch on this copy. Adopting a newer lease keeps it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum Cycle {
-    Open,
-    Closed,
-}
-
-/// One Machine's admission record for one Volume name.
-///
-/// Stored as the ZFS user property `ployz:lease.<name>` on the managed root (an uppercase
-/// letter in `<name>` written as `:` and its lowercase), value
-/// `<lease>:<seq>.<round>.<sub>:<open|closed>`, so it outlives every copy of the Volume.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct LeaseRecord {
-    pub lease: Lease,
-    pub pos: Pos,
-    pub cycle: Cycle,
-}
-
-impl fmt::Display for LeaseRecord {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let cycle = match self.cycle {
-            Cycle::Open => "open",
-            Cycle::Closed => "closed",
-        };
-        write!(formatter, "{}:{}:{cycle}", self.lease, self.pos)
-    }
-}
-
-/// A stored lease record that does not read as `<lease>:<seq>.<round>.<sub>:<open|closed>`.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid lease record {0:?}; expected <lease>:<seq>.<round>.<sub>:<open|closed>")]
-pub struct LeaseRecordParseError(pub String);
-
-impl FromStr for LeaseRecord {
-    type Err = LeaseRecordParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || LeaseRecordParseError(value.to_owned());
-        let mut fields = value.split(':');
-        let (Some(lease), Some(pos), Some(cycle), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return Err(invalid());
-        };
-        let mut parts = pos.split('.');
-        let (Some(seq), Some(round), Some(sub), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(invalid());
-        };
-        Ok(Self {
-            lease: Lease(lease.parse().map_err(|_| invalid())?),
-            pos: Pos {
-                seq: seq.parse().map_err(|_| invalid())?,
-                round: round.parse().map_err(|_| invalid())?,
-                sub: sub.parse().map_err(|_| invalid())?,
-            },
-            cycle: match cycle {
-                "open" => Cycle::Open,
-                "closed" => Cycle::Closed,
-                _ => return Err(invalid()),
-            },
-        })
-    }
-}
-
-/// What every switch request carries. The Machine compares it with its own record.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct Switch {
-    pub lease: Lease,
-    pub pos: Pos,
-}
-
-/// What the fence rule decided for a request, under the dataset lock.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum FenceDecision {
-    /// Same lease, later position: run the effect and record the position.
-    Admit,
-    /// Same lease and position: answer from the marker, or finish an incomplete effect.
-    Replay,
-    /// Newer lease, or no record yet: write the record, then run the effect.
-    Adopt,
-    RefuseStaleLease,
-    RefuseStaleStep,
-}
 
 /// ZFS `guid` of a snapshot; stable across send and receive.
 ///
@@ -239,26 +92,21 @@ impl From<SlotId> for String {
     }
 }
 
-/// Name of a run's snapshot without the `@`: `w-<lease>-<round>` taken warm, `f-<lease>` taken final.
+/// Name of a run's snapshot without the `@`: `w-<run>-<round>` taken warm, `f-<run>` taken final.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub struct SnapshotName(String);
 
 impl SnapshotName {
     #[must_use]
-    pub fn warm(lease: Lease, round: u32) -> Self {
-        Self(format!("w-{lease}-{round}"))
-    }
-
-    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-/// A snapshot name that is not `w-<lease>-<round>` or `f-<lease>`.
+/// A snapshot name that is not `w-<run>-<round>` or `f-<run>`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid run snapshot name {0:?}; expected w-<lease>-<round> or f-<lease>")]
+#[error("invalid run snapshot name {0:?}; expected w-<run>-<round> or f-<run>")]
 pub struct SnapshotNameParseError(pub String);
 
 impl FromStr for SnapshotName {
@@ -269,8 +117,8 @@ impl FromStr for SnapshotName {
         let valid = match value.split_once('-') {
             Some(("w", rest)) => rest
                 .split_once('-')
-                .is_some_and(|(lease, index)| is_number(lease) && is_number(index)),
-            Some(("f", lease)) => is_number(lease),
+                .is_some_and(|(run, index)| is_number(run) && is_number(index)),
+            Some(("f", run)) => is_number(run),
             _ => false,
         };
         valid.then(|| Self(value.to_owned())).ok_or_else(invalid)
@@ -449,14 +297,13 @@ pub struct Pull {
     pub failure: Option<String>,
 }
 
-/// Live answer to `InspectVolumeCopy`: what this Machine holds and what it last admitted.
+/// Live answer to `InspectVolumeCopy`: what this Machine holds.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeCopyView {
     pub copy: Option<VolumeCopy>,
-    pub lease: Option<LeaseRecord>,
 }
 
-/// Ask a Machine what it holds for one Volume name. Carries no lease.
+/// Ask a Machine what it holds for one Volume name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct InspectVolumeCopyRequest {
     pub name: DockerVolumeName,
@@ -545,8 +392,6 @@ pub const MIRROR_ROOT: &str = "ployz-mirror";
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum SwitchError {
-    StaleLease,
-    StaleStep,
     Precondition,
     Busy,
     VolumeSwitching,
@@ -576,9 +421,7 @@ impl SwitchError {
 
     const fn rpc_code(self) -> RpcErrorCode {
         match self {
-            Self::StaleLease
-            | Self::StaleStep
-            | Self::Precondition
+            Self::Precondition
             | Self::Busy
             | Self::VolumeSwitching
             | Self::NoWriter
@@ -814,56 +657,6 @@ mod tests {
     }
 
     #[test]
-    fn lease_record_round_trips_through_its_property_value() {
-        let record = LeaseRecord {
-            lease: Lease(7),
-            pos: Pos {
-                seq: 4,
-                round: 2,
-                sub: 5,
-            },
-            cycle: Cycle::Open,
-        };
-        assert_eq!(record.to_string(), "7:4.2.5:open");
-        assert_eq!("7:4.2.5:open".parse::<LeaseRecord>().unwrap(), record);
-        assert_eq!(
-            "7:2.0.0:closed".parse::<LeaseRecord>().unwrap().cycle,
-            Cycle::Closed
-        );
-        for invalid in [
-            "",
-            "7",
-            "7:2.0.0",
-            "7:2.0:closed",
-            "7:2.0.0:ajar",
-            "x:2.0.0:open",
-        ] {
-            assert_eq!(
-                invalid.parse::<LeaseRecord>(),
-                Err(LeaseRecordParseError(invalid.to_owned()))
-            );
-        }
-    }
-
-    #[test]
-    fn positions_order_by_step_then_round_then_sub() {
-        let later_round = Pos {
-            seq: 4,
-            round: 2,
-            sub: 1,
-        };
-        let earlier_round_later_sub = Pos {
-            seq: 4,
-            round: 1,
-            sub: 5,
-        };
-        assert!(earlier_round_later_sub < later_round);
-        assert!(Pos::step(5) > later_round);
-        assert!(Pos::step(2) < Pos::step(3));
-        assert!(later_round < Pos::DEPARTED && Pos::step(u16::MAX - 1) < Pos::DEPARTED);
-    }
-
-    #[test]
     fn markers_round_trip_through_their_property_values() {
         for (text, marker) in [
             ("idle", WriterMarker::Idle),
@@ -933,16 +726,16 @@ mod tests {
 
     #[test]
     fn switch_errors_carry_their_reason_in_details() {
-        let error = SwitchError::StaleStep.rpc_error("too late");
+        let error = SwitchError::NoWriter.rpc_error("nothing to mount");
         assert_eq!(error.code, RpcErrorCode::Conflict);
-        assert_eq!(error.details, serde_json::json!({ "reason": "stale_step" }));
+        assert_eq!(error.details, serde_json::json!({ "reason": "no_writer" }));
         assert_eq!(
             SwitchError::from_details(&error.details),
-            Some(SwitchError::StaleStep)
+            Some(SwitchError::NoWriter)
         );
         assert_eq!(
-            SwitchError::from_details(&SwitchError::StaleLease.rpc_error("").details),
-            Some(SwitchError::StaleLease)
+            SwitchError::from_details(&SwitchError::NoCapacity.rpc_error("").details),
+            Some(SwitchError::NoCapacity)
         );
         assert_eq!(
             SwitchError::from_details(&serde_json::json!({ "reason": "unknown" })),

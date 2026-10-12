@@ -958,8 +958,6 @@ storage_locked?: boolean, };
 
 export type CreationKey = string;
 
-export type Cycle = "open" | "closed";
-
 export type DashboardPage = "projects" | "environments" | "variables" | "servers" | "github";
 
 export type DataEffect = "deleted" | "kept";
@@ -2095,10 +2093,6 @@ export type Kept = { service: ServiceName, why: string, };
 
 export type LastHealthCheck = { "type": "exited", code: number, output: string, } | { "type": "http_status", status: number, } | { "type": "http_unreachable", error: HttpCheckError, };
 
-export type Lease = number;
-
-export type LeaseRecord = { lease: Lease, pos: Pos, cycle: Cycle, };
-
 export type Left = { environment: EnvironmentSummary,
 /**
  * The Deployment taking it off, once one is admitted.
@@ -2865,8 +2859,6 @@ data: boolean, };
 export type PlannedRole = "own" | "live" | "left_out";
 
 export type PortPublication = { "mode": "ingress", hostname: IngressHost, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
-
-export type Pos = { seq: number, round: number, sub: number, };
 
 export type PrEnvironment = { environment: EnvironmentSummary,
 /**
@@ -4120,7 +4112,7 @@ export type Sweep = {
  */
 now: number, };
 
-export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "restore_point_gone" } | { "reason": "no_capacity" };
+export type SwitchError = { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "restore_point_gone" } | { "reason": "no_capacity" };
 
 export type SyncChange = "new" | "changed" | "conflict";
 
@@ -4429,7 +4421,7 @@ slot: SlotId, mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, 
  */
 pull: Pull | null, };
 
-export type VolumeCopyView = { copy: VolumeCopy | null, lease: LeaseRecord | null, };
+export type VolumeCopyView = { copy: VolumeCopy | null, };
 
 export type VolumeDriver = { name: string, options: { [key in string]: string }, };
 

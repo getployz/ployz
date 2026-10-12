@@ -1,16 +1,16 @@
 //! Departure: when a Machine leaves its cluster or is installed afresh, every root it
-//! holds becomes a slot and every lease record closes past its last step, so nothing left
-//! behind is taken for the writer and a later restore starts from an ordinary slot.
+//! holds becomes a slot, so nothing left behind is taken for the writer and a later restore
+//! starts from an ordinary slot.
 
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{Cycle, LeaseRecord, MirrorMarker, Pos, RpcError};
+use ployz_core::{MirrorMarker, RpcError};
 use ployzd::machine_pool::MachinePool;
 
 use super::{
-    DATASET_ROOT, Dataset, DockerVolumeName, Place, VolumeStorage,
-    lease::{LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal},
+    Dataset, DockerVolumeName, Place, VolumeStorage,
+    lease::{MIRROR_PROPERTY, WRITER_PROPERTY, internal},
     storage::{slot_fs, slot_parent},
 };
 
@@ -26,8 +26,7 @@ enum Departure<'datasets> {
 }
 
 impl VolumeStorage {
-    /// Demotes every root to a slot, idles every slot marker and closes every lease
-    /// record. Answers the names demoted, for the daemon to forget in Docker.
+    /// Demotes every root to a slot and idles every slot marker. Answers the names demoted, for the daemon to forget in Docker.
     async fn demote_all(&self, now_unix_seconds: i64) -> super::Result<Vec<String>> {
         let _guard = self.admit_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
@@ -52,7 +51,6 @@ impl VolumeStorage {
                 demoted.push(name.to_string());
             }
         }
-        self.close_lease_records(&pool, &datasets).await?;
         Ok(demoted)
     }
 
@@ -167,50 +165,6 @@ impl VolumeStorage {
     async fn seal(&self, fs: &str) -> super::Result<()> {
         self.zfs(&["set", "readonly=on", fs]).await?;
         self.zfs(&["inherit", WRITER_PROPERTY, fs]).await?;
-        Ok(())
-    }
-
-    /// Every record on the managed root keeps its lease and closes at [`Pos::DEPARTED`]:
-    /// each late request of that run is behind it, and the next run's newer lease adopts.
-    async fn close_lease_records(
-        &self,
-        pool: &MachinePool,
-        datasets: &[Dataset],
-    ) -> super::Result<()> {
-        let root = format!("{}/{DATASET_ROOT}", pool.name());
-        if !datasets.iter().any(|dataset| dataset.name == root) {
-            return Ok(());
-        }
-        let listed = self
-            .zfs(&[
-                "get",
-                "-H",
-                "-o",
-                "property,value",
-                "-s",
-                "local",
-                "all",
-                &root,
-            ])
-            .await?;
-        for line in listed.lines() {
-            let Some((property, value)) = line.split_once('\t') else {
-                continue;
-            };
-            if !property.starts_with(LEASE_PROPERTY_PREFIX) {
-                continue;
-            }
-            let record = value
-                .parse::<LeaseRecord>()
-                .map_err(|error| format!("{error} on {root}"))?;
-            let closed = LeaseRecord {
-                pos: Pos::DEPARTED,
-                cycle: Cycle::Closed,
-                ..record
-            };
-            self.zfs(&["set", &format!("{property}={closed}"), &root])
-                .await?;
-        }
         Ok(())
     }
 }

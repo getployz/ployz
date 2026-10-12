@@ -264,7 +264,7 @@ impl LocalMachine {
     /// restart forgets the mark; a still-running Container returns to ingress
     /// and the resend redoes the drain.
     ///
-    /// Polls no proxy, takes no lease, reads no other Machine.
+    /// Polls no proxy and reads no other Machine.
     pub(crate) async fn stop_behind_ingress(
         &self,
         installation: &crate::mutation::MutationGuard,

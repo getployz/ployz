@@ -1,14 +1,12 @@
-//! Departure over fake ZFS: every root becomes a slot, every record closes, and the
-//! roles Storage.Inspect and Mount derive from the markers.
+//! Departure over fake ZFS: every root becomes a slot, and the roles Storage.Inspect and
+//! Mount derive from the markers.
 
 use super::lease_tests::{set_property, start};
 use super::*;
 
 #[tokio::test]
-async fn departure_demotes_each_root_to_a_slot_and_closes_every_record() {
+async fn departure_demotes_each_root_to_a_slot() {
     let test = TestDir::new();
-    set_property(&test, "tank/ployz", "ployz:lease.data", "3:5.2.1:open");
-    set_property(&test, "tank/ployz", "ployz:lease.gone", "1:2.0.0:closed");
     set_property(
         &test,
         "tank/ployz/data",
@@ -43,14 +41,6 @@ async fn departure_demotes_each_root_to_a_slot_and_closes_every_record() {
     let kept = snapshot_names(&test, "tank/ployz-mirror/data/fs");
     assert!(kept.iter().any(|name| name.starts_with("dep-")), "{kept:?}");
     assert!(kept.contains(&"w-3-1".to_owned()), "{kept:?}");
-    assert_eq!(
-        property(&test, "tank/ployz", "ployz:lease.data").as_deref(),
-        Some("3:65535.4294967295.255:closed")
-    );
-    assert_eq!(
-        property(&test, "tank/ployz", "ployz:lease.gone").as_deref(),
-        Some("1:65535.4294967295.255:closed")
-    );
 
     let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
     assert_eq!(capacity.pointer("/Ok/volumes").unwrap(), &json!({}));
@@ -222,7 +212,6 @@ async fn storage_inspection_derives_each_copy_role() {
     struct Case {
         markers: &'static [&'static str],
         writer: Option<&'static str>,
-        record: Option<&'static str>,
         role: &'static str,
         listed: bool,
     }
@@ -230,42 +219,24 @@ async fn storage_inspection_derives_each_copy_role() {
         Case {
             markers: &["root", "volume"],
             writer: None,
-            record: None,
-            role: "writer",
-            listed: true,
-        },
-        Case {
-            markers: &["root", "volume"],
-            writer: None,
-            record: Some("2:4.0.0:closed"),
             role: "writer",
             listed: true,
         },
         Case {
             markers: &["root", "volume"],
             writer: Some("stopping"),
-            record: None,
-            role: "switching",
-            listed: true,
-        },
-        Case {
-            markers: &["root", "volume"],
-            writer: None,
-            record: Some("2:4.0.0:open"),
             role: "switching",
             listed: true,
         },
         Case {
             markers: &["root", "volume", "readonly-volume"],
             writer: None,
-            record: None,
             role: "switching",
             listed: true,
         },
         Case {
             markers: &["root", "mirror", "mirror-fs"],
             writer: None,
-            record: None,
             role: "slot",
             listed: false,
         },
@@ -275,18 +246,14 @@ async fn storage_inspection_derives_each_copy_role() {
         if let Some(writer) = case.writer {
             set_property(&test, "tank/ployz/data", "ployz:writer", writer);
         }
-        if let Some(record) = case.record {
-            set_property(&test, "tank/ployz", "ployz:lease.data", record);
-        }
         let (socket, server) = start(&test, USABLE_POOL, case.markers);
         let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
         assert_eq!(
             capacity.pointer("/Ok/copies/data/role").unwrap(),
             &json!(case.role),
-            "{:?} {:?} {:?}: {capacity}",
+            "{:?} {:?}: {capacity}",
             case.markers,
-            case.writer,
-            case.record
+            case.writer
         );
         assert_eq!(
             capacity.pointer("/Ok/volumes/data").is_some(),
@@ -299,22 +266,20 @@ async fn storage_inspection_derives_each_copy_role() {
 }
 
 #[tokio::test]
-async fn mount_admits_only_an_idle_closed_root() {
-    for (writer, record, admitted) in [
-        (None, None, true),
-        (None, Some("2:4.0.0:closed"), true),
-        (Some("stopping"), None, false),
-        (Some("frozen:42"), None, false),
-        (None, Some("2:4.0.0:open"), false),
+async fn mount_admits_a_writable_root_and_refuses_an_absent_or_readonly_one() {
+    for (markers, refusal) in [
+        (&["root", "volume"][..], None),
+        (
+            &["root", "volume", "readonly-volume"][..],
+            Some("VolumeSwitching:"),
+        ),
+        (
+            &["root"][..],
+            Some("Provisioned Volume data does not exist"),
+        ),
     ] {
         let test = TestDir::new();
-        if let Some(writer) = writer {
-            set_property(&test, "tank/ployz/data", "ployz:writer", writer);
-        }
-        if let Some(record) = record {
-            set_property(&test, "tank/ployz", "ployz:lease.data", record);
-        }
-        let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+        let (socket, server) = start(&test, USABLE_POOL, markers);
         let response = post(
             &socket,
             "/VolumeDriver.Mount",
@@ -325,17 +290,15 @@ async fn mount_admits_only_an_idle_closed_root() {
             .get("Err")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if admitted {
-            assert_eq!(error, "", "{writer:?} {record:?}: {response}");
-            assert_eq!(
-                response.get("Mountpoint").and_then(Value::as_str),
-                Some("/var/lib/ployz-volumes/data")
-            );
-        } else {
-            assert!(
-                error.starts_with("VolumeSwitching:"),
-                "{writer:?} {record:?}: {response}"
-            );
+        match refusal {
+            None => {
+                assert_eq!(error, "", "{markers:?}: {response}");
+                assert_eq!(
+                    response.get("Mountpoint").and_then(Value::as_str),
+                    Some("/var/lib/ployz-volumes/data")
+                );
+            }
+            Some(refusal) => assert!(error.starts_with(refusal), "{markers:?}: {response}"),
         }
         server.abort();
     }

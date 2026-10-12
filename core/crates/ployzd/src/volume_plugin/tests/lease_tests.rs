@@ -39,7 +39,6 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
         "snapshots",
         "tank/ployz/data@f-2\t42\t1700000000\ntank/ployz/data@zfs-auto-snap\t7\t1600000000",
     );
-    set_property(&test, "tank/ployz", "ployz:lease.data", "2:6.0.0:open");
     let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
 
     let response = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
@@ -53,7 +52,6 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
                 "newest": {"name": "f-2", "guid": "42", "created_unix_seconds": 1_700_000_000},
                 "epoch": 0,
             },
-            "lease": {"lease": 2, "pos": {"seq": 6, "round": 0, "sub": 0}, "cycle": "open"},
         }})
     );
     server.abort();
@@ -84,7 +82,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
         })
     );
     let response = post(&socket, "/Volume.Inspect", json!({"name": "missing"})).await;
-    assert_eq!(response, json!({"Ok": {"copy": null, "lease": null}}));
+    assert_eq!(response, json!({"Ok": {"copy": null}}));
     server.abort();
 }
 
@@ -93,7 +91,7 @@ async fn inspect_without_a_pool_holds_nothing() {
     let test = TestDir::new();
     let (socket, server) = start(&test, "", &[]);
     let response = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
-    assert_eq!(response, json!({"Ok": {"copy": null, "lease": null}}));
+    assert_eq!(response, json!({"Ok": {"copy": null}}));
     server.abort();
 }
 

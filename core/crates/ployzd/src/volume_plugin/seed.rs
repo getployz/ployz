@@ -125,7 +125,7 @@ impl VolumeStorage {
     ) -> Result<VolumeCopyView, RpcError> {
         let datasets = self.datasets(pool).await.map_err(internal)?;
         let copy = self.copy(&datasets, pool, into).await.map_err(internal)?;
-        Ok(VolumeCopyView { copy, lease: None })
+        Ok(VolumeCopyView { copy })
     }
 
     /// Makes the complete copy the root of `into`, marked with its point and unregistered

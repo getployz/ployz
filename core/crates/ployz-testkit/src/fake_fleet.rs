@@ -814,7 +814,7 @@ impl Fleet {
                             epoch: WriterEpoch::default(),
                         },
                     });
-                unary(VolumeCopyView { copy, lease: None }.into())
+                unary(VolumeCopyView { copy }.into())
             }
             RpcRequestBody::RequestMachineUpgrade(request) => {
                 let machine = self.by_id_mut(target)?;

@@ -66,17 +66,7 @@ impl VolumeStorage {
                 let name = ployz_core::DockerVolumeName::parse(name)
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
                 let (role, maximum_bytes) = match place {
-                    super::Place::Root(_) => {
-                        let plugin_name = name
-                            .as_str()
-                            .parse::<DockerVolumeName>()
-                            .map_err(|error| ployz_core::error_chain::inline(&error))?;
-                        (
-                            self.root_role(&datasets, pool, dataset, &plugin_name)
-                                .await?,
-                            dataset.refquota,
-                        )
-                    }
+                    super::Place::Root(_) => (self.root_role(dataset).await?, dataset.refquota),
                     super::Place::Slot(_) => {
                         let bound = super::storage::committed_bytes(dataset, pool.name());
                         if bound == 0 {
@@ -122,20 +112,10 @@ impl VolumeStorage {
         })
     }
 
-    /// Writer while idle, closed and writable; Switching while a run holds the root.
-    async fn root_role(
-        &self,
-        datasets: &[super::Dataset],
-        pool: &ployzd::machine_pool::MachinePool,
-        root: &super::Dataset,
-        name: &DockerVolumeName,
-    ) -> super::Result<CopyRole> {
-        let open = self
-            .lease_record(datasets, pool, name)
-            .await?
-            .is_some_and(|record| record.cycle == ployz_core::Cycle::Open);
+    /// Writer while idle and writable; Switching while a run holds the root.
+    async fn root_role(&self, root: &super::Dataset) -> super::Result<CopyRole> {
         let idle = self.writer_marker(root).await? == ployz_core::WriterMarker::Idle;
-        Ok(if idle && !root.readonly && !open {
+        Ok(if idle && !root.readonly {
             CopyRole::Writer
         } else {
             CopyRole::Switching

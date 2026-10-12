@@ -240,8 +240,7 @@ impl VolumeStorage {
         self.copy_now(&scope).await
     }
 
-    /// A slot parent bounded like the copy it will hold. Unlike the old mirror slot it
-    /// carries no lease marker.
+    /// A slot parent bounded like the copy it will hold.
     pub(super) async fn create_bounded_slot(
         &self,
         parent: &str,
