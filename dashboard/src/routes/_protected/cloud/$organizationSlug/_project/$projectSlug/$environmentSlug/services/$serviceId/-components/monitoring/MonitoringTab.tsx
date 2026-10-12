@@ -1,6 +1,6 @@
 import { Suspense, useDeferredValue, useEffect, useState, type ReactNode } from "react";
 import { useQueryErrorResetBoundary } from "@tanstack/react-query";
-import { CatchBoundary, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
+import { CatchBoundary, useHydrated, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
 import { createChartCursor, type ChartCursorController } from "@tanstack/charts/cursor";
 import { XIcon } from "lucide-react";
 import type { ServiceListing } from "@ployz/sdk";
@@ -208,7 +208,9 @@ function MonitoringView({ organizationSlug, service, sections, range: chosen, sh
   const charted = zoom?.range ?? range;
   const window = chartWindow(resolveRange(charted, now), now, (uptime?.check.intervalSeconds ?? 60) * 1000);
   const times = steps(window);
-  const showMetrics = sections.includes("metrics");
+  const hydrated = useHydrated();
+  // Without an uptime read the clock is this render's own, so the charts wait for the client to match the server.
+  const showMetrics = sections.includes("metrics") && (read !== null || hydrated);
   const metrics = showMetrics ? previewMetrics(incidents, window, now) : [];
   const deploys = deployments.flatMap((deployment) => {
     const ended = admission(deployment).ended?.getTime();
