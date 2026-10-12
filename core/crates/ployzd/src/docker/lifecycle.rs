@@ -2,7 +2,9 @@ use std::future::Future;
 
 use bollard::{
     errors::Error as DockerError,
-    models::{ContainerCreateBody, ContainerInspectResponse, Mount, MountType},
+    models::{
+        ContainerCreateBody, ContainerInspectResponse, Mount, MountType, NetworkConnectRequest,
+    },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
@@ -16,7 +18,7 @@ use ployz_core::{
 #[cfg(test)]
 use ployz_core::MachineGateway;
 
-use crate::docker_image::prepare_image;
+use crate::{docker_image::prepare_image, network::DOCKER_NETWORK_NAME};
 
 use super::{
     ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
@@ -354,7 +356,20 @@ impl ContainerRuntime {
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
-        self.ensure_managed(container_id).await?;
+        let inspected = self.ensure_managed(container_id).await?;
+        if lost_ployz_network(&inspected) {
+            self.docker
+                .client
+                .connect_network(
+                    DOCKER_NETWORK_NAME,
+                    NetworkConnectRequest {
+                        container: container_id.to_string(),
+                        endpoint_config: None,
+                    },
+                )
+                .await
+                .map_err(|error| docker_error(container_id, error))?;
+        }
         let result = self
             .docker
             .client
@@ -395,7 +410,7 @@ impl ContainerRuntime {
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
         match self.ensure_managed(container_id).await {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
                 self.forget_checks(container_id);
                 return Ok(());
@@ -446,7 +461,10 @@ impl ContainerRuntime {
         Ok(())
     }
 
-    async fn ensure_managed(&self, container_id: &ContainerId) -> Result<(), Error> {
+    async fn ensure_managed(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<ContainerInspectResponse, Error> {
         let inspected = self
             .docker
             .client
@@ -455,14 +473,15 @@ impl ContainerRuntime {
             .map_err(|error| docker_error(container_id, error))?;
         let labels = inspected
             .config
-            .and_then(|config| config.labels)
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
             .ok_or(Error::NotManaged)?;
-        ManagedLabels::parse(&labels)?;
+        ManagedLabels::parse(labels)?;
         self.specs
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        Ok(())
+        Ok(inspected)
     }
 
     async fn force_remove_container(&self, container_id: &ContainerId) -> Result<(), Error> {
@@ -606,9 +625,20 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
     }
 }
 
+/// Docker 29 empties a container's networks when its start fails, and a later start
+/// then runs it with no network and no published ports.
 fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
-    let _ = inspected;
-    false
+    let created_on_ployz = inspected
+        .host_config
+        .as_ref()
+        .and_then(|host| host.network_mode.as_deref())
+        == Some(DOCKER_NETWORK_NAME);
+    let attached = inspected
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.networks.as_ref())
+        .is_some_and(|networks| networks.contains_key(DOCKER_NETWORK_NAME));
+    created_on_ployz && !attached
 }
 
 #[cfg(test)]

@@ -464,7 +464,9 @@ local one is running or restarting. It decides from its own Docker alone. It
 never creates, replaces, moves or removes a container, and a stopped Ingress
 Proxy stays stopped. This extends Docker's restart policy to Machine-local
 serving infrastructure. It is behavior on the daemon's own schedule, which bet 3
-flags, and it is the only Service Container the daemon starts unasked.
+flags, and it is the only Service Container the daemon starts unasked. Docker
+also drops a container's network when its start fails, so every daemon start
+reattaches the `ployz` network first when the container lost it.
 
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers, a daemon stop
