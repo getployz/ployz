@@ -71,8 +71,34 @@ pub struct LocalDocker {
     client: Docker,
     endpoint_creates: Arc<Mutex<()>>,
     /// Counts container creates, so a stranded ingress retry can tell a newer
-    /// container may have appeared since its scan.
-    creates: Arc<std::sync::atomic::AtomicU64>,
+    /// container may have appeared since its scan, or be appearing still.
+    creates: Arc<Creates>,
+}
+
+#[derive(Default)]
+struct Creates {
+    started: std::sync::atomic::AtomicU64,
+    finished: std::sync::atomic::AtomicU64,
+}
+
+/// Counts a create as finished when dropped, even if the create was cancelled.
+struct Creating<'a>(&'a Creates);
+
+impl<'a> Creating<'a> {
+    fn new(creates: &'a Creates) -> Self {
+        creates
+            .started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(creates)
+    }
+}
+
+impl Drop for Creating<'_> {
+    fn drop(&mut self) {
+        self.0
+            .finished
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl LocalDocker {
@@ -108,8 +134,19 @@ impl LocalDocker {
             .is_some_and(containerd_store))
     }
 
+    /// Creates finished so far.
     fn creates(&self) -> u64 {
-        self.creates.load(std::sync::atomic::Ordering::SeqCst)
+        self.creates
+            .finished
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Every create started so far had finished when `creates` was read.
+    fn created_nothing_since(&self, creates: u64) -> bool {
+        self.creates
+            .started
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == creates
     }
 
     async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {

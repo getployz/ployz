@@ -393,7 +393,8 @@ impl ContainerRuntime {
     }
 
     /// Start an Ingress Proxy whose last start failed, unless a request stopped it
-    /// or is about to, or a container was created since `creates` was read.
+    /// or is about to, or a container was created since `creates` was read or is
+    /// being created.
     pub(super) async fn start_stranded(&self, container_id: &ContainerId, creates: u64) {
         let gate = self
             .stranded()
@@ -413,7 +414,7 @@ impl ContainerRuntime {
         let result = async {
             let inspected = self.ensure_managed(container_id).await?;
             // A newer Ingress Proxy may be about to take port 80; the next scan decides.
-            if !failed_start(&inspected) || self.docker.creates() != creates {
+            if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
                 return Ok(());
             }
             self.start_inspected(container_id, &inspected).await
@@ -581,8 +582,7 @@ impl super::LocalDocker {
         if self.bridge_capacity().await?.free_endpoints() == 0 {
             return Err(Error::EndpointCapacity);
         }
-        self.creates
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _creating = super::Creating::new(&self.creates);
         Ok(self.client.create_container(options, body).await?)
     }
 }
@@ -920,6 +920,25 @@ mod tests {
             .start_stranded(&container_id, runtime.docker.creates())
             .await;
         assert!(!started(&fake), "the stop holds");
+    }
+
+    #[tokio::test]
+    async fn a_create_in_flight_when_the_scan_began_voids_the_start() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        let creating = super::super::Creating::new(&runtime.docker.creates);
+        let creates = runtime.docker.creates();
+
+        runtime.start_stranded(&container_id, creates).await;
+        assert!(!started(&fake), "a newer ingress may be appearing");
+
+        drop(creating);
+        runtime.start_stranded(&container_id, creates).await;
+        assert!(!started(&fake), "it appeared after the scan began");
+
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+        assert!(started(&fake), "the next scan decides");
     }
 
     #[tokio::test]
