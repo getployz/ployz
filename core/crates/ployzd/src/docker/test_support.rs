@@ -340,8 +340,15 @@ async fn fake_docker(
             (StatusCode::NO_CONTENT, serde_json::Value::Null)
         }
     } else if method == Method::POST && path.ends_with("/connect") {
-        if let Some(container) = fake.existing_container.lock().unwrap().as_mut() {
-            container["NetworkSettings"]["Networks"]["ployz"] = serde_json::json!({});
+        if let Some(networks) = fake
+            .existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|container| container.pointer_mut("/NetworkSettings/Networks"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            networks.insert("ployz".into(), serde_json::json!({}));
         }
         if fake.connect_raced.load(Ordering::SeqCst) {
             (

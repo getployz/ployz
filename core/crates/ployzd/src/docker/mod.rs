@@ -141,6 +141,7 @@ pub struct ContainerRuntime {
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, Withdrawal>>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
+    stranded: Arc<std::sync::Mutex<observe::StrandedIngress>>,
 }
 
 impl ContainerRuntime {
@@ -152,6 +153,7 @@ impl ContainerRuntime {
             sink: None,
             stopping: watch::Sender::new(BTreeMap::new()),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
+            stranded: Arc::default(),
         }
     }
 

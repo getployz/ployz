@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     time::{Duration, SystemTime},
 };
 
@@ -18,6 +18,15 @@ use crate::machine::RecordOwner;
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+pub(super) struct StrandedIngress {
+    /// Stopped on request, so never started unasked.
+    pub(super) held: BTreeSet<ContainerId>,
+    /// The last one whose failure was logged. Docker names a fresh endpoint in
+    /// every failure, so comparing the messages would log every scan.
+    pub(super) reported: Option<ContainerId>,
+}
 
 #[derive(Clone)]
 pub(super) struct ObservationSink {
@@ -229,13 +238,21 @@ impl ContainerRuntime {
                 }
             }
         }
-        if let Some(container_id) = stranded_ingress(&observed, true) {
-            self.start_stranded(&container_id).await;
-        }
         let publication = sink.replicated.machine_publication().await;
         let local = sink.local.record();
         if local.phase() != LocalMachinePhase::Participating || local.id() != machine_id {
             return Ok(());
+        }
+        self.stranded()
+            .held
+            .retain(|held| container_ids.contains(held));
+        if local
+            .machine()
+            .is_some_and(|machine| machine.accepts_ingress)
+            && let Some(container_id) =
+                stranded_ingress(&observed, observed.len() == container_ids.len())
+        {
+            self.start_stranded(&container_id).await;
         }
         let existing = publication.local_containers(&machine_id).await?;
         let changes = local_container_changes(&existing, &live);
@@ -399,12 +416,15 @@ fn local_volume_changes(
     }
 }
 
-/// The newest local Ingress Proxy, when Docker never started it and no other one runs.
+/// The newest local Ingress Proxy, when it never ran and no other one runs.
 ///
 /// Docker's restart policy covers an ingress that ran and died, not one whose first
-/// start failed, such as when another process held port 80. A stopped newest copy
-/// stays stopped.
-fn stranded_ingress(observations: &[ContainerObservation], _complete: bool) -> Option<ContainerId> {
+/// start failed, such as when another process held port 80. A scan that could not
+/// inspect every container may have missed a running one, so it starts nothing.
+fn stranded_ingress(observations: &[ContainerObservation], complete: bool) -> Option<ContainerId> {
+    if !complete {
+        return None;
+    }
     let ingresses = observations.iter().filter(|observation| {
         observation.kind == ContainerKind::ServiceContainer
             && crate::ingress::is_system_ingress(observation)

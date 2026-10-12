@@ -3,7 +3,8 @@ use std::future::Future;
 use bollard::{
     errors::Error as DockerError,
     models::{
-        ContainerCreateBody, ContainerInspectResponse, Mount, MountType, NetworkConnectRequest,
+        ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum, Mount, MountType,
+        NetworkConnectRequest,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -357,8 +358,18 @@ impl ContainerRuntime {
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.ensure_managed(container_id).await?;
-        if lost_ployz_network(&inspected) {
-            self.docker
+        self.stranded().held.remove(container_id);
+        self.start_inspected(container_id, &inspected).await
+    }
+
+    async fn start_inspected(
+        &self,
+        container_id: &ContainerId,
+        inspected: &ContainerInspectResponse,
+    ) -> Result<(), Error> {
+        if lost_ployz_network(inspected)
+            && let Err(error) = self
+                .docker
                 .client
                 .connect_network(
                     DOCKER_NETWORK_NAME,
@@ -368,7 +379,10 @@ impl ContainerRuntime {
                     },
                 )
                 .await
-                .map_err(|error| docker_error(container_id, error))?;
+            // A concurrent start may have attached it first.
+            && lost_ployz_network(&self.ensure_managed(container_id).await?)
+        {
+            return Err(docker_error(container_id, error));
         }
         let result = self
             .docker
@@ -378,14 +392,37 @@ impl ContainerRuntime {
         idempotent_lifecycle_result(container_id, result)
     }
 
-    /// Start an Ingress Proxy whose first start failed.
+    /// Start an Ingress Proxy whose first start failed, unless a request stopped it.
     pub(super) async fn start_stranded(&self, container_id: &ContainerId) {
-        if let Err(error) = self.start(container_id).await {
-            eprintln!(
-                "Ingress Proxy {container_id} is still not started: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            );
+        if self.stranded().held.contains(container_id) {
+            return;
         }
+        let result = async {
+            let inspected = self.ensure_managed(container_id).await?;
+            if !failed_start(&inspected) {
+                return Ok(());
+            }
+            self.start_inspected(container_id, &inspected).await
+        }
+        .await;
+        let mut stranded = self.stranded();
+        match result {
+            Ok(()) => stranded.reported = None,
+            Err(error) if stranded.reported != Some(*container_id) => {
+                eprintln!(
+                    "Ingress Proxy {container_id} is still not started: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
+                stranded.reported = Some(*container_id);
+            }
+            Err(_) => {}
+        }
+    }
+
+    pub(super) fn stranded(&self) -> std::sync::MutexGuard<'_, super::observe::StrandedIngress> {
+        self.stranded
+            .lock()
+            .expect("stranded ingress is never poisoned")
     }
 
     pub async fn stop(
@@ -395,6 +432,7 @@ impl ContainerRuntime {
         grace_period_seconds: Option<i32>,
     ) -> Result<(), Error> {
         self.ensure_managed(container_id).await?;
+        self.stranded().held.insert(*container_id);
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -635,6 +673,17 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
     }
 }
 
+/// Docker left this container created and recorded why its start failed.
+fn failed_start(inspected: &ContainerInspectResponse) -> bool {
+    inspected.state.as_ref().is_some_and(|state| {
+        state.status == Some(ContainerStateStatusEnum::CREATED)
+            && state
+                .error
+                .as_deref()
+                .is_some_and(|error| !error.is_empty())
+    })
+}
+
 /// Docker 29 empties a container's networks when its start fails, and a later start
 /// then runs it with no network and no published ports.
 fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
@@ -717,7 +766,9 @@ mod tests {
             .iter()
             .find(|(path, _)| path.ends_with("/containers/create"))
             .unwrap()
-            .1["Labels"]
+            .1
+            .get("Labels")
+            .unwrap()
             .clone();
         *fake.existing_container.lock().unwrap() = Some(serde_json::json!({
             "Id": created.container_id.as_str(),
