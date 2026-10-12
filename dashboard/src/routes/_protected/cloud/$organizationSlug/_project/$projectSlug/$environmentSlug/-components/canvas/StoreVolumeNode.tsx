@@ -12,6 +12,8 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../enviro
 import { NO_MOUNTS_CONFIGURED, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
+import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
+import { MirrorNodes } from "./MirrorNode";
 
 /** A Volume no Service here mounts, on the canvas and in its phone list: the one kind of Volume that is its own node. */
 export function StoreVolumeCard({ volume, selected, className }: { volume: VolumeListing; selected: boolean; className: string }) {
@@ -43,7 +45,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
   );
 }
 
-export function StoreVolumeNode({ data }: { data: { volume: VolumeListing } }) {
+export function StoreVolumeNode({ data }: { data: { volume: VolumeListing; mirrors: readonly CanvasMirror[] } }) {
   const pick = useNodePick(data.volume.name);
   const { selectedNodeId } = useCanvasInspectorSelection();
   if (pick) return <PickedNode pick={pick} name={data.volume.name} nodeId={data.volume.id} icon={<HardDriveIcon />} />;
@@ -52,6 +54,7 @@ export function StoreVolumeNode({ data }: { data: { volume: VolumeListing } }) {
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />
       <Handle type="source" position={Position.Top} isConnectable={false} className="opacity-0" />
       <StoreVolumeCard volume={data.volume} selected={selectedNodeId === data.volume.id} className="block h-36 w-72" />
+      <MirrorNodes mirrors={data.mirrors} />
     </>
   );
 }

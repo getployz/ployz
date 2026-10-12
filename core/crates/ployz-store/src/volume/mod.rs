@@ -41,6 +41,10 @@ pub struct CreateVolume {
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     pub shared_writes: bool,
+    /// Fix its storage now, as a Deploy would. A restored Volume keeps the storage of the copy it lands on.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub storage_locked: bool,
 }
 
 /// One Service mounting a Volume at a path.
@@ -159,6 +163,14 @@ pub(crate) fn create_volume(
     }
     scope::save_working(tx, &mut environment)?;
     scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
+    if create.storage_locked {
+        lock_storage(
+            tx,
+            &environment.summary.id,
+            &node.resource_id,
+            &node.storage,
+        )?;
+    }
     Ok(VolumeStaged {
         volume: summary(&node)?,
         environment: environment.summary,
@@ -255,18 +267,29 @@ pub(crate) fn fix_storage(
         if !targets.iter().any(|node| node.id() == volume.resource_id) {
             continue;
         }
-        let storage = serde_json::to_string(&volume.storage).expect("storage is JSON");
-        tx.execute(
-            "INSERT INTO config_volume_storage (environment_id, volume_id, storage) \
-             VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, volume_id) DO NOTHING",
-            &[
-                environment.as_str().into(),
-                volume.resource_id.as_str().into(),
-                storage.as_str().into(),
-            ],
-        )?;
+        lock_storage(tx, environment, &volume.resource_id, &volume.storage)?;
     }
     check_storage(tx, environment, intent)
+}
+
+/// Fix `volume`'s storage at `storage`, unless it is already fixed.
+fn lock_storage(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    volume: &str,
+    storage: &VolumeKind,
+) -> Result<(), RpcError> {
+    let storage = serde_json::to_string(storage).expect("storage is JSON");
+    tx.execute(
+        "INSERT INTO config_volume_storage (environment_id, volume_id, storage) \
+         VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, volume_id) DO NOTHING",
+        &[
+            environment.as_str().into(),
+            volume.into(),
+            storage.as_str().into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// Each Volume's fixed storage, by Volume ID.
@@ -448,6 +471,7 @@ mod tests {
                         path: "/data".into(),
                     }],
                     shared_writes: false,
+                    storage_locked: false,
                 },
             )
             .unwrap();

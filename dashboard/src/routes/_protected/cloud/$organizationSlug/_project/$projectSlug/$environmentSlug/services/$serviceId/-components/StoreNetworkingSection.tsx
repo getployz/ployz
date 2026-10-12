@@ -76,12 +76,10 @@ export function defaultPortHint(port: JsonValue | undefined, domains: readonly P
  * A Service's domains over the Config Store: generated ones under the Cluster Domain and custom ones, each with the
  * status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
  */
-export function StoreNetworkingSection({ state, version, privateFirst = false, validatePrivateDns }: {
+export function StoreNetworkingSection({ state, privateFirst = false, validatePrivateDns }: {
   state: StoreService;
   /** A database is reached privately: its address leads, and domains follow. */
   privateFirst?: boolean;
-  /** The review's version, which undoing a removal discards against. */
-  version: string;
   validatePrivateDns: (raw: string) => string | null;
 }) {
   const { organizationSlug, environment, service, changes } = state;
@@ -170,12 +168,8 @@ export function StoreNetworkingSection({ state, version, privateFirst = false, v
       {none ? null : (
         <div className="flex flex-col gap-1">
           {removed.map((removed) => (
-            <DomainRowShell key={`removed:${removed.name}`} icon={<ZapIcon className="opacity-50" />} changed actions={(
-              <Button type="button" variant="ghost" size="sm"
-                onClick={() => writer.commit({ command: "discard", environment, path: removed.path, version })}>Undo</Button>
-            )}>
+            <DomainRowShell key={`removed:${removed.name}`} icon={<ZapIcon className="opacity-50" />} changed actions={null}>
               <div className="truncate font-mono text-sm text-muted-foreground line-through">{removed.name}</div>
-              <div className="truncate text-muted-foreground text-sm">Removed on your next deploy</div>
             </DomainRowShell>
           ))}
           {domains.map((domain) => {

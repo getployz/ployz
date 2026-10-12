@@ -54,7 +54,7 @@ impl Leased {
         })
     }
 
-    fn require_root(&self, name: &DockerVolumeName) -> Result<String, RpcError> {
+    pub(super) fn require_root(&self, name: &DockerVolumeName) -> Result<String, RpcError> {
         let root = root_dataset(&self.pool, name);
         self.datasets
             .iter()

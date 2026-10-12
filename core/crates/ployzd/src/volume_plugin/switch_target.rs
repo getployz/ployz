@@ -486,7 +486,7 @@ impl VolumeStorage {
 
     /// Renames a copy over the root marked unregistered: Docker sees it only once its Create
     /// registers it with the spec's labels.
-    async fn rename_unregistered(
+    pub(super) async fn rename_unregistered(
         &self,
         fs: &str,
         root: &str,
