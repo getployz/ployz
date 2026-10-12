@@ -3,7 +3,7 @@
 #[cfg(feature = "verify-faults")]
 pub(crate) use enabled::{apply, check_env};
 #[cfg(feature = "verify-faults")]
-pub use enabled::{kill_after_record, kill_inside, leak_memory};
+pub use enabled::{kill_inside, leak_memory};
 
 /// Verbs whose effect outlives the RPC; `kill-daemon` fires inside them, from [`kill_inside`].
 #[cfg_attr(not(feature = "verify-faults"), allow(dead_code))]
@@ -22,9 +22,6 @@ pub(crate) async fn apply(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub fn kill_inside(_verb: &'static str) {}
-
-#[cfg(not(feature = "verify-faults"))]
-pub fn kill_after_record(_verb: &'static str) {}
 
 #[cfg(not(feature = "verify-faults"))]
 pub fn leak_memory() {}
@@ -49,10 +46,6 @@ mod enabled {
         KillDaemon {
             verb: String,
         },
-        /// Aborts the Volume plugin once `verb` recorded its position, before its effect.
-        KillAfterRecord {
-            verb: String,
-        },
         Unanswered,
         /// Grows the process by `mib_per_sec` MiB of touched memory every second, forever.
         LeakMemory {
@@ -62,7 +55,7 @@ mod enabled {
 
     #[derive(Debug, thiserror::Error)]
     #[error(
-        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, kill-after-record:<verb>, unanswered, leak-memory:<mib-per-sec>)"
+        "{ENV}={0:?} is not a fault point (delay-rpc:<verb>:<secs>, kill-daemon:<verb>, unanswered, leak-memory:<mib-per-sec>)"
     )]
     pub(crate) struct FaultParseError(String);
 
@@ -81,11 +74,6 @@ mod enabled {
                 }
                 (Some("kill-daemon"), Some(verb), None, None) if !verb.is_empty() => {
                     FaultPoint::KillDaemon {
-                        verb: verb.to_owned(),
-                    }
-                }
-                (Some("kill-after-record"), Some(verb), None, None) if !verb.is_empty() => {
-                    FaultPoint::KillAfterRecord {
                         verb: verb.to_owned(),
                     }
                 }
@@ -138,7 +126,6 @@ mod enabled {
             }
             FaultPoint::DelayRpc { .. }
             | FaultPoint::KillDaemon { .. }
-            | FaultPoint::KillAfterRecord { .. }
             | FaultPoint::LeakMemory { .. } => {}
         }
     }
@@ -168,19 +155,6 @@ mod enabled {
         }
     }
 
-    /// Aborts the Volume plugin when `kill-after-record:<verb>` names `verb`.
-    pub fn kill_after_record(verb: &'static str) {
-        if let Ok(Some(FaultPoint::KillAfterRecord { verb: wanted })) = FaultPoint::from_env()
-            && wanted == verb
-        {
-            tracing::warn!(
-                verb,
-                "fault: killing the plugin after the record, before the effect"
-            );
-            std::process::abort();
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -201,12 +175,6 @@ mod enabled {
                         verb: "InspectVolumeCopy".into(),
                     },
                 ),
-                (
-                    "kill-after-record:SeedVolume",
-                    FaultPoint::KillAfterRecord {
-                        verb: "SeedVolume".into(),
-                    },
-                ),
                 ("unanswered", FaultPoint::Unanswered),
                 ("leak-memory:16", FaultPoint::LeakMemory { mib_per_sec: 16 }),
             ] {
@@ -220,7 +188,7 @@ mod enabled {
                 "delay-rpc::3",
                 "kill-daemon",
                 "kill-daemon:SetVolumeCopy:extra",
-                "kill-after-record",
+                "kill-after-record:SeedVolume",
                 "hold-task:SetVolumeCopy:610",
                 "busy-mount:data",
                 "unanswered:SetVolumeCopy",
