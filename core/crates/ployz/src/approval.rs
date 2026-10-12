@@ -95,11 +95,14 @@ impl Asked {
         }
     }
 
-    /// `this deploy to production`, `this removal of web-1`.
+    /// `this deploy to shop/production`, `this removal of web-1`.
     pub(crate) fn what(&self, verb: Verb) -> String {
         let noun = verb.noun();
         match &self.subject {
-            Subject::Diff(diff) => format!("this {noun} to {}", diff.environment.name),
+            Subject::Diff(diff) => format!(
+                "this {noun} to {}/{}",
+                diff.environment.project, diff.environment.name
+            ),
             Subject::Operation(operation) => format!("this {noun} of {}", operation.name),
         }
     }

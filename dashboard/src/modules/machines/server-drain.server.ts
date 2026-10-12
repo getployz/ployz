@@ -3,7 +3,7 @@ import type { DrainReport, DrainScope, QualifiedService } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schedule, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
-import { gateOperation } from "#/modules/approvals/approvals.server";
+import { gateOperation, operationDigest, trustedApproval } from "#/modules/approvals/approvals.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
 import { createServerDrainRequestedEvent, type ServerDrainRequestedEventData } from "#/modules/inngest/events";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
@@ -308,6 +308,18 @@ const stateOf = Effect.fn("ServerDrain.stateOf")(function* (attemptId: string) {
 });
 
 /**
+ * A Drain waits its turn after its gate, and an earlier Drain can leave this one retiring a last copy. So it plans
+ * again before it runs, and runs only if what it would destroy now is what its approval covered.
+ */
+const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (request: DrainRequest, approvalId: string | null) {
+  const plan = yield* planDrain(request.organizationId, request.machineId);
+  if (plan === null || plan.effects.length === 0) return true;
+  if (approvalId === null) return false;
+  const trusted = yield* trustedApproval(request.organizationId, approvalId);
+  return trusted.ok && trusted.approval !== "required" && trusted.approval.approved === operationDigest(plan);
+});
+
+/**
  * Ask the Engine once. The row is claimed (`running`) right before the call and ended with the Engine's answer right
  * after, in one step: a retry that finds the row running knows the Engine may have been asked, closes it lost
  * and never asks again; one that finds it ended returns what's there. An error from the Engine means nothing moved
@@ -325,8 +337,14 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
     return yield* stateOf(request.attemptId);
   }
   if (current.state !== "pending") return current;
-  const [row] = yield* drizzle.select({ targets: serverDrainAttempt.targets }).from(serverDrainAttempt)
-    .where(eq(serverDrainAttempt.id, request.attemptId));
+  const [row] = yield* drizzle.select({ targets: serverDrainAttempt.targets, approvalId: serverDrainAttempt.approvalId })
+    .from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
+  if (!(yield* stillCovered(request, row?.approvalId ?? null))) {
+    yield* drizzle.update(serverDrainAttempt)
+      .set(refused("The drain now destroys something nobody approved. Drain the server again to review it."))
+      .where(and(owned, eq(serverDrainAttempt.state, "pending")));
+    return yield* stateOf(request.attemptId);
+  }
   const targets = row?.targets ?? null;
   const scope: DrainScope = targets === null
     ? { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) }
