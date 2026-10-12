@@ -1233,7 +1233,7 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
         userId: caller.userId,
         organizationId: ORGANIZATION,
         event: "$ai_trace",
-        properties: { $ai_trace_id: run, $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number) },
+        properties: { $ai_trace_id: run, $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: false },
       }];
     }));
     expect(JSON.stringify(captured)).not.toMatch(/count|services|two/i);
@@ -1283,7 +1283,7 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
         },
       },
       { ...envelope, event: "$ai_generation", properties: { ...generation, $ai_span_id: expect.any(String) } },
-      { ...envelope, event: "$ai_trace", properties: { $ai_trace_id: "run-1", $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number) } },
+      { ...envelope, event: "$ai_trace", properties: { $ai_trace_id: "run-1", $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: true } },
     ]);
     expect(captured[0]?.properties?.["$ai_span_id"]).not.toBe(captured[2]?.properties?.["$ai_span_id"]);
     expect(JSON.stringify(captured)).not.toMatch(/look|around|quiet|secretname/i);
@@ -1302,6 +1302,30 @@ it.live("a refused tool call shows in PostHog as an error", () =>
 
     expect(captured.filter(({ event }) => event === "$ai_span").map(({ properties }) => [properties?.["$ai_span_name"], properties?.["$ai_is_error"]]))
       .toEqual(expect.arrayContaining([["environment_show", false], ["deploy", true]]));
+    expect(captured.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_is_error: true } });
+  }));
+
+it.live("a reply stopped mid-stream still closes its trace in PostHog", () =>
+  Effect.gen(function* () {
+    const { provided, caller } = yield* sidebar({ removeWeb: false });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const model = fakeText({ tokensPerSecond: 200 });
+    model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);
+    const abortController = new AbortController();
+    const stream = yield* provided(agentChat(caller, { messages: [{ role: "user", content: "explain" }], threadId: THREAD, runId: "run-stopped", abortController }, model))
+      .pipe(Effect.provideService(PostHog, sink));
+    yield* Effect.promise(async () => {
+      for await (const chunk of stream) if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) abortController.abort();
+    });
+
+    expect(captured.filter(({ event }) => event === "$ai_trace")).toEqual([
+      expect.objectContaining({ properties: { $ai_trace_id: "run-stopped", $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number), $ai_is_error: false } }),
+    ]);
   }));
 
 it.live("Claude thinks as it sees fit and sends a summary of its thinking back", () =>

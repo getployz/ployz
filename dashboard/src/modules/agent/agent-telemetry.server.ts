@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { trace } from "@opentelemetry/api";
-import { defineChatMiddleware } from "@tanstack/ai";
+import { defineChatMiddleware, type ChatMiddlewareContext } from "@tanstack/ai";
 import { otelMiddleware } from "@tanstack/ai/middlewares/otel";
 import { Effect, Schema } from "effect";
 import type { PostHogService } from "#/modules/analytics/posthog.server";
@@ -25,8 +25,17 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
   // The model call the tools run under; none yet when a resumed run first finishes the calls it was waiting on.
   let spanId: string | null = null;
   let toolsCalled: string[] = [];
+  let toolFailed = false;
   const capture = (event: string, properties: Properties) =>
     Effect.runPromise(posthog.capture({ userId: caller.userId, organizationId: caller.organization.id, event, properties }));
+  const turn = (ctx: ChatMiddlewareContext, duration: number, failed: boolean) =>
+    capture("$ai_trace", {
+      $ai_trace_id: ctx.runId,
+      $ai_session_id: ctx.threadId,
+      $ai_span_name: "sidebar_turn",
+      $ai_latency: duration / 1000,
+      $ai_is_error: failed,
+    });
   return defineChatMiddleware({
     name: "ployz-ai-observability",
     onIteration: (_ctx, { messageId }) => {
@@ -59,25 +68,21 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
         ? generation
         : { ...generation, $ai_tools_called: toolsCalled.join(","), $ai_tool_call_count: toolsCalled.length });
     },
-    onAfterToolCall: (ctx, { toolCallId, toolName, ok, result, duration }) =>
-      capture("$ai_span", {
+    onAfterToolCall: (ctx, { toolCallId, toolName, ok, result, duration }) => {
+      const failed = !ok || refused(result);
+      toolFailed ||= failed;
+      return capture("$ai_span", {
         $ai_trace_id: ctx.runId,
         $ai_session_id: ctx.threadId,
         $ai_span_id: toolCallId,
         $ai_parent_id: spanId ?? ctx.runId,
         $ai_span_name: toolName,
         $ai_latency: duration / 1000,
-        $ai_is_error: !ok || refused(result),
-      }),
-    onFinish: (ctx, { duration }) =>
-      capture("$ai_trace", { $ai_trace_id: ctx.runId, $ai_session_id: ctx.threadId, $ai_span_name: "sidebar_turn", $ai_latency: duration / 1000 }),
-    onError: (ctx, { duration }) =>
-      capture("$ai_trace", {
-        $ai_trace_id: ctx.runId,
-        $ai_session_id: ctx.threadId,
-        $ai_span_name: "sidebar_turn",
-        $ai_latency: duration / 1000,
-        $ai_is_error: true,
-      }),
+        $ai_is_error: failed,
+      });
+    },
+    onFinish: (ctx, { duration }) => turn(ctx, duration, toolFailed),
+    onAbort: (ctx, { duration }) => turn(ctx, duration, toolFailed),
+    onError: (ctx, { duration }) => turn(ctx, duration, true),
   });
 };
