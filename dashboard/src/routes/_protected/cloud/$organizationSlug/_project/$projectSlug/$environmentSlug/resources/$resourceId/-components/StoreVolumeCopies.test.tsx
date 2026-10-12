@@ -26,7 +26,7 @@ const mirrorAsOf = (server: string, when: Date): Member => {
 };
 const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServer => ({ id: id(name), name, storage });
 
-function panel(members: Member[], placement: PlacementRow | null, options: { open?: string; upgrade?: string[]; servers?: CopyServer[] } = {}) {
+function panel(members: Member[], placement: PlacementRow | null, options: { open?: string; upgrade?: string[]; servers?: CopyServer[]; deploying?: boolean } = {}) {
   const stage = vi.fn();
   const deleteCopy = vi.fn(() => Promise.resolve());
   const restore = vi.fn();
@@ -34,7 +34,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: { ope
   const copies = copiesFromPlacement({ volume, members, row: placement, active: null, lastSync: null, lastDone: null });
   render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
-    upgrade={options.upgrade ?? []} unknown={[]} seeds disabled={false} stage={stage} restore={restore} deleteCopy={deleteCopy}
+    upgrade={options.upgrade ?? []} unknown={[]} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore} deleteCopy={deleteCopy}
     open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
   return { stage, deleteCopy, restore, onOpen };
 }
@@ -71,6 +71,15 @@ describe("VolumeCopiesPanel", () => {
     expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Mirror on web-2" }));
     expect(onOpen).toHaveBeenCalledWith(id("web-2"));
+  });
+
+  it("offers Delete on an old copy once the Deploy that stamped the Volume has ended, and not while it runs", () => {
+    const stamped = { ...row([]), deploymentId: "dep-1" };
+    panel([member("web-1", "writer"), member("web-3", "mirror")], stamped);
+    expect(screen.getByRole("button", { name: "Delete copy on web-3" }).hasAttribute("disabled")).toBe(false);
+    cleanup();
+    panel([member("web-1", "writer"), member("web-3", "mirror")], stamped, { deploying: true });
+    expect(screen.getByRole("button", { name: "Delete copy on web-3" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("deletes an old copy at once after a plain confirm, not staged", async () => {
