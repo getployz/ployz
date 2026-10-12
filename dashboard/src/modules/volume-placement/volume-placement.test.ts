@@ -128,7 +128,7 @@ describe("placementChanges", () => {
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
     ]);
     expect(steps([member("web-1", "writer")], row(["web-2"], { primary: "web-1" }))).toEqual([
-      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
+      { kind: "delete_mirror", args: { slot: id("web-2"), confirmed_name: null } },
     ]);
   });
 
