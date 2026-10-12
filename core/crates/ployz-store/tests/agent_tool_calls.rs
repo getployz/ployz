@@ -1025,6 +1025,110 @@ fn a_deployments_metrics_show_its_oom_kill_and_exit_code_by_deployment_number() 
 }
 
 #[test]
+fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
+    let store = shop();
+    for (id, name) in [(3, "web"), (4, "worker")] {
+        store
+            .write(
+                &who(),
+                &CreateService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{id}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: Some("traefik/whoami".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    let deploy = |id: &str, services: &[&str]| {
+        let id = DeploymentId::parse(id).unwrap();
+        store
+            .write(
+                &who(),
+                &Admit::Deploy(Deploy {
+                    id: id.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: services
+                        .iter()
+                        .map(|name| ServiceName::parse(*name).unwrap())
+                        .collect(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                }),
+            )
+            .unwrap();
+        id
+    };
+    let first = deploy("00000000-0000-4000-8000-000000000101", &[]);
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&first, &runner).unwrap();
+    let operations: Vec<Value> = ["web", "worker"]
+        .iter()
+        .enumerate()
+        .map(|(index, service)| {
+            let container = if *service == "web" { "0" } else { "1" };
+            let service = *service;
+            json!({
+                "index": index, "machine_id": machine('a'), "service_name": service,
+                "operation": {
+                    "type": "remove_container", "machine_id": machine('a'),
+                    "container_id": container.repeat(64),
+                },
+                "status": { "type": "pending" },
+            })
+        })
+        .collect();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace, "operations": operations,
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&first, &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
+        "type": "success",
+        "completed": operations.iter().map(|row| row["operation"].clone()).collect::<Vec<_>>(),
+    }))
+    .unwrap();
+    store
+        .record(
+            &first,
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    deploy("00000000-0000-4000-8000-000000000102", &["web"]);
+    let mut cloud = |_: Cloud| -> Result<Value, RpcError> {
+        panic!("read the metrics of a Service the Deployment did not deploy")
+    };
+
+    let refusal = drive(
+        &store,
+        in_org(),
+        "service_metrics",
+        json!({ "service": "worker", "deployment": 2 }),
+        "metrics-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(
+        refusal.message,
+        "That Deployment did not deploy this Service"
+    );
+    assert_eq!(refusal.valid, vec!["web".to_owned()]);
+}
+
+#[test]
 fn a_servers_metrics_name_each_events_environment_or_its_leftover() {
     let (store, _) = deploying();
     let owned = store.read(&who(), &NamespacesQuery {}).unwrap();

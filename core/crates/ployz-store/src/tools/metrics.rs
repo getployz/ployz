@@ -116,12 +116,21 @@ impl Tool for ServiceMetrics {
             Some(_) => Some(cx.view::<NumberedDeploymentQuery>(answers.next())?),
             None => None,
         };
-        // A Deployment's containers carry the name it ran them under.
-        let carried = match deployment
-            .as_ref()
-            .and_then(|view| view.runtime_names.get(&self.service))
-        {
-            Some(name) => name.clone(),
+        // A Deployment's containers carry the name it ran them under. Its events say nothing
+        // about a Service it did not deploy.
+        let carried = match &deployment {
+            Some(view) => view
+                .runtime_names
+                .get(&self.service)
+                .cloned()
+                .ok_or_else(|| {
+                    let names = || view.runtime_names.keys().map(ServiceName::as_str);
+                    Stop::from(
+                        Refusal::not_found("That Deployment did not deploy this Service")
+                            .with_did_you_mean(did_you_mean(self.service.as_str(), names()))
+                            .with_valid(names()),
+                    )
+                })?,
             None => namespace
                 .services
                 .get(&self.service)
