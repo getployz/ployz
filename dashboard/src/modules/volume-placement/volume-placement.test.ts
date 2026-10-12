@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
+import { volumeLoss, volumeLossItems } from "#/modules/config-store/store-volumes";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
@@ -502,9 +503,23 @@ describe("lossByVolume", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
     const lost = [...placementLosses(changes([], seeded)), ...placementLosses(changes(members, row(["web-2"], { primary: "web-1" })))];
     expect(lossByVolume(lost)).toEqual([
-      { name: "data", deletes: [{ machine_id: id("web-1") }], loss: "writes" },
+      { name: "data", deletes: [], loss: "writes", after: at.getTime() / 1000 },
       { name: "pg-data", deletes: [{ machine_id: id("web-2") }], loss: "data" },
     ]);
+  });
+
+  it("words a refused restore's confirm as the local check does, with the changes it drops rather than the Server", () => {
+    const seeded: PlacementRow = {
+      ...row([], { primary: "web-1" }),
+      staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: {
+        sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
+      } },
+    };
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const staged = [...changes([], seeded), ...changes(members, row(["web-2"], { primary: "web-1" }))];
+    const details = JSON.parse(JSON.stringify({ volumes: lossByVolume(placementLosses(staged)), accept: ["data", "pg-data"], version: "9:1:0.1" }));
+    const refused = volumeLoss({ code: "confirmation_required", details });
+    expect(refused && volumeLossItems(refused, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(staged).items);
   });
 });
 

@@ -1,7 +1,7 @@
-import type { DeletionCheck, DeletionItem } from "#/components/deletion-dialog";
+import type { DeletionCheck } from "#/components/deletion-dialog";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { StoreRefused } from "./store.contract";
-import { volumeLoss, type VolumeLoss } from "./store-volumes";
+import { volumeLoss, volumeLossItems, type VolumeLoss } from "./store-volumes";
 
 /** What the user accepts when they confirm a Volume loss: exactly the Volumes asked about, bound to the Store's version. */
 export type VolumeAcceptance = Pick<VolumeLoss, "accept" | "version">;
@@ -18,11 +18,7 @@ export function useVolumeLossCheck(organizationSlug: string) {
   return (refusal: StoreRefused): VolumeLossCheck | null => {
     const refused = volumeLoss(refusal);
     if (!refused) return null;
-    const items = refused.volumes.map((volume): DeletionItem => ({
-      kind: "volume",
-      name: volume.name,
-      detail: volume.deletes.flatMap((held) => machines.find((machine) => machine.id === held.machine_id)?.name ?? []).join(", ") || undefined,
-    }));
+    const items = volumeLossItems(refused, (id) => machines.find((machine) => machine.id === id)?.name);
     return { items, evidence: { accept: refused.accept, version: refused.version }, losesWrites: refused.volumes.some((volume) => volume.loss === "writes") };
   };
 }
