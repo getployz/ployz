@@ -357,8 +357,12 @@ export declare class Client {
   }>;
   /** Stop one Container. A rejection with `unavailable` means the stop may have happened. */
   stopContainer(machine: string, container: string): Promise<void>;
-  /** Start one Container. True once it serves; false when it started but wasn't seen serving in time. */
-  startContainer(machine: string, container: string): Promise<boolean>;
+  /**
+   * Start one Container and wait for it the way a Deploy does: `serving` once it serves,
+   * `unconfirmed` when it started but wasn't seen serving in time, `unhealthy` when it
+   * failed its healthcheck or didn't pass it before its deadline.
+   */
+  startContainer(machine: string, container: string): Promise<"serving" | "unconfirmed" | "unhealthy">;
   /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
   inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**

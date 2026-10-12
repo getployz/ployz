@@ -111,7 +111,8 @@ export interface PloyzSession {
   readonly agentAsk: (query: CloudQuery) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
-  readonly startContainer: (machine: string, container: string) => Effect.Effect<boolean, PloyzSdkError>;
+  /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
+  readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
     container: string,

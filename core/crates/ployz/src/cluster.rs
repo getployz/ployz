@@ -42,8 +42,13 @@ use crate::{
 };
 
 mod capacity;
+mod container_health;
 mod container_observations;
 
+pub(crate) use container_health::{
+    DEFAULT_HEALTH_MONITOR, HealthExpectation, HealthPoll, HealthWaitError, HealthWaitTick,
+    POLL_INTERVAL, classify_health, health_deadline_for, observed_health, wait_until_ready,
+};
 pub(crate) use container_observations::ContainerObservationCondition;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
