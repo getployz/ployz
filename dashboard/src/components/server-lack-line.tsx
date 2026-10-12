@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
+import { CatchBoundary } from "@tanstack/react-router";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Button } from "#/components/ui/button";
 import { serverStatus } from "#/modules/machines/server-status";
@@ -16,7 +17,9 @@ export function ServerLackLine({ organizationSlug, lack, name }: { organizationS
   const unread = <LackLine server={machine?.name ?? name} remedy={remedy({
     feature, server: { name: machine?.name ?? name, daemonVersion: machine?.daemonVersion ?? "" }, release: { state: "pending" }, line: null,
   })} onUpgrade={() => {}} />;
-  return <Suspense fallback={unread}>{machine ? <Upgradable organizationSlug={organizationSlug} machine={machine} capability={lack.capability} /> : unread}</Suspense>;
+  return <CatchBoundary getResetKey={() => lack.machineId} errorComponent={() => unread}>
+    <Suspense fallback={unread}>{machine ? <Upgradable organizationSlug={organizationSlug} machine={machine} capability={lack.capability} /> : unread}</Suspense>
+  </CatchBoundary>;
 }
 
 function Upgradable({ organizationSlug, machine, capability }: { organizationSlug: string; machine: RuntimeMachineRecord; capability: string }) {

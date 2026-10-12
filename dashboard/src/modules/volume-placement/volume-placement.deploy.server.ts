@@ -1,12 +1,14 @@
 import "@tanstack/react-start/server-only";
 import type { CopyObservation, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, isNotNull } from "drizzle-orm";
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
+import {
+  placementLacking, placementUnknown, placementUnknownMessage, placementUpgradeMessage, type StorageServer,
+} from "#/modules/volume-placement/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { restoreSettled, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import {
@@ -159,21 +161,37 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   return { kind: "done" } satisfies PlacementAdvance;
 });
 
-/** The names of the Servers with storage that hold placement back. Fails unless every Server answers: a silent one may run anything. */
+/** Servers with storage whose records list no capabilities: placement stays closed, but no Upgrade is claimed. */
+export class SupportUnknown extends Data.TaggedError("SupportUnknown")<{ readonly servers: readonly string[] }> {}
+
+/**
+ * The names of the Servers with storage that lack the volume verbs. Fails unless every Server answers, since a silent one
+ * may run anything, and with SupportUnknown when a Server's record cannot say.
+ */
 export type BlockerReader = (organizationId: string) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
 
+const lackingOrUnknown = (servers: readonly StorageServer[]): Effect.Effect<readonly string[], SupportUnknown> => {
+  const lacking = placementLacking(servers);
+  const unknown = placementUnknown(servers);
+  return lacking.length === 0 && unknown.length > 0 ? Effect.fail(new SupportUnknown({ servers: unknown })) : Effect.succeed(lacking);
+};
+
 export const readPlacementBlockers: BlockerReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
-  Effect.flatMap((frame) => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : Effect.succeed(placementBlockers(frame.machines.map((entry) => ({
+  Effect.flatMap((frame): Effect.Effect<readonly string[], SupportUnknown | string> => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : lackingOrUnknown(frame.machines.map((entry) => ({
     name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities,
-  }))))),
+  })))),
 );
 
 const UNANSWERED: StoreRefusal = { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null };
 
 /** Why the organization can't stage a placement or restore yet, or null when it can. */
 export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string, read: BlockerReader = readPlacementBlockers) {
-  const blockers = yield* read(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
+  const blockers = yield* read(organizationId).pipe(Effect.catch((error) => Effect.succeed(error instanceof SupportUnknown ? error : null)));
   if (blockers === null) return UNANSWERED;
+  if (blockers instanceof SupportUnknown) {
+    const refusal: StoreRefusal = { code: "support_unknown", message: placementUnknownMessage(blockers.servers), details: { servers: [...blockers.servers] } };
+    return refusal;
+  }
   if (blockers.length === 0) return null;
   const refusal: StoreRefusal = { code: "upgrade_required", message: placementUpgradeMessage(blockers), details: { servers: [...blockers] } };
   return refusal;

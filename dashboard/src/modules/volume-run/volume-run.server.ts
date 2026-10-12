@@ -13,7 +13,7 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { requirements } from "#/modules/runtime/daemon-compat";
+import { requirementFor, requirements } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
 import { releaseLine, remedy, serverUpgradeLine, type ReleaseState } from "#/modules/server-upgrade/server-upgrade";
@@ -557,19 +557,21 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
         pool: storage?.state === "pool" || view.copy !== null,
         view,
       })),
-      Effect.catchTag("ServerLacks", () => lackSentence(organizationId, { name: machine.name, daemonVersion: machine.runtime.daemon_version }).pipe(
+      Effect.timeout(OBSERVE_TIMEOUT),
+      Effect.catchTag("ServerLacks", (lack) => lackSentence(organizationId, lack.capability, { name: machine.name, daemonVersion: machine.runtime.daemon_version }).pipe(
         Effect.map((lack): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false, lack })),
       )),
-      Effect.timeout(OBSERVE_TIMEOUT),
       Effect.orElseSucceed((): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false })),
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
 
-const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (organizationId: string, server: { readonly name: string; readonly daemonVersion: string }) {
+const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (organizationId: string, capability: string, server: { readonly name: string; readonly daemonVersion: string }) {
+  const feature = requirementFor(capability) ?? requirements.volumeMove;
   const line = releaseLine(server.daemonVersion);
-  const channel = yield* organizationReleaseChannel(organizationId);
-  const release: ReleaseState = line === null ? { state: "resolved", release: null } : yield* channelRelease(channel, line).pipe(
+  const release: ReleaseState = line === null ? { state: "resolved", release: null } : yield* organizationReleaseChannel(organizationId).pipe(
+    Effect.flatMap((channel) => channelRelease(channel, line)),
     Effect.map((release): ReleaseState => ({ state: "resolved", release })),
+    Effect.timeout(OBSERVE_TIMEOUT),
     Effect.orElseSucceed((): ReleaseState => ({ state: "failed" })),
   );
   const upgrade = serverUpgradeLine({
@@ -582,8 +584,8 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (organization
     automatic: false,
     rolloutRunning: false,
   });
-  const said = remedy({ feature: requirements.volumeMove, server, release, line: upgrade });
-  return "sentence" in said ? said.sentence : `${requirements.volumeMove.feature} needs a newer Ployz on ${server.name}.`;
+  const said = remedy({ feature, server, release, line: upgrade });
+  return "sentence" in said ? said.sentence : `${feature.feature} needs a newer Ployz on ${server.name}.`;
 });
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {

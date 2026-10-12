@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { requirements } from "#/modules/runtime/daemon-compat";
-import { placementBlockers, placementServers, placementUpgradeMessage, restoreOpen, runsPlacement } from "./daemon-release";
+import {
+  placementBlockers, placementLacking, placementServers, placementUnknown, placementUnknownMessage, placementUpgradeMessage, restoreOpen, runsPlacement,
+} from "./daemon-release";
 
 type Daemon = "serves" | "lacks" | "unknown";
 
@@ -30,6 +32,13 @@ describe("placementBlockers", () => {
       server("edge", "lacks", { storage: "stateless" }),
       server("new", "serves"),
     ])).toEqual(["db-old", "unknown", "ready"]);
+  });
+
+  it("claims a lack only for the blockers whose records say so, and leaves the silent ones unknown", () => {
+    const servers = [server("db-old", "lacks"), server("ready", "unknown", { storage: "ready" }), server("edge", "unknown", { storage: "stateless" }), server("new", "serves")];
+    expect(placementLacking(servers)).toEqual(["db-old"]);
+    expect(placementUnknown(servers)).toEqual(["ready"]);
+    expect(placementUnknownMessage(["ready"])).toBe("Ployz can't tell whether ready can move volumes.");
   });
 
   it("says which Servers to upgrade", () => {

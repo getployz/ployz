@@ -45,15 +45,13 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const matches = (row: ContainerLogRow) => row.kind === "gap" ? !search && !levels.length
     : (!levels.length || levels.includes(row.level)) && row.message.toLowerCase().includes(search.toLowerCase());
   const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && matches(row)).sort(compareLogRows);
-  const live = Object.entries(missing.live).map(([machineId, { machineName, failed }]) => {
-    const reasons = Object.values(failed);
-    return { machineId, machineName, ...reasons.find(reason => reason.capability !== undefined) ?? reasons.at(-1) ?? { message: "" } };
-  });
+  const failures = [...Object.entries(missing.live).flatMap(([machineId, { machineName, failed }]) =>
+    Object.values(failed).map(reason => ({ machineId, machineName, ...reason }))), ...missing.history];
+  const split = lacks(failures);
   const lacking = new Map<string, ServerLacks>();
-  for (const lack of lacks([...live, ...missing.history]).lacks) if (!lacking.has(lack.machineId)) lacking.set(lack.machineId, lack);
-  const names = new Map([...missing.history, ...live].map(server => [server.machineId, server.machineName]));
-  const missingServers = [...missing.history, ...live.filter(server => !missing.history.some(known => known.machineId === server.machineId))]
-    .filter(server => !lacking.has(server.machineId));
+  for (const lack of split.lacks) if (!lacking.has(lack.machineId)) lacking.set(lack.machineId, lack);
+  const names = new Map(failures.map(server => [server.machineId, server.machineName]));
+  const missingServers = split.rest.filter((server, index) => split.rest.findIndex(other => other.machineId === server.machineId) === index);
   const touchY = useRef(0);
   const dragging = useRef(false);
   function loadAtTop(delta = 0) {

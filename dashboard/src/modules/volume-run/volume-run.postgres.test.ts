@@ -607,6 +607,22 @@ describe("volume runs", () => {
       }
     });
 
+    it("mirror: a lacking Server still refuses as lacking when the Release Channel never answers", { timeout: 30_000 }, async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: null, lease: null, lacks: "0.2.4" };
+      vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
+      try {
+        const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+        const output = await execute(run.id);
+
+        expect(output.result).toMatchObject({ refused: { code: "server_lacks" } });
+        expect(await rows()).toMatchObject([{ state: "failed", lease: null }]);
+        expect((await rows())[0]?.message).toContain("fsn-2");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
     it("sync: rounds onto the existing mirror, committing what it already holds first", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null };
       first(machines).warms = ["21", "21"];

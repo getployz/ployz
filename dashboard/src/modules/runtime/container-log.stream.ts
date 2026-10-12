@@ -129,9 +129,14 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           Object.values(snapshot.missing.live[machineId]?.failed ?? {}).some(reason => reason.capability !== undefined)
           || snapshot.missing.history.some(server => server.machineId === machineId && server.capability !== undefined);
         // @ployz/sdk never reopens a source it marked failed, so a lacking Server's new daemon needs a fresh stream.
+        const versions = new Map<string, string>();
         const upgrades = getRuntimeCollections(selection.organizationSlug, scope).machines.subscribeChanges((changes) => {
-          const upgraded = new Set(changes.flatMap(change => change.type === "update" && change.previousValue !== undefined
-            && change.value.daemonVersion !== change.previousValue.daemonVersion && lacking(change.value.id) ? [change.value.id] : []));
+          const upgraded = new Set<string>();
+          for (const change of changes) {
+            if (change.type === "delete") continue;
+            if (versions.get(change.value.id) !== change.value.daemonVersion && lacking(change.value.id)) upgraded.add(change.value.id);
+            versions.set(change.value.id, change.value.daemonVersion);
+          }
           if (!upgraded.size) return;
           close();
           resetHistory();
@@ -139,7 +144,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           const history = snapshot.missing.history.filter(server => !upgraded.has(server.machineId));
           publish({ ...snapshot, missing: { live, history }, historyPending: false });
           close = open();
-        });
+        }, { includeInitialState: true });
         return () => {
           upgrades.unsubscribe();
           pending = [];

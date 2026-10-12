@@ -5,8 +5,8 @@ import { requirements } from "#/modules/runtime/daemon-compat";
 import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { readPlacementBlockers } from "./volume-placement.deploy.server";
 
-const machine = (name: string, servesVolumeMove: boolean) => ({
-  machine: { name, runtime: { capabilities: servesVolumeMove ? [requirements.volumeMove.capability] : ["ployz.logs.tail.v1"] } },
+const machine = (name: string, servesVolumeMove: boolean | "unknown") => ({
+  machine: { name, runtime: { capabilities: servesVolumeMove === "unknown" ? [] : servesVolumeMove ? [requirements.volumeMove.capability] : ["ployz.logs.tail.v1"] } },
   storage: { state: "pool" },
 });
 
@@ -26,6 +26,16 @@ const reading = (frame: Frame) => readPlacementBlockers("org-1").pipe(
 describe("readPlacementBlockers", () => {
   it("names the daemons that lack volume move when every Server answers", async () => {
     const read = await reading({ machines: [machine("new", true), machine("old", false)], incomplete_ids: { machines: [] } });
+    expect(read).toMatchObject({ _tag: "Success", success: ["old"] });
+  });
+
+  it("fails as unknown, not lacking, when a Server's record lists no capabilities", async () => {
+    const read = await reading({ machines: [machine("new", true), machine("quiet", "unknown")], incomplete_ids: { machines: [] } });
+    expect(read).toMatchObject({ _tag: "Failure", failure: { _tag: "SupportUnknown", servers: ["quiet"] } });
+  });
+
+  it("names only the confirmed lacks when lacking and unknown Servers both hold placement", async () => {
+    const read = await reading({ machines: [machine("old", false), machine("quiet", "unknown")], incomplete_ids: { machines: [] } });
     expect(read).toMatchObject({ _tag: "Success", success: ["old"] });
   });
 

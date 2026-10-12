@@ -5,7 +5,8 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Router
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { getDbClient } from "#/collections/scope";
-import { lacks, requirementFor, requirements, ServerLacks, serverSupports, useServerSupports } from "./daemon-compat";
+import { lacks, requirementFor, requirements, ServerLacks, serverSupports } from "./daemon-compat";
+import { useServerSupports } from "./use-server-supports";
 import { asSdkFailure, PloyzProviderError } from "./ployz.server";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "./runtime.collection";
 

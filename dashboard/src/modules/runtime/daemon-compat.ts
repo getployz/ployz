@@ -1,8 +1,5 @@
 import type { CapabilityName } from "@ployz/sdk/capabilities";
-import { useLiveQuery } from "@tanstack/react-db";
 import { Data } from "effect";
-import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getRuntimeCollections } from "#/modules/runtime/runtime.collection";
 
 export type Requirement = { readonly capability: CapabilityName; readonly feature: string; readonly plural?: true };
 
@@ -41,10 +38,4 @@ export function lacks<F extends { readonly machineId: string; readonly capabilit
 export function serverSupports(machine: { readonly capabilities: readonly string[] }, requirement: Requirement): boolean | "unknown" {
   if (machine.capabilities.length === 0) return "unknown";
   return machine.capabilities.includes(requirement.capability);
-}
-
-export function useServerSupports(organizationSlug: string, machineId: string, requirement: Requirement) {
-  const { data: machines = [] } = useLiveQuery(getRuntimeCollections(organizationSlug, useCollectionScope()).machines);
-  const machine = machines.find((row) => row.id === machineId);
-  return machine === undefined ? "unknown" : serverSupports(machine, requirement);
 }

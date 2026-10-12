@@ -8,8 +8,20 @@ export type StorageServer = { readonly name: string; readonly storage: "stateles
 export const placementBlockers = (machines: readonly StorageServer[]) =>
   machines.filter((machine) => machine.storage !== "stateless" && !runsPlacement(machine)).map((machine) => machine.name);
 
+const answering = (machines: readonly StorageServer[], answer: false | "unknown") =>
+  machines.filter((machine) => machine.storage !== "stateless" && serverSupports(machine, requirements.volumeMove) === answer).map((machine) => machine.name);
+
+/** The blockers whose records say they lack the verbs: the only ones an Upgrade is claimed to fix. */
+export const placementLacking = (machines: readonly StorageServer[]) => answering(machines, false);
+
+/** The blockers whose records list no capabilities, so Ployz cannot tell whether they serve the verbs. */
+export const placementUnknown = (machines: readonly StorageServer[]) => answering(machines, "unknown");
+
 export const placementUpgradeMessage = (blockers: readonly string[]) =>
   `Every Server with storage needs a newer Ployz. Upgrade ${blockers.join(", ")} first.`;
+
+export const placementUnknownMessage = (servers: readonly string[]) =>
+  `Ployz can't tell whether ${servers.join(", ")} can move volumes.`;
 
 type PlacementMachine = StorageServer & { readonly id: string; readonly acceptsServices: boolean };
 

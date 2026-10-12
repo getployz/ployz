@@ -32,7 +32,7 @@ import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
-import { ServerLacks } from "#/modules/runtime/daemon-compat";
+import { requirementFor, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
@@ -208,6 +208,7 @@ export function rpcErrorMessage(error: PloyzSdkError) {
 }
 
 export function sdkFailureMessage(error: PloyzSdkError) {
+  if (error instanceof ServerLacks) return `${requirementFor(error.capability)?.feature ?? "This step"} needs a newer Ployz on one of your Servers.`;
   const cause = "cause" in error ? error.cause : error;
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String, message: Schema.String }))(cause);
   return Option.isSome(rpc) ? `${rpc.value.code}: ${rpc.value.message}` : describeFailureCause(cause);

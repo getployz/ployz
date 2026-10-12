@@ -286,15 +286,20 @@ async function lackHarness(environmentSlug: string, failures: readonly object[])
 }
 
 it("gives a Server that lacks the logs capability its own line and leaves every other failure in the alert", async () => {
-  const harness = await lackHarness("mixed", [{ machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." }]);
+  const harness = await lackHarness("mixed", [
+    { machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." },
+    { machineId: "old", machineName: "old", message: "Its stored logs are unreadable." },
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+  ]);
   try {
     const opened = harness.sources.at(-1);
     if (!opened) throw new Error("Viewer did not open its log stream");
     await harness.refuse(opened.source);
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("fsn-1: Its log service isn’t running."));
     expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
-    expect(screen.getByRole("alert").textContent).not.toContain("old");
-    expect(screen.getByText("A server’s logs are missing")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("old: Its stored logs are unreadable.");
+    expect(screen.getByRole("alert").textContent).not.toContain("unsupported");
+    expect(screen.getByText("2 servers’ logs are missing")).toBeTruthy();
   } finally {
     await harness.teardown();
   }
@@ -314,6 +319,41 @@ it("reopens the log stream once a lacking Server's daemon changes, as after Upgr
     expect(harness.sources).toHaveLength(2);
     expect(opened.closed).toBe(true);
     expect(screen.queryByRole("status")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("reopens the log stream when a lacking Server's record returns with a new daemon after the cluster dropped", async () => {
+  const harness = await lackHarness("reconnected", []);
+  try {
+    await act(async () => { harness.machines.insert([runtimeMachine("old", "0.2.3")]); });
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened.source);
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
+    await act(async () => { harness.machines.delete("old"); });
+    expect(harness.sources).toHaveLength(1);
+    await act(async () => { harness.machines.insert([runtimeMachine("old", "0.2.4")]); });
+    expect(harness.sources).toHaveLength(2);
+    expect(opened.closed).toBe(true);
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("reopens the log stream when a lacking Server's record first arrives already upgraded", async () => {
+  const harness = await lackHarness("arrived", []);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened.source);
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
+    await act(async () => { harness.machines.insert([runtimeMachine("old", "0.2.4")]); });
+    expect(harness.sources).toHaveLength(2);
+    expect(opened.closed).toBe(true);
+    await act(async () => { harness.machines.update("old", draft => { draft.observedAt = "2026-10-12T00:01:00Z"; }); });
+    expect(harness.sources).toHaveLength(2);
   } finally {
     await harness.teardown();
   }
