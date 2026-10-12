@@ -117,8 +117,13 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   for (const row of ordered) {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     if (volume === undefined) {
-      // A restore's Volume can be still on its way into the Store; only staging or discarding the restore drops its row.
       const seed = row.staged?.seed;
+      // A committed restore's Store write landed, so its missing Volume was discarded: nothing is left to restore into.
+      if (seed?.committed === true) {
+        yield* drizzle.delete(volumePlacement).where(and(eq(volumePlacement.volumeId, row.volumeId), eq(volumePlacement.deploymentId, deploymentId)));
+        continue;
+      }
+      // An unmarked restore's Volume can be still on its way into the Store; only staging or discarding it drops its row.
       if (seed !== undefined) waiting.add(seed.sourceVolumeId);
       yield* settleClaimed(row.volumeId, deploymentId, seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
       continue;

@@ -144,10 +144,12 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     yield* drizzle.delete(volumePlacement).where(eq(volumePlacement.volumeId, id));
     return { ok: false, refusal: written.refusal } satisfies PlacementWrite;
   }
+  // The restore is staged once the Store write lands. Without the marker, Discard all marks it before it discards.
   const [committed] = yield* drizzle.update(volumePlacement)
     .set({ staged: sql`jsonb_set(${volumePlacement.staged}, '{seed,committed}', 'true')`, updatedAt: new Date() })
     .where(and(eq(volumePlacement.volumeId, id), isNotNull(sql`${volumePlacement.staged}->'seed'`)))
-    .returning();
+    .returning()
+    .pipe(Effect.catch((error) => Effect.logWarning("Could not mark a staged restore committed.", { volumeId: id, error }).pipe(Effect.as([]))));
   return { ok: true, placement: view(committed ?? row) } satisfies PlacementWrite;
 });
 
