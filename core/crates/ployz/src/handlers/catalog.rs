@@ -662,5 +662,7 @@ mod tests {
         assert_eq!(type_of(&variable), "string or object");
         let replicas = catalog::explain("web.replicas").unwrap().schema;
         assert_eq!(type_of(&replicas), "integer");
+        let domains = catalog::explain("web.domains").unwrap().schema;
+        assert_eq!(type_of(&domains), "array");
     }
 }
