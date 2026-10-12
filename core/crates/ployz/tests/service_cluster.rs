@@ -1,9 +1,11 @@
 use std::{process, time::Duration};
 
+#[path = "support/containers.rs"]
+mod containers;
+
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerKind, ContainerRuntimeObservation,
-    InspectContainerRequest, Machine, MachineId, MachineTarget, Namespace, RemoveContainerRequest,
-    ResolvedServiceSpec, ServiceId, ServiceSelector, StopContainerRequest, op, select_service,
+    ContainerAction, ContainerId, ContainerKind, InspectContainerRequest, Machine, MachineId,
+    MachineTarget, Namespace, ResolvedServiceSpec, ServiceId, ServiceSelector, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 
@@ -27,46 +29,42 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     let service_id = ServiceId::random();
     let first = spec(&service_id, "shared", "v1");
     let second = spec(&service_id, "shared", "v2");
-    client
-        .create_container(
-            machines[0].id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            first.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-    client
-        .create_container(
-            machines[1].id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            second.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-    client
-        .create_container(
-            machines[0].id,
-            ContainerKind::PreDeployHook,
-            Namespace::parse("app").unwrap(),
-            first.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-    client
-        .create_container(
-            machines[1].id,
-            ContainerKind::PreDeployHook,
-            Namespace::parse("app").unwrap(),
-            second.clone(),
-            None,
-        )
-        .await
-        .unwrap();
+    containers::run(
+        &client,
+        machines[0].id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("app").unwrap(),
+        first.clone(),
+    )
+    .await
+    .unwrap();
+    containers::run(
+        &client,
+        machines[1].id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("app").unwrap(),
+        second.clone(),
+    )
+    .await
+    .unwrap();
+    containers::run(
+        &client,
+        machines[0].id,
+        ContainerKind::PreDeployHook,
+        Namespace::parse("app").unwrap(),
+        first.clone(),
+    )
+    .await
+    .unwrap();
+    containers::run(
+        &client,
+        machines[1].id,
+        ContainerKind::PreDeployHook,
+        Namespace::parse("app").unwrap(),
+        second.clone(),
+    )
+    .await
+    .unwrap();
 
     let live = wait_for_services(&mut client, 1, 4).await;
     let observed = select_service(&live.services(), &ServiceSelector::from(&service_id))
@@ -90,16 +88,15 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
     );
 
     let collision_id = ServiceId::random();
-    client
-        .create_container(
-            machines[1].id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("shop-staging").unwrap(),
-            spec(&collision_id, "shared", "collision"),
-            None,
-        )
-        .await
-        .unwrap();
+    containers::run(
+        &client,
+        machines[1].id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("shop-staging").unwrap(),
+        spec(&collision_id, "shared", "collision"),
+    )
+    .await
+    .unwrap();
     let live = wait_for_services(&mut client, 2, 5).await;
     let services = live.services();
     let error = select_service(&services, &ServiceSelector::parse("shared").unwrap()).unwrap_err();
@@ -142,22 +139,6 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             .iter()
             .all(|hook| hook.as_observation().container_id != success.value)
     }));
-    let local_after_start = client
-        .live_services(ployz_core::EnvironmentValues::Redacted)
-        .await
-        .unwrap();
-    let local_services = local_after_start.services();
-    let local_service =
-        select_service(&local_services, &ServiceSelector::from(&service_id)).unwrap();
-    assert!(matches!(
-        local_service
-            .hook_containers
-            .first()
-            .unwrap()
-            .as_observation()
-            .runtime,
-        ContainerRuntimeObservation::Created
-    ));
 
     let stopped = client
         .change_observed_service(
@@ -233,20 +214,19 @@ async fn assert_l3_061_default_spec(
         "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
     }))
     .unwrap();
-    let created = client
-        .create_container(
-            machine.id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            spec.clone(),
-            None,
-        )
-        .await
-        .unwrap();
+    let created = containers::run(
+        client,
+        machine.id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("app").unwrap(),
+        spec.clone(),
+    )
+    .await
+    .unwrap();
 
-    let observed = inspect_container(client, machine.id, created.container_id).await;
+    let observed = inspect_container(client, machine.id, created).await;
     assert_eq!(observed.resolved_spec, spec);
-    let docker = docker_inspect(cluster, 0, &created.container_id);
+    let docker = docker_inspect(cluster, 0, &created);
     assert_eq!(
         docker
             .pointer("/Config/Labels/ployz.service.id")
@@ -267,10 +247,10 @@ async fn assert_l3_061_default_spec(
             .iter()
             .any(|value| value == &format!("PLOYZ_MACHINE_ID={}", machine.id))
     );
-    assert_eq!(stored_spec(cluster, 0, &created.container_id), spec);
+    assert_eq!(stored_spec(cluster, 0, &created), spec);
 
-    remove_container(client, machine.id, created.container_id).await;
-    assert_removed(cluster, 0, &created.container_id);
+    remove_container(client, machine.id, created).await;
+    assert_removed(cluster, 0, &created);
 }
 
 async fn assert_l3_062_full_spec(
@@ -320,20 +300,19 @@ async fn assert_l3_062_full_spec(
         "configs": [{ "name": "settings", "content": [107, 61, 118, 10] }]
     }))
     .unwrap();
-    let created = client
-        .create_container(
-            machine.id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            spec.clone(),
-            None,
-        )
-        .await
-        .unwrap();
+    let created = containers::run(
+        client,
+        machine.id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("app").unwrap(),
+        spec.clone(),
+    )
+    .await
+    .unwrap();
 
-    let observed = inspect_container(client, machine.id, created.container_id).await;
+    let observed = inspect_container(client, machine.id, created).await;
     assert_eq!(observed.resolved_spec, spec);
-    let docker = docker_inspect(cluster, 0, &created.container_id);
+    let docker = docker_inspect(cluster, 0, &created);
     assert_eq!(
         docker
             .pointer("/HostConfig/Memory")
@@ -359,10 +338,10 @@ async fn assert_l3_062_full_spec(
             .iter()
             .any(|value| value == "TOKEN=secret")
     );
-    assert_eq!(stored_spec(cluster, 0, &created.container_id), spec);
+    assert_eq!(stored_spec(cluster, 0, &created), spec);
 
-    remove_container(client, machine.id, created.container_id).await;
-    assert_removed(cluster, 0, &created.container_id);
+    remove_container(client, machine.id, created).await;
+    assert_removed(cluster, 0, &created);
 }
 
 async fn inspect_container(
@@ -385,26 +364,7 @@ async fn remove_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    let target = MachineTarget::from(&machine_id);
-    let _ = client
-        .call::<op::StopContainer>(
-            StopContainerRequest {
-                container_id,
-                signal: None,
-                grace_period_seconds: None,
-            },
-            Some(&target),
-        )
-        .await;
-    client
-        .call::<op::RemoveContainer>(
-            RemoveContainerRequest {
-                container_id,
-                remove_volumes: true,
-                force: false,
-            },
-            Some(&target),
-        )
+    containers::remove(client, machine_id, container_id)
         .await
         .unwrap();
 }

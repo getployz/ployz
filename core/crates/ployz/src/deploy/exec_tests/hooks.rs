@@ -15,11 +15,7 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
         ];
         let plan = operations;
         let client = Scripted::new(vec![
-            created(
-                Call::Create(machine, ContainerKind::PreDeployHook),
-                &hook_id,
-            ),
-            ok(Call::Start(machine, hook_id)),
+            created(Call::Run(machine, ContainerKind::PreDeployHook), &hook_id),
             Step(Call::Inspect(machine, hook_id), reply),
         ]);
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -39,14 +35,9 @@ async fn hook_exit_zero_runs_suffix_nonzero_and_inspect_failure_retain_the_hook(
         stop(&machine, &suffix),
     ];
     let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::PreDeployHook),
-            &hook_id,
-        ),
-        ok(Call::Start(machine, hook_id)),
+        created(Call::Run(machine, ContainerKind::PreDeployHook), &hook_id),
         observed(Call::Inspect(machine, hook_id), exited(0)),
         ok(Call::Stop(machine, suffix)),
-        dropped(suffix),
     ]);
     assert!(matches!(
         execute_with(&plan, &client, &CancellationToken::new()).await,
@@ -61,13 +52,9 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
     let hook_id = container('a');
     let plan = vec![hook(&machine, spec(None, None, Some(10)))];
     let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::PreDeployHook),
-            &hook_id,
-        ),
-        ok(Call::Start(machine, hook_id)),
+        created(Call::Run(machine, ContainerKind::PreDeployHook), &hook_id),
         Step(Call::Inspect(machine, hook_id), Reply::Pending),
-        ok(Call::StopWithGrace(machine, hook_id, 0)),
+        ok(Call::Kill(machine, hook_id)),
     ]);
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
     assert!(matches!(
@@ -87,13 +74,9 @@ async fn hook_timeout_and_cancellation_attempt_stop_and_retain_the_container() {
 
     let cancellation = CancellationToken::new();
     let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::PreDeployHook),
-            &hook_id,
-        ),
-        ok(Call::Start(machine, hook_id)),
+        created(Call::Run(machine, ContainerKind::PreDeployHook), &hook_id),
         Step(Call::Inspect(machine, hook_id), Reply::Pending),
-        failed(Call::StopWithGrace(machine, hook_id, 0), "stop failed"),
+        failed(Call::Kill(machine, hook_id), "stop failed"),
     ]);
     let cancel = cancellation.clone();
     tokio::spawn(async move {
@@ -126,11 +109,9 @@ async fn executing_the_same_plan_twice_runs_a_fresh_hook_each_time() {
     let second = container('b');
     let plan = vec![hook(&machine, spec(None, None, Some(5_000)))];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::PreDeployHook), &first),
-        ok(Call::Start(machine, first)),
+        created(Call::Run(machine, ContainerKind::PreDeployHook), &first),
         observed(Call::Inspect(machine, first), exited(0)),
-        created(Call::Create(machine, ContainerKind::PreDeployHook), &second),
-        ok(Call::Start(machine, second)),
+        created(Call::Run(machine, ContainerKind::PreDeployHook), &second),
         observed(Call::Inspect(machine, second), exited(0)),
     ]);
 

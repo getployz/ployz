@@ -10,8 +10,7 @@ use serde_json::{Value, json};
 use super::*;
 
 #[test]
-fn unspecified_or_negative_stop_timeout_has_no_rpc_deadline() {
-    assert_eq!(stop_rpc_timeout(Some(-1), 1), None);
+fn unspecified_stop_timeout_has_no_rpc_deadline() {
     assert_eq!(stop_rpc_timeout(None, 1), None);
     assert_eq!(
         stop_rpc_timeout(Some(5), 1),
@@ -21,36 +20,6 @@ fn unspecified_or_negative_stop_timeout_has_no_rpc_deadline() {
     assert_eq!(
         stop_rpc_timeout(Some(10), 2),
         Some(TARGET_RPC_TIMEOUT + Duration::from_secs(20))
-    );
-}
-
-#[test]
-fn remove_tolerates_a_missing_preliminary_stop_target() {
-    let missing = RpcError {
-        code: RpcErrorCode::NotFound,
-        message: "gone".into(),
-        details: Value::Null,
-        cause: Vec::new(),
-    };
-
-    assert!(accept_stop_result(ContainerAction::Remove, Err(missing.clone())).is_ok());
-    assert_eq!(
-        accept_stop_result(ContainerAction::Stop, Err(missing.clone()))
-            .unwrap_err()
-            .code,
-        RpcErrorCode::NotFound
-    );
-    assert_eq!(
-        accept_stop_result(
-            ContainerAction::Remove,
-            Err(RpcError {
-                code: RpcErrorCode::Internal,
-                ..missing
-            })
-        )
-        .unwrap_err()
-        .code,
-        RpcErrorCode::Internal
     );
 }
 
@@ -290,7 +259,7 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine),
         namespace: Namespace::parse("app").unwrap(),
-        kind: ContainerKind::ServiceContainer,
+        kind: ployz_core::ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
         },

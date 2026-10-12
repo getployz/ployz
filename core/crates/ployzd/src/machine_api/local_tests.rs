@@ -1,14 +1,12 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, ingress_config_missing, store_error};
-use crate::corrosion::{AdminClient, fake_cluster};
+use super::{MachineService, store_error};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, ForgetRequest, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-    GetContainerObservationsRequest, HealthObservation, MachineId, MachineRelease, MachineRpc,
-    MachineUpgradeAttemptId, Namespace, RequestMachineUpgradeRequest, ResolvedServiceSpec,
-    RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, ServiceId, ServiceName, op,
+    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, ForgetRequest,
+    MachineId, MachineRelease, MachineRpc, MachineUpgradeAttemptId, Namespace,
+    RequestMachineUpgradeRequest, ResolvedServiceSpec, RpcErrorCode, RpcResponseBody,
+    RuntimeWatchRequest, ServiceId, op,
 };
 use std::{
     collections::BTreeMap,
@@ -26,14 +24,6 @@ fn out_of_order_machine_transitions_are_conflicts() {
     ] {
         assert_eq!(store_error(error).code, RpcErrorCode::Conflict);
     }
-}
-
-#[test]
-fn missing_ingress_config_names_its_path_in_details() {
-    let path = "/data/ingress/caddy.json";
-    let error = ingress_config_missing(std::path::Path::new(path));
-    assert_eq!(error.code, RpcErrorCode::NotFound);
-    assert_eq!(error.details.get("path"), Some(&serde_json::json!(path)));
 }
 
 #[tokio::test]
@@ -158,277 +148,22 @@ async fn upgrade_rpc_rejects_nonstandard_machine_paths_before_acceptance() {
     std::fs::remove_dir_all(data_dir).unwrap();
 }
 
-#[tokio::test]
-async fn replicated_container_observations_are_advertised_only_with_a_cluster_store() {
-    let data_dir = std::env::temp_dir().join(format!(
-        "ployzd-container-observation-capability-{}",
-        MachineId::random()
-    ));
-    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
-    let without_cluster = MachineService::with_cluster(store.clone(), None)
-        .describe_contract(Request::new(
-            op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
-                .encode()
-                .unwrap(),
-        ))
+async fn create_service_container(
+    service: &MachineService,
+    spec: ResolvedServiceSpec,
+) -> crate::docker::ContainerCreated {
+    service
+        .local
+        .create_container(
+            ContainerKind::ServiceContainer,
+            &Namespace::parse("app").unwrap(),
+            &spec,
+            None,
+            None,
+            None,
+        )
         .await
         .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::DescribeContract>()
-        .unwrap();
-    assert!(!without_cluster.supports(GET_CONTAINER_OBSERVATIONS_CAPABILITY));
-
-    let (replicated, server) = fake_cluster::store().await;
-    let with_cluster = MachineService::with_cluster(
-        store,
-        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
-    )
-    .describe_contract(Request::new(
-        op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
-            .encode()
-            .unwrap(),
-    ))
-    .await
-    .unwrap()
-    .into_inner()
-    .decode_response()
-    .unwrap()
-    .decode::<op::DescribeContract>()
-    .unwrap();
-    assert!(with_cluster.supports(GET_CONTAINER_OBSERVATIONS_CAPABILITY));
-    server.abort();
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn replicated_container_observation_wait_rejects_a_long_hold() {
-    let (replicated, server) = fake_cluster::store().await;
-    let data_dir = std::env::temp_dir().join(format!(
-        "ployzd-container-observation-bound-{}",
-        MachineId::random()
-    ));
-    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
-    let service = MachineService::with_cluster(
-        store,
-        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
-    );
-    let response = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        service.get_container_observations(Request::new(
-            op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-                container_ids: vec![ContainerId::parse("a".repeat(64)).unwrap()],
-                wait_millis: 5_001,
-            })
-            .encode()
-            .unwrap(),
-        )),
-    )
-    .await
-    .expect("an overlong hold is rejected immediately")
-    .unwrap()
-    .into_inner()
-    .decode_response()
-    .unwrap();
-    assert!(matches!(
-        response.body,
-        RpcResponseBody::Error(error) if error.code == RpcErrorCode::InvalidArgument
-    ));
-    server.abort();
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn replicated_container_observations_are_complete_and_do_not_use_docker() {
-    let (replicated, server) = fake_cluster::store().await;
-    let present = container_observation('a');
-    replicated.publish_container(&present).await.unwrap();
-    let missing = ContainerId::parse("b".repeat(64)).unwrap();
-    let data_dir = std::env::temp_dir().join(format!(
-        "ployzd-container-observations-{}",
-        MachineId::random()
-    ));
-    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
-    let service = MachineService::with_cluster(
-        store,
-        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
-    );
-
-    let response = service
-        .get_container_observations(Request::new(
-            op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-                container_ids: vec![present.container_id, missing],
-                wait_millis: 0,
-            })
-            .encode()
-            .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::GetContainerObservations>()
-        .unwrap();
-
-    assert_eq!(
-        response.containers,
-        BTreeMap::from([(present.container_id, Some(present)), (missing, None)])
-    );
-    server.abort();
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn replicated_container_observation_store_failure_is_not_absent() {
-    let (replicated, server) = fake_cluster::store().await;
-    let data_dir = std::env::temp_dir().join(format!(
-        "ployzd-container-observation-store-error-{}",
-        MachineId::random()
-    ));
-    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
-    let service = MachineService::with_cluster(
-        store,
-        Some((replicated, AdminClient::new("/no/such/admin.sock"))),
-    );
-    server.abort();
-    let _ = server.await;
-
-    let response = service
-        .get_container_observations(Request::new(
-            op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-                container_ids: vec![ContainerId::parse("a".repeat(64)).unwrap()],
-                wait_millis: 0,
-            })
-            .encode()
-            .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap();
-
-    assert!(matches!(
-        response.body,
-        RpcResponseBody::Error(error) if error.code == RpcErrorCode::Internal
-    ));
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn replicated_container_observation_wait_returns_on_change_or_timeout() {
-    let (replicated, server) = fake_cluster::store_with_subscriptions().await;
-    let initial = container_observation('a');
-    replicated.publish_container(&initial).await.unwrap();
-    let data_dir = std::env::temp_dir().join(format!(
-        "ployzd-container-observation-wait-{}",
-        MachineId::random()
-    ));
-    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
-    let service = MachineService::with_cluster(
-        store,
-        Some((replicated.clone(), AdminClient::new("/no/such/admin.sock"))),
-    );
-
-    let initial_id = initial.container_id;
-    let waiting = tokio::spawn({
-        let service = service.clone();
-        async move {
-            service
-                .get_container_observations(Request::new(
-                    op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-                        container_ids: vec![initial_id],
-                        wait_millis: 1_000,
-                    })
-                    .encode()
-                    .unwrap(),
-                ))
-                .await
-                .unwrap()
-                .into_inner()
-                .decode_response()
-                .unwrap()
-                .decode::<op::GetContainerObservations>()
-                .unwrap()
-        }
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let mut changed = initial.clone();
-    changed
-        .try_update(|parts| parts.runtime = ContainerRuntimeObservation::Exited { code: 0 })
-        .unwrap();
-    replicated.publish_container(&changed).await.unwrap();
-    let response = tokio::time::timeout(std::time::Duration::from_millis(500), waiting)
-        .await
-        .expect("requested observation change returns before the hold expires")
-        .unwrap();
-    assert_eq!(
-        response
-            .containers
-            .get(&initial.container_id)
-            .and_then(Option::as_ref),
-        Some(&changed)
-    );
-
-    let started = tokio::time::Instant::now();
-    let response = service
-        .get_container_observations(Request::new(
-            op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-                container_ids: vec![initial_id],
-                wait_millis: 20,
-            })
-            .encode()
-            .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::GetContainerObservations>()
-        .unwrap();
-    assert!(started.elapsed() >= std::time::Duration::from_millis(20));
-    assert_eq!(
-        response
-            .containers
-            .get(&initial.container_id)
-            .and_then(Option::as_ref),
-        Some(&changed)
-    );
-
-    server.abort();
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-fn container_observation(id: char) -> ContainerObservation {
-    let machine_id = MachineId::parse("1".repeat(32)).unwrap();
-    let service_id = ServiceId::parse("2".repeat(32)).unwrap();
-    let service_name = ServiceName::parse("api").unwrap();
-    let resolved_spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-        "service_id": service_id,
-        "name": service_name,
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "example.test/api", "pull_policy": "missing" }
-    }))
-    .unwrap();
-    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
-        display_name: format!("api-{id}"),
-        created_at_unix_nanos: 0,
-        machine_id,
-        namespace: Namespace::parse("app").unwrap(),
-        kind: ContainerKind::ServiceContainer,
-        runtime: ContainerRuntimeObservation::Running {
-            health: HealthObservation::Healthy,
-        },
-        effective_healthcheck: None,
-        resolved_spec,
-        address: Some(ContainerAddress([10, 210, 1, 2].into())),
-        labels: BTreeMap::new(),
-    })
-    .unwrap()
 }
 
 #[tokio::test]
@@ -538,16 +273,20 @@ async fn tail_logs_reads_each_target_from_its_live_source_without_the_observer()
 
 #[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
-    use ployz_core::CreateContainerRequest;
     use serde_json::json;
+    #[derive(Clone)]
+    struct Creation {
+        creation_key: Option<String>,
+        kind: ContainerKind,
+        namespace: Namespace,
+        resolved_spec: ployz_core::ResolvedServiceSpec,
+    }
     let (data_dir, store, service, fake) = fake_docker_service("ployzd-keyed").await;
     let containers = fake.named_containers.clone().unwrap();
-    let request = CreateContainerRequest {
-        deployment_id: None,
+    let request = Creation {
         creation_key: Some("retry/1".into()),
         kind: ContainerKind::ServiceContainer,
         namespace: Namespace::parse("app").unwrap(),
-        registry_auth: None,
         resolved_spec: serde_json::from_value(json!({
             "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
             "mode":{"mode":"replicated", "replicas":1},
@@ -558,21 +297,30 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     };
     async fn create(
         service: &MachineService,
-        request: CreateContainerRequest,
-    ) -> Result<ployz_core::ContainerCreated, ployz_core::RpcError> {
-        let response = service
-            .create_container(Request::new(
-                op::CreateContainer::into_request(request).encode().unwrap(),
-            ))
-            .await
-            .unwrap()
-            .into_inner()
-            .decode_response()
-            .unwrap();
-        if let RpcResponseBody::Error(error) = response.body {
-            return Err(error);
-        }
-        Ok(response.decode::<op::CreateContainer>().unwrap())
+        request: Creation,
+    ) -> Result<crate::docker::ContainerCreated, ployz_core::RpcError> {
+        let created = service
+            .local
+            .create_container(
+                request.kind,
+                &request.namespace,
+                &request.resolved_spec,
+                request.creation_key,
+                None,
+                None,
+            )
+            .await;
+        created.map_err(|error| {
+            let response = super::local_error(error)
+                .unwrap()
+                .into_inner()
+                .decode_response()
+                .unwrap();
+            let RpcResponseBody::Error(error) = response.body else {
+                panic!("a failed creation must answer an error");
+            };
+            error
+        })
     }
     let (first, simultaneous) = tokio::join!(
         create(&service, request.clone()),
@@ -650,21 +398,9 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
         RpcErrorCode::Conflict
     );
     service
-        .remove_container(Request::new(
-            op::RemoveContainer::into_request(ployz_core::RemoveContainerRequest {
-                container_id: first.container_id,
-                remove_volumes: false,
-                force: false,
-            })
-            .encode()
-            .unwrap(),
-        ))
+        .local
+        .remove_container(first.container_id, false, false)
         .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::RemoveContainer>()
         .unwrap();
     assert_eq!(
         create(&service, request.clone()).await.unwrap_err().code,
@@ -817,22 +553,12 @@ async fn inspecting_an_unknown_build_grant_is_not_found() {
 
 #[tokio::test]
 async fn listed_containers_redact_values_unless_requested() {
-    use ployz_core::{
-        ConfigSpec, CreateContainerRequest, EnvironmentValues, ListContainersRequest,
-    };
+    use ployz_core::{ConfigSpec, EnvironmentValues, ListContainersRequest};
     use serde_json::json;
     use std::os::unix::fs::MetadataExt;
     let (data_dir, _store, service, fake) = fake_docker_service("ployzd-list-env").await;
     let owner = std::fs::metadata(&data_dir).unwrap();
-    let created = service
-        .create_container(Request::new(
-            op::CreateContainer::into_request(CreateContainerRequest {
-                deployment_id: None,
-                creation_key: None,
-                kind: ContainerKind::ServiceContainer,
-                namespace: Namespace::parse("app").unwrap(),
-                registry_auth: None,
-                resolved_spec: serde_json::from_value(json!({
+    let created = create_service_container(&service, serde_json::from_value(json!({
                     "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
                     "mode":{"mode":"replicated", "replicas":1},
                     "container":{
@@ -846,18 +572,7 @@ async fn listed_containers_redact_values_unless_requested() {
                     "pre_deploy":{"command":["migrate"], "environment":{"DATABASE_URL":"postgres://secret"}},
                     "configs":[{"name":"settings", "content":b"token=config-secret".to_vec()}]
                 }))
-                .unwrap(),
-            })
-            .encode()
-            .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap()
-        .decode::<op::CreateContainer>()
-        .unwrap();
+                .unwrap()).await;
     *fake.existing_container.lock().unwrap() = Some(json!({"Id": created.container_id}));
     let list = |request: ListContainersRequest| {
         let service = &service;
@@ -929,29 +644,6 @@ async fn listed_containers_redact_values_unless_requested() {
             }],
         )
     );
-    let _ = std::fs::remove_dir_all(data_dir);
-}
-
-#[tokio::test]
-async fn marking_an_unknown_container_stopping_is_not_found() {
-    let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-mark-stopping").await;
-    let response = service
-        .mark_container_stopping(Request::new(
-            op::MarkContainerStopping::into_request(ployz_core::MarkContainerStoppingRequest {
-                container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
-            })
-            .encode()
-            .unwrap(),
-        ))
-        .await
-        .unwrap()
-        .into_inner()
-        .decode_response()
-        .unwrap();
-    let RpcResponseBody::Error(error) = response.body else {
-        panic!("marking an unknown Container must fail: {response:?}");
-    };
-    assert_eq!(error.code, RpcErrorCode::NotFound);
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
@@ -1092,27 +784,8 @@ mod set_volume_copy {
     }
 
     async fn stopped_container(service: &MachineService) -> ContainerId {
-        use ployz_core::CreateContainerRequest;
-        service
-            .create_container(Request::new(
-                op::CreateContainer::into_request(CreateContainerRequest {
-                    deployment_id: None,
-                    creation_key: None,
-                    kind: ContainerKind::ServiceContainer,
-                    namespace: Namespace::parse("app").unwrap(),
-                    registry_auth: None,
-                    resolved_spec: serde_json::from_value(spec()).unwrap(),
-                })
-                .encode()
-                .unwrap(),
-            ))
+        create_service_container(service, serde_json::from_value(spec()).unwrap())
             .await
-            .unwrap()
-            .into_inner()
-            .decode_response()
-            .unwrap()
-            .decode::<op::CreateContainer>()
-            .unwrap()
             .container_id
     }
 

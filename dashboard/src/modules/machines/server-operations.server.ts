@@ -46,8 +46,8 @@ export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdenti
   return unique.length === 0 ? `on ${server}` : `used by ${unique.join(", ")} on ${server}`;
 }
 
-/** An operation as the gate weighs it, with the services a Drain of it acts on. */
-export type DrainPlan = OperationAsked & { readonly targets: QualifiedService[] };
+/** An operation as the gate weighs it, with the services a Drain of it acts on and those it moves to another Server. */
+export type DrainPlan = OperationAsked & { readonly targets: QualifiedService[]; readonly moves: QualifiedService[] };
 
 /**
  * What draining `machineId` does to the Services the Organization's Environments own there, from one frame: each moves,
@@ -90,6 +90,7 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     preview: { server: machineId, moves, stays, retires },
     effects,
     targets: [...moves, ...stays, ...retires].sort(byName),
+    moves,
   };
 }
 

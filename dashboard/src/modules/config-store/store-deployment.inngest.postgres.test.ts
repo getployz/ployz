@@ -9,7 +9,7 @@ import { Header } from "tar";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { createCancelStoreDeployment, createDeployToFirstServer, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
-import { failStoreDeploymentStorage, recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
+import { failStoreDeploymentUnrun, recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
 import { GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
 import { configDeploymentAdmittedEvent, createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
 import { volumePlacement } from "#/modules/volume-placement/tables";
@@ -124,7 +124,7 @@ it.live(
       // A run that gave up moving its Volumes fails the Deployment and returns them to staged.
       yield* write({ command: "admit", admit: "deploy", id: UNSTORED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* claim(UNSTORED);
-      expect(yield* failStoreDeploymentStorage(ORGANIZATION, ENVIRONMENT, UNSTORED, "storage-run", "data: web-2 did not answer").pipe(Effect.provide(services)))
+      expect(yield* failStoreDeploymentUnrun(ORGANIZATION, ENVIRONMENT, UNSTORED, "storage-run", "data: web-2 did not answer").pipe(Effect.provide(services)))
         .toEqual({ failed: UNSTORED });
       expect(yield* claimOn(UNSTORED)).toBeNull();
 

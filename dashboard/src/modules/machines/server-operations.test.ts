@@ -56,6 +56,7 @@ describe("drainPlan", () => {
       preview: { server: here, moves: ["shop/web"], stays: ["shop/db"], retires: ["shop/edge", "shop/metrics"] },
       effects: [{ kind: "removes_service", name: "shop/metrics", node: "metrics", path: "services/shop/metrics" }],
       targets: ["shop/db", "shop/edge", "shop/metrics", "shop/web"],
+      moves: ["shop/web"],
     });
   });
 

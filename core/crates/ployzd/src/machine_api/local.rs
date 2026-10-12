@@ -1,21 +1,14 @@
 //! Local Machine RPC. Listeners take [`super::MachineApi`], not this type.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
-    ContainerList, ContainerObservation, ContainerObservationMap, ContractDescription,
-    EnvironmentValues, IngressProxyConfig, LiveLogTarget, LocalMachinePhase, LogMetadata,
-    LogOrigin, MachineLogService, MachineRpc, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, op,
+    ContainerList, ContainerObservation, ContractDescription, EnvironmentValues, LiveLogTarget,
+    LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc, OpaquePayload,
+    PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, op,
 };
 use serde_json::Value;
-use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -27,14 +20,11 @@ use crate::{
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
 };
 
-const MAX_CONTAINER_OBSERVATION_WAIT: Duration = Duration::from_secs(5);
-
 const DEFAULT_OBSERVE_SOCKET: &str = "/run/ployz/observe.sock";
 
 #[derive(Clone)]
 pub struct MachineService {
     local: LocalMachine,
-    ingress_data_dir: Option<PathBuf>,
     observe: crate::observe::ObserveClient,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
@@ -52,7 +42,6 @@ impl MachineService {
     ) -> Self {
         Self {
             local: LocalMachine::new(owner).with_cluster(cluster),
-            ingress_data_dir: None,
             observe: crate::observe::ObserveClient::new(PathBuf::from(DEFAULT_OBSERVE_SOCKET)),
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
@@ -87,13 +76,6 @@ impl MachineService {
     #[must_use]
     pub(crate) fn with_volume_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
         self.local = self.local.with_plugin(plugin);
-        self
-    }
-
-    #[must_use]
-    /// Make exact Ingress Proxy configuration available through the Machine RPC.
-    pub fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
-        self.ingress_data_dir = Some(path);
         self
     }
 
@@ -200,9 +182,6 @@ impl MachineRpc for MachineService {
         if self.local.containers().is_some() {
             capabilities.extend(CapabilityAdvertisement::Container.capabilities());
         }
-        if self.ingress_data_dir.is_some() {
-            capabilities.extend(CapabilityAdvertisement::Ingress.capabilities());
-        }
         if self.local.has_cluster() {
             capabilities.extend(CapabilityAdvertisement::Cluster.capabilities());
         }
@@ -295,115 +274,12 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn mark_container_stopping(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::MarkContainerStopping>(request)?;
-        let _guard = self.switch_mutation.lock().await;
-        let containers = match self.containers() {
-            Ok(containers) => containers,
-            Err(error) => return respond(error),
-        };
-        let machine_id = self.local_record().id();
-        match containers
-            .inspect_managed_details(&request.container_id, &machine_id)
-            .await
-        {
-            Ok(details) => {
-                containers.mark_stopping(request.container_id);
-                respond(details)
-            }
-            Err(error) => respond(RpcError::from(&error)),
-        }
-    }
-
-    async fn get_container_observations(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::GetContainerObservations>(request)?;
-        let wait = Duration::from_millis(request.wait_millis);
-        if wait > MAX_CONTAINER_OBSERVATION_WAIT {
-            return respond(RpcError {
-                code: RpcErrorCode::InvalidArgument,
-                message: "container observation wait exceeds 5 seconds".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            });
-        }
-        let replicated = match self.replicated() {
-            Ok(replicated) => replicated,
-            Err(error) => return respond(error),
-        };
-        let response = container_observations(replicated, &request.container_ids, wait).await;
-        match response {
-            Ok(response) => respond(response),
-            Err(error) => respond(cluster_store_error(error)),
-        }
-    }
-
-    async fn create_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::CreateContainer>(request)?;
-        finish(
-            self.local
-                .create_container(
-                    request.kind,
-                    &request.namespace,
-                    &request.resolved_spec,
-                    request.creation_key,
-                    request.deployment_id,
-                    request.registry_auth,
-                )
-                .await,
-        )
-    }
-
-    async fn start_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::StartContainer>(request)?;
-        finish(self.local.start_container(request.container_id).await)
-    }
-
-    async fn stop_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::StopContainer>(request)?;
-        finish(
-            self.local
-                .stop_container(
-                    request.container_id,
-                    request.signal,
-                    request.grace_period_seconds,
-                )
-                .await,
-        )
-    }
-
     async fn ensure_container(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::EnsureContainer>(request)?;
         finish(self.local.ensure_container(request.want).await)
-    }
-
-    async fn remove_container(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::RemoveContainer>(request)?;
-        finish(
-            self.local
-                .remove_container(request.container_id, request.remove_volumes, request.force)
-                .await,
-        )
     }
 
     async fn inspect_storage(
@@ -704,32 +580,6 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn get_ingress_proxy_config(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::GetIngressProxyConfig>(request)?;
-        if let Err(error) = self.ready_replicated() {
-            return respond(error);
-        }
-        let Some(data_dir) = &self.ingress_data_dir else {
-            return respond(unavailable("Ingress Proxy configuration is not available"));
-        };
-        let path = crate::ingress::caddy::config_path(data_dir);
-        let generated = std::fs::read_to_string(&path);
-        match generated {
-            Ok(config) => respond(IngressProxyConfig { config }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                respond(ingress_config_missing(&path))
-            }
-            Err(error) => Err(Status::internal(format!(
-                "read Ingress Proxy configuration {}: {error}",
-                path.display(),
-                error = ployz_core::error_chain::inline(&error),
-            ))),
-        }
-    }
-
     async fn publish_certificate_material(
         &self,
         request: Request<OpaquePayload>,
@@ -774,42 +624,6 @@ impl MachineRpc for MachineService {
             Err(error) => respond(cluster_store_error(error)),
         }
     }
-}
-
-async fn container_observations(
-    replicated: &ReplicatedStore,
-    container_ids: &[ployz_core::ContainerId],
-    wait: Duration,
-) -> Result<ContainerObservationMap, crate::corrosion::Error> {
-    if wait.is_zero() || container_ids.is_empty() {
-        return read_container_observations(replicated, container_ids).await;
-    }
-    let mut changes = replicated.subscribe_container_changes().await?;
-    let initial = read_container_observations(replicated, container_ids).await?;
-    let deadline = Instant::now() + wait;
-    loop {
-        match tokio::time::timeout_at(deadline, changes.changed()).await {
-            Ok(Ok(())) => {
-                let current = read_container_observations(replicated, container_ids).await?;
-                if current != initial {
-                    return Ok(current);
-                }
-            }
-            Ok(Err(error)) => return Err(error),
-            Err(_) => return read_container_observations(replicated, container_ids).await,
-        }
-    }
-}
-
-async fn read_container_observations(
-    replicated: &ReplicatedStore,
-    container_ids: &[ployz_core::ContainerId],
-) -> Result<ContainerObservationMap, crate::corrosion::Error> {
-    let mut containers = BTreeMap::new();
-    for container_id in container_ids {
-        containers.insert(*container_id, replicated.container(container_id).await?);
-    }
-    Ok(ContainerObservationMap { containers })
 }
 
 #[allow(clippy::result_large_err)]
@@ -917,19 +731,6 @@ fn unavailable(message: &str) -> RpcError {
         code: RpcErrorCode::Unavailable,
         message: message.into(),
         details: Value::Null,
-        cause: Vec::new(),
-    }
-}
-
-/// The generated Ingress Proxy configuration is absent; `details.path` names the file.
-fn ingress_config_missing(path: &Path) -> RpcError {
-    RpcError {
-        code: RpcErrorCode::NotFound,
-        message: format!(
-            "Ingress Proxy configuration {} does not exist",
-            path.display()
-        ),
-        details: serde_json::json!({ "path": path.display().to_string() }),
         cause: Vec::new(),
     }
 }

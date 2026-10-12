@@ -22,19 +22,21 @@ use std::{
 };
 
 use ployz_core::{
-    CapabilityAdvertisement, ContainerChanged, ContainerDetails, ContainerId, ContainerKind,
-    ContainerList, ContainerObservation, ContainerObservationParts, ContainerRuntimeObservation,
+    CapabilityAdvertisement, ContainerDetails, ContainerId, ContainerKind, ContainerList,
+    ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
+    ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     ContractDescription, CopyRole, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, HealthObservation, HistoryContainer, HistoryContainerKind,
-    HistoryRow, HistoryStream, LiveLogTarget, LocalMachinePhase, LogBody, LogDirection, LogEntry,
-    LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId,
-    MachineList, MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc,
-    MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
-    MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
-    ProvisionedCopy, ProvisionedVolumeMaximumBytes, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, StorageBacking, StorageCapacity, VolumeCopy,
-    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
+    DockerVolumeStorageObservation, EnsuredContainer, HealthObservation, HistoryContainer,
+    HistoryContainerKind, HistoryRow, HistoryStream, LiveLogTarget, LocalMachinePhase, LogBody,
+    LogDirection, LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine,
+    MachineDetails, MachineId, MachineList, MachineName, MachineObservation, MachinePath,
+    MachineRelease, MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt,
+    MachineUpgradeOutcome, MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace,
+    OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RunTarget, RuntimeWatchFrame, ServiceId, ServiceName, SlotId,
+    StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
+    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -149,7 +151,8 @@ pub struct LedgerEntry {
     pub seq: u64,
     /// The target Machine's name.
     pub machine: MachineName,
-    /// The RPC command, as in `RpcRequestBody::command`.
+    /// The RPC command, as in `RpcRequestBody::command`; an EnsureContainer adds its
+    /// wanted state, as in `ensure_container:stopped`.
     pub command: String,
     /// The fixture display name of the Container the request names, if any.
     pub container: Option<String>,
@@ -455,10 +458,27 @@ enum Received {
     Bare(&'static str),
 }
 
+/// An EnsureContainer reads, in the ledger and in faults, as the state it wants, so a
+/// stop and a start stay apart.
+const ENSURE_WANTS: [&str; 3] = [
+    "ensure_container:running",
+    "ensure_container:stopped",
+    "ensure_container:gone",
+];
+
 impl Received {
     fn command(&self) -> &'static str {
         match self {
-            Self::Body(body) => body.command(),
+            Self::Body(body) => {
+                let RpcRequestBody::EnsureContainer(request) = &**body else {
+                    return body.command();
+                };
+                match request.want {
+                    ContainerWant::Running { .. } => "ensure_container:running",
+                    ContainerWant::Stopped { .. } => "ensure_container:stopped",
+                    ContainerWant::Gone { .. } => "ensure_container:gone",
+                }
+            }
             Self::Bare(command) => command,
         }
     }
@@ -569,7 +589,7 @@ impl Fleet {
                 | Fault::DisconnectAfter { machine, command } => (machine, command),
             };
             find_mut(&mut machines, machine)?;
-            if !COMMANDS.contains(&command.as_str()) {
+            if !COMMANDS.contains(&command.as_str()) && !ENSURE_WANTS.contains(&command.as_str()) {
                 return Err(FakeFleetError::UnknownCommand(command.clone()));
             }
             fleet.faults.push(ArmedFault {
@@ -634,16 +654,21 @@ impl Fleet {
         }
         let command = request.command();
         let payload = request.payload()?;
-        let container = payload
-            .get("container_id")
-            .and_then(Value::as_str)
-            .and_then(|id| {
-                machine
-                    .containers
-                    .iter()
-                    .find(|container| container.id.as_str() == id)
-            })
-            .map(|container| container.spec.name.clone());
+        let container = [
+            "/container_id",
+            "/want/container/id",
+            "/want/container/existing/id",
+        ]
+        .into_iter()
+        .find_map(|pointer| payload.pointer(pointer))
+        .and_then(Value::as_str)
+        .and_then(|id| {
+            machine
+                .containers
+                .iter()
+                .find(|container| container.id.as_str() == id)
+        })
+        .map(|container| container.spec.name.clone());
         let entry = LedgerEntry {
             seq: self.ledger.len() as u64 + 1,
             machine: machine.name.clone(),
@@ -704,7 +729,6 @@ impl Fleet {
                         capabilities: [
                             CapabilityAdvertisement::Always,
                             CapabilityAdvertisement::Container,
-                            CapabilityAdvertisement::Ingress,
                             CapabilityAdvertisement::Cluster,
                         ]
                         .into_iter()
@@ -766,11 +790,18 @@ impl Fleet {
                     .into(),
                 )
             }
-            RpcRequestBody::StopContainer(request) => {
-                unary(self.set_state(target, request.container_id, RunState::Exited)?)
-            }
-            RpcRequestBody::StartContainer(request) => {
-                unary(self.set_state(target, request.container_id, RunState::Running)?)
+            RpcRequestBody::EnsureContainer(request) => {
+                let (container_id, state) = match request.want {
+                    ContainerWant::Running {
+                        container: RunTarget::Existing(ContainerLocator::Id(id)),
+                    } => (id, RunState::Running),
+                    ContainerWant::Stopped {
+                        container: ContainerLocator::Id(id),
+                        ..
+                    } => (id, RunState::Exited),
+                    _ => return Err(unimplemented("ensure_container for this want")),
+                };
+                unary(self.set_state(target, container_id, state)?)
             }
             RpcRequestBody::InspectStorage(_) => unary(self.by_id(target)?.storage().into()),
             RpcRequestBody::ListVolumes(_) => unary(
@@ -894,10 +925,26 @@ impl Fleet {
             .iter_mut()
             .find(|container| container.id == container_id)
         else {
-            return Ok(not_found(&container_id));
+            return Ok(EnsuredContainer::Refused {
+                now: ContainerNow::Absent {
+                    of: ContainerLocator::Id(container_id),
+                },
+                refusal: ContainerRefusal {
+                    reason: ContainerRefusalReason::NotFound,
+                    message: format!("no Container {container_id}"),
+                },
+            }
+            .into());
         };
         container.spec.state = state;
-        Ok(ContainerChanged { container_id }.into())
+        let machine = self.by_id(target)?;
+        let observed = machine
+            .container(&container_id)
+            .ok_or_else(|| Status::internal("the changed Container vanished"))?;
+        Ok(EnsuredContainer::Ensured {
+            now: ContainerNow::Present(machine.observe(observed)?),
+        }
+        .into())
     }
 
     fn observations(&self) -> Vec<MachineObservation> {

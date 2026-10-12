@@ -1,10 +1,10 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
 
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
-    CreateContainerRequest, EnvironmentValues, InspectRequest, ListContainersRequest, LiveServices,
-    Machine, MachineId, MachineTarget, QualifiedService, RpcError, ServiceObservation,
-    ServicePlacementEligibility, op, service_containers,
+    BridgeEndpointCapacity, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
+    ContainerWant, CreationKey, EnvironmentValues, InspectRequest, ListContainersRequest,
+    LiveServices, Machine, MachineId, MachineTarget, NewContainer, QualifiedService, RpcError,
+    RunTarget, ServiceObservation, ServicePlacementEligibility, SlotKey, op, service_containers,
 };
 
 use crate::global_slot::{remove_slot, slot_eligibility, unknown_eligibility};
@@ -36,16 +36,13 @@ pub(crate) trait CatchUpClient {
         &mut self,
         machine_id: &MachineId,
     ) -> Result<Option<BridgeEndpointCapacity>, Failure>;
-    async fn create_slot(
+    /// Run the Global slot's Container on `machine_id`, or answer `None` when the
+    /// Machine is not eligible for it.
+    async fn run_slot(
         &mut self,
         machine_id: &MachineId,
-        request: CreateContainerRequest,
-    ) -> Result<Option<ContainerCreated>, RpcError>;
-    async fn start_slot(
-        &mut self,
-        machine_id: &MachineId,
-        container_id: ContainerId,
-    ) -> Result<(), RpcError>;
+        new: NewContainer,
+    ) -> Result<Option<ContainerId>, RpcError>;
     /// List Containers directly from the joined Machine for final verification.
     async fn target_containers(
         &mut self,
@@ -77,21 +74,20 @@ impl CatchUpClient for Client {
         Ok(details.telemetry.map(|telemetry| telemetry.into_bridge()))
     }
 
-    async fn create_slot(
+    async fn run_slot(
         &mut self,
         machine_id: &MachineId,
-        request: CreateContainerRequest,
-    ) -> Result<Option<ContainerCreated>, RpcError> {
+        new: NewContainer,
+    ) -> Result<Option<ContainerId>, RpcError> {
         let target = MachineTarget::from(machine_id);
-        match slot_eligibility(self, machine_id, &request.namespace, &request.resolved_spec).await?
-        {
+        match slot_eligibility(self, machine_id, &new.slot.namespace, &new.resolved_spec).await? {
             ServicePlacementEligibility::Eligible => {}
             ServicePlacementEligibility::Ineligible(_) => {
                 remove_slot(
                     self,
                     machine_id,
-                    &request.namespace,
-                    &request.resolved_spec.name,
+                    &new.slot.namespace,
+                    &new.resolved_spec.name,
                 )
                 .await?;
                 return Ok(None);
@@ -101,7 +97,7 @@ impl CatchUpClient for Client {
             }
         }
         // Explicit Deploy replacement keys also distinguish the previous Container.
-        // Reuse its exact persisted creation when catch-up finds it before Start.
+        // Reuse its exact persisted creation when catch-up finds it.
         let containers = self
             .read::<op::ListContainers>(
                 ListContainersRequest {
@@ -113,13 +109,16 @@ impl CatchUpClient for Client {
         if let Some(existing) = containers.containers.into_iter().find(|container| {
             container.machine_id == *machine_id
                 && container.kind == ContainerKind::ServiceContainer
-                && container.namespace == request.namespace
-                && container.resolved_spec == request.resolved_spec
+                && container.namespace == new.slot.namespace
+                && container.resolved_spec == new.resolved_spec
         }) {
-            return Ok(Some(ContainerCreated {
-                container_id: existing.container_id,
-                display_name: existing.display_name.clone(),
-            }));
+            return ensure_retried(
+                self,
+                &target,
+                RunTarget::Existing(ContainerLocator::Id(existing.container_id)),
+            )
+            .await
+            .map(|_| Some(existing.container_id));
         }
         let capacity = self
             .bridge_capacity(machine_id)
@@ -133,24 +132,8 @@ impl CatchUpClient for Client {
                 cause: Vec::new(),
             });
         }
-        self.call::<op::CreateContainer>(request, Some(&target))
-            .await
-            .map(Some)
-            .map_err(Into::into)
-    }
-
-    async fn start_slot(
-        &mut self,
-        machine_id: &MachineId,
-        container_id: ContainerId,
-    ) -> Result<(), RpcError> {
-        self.call::<op::StartContainer>(
-            ployz_core::StartContainerRequest { container_id },
-            Some(&MachineTarget::from(machine_id)),
-        )
-        .await
-        .map(|_| ())
-        .map_err(Into::into)
+        let now = ensure_retried(self, &target, RunTarget::New(new)).await?;
+        Ok(now.present().map(|observed| observed.container_id))
     }
 
     async fn target_containers(
@@ -167,6 +150,24 @@ impl CatchUpClient for Client {
         .map(|list| list.containers)
         .map_err(Failure::from)
     }
+}
+
+/// Running is idempotent for an id and for a keyed slot, so a lost reply is resent.
+async fn ensure_retried(
+    client: &mut Client,
+    target: &MachineTarget,
+    container: RunTarget,
+) -> Result<ployz_core::ContainerNow, RpcError> {
+    client
+        .call::<op::EnsureContainer>(
+            ployz_core::EnsureContainerRequest {
+                want: ContainerWant::Running { container },
+            },
+            Some(target),
+        )
+        .await
+        .map_err(RpcError::from)?
+        .into_result()
 }
 
 pub(crate) fn joined_catch_up_error(
@@ -213,7 +214,6 @@ pub(crate) fn joined_catch_up_error(
 pub(crate) enum CatchUpFact {
     Identified(Vec<QualifiedService>),
     Creating(QualifiedService),
-    Starting(QualifiedService),
     Excluded(QualifiedService),
     Running(QualifiedService),
     Failed(QualifiedService),
@@ -256,10 +256,6 @@ pub(crate) async fn follow_globals(
             CatchUpFact::Creating(service) => (
                 service,
                 State::Running(ployz_store::RowPhase::CreatingContainer),
-            ),
-            CatchUpFact::Starting(service) => (
-                service,
-                State::Running(ployz_store::RowPhase::StartingContainer),
             ),
             CatchUpFact::Excluded(service) => (service, State::Excluded),
             CatchUpFact::Running(service) => (service, State::ObservedRunning),
@@ -342,27 +338,22 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             break;
         }
         let identity = slot.identity().clone();
-        let request = CreateContainerRequest {
-            deployment_id: None,
-            creation_key: Some(crate::cluster::global_creation_key(slot.resolved_spec())),
-            kind: ContainerKind::ServiceContainer,
-            namespace: identity.namespace.clone(),
-            registry_auth: None,
+        let new = NewContainer {
+            slot: SlotKey {
+                namespace: identity.namespace.clone(),
+                kind: ContainerKind::ServiceContainer,
+                creation_key: CreationKey::try_from(crate::cluster::global_creation_key(
+                    slot.resolved_spec(),
+                ))
+                .expect("a Global creation key stays within 512 bytes"),
+            },
             resolved_spec: slot.resolved_spec().clone(),
+            deployment_id: None,
+            registry_auth: None,
         };
         observe(CatchUpFact::Creating(identity.clone()));
-        match client.create_slot(&this_machine.id, request).await {
-            Ok(Some(created)) => {
-                expected.push(slot);
-                observe(CatchUpFact::Starting(identity.clone()));
-                if let Err(error) = client
-                    .start_slot(&this_machine.id, created.container_id)
-                    .await
-                {
-                    observe(CatchUpFact::Failed(identity.clone()));
-                    failures.push((identity, error.to_string()));
-                }
-            }
+        match client.run_slot(&this_machine.id, new).await {
+            Ok(Some(_)) => expected.push(slot),
             Ok(None) => {
                 unresolved.retain(|service| service != &identity);
                 observe(CatchUpFact::Excluded(identity));

@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    EnvironmentValues, HealthObservation, MachineId, MachineObservation, MachineStorageObservation,
-    MachineTarget, Namespace, RemoveContainerRequest, RpcError, RpcErrorCode, ServiceName,
-    StartContainerRequest, StopContainerRequest, op,
+    ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
+    ContainerRuntimeObservation, ContainerWant, Drain, EnvironmentValues, HealthObservation,
+    MachineId, MachineObservation, MachineStorageObservation, Namespace, RpcError, RpcErrorCode,
+    RunTarget, ServiceName, StopOptions,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::Session;
-use crate::cluster::{ContainerObservationCondition, HealthWaitError};
+use crate::cluster::HealthWaitError;
 use crate::connect::TARGET_RPC_TIMEOUT;
 use crate::operator::DEPLOYMENT_LABEL;
 
@@ -273,8 +273,9 @@ fn copies_of<'a>(
         .collect()
 }
 
-/// Stop Container `container` on `machine`. An answer is the Machine's; a lost one is
-/// the transport's error, and the stop may have happened.
+/// Stop Container `container` on `machine`, after its Servers' proxies stop routing to
+/// it or the default drain ends. An answer is the Machine's; a lost one is the
+/// transport's error, and the stop may have happened.
 ///
 /// # Errors
 /// Returns the Machine's refusal, or the transport's error when it did not answer.
@@ -285,21 +286,25 @@ pub async fn stop_one(
 ) -> Result<(), RpcError> {
     let client = session.client()?;
     session
-        .until_closed(crate::ingress::stop_container(
-            &client,
+        .until_closed(client.ensure_container(
             &machine,
-            StopContainerRequest {
-                container_id: container,
-                signal: None,
-                grace_period_seconds: None,
+            ContainerWant::Stopped {
+                container: ContainerLocator::Id(container),
+                drain: Drain::DEFAULT,
+                stop: StopOptions {
+                    signal: None,
+                    grace_period_seconds: None,
+                },
             },
             None,
         ))
         .await
+        .map(|_| ())
 }
 
-/// Remove stopped Container `container` from `machine`, keeping its Volumes. A Container
-/// the Machine no longer has answers Ok, so a resend after a crash converges.
+/// Remove Container `container` from `machine` with its anonymous Volumes, keeping its
+/// named Volumes. A Container the Machine no longer has answers Ok, so a resend after a
+/// crash converges.
 ///
 /// # Errors
 /// Returns the Machine's refusal, or the transport's error when it did not answer.
@@ -309,30 +314,25 @@ pub async fn remove_one(
     container: ContainerId,
 ) -> Result<(), RpcError> {
     let client = session.client()?;
-    let removed = session
-        .until_closed(client.invoke::<op::RemoveContainer>(
-            RemoveContainerRequest {
-                container_id: container,
-                remove_volumes: false,
-                force: false,
+    session
+        .until_closed(client.ensure_container(
+            &machine,
+            ContainerWant::Gone {
+                container: ContainerLocator::Id(container),
+                drain: Drain::DEFAULT,
             },
-            &MachineTarget::from(&machine),
-            Some(TARGET_RPC_TIMEOUT),
+            None,
         ))
-        .await;
-    match removed {
-        Ok(_) => Ok(()),
-        Err(error) if error.code == RpcErrorCode::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
+        .await
+        .map(|_| ())
 }
 
 /// What a committed start reached, waiting for it the way a Deploy does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Started {
-    /// The Container serves traffic, or no Machine can report whether it does.
+    /// The Container started and passed its healthcheck, or has none.
     Serving,
-    /// The Container started but was not seen serving before the wait ended.
+    /// The Container started but its health could not be read.
     Unconfirmed,
     /// The Container started but failed its healthcheck, or did not pass it in time.
     Unhealthy,
@@ -350,8 +350,8 @@ impl Started {
     }
 }
 
-/// Start Container `container` on `machine`, wait until it is healthy or past its
-/// healthcheck deadline, then wait, bounded, until it serves.
+/// Start Container `container` on `machine`, then wait until it is healthy or past its
+/// healthcheck deadline.
 ///
 /// # Errors
 /// Returns the Machine's refusal, or the transport's error when it did not answer.
@@ -364,34 +364,23 @@ pub async fn start_one(
     session
         .until_closed(async {
             client
-                .invoke::<op::StartContainer>(
-                    StartContainerRequest {
-                        container_id: container,
+                .ensure_container(
+                    &machine,
+                    ContainerWant::Running {
+                        container: RunTarget::Existing(ContainerLocator::Id(container)),
                     },
-                    &MachineTarget::from(&machine),
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
             let cancellation = CancellationToken::new();
-            match client
-                .wait_until_ready(&machine, &container, &cancellation)
-                .await
-            {
-                Ok(()) => {}
-                Err(HealthWaitError::Health(_)) => return Ok(Started::Unhealthy),
-                Err(HealthWaitError::Inspect(_)) => return Ok(Started::Unconfirmed),
-            }
             Ok(
                 match client
-                    .wait_for_container_observations(
-                        &[container],
-                        ContainerObservationCondition::Serving,
-                        &cancellation,
-                    )
+                    .wait_until_ready(&machine, &container, &cancellation)
                     .await
                 {
                     Ok(()) => Started::Serving,
-                    Err(_) => Started::Unconfirmed,
+                    Err(HealthWaitError::Health(_)) => Started::Unhealthy,
+                    Err(HealthWaitError::Inspect(_)) => Started::Unconfirmed,
                 },
             )
         })

@@ -33,11 +33,9 @@ async fn dependency_gate_waits_for_all_service_containers_before_the_dependent()
         listed(&dependency, vec![first.clone(), second]),
         listed(&dependency, vec![first, second_healthy]),
         created(
-            Call::Create(machine('1'), ContainerKind::ServiceContainer),
+            Call::Run(machine('1'), ContainerKind::ServiceContainer),
             &new,
         ),
-        ok(Call::Start(machine('1'), new)),
-        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -202,39 +200,28 @@ async fn health_monitor_accepts_running_no_check_inherited_starting_and_transien
     ];
     let client = Scripted::new(vec![
         created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
+            Call::Run(machine, ContainerKind::ServiceContainer),
             &no_check,
         ),
-        ok(Call::Start(machine, no_check)),
         observed(Call::Inspect(machine, no_check), running()),
-        serving(no_check),
         created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
+            Call::Run(machine, ContainerKind::ServiceContainer),
             &inherited,
         ),
-        ok(Call::Start(machine, inherited)),
         observed_with_healthcheck(
             Call::Inspect(machine, inherited),
             starting(),
             ployz_core::HealthcheckSpec::Configured(inherited_healthcheck),
         ),
         observed(Call::Inspect(machine, inherited), healthy()),
-        serving(inherited),
-        created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
-            &early,
-        ),
-        ok(Call::Start(machine, early)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &early),
         observed(Call::Inspect(machine, early), healthy()),
-        serving(early),
         created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
+            Call::Run(machine, ContainerKind::ServiceContainer),
             &transient,
         ),
-        ok(Call::Start(machine, transient)),
         observed(Call::Inspect(machine, transient), unhealthy()),
         observed(Call::Inspect(machine, transient), healthy()),
-        serving(transient),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -249,8 +236,7 @@ async fn health_monitor_fails_a_clean_exit_without_waiting_for_serving() {
     let new = container('a');
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(machine, new), exited(0)),
     ]);
 
@@ -285,11 +271,9 @@ async fn health_monitor_succeeds_on_the_first_healthy_probe() {
         false,
     )];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(machine, new), starting()),
         observed(Call::Inspect(machine, new), healthy()),
-        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -308,10 +292,8 @@ async fn health_monitor_completes_on_a_check_that_passed_once_and_is_failing_now
         false,
     )];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(machine, new), failing()),
-        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -326,10 +308,8 @@ async fn health_monitor_accepts_running_without_a_healthcheck_after_the_monitor(
     let new = container('a');
     let plan = vec![run(&machine, spec(Some(1_000), None, None), false)];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(machine, new), running()),
-        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -348,8 +328,7 @@ async fn health_monitor_fails_restarting_without_waiting_out_the_monitor_window(
         false,
     )];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(
             Call::Inspect(machine, new),
             ContainerRuntimeObservation::Restarting,
@@ -383,8 +362,7 @@ async fn health_monitor_still_fails_a_restart_loop() {
     let new = container('a');
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(
             Call::Inspect(machine, new),
             ContainerRuntimeObservation::Restarting,
@@ -423,8 +401,7 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
         let new = container('a');
         let plan = vec![run(&machine, spec(Some(0), healthcheck, None), false)];
         let client = Scripted::new(vec![
-            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-            ok(Call::Start(machine, new)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
             observed(Call::Inspect(machine, new), runtime),
         ]);
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -448,11 +425,10 @@ async fn health_monitor_fails_terminal_unhealthy_and_crash_but_skip_bypasses_ins
         spec(Some(0), Some(healthcheck()), None),
         true,
     )];
-    let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
-        serving(new),
-    ]);
+    let client = Scripted::new(vec![created(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        &new,
+    )]);
     assert!(matches!(
         execute_with(&plan, &client, &CancellationToken::new()).await,
         DeployOutcome::Success { .. }
@@ -472,14 +448,12 @@ async fn health_monitor_does_not_inherit_when_spec_disables_the_check() {
         false,
     )];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed_with_healthcheck(
             Call::Inspect(machine, new),
             running(),
             ployz_core::HealthcheckSpec::Configured(inherited),
         ),
-        serving(new),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -499,11 +473,9 @@ async fn http_health_monitor_waits_for_a_successful_machine_probe() {
     });
     let plan = vec![run(&machine, spec(Some(0), Some(http), None), false)];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(machine, new), unhealthy()),
         observed(Call::Inspect(machine, new), healthy()),
-        serving(new),
     ]);
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
@@ -521,8 +493,7 @@ async fn health_monitor_failure_quotes_the_last_check() {
         false,
     )];
     let client = Scripted::new(vec![
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         Step(
             Call::Inspect(machine, new),
             Reply::Observed(unhealthy(), None, Some(last_check.clone())),

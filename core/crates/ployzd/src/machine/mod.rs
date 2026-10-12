@@ -656,7 +656,6 @@ mod tests {
             )),
         )
         .with_optional_containers(Some(containers))
-        .with_ingress_data_dir(root.join("ingress"))
         .describe_contract(tonic::Request::new(
             op::DescribeContract::into_request(ployz_core::DescribeContractRequest {})
                 .encode()

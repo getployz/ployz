@@ -168,7 +168,12 @@ impl Client {
     ) -> DeployOutcome<ExecutionError> {
         let mut client = self.clone();
         client.registry_auth.clone_from(preview.registry_auth());
-        execute_operation_sequence(preview, &client, cancellation, progress).await
+        // A CLI Deploy has no deployment id, so each run names its own slots.
+        let run = client.deployment_id.as_ref().map_or_else(
+            || uuid::Uuid::new_v4().simple().to_string(),
+            |id| id.as_str().to_owned(),
+        );
+        execute_operation_sequence(preview, &run, &client, cancellation, progress).await
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.

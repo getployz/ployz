@@ -76,7 +76,9 @@ ployz exec web                     # a shell in one of its containers
 ployz exec web npm run migrate     # or one command
 ```
 
-A restart doesn't pick up staged changes. Deploy for that.
+A restart doesn't pick up staged changes. Deploy for that. Restarting or stopping the same
+service from the CLI and from the [Ployz agent](../account/agent-sidebar.md) at once can leave it
+either running or stopped.
 
 Restart and start wait for each container's healthcheck to pass, the same way a deploy does,
 before they return. A container that fails its healthcheck, or doesn't pass it before its

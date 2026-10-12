@@ -141,7 +141,7 @@ export const delta = (before: Multiset, after: Multiset): Multiset => Object.fro
   Object.entries(after).flatMap(([key, times]) => (times === (before[key] ?? 0) ? [] : [[key, times - (before[key] ?? 0)] as const])));
 
 /**
- * `snapshot` as one value per key, `staging.settings.web.image`, `projects.trial` and `machine.web-1 stop_container …`;
+ * `snapshot` as one value per key, `staging.settings.web.image`, `projects.trial` and `machine.web-1 ensure_container:stopped …`;
  * `released` follows from the rest, and `actions` the tasks grade themselves.
  */
 const flatten = (snapshot: Snapshot) => Object.fromEntries([

@@ -4,11 +4,13 @@ use std::{
     time::Duration,
 };
 
+#[path = "support/containers.rs"]
+mod containers;
+
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CORROSION_API_PORT, CertificateHost, CertificateMaterialChange,
-    ContainerKind, GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate, Namespace,
-    PublicIpUpdate, PublishCertificateMaterialRequest, RemoveContainerRequest, ResolvedServiceSpec,
-    ServiceId, StartContainerRequest, op,
+    ContainerKind, Machine, MachineUpdate, Namespace, PublicIpUpdate,
+    PublishCertificateMaterialRequest, ResolvedServiceSpec, ServiceId, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -40,7 +42,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     )
     .await;
     wait_running(&mut client, &http_id, 1).await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("auto_https off") && config.contains("http://plain.example.com")
     })
     .await;
@@ -56,7 +58,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     )
     .await;
     wait_running(&mut client, &custom_id, 1).await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -65,18 +67,8 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     wait_https(&cluster, 0, "app.example.com").await;
 
     // A stopped Container keeps its site (answering 503 NOT_RUNNING); removal drops the hostname.
-    client
-        .call::<op::RemoveContainer>(
-            RemoveContainerRequest {
-                container_id: custom,
-                remove_volumes: false,
-                force: true,
-            },
-            Some(&MachineTarget::from(&first.id)),
-        )
-        .await
-        .unwrap();
-    wait_config(&mut client, &first, |config| {
+    containers::remove(&client, first.id, custom).await.unwrap();
+    wait_config(&cluster, 0, |config| {
         !config.contains("https://app.example.com")
     })
     .await;
@@ -141,12 +133,12 @@ async fn several_machines_order_once_and_every_machine_answers() {
     wait_running(&mut client, &web_id, 1).await;
     wait_running(&mut client, &broken_id, 1).await;
 
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
             && config.contains("tls /config/caddy/certs/web.example.com-")
     })
     .await;
-    wait_config(&mut client, &second, |config| {
+    wait_config(&cluster, 1, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
             && config.contains("tls /config/caddy/certs/web.example.com-")
     })
@@ -200,7 +192,7 @@ async fn down_machine_does_not_block_ordering() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&mut client, living, |config| {
+    wait_config(&cluster, living_index, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -237,7 +229,7 @@ async fn certificate_renews_before_expiry_without_restart() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -286,11 +278,11 @@ async fn machines_holding_the_same_certificate_renew_once() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
-    wait_config(&mut client, &second, |config| {
+    wait_config(&cluster, 1, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -340,7 +332,7 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -388,7 +380,7 @@ async fn joining_machine_serves_existing_certificate() {
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -396,7 +388,7 @@ async fn joining_machine_serves_existing_certificate() {
 
     let second = cluster.add_machine(0, 1, "machine-2").await.unwrap();
     cli(&direct, &ingress_role(&second));
-    wait_config(&mut client, &second, |config| {
+    wait_config(&cluster, 1, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -437,7 +429,7 @@ async fn published_material_is_served_never_renewed_and_clear_returns_it_to_acme
     )
     .await;
     wait_running(&mut client, &app_id, 1).await;
-    let published_config = wait_config(&mut client, &first, |config| {
+    let published_config = wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
     })
     .await;
@@ -447,7 +439,7 @@ async fn published_material_is_served_never_renewed_and_clear_returns_it_to_acme
     assert!(certificate_bodies(&cluster, 0).contains(r#"\"published\":true"#));
 
     clear_material(&mut client, "app.example.com").await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-") && config != published_config
     })
     .await;
@@ -502,7 +494,7 @@ async fn published_wildcard_covers_hostnames_so_acme_orders_nothing() {
     .await;
     wait_running(&mut client, &app_id, 1).await;
     wait_running(&mut client, &web_id, 1).await;
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/app.example.com-")
             && config.contains("tls /config/caddy/certs/web.example.com-")
     })
@@ -640,7 +632,7 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
     wait_running(&mut client, &outside_id, 1).await;
     // Verification goes through the hostname, so the elsewhere address never answers.
     let refused = "outside.example.com did not answer on port 80";
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("# Skipped certificate issuance:") && config.contains(refused)
     })
     .await;
@@ -653,7 +645,7 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
     );
 
     point_dns(&cluster, "outside.example.com", ip);
-    wait_config(&mut client, &first, |config| {
+    wait_config(&cluster, 0, |config| {
         config.contains("tls /config/caddy/certs/outside.example.com-")
     })
     .await;
@@ -763,26 +755,15 @@ async fn create_and_start(
     machine: &Machine,
     spec: ResolvedServiceSpec,
 ) -> ployz_core::ContainerId {
-    let created = client
-        .create_container(
-            machine.id,
-            ContainerKind::ServiceContainer,
-            Namespace::parse("app").unwrap(),
-            spec,
-            None,
-        )
-        .await
-        .unwrap();
-    client
-        .call::<op::StartContainer>(
-            StartContainerRequest {
-                container_id: created.container_id,
-            },
-            Some(&MachineTarget::from(&machine.id)),
-        )
-        .await
-        .unwrap();
-    created.container_id
+    containers::run(
+        client,
+        machine.id,
+        ContainerKind::ServiceContainer,
+        Namespace::parse("app").unwrap(),
+        spec,
+    )
+    .await
+    .unwrap()
 }
 
 async fn wait_machine_count(cluster: &Cluster, index: usize, count: usize) {
@@ -860,23 +841,13 @@ async fn wait_running(client: &mut ployz::connect::Client, service_id: &ServiceI
     }
 }
 
-async fn wait_config(
-    client: &mut ployz::connect::Client,
-    machine: &Machine,
-    expected: impl Fn(&str) -> bool,
-) -> String {
+async fn wait_config(cluster: &Cluster, index: usize, expected: impl Fn(&str) -> bool) -> String {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     loop {
-        match client
-            .call::<op::GetIngressProxyConfig>(
-                GetIngressProxyConfigRequest {},
-                Some(&MachineTarget::from(&machine.id)),
-            )
-            .await
-        {
-            Ok(config) if expected(config.config()) => return config.config().to_owned(),
+        match cluster.ingress_proxy_config(index) {
+            Ok(config) if expected(&config) => return config,
             Ok(config) if tokio::time::Instant::now() >= deadline => {
-                panic!("Caddyfile did not converge:\n{}", config.config())
+                panic!("Caddyfile did not converge:\n{config}")
             }
             Err(error) if tokio::time::Instant::now() >= deadline => {
                 panic!("Caddyfile was unavailable: {error}")

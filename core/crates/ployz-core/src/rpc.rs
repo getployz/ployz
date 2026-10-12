@@ -42,7 +42,6 @@ pub const PROTOCOL_MAJOR: u32 = 1;
 pub enum CapabilityAdvertisement {
     Always,
     Container,
-    Ingress,
     Cluster,
 }
 
@@ -365,32 +364,6 @@ pub struct InspectContainerRequest {
     pub container_id: ContainerId,
 }
 
-/// Read complete replicated observations for a batch of Container IDs.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GetContainerObservationsRequest {
-    /// Container IDs whose current replicated documents are requested.
-    pub container_ids: Vec<ContainerId>,
-    /// Maximum daemon-side hold before returning the current map.
-    #[serde(default)]
-    pub wait_millis: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CreateContainerRequest {
-    /// Correlation metadata, never part of the Service configuration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deployment_id: Option<crate::DeploymentLogId>,
-    /// Retry identity for a currently existing creation, scoped to Machine, Namespace, and kind.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub creation_key: Option<String>,
-    pub kind: ContainerKind,
-    pub namespace: Namespace,
-    pub resolved_spec: ResolvedServiceSpec,
-    /// Credentials for pulling the image; used for this pull only, never stored.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registry_auth: Option<crate::RegistryAuth>,
-}
-
 /// Exactly one update to a labelled Management Client slot: set it or clear it.
 ///
 /// Neither case carries a secret; `Set` returns the fresh client key in its capability.
@@ -410,39 +383,9 @@ pub struct SetManagementClientResponse {
     pub capability: Option<ManagementCapability>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StartContainerRequest {
-    pub container_id: ContainerId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StopContainerRequest {
-    pub container_id: ContainerId,
-    #[serde(default)]
-    pub signal: Option<String>,
-    #[serde(default)]
-    pub grace_period_seconds: Option<i32>,
-}
-
-/// Report one local Container's health as `stopping` so the Ingress Proxies drop it
-/// before it stops. Answers the Container as now observed.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MarkContainerStoppingRequest {
-    pub container_id: ContainerId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveContainerRequest {
-    pub container_id: ContainerId,
-    #[serde(default)]
-    pub remove_volumes: bool,
-    #[serde(default)]
-    pub force: bool,
-}
-
 /// The place one Container creation lands on a Machine. The same slot names the
 /// same Container across resends; a different spec in it is an occupied slot.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SlotKey {
     pub namespace: Namespace,
     pub kind: ContainerKind,
@@ -759,10 +702,6 @@ pub enum ImageRemovalOutcome {
     Unrecognized,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-/// Request the exact generated Caddy configuration.
-pub struct GetIngressProxyConfigRequest {}
-
 /// Publish or clear operator-supplied Certificate Material for one certificate hostname.
 ///
 /// Published material is served as given; ACME never orders, renews, or overwrites it.
@@ -999,24 +938,6 @@ pub struct ContainerDetails {
     pub last_check: Option<crate::LastHealthCheck>,
 }
 
-/// Complete replicated observation map; `None` means the row is absent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ContainerObservationMap {
-    /// One present or absent answer for every requested Container ID.
-    pub containers: BTreeMap<ContainerId, Option<ContainerObservation>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ContainerCreated {
-    pub container_id: ContainerId,
-    pub display_name: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ContainerChanged {
-    pub container_id: ContainerId,
-}
-
 /// The Machine's answer to `EnsureContainer`: the Container as now observed, and
 /// the refusal when the want could not be met.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -1043,10 +964,54 @@ pub enum ContainerNow {
     Absent { of: ContainerLocator },
 }
 
+impl EnsuredContainer {
+    /// The observed Container, or the refusal as the error the replaced verbs answered.
+    pub fn into_result(self) -> Result<ContainerNow, RpcError> {
+        match self {
+            Self::Ensured { now } => Ok(now),
+            Self::Refused { refusal, .. } => Err(refusal.into_error()),
+        }
+    }
+}
+
+impl ContainerNow {
+    #[must_use]
+    pub fn present(&self) -> Option<&ContainerObservation> {
+        match self {
+            Self::Present(observation) => Some(observation),
+            Self::Absent { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ContainerRefusal {
     pub reason: ContainerRefusalReason,
     pub message: String,
+}
+
+impl ContainerRefusal {
+    /// The refusal as the error the replaced Container verbs answered.
+    #[must_use]
+    pub fn into_error(self) -> RpcError {
+        let code = match self.reason {
+            ContainerRefusalReason::NotFound => RpcErrorCode::NotFound,
+            ContainerRefusalReason::NotParticipating => RpcErrorCode::Unavailable,
+            ContainerRefusalReason::InvalidIngress => RpcErrorCode::InvalidArgument,
+            ContainerRefusalReason::NotEligible
+            | ContainerRefusalReason::SlotOccupied
+            | ContainerRefusalReason::VolumesNotPrepared => RpcErrorCode::Conflict,
+            ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
+                RpcErrorCode::Internal
+            }
+        };
+        RpcError {
+            code,
+            message: self.message,
+            details: Value::Null,
+            cause: Vec::new(),
+        }
+    }
 }
 
 /// Why a Machine would not meet a want. An unknown reason from a newer Machine
@@ -1093,20 +1058,6 @@ pub struct MachineImages {
 pub struct DiskSpace {
     pub total_bytes: u64,
     pub free_bytes: u64,
-}
-
-/// Exact Caddyfile consumed by the Ingress Proxy.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct IngressProxyConfig {
-    pub config: String,
-}
-
-impl IngressProxyConfig {
-    /// Borrow the exact generated Caddyfile.
-    #[must_use]
-    pub fn config(&self) -> &str {
-        &self.config
-    }
 }
 
 /// The certificate row holds the published material, or no longer holds published material.
@@ -1203,9 +1154,6 @@ define_responses! {
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
-    ContainerObservationMap(ContainerObservationMap) => "container_observation_map";
-    ContainerCreated(ContainerCreated) => "container_created";
-    ContainerChanged(ContainerChanged) => "container_changed";
     EnsuredContainer(EnsuredContainer) => "ensured_container";
     StorageCapacity(crate::StorageCapacity) => "storage_capacity";
     PreparedVolumes(PreparedVolumes) => "prepared_volumes";
@@ -1218,7 +1166,6 @@ define_responses! {
     ImagesRemoved(ImagesRemoved) => "images_removed";
     BuildGrantMinted(BuildGrantMinted) => "build_grant_minted";
     BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
-    IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";

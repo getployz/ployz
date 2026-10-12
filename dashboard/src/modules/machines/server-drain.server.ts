@@ -21,6 +21,7 @@ import {
 } from "#/modules/machines/server-drain";
 import { planDrain } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
+import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
@@ -309,14 +310,16 @@ const stateOf = Effect.fn("ServerDrain.stateOf")(function* (attemptId: string) {
 
 /**
  * A Drain waits its turn after its gate, and an earlier Drain can leave this one retiring a last copy. So it plans
- * again before it runs, and runs only if what it would destroy now is what its approval covered.
+ * again before it runs, and runs only if what it would destroy now is what its approval covered. Also whether the
+ * plan moves anything, which decides the Servers it may land on.
  */
 const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (request: DrainRequest, approvalId: string | null) {
   const plan = yield* planDrain(request.organizationId, request.machineId);
-  if (plan === null || plan.effects.length === 0) return true;
-  if (approvalId === null) return false;
+  const moves = plan === null || plan.moves.length > 0;
+  if (plan === null || plan.effects.length === 0) return { covered: true, moves };
+  if (approvalId === null) return { covered: false, moves };
   const trusted = yield* trustedApproval(request.organizationId, approvalId);
-  return trusted.ok && trusted.approval !== "required" && trusted.approval.approved === operationDigest(plan);
+  return { covered: trusted.ok && trusted.approval !== "required" && trusted.approval.approved === operationDigest(plan), moves };
 });
 
 /**
@@ -339,9 +342,22 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (requ
   if (current.state !== "pending") return current;
   const [row] = yield* drizzle.select({ targets: serverDrainAttempt.targets, approvalId: serverDrainAttempt.approvalId })
     .from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId));
-  if (!(yield* stillCovered(request, row?.approvalId ?? null))) {
+  const { covered, moves } = yield* stillCovered(request, row?.approvalId ?? null);
+  if (!covered) {
     yield* drizzle.update(serverDrainAttempt)
       .set(refused("The drain now destroys something nobody approved. Drain the server again to review it."))
+      .where(and(owned, eq(serverDrainAttempt.state, "pending")));
+    return yield* stateOf(request.attemptId);
+  }
+  // The Drain's Container steps run on the drained Server, which retires its Globals, and, when the Drain moves
+  // anything, on every other Server taking services, since a move may land on any of them.
+  const lacking = yield* serversLackingEnsure(
+    request.organizationId,
+    (machine) => machine.id === request.machineId || moves && machine.accepts_services,
+  );
+  if (lacking.length > 0) {
+    yield* drizzle.update(serverDrainAttempt)
+      .set(refused(`Drains need a newer Ployz on ${lacking.join(", ")}.`))
       .where(and(owned, eq(serverDrainAttempt.state, "pending")));
     return yield* stateOf(request.attemptId);
   }

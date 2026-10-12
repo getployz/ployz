@@ -1,45 +1,31 @@
 use super::*;
 
-#[tokio::test(start_paused = true)]
-async fn start_lost_to_a_daemon_restart_starts_the_created_container() {
-    let machine = machine('1');
-    let created_id = container('a');
-    let plan = vec![run(&machine, spec(None, None, None), true)];
-    let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
-            &created_id,
+fn resent(machine: MachineId, id: &ContainerId) -> [Step; 2] {
+    [
+        failed_unavailable(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "transport error",
         ),
-        failed_unavailable(Call::Start(machine, created_id), "transport error"),
-        ok(Call::Start(machine, created_id)),
-        serving(created_id),
-    ]);
-
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
-
-    assert!(matches!(outcome, DeployOutcome::Success { .. }));
-    client.assert_done();
+        created(Call::Run(machine, ContainerKind::ServiceContainer), id),
+    ]
 }
 
 #[tokio::test(start_paused = true)]
-async fn start_lost_to_a_daemon_restart_accepts_a_container_that_is_already_running() {
+async fn a_run_lost_to_a_daemon_restart_is_resent_to_the_same_slot() {
     let machine = machine('1');
-    let created_id = container('a');
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];
-    let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
-            &created_id,
-        ),
-        failed_unavailable(Call::Start(machine, created_id), "transport error"),
-        ok(Call::Start(machine, created_id)),
-        observed(Call::Inspect(machine, created_id), running()),
-        serving(created_id),
-    ]);
+    let mut steps = Vec::from(resent(machine, &container('a')));
+    steps.push(observed(Call::Inspect(machine, container('a')), running()));
+    let client = Scripted::new(steps);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
+    let slots = client.slots.lock().unwrap();
+    let [first, second] = slots.as_slice() else {
+        panic!("expected two creations, got {slots:?}");
+    };
+    assert_eq!(first, second);
     client.assert_done();
 }
 
@@ -47,28 +33,13 @@ async fn start_lost_to_a_daemon_restart_accepts_a_container_that_is_already_runn
 async fn two_consecutive_run_containers_each_survive_a_target_restart() {
     let first_machine = machine('1');
     let second_machine = machine('2');
-    let first = container('a');
-    let second = container('b');
     let plan = vec![
         run(&first_machine, spec(None, None, None), true),
         run(&second_machine, spec(None, None, None), true),
     ];
-    let client = Scripted::new(vec![
-        created(
-            Call::Create(first_machine, ContainerKind::ServiceContainer),
-            &first,
-        ),
-        failed_unavailable(Call::Start(first_machine, first), "transport error"),
-        ok(Call::Start(first_machine, first)),
-        serving(first),
-        created(
-            Call::Create(second_machine, ContainerKind::ServiceContainer),
-            &second,
-        ),
-        failed_unavailable(Call::Start(second_machine, second), "transport error"),
-        ok(Call::Start(second_machine, second)),
-        serving(second),
-    ]);
+    let mut steps = Vec::from(resent(first_machine, &container('a')));
+    steps.extend(resent(second_machine, &container('b')));
+    let client = Scripted::new(steps);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
@@ -83,13 +54,11 @@ async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
     let plan = vec![run(&machine, spec(Some(0), None, None), false)];
     let client = Scripted::new(vec![
         created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
+            Call::Run(machine, ContainerKind::ServiceContainer),
             &created_id,
         ),
-        ok(Call::Start(machine, created_id)),
         failed_unavailable(Call::Inspect(machine, created_id), "transport error"),
         observed(Call::Inspect(machine, created_id), running()),
-        serving(created_id),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -99,50 +68,21 @@ async fn inspect_lost_to_a_daemon_restart_is_waited_out() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn create_unavailable_is_not_retried() {
+async fn a_run_waiting_out_a_restart_stops_when_cancelled_and_removes_its_slot() {
     let machine = machine('1');
-    let plan = vec![run(&machine, spec(None, None, None), true)];
-    let client = Scripted::new(vec![failed_unavailable(
-        Call::Create(machine, ContainerKind::ServiceContainer),
-        "transport error",
-    )]);
-
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
-
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Operation {
-                error: ExecutionError::Machine {
-                    action: MachineAction::CreateContainer,
-                    ..
-                },
-                ..
-            },
-            ..
-        }
-    ));
-    client.assert_done();
-}
-
-#[tokio::test(start_paused = true)]
-async fn start_unavailable_stops_waiting_when_cancelled() {
-    let machine = machine('1');
-    let created_id = container('a');
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted::new(vec![
-        created(
-            Call::Create(machine, ContainerKind::ServiceContainer),
-            &created_id,
+        failed_unavailable(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "transport error",
         ),
-        failed_unavailable(Call::Start(machine, created_id), "transport error"),
-        ok(Call::Remove(machine, created_id)),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
     ]);
     let cancellation = CancellationToken::new();
     let execute = execute_with(&plan, &client, &cancellation);
     tokio::pin!(execute);
     tokio::select! {
-        outcome = &mut execute => panic!("start retry returned before cancel: {outcome:?}"),
+        outcome = &mut execute => panic!("run retry returned before cancel: {outcome:?}"),
         () = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
     }
     cancellation.cancel();
@@ -152,10 +92,7 @@ async fn start_unavailable_stops_waiting_when_cancelled() {
         outcome,
         DeployOutcome::Failed {
             failed: FailedOperation::Operation {
-                error: ExecutionError::Machine {
-                    action: MachineAction::StartContainer,
-                    ..
-                },
+                error: ExecutionError::Cancelled,
                 ..
             },
             ..
@@ -171,10 +108,10 @@ async fn cancelled_create_waits_for_the_one_shot_then_removes() {
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted::new(vec![
         created_later(
-            Call::Create(machine, ContainerKind::ServiceContainer),
+            Call::Run(machine, ContainerKind::ServiceContainer),
             &created_id,
         ),
-        ok(Call::Remove(machine, created_id)),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
     ]);
     let cancellation = CancellationToken::new();
     let execute = execute_with(&plan, &client, &cancellation);

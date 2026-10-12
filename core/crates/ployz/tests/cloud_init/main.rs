@@ -1093,9 +1093,7 @@ async fn two_concurrent_joins_each_ensure_ingress_locally() {
     );
 }
 
-async fn join_against_founder(
-    founder: &ployz_core::Machine,
-) -> Vec<ployz_core::CreateContainerRequest> {
+async fn join_against_founder(founder: &ployz_core::Machine) -> Vec<ployz_core::NewContainer> {
     let mut registration = registration();
     registration.assigned_machine.id = ployz_core::MachineId::random();
     registration.visible_peers = vec![founder.clone()];
@@ -1135,12 +1133,12 @@ async fn join_against_founder(
     daemon.ensure_requests()
 }
 
-fn ensure_names(requests: &[ployz_core::CreateContainerRequest]) -> Vec<(&str, &str)> {
+fn ensure_names(requests: &[ployz_core::NewContainer]) -> Vec<(&str, &str)> {
     requests
         .iter()
         .map(|request| {
             (
-                request.namespace.as_str(),
+                request.slot.namespace.as_str(),
                 request.resolved_spec.name.as_str(),
             )
         })

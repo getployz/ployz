@@ -19,7 +19,7 @@
 /// one envelope.
 ///
 /// `CAPABILITY` is the stable advertised name for that RPC. `Advertisement` is
-/// `Always`, `Container`, `Ingress`, or `Cluster` — the group `describe_contract`
+/// `Always`, `Container`, or `Cluster` — the group `describe_contract`
 /// includes the name in.
 ///
 /// `package` is the gRPC service package. It is stated here rather than at each consumer
@@ -47,12 +47,6 @@ macro_rules! rpc_catalog {
                 Forget: (forget, "Forget", ForgetRequest, "forget", Forgotten, FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1", Always),
                 ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container),
                 InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container),
-                GetContainerObservations: (get_container_observations, "GetContainerObservations", GetContainerObservationsRequest, "get_container_observations", ContainerObservationMap, GET_CONTAINER_OBSERVATIONS_CAPABILITY, "ployz.container.observations.v1", Cluster),
-                CreateContainer: (create_container, "CreateContainer", CreateContainerRequest, "create_container", ContainerCreated, CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1", Container),
-                StartContainer: (start_container, "StartContainer", StartContainerRequest, "start_container", ContainerChanged, START_CONTAINER_CAPABILITY, "ployz.container.start.v1", Container),
-                StopContainer: (stop_container, "StopContainer", StopContainerRequest, "stop_container", ContainerChanged, STOP_CONTAINER_CAPABILITY, "ployz.container.stop.v1", Container),
-                MarkContainerStopping: (mark_container_stopping, "MarkContainerStopping", MarkContainerStoppingRequest, "mark_container_stopping", ContainerDetails, MARK_CONTAINER_STOPPING_CAPABILITY, "ployz.container.mark-stopping.v1", Container),
-                RemoveContainer: (remove_container, "RemoveContainer", RemoveContainerRequest, "remove_container", ContainerChanged, REMOVE_CONTAINER_CAPABILITY, "ployz.container.remove.v1", Container),
                 EnsureContainer: (ensure_container, "EnsureContainer", EnsureContainerRequest, "ensure_container", EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container),
                 InspectStorage: (inspect_storage, "InspectStorage", InspectStorageRequest, "inspect_storage", StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container),
                 PrepareVolumes: (prepare_volumes, "PrepareVolumes", PrepareVolumesRequest, "prepare_volumes", PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container),
@@ -67,7 +61,6 @@ macro_rules! rpc_catalog {
                 PullImageFromMachine: (pull_image_from_machine, "PullImageFromMachine", PullImageFromMachineRequest, "pull_image_from_machine", ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container),
                 MintBuildGrant: (mint_build_grant, "MintBuildGrant", MintBuildGrantRequest, "mint_build_grant", BuildGrantMinted, MINT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.mint.v1", Container),
                 InspectBuildGrant: (inspect_build_grant, "InspectBuildGrant", InspectBuildGrantRequest, "inspect_build_grant", BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container),
-                GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
             }

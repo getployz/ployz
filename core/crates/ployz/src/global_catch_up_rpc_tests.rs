@@ -1,12 +1,43 @@
 //! Real RPC adapter contracts for Global catch-up.
 
 use super::*;
+use ployz_core::{ContainerNow, EnsuredContainer, RpcResponse};
+
+fn global_slot(key: &str) -> SlotKey {
+    SlotKey {
+        namespace: Namespace::parse("app").unwrap(),
+        kind: ContainerKind::ServiceContainer,
+        creation_key: CreationKey::try_from(key.to_owned()).unwrap(),
+    }
+}
+
+fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> NewContainer {
+    NewContainer {
+        slot: global_slot(key),
+        resolved_spec,
+        deployment_id: None,
+        registry_auth: None,
+    }
+}
+
+fn ensured(now: ContainerNow) -> RpcResponse {
+    RpcResponse::from(EnsuredContainer::Ensured { now })
+}
+
+fn present_on(target: &Machine, spec: ployz_core::ResolvedServiceSpec, hex: char) -> RpcResponse {
+    ensured(ContainerNow::Present(
+        grouped(qualified("app", "api"), spec, running_on(target, hex))
+            .containers
+            .remove(0)
+            .into_observation(),
+    ))
+}
 
 #[tokio::test(start_paused = true)]
 async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() {
     use ployz_core::{
-        ContainerCreated, InspectTelemetry, LocalMachinePhase, MachineDetails, OpaquePayload,
-        RpcRequestBody, RpcResponse,
+        ContainerWant, InspectTelemetry, LocalMachinePhase, MachineDetails, OpaquePayload,
+        RpcRequestBody, RunTarget,
     };
     use std::sync::{
         Arc,
@@ -21,16 +52,12 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
             let observed = target.clone();
             let calls = Arc::new(AtomicUsize::new(0));
             let attempts = calls.clone();
-            let request = CreateContainerRequest {
-                deployment_id: None,
-                creation_key: Some("global:test".into()),
-                kind: ContainerKind::ServiceContainer,
-                namespace: Namespace::parse("app").unwrap(),
-                registry_auth: None,
-                resolved_spec: requested(ServiceMode::Global)
+            let request = new_container(
+                "global:test",
+                requested(ServiceMode::Global)
                     .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
                     .unwrap(),
-            };
+            );
             let expected = request.clone();
             let (mut client, server) =
                 crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
@@ -56,7 +83,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                             target.id.as_str()
                         );
                         let inject_failure =
-                            !placement || matches!(body, RpcRequestBody::CreateContainer(_));
+                            !placement || matches!(body, RpcRequestBody::EnsureContainer(_));
                         #[expect(
                             clippy::wildcard_enum_match_arm,
                             reason = "fixture accepts only the catch-up RPCs under test"
@@ -90,13 +117,16 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     containers: Vec::new(),
                                 })
                             }
-                            RpcRequestBody::CreateContainer(ensure) => {
+                            RpcRequestBody::EnsureContainer(ensure) => {
                                 assert!(placement);
-                                assert_eq!(ensure, expected);
-                                RpcResponse::from(ContainerCreated {
-                                    container_id: container_id('a'),
-                                    display_name: "api".into(),
-                                })
+                                let ContainerWant::Running {
+                                    container: RunTarget::New(new),
+                                } = ensure.want
+                                else {
+                                    panic!("catch-up runs a new Container: {:?}", ensure.want);
+                                };
+                                assert_eq!(new, expected);
+                                present_on(&target, new.resolved_spec, 'a')
                             }
                             other => panic!("unexpected catch-up RPC: {other:?}"),
                         };
@@ -110,7 +140,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                 .await;
             let started = tokio::time::Instant::now();
             let succeeded = if placement {
-                CatchUpClient::create_slot(&mut client, &target.id, request)
+                CatchUpClient::run_slot(&mut client, &target.id, request)
                     .await
                     .is_ok()
             } else {
@@ -139,8 +169,8 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
 #[tokio::test]
 async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_slot() {
     use ployz_core::{
-        ContainerChanged, ContainerList, LocalMachinePhase, MachineDetails, OpaquePayload,
-        RpcRequestBody, RpcResponse,
+        ContainerList, ContainerLocator, ContainerWant, Drain, LocalMachinePhase, MachineDetails,
+        OpaquePayload, RpcRequestBody, RunTarget,
     };
     use std::sync::{Arc, Mutex};
     use tonic::{Request, Response};
@@ -163,14 +193,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
         }
         .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
         .unwrap();
-        let request = CreateContainerRequest {
-            deployment_id: None,
-            creation_key: Some(crate::cluster::global_creation_key(&spec)),
-            kind: ContainerKind::ServiceContainer,
-            namespace: Namespace::parse("app").unwrap(),
-            registry_auth: None,
-            resolved_spec: spec.clone(),
-        };
+        let request = new_container(&crate::cluster::global_creation_key(&spec), spec.clone());
         let expected = request.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let recorded = calls.clone();
@@ -216,37 +239,47 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 token: None,
                             })
                         }
-                        RpcRequestBody::CreateContainer(create) => {
-                            recorded.lock().unwrap().push("create");
-                            assert_eq!(create, expected);
-                            if outcome == "conflict" {
-                                RpcResponse::from(RpcError {
-                                    code: ployz_core::RpcErrorCode::Conflict,
-                                    message: "creation key conflict".into(),
-                                    details: serde_json::Value::Null,
-                                    cause: Vec::new(),
-                                })
-                            } else {
-                                RpcResponse::from(ployz_core::ContainerCreated {
-                                    container_id: container_id(if outcome == "revision" {
-                                        'b'
-                                    } else {
-                                        'a'
-                                    }),
-                                    display_name: "existing".into(),
+                        RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
+                            ContainerWant::Running {
+                                container: RunTarget::New(new),
+                            } => {
+                                recorded.lock().unwrap().push("run new");
+                                assert_eq!(new, expected);
+                                if outcome == "conflict" {
+                                    RpcResponse::from(RpcError {
+                                        code: ployz_core::RpcErrorCode::Conflict,
+                                        message: "creation key conflict".into(),
+                                        details: serde_json::Value::Null,
+                                        cause: Vec::new(),
+                                    })
+                                } else {
+                                    present_on(
+                                        &target,
+                                        new.resolved_spec,
+                                        if outcome == "revision" { 'b' } else { 'a' },
+                                    )
+                                }
+                            }
+                            ContainerWant::Running {
+                                container: RunTarget::Existing(ContainerLocator::Id(id)),
+                            } => {
+                                recorded.lock().unwrap().push("run existing");
+                                assert_eq!(id, container_id('a'));
+                                present_on(&target, expected.resolved_spec, 'a')
+                            }
+                            ContainerWant::Gone {
+                                container: ContainerLocator::Id(id),
+                                drain,
+                            } => {
+                                recorded.lock().unwrap().push("gone");
+                                assert_eq!(id, container_id('a'));
+                                assert_eq!(drain, Drain::DEFAULT);
+                                ensured(ContainerNow::Absent {
+                                    of: ContainerLocator::Id(id),
                                 })
                             }
-                        }
-                        RpcRequestBody::StartContainer(start) => {
-                            recorded.lock().unwrap().push("start");
-                            assert_eq!(
-                                start.container_id,
-                                container_id(if outcome == "revision" { 'b' } else { 'a' })
-                            );
-                            RpcResponse::from(ContainerChanged {
-                                container_id: start.container_id,
-                            })
-                        }
+                            other => panic!("unexpected want: {other:?}"),
+                        },
                         RpcRequestBody::ListContainers(_) => {
                             recorded.lock().unwrap().push("list");
                             if outcome == "new" {
@@ -288,42 +321,27 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 containers: vec![slot, unrelated],
                             })
                         }
-                        RpcRequestBody::StopContainer(stop) => {
-                            recorded.lock().unwrap().push("stop");
-                            assert_eq!(stop.container_id, container_id('a'));
-                            RpcResponse::from(ContainerChanged {
-                                container_id: stop.container_id,
-                            })
-                        }
-                        RpcRequestBody::RemoveContainer(remove) => {
-                            recorded.lock().unwrap().push("remove");
-                            assert_eq!(remove.container_id, container_id('a'));
-                            assert!(!remove.remove_volumes);
-                            RpcResponse::from(ContainerChanged {
-                                container_id: remove.container_id,
-                            })
-                        }
                         other => panic!("unexpected RPC: {other:?}"),
                     };
                     Ok(Response::new(response.encode().unwrap()))
                 }
             })
             .await;
-        let created = CatchUpClient::create_slot(&mut client, &target.id, request).await;
-        if let Ok(Some(created)) = &created {
-            CatchUpClient::start_slot(&mut client, &target.id, created.container_id)
-                .await
-                .unwrap();
-        }
+        let ran = CatchUpClient::run_slot(&mut client, &target.id, request).await;
         assert_eq!(
-            created.is_ok(),
-            ["matching", "new", "revision", "ineligible"].contains(&outcome)
+            ran.ok(),
+            match outcome {
+                "new" | "matching" => Some(Some(container_id('a'))),
+                "revision" => Some(Some(container_id('b'))),
+                "ineligible" => Some(None),
+                _ => None,
+            }
         );
         let expected: &[&str] = match outcome {
-            "new" | "revision" => &["inspect", "list", "capacity", "create", "start"],
-            "matching" => &["inspect", "list", "start"],
-            "conflict" => &["inspect", "list", "capacity", "create"],
-            "ineligible" => &["inspect", "list", "stop", "remove"],
+            "new" | "revision" => &["inspect", "list", "capacity", "run new"],
+            "matching" => &["inspect", "list", "run existing"],
+            "conflict" => &["inspect", "list", "capacity", "run new"],
+            "ineligible" => &["inspect", "list", "gone"],
             "capacity" => &["inspect", "list", "capacity"],
             _ => &["inspect"],
         };
@@ -335,9 +353,9 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
 #[tokio::test]
 async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full_capacity_slot() {
     use ployz_core::{
-        ContainerChanged, ContainerList, LocalMachinePhase, MachineDetails, MachineList,
-        MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody, RpcResponse,
-        TelemetryObservation,
+        ContainerList, ContainerLocator, ContainerWant, LocalMachinePhase, MachineDetails,
+        MachineList, MachineObservation, MembershipObservation, OpaquePayload, RpcRequestBody,
+        RunTarget, TelemetryObservation,
     };
     use std::sync::{
         Arc, Mutex,
@@ -420,35 +438,35 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             }),
                             token: None,
                         }),
-                        RpcRequestBody::StartContainer(start) => {
-                            assert!(eligible);
-                            let mut current = current.lock().unwrap();
-                            let slot = current.first_mut().unwrap();
-                            assert_eq!(slot.container_id, start.container_id);
-                            slot.try_update(|parts| {
-                                parts.runtime = ContainerRuntimeObservation::Running {
-                                    health: HealthObservation::Healthy,
-                                }
-                            })
-                            .unwrap();
-                            RpcResponse::from(ContainerChanged {
-                                container_id: start.container_id,
-                            })
-                        }
-                        RpcRequestBody::StopContainer(stop) => {
-                            assert!(!eligible);
-                            RpcResponse::from(ContainerChanged {
-                                container_id: stop.container_id,
-                            })
-                        }
-                        RpcRequestBody::RemoveContainer(remove) => {
-                            assert!(!eligible);
-                            assert_eq!(remove.container_id, container_id('b'));
-                            current.lock().unwrap().clear();
-                            RpcResponse::from(ContainerChanged {
-                                container_id: remove.container_id,
-                            })
-                        }
+                        RpcRequestBody::EnsureContainer(ensure) => match ensure.want {
+                            ContainerWant::Running {
+                                container: RunTarget::Existing(ContainerLocator::Id(id)),
+                            } => {
+                                assert!(eligible);
+                                let mut current = current.lock().unwrap();
+                                let slot = current.first_mut().unwrap();
+                                assert_eq!(slot.container_id, id);
+                                slot.try_update(|parts| {
+                                    parts.runtime = ContainerRuntimeObservation::Running {
+                                        health: HealthObservation::Healthy,
+                                    }
+                                })
+                                .unwrap();
+                                ensured(ContainerNow::Present(slot.clone()))
+                            }
+                            ContainerWant::Gone {
+                                container: ContainerLocator::Id(id),
+                                ..
+                            } => {
+                                assert!(!eligible);
+                                assert_eq!(id, container_id('b'));
+                                current.lock().unwrap().clear();
+                                ensured(ContainerNow::Absent {
+                                    of: ContainerLocator::Id(id),
+                                })
+                            }
+                            other => panic!("unexpected want: {other:?}"),
+                        },
                         other => {
                             panic!("unexpected RPC (existing slot needs no endpoint): {other:?}")
                         }
@@ -474,7 +492,6 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
 async fn provisioned_globals_use_target_storage_and_report_unknown() {
     use ployz_core::{
         ContainerList, LocalMachinePhase, MachineDetails, OpaquePayload, RpcRequestBody,
-        RpcResponse,
     };
     use tonic::{Request, Response};
 
@@ -494,19 +511,17 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
     ] {
         let target = machine('1', "joiner");
         let observed = target.clone();
-        let request = CreateContainerRequest {
-            deployment_id: None,
-            creation_key: Some("global:storage".into()),
-            kind: ContainerKind::ServiceContainer,
-            namespace: Namespace::parse("app").unwrap(),
-            registry_auth: None,
-            resolved_spec: provisioned_global_spec()
+        let request = new_container(
+            "global:storage",
+            provisioned_global_spec()
                 .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
                 .unwrap(),
-        };
+        );
+        let spec = request.resolved_spec.clone();
         let (mut client, server) =
             crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
                 let target = observed.clone();
+                let spec = spec.clone();
                 async move {
                     #[expect(
                         clippy::wildcard_enum_match_arm,
@@ -540,7 +555,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                         RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                             containers: Vec::new(),
                         }),
-                        RpcRequestBody::CreateContainer(_) => {
+                        RpcRequestBody::EnsureContainer(_) => {
                             assert!(matches!(
                                 storage,
                                 Some(
@@ -548,7 +563,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                                         | MachineStorageObservation::Pool { .. }
                                 )
                             ));
-                            RpcResponse::from(created())
+                            present_on(&target, spec, 'a')
                         }
                         other => panic!("unexpected storage eligibility RPC: {other:?}"),
                     };
@@ -556,7 +571,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                 }
             })
             .await;
-        let result = CatchUpClient::create_slot(&mut client, &target.id, request).await;
+        let result = CatchUpClient::run_slot(&mut client, &target.id, request).await;
         if inspection_error {
             assert!(
                 result

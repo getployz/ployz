@@ -1,5 +1,8 @@
 use std::{collections::BTreeSet, path::Path, process, time::Duration};
 
+#[path = "support/containers.rs"]
+mod containers;
+
 use futures_util::StreamExt;
 use ployz::operator::{
     ExecMode, LogInput, ServiceArg, exec_options, merge_logs, observe_service_logs, open_exec,
@@ -7,9 +10,8 @@ use ployz::operator::{
 };
 use ployz_core::{
     ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,
-    FanoutSelector, LogBody, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
-    Namespace, ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op,
-    select_service,
+    FanoutSelector, LogBody, LogEntry, LogOrigin, LogsOptions, MachineLogService, Namespace,
+    ResolvedServiceSpec, ServiceId, ServiceSelector, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use tokio_util::sync::CancellationToken;
@@ -32,26 +34,16 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
     let spec = service_spec(&service_id);
     let mut created = Vec::new();
     for machine in [&machines[0], &machines[0], &machines[1]] {
-        let container = client
-            .create_container(
-                machine.id,
-                ContainerKind::ServiceContainer,
-                Namespace::parse("app").unwrap(),
-                spec.clone(),
-                None,
-            )
-            .await
-            .unwrap();
-        client
-            .call::<op::StartContainer>(
-                StartContainerRequest {
-                    container_id: container.container_id,
-                },
-                Some(&MachineTarget::from(&machine.id)),
-            )
-            .await
-            .unwrap();
-        created.push(container.container_id);
+        let container = containers::run(
+            &client,
+            machine.id,
+            ContainerKind::ServiceContainer,
+            Namespace::parse("app").unwrap(),
+            spec.clone(),
+        )
+        .await
+        .unwrap();
+        created.push(container);
     }
     let observed = wait_for_service(&mut client, &service_id, 3).await;
 

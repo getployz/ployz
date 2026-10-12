@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+#[path = "support/containers.rs"]
+mod containers;
+
 use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
@@ -63,41 +66,35 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
         cluster
             .write_volume_data(index, &shared, &format!("volume-{index}"))
             .unwrap();
-        let created = client
-            .create_container(
-                machine.machine.id,
-                ContainerKind::ServiceContainer,
-                Namespace::parse("app").unwrap(),
-                mount_spec(index, &shared),
-                None,
-            )
-            .await
-            .unwrap();
-        cluster
-            .start_container(index, &created.container_id)
-            .unwrap();
+        let created = containers::run(
+            &client,
+            machine.machine.id,
+            ContainerKind::ServiceContainer,
+            Namespace::parse("app").unwrap(),
+            mount_spec(index, &shared),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             cluster
-                .read_container_file(index, &created.container_id, "/data/value")
+                .read_container_file(index, &created, "/data/value")
                 .unwrap(),
             format!("volume-{index}")
         );
         assert_eq!(
             cluster
-                .read_container_file(index, &created.container_id, "/host/value")
+                .read_container_file(index, &created, "/host/value")
                 .unwrap(),
             format!("bind-{index}")
         );
-        let mounts = cluster
-            .container_mounts(index, &created.container_id)
-            .unwrap();
+        let mounts = cluster.container_mounts(index, &created).unwrap();
         for mount_type in ["bind", "volume", "tmpfs"] {
             assert!(
                 mounts.contains(&format!("\"Type\":\"{mount_type}\"")),
                 "{mounts}"
             );
         }
-        mounted_containers.push((index, created.container_id));
+        mounted_containers.push((index, created));
     }
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     for (index, container_id) in &mounted_containers {
@@ -118,16 +115,15 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
 
     let missing = DockerVolumeName::parse("missing").unwrap();
     assert!(
-        client
-            .create_container(
-                first_machine.machine.id,
-                ContainerKind::ServiceContainer,
-                Namespace::parse("app").unwrap(),
-                mount_spec(9, &missing),
-                None,
-            )
-            .await
-            .is_err()
+        containers::run(
+            &client,
+            first_machine.machine.id,
+            ContainerKind::ServiceContainer,
+            Namespace::parse("app").unwrap(),
+            mount_spec(9, &missing),
+        )
+        .await
+        .is_err()
     );
     let listed_first = client
         .list_volumes(std::slice::from_ref(first_machine))

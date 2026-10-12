@@ -4,28 +4,25 @@ use std::{
 };
 
 use ployz_core::{
-    BuildGrantId, BuildGrantInspected, CREATE_CONTAINER_CAPABILITY, CapabilityName,
-    CertificateHost, CertificateMaterialChange, CertificateMaterialPublished, CodecError,
-    ContainerCreated, ContainerHostname, ContainerId, ContainerKind, ContainerLabels,
-    ContainerObservationMap, ContainerRuntimeObservation, ContractDescription,
-    CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace,
-    DockerVolumeName, ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost,
-    FORGET_MACHINE_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, ForgetRequest,
-    Forgotten, FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-    GET_INGRESS_PROXY_CONFIG_CAPABILITY, GetContainerObservationsRequest,
-    GetIngressProxyConfigRequest, HealthObservation, ImageDigest, ImageIngestDestination,
-    ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
-    ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig, InspectBuildGrantRequest,
-    InspectRequest, LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY, LeaveRequest, Left,
-    LeftPhase, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId,
-    MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate,
-    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
-    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
-    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
-    PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
-    PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
-    TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    BuildGrantId, BuildGrantInspected, CapabilityName, CertificateHost, CertificateMaterialChange,
+    CertificateMaterialPublished, CodecError, ContainerHostname, ContainerId, ContainerKind,
+    ContainerLabels, ContainerRuntimeObservation, ContractDescription,
+    DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace, DockerVolumeName,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost, FORGET_MACHINE_CAPABILITY,
+    FanoutFailure, FanoutOutcome, FanoutResponse, ForgetRequest, Forgotten, FramingError,
+    HealthObservation, ImageDigest, ImageIngestDestination, ImageIngestOpened, ImageIngestReason,
+    ImagePulled, ImageRemoval, ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost,
+    InspectBuildGrantRequest, InspectRequest, LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY,
+    LeaveRequest, Left, LeftPhase, ListImagesRequest, MANAGED_LABEL, MachineFailure,
+    MachineGateway, MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet,
+    MachineSuccess, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NAMESPACE_LABEL,
+    NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    PartialResult, PortPublication, PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate,
+    PublishCertificateMaterialRequest, PullImageFromMachineRequest, RequestMachineUpgradeRequest,
+    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceId, ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource,
+    encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -698,36 +695,6 @@ fn json_payload_round_trips_through_the_opaque_prost_envelope() {
 }
 
 #[test]
-fn replicated_container_observation_contract_is_batched_and_complete() {
-    let first = ContainerId::parse("a".repeat(64)).unwrap();
-    let second = ContainerId::parse("b".repeat(64)).unwrap();
-    let request = op::GetContainerObservations::into_request(GetContainerObservationsRequest {
-        container_ids: vec![first, second],
-        wait_millis: 2_000,
-    });
-    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
-    assert_eq!(request.body.command(), "get_container_observations");
-    assert_eq!(
-        GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-        "ployz.container.observations.v1"
-    );
-
-    let response = ContainerObservationMap {
-        containers: BTreeMap::from([(first, None), (second, None)]),
-    };
-    assert_eq!(
-        RpcResponse::from(response.clone())
-            .encode()
-            .unwrap()
-            .decode_response()
-            .unwrap()
-            .decode::<op::GetContainerObservations>()
-            .unwrap(),
-        response
-    );
-}
-
-#[test]
 fn image_list_contract_keeps_machine_local_store_and_platforms() {
     let request = op::ListImages::into_request(ListImagesRequest {
         reference: Some("example.test/api:1.*".into()),
@@ -997,35 +964,6 @@ fn peer_image_pull_contract_names_the_source_management_destination() {
         pulled
     );
     assert_eq!(source.port, ployz_core::UNREGISTRY_PORT);
-}
-
-#[test]
-fn ingress_proxy_config_contract_contains_the_exact_caddyfile() {
-    let request = op::GetIngressProxyConfig::into_request(GetIngressProxyConfigRequest {});
-    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
-
-    let config = IngressProxyConfig {
-        config: "example.test { respond ok }\n".into(),
-    };
-    let response = RpcResponse::from(config.clone());
-    assert_eq!(
-        response
-            .encode()
-            .unwrap()
-            .decode_response()
-            .unwrap()
-            .decode::<op::GetIngressProxyConfig>()
-            .unwrap(),
-        config
-    );
-    assert_eq!(
-        serde_json::to_value(&config).unwrap(),
-        json!({ "config": "example.test { respond ok }\n" })
-    );
-    assert_eq!(
-        GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-        "ployz.ingress.config.v1"
-    );
 }
 
 #[test]
@@ -1610,37 +1548,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         .volumes,
         vec![volume]
     );
-    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-        "service_id": "11111111111111111111111111111111",
-        "name": "api",
-        "mode": { "mode": "replicated", "replicas": 1 },
-        "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
-    }))
-    .unwrap();
-    let request = op::CreateContainer::into_request(CreateContainerRequest {
-        deployment_id: None,
-        creation_key: Some("deploy/slot-1".into()),
-        kind: ContainerKind::ServiceContainer,
-        namespace: Namespace::parse("shop").unwrap(),
-        registry_auth: None,
-        resolved_spec: spec.clone(),
-    });
-    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
-    assert!(
-        serde_json::from_value::<CreateContainerRequest>(json!({
-            "kind": "service_container",
-            "resolved_spec": spec
-        }))
-        .is_err()
-    );
-
-    let created = ContainerCreated {
-        container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
-        display_name: "api-abcd".into(),
-    };
-    let response = RpcResponse::from(created.clone());
-    assert_eq!(response.decode::<op::CreateContainer>().unwrap(), created);
-    assert_eq!(CREATE_CONTAINER_CAPABILITY, "ployz.container.create.v1");
 }
 
 #[test]

@@ -90,12 +90,6 @@ impl MachineApiBuilder {
     }
 
     #[must_use]
-    pub(crate) fn with_ingress_data_dir(mut self, path: PathBuf) -> Self {
-        self.service = self.service.with_ingress_data_dir(path);
-        self
-    }
-
-    #[must_use]
     pub(crate) fn with_observe_socket(mut self, socket: PathBuf) -> Self {
         self.service = self.service.with_observe_socket(socket);
         self
