@@ -1,17 +1,17 @@
 import { useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { ConfigWritten, EnvironmentRef, MachineId } from "@ployz/sdk";
+import type { ConfigWritten, EnvironmentRef, MachineId, MachineName } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import { useActiveVolumeRuns, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
+import { useActiveVolumeRuns, volumeMembersQueryOptions, volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
 import {
   appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
-import { discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
+import { deleteCopyServerFn, discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
 import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
 type PlacementResult = { readonly ok: true } | { readonly ok: false; readonly refusal: { readonly message: string } };
@@ -48,6 +48,16 @@ export function useStageRestore(organizationSlug: string, environment: Environme
     organizationSlug, volumeId: volume.id, environment, guid: point.guid, name: point.name, at: Math.floor(point.at.getTime() / 1000),
   } })]);
   return { restore, pending };
+}
+
+/** Delete an old copy now. */
+export function useDeleteCopy(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {
+  const queryClient = useQueryClient();
+  return (server: MachineName) => deleteCopyServerFn({ data: { organizationSlug, volumeId: volume.id, environment, server } }).then((result) => {
+    if (result.ok) toast.success("Copy deleted");
+    else toast.error(result.refusal.message);
+    void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
+  }, (error: Error) => { toast.error(toErrorMessage(error, `Could not delete the copy of ${volume.name}`)); });
 }
 
 export type StagedPlacements = {
