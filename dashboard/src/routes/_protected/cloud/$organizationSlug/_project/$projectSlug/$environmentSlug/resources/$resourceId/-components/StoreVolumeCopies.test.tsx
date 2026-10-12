@@ -17,6 +17,7 @@ const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; d
   environmentId: "e1",
   mirrors: mirrors.map(id),
   staged: staged === null ? null : { primary: id(staged.primary), mirrors: (staged.mirrors ?? []).map(id), deletes: (staged.deletes ?? []).map(id) },
+  unreached: false,
   deploymentId: null,
 });
 const mirrorAsOf = (server: string, when: Date): Member => {

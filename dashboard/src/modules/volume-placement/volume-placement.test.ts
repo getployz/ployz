@@ -38,6 +38,7 @@ const row = (mirrors: string[] | null, staged: { primary: string; mirrors?: stri
   environmentId: "e1",
   mirrors: mirrors === null ? null : mirrors.map(id),
   staged: staged === null ? null : { primary: id(staged.primary), mirrors: (staged.mirrors ?? []).map((name) => id(name)), deletes: (staged.deletes ?? []).map((name) => id(name)) },
+  unreached: false,
   deploymentId: null,
 });
 const pooled = (server: string) => member(server, "empty", { pool: true });

@@ -2,7 +2,7 @@ import { index, jsonb, pgTable, text, uuid } from "drizzle-orm/pg-core";
 import type { MachineId } from "@ployz/sdk";
 import { createdAt, updatedAt } from "#/db/tables";
 import { organization } from "#/modules/organization/tables";
-import type { Placement } from "#/modules/volume-placement/volume-placement";
+import type { StoredPlacement } from "#/modules/volume-placement/volume-placement";
 
 /** Which copies of a Volume are mirrors, and the placement the user staged for the next Deploy. */
 export const volumePlacement = pgTable(
@@ -14,7 +14,7 @@ export const volumePlacement = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     environmentId: text("environment_id").notNull(),
     mirrors: jsonb("mirrors").$type<MachineId[]>(),
-    staged: jsonb("staged").$type<Placement>(),
+    staged: jsonb("staged").$type<StoredPlacement>(),
     deploymentId: text("deployment_id"),
     createdAt,
     updatedAt,

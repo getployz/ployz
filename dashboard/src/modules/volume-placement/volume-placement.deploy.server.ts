@@ -8,9 +8,9 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
-import { restoreSettled, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
+import { restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
 import {
-  appliedMirrors, drainPlacement, nextPlacementStep, observePlacement, placementChanges, type PlacementRow,
+  appliedMirrors, drainPlacement, nextPlacementStep, observePlacement, placementChanges,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
 import {
@@ -31,10 +31,6 @@ export type MemberInspector = typeof inspectVolumeCopies;
 
 const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 const isActive = (state: VolumeRunState) => ACTIVE_VOLUME_RUN_STATES.some((active) => active === state);
-
-const rowView = (row: typeof volumePlacement.$inferSelect): PlacementRow => ({
-  volumeId: row.volumeId, environmentId: row.environmentId, mirrors: row.mirrors, staged: row.staged, deploymentId: row.deploymentId,
-});
 
 /**
  * The Deploy gives back what it took: the rows stay staged for the next one. A failed Deploy marks them unreached, so
@@ -159,7 +155,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const runsOn = row.staged?.seed?.sourceVolumeId ?? row.volumeId;
     const busy = (yield* listActiveVolumeRuns(organizationId)).find((run) => run.volume_id === runsOn);
     if (busy !== undefined) return { kind: "wait", wait: { runId: busy.id, volumeId: row.volumeId, mirrors: null } } satisfies PlacementAdvance;
-    const placement = rowView(row);
+    const placement = view(row);
     const members = yield* inspect(organizationId, environment, row.volumeId);
     const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
     if (step === null) {
@@ -279,7 +275,7 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
     if (!copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer")) continue;
     const found = rows.find((entry) => entry.volumeId === volume.volumeId);
     if (found?.deploymentId != null) continue;
-    const row = found === undefined ? null : rowView(found);
+    const row = found === undefined ? null : view(found);
     const members = yield* inspect(organizationId, volume.environment, volume.volumeId);
     const staged = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, accepting, server);
     if (staged === null) {

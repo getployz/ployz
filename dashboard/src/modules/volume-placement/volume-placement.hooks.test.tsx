@@ -15,7 +15,7 @@ const environment = { project: "shop", environment: "production" };
 
 it("Discard all discards a staged restore the Servers haven't answered for yet, once the Store discard lands", async () => {
   const restore: PlacementRow = {
-    volumeId: "vol-restored", environmentId: "env-1", mirrors: [], deploymentId: null,
+    volumeId: "vol-restored", environmentId: "env-1", mirrors: [], unreached: false, deploymentId: null,
     staged: {
       primary: "web-1".padEnd(32, "0") as never, mirrors: [], deletes: [],
       seed: { sourceVolumeId: "vol-source", sourceName: "data", dockerVolume: "shop_vol-restored", point: { guid: "1", name: "p", at: 1 } },

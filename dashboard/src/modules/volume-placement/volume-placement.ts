@@ -40,9 +40,10 @@ export type Placement = {
   readonly mirrors: readonly MachineId[];
   readonly deletes: readonly MachineId[];
   readonly seed?: Seed;
-  /** A failed Deploy gave this back before it got to it. */
-  readonly unreached?: true;
 };
+
+/** The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark. */
+export type StoredPlacement = Placement & { readonly unreached?: true };
 
 /**
  * The dashboard's record of a Volume's placement. `mirrors` are the copies that refresh; a copy on any other Server is
@@ -53,6 +54,8 @@ export type PlacementRow = {
   readonly environmentId: string;
   readonly mirrors: readonly MachineId[] | null;
   readonly staged: Placement | null;
+  /** A failed Deploy gave `staged` back before it got to it. */
+  readonly unreached: boolean;
   /** The Deploy that owns `staged`; Discard waits for it. */
   readonly deploymentId: string | null;
 };
