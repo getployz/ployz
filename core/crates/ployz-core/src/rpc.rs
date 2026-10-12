@@ -1494,7 +1494,11 @@ mod streaming_routing_tests {
             super::capability_of("/ployz.rpc.v1.MachineRpc/DeclareMirror"),
             Some("ployz.volume.mirror.declare.v1")
         );
-        for path in ["/ployz.rpc.v1.MachineRpc/Nope", "/other.Service/Inspect", ""] {
+        for path in [
+            "/ployz.rpc.v1.MachineRpc/Nope",
+            "/other.Service/Inspect",
+            "",
+        ] {
             assert_eq!(super::capability_of(path), None);
         }
     }

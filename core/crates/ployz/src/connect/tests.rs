@@ -2,7 +2,7 @@ use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Durat
 
 use super::*;
 use crate::context::SshDestination;
-use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER};
+use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER, Rpc};
 use tokio::io::AsyncWriteExt;
 
 #[test]
@@ -477,4 +477,51 @@ fn a_dropped_connection_keeps_the_network_reason_as_the_deepest_cause() {
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "transport error");
     assert_eq!(crate::ui::causes(&error), ["connection reset by peer"]);
+}
+
+#[test]
+fn a_bare_refusal_names_the_capability_and_the_target() {
+    let target = MachineTarget::parse("machine-2").unwrap();
+    let path = ployz_core::op::DeclareMirror::PATH;
+    let named = json!({ "capability": "ployz.volume.mirror.declare.v1", "target": "machine-2" });
+
+    let transport =
+        TransportError::from(tonic::Status::unimplemented("")).name_refusal(path, &target);
+    assert_eq!(transport.to_rpc_error().details, named);
+
+    let remote = ConnectError::Remote(RpcError {
+        code: RpcErrorCode::Unsupported,
+        message: "unknown route".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    });
+    assert_eq!(rpc_error(remote.name_refusal(path, &target)).details, named);
+
+    let tail = TransportError::from(tonic::Status::unimplemented(""))
+        .name_refusal(ployz_core::op::TailLogs::PATH, &target);
+    assert_eq!(
+        tail.to_rpc_error().details.get("capability"),
+        Some(&json!("ployz.logs.tail.v1"))
+    );
+}
+
+#[test]
+fn a_domain_refusal_and_other_errors_pass_through() {
+    let target = MachineTarget::parse("machine-2").unwrap();
+    let path = ployz_core::op::DeclareMirror::PATH;
+    let domain = RpcError {
+        code: RpcErrorCode::Unsupported,
+        message: "this Server has no managed storage".into(),
+        details: json!({ "cause": "storage none" }),
+        cause: Vec::new(),
+    };
+    assert_eq!(name_refusal(domain.clone(), path, &target), domain);
+
+    let unavailable =
+        TransportError::from(tonic::Status::unavailable("down")).name_refusal(path, &target);
+    assert_eq!(unavailable.to_rpc_error().details, Value::Null);
+
+    let unknown_route = TransportError::from(tonic::Status::unimplemented(""))
+        .name_refusal("/other.Service/Inspect", &target);
+    assert_eq!(unknown_route.to_rpc_error().details, Value::Null);
 }

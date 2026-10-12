@@ -34,8 +34,8 @@ use tonic::{
 use crate::{
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
-        TransportError, UNARY_RETRY_DELAYS, apply_timeout, name_refusal, rpc_error, stop_rpc_timeout,
-        target_request,
+        TransportError, UNARY_RETRY_DELAYS, apply_timeout, name_refusal, rpc_error,
+        stop_rpc_timeout, target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, VolumeSnapshot},

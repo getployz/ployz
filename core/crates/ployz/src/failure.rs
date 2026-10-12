@@ -291,20 +291,33 @@ impl Failure {
 fn refusal(error: &(dyn Error + 'static)) -> Option<Refusal> {
     std::iter::successors(Some(error), |&link| link.source())
         .take_while(|link| !link.is::<Message>())
-        .find_map(|link| match classify(link) {
-            (RpcErrorCode::Unsupported, details) => Refusal::from_details(details),
-            _ => None,
+        .find_map(|link| {
+            let (code, details) = classify(link);
+            Refusal::new(&code, details)
         })
 }
 
-struct Refusal {
+/// A target that runs a Ployz too old to serve a capability.
+pub(crate) struct Refusal {
     target: String,
     capability: String,
     details: Value,
 }
 
 impl Refusal {
-    fn from_details(details: Value) -> Option<Self> {
+    pub(crate) fn of(error: &RpcError) -> Option<Self> {
+        Self::new(&error.code, error.details.clone())
+    }
+
+    /// The same refusal, naming the target as the reader knows it.
+    pub(crate) fn on(self, target: String) -> Self {
+        Self { target, ..self }
+    }
+
+    fn new(code: &RpcErrorCode, details: Value) -> Option<Self> {
+        if *code != RpcErrorCode::Unsupported {
+            return None;
+        }
         let target = details.get("target")?.as_str()?.to_owned();
         let capability = details.get("capability")?.as_str()?.to_owned();
         Some(Self {
@@ -963,10 +976,69 @@ impl From<tonic::Status> for Failure {
 mod tests {
     use std::error::Error as StdError;
 
-    use ployz_core::{MachineName, RpcError, RpcErrorCode};
+    use ployz_core::{MachineName, MachineTarget, RpcError, RpcErrorCode, op};
     use serde_json::Value;
 
     use super::*;
+    use crate::connect::TransportError;
+
+    fn unsupported(details: Value) -> RpcError {
+        RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "unimplemented".into(),
+            details,
+            cause: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_refusal_with_a_capability_names_the_target_and_the_capability() {
+        let details =
+            serde_json::json!({ "capability": "ployz.volume.mirror.v1", "target": "beta" });
+        let failure = Failure::from(unsupported(details.clone()));
+        assert_eq!(
+            failure.to_string(),
+            "beta needs a newer Ployz. It cannot serve ployz.volume.mirror.v1."
+        );
+        let report = failure.report();
+        assert_eq!(report.code, RpcErrorCode::Unsupported);
+        assert_eq!(report.details, details);
+        assert_eq!(crate::ui::exit_code(&report.code), 1);
+    }
+
+    #[test]
+    fn a_refusal_without_a_capability_keeps_its_sentence() {
+        let failure = Failure::from(unsupported(Value::Null));
+        assert_eq!(failure.to_string(), "unimplemented");
+    }
+
+    #[test]
+    fn a_refusal_inside_an_operator_wrapper_still_names_the_capability() {
+        let error = OperatorError::OpenContainerLogs {
+            container: "api".into(),
+            server: "beta".into(),
+            source: Box::new(OperatorError::Rpc(
+                TransportError::from(tonic::Status::unimplemented("unimplemented"))
+                    .name_refusal(op::TailLogs::PATH, &MachineTarget::parse("m-1").unwrap())
+                    .addressed_as("beta"),
+            )),
+        };
+        assert_eq!(
+            Failure::from(error).to_string(),
+            "beta needs a newer Ployz. It cannot serve ployz.logs.tail.v1."
+        );
+    }
+
+    #[test]
+    fn context_keeps_its_own_sentence_over_a_refusal() {
+        let inner = Failure::from(unsupported(
+            serde_json::json!({ "capability": "ployz.logs.tail.v1", "target": "beta" }),
+        ));
+        assert_eq!(
+            inner.context("Could not deploy.").to_string(),
+            "Could not deploy."
+        );
+    }
 
     #[test]
     fn context_keeps_the_inner_details_and_next() {

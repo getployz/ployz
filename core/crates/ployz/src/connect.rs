@@ -407,10 +407,11 @@ impl AsyncWrite for ChildIo {
 /// details already and passes through, as does every other error.
 #[must_use]
 pub fn name_refusal(mut error: RpcError, path: &str, target: &MachineTarget) -> RpcError {
-    if error.code == RpcErrorCode::Unsupported && error.details.is_null() {
-        if let Some(details) = refusal_details(path, target) {
-            error.details = details;
-        }
+    if error.code == RpcErrorCode::Unsupported
+        && error.details.is_null()
+        && let Some(details) = refusal_details(path, target)
+    {
+        error.details = details;
     }
     error
 }
@@ -422,11 +423,13 @@ fn refusal_details(path: &str, target: &MachineTarget) -> Option<Value> {
 
 impl ConnectError {
     pub(crate) fn name_refusal(self, path: &str, target: &MachineTarget) -> Self {
-        match self {
-            Self::Rpc(error) => Self::Rpc(error.name_refusal(path, target)),
-            Self::Remote(error) => Self::Remote(name_refusal(error, path, target)),
-            other => other,
+        if let Self::Rpc(error) = self {
+            return Self::Rpc(error.name_refusal(path, target));
         }
+        if let Self::Remote(error) = self {
+            return Self::Remote(name_refusal(error, path, target));
+        }
+        self
     }
 }
 
@@ -852,10 +855,11 @@ impl TransportError {
     }
 
     pub(crate) fn name_refusal(mut self, path: &str, target: &MachineTarget) -> Self {
-        if self.code == tonic::Code::Unimplemented && self.details.is_null() {
-            if let Some(details) = refusal_details(path, target) {
-                self.details = details;
-            }
+        if self.code == tonic::Code::Unimplemented
+            && self.details.is_null()
+            && let Some(details) = refusal_details(path, target)
+        {
+            self.details = details;
         }
         self
     }

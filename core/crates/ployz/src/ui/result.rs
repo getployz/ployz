@@ -292,6 +292,10 @@ impl Gaps {
     /// One warning per Machine that didn't answer, by name, with its cause.
     pub(crate) fn warn(&self) {
         for failure in &self.failures {
+            if let Some(refusal) = crate::failure::Refusal::of(&failure.error) {
+                flag(&refusal.on(self.name(&failure.machine_id)).to_string());
+                continue;
+            }
             flag(&format!(
                 "{} did not answer; its rows are missing.",
                 self.name(&failure.machine_id)
