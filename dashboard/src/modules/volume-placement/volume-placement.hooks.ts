@@ -6,7 +6,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import { volumeSnapshotsQueryOptions } from "#/modules/volume-copies/volume-snapshots.hooks";
+import { volumeSnapshotsQueryOptions } from "#/modules/volume-copies/volume-snapshots.queries";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
   appliedMirrors, observePlacement, type Placement, type PlacementRow, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementVolume, type RestorePoint,
