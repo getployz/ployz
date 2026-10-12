@@ -39,10 +39,10 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
     };
     let path = SettingPath::parse(path)?;
     let named = Some(path.settings_of()?);
-    Ok(versioned(path.target().map_or_else(
-        || service(named),
-        |one| target(one, named),
-    )))
+    Ok(versioned(
+        path.target()
+            .map_or_else(|| service(named), |one| target(one, named)),
+    ))
 }
 
 /// One Setting: its canonical path and its schema.
@@ -261,10 +261,16 @@ mod tests {
             None
         );
         let service = schema(Some("shop")).unwrap();
-        assert_eq!(service["properties"]["privateDns"]["default"], json!("shop"));
+        assert_eq!(
+            service["properties"]["privateDns"]["default"],
+            json!("shop")
+        );
         let one = explain("shop.privateDns").unwrap();
         assert_eq!(one.schema["default"], json!("shop"));
-        assert_eq!(schema(Some("shop.privateDns")).unwrap()["default"], json!("shop"));
+        assert_eq!(
+            schema(Some("shop.privateDns")).unwrap()["default"],
+            json!("shop")
+        );
     }
 
     #[test]
