@@ -9,7 +9,7 @@ it. The original volume stays until you delete it.
 
 Restore works on managed volumes in Ployz Cloud, once every server that can hold managed volumes
 runs Ployz 0.2.5 or newer. Until then the points list without **Restore**. A volume without a mirror has no points; add one
-under **Placement** in the volume's **Settings** tab, see [Move a volume](move-a-volume.md).
+with **Add copy** under the volume's **Copies**. See [Move a volume](move-a-volume.md).
 
 ## In Ployz Cloud
 

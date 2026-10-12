@@ -14,8 +14,8 @@ const row = (mirrors: string[], staged: { primary: string; mirrors?: string[]; d
   staged: staged === null ? null : { primary: id(staged.primary), mirrors: (staged.mirrors ?? []).map(id), deletes: (staged.deletes ?? []).map(id) },
   deploymentId: null,
 });
-const copies = (placement: PlacementRow | null, members = [member("web-1", "writer"), member("web-2", "mirror")], active = null as ReturnType<typeof run> | null, lastSync = null as ReturnType<typeof run> | null) =>
-{
+type Run = ReturnType<typeof run> | null;
+const copies = (placement: PlacementRow | null, members = [member("web-1", "writer"), member("web-2", "mirror")], active: Run = null, lastSync: Run = null) => {
   const model = copiesFromPlacement({ volume, members, row: placement, active, lastSync });
   if (model === null) throw new Error("no primary");
   return model;
