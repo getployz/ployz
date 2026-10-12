@@ -468,8 +468,9 @@ container. A stopped Ingress Proxy stays stopped: a requested stop holds the
 container down, even one that never ran, until a requested start; the hold lives
 in daemon memory, so a daemon restart forgets it, and a stop or an in-flight
 stopping mark wins over a scan that races it. A stop-first replacement
-therefore stops the old container even at rest, and hands a never-started one
-back with a start when the replacement fails. This extends Docker's restart
+therefore stops the old container even at rest. When the replacement fails, it
+hands an old Ingress Proxy at rest back with a start, even one a user stopped,
+and leaves any other container at rest stopped. This extends Docker's restart
 policy to Machine-local serving infrastructure. It is behavior on the daemon's
 own schedule, which bet 3 flags, and it is the only Service Container the daemon
 starts unasked. Docker also drops a container's network when its start fails, so

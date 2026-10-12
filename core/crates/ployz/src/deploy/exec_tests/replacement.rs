@@ -189,8 +189,8 @@ async fn stop_first_stops_but_does_not_restart_an_old_container_that_exited() {
     client.assert_done();
 }
 
-// The stop held a never-started old container down for the replacement. A start
-// hands it back to its Server, which keeps retrying an ingress whose start fails.
+// The stop held an ingress at rest down for the replacement. A start hands it back
+// to its Server, which keeps retrying an ingress whose start fails.
 #[tokio::test]
 async fn stop_first_hands_a_never_started_old_container_back_when_the_new_one_fails() {
     for (restart, restart_succeeds) in [
@@ -213,7 +213,7 @@ async fn stop_first_hands_a_never_started_old_container_back_when_the_new_one_fa
         let old = container('a');
         let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
         let mut steps = vec![
-            observed(
+            observed_ingress(
                 Call::Inspect(machine, old),
                 ContainerRuntimeObservation::Created,
             ),
@@ -238,6 +238,98 @@ async fn stop_first_hands_a_never_started_old_container_back_when_the_new_one_fa
                 ..
             }, .. } if restart.restarted() == restart_succeeds
         ));
+        client.assert_done();
+    }
+}
+
+// An ingress whose boot-time start failed is exited, and its Server restarts it
+// only once nothing holds it down.
+#[tokio::test]
+async fn stop_first_hands_an_exited_ingress_back_when_its_create_fails() {
+    for runtime in [exited(255), ContainerRuntimeObservation::Dead] {
+        let machine = machine('1');
+        let old = container('a');
+        let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
+        let client = Scripted::new(vec![
+            observed_ingress(Call::Inspect(machine, old), runtime),
+            ok(Call::Stop(machine, old)),
+            failed(
+                Call::Create(machine, ContainerKind::ServiceContainer),
+                "pull failed",
+            ),
+            ok(Call::Start(machine, old)),
+            serving(old),
+        ]);
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(matches!(
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Replacement {
+                    compensation: ReplacementCompensation::OldStopped {
+                        stop_new_container: None,
+                        restart_old_container: RestartAttempt::Restarted,
+                    },
+                    ..
+                },
+                ..
+            }
+        ));
+        client.assert_done();
+    }
+}
+
+// Only an ingress is handed back from rest. A Service container that never ran,
+// such as one a cancelled Deploy left created, stays down when its replacement fails.
+#[tokio::test]
+async fn stop_first_leaves_a_never_started_service_container_down_when_the_new_one_fails() {
+    for create_fails in [true, false] {
+        let machine = machine('1');
+        let old = container('a');
+        let new = container('b');
+        let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
+        let mut steps = vec![
+            observed(
+                Call::Inspect(machine, old),
+                ContainerRuntimeObservation::Created,
+            ),
+            ok(Call::Stop(machine, old)),
+        ];
+        if create_fails {
+            steps.push(failed(
+                Call::Create(machine, ContainerKind::ServiceContainer),
+                "pull failed",
+            ));
+        } else {
+            steps.extend([
+                created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+                ok(Call::Start(machine, new)),
+                observed(Call::Inspect(machine, new), unhealthy()),
+                ok(Call::StopWithGrace(machine, new, 0)),
+                ok(Call::Remove(machine, new)),
+            ]);
+        }
+        let client = Scripted::new(steps);
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        let DeployOutcome::Failed { failed, .. } = outcome else {
+            panic!("the replacement fails");
+        };
+        if create_fails {
+            assert!(matches!(failed, FailedOperation::Operation { .. }));
+        } else {
+            assert!(matches!(
+                failed,
+                FailedOperation::Replacement {
+                    compensation: ReplacementCompensation::OldUntouched {
+                        stop_new_container: StopAttempt::Stopped,
+                    },
+                    ..
+                }
+            ));
+        }
         client.assert_done();
     }
 }

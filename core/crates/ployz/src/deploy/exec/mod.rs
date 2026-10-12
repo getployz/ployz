@@ -987,11 +987,18 @@ async fn replace_container<C: MachineOperations>(
                     .stop_container(&operation.machine_id, &operation.old_container_id, None)
                     .await
                 {
-                    // A never-started old container is handed back by a start, which
-                    // lifts the hold even when the start fails again.
+                    // An ingress at rest is handed back by a start, which lifts the
+                    // hold even when the start fails again. That includes one a user
+                    // stopped. Any other container at rest stays down.
                     Ok(()) => {
                         super::is_active_runtime(&old.runtime)
-                            || old.runtime == ContainerRuntimeObservation::Created
+                            || (crate::ingress::is_system_ingress(&old)
+                                && matches!(
+                                    old.runtime,
+                                    ContainerRuntimeObservation::Created
+                                        | ContainerRuntimeObservation::Exited { .. }
+                                        | ContainerRuntimeObservation::Dead
+                                ))
                     }
                     Err(error) if error.code == RpcErrorCode::NotFound => false,
                     Err(error) => {
