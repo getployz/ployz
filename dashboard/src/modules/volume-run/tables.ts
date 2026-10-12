@@ -30,6 +30,8 @@ export const volumeRun = pgTable(
     refquotaBytes: bigint("refquota_bytes", { mode: "number" }).default(0).notNull(),
     state: text("state").default("requested").notNull().$type<VolumeRunState>(),
     lease: bigint("lease", { mode: "number" }),
+    /** The epoch this run gives a new writer, so a later run on the Volume numbers above it. */
+    epoch: bigint("epoch", { mode: "number" }),
     /** The Service spec seen when the run took its lease; Restore reads it once that Service's Server is gone. */
     serviceSpec: jsonb("service_spec").$type<ServiceSpec>(),
     inngestRunId: text("inngest_run_id"),

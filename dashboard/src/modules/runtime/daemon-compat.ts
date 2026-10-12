@@ -6,7 +6,7 @@ export type Requirement = { readonly capability: CapabilityName; readonly featur
 export const requirements = {
   liveLogs: { capability: "ployz.logs.tail.v1", feature: "Logs", plural: true },
   olderLogs: { capability: "ployz.logs.history.v2", feature: "Older logs", plural: true },
-  volumeMove: { capability: "ployz.volume.mirror.declare.v1", feature: "Volume move" },
+  volumeMove: { capability: "ployz.volume.copy.set.v1", feature: "Volume move" },
 } as const satisfies Record<string, Requirement>;
 
 export function requirementFor(capability: string): Requirement | null {

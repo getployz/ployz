@@ -1,7 +1,8 @@
-import type { Snapshot, SnapshotGuid } from "@ployz/sdk";
+import type { ExpectedCopy, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
 import { type AnsweredMember, copyName, type Member, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
-export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "empty" | "unanswered";
+/** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
+export type Role = "writer" | "cutting" | "mirror" | "empty" | "unanswered";
 
 export type RefusalCode =
   | "unanswered"
@@ -9,8 +10,6 @@ export type RefusalCode =
   | "no_writer"
   | "two_writers"
   | "volume_switching"
-  | "handed"
-  | "stale_slot"
   | "second_mirror"
   | "invalid"
   | "no_pool"
@@ -19,66 +18,33 @@ export type RefusalCode =
   | "another_copy"
   | "confirm_required";
 
-/** Where a Move continues from the copies it finds; every step after `handover` is past the point of no return. */
-export type MoveStart = "rounds" | "handover" | "accept" | "promote" | "start" | "close" | "undo";
+/**
+ * Where a Move continues from the copies it finds. `rounds` and `cut` start on A's root; `final` pulls the cut's
+ * snapshot to B; `start` makes B the writer and removes A's kept Container. From `start` on a Move only goes forward.
+ */
+export type MoveStart = "rounds" | "cut" | "final" | "start";
 
-/** `to` names the Server a handed-over Volume went to, where a Move continues. */
-export type Refusal = { readonly code: RefusalCode; readonly message: string; readonly to?: string };
+export type Refusal = { readonly code: RefusalCode; readonly message: string };
+
+/**
+ * What a Release finds in flight: a cut that stopped on a read-only root, a writer that may still keep the moved-off
+ * Container, or only slots, where one of them is the cut source that keeps its stopped Container.
+ */
+export type ReleaseFrom =
+  | { readonly kind: "cut"; readonly root: AnsweredMember }
+  | { readonly kind: "writer"; readonly writer: AnsweredMember; readonly behind: readonly AnsweredMember[] }
+  | { readonly kind: "slots"; readonly slots: readonly AnsweredMember[] };
 
 export type Planned =
-  | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly declare: boolean } }
+  | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
-  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null; readonly forgetLease: readonly AnsweredMember[] } }
-  | {
-      readonly ok: true;
-      readonly phase: {
-        readonly kind: "move";
-        readonly writer: AnsweredMember;
-        readonly target: AnsweredMember;
-        readonly start: MoveStart;
-        readonly guid: SnapshotGuid | null;
-        readonly declare: boolean;
-      };
-    }
-  | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly source: AnsweredMember; readonly mirror: AnsweredMember | null; readonly thaw: boolean } }
+  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
+  | { readonly ok: true; readonly phase: { readonly kind: "move"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly start: MoveStart } }
+  | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly from: ReleaseFrom } }
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "seed"; readonly source: AnsweredMember } }
   | { readonly ok: false; readonly refusal: Refusal };
-
-type Phase = Extract<Planned, { ok: true }>["phase"];
-
-/** The Machines the planned phase sends a verb to; only their records may raise the next lease. */
-export function participantsOf(phase: Phase): readonly AnsweredMember[] {
-  switch (phase.kind) {
-    case "mirror":
-      return [phase.writer, phase.target];
-    case "move":
-      switch (phase.start) {
-        case "close":
-        case "undo":
-          return [phase.writer];
-        case "rounds":
-        case "handover":
-        case "accept":
-        case "promote":
-        case "start":
-          return [phase.writer, phase.target];
-      }
-    case "sync":
-      return [phase.writer, phase.mirror];
-    case "release":
-      return phase.thaw ? [phase.source] : [];
-    case "delete_mirror":
-      return [...phase.destroy, ...(phase.forget === null ? [] : [phase.forget]), ...phase.forgetLease];
-    case "restore":
-      return [phase.from];
-    case "demote":
-      return [phase.old];
-    case "seed":
-      return [phase.source];
-  }
-}
 
 export type PlanInput = VolumeRunInput & { readonly volumeName: string; readonly orphan: boolean };
 
@@ -86,47 +52,31 @@ export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
   const copy = member.view.copy;
   if (copy === null) return "empty";
-  if (copy.kind === "root") {
-    switch (copy.writer.phase) {
-      case "idle":
-        return "writer";
-      case "handed":
-        return "handed";
-      case "stopping":
-      case "frozen":
-      case "thawing":
-        return "switching";
-    }
-  }
-  switch (copy.mirror.phase) {
-    case "idle":
-      return "mirror";
-    case "handed_in":
-    case "promoting":
-      return "stale";
-  }
+  if (copy.kind === "slot") return "mirror";
+  return copy.readonly ? "cutting" : "writer";
 }
 
-/** The snapshot guid a root hands over: the final snapshot it froze or handed. */
-function frozenGuid(member: AnsweredMember): SnapshotGuid | null {
-  const copy = member.view.copy;
-  if (copy?.kind !== "root") return null;
-  return copy.writer.phase === "frozen" || copy.writer.phase === "handed" ? copy.writer.guid : null;
+export const epochOf = (member: AnsweredMember) => (member.view.copy?.kind === "root" ? member.view.copy.epoch : 0);
+
+export const newestGuid = (copy: VolumeCopy | null): SnapshotGuid | null => copy?.newest?.guid ?? null;
+
+/** What a SetVolumeCopy expects of a copy the run saw: a slot that holds no snapshot yet counts as none. */
+export function expectOf(copy: VolumeCopy | null): ExpectedCopy {
+  if (copy === null) return { kind: "none" };
+  if (copy.kind === "root") return { kind: "writer", epoch: copy.epoch };
+  return copy.newest === null ? { kind: "none" } : { kind: "mirror", newest: copy.newest.guid };
 }
 
-function holds(member: AnsweredMember, guid: SnapshotGuid): boolean {
-  const copy = member.view.copy;
-  if (copy === null) return false;
-  if (copy.kind === "slot" && copy.mirror.phase === "handed_in") return copy.mirror.guid === guid;
-  return copy.newest?.guid === guid;
-}
+const SNAPSHOT_EPOCH = /^[wf]-(\d+)/;
+const FINAL_SNAPSHOT = /^f-\d+$/;
 
-/** Past `handover` a Move only goes forward, so the target's copy names the next step and Accept never re-runs on it. */
-function handedStart(target: AnsweredMember): MoveStart {
-  const copy = target.view.copy;
-  if (copy?.kind === "slot") return copy.mirror.phase === "idle" ? "accept" : "promote";
-  if (copy?.readonly !== false) return "promote";
-  return target.view.lease?.cycle === "open" ? "start" : "close";
+/** The highest epoch any answered copy shows, in its root or in the run that named its newest snapshot. */
+export function observedEpoch(members: readonly Member[]): number {
+  return Math.max(0, ...members.flatMap((member) => {
+    if (!member.answered) return [];
+    const named = SNAPSHOT_EPOCH.exec(member.view.copy?.newest?.name ?? "");
+    return [epochOf(member), named === null ? 0 : Number(named[1])];
+  }));
 }
 
 const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =>
@@ -140,11 +90,9 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const answered = members.filter((member): member is AnsweredMember => member.answered);
   const withRole = (...roles: Role[]) => answered.filter((member) => roles.includes(roleOf(member)));
   const named = (member: Member) => copyName(name, member.machine.name);
-  const roots = withRole("writer", "switching", "handed");
-  const switching = withRole("switching", "handed");
-  const writer = withRole("writer")[0];
+  const roots = withRole("writer", "cutting");
+  const cutting = withRole("cutting");
   const mirrors = withRole("mirror");
-  const stale = withRole("stale");
   const silent = members.filter((member): member is Exclude<Member, AnsweredMember> => !member.answered);
   const unanswered = silent.find((member) => member.lack !== undefined) ?? silent[0];
   const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack === undefined
@@ -153,87 +101,109 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const midRun = () => refuse("volume_switching", `${name} is mid-run; wait or volume release ${name}`);
 
   if (input.kind === "delete_mirror") {
-    const slots = [...mirrors, ...stale];
     if (input.orphan) {
       if (roots.length > 0) return refuse("invalid", `${name} still has a writer on ${roots.map(named).join(", ")}`);
-      if (slots.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null, forgetLease: answered.filter((member) => slots.includes(member) || member.view.lease !== null) } };
+      if (mirrors.length === 0) return refuse("no_mirror", `${name} has no mirror`);
+      return { ok: true, phase: { kind: "delete_mirror", destroy: mirrors, forget: null } };
     }
     if (unanswered !== undefined) return unknown(unanswered);
-    if (switching.length > 0 || writer?.view.lease?.cycle === "open") return midRun();
+    if (cutting.length > 0) return midRun();
     const { slot, confirmed_name } = input.args;
-    const destroy = slot === null ? slots : slots.filter((member) => member.machine.name === slot);
+    const destroy = slot === null ? mirrors : mirrors.filter((member) => member.machine.name === slot);
     if (destroy.length === 0) return refuse("no_mirror", slot === null ? `${name} has no mirror` : `${name} has no mirror on ${slot}`);
     if (roots.length === 0 && confirmed_name !== name) {
       const only = destroy.map(named).join(", ");
       return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only} --confirm ${name}`);
     }
-    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: writer ?? null, forgetLease: destroy } };
+    const [writer] = roots;
+    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null } };
   }
 
   if (unanswered !== undefined) return unknown(unanswered);
   if (input.kind === "restore") return planRestore(name, input.args.from, answered);
-  if (input.kind === "seed") {
-    if (switching.length > 0) return midRun();
-    if (roots.length > 1) return refuse("two_writers", `${name} has two primaries, ${roots.map(named).join(" and ")}`);
-    if (writer === undefined) return refuse("no_writer", `${name} has no primary to restore from`);
-    return { ok: true, phase: { kind: "seed", source: writer } };
-  }
-  const [source] = switching;
-  if (source !== undefined && switching.length === 1) {
-    const guid = frozenGuid(source);
-    const holder = guid === null ? undefined : answered.find((member) => member !== source && holds(member, guid));
-    const handedTo = (server: string) => `${name} is handed to ${server}; volume move ${name} --to ${server} again continues from there`;
-    if (input.kind === "release") {
-      if (roleOf(source) === "handed") {
-        if (holder === undefined) return refuse("handed", `${name} is handed off`);
-        return { ok: false, refusal: { code: "handed", message: handedTo(holder.machine.name), to: holder.machine.name } };
-      }
-      return { ok: true, phase: { kind: "release", source, mirror: holder ?? null, thaw: true } };
-    }
-    if (input.kind === "move") {
-      const { to } = input.args;
-      const target = answered.find((member) => isDestination(input.args, member));
-      if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
-      if (roleOf(source) === "handed") {
-        if (holder === undefined) return refuse("invalid", `no Server holds the snapshot ${named(source)} handed over`);
-        if (holder !== target) return refuse("volume_switching", handedTo(holder.machine.name));
-        return { ok: true, phase: { kind: "move", writer: source, target, start: handedStart(target), guid, declare: false } };
-      }
-      const start = holder === target && target.view.copy?.kind === "slot" ? "handover" : "undo";
-      return { ok: true, phase: { kind: "move", writer: source, target, start, guid, declare: false } };
-    }
-  }
   if (roots.length > 1) {
     const old = oldCopy(roots);
-    if (old !== null) return { ok: true, phase: { kind: "demote", ...old } };
+    if (old === null) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
+    return { ok: true, phase: { kind: "demote", ...old } };
   }
-  if (roots.length > 1) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
-  if (switching.length > 0) return midRun();
-  if (writer === undefined) return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
-  const firstStale = stale[0];
-  if (firstStale !== undefined) {
-    return refuse("stale_slot", `${named(firstStale)} holds a stale copy; volume mirror rm ${named(firstStale)} first`);
+  const [root] = roots;
+
+  if (input.kind === "seed") {
+    if (root === undefined || roleOf(root) !== "writer") return root === undefined ? refuse("no_writer", `${name} has no primary to restore from`) : midRun();
+    return { ok: true, phase: { kind: "seed", source: root } };
   }
-  if (input.kind === "release") return { ok: true, phase: { kind: "release", source: writer, mirror: null, thaw: false } };
+
+  if (input.kind === "release") {
+    if (root === undefined) {
+      if (mirrors.length === 0) return refuse("no_writer", `${name} has no copy to release`);
+      return { ok: true, phase: { kind: "release", from: { kind: "slots", slots: mirrors } } };
+    }
+    if (roleOf(root) === "cutting") return { ok: true, phase: { kind: "release", from: { kind: "cut", root } } };
+    const at = newestGuid(root.view.copy);
+    const behind = at === null ? [] : mirrors.filter((member) => newestGuid(member.view.copy) === at);
+    return { ok: true, phase: { kind: "release", from: { kind: "writer", writer: root, behind } } };
+  }
+
+  if (input.kind === "move") return planMove(name, input.args, answered, root ?? null);
+
+  if (root === undefined) {
+    if (mirrors.length > 0) return refuse("no_writer", `${name} has no writer; volume release ${name} ends a move cut short`);
+    return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
+  }
+  if (roleOf(root) === "cutting") return midRun();
 
   if (input.kind === "sync") {
     const [mirror, second] = mirrors;
     if (mirror === undefined) return refuse("no_mirror", `${name} has no mirror; volume mirror ${name} --to <server>`);
     if (second !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(mirror)}`);
-    return { ok: true, phase: { kind: "sync", writer, mirror, full: input.args.full } };
+    return { ok: true, phase: { kind: "sync", writer: root, mirror, full: input.args.full } };
   }
 
   const { to } = input.args;
-  if (isDestination(input.args, writer)) return refuse("invalid", `${name}'s writer is already on ${to}`);
+  if (isDestination(input.args, root)) return refuse("invalid", `${name}'s writer is already on ${to}`);
   const elsewhere = mirrors.find((member) => !isDestination(input.args, member));
   if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
   const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
   if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
-  const declare = roleOf(target) !== "mirror";
-  if (input.kind === "move") return { ok: true, phase: { kind: "move", writer, target, start: "rounds", guid: null, declare } };
-  return { ok: true, phase: { kind: "mirror", writer, target, declare } };
+  return { ok: true, phase: { kind: "mirror", writer: root, target } };
+}
+
+/**
+ * A Move is read from the copies alone. A is the root, or with no root the one slot besides B; G is A's newest once
+ * A is a slot. The Move needs B's Writer while B's slot holds G, and is done but for A's Container once B is the writer
+ * at G.
+ */
+function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly AnsweredMember[], root: AnsweredMember | null): Planned {
+  const named = (member: Member) => copyName(name, member.machine.name);
+  const { to } = args;
+  const target = answered.find((member) => isDestination(args, member));
+  if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
+  const others = answered.filter((member) => member !== target && member.view.copy?.kind === "slot");
+  const move = (writer: AnsweredMember, start: MoveStart): Planned => ({ ok: true, phase: { kind: "move", writer, target, start } });
+
+  if (root === target) {
+    if (roleOf(root) === "cutting") return refuse("volume_switching", `${name} is mid-run; wait or volume release ${name}`);
+    // A synced mirror also holds the writer's newest; only a cut source holds a final snapshot.
+    const at = newestGuid(root.view.copy);
+    const source = at === null ? undefined : others.find((member) => member.view.copy?.newest?.guid === at && FINAL_SNAPSHOT.test(member.view.copy.newest.name));
+    if (source === undefined) return refuse("invalid", `${name}'s writer is already on ${to}`);
+    return move(source, "start");
+  }
+  const elsewhere = others.find((member) => member !== root);
+  if (root !== null) {
+    if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+    if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
+    return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
+  }
+
+  const [source, second] = others;
+  if (source === undefined) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
+  if (second !== undefined) return refuse("second_mirror", `${name} has copies on ${others.map(named).join(" and ")}; volume release ${name} first`);
+  const at = newestGuid(source.view.copy);
+  if (at === null) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
+  if (!target.pool) return refuse("no_pool", `${to} has no managed volume storage yet`);
+  return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
 }
 
 /** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
@@ -242,7 +212,8 @@ function planRestore(name: string, from: string, answered: readonly AnsweredMemb
   if (source === undefined) return refuse("invalid", `${from} is not a Server of this cluster`);
   const copy = source.view.copy;
   if (copy === null) return refuse("no_copy", `${from} holds no copy of ${name}`);
-  if (roleOf(source) === "writer" && !copy.readonly) return refuse("invalid", `${name}'s writer is already on ${from}`);
+  if (roleOf(source) === "writer") return refuse("invalid", `${name}'s writer is already on ${from}`);
+  if (copy.newest === null) return refuse("no_copy", `${copyName(name, from)} holds no snapshot to restore`);
   const others = answered.filter((member) => member !== source && member.view.copy !== null);
   if (others.length > 0) {
     const servers = others.map((member) => member.machine.name).join(", ");
@@ -256,18 +227,15 @@ function planRestore(name: string, from: string, answered: readonly AnsweredMemb
 }
 
 /**
- * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root whose lease record
- * is lower is old. A read-only root ranks below every writable one whatever its record: a demote cut short left it so,
- * and only a writable root can be the writer. Writable roots whose records tie, or two without one, leave no way to
- * tell, so neither is old.
+ * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root with the lower
+ * epoch is old. Only a writable root can be the writer, so a read-only one is old beside any writable one. Writable
+ * roots whose epochs tie leave no way to tell, so neither is old.
  */
 function oldCopy(roots: readonly AnsweredMember[]): { readonly old: AnsweredMember; readonly writer: AnsweredMember } | null {
-  if (roots.some((root) => roleOf(root) !== "writer")) return null;
-  const writable = (root: AnsweredMember) => root.view.copy?.readonly === false;
-  const leaseOf = (root: AnsweredMember) => root.view.lease?.lease ?? 0;
-  const above = (a: AnsweredMember, b: AnsweredMember) => Number(writable(a)) - Number(writable(b)) || leaseOf(a) - leaseOf(b);
-  const [writer, ...rest] = [...roots].sort((a, b) => above(b, a));
-  const old = rest.at(-1);
-  if (writer === undefined || old === undefined || !writable(writer) || above(writer, old) === 0) return null;
+  const writable = (root: AnsweredMember) => roleOf(root) === "writer";
+  const above = (a: AnsweredMember, b: AnsweredMember) => Number(writable(a)) - Number(writable(b)) || epochOf(a) - epochOf(b);
+  const [writer, next] = [...roots].sort((a, b) => above(b, a));
+  const old = [...roots].sort((a, b) => above(a, b))[0];
+  if (writer === undefined || next === undefined || old === undefined || !writable(writer) || above(writer, next) === 0) return null;
   return { old, writer };
 }

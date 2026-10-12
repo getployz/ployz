@@ -115,6 +115,7 @@ export interface PloyzSession {
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
   readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
+  readonly removeContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
     container: string,
@@ -278,6 +279,7 @@ function wrapClient(client: Client): PloyzSession {
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
     stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
     startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),
+    removeContainer: (machine, container) => sdkPromise("remove container", () => client.removeContainer(machine, container)),
     copyContainerImage: (source, container, dest) =>
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     requestMachineUpgrade: (machine, attemptId, release) =>

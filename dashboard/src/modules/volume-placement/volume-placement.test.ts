@@ -53,6 +53,23 @@ const primaryMove = (from: string, to: string, loss?: string) =>
   ({ kind: "update", name: "Primary", currentValue: from, newValue: to, detail: undefined, loss });
 const steps = (members: Member[], placement: PlacementRow | null) => placementSteps(changes(members, placement));
 
+describe("observePlacement", () => {
+  const primary = (members: Member[]) => observePlacement(members).primary?.name ?? null;
+
+  it("takes the writable root with the highest epoch as primary", () => {
+    expect(primary([member("web-1", "writer", { epoch: 3 }), member("web-2", "writer", { epoch: 8 })])).toBe("web-2");
+    expect(primary([member("web-2", "writer", { epoch: 8 }), member("web-1", "writer", { epoch: 3 })])).toBe("web-2");
+  });
+
+  it("takes a writable root over a read-only one at any epoch", () => {
+    expect(primary([member("web-1", "cut", { epoch: 9 }), member("web-2", "writer", { epoch: 2 })])).toBe("web-2");
+  });
+
+  it("has no primary when only slots answer", () => {
+    expect(primary([member("web-1", "mirror"), member("web-2", "behind")])).toBeNull();
+  });
+});
+
 describe("placementChanges", () => {
   it("is empty when nothing is staged", () => {
     expect(changes([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"]))).toEqual([]);
@@ -65,8 +82,8 @@ describe("placementChanges", () => {
     expect(review(members, row(["web-2"], { primary: "web-2" }))).toEqual([primaryMove("web-1", "web-2")]);
   });
 
-  it("keeps a move to the mirror as the same move after the hand-over, never as removing that mirror", () => {
-    const members = [member("web-1", "handed", { lease: 3 }), member("web-2", "promoted", { lease: 4 })];
+  it("keeps a move to the mirror as the same move once the target writes, never as removing that mirror", () => {
+    const members = [member("web-1", "mirror"), member("web-2", "writer", { epoch: 2 })];
     expect(changes(members, row(["web-2"], { primary: "web-2" })).map((change) => change.kind)).toEqual(["move"]);
     expect(review(members, row(["web-2"], { primary: "web-2" }))).toEqual([primaryMove("web-1", "web-2")]);
   });
@@ -298,7 +315,7 @@ describe("placementTargets", () => {
 describe("storageStep", () => {
   const run = (volumeId: string, message: string | null): VolumeRunView => ({
     id: "r1", volume_id: volumeId, volume_name: "pg-data", kind: "move", args: { to: "web-2" }, orphan: false, state: "running",
-    lease: null, message, created_at: "", updated_at: "", finished_at: null,
+    lease: null, epoch: null, message, created_at: "", updated_at: "", finished_at: null,
   });
   const taken = { ...row([]), deploymentId: "dep-1" };
 
