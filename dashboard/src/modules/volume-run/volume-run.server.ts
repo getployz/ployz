@@ -30,7 +30,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
-import { newestGuid, type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
+import { alreadyOn, newestGuid, type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -212,6 +212,7 @@ function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase, source: Machi
     case "mirror":
     case "sync":
     case "move":
+    case "landed":
     case "restore":
     case "demote":
     case "seed":
@@ -257,6 +258,13 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const verb = VERBS[input.kind];
   const { phase } = planned;
+  if (phase.kind === "landed") {
+    const source = yield* keptOn(organizationId, volume.dockerVolume, phase.behind.map((member) => member.machine)).pipe(Effect.orElseSucceed(() => null));
+    if (source === null) {
+      const { code, message } = alreadyOn(volume.volumeName, phase.target.machine.name);
+      return { ok: false, refusal: { code: refusalCode[code], message, details: null } } satisfies VolumeRunPlan;
+    }
+  }
   const source = phase.kind === "release" && phase.from.kind === "slots"
     ? yield* keptOn(organizationId, volume.dockerVolume, phase.from.slots.map((member) => member.machine)).pipe(Effect.orElseSucceed(() => null))
     : null;

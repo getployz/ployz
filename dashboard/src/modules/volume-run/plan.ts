@@ -40,6 +40,7 @@ export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
   | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "move"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly start: MoveStart } }
+  | { readonly ok: true; readonly phase: { readonly kind: "landed"; readonly target: AnsweredMember; readonly behind: readonly AnsweredMember[] } }
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly from: ReleaseFrom } }
   | { readonly ok: true; readonly phase: { readonly kind: "restore"; readonly from: AnsweredMember; readonly lostAfter: Snapshot | null } }
   | { readonly ok: true; readonly phase: { readonly kind: "demote"; readonly old: AnsweredMember; readonly writer: AnsweredMember } }
@@ -68,7 +69,6 @@ export function expectOf(copy: VolumeCopy | null): ExpectedCopy {
 }
 
 const SNAPSHOT_EPOCH = /^[wf]-(\d+)/;
-const FINAL_SNAPSHOT = /^f-\d+$/;
 
 /** The highest epoch any answered copy shows, in its root or in the run that named its newest snapshot. */
 export function observedEpoch(members: readonly Member[]): number {
@@ -107,6 +107,8 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       return { ok: true, phase: { kind: "delete_mirror", destroy: mirrors, forget: null } };
     }
     if (unanswered !== undefined) return unknown(unanswered);
+    const writers = withRole("writer");
+    if (writers.length > 1) return refuse("two_writers", `${name} has two writers, ${writers.map(named).join(" and ")}`);
     if (cutting.length > 0) return midRun();
     const { slot, confirmed_name } = input.args;
     const destroy = slot === null ? mirrors : mirrors.filter((member) => member.machine.name === slot);
@@ -123,6 +125,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (input.kind === "restore") return planRestore(name, input.args.from, answered);
   if (roots.length > 1) {
     const old = oldCopy(roots);
+    if (old === null && withRole("writer").length < 2) return midRun();
     if (old === null) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
     return { ok: true, phase: { kind: "demote", ...old } };
   }
@@ -160,7 +163,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   }
 
   const { to } = input.args;
-  if (isDestination(input.args, root)) return refuse("invalid", `${name}'s writer is already on ${to}`);
+  if (isDestination(input.args, root)) return { ok: false, refusal: alreadyOn(name, to) };
   const elsewhere = mirrors.find((member) => !isDestination(input.args, member));
   if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
   const target = answered.find((member) => isDestination(input.args, member));
@@ -172,7 +175,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
 /**
  * A Move is read from the copies alone. A is the root, or with no root the one slot besides B; G is A's newest once
  * A is a slot. The Move needs B's Writer while B's slot holds G, and is done but for A's Container once B is the writer
- * at G.
+ * at G. Then A is whichever slot at G keeps the stopped Container, which only the run can see.
  */
 function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly AnsweredMember[], root: AnsweredMember | null): Planned {
   const named = (member: Member) => copyName(name, member.machine.name);
@@ -184,11 +187,10 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
 
   if (root === target) {
     if (roleOf(root) === "cutting") return refuse("volume_switching", `${name} is mid-run; wait or volume release ${name}`);
-    // A synced mirror also holds the writer's newest; only a cut source holds a final snapshot.
     const at = newestGuid(root.view.copy);
-    const source = at === null ? undefined : others.find((member) => member.view.copy?.newest?.guid === at && FINAL_SNAPSHOT.test(member.view.copy.newest.name));
-    if (source === undefined) return refuse("invalid", `${name}'s writer is already on ${to}`);
-    return move(source, "start");
+    const behind = at === null ? [] : others.filter((member) => newestGuid(member.view.copy) === at);
+    if (behind.length === 0) return { ok: false, refusal: alreadyOn(name, to) };
+    return { ok: true, phase: { kind: "landed", target, behind } };
   }
   const elsewhere = others.find((member) => member !== root);
   if (root !== null) {
@@ -206,13 +208,15 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
 }
 
+export const alreadyOn = (name: string, server: string): Refusal => ({ code: "invalid", message: `${name}'s writer is already on ${server}` });
+
 /** Restore makes the one copy left the writer, so any copy elsewhere, answering or not, would become a second writer. */
 function planRestore(name: string, from: string, answered: readonly AnsweredMember[]): Planned {
   const source = answered.find((member) => member.machine.name === from);
   if (source === undefined) return refuse("invalid", `${from} is not a Server of this cluster`);
   const copy = source.view.copy;
   if (copy === null) return refuse("no_copy", `${from} holds no copy of ${name}`);
-  if (roleOf(source) === "writer") return refuse("invalid", `${name}'s writer is already on ${from}`);
+  if (roleOf(source) === "writer") return { ok: false, refusal: alreadyOn(name, from) };
   if (copy.newest === null) return refuse("no_copy", `${copyName(name, from)} holds no snapshot to restore`);
   const others = answered.filter((member) => member !== source && member.view.copy !== null);
   if (others.length > 0) {

@@ -302,7 +302,7 @@ export function placementTargets(
     member.answered && detached.has(member.machine.id) ? { ...member, view: { ...member.view, copy: null } } : member);
   const accepts = (kind: "move" | "mirror", member: Member) => {
     const planned = planFromCopies({ kind, args: { to: member.machine.name }, volumeName: volume.name, orphan: false }, cleared);
-    return planned.ok;
+    return planned.ok && planned.phase.kind !== "landed";
   };
   const candidates = members.filter((member) => servers.includes(member.machine.id));
   const mirrors = appliedMirrors(observed, row);

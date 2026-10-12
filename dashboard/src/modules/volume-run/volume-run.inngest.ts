@@ -9,7 +9,7 @@ import {
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
-import { epochOf, expectOf, observedEpoch, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
+import { alreadyOn, epochOf, expectOf, observedEpoch, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -94,6 +94,7 @@ export async function runVolume(
   const { phase } = plan;
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
+  if (phase.kind === "landed") return landVolume(steps, phase);
   const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
   switch (phase.kind) {
     case "restore":
@@ -310,7 +311,11 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     if (source === null || owner === undefined || at === null) {
       return fail(steps, "03-no-source", `${run.volumeName} has no writer and no stopped Service on its copies; volume restore ${run.volumeName} --from <server>`);
     }
-    const done = await undoAfterCut(steps, { A: owner.machine, containerId: source.containerId, at, epoch, others: from.slots.filter((slot) => slot !== owner) });
+    const found = await steps.step.run("03-spec", () => steps.runEffect(findHolder(run, steps.runId, owner.machine)));
+    // SAFETY: step output is the JSON of a Holder, and a Holder holds only JSON values.
+    const holder = found.ok ? found.holder as Holder : null;
+    const others = from.slots.filter((slot) => slot !== owner);
+    const done = await undoAfterCut(steps, { A: owner.machine, holder, containerId: source.containerId, at, epoch, others });
     await finish(steps, "06-finish");
     return { runId: run.id, released: done === "undone" ? owner.machine.name : null };
   } catch (error) {
@@ -320,25 +325,40 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
 
 /**
  * Undo after the cut. B's slot at G goes first, so a start B was sent earlier refuses on its expect; only then does A
- * become the writer again. B already the writer at G means the Move landed, so A's kept Container goes instead.
+ * become the writer again. B already the writer at G means the Move landed, so it goes forward. Any other root on B
+ * leaves A a slot, since A as the writer beside it would be a second writable root.
  */
 async function undoAfterCut(
   steps: RunSteps,
-  ctx: { readonly A: MachineRef; readonly containerId: ContainerId; readonly at: Snapshot; readonly epoch: number; readonly others: readonly { readonly machine: MachineRef }[] },
+  ctx: {
+    readonly A: MachineRef;
+    readonly holder: Holder | null;
+    readonly containerId: ContainerId;
+    readonly at: Snapshot;
+    readonly epoch: number;
+    readonly others: readonly { readonly machine: MachineRef }[];
+  },
 ): Promise<"undone" | "forward"> {
   const { step, runEffect, run, runId } = steps;
   const { A, at } = ctx;
-  const forward = async () => {
+  const forward = async (B: MachineRef, copy: VolumeCopy | null) => {
+    await startOnB(steps, ["13-running", "13-start"], { A, B, holder: ctx.holder, copy, at, epoch: ctx.epoch });
     await step.run("13-remove", () => runEffect(removeContainer(run, runId, A, ctx.containerId)));
     return "forward" as const;
   };
+  const otherRoot = (B: MachineRef, copy: Extract<VolumeCopy, { kind: "root" }>) => new NonRetriableError(
+    `${copyName(run.volumeName, B.name)} ${copy.readonly ? "is a read-only copy mid-cut" : `writes at a snapshot other than ${at.name}`}; `
+      + `${run.volumeName}'s Service stays stopped on ${A.name}`,
+  );
   for (const { machine } of ctx.others) {
     const now = await step.run(`13-inspect-${machine.name}`, () => runEffect(inspectCopy(run, runId, machine)));
-    if (isWriterAt(now, at)) return forward();
+    if (isWriterAt(now, at)) return forward(machine, now);
+    if (now?.kind === "root") throw otherRoot(machine, now);
     if (now?.kind !== "slot" || now.newest?.guid !== at.guid) continue;
     const forgot = await setCopy(steps, `13-forget-${machine.name}`, machine, { kind: "mirror", newest: at.guid }, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
     if (forgot.ok) continue;
-    if (isWriterAt(forgot.copy, at)) return forward();
+    if (isWriterAt(forgot.copy, at)) return forward(machine, forgot.copy);
+    if (forgot.copy?.kind === "root") throw otherRoot(machine, forgot.copy);
     throw new NonRetriableError(forgot.message);
   }
   await mustSet(steps, "14-undo", A, { kind: "mirror", newest: at.guid }, {
@@ -348,6 +368,19 @@ async function undoAfterCut(
     start: { kind: "kept", container_id: ctx.containerId },
   }, `${A.name} is still starting ${run.volumeName}'s Service`);
   return "undone";
+}
+
+/** B already writes at G, so the Move lacks only B's Service and A's kept Container gone; A is the slot keeping it. */
+async function landVolume(steps: RunSteps, phase: PhaseOf<"landed">) {
+  const { step, runEffect, run, runId } = steps;
+  const source = await step.run("02-source", () => runEffect(findKept(run, runId, phase.behind.map((member) => member.machine))));
+  const writer = source === null ? undefined : phase.behind.find((member) => member.machine.id === source.machine.id);
+  if (writer === undefined) {
+    const refusal = alreadyOn(run.volumeName, phase.target.machine.name);
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, refusal)));
+    return { runId: run.id, refused: refusal };
+  }
+  return moveVolume(steps, { kind: "move", writer, target: phase.target, start: "start" }, epochOf(phase.target));
 }
 
 /**
@@ -412,20 +445,7 @@ async function finishOnTarget(steps: RunSteps, phase: PhaseOf<"move">, holder: H
   const at = phase.writer.view.copy?.kind === "slot" ? phase.writer.view.copy.newest : null;
   const message = forwardOnly ?? `volume move ${run.volumeName} --to ${B.name} again continues from there`;
   try {
-    const running = await step.run("07-running", () => runEffect(runningOn(run, runId, B)));
-    if (!running) {
-      const G = at ?? copy?.newest ?? null;
-      if (holder === null || G === null) throw new NonRetriableError(`${run.volumeName} has no Service container on ${A.name} to start on ${B.name}`);
-      const started = await settle(steps, "08-start", startOnTarget(run, runId, {
-        from: A,
-        holder,
-        to: B,
-        expect: expectOf(copy),
-        at: G.guid,
-        epoch: copy?.kind === "root" ? copy.epoch : epoch,
-      }), `${B.name} is still starting ${holder.redactedSpec.name}`);
-      if (!started.ok) throw new NonRetriableError(started.message);
-    }
+    await startOnB(steps, ["07-running", "08-start"], { A, B, holder, copy, at: at ?? copy?.newest ?? null, epoch });
     const kept = holder ?? (await step.run("09-kept", () => runEffect(findKept(run, runId, [A]))));
     if (kept !== null) await step.run("09-remove", () => runEffect(removeContainer(run, runId, A, kept.containerId)));
   } catch (error) {
@@ -433,6 +453,31 @@ async function finishOnTarget(steps: RunSteps, phase: PhaseOf<"move">, holder: H
   }
   await finish(steps, "10-finish");
   return { runId: run.id, moved: B.name };
+}
+
+/**
+ * B runs the Service before anything removes A's kept Container, so a start that fails on B never leaves the Service
+ * down on both Machines. A B that writes but runs nothing is sent the same start again, under the same creation key.
+ */
+async function startOnB(
+  steps: RunSteps,
+  [runningId, startId]: readonly [string, string],
+  ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly holder: Holder | null; readonly copy: VolumeCopy | null; readonly at: Snapshot | null; readonly epoch: number },
+) {
+  const { step, runEffect, run, runId } = steps;
+  const { A, B, holder, copy, at } = ctx;
+  const running = await step.run(runningId, () => runEffect(runningOn(run, runId, B)));
+  if (running) return;
+  if (holder === null || at === null) throw new NonRetriableError(`${run.volumeName} has no Service container on ${A.name} to start on ${B.name}`);
+  const started = await settle(steps, startId, startOnTarget(run, runId, {
+    from: A,
+    holder,
+    to: B,
+    expect: expectOf(copy),
+    at: at.guid,
+    epoch: copy?.kind === "root" ? copy.epoch : ctx.epoch,
+  }), `${B.name} is still starting ${holder.redactedSpec.name}`);
+  if (!started.ok) throw new NonRetriableError(started.message);
 }
 
 /** Before the cut A is still the writer, so its kept Container starts again; a cut that landed meanwhile undoes as after the cut. */
@@ -463,7 +508,7 @@ async function undoMove(
 ) {
   const { run } = steps;
   try {
-    const done = await undoAfterCut(steps, { A: ctx.A, containerId: ctx.holder.containerId, at: ctx.at, epoch: ctx.epoch, others: [{ machine: ctx.B }] });
+    const done = await undoAfterCut(steps, { A: ctx.A, holder: ctx.holder, containerId: ctx.holder.containerId, at: ctx.at, epoch: ctx.epoch, others: [{ machine: ctx.B }] });
     if (done === "forward") {
       await finish(steps, "15-finish");
       return { runId: run.id, moved: ctx.B.name };

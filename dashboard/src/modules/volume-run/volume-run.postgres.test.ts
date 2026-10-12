@@ -71,8 +71,11 @@ type FakeMachine = {
 
 type FakeContainer = { machine: string; id: string; running: boolean };
 
-/** What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, or fail to answer. */
-type Fault = CopyRefusal | "lost" | "down" | RawFault;
+/**
+ * What a fake Machine does with the next request of one label: refuse, apply it and lose the reply, fail to answer, or
+ * hold it in flight until the test lands it.
+ */
+type Fault = CopyRefusal | "lost" | "down" | "held" | RawFault;
 
 /** A Machine's error exactly as sent, for refusals whose copy differs from the fake's own. */
 class RawFault {
@@ -116,6 +119,7 @@ describe("volume runs", () => {
   let failNext: Map<string, Fault>;
   let beforeSet: Map<string, () => void>;
   let sent: SetVolumeCopyRequest[];
+  let held: Map<string, () => CopyRefusal | null>;
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
 
   const machine = (target: string) => {
@@ -294,6 +298,10 @@ describe("volume runs", () => {
         transition(fake, expected, want);
         return fail("down");
       }
+      if (fault === "held") {
+        held.set(key, () => transition(fake, expected, want));
+        return fail("down");
+      }
       if (fault !== undefined) return fail(fault);
       const refused = transition(fake, expected, want);
       return refused === null ? Effect.succeed({ copy: fake.copy }) : fail(refused);
@@ -323,7 +331,7 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
-  const settled = ["05-cut", "08-start", "13-undo", "14-undo", "04-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
+  const settled = ["05-cut", "08-start", "13-start", "13-undo", "14-undo", "04-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-wait-${poll}`)),
     ...[...settled, ...["03-r0", "03-r1", "03-r2"].flatMap((round) => [`${round}-snapshot`, `${round}-pull`]), "06-final-pull",
@@ -357,6 +365,7 @@ describe("volume runs", () => {
     failNext = new Map();
     beforeSet = new Map();
     sent = [];
+    held = new Map();
     guids = 0;
     snapshots = new Map([[base.name, base]]);
     containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true }];
@@ -805,6 +814,41 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["remove@fsn-1(web-fsn-1)"]);
     });
 
+    it("again once B writes takes the slot keeping the stopped Container as the cut source, not a mirror synced to G", async () => {
+      const G = newSnap("f-1");
+      machines = [
+        { name: "fsn-3", pool: true, copy: slotCopy(G) },
+        { name: "fsn-1", pool: true, copy: slotCopy(G) },
+        { name: "fsn-2", pool: true, copy: writerCopy(G, 2) },
+      ];
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }, { machine: "fsn-2", id: "created-1", running: true }];
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
+      expect(verbs).toEqual(["remove@fsn-1(web-fsn-1)"]);
+      expect(containers).toEqual([{ machine: "fsn-2", id: "created-1", running: true }]);
+    });
+
+    it.each([
+      ["a writer at another snapshot", () => writerCopy(base, 5), "data-fsn-2 writes at a snapshot other than f-1"],
+      ["a read-only copy mid-cut", () => writerCopy(snapshots.get("f-1") ?? null, 5, true), "data-fsn-2 is a read-only copy mid-cut"],
+    ])("an undo that finds B %s refuses and never makes A the writer", async (_, became, state) => {
+      cut(newSnap("f-1"));
+      beforeSet.set("pull@fsn-2", () => { named("fsn-2").copy = became(); });
+      failNext.set("pull@fsn-2", "no_capacity");
+      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs).toEqual(["pull@fsn-2(f-1)"]);
+      expect(named("fsn-1").copy).toMatchObject({ kind: "slot" });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+      expect((await rows())[0]?.message).toContain(state);
+    });
+
     it("refuses a writer with no Service container, before any verb", async () => {
       containers = [];
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
@@ -893,16 +937,48 @@ describe("volume runs", () => {
       expect(machines.filter((fake) => fake.copy?.kind === "root" && !fake.copy.readonly).map((fake) => fake.name)).toEqual(["fsn-1"]);
     });
 
-    it("with only slots, a B that became the writer meanwhile sends the Move forward", async () => {
+    it("with only slots, a B that became the writer and runs the Service meanwhile sends the Move forward", async () => {
       const at = G();
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(at) };
-      failNext.set("forget@fsn-2", new RawFault({ code: "failed_precondition", message: "mismatch", details: { reason: "mismatch", copy: writerCopy(at, 1) } }));
+      beforeSet.set("forget@fsn-2", () => {
+        named("fsn-2").copy = writerCopy(at, 1);
+        containers.push({ machine: "fsn-2", id: "created-1", running: true });
+      });
       const run = await requested({ kind: "release", args: {} });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: null });
       expect(verbs).toEqual(["forget@fsn-2", "remove@fsn-1(web-fsn-1)"]);
+    });
+
+    it("with only slots, a B that became the writer but runs nothing gets B's start again before A's Container goes", async () => {
+      const at = G();
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(at) };
+      beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = writerCopy(at, 1); });
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, released: null });
+      expect(verbs).toEqual(["forget@fsn-2", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+      expect(sent.at(-1)).toMatchObject({ expect: { kind: "writer", epoch: 1 }, want: { kind: "writer", at: at.guid, epoch: 1, start: { kind: "create", creation_key: `${volumeId}-${at.guid}` } } });
+      expect(containers).toEqual([{ machine: "fsn-2", id: `created-${volumeId}-${at.guid}`, running: true }]);
+    });
+
+    it("with only slots, a B start that fails keeps A's Container, so the Service is not down on both Machines", async () => {
+      const at = G();
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(at) };
+      beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = writerCopy(at, 1); });
+      failNext.set("writer@fsn-2", "no_capacity");
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs).toEqual(["forget@fsn-2", "writer@fsn-2(create)"]);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+      expect(await rows()).toMatchObject([{ state: "failed" }]);
     });
 
     it("with only slots and no kept Container, says to restore", async () => {
@@ -1116,6 +1192,20 @@ describe("volume runs", () => {
       });
       expect(await rows()).toEqual([]);
       expect(send).not.toHaveBeenCalled();
+    });
+
+    it("a Move onto the writer beside a mirror synced to its final snapshot, with no stopped Container, is refused", async () => {
+      const G = newSnap("f-1");
+      machines = [
+        { name: "fsn-1", pool: true, copy: slotCopy(G) },
+        { name: "fsn-2", pool: true, copy: writerCopy(G, 2) },
+      ];
+      containers = [{ machine: "fsn-2", id: "created-1", running: true }];
+
+      const admitted = await run({ kind: "move", args: { to: "fsn-2" } });
+
+      expect(admitted).toMatchObject({ ok: false, refusal: { message: "data's writer is already on fsn-2" } });
+      expect(await rows()).toEqual([]);
     });
   });
 

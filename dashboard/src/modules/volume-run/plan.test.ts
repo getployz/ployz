@@ -29,6 +29,8 @@ function outcome(input: PlanInput, members: Member[]) {
       return `delete ${names(phase.destroy)} forget ${phase.forget?.machine.name ?? "none"}`;
     case "move":
       return `move ${phase.writer.machine.name}->${phase.target.machine.name} at ${phase.start}`;
+    case "landed":
+      return `landed on ${phase.target.machine.name} behind ${names(phase.behind)}`;
     case "release": {
       const { from } = phase;
       if (from.kind === "cut") return `release cut ${from.root.machine.name}`;
@@ -106,6 +108,8 @@ describe("plan_from_copies_table", () => {
     ["delete the only copy unconfirmed", remove("b"), [member("a", "empty"), member("b", "mirror")], "refuse confirm_required"],
     ["delete the only copy confirmed", remove("b", "data"), [member("a", "empty"), member("b", "mirror")], "delete b forget none"],
     ["delete the only copy confirmed wrongly", remove("b", "other"), [member("b", "mirror")], "refuse confirm_required"],
+    ["delete with two writers at one epoch", remove("c"), [member("a", "writer", { epoch: 8 }), member("b", "writer", { epoch: 8 }), member("c", "mirror")], "refuse two_writers"],
+    ["delete with an old writer beside the restored one", remove("c"), [member("a", "writer", { epoch: 3 }), member("b", "writer", { epoch: 8 }), member("c", "mirror")], "refuse two_writers"],
     ["delete while a cut holds the root", remove("b"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
     ["delete with a Server unanswered", remove("b"), [member("a", "writer"), member("b", "mirror"), member("c", "unanswered")], "refuse unanswered"],
     ["orphan delete destroys every slot", orphan, [member("b", "mirror"), member("c", "pulling"), member("d", "empty", { pool: true })], "delete b,c forget none"],
@@ -123,8 +127,8 @@ describe("plan_from_copies_table", () => {
     ["move again once only slots remain and the target is mid-pull pulls the final", move("b"), [member("a", "mirror"), member("b", "pulling")], "move a->b at final"],
     ["move again once only the source slot remains pulls the final", move("b"), [member("a", "mirror"), member("b", "empty", { pool: true })], "move a->b at final"],
     ["move again once the target slot holds the source's newest starts", move("b"), [member("a", "mirror"), member("b", "mirror")], "move a->b at start"],
-    ["move again once the target writes at the source's newest starts", move("b"), [member("a", "final"), member("b", "writer")], "move a->b at start"],
-    ["move to the writer beside a synced mirror refuses", move("b"), [member("a", "mirror"), member("b", "writer")], "refuse invalid"],
+    ["move again once the target writes at the source's newest leaves the run to find the cut source", move("b"), [member("a", "final"), member("b", "writer")], "landed on b behind a"],
+    ["move to the writer beside mirrors at its newest names them all, not only a final snapshot", move("b"), [member("a", "mirror"), member("b", "writer"), member("c", "final")], "landed on b behind a,c"],
     ["move onto the writer with its mirror behind", move("a"), [member("a", "writer"), member("b", "behind")], "refuse invalid"],
     ["move onto the writer alone", move("a"), [member("a", "writer")], "refuse invalid"],
     ["move onto a root mid-cut", move("a"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
@@ -169,7 +173,7 @@ describe("plan_from_copies_table", () => {
     ["a read-only root above the writer's epoch is the old one", sync(), [member("a", "cut", { epoch: 9 }), member("b", "writer", { epoch: 8 }), member("c", "mirror")], "demote a below b"],
     ["a read-only root tied with the writer is the old one", release, [member("b", "writer", { epoch: 8 }), member("a", "cut", { epoch: 8 })], "demote a below b"],
     ["a read-only root beside a lower writer is the old one", mirror("c"), [member("a", "writer", { epoch: 3 }), member("b", "cut", { epoch: 8 }), member("c", "empty")], "demote b below a"],
-    ["two read-only roots stay two writers", release, [member("a", "cut", { epoch: 9 }), member("b", "cut", { epoch: 8 })], "refuse two_writers"],
+    ["two read-only roots are mid-run, not two writers", release, [member("a", "cut", { epoch: 9 }), member("b", "cut", { epoch: 8 })], "refuse volume_switching"],
     ["two writers at the same epoch stay two writers", release, [member("a", "writer", { epoch: 8 }), member("b", "writer", { epoch: 8 })], "refuse two_writers"],
     ["a tie at the top stays two writers beside a lower root", release, [member("a", "writer", { epoch: 8 }), member("b", "writer", { epoch: 8 }), member("c", "writer", { epoch: 3 })], "refuse two_writers"],
   ])("%s", (_, input, members, expected) => {
