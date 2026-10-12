@@ -7,22 +7,21 @@ import { afterEach, expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { ServerLacks, requirements } from "#/modules/runtime/daemon-compat";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { listLatestServerUpgradesServerFn, readChannelReleaseServerFn, requestServerUpgradeServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
+import * as functions from "#/modules/server-upgrade/server-upgrade.functions";
+import * as hooks from "#/modules/server-upgrade/server-upgrade.hooks";
 import { serverUpgradeKeys } from "#/modules/server-upgrade/server-upgrade.queries";
 import { ServerLackLine } from "./server-lack-line";
 
-vi.mock("#/modules/server-upgrade/server-upgrade.functions", () => ({
-  listLatestServerUpgradesServerFn: vi.fn(),
-  readChannelReleaseServerFn: vi.fn(),
-  requestServerUpgradeServerFn: vi.fn(),
-  setServerUpgradeSettingsServerFn: vi.fn(),
-}));
-vi.mock("#/modules/server-upgrade/server-upgrade.hooks", async (actual) => ({
-  ...await actual<typeof import("#/modules/server-upgrade/server-upgrade.hooks")>(),
-  useServerUpgradeSettings: () => ({ automatic: false, channel: "stable" }),
-}));
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.resetAllMocks(); });
+function stubCloud() {
+  vi.spyOn(hooks, "useServerUpgradeSettings").mockReturnValue({ automatic: false, channel: "stable", setAutomatic: () => {}, setChannel: () => {} });
+  return {
+    listLatest: vi.spyOn(functions, "listLatestServerUpgradesServerFn"),
+    readRelease: vi.spyOn(functions, "readChannelReleaseServerFn").mockResolvedValue("0.2.4"),
+    request: vi.spyOn(functions, "requestServerUpgradeServerFn").mockResolvedValue(undefined),
+  };
+}
 
 const machine: RuntimeMachineRecord = {
   id: "m-2", name: "web-2", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
@@ -45,16 +44,15 @@ async function renderLine() {
 }
 
 it("names the channel's release and offers Upgrade once the release reads, and Upgrade asks Cloud for that Server", async () => {
-  vi.mocked(listLatestServerUpgradesServerFn).mockResolvedValue({ servers: {} });
-  vi.mocked(readChannelReleaseServerFn).mockResolvedValue("0.2.4");
-  vi.mocked(requestServerUpgradeServerFn).mockResolvedValue(undefined as never);
+  const cloud = stubCloud();
+  cloud.listLatest.mockResolvedValue({ servers: {} });
   const { teardown } = await renderLine();
   try {
     expect((await screen.findByRole("button", { name: "Upgrade" })).closest("[role=status]")?.textContent)
       .toBe("Logs need a newer Ployz on web-2. 0.2.4 is out.Upgrade");
-    expect(readChannelReleaseServerFn).toHaveBeenCalledWith({ data: { channel: "stable", line: "v0" } });
+    expect(cloud.readRelease).toHaveBeenCalledWith({ data: { channel: "stable", line: "v0" } });
     fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
-    expect(requestServerUpgradeServerFn).toHaveBeenCalledWith({ data: { organizationSlug: "acme", machineId: "m-2" } });
+    expect(cloud.request).toHaveBeenCalledWith({ data: { organizationSlug: "acme", machineId: "m-2" } });
     expect(screen.getByRole("status").textContent).toBe("Upgrading web-2 to 0.2.4");
   } finally {
     await teardown();
@@ -62,8 +60,7 @@ it("names the channel's release and offers Upgrade once the release reads, and U
 });
 
 it("tries again after a read under the line fails, so the release and button come back without a reload", async () => {
-  vi.mocked(listLatestServerUpgradesServerFn).mockRejectedValueOnce(new Error("fetch failed")).mockResolvedValue({ servers: {} });
-  vi.mocked(readChannelReleaseServerFn).mockResolvedValue("0.2.4");
+  stubCloud().listLatest.mockRejectedValueOnce(new Error("fetch failed")).mockResolvedValue({ servers: {} });
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const { teardown } = await renderLine();
@@ -80,17 +77,17 @@ it("tries again after a read under the line fails, so the release and button com
 });
 
 it("moves to Upgrading when another session's Upgrade lands through the org change stream, with no click here", async () => {
-  vi.mocked(listLatestServerUpgradesServerFn).mockResolvedValue({ servers: {} });
-  vi.mocked(readChannelReleaseServerFn).mockResolvedValue("0.2.4");
+  const cloud = stubCloud();
+  cloud.listLatest.mockResolvedValue({ servers: {} });
   const { client, teardown } = await renderLine();
   try {
     await screen.findByRole("button", { name: "Upgrade" });
-    vi.mocked(listLatestServerUpgradesServerFn).mockResolvedValue({ servers: { "m-2": {
+    cloud.listLatest.mockResolvedValue({ servers: { "m-2": {
       attemptId: "a".repeat(32), outcome: "running", stage: null, error: null, fromVersion: "0.2.3", targetVersion: "0.2.4", startedAt: new Date().toISOString(),
     } } });
     await act(async () => { await client.invalidateQueries({ queryKey: serverUpgradeKeys.all }); });
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Upgrading web-2 to 0.2.4"));
-    expect(requestServerUpgradeServerFn).not.toHaveBeenCalled();
+    expect(cloud.request).not.toHaveBeenCalled();
   } finally {
     await teardown();
   }
