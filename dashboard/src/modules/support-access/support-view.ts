@@ -11,9 +11,12 @@ type Holds = "variable" | "file" | "other";
 
 const VARIABLE_PATH = /(^|\.)(env|variables)\.[^.]+$/;
 const FILE_PATH = /^configs\.@[^.]+\.files\./;
+/** A variable's `.exported` and `.description` share its row but aren't its value. */
+const VARIABLE_META_PATH = /(^|\.)env\.[^.]+\.(exported|description)$/;
 
 /** A row's `<lineage>:<at>` names what it holds; rows without one (renames, mounts, flags) fall back to the path. */
 export function holds(row: string | null | undefined, path = ""): Holds {
+  if (VARIABLE_META_PATH.test(path)) return "other";
   if (row) {
     const at = row.slice(row.indexOf(":") + 1);
     return at.startsWith("variables.") ? "variable" : at.startsWith("files.") ? "file" : "other";
@@ -24,9 +27,9 @@ export function holds(row: string | null | undefined, path = ""): Holds {
 const isObject = (value: JsonValue): value is { [key: string]: JsonValue } =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A variable's value as a sealed one reads: unset stays unset, and `.exported`, a flag on the same row, stays. */
+/** A variable's value as a sealed one reads: unset stays unset. */
 const hideValue = (value: JsonValue): JsonValue =>
-  value === null || value === true || value === false || (isObject(value) && "secret" in value) ? value : { secret: true };
+  value === null || (isObject(value) && "secret" in value) ? value : { secret: true };
 
 /** A Config file's cell without its text: its mode and owner stay. */
 const hideFile = (value: JsonValue): JsonValue => {

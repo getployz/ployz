@@ -49,13 +49,16 @@ describe("a Service's view for support", () => {
     expect(viewForSupport(service, ALL)).toEqual(service);
   });
 
-  it("keeps whether a variable is exported, which shares the variable's row", () => {
-    const exported = view({
+  it("keeps whether a variable is exported and its description, which share the variable's row", () => {
+    const meta = view({
       view: "service",
       values: {},
-      changes: [{ after: true, before: false, canRestore: true, kind: "change", path: "api.env.SHARED.exported", row: `${API}:variables.SHARED` }],
+      changes: [
+        { after: true, before: false, canRestore: true, kind: "change", path: "api.env.SHARED.exported", row: `${API}:variables.SHARED` },
+        { after: "Feature switch", before: null, canRestore: true, kind: "change", path: "api.env.SHARED.description", row: `${API}:variables.SHARED` },
+      ],
     });
-    expect(viewForSupport(exported, NONE)).toEqual(exported);
+    expect(viewForSupport(meta, NONE)).toEqual(meta);
   });
 });
 
