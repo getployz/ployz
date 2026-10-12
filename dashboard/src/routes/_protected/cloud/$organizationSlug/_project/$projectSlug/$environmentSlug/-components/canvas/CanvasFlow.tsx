@@ -1,4 +1,4 @@
-import { use, useState } from "react";
+import { Suspense, use, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -7,8 +7,8 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useLoaderData, useLocation, useNavigate, useParams } from "@tanstack/react-router";
-import { PlusIcon } from "lucide-react";
+import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
+import { HistoryIcon, PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "./store-hints";
@@ -27,19 +27,23 @@ import { useVolumeCreator } from "./useVolumeCreator";
 import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
-import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
-import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-deployments";
+import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-deployments";
 import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
+import { OnMergeButton } from "../sync/OnMerge";
+import { SyncDialog } from "../sync/SyncDialog";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import {
+  ENVIRONMENT_HISTORY_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "../environment-route-paths";
@@ -67,7 +71,6 @@ export function CanvasFlow({
   const [flowReady, setFlowReady] = useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
-  const locationKey = useLocation({ select: (location) => location.href });
   const { onNodeDrag } = useCanvasPositionMutation({
     ...params,
     organizationId,
@@ -154,6 +157,8 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <Suspense fallback={null}><OnMergeButton /></Suspense>
+        <Button nativeButton={false} className="pointer-events-auto" variant="outline" render={<Link to={ENVIRONMENT_HISTORY_ROUTE_TO} params={params} />}><HistoryIcon />History</Button>
         <SyncButton />
         <CanvasFinder nodes={findableNodes} />
         <Button
@@ -166,7 +171,7 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <StoreBottomBar key={locationKey} store={store} />
+      <StoreBottomBar store={store} />
 
       <ServiceCreatorDialog
         open={creator.creatorOpen}
@@ -214,35 +219,49 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
-  const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
   const storage = useStorageSteps(params.organizationSlug);
-  const storeGroups = changeGroups(diff, store.services.map(({ service }) => service));
+  const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
-  const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath);
+  const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath, group.discardTarget);
+  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
+  const writer = useStoreWriter(params.organizationSlug);
+  const [including, setIncluding] = useState<string | null>(null);
   return (
     <>
       <BottomBar
         groups={groups}
-        totalChanges={diff.total_count + placements.count}
-        canPublish={diff.total_count > 0 && !diff.published}
+        totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
+        runtimeChanges={diff.total_count + placements.count}
+        canPublish={hasSomethingToSave}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
         onPublish={actions.publish}
         onDiscardAll={() => {
           placements.discardAll();
-          if (storeGroups.length > 0 || diff.total_count > 0) actions.discard(null);
+          if (storeGroups.length > 0 || diff.total_count > 0) actions.discard(null, "review");
         }}
         onDiscardNode={discardNode}
-        onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path) : actions.discard(path)}
+        onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path)
+          : actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
         active={inFlight}
         storage={storage}
         notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
-        waiting={waiting}
+        proposals={{
+          included: diff.included,
+          onRemoveIncluded: ({ proposal }) => void writer.commit({ command: "remove_proposal", environment: ref, proposal, version: diff.version }),
+          onIncludeNewer: ({ source }) => setIncluding(source.name),
+        }}
         noServers={noServers}
       />
       {actions.dialog}
+      {including === null ? null : (
+        <Suspense fallback={null}>
+          <SyncDialog organizationSlug={params.organizationSlug} from={{ project: ref.project, environment: including }}
+            into={diff.environment.name} closable={() => false} onClose={() => setIncluding(null)} onSynced={() => setIncluding(null)} />
+        </Suspense>
+      )}
     </>
   );
 }

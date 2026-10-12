@@ -106,17 +106,15 @@ fn into(
     let picks = whole(checked.rows(), picks);
     let mut landing = checked.plan().landable(&picks);
     if !landing.is_empty() {
-        let before = branch.summary.revision;
         let none = BTreeMap::new();
         let landed = crate::storage::attempt(tx, |tx| {
-            checked.apply(tx, who, &mut branch, &landing, &none, None)
+            checked.apply(tx, who, &mut branch, &landing, &none, Owner::None)
         });
         match landed {
             // One of the Branch's own rules refuses it: all of it is a hint.
             Err(error) if crate::automation::skippable(&error) => landing.clear(),
             landed => {
                 landed?;
-                crate::conditional_sync::followed(tx, &branch.summary, before)?;
             }
         }
     }
@@ -218,12 +216,11 @@ pub(crate) fn take(
         ));
     }
     let none = BTreeMap::new();
-    let staged = checked.apply(tx, who, &mut branch, &picks, &none, None)?;
+    let staged = checked.apply(tx, who, &mut branch, &picks, &none, Owner::None)?;
     Ok(Taken {
         from: from.summary,
         into: branch.summary,
         staged,
-        conditional_sync: None,
     })
 }
 

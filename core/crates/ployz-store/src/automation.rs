@@ -12,9 +12,9 @@
 //! keeps its newest result.
 
 use crate::id::{BranchName, CommitSha, RepositoryId};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::config::SavedServiceIntent;
+use ployz_core::config::{SavedServiceIntent, ServiceSource};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -22,8 +22,9 @@ use ts_rs::TS;
 
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
-use crate::id::{ConditionalSyncId, DeploymentId, EnvironmentId, Hostname, OrganizationId};
+use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
+use crate::pull_request::on_merge::Merging;
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
 use crate::storage::{Tx, name_of};
@@ -69,10 +70,6 @@ pub struct BranchHead {
     /// Service that follows the branch.
     #[serde(default)]
     pub changed: Option<Vec<String>>,
-    /// The merge commits of frozen Conditional Syncs ([`crate::PendingSyncs::merged`])
-    /// Cloud found `head` is or descends from: this push carries those.
-    #[serde(default)]
-    pub merged: Vec<CommitSha>,
 }
 
 /// A check suite of a commit, as Cloud read it just now.
@@ -138,9 +135,13 @@ pub struct Automated {
     pub waiting: Vec<EnvironmentId>,
     /// Environments that would have deployed but can't, and why.
     pub skipped: Vec<Skipped>,
-    /// Branches the Store is closing that still run on the Servers: Cloud admits
-    /// their removal (`Admit { remove }`) with the runtime evidence it gathers.
+    /// Branches whose removal is due: Cloud admits it from the Servers under the
+    /// mark (`Admit { remove }`).
     pub closing: Vec<EnvironmentSummary>,
+    /// Idle PR Environments that hold something for their merge, still on the
+    /// Servers: Cloud takes each off and keeps it (`Admit { shut_down }`).
+    #[serde(default)]
+    pub shutting_down: Vec<EnvironmentSummary>,
     /// Environments deleted: nothing of them runs on the Servers any more.
     pub removed: Vec<EnvironmentSummary>,
     /// Pull requests whose GitHub check Cloud publishes again.
@@ -284,14 +285,13 @@ fn branch_head(
     let Some(head) = &event.head else {
         return Ok(Automated::default());
     };
+    remember(tx, who, repository_id, branch, head)?;
     // The first head seen deploys every Service that follows the branch.
     let changed = event.base.as_ref().and(event.changed.as_deref());
     let environments = tx.query(
         "SELECT id FROM config_environment WHERE organization_id = ?1 ORDER BY id",
         &[organization.into()],
     )?;
-    let mut carried =
-        crate::conditional_sync::carried(tx, who, event.repository_id, branch, &event.merged)?;
     let mut automated = Automated::default();
     for row in environments {
         let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
@@ -300,13 +300,12 @@ fn branch_head(
             branch,
             head,
         };
-        let syncs = carried.remove(&environment).unwrap_or_default();
         deploy(
             tx,
             who,
             &environment,
             &push,
-            (Select::Changed(changed), &syncs),
+            Select::Changed(changed),
             trusted,
             &mut automated,
         )?;
@@ -342,7 +341,7 @@ fn check_suite(
         ],
     )?;
     let waiting = tx.query(
-        "SELECT environment_id, branch, services, syncs FROM config_waiting_deploy \
+        "SELECT environment_id, branch, services FROM config_waiting_deploy \
          WHERE organization_id = ?1 AND repository_id = ?2 AND head = ?3 \
          ORDER BY environment_id, branch",
         &[
@@ -355,7 +354,6 @@ fn check_suite(
     for row in waiting {
         let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
         let services: Vec<String> = row.json(2, "waiting deploy")?;
-        let syncs: Vec<ConditionalSyncId> = row.json(3, "waiting deploy")?;
         let branch: BranchName = row.parse(1, "waiting deploy")?;
         let push = Push {
             repository_id: event.repository_id,
@@ -367,7 +365,7 @@ fn check_suite(
             who,
             &environment,
             &push,
-            (Select::Services(&services), &syncs),
+            Select::Services(&services),
             trusted,
             &mut automated,
         )?;
@@ -381,26 +379,78 @@ struct Push<'a> {
     head: &'a CommitSha,
 }
 
-/// Which of the Services that follow the branch deploy.
+/// Which of the Services that follow the branch deploy, besides those merges
+/// landed.
 enum Select<'a> {
-    /// Those watching one of these changed paths; `None`: all of them.
+    /// Those watching one of these changed paths (`None`: all of them).
     Changed(Option<&'a [String]>),
     /// Those a push selected earlier, by ID, that still follow it.
     Services(&'a [String]),
 }
 
-/// Deploy `environment`'s Services the push selects, wait for CI, or skip it; the
-/// frozen Conditional Syncs it carries there land first, wait with it, or land now.
+/// How many of a branch's latest heads the Store remembers.
+const RECENT: usize = 50;
+
+/// Remember `head` among the branch's recent heads.
+fn remember(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    branch: &BranchName,
+    head: &CommitSha,
+) -> Result<(), RpcError> {
+    let mut heads = recent(tx, who, repository_id, branch)?;
+    heads.retain(|seen| seen != head);
+    heads.push(head.clone());
+    let drop = heads.len().saturating_sub(RECENT);
+    heads.drain(..drop);
+    tx.execute(
+        "UPDATE config_branch SET recent = ?4 \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND branch = ?3",
+        &[
+            who.organization.as_str().into(),
+            repository_id.into(),
+            branch.as_str().into(),
+            serde_json::to_string(&heads)
+                .expect("heads are JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// The branch's recent heads, oldest first.
+fn recent(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    branch: &BranchName,
+) -> Result<Vec<CommitSha>, RpcError> {
+    tx.query(
+        "SELECT recent FROM config_branch \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND branch = ?3",
+        &[
+            who.organization.as_str().into(),
+            repository_id.into(),
+            branch.as_str().into(),
+        ],
+    )?
+    .first()
+    .map_or_else(|| Ok(Vec::new()), |row| row.json(0, "recent heads"))
+}
+
+/// Deploy `environment`'s Services the push selects, wait for CI, or skip it.
 fn deploy(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
     push: &Push<'_>,
-    (select, syncs): (Select<'_>, &[ConditionalSyncId]),
+    select: Select<'_>,
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    match admit(tx, who, environment, push, (select, syncs), trusted) {
+    match admit(tx, who, environment, push, select, trusted) {
         Ok(Some(Deploy::Admitted(deployment))) => automated.admitted.push(AutoDeployed {
             environment: environment.clone(),
             deployment: *deployment,
@@ -421,6 +471,126 @@ fn deploy(
         Err(error) => return Err(error),
     }
     Ok(())
+}
+
+/// Deploy the Services `services` a merge at `commit` into `branch` landed in
+/// `environment`: now when the branch's head is or came after `commit`, else with
+/// the push that carries `commit`. Kept until a Deployment takes them.
+pub(crate) fn deploy_landed(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentId,
+    repository_id: RepositoryId,
+    merge: &Merging<'_>,
+    services: Vec<String>,
+    automated: &mut Automated,
+) -> Result<(), RpcError> {
+    let (branch, commit) = (merge.target, merge.commit);
+    let mut pending: BTreeSet<String> = services.into_iter().collect();
+    let earlier = tx.query(
+        "SELECT services FROM config_merge_deploy \
+         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
+        &[
+            environment.as_str().into(),
+            repository_id.into(),
+            branch.as_str().into(),
+            commit.as_str().into(),
+        ],
+    )?;
+    if let Some(row) = earlier.first() {
+        pending.extend(row.json::<Vec<String>>(0, "merge deploy")?);
+    }
+    tx.execute(
+        "INSERT INTO config_merge_deploy \
+         (environment_id, repository_id, branch, commit_sha, seq, organization_id, services) \
+         SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(seq), 0) + 1, ?5, ?6 FROM config_merge_deploy \
+         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 \
+         ON CONFLICT (environment_id, repository_id, branch, commit_sha) \
+         DO UPDATE SET services = excluded.services",
+        &[
+            environment.as_str().into(),
+            repository_id.into(),
+            branch.as_str().into(),
+            commit.as_str().into(),
+            who.organization.as_str().into(),
+            serde_json::to_string(&pending)
+                .expect("Service IDs are JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
+    let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
+        return Ok(());
+    };
+    let recent = recent(tx, who, repository_id, branch)?;
+    let reached = |at: &CommitSha| *at == head || recent.contains(at);
+    // A push that skipped past the merge commit reached it all the same, when GitHub
+    // says the head Cloud read with the merge contains it.
+    if !reached(commit) && !merge.target_head.is_some_and(reached) {
+        return Ok(());
+    }
+    // What still waits for this head's CI keeps waiting with it.
+    let waiting: Vec<String> = tx
+        .query(
+            "SELECT services FROM config_waiting_deploy \
+             WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND head = ?4",
+            &[
+                environment.as_str().into(),
+                repository_id.into(),
+                branch.as_str().into(),
+                head.as_str().into(),
+            ],
+        )?
+        .first()
+        .map_or_else(|| Ok(Vec::new()), |row| row.json(0, "waiting deploy"))?;
+    let push = Push {
+        repository_id,
+        branch,
+        head: &head,
+    };
+    deploy(
+        tx,
+        who,
+        environment,
+        &push,
+        Select::Services(&waiting),
+        merge.trusted,
+        automated,
+    )
+}
+
+/// What merges into the branch of `push` landed in `environment` that no Deployment
+/// took yet and `push` carries: their merge commits, and their Services. A head that
+/// is one of those commits carries it and the merges before it; any other head all.
+fn landed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    push: &Push<'_>,
+) -> Result<(Vec<String>, BTreeSet<String>), RpcError> {
+    let rows = tx.query(
+        "SELECT commit_sha, services FROM config_merge_deploy \
+         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 ORDER BY seq",
+        &[
+            environment.as_str().into(),
+            push.repository_id.into(),
+            push.branch.as_str().into(),
+        ],
+    )?;
+    let mut commits = rows
+        .iter()
+        .map(|row| row.text(0).map(str::to_owned))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(at) = commits
+        .iter()
+        .position(|commit| commit == push.head.as_str())
+    {
+        commits.truncate(at + 1);
+    }
+    let mut services = BTreeSet::new();
+    for row in rows.iter().take(commits.len()) {
+        services.extend(row.json::<Vec<String>>(1, "merge deploy")?);
+    }
+    Ok((commits, services))
 }
 
 /// Whether an automatic Deploy that failed with `error` is skipped, leaving the
@@ -447,16 +617,10 @@ fn admit(
     who: &Actor,
     id: &EnvironmentId,
     push: &Push<'_>,
-    (select, syncs): (Select<'_>, &[ConditionalSyncId]),
+    select: Select<'_>,
     trusted: &Trusted,
 ) -> Result<Option<Deploy>, RpcError> {
-    let mut environment = scope::lock_id(tx, who, id)?;
-    // Where nothing deploys, what the push carries lands now.
-    let land = |tx: &mut dyn Tx, environment: &mut scope::Environment| {
-        syncs
-            .iter()
-            .try_for_each(|sync| crate::conditional_sync::land(tx, who, sync, environment))
-    };
+    let environment = scope::lock_id(tx, who, id)?;
     // Being removed: a push leaves it be. A shut-down PR Environment (its removal
     // applied) comes back on: the push deploys all of it again.
     let removal = crate::removal::latest(tx, id)?.filter(|removal| {
@@ -470,31 +634,34 @@ fn admit(
         .is_some_and(|removal| removal.status == DeploymentStatus::Applied)
         && crate::pull_request::of(tx, id)?.is_some();
     if crate::removal::mark::naming(tx, id)?.is_some() || (removal.is_some() && !shut_down) {
-        land(tx, &mut environment)?;
         return Ok(None);
     }
     // A push brings back a Branch whose removal someone cancelled.
     crate::removal::mark::clear_tombstone(tx, &crate::removal::Target::Environment(id.clone()))?;
     let Some(saved) = review::latest_saved(tx, id)? else {
-        land(tx, &mut environment)?;
         return Ok(None);
     };
-    let mut selected: Vec<&SavedServiceIntent> = Vec::new();
+    // What a merge landed deploys whatever the Service follows: its config changed.
+    let (merges, landed) = landed(tx, id, push)?;
+    // Each selected Service, and whether it builds the pushed head.
+    let mut selected: Vec<(&SavedServiceIntent, bool)> = Vec::new();
     let mut wait = false;
     for service in &saved.intent.services {
-        if !crate::git::tracks(service, push.repository_id, push.branch) {
+        let tracks = crate::git::tracks(service, push.repository_id, push.branch);
+        let merged = landed.contains(&service.id);
+        if !tracks && !merged {
             continue;
         }
         let policy = policy::load(tx, id, &service.id)?;
-        let chosen = policy.auto_deploy
+        let follows = tracks && policy.auto_deploy;
+        let pushed = follows
             && match select {
-                Select::Changed(None) => true,
-                Select::Changed(Some(changed)) => policy.watches(changed),
+                Select::Changed(changed) => changed.is_none_or(|changed| policy.watches(changed)),
                 Select::Services(ids) => ids.contains(&service.id),
             };
-        if chosen {
-            wait |= policy.wait_for_ci;
-            selected.push(service);
+        if pushed || merged {
+            wait |= tracks && policy.wait_for_ci;
+            selected.push((service, follows));
         }
     }
     let key: [crate::storage::Param<'_>; 3] = [
@@ -509,18 +676,22 @@ fn admit(
              WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
             &key,
         )?;
-        land(tx, &mut environment)?;
+        if selected.is_empty() {
+            forget_landed(tx, id, push, &merges)?;
+        }
         return Ok((!selected.is_empty()).then_some(Deploy::NoServers));
     }
     if wait && !passed(tx, who, push)? {
-        let services: Vec<&str> = selected.iter().map(|service| service.id.as_str()).collect();
+        let services: Vec<&str> = selected
+            .iter()
+            .map(|(service, _)| service.id.as_str())
+            .collect();
         tx.execute(
             "INSERT INTO config_waiting_deploy \
-             (environment_id, repository_id, branch, organization_id, head, services, syncs) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             (environment_id, repository_id, branch, organization_id, head, services) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
              ON CONFLICT (environment_id, repository_id, branch) \
-             DO UPDATE SET head = excluded.head, services = excluded.services, \
-             syncs = excluded.syncs",
+             DO UPDATE SET head = excluded.head, services = excluded.services",
             &[
                 environment_param,
                 repository_param,
@@ -529,10 +700,6 @@ fn admit(
                 push.head.as_str().into(),
                 serde_json::to_string(&services)
                     .expect("Service IDs are JSON")
-                    .as_str()
-                    .into(),
-                serde_json::to_string(syncs)
-                    .expect("Conditional Sync IDs are JSON")
                     .as_str()
                     .into(),
             ],
@@ -544,25 +711,25 @@ fn admit(
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
         &key,
     )?;
-    // What the push carries lands in Saved State first, so it deploys too.
-    let selected: Vec<SavedServiceIntent> = selected.into_iter().cloned().collect();
-    let (saved, selected) = match syncs.is_empty() {
-        true => (saved, selected),
-        false => {
-            let ids: Vec<String> = selected.iter().map(|service| service.id.clone()).collect();
-            land(tx, &mut environment)?;
-            let saved =
-                review::latest_saved(tx, id)?.ok_or_else(|| error::corrupt("Saved State"))?;
-            let selected = saved
-                .intent
-                .services
-                .iter()
-                .filter(|service| ids.contains(&service.id))
-                .cloned()
-                .collect();
-            (saved, selected)
+    // A Service that builds the head is pinned to it; another Git Service to the
+    // commit it last built here, or its branch's head when it never built.
+    let mut pins: BTreeMap<ServiceName, CommitSha> = BTreeMap::new();
+    for (service, follows) in &selected {
+        let pin = if *follows {
+            Some(push.head.clone())
+        } else if crate::git::is_git(service) {
+            last_built(tx, id, service)?
+        } else {
+            None
+        };
+        if let Some(pin) = pin {
+            pins.insert(service.config.private_dns.clone(), pin);
         }
-    };
+    }
+    let selected: Vec<SavedServiceIntent> = selected
+        .into_iter()
+        .map(|(service, _)| service.clone())
+        .collect();
     let names = match shut_down {
         true => Vec::new(),
         false => selected
@@ -571,10 +738,6 @@ fn admit(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| error::corrupt("Service name"))?,
     };
-    let pins: BTreeMap<ServiceName, CommitSha> = selected
-        .iter()
-        .map(|service| (service.config.private_dns.clone(), push.head.clone()))
-        .collect();
     // Generated domains expand under the Cluster Domain Cloud reserved for the
     // Environment's last Deploy.
     let cluster_domain = deployment::cluster_domain(tx, id)?;
@@ -589,7 +752,140 @@ fn admit(
             trusted,
         )
     })?;
+    forget_landed(tx, id, push, &merges)?;
     Ok(Some(Deploy::Admitted(Box::new(summary))))
+}
+
+/// Forget the landed Services of `environment` a Deployment just took: `shipped`
+/// holds their Service IDs.
+pub(crate) fn shipped_landed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    shipped: &BTreeSet<&str>,
+) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT repository_id, branch, commit_sha, services FROM config_merge_deploy \
+         WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    for row in &rows {
+        let repository_id: RepositoryId = row.number(0, "merge deploy")?;
+        let branch = row.text(1)?;
+        let commit = row.text(2)?;
+        let mut pending: Vec<String> = row.json(3, "merge deploy")?;
+        let before = pending.len();
+        pending.retain(|service| !shipped.contains(service.as_str()));
+        if pending.len() == before {
+            continue;
+        }
+        if pending.is_empty() {
+            tx.execute(
+                "DELETE FROM config_merge_deploy WHERE environment_id = ?1 \
+                 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
+                &[
+                    environment.as_str().into(),
+                    repository_id.into(),
+                    branch.into(),
+                    commit.into(),
+                ],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE config_merge_deploy SET services = ?5 WHERE environment_id = ?1 \
+                 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
+                &[
+                    environment.as_str().into(),
+                    repository_id.into(),
+                    branch.into(),
+                    commit.into(),
+                    serde_json::to_string(&pending)
+                        .expect("Service IDs are JSON")
+                        .as_str()
+                        .into(),
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Forget the merges at `commits` into the branch of `push` that landed in
+/// `environment`: a Deployment took them, or nothing is left of them.
+fn forget_landed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    push: &Push<'_>,
+    commits: &[String],
+) -> Result<(), RpcError> {
+    for commit in commits {
+        tx.execute(
+            "DELETE FROM config_merge_deploy WHERE environment_id = ?1 \
+             AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
+            &[
+                environment.as_str().into(),
+                push.repository_id.into(),
+                push.branch.as_str().into(),
+                commit.as_str().into(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// The commit Service `service` (its ID) last built in Environment `id`, under
+/// whatever runtime name it had then: each Deployment's target nodes say.
+fn last_built(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+    service: &SavedServiceIntent,
+) -> Result<Option<CommitSha>, RpcError> {
+    let rows = tx.query(
+        "SELECT b.commit_sha, b.service, d.nodes, d.saved_revision FROM config_build b \
+         JOIN config_deployment d ON d.id = b.deployment_id \
+         WHERE d.environment_id = ?1 AND d.nodes LIKE ?2 AND b.commit_sha IS NOT NULL \
+         AND b.status IN ('built', 'reused') ORDER BY d.admitted DESC",
+        &[
+            id.as_str().into(),
+            format!("%\"{}\"%", service.id).as_str().into(),
+        ],
+    )?;
+    for row in &rows {
+        let nodes: Vec<deployment::TargetNode> = row.json(2, "Deployment")?;
+        let built = row.text(1)?;
+        let ours = nodes.iter().any(|node| match node {
+            deployment::TargetNode::Service { id, runtime, .. } => {
+                id.as_str() == service.id && runtime.as_str() == built
+            }
+            deployment::TargetNode::Volume { .. } | deployment::TargetNode::Config { .. } => false,
+        });
+        if !ours {
+            continue;
+        }
+        // A build of another repository or branch is no commit of this source.
+        let saved = deployment::saved_at(tx, id, row.number(3, "revision")?)?;
+        let same = saved
+            .services
+            .iter()
+            .find(|then| then.id == service.id)
+            .is_some_and(|then| same_source(&then.config.source, &service.config.source));
+        return if same {
+            row.parse(0, "commit").map(Some)
+        } else {
+            Ok(None)
+        };
+    }
+    Ok(None)
+}
+
+/// Whether `a` and `b` build the same branch of the same repository.
+fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
+    matches!(
+        (a, b),
+        (
+            ServiceSource::Git { repository_id, branch, .. },
+            ServiceSource::Git { repository_id: then, branch: then_branch, .. },
+        ) if repository_id == then && branch == then_branch
+    )
 }
 
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:

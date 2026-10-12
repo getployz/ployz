@@ -85,13 +85,13 @@ it.live(
         return view.environments.map((listing) => listing.name);
       });
 
-      // Opened: the PR Environment deploys, and the check says nothing waits to be saved.
+      // Opened: the PR Environment deploys, and the check says its merge lands no config changes.
       const opened = yield* run("open");
       expect(opened.admitted).toHaveLength(1);
       expect(opened.check).toBe("posted");
       expect(dispatched).toEqual(["open"]);
       expect(yield* environments()).toEqual(["pr-5", "production"]);
-      expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No changes for production" } }]);
+      expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No config changes" } }]);
 
       // A later write in its Project may move the check: the Store names it, and Cloud asks for it again.
       yield* callStore(ORGANIZATION, null, { operation: "write", command: {

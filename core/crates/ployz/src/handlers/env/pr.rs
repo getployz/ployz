@@ -1,8 +1,8 @@
-//! A PR Environment's plan, and shutting one down.
+//! A PR Environment's plan, what its merge lands, and shutting one down.
 
 use clap::ArgMatches;
-use ployz_store::{DeploymentStatus, EnvironmentName, EnvironmentRef};
-use serde_json::json;
+use ployz_store::{DeploymentStatus, EnvironmentName, EnvironmentRef, Ride};
+use serde_json::{Value, json};
 
 use super::super::deploy;
 use super::super::store::{self, project, store};
@@ -144,4 +144,86 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
         ]);
     }
     crate::ui::list(&json, &table)
+}
+
+/// What a PR Environment's pull request lands when it merges.
+pub(super) fn on_merge(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let view = store(root)?.read(&ployz_store::OnMergeQuery {
+        environment: store::environment(matches)?,
+    })?;
+    let mut table = crate::ui::Table::new(
+        ["INTO", "ROW", "NOW", "LANDS", "DETAILS"],
+        format!("Merging #{} lands nothing.", view.pull_request.number),
+    );
+    for into in &view.destinations {
+        for row in &into.rows {
+            let (lands, tone) = match row.ride {
+                Ride::Rides | Ride::Edited if row.lands.is_null() => {
+                    ("removed".to_owned(), crate::ui::Tone::Bad)
+                }
+                Ride::Rides | Ride::Edited if !row.production.is_null() && is_file(&row.lands) => {
+                    ("changed".to_owned(), crate::ui::Tone::Good)
+                }
+                Ride::Rides | Ride::Edited => (shown(&row.lands), crate::ui::Tone::Good),
+                Ride::Excluded => ("excluded".to_owned(), crate::ui::Tone::Muted),
+                Ride::ProductionKeeps => ("keeps its own".to_owned(), crate::ui::Tone::Muted),
+            };
+            let mut details = Vec::new();
+            if row.ride == Ride::Edited {
+                details.push("edited");
+            }
+            if row.conflict {
+                details.push("changed there too");
+            }
+            table.row([
+                crate::ui::Cell::from(into.name.to_string()),
+                crate::ui::Cell::from(row.at.to_string()),
+                crate::ui::Cell::from(shown(&row.production)),
+                crate::ui::Cell::status(lands, tone),
+                crate::ui::Cell::from(details.join(" · ")),
+            ]);
+        }
+    }
+    crate::ui::list(&view, &table)
+}
+
+fn is_file(value: &Value) -> bool {
+    value.get("content").is_some()
+}
+
+/// A value as the On merge list shows it: a secret only as set or Not set, a
+/// Config file's contents as a file.
+fn shown(value: &Value) -> String {
+    if *value == json!({ "secret": true }) {
+        return "secret".to_owned();
+    }
+    if *value == json!({ "secret": false }) {
+        return "Not set".to_owned();
+    }
+    match value {
+        Value::Null => "not set".to_owned(),
+        Value::String(text) => text.clone(),
+        Value::Object(file) if file.contains_key("content") => "file".to_owned(),
+        other @ (Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_)) => {
+            other.to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::shown;
+
+    #[test]
+    fn only_a_missing_secret_reads_not_set() {
+        assert_eq!(shown(&json!({ "secret": false })), "Not set");
+        assert_eq!(shown(&json!({ "secret": true })), "secret");
+        assert_eq!(
+            shown(&json!({ "type": "http", "path": "/up" })),
+            r#"{"path":"/up","type":"http"}"#
+        );
+    }
 }

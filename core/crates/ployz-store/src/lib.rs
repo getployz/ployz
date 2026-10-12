@@ -10,7 +10,6 @@ mod build;
 mod builders;
 pub mod catalog;
 mod command;
-mod conditional_sync;
 mod config_item;
 mod deployment;
 mod domain;
@@ -47,11 +46,11 @@ pub use automation::{
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     KeepBranch, LiveNode, PlannedNode, PlannedRole, SetBranchSetup, SetupCommand, SyncChanges,
-    SyncQuery, SyncRow, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
+    SyncQuery, SyncRow, SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
 pub use branch::{
-    FollowHint, HintSource, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced, NeverSyncedRow,
-    RowRef, SecretRow, SyncChange,
+    FollowHint, HintSource, Included, IncomingChange, Mark, NamedRow, NeverSync, NeverSynced,
+    NeverSyncedRow, ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -59,10 +58,6 @@ pub use build::{
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
-pub use conditional_sync::{
-    ConditionalSync, ConditionalSyncState, HoldSecret, Landed, PendingSyncs, PullRequestHint,
-    SecretHeld,
-};
 pub use deployment::{
     Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, FailedAt, Failure,
     NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress,
@@ -82,18 +77,21 @@ pub use id::*;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{
-    Destination, DestinationSync, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery,
-    PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
+    MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto, OnMergeQuery, OpenPullRequest,
+    PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery,
+    PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Sweep,
 };
 pub use query::*;
 pub use removal::{
     CancelRemoval, Due, DueQuery, Fix, Left, LeftStatus, Removal, RemovalCancelled, Remove,
     RemovedVolume, Residual, VolumeLoss, Waiting, docker_volume,
 };
+pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
+pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
     ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment,
@@ -125,6 +123,7 @@ impl Actor {
 pub struct ConfigStore {
     storage: storage::Storage,
     sealing: SealingKey,
+    converted: Option<Converted>,
 }
 
 impl ConfigStore {
@@ -134,10 +133,19 @@ impl ConfigStore {
     /// # Errors
     /// Returns `invalid_argument` for an unsupported URL, or a storage error.
     pub fn open(url: &str, sealing: SealingKey) -> Result<Self, RpcError> {
+        let (storage, converted) = storage::Storage::open(url)?;
         Ok(Self {
-            storage: storage::Storage::open(url)?,
+            storage,
             sealing,
+            converted,
         })
+    }
+
+    /// What converting Conditional Syncs to offers did, when this open converted them:
+    /// the receipt its caller logs. `None` once an earlier open did.
+    #[must_use]
+    pub const fn converted(&self) -> Option<&Converted> {
+        self.converted.as_ref()
     }
 
     /// Answer `query` — a [`Query`], or one of its payloads for its own view —
@@ -342,20 +350,20 @@ impl ConfigStore {
             .read(|tx| automation::head(tx, organization, repository_id, branch))
     }
 
-    /// The Conditional Syncs a push to `branch` may freeze or carry: Cloud reports
-    /// the pull requests that merged, then which merge commits the head contains.
+    /// The open pull requests into `branch` whose merge would land config: Cloud
+    /// reports each that merged before it tells the Store about the push.
     ///
     /// # Errors
     /// Returns a storage error.
-    pub fn pending_syncs(
+    pub fn awaiting_merge(
         &self,
         organization: &OrganizationId,
         repository_id: RepositoryId,
         branch: &BranchName,
-    ) -> Result<PendingSyncs, RpcError> {
+    ) -> Result<Vec<PullRequestNumber>, RpcError> {
         let who = Actor::system(organization.clone());
         self.storage
-            .read(|tx| conditional_sync::pending(tx, &who, repository_id, branch))
+            .read(|tx| pull_request::awaiting_merge(tx, &who, repository_id, branch))
     }
 
     /// Forget an Organization's configuration once it has no Project: what it

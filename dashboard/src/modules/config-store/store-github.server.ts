@@ -27,59 +27,57 @@ export const githubTimestamp = (at: string) => new Date(at).toISOString().replac
 
 type LivePullRequest = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;
 
-/**
- * A pull request's facts as the Store takes them. `mergeReached`: once merged, the target branch head the Store last
- * saw, when Cloud found the merge commit in it.
- */
+/** A pull request's facts as the Store takes them, with `targetHead` from `mergedInto`. */
 export function pullRequestEvent(
-  repositoryId: number, number: number, live: LivePullRequest & { updatedAt: string }, mergeReached: string | null,
+  repositoryId: number, number: number, live: LivePullRequest & { updatedAt: string }, targetHead: string | null = null,
 ): SystemEvent {
   return {
     event: "pull_request", repository_id: repositoryId, number, title: live.title,
     author: live.author.login, bot: live.author.isBot, head_branch: live.headBranch, head: live.headSha,
     target_branch: live.targetBranch, commits: live.commits, open: live.open, merge_commit: live.mergeCommitSha,
-    merge_reached: mergeReached, updated: githubTimestamp(live.updatedAt),
+    target_head: targetHead, updated: githubTimestamp(live.updatedAt),
   };
 }
 
-/** Whether `sha` is, or descends from, `ancestor`. */
-export const descendsFrom = (installationId: number, repository: GithubResolvedRepository, ancestor: string, sha: string) =>
-  ancestor === sha
-    ? Effect.succeed(true)
-    : compareInstallationRepositoryCommits(installationId, repository, ancestor, sha).pipe(
-      Effect.map(({ status }) => status === "ahead" || status === "identical"),
-      Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(false)),
-    );
+/**
+ * A merged pull request's target branch head now, when GitHub says it contains the merge commit. Two quick merges
+ * push the branch past the first one's commit before Cloud reads it, so the Store never sees that commit as a head;
+ * this tells it a head it saw already carries the merge.
+ */
+export const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
+  installationId: number, repositoryId: number, live: Pick<LivePullRequest, "mergeCommitSha" | "targetBranch">,
+) {
+  if (!live.mergeCommitSha) return null;
+  const repository = yield* resolveGithubRepository(installationId, repositoryId);
+  const branch = yield* resolveGithubBranchHead(installationId, repository, `refs/heads/${live.targetBranch}`);
+  if (branch.state !== "present") return null;
+  const comparison = yield* compareInstallationRepositoryCommits(installationId, repository, live.mergeCommitSha, branch.headSha)
+    .pipe(Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)));
+  return comparison?.status === "ahead" || comparison?.status === "identical" ? branch.headSha : null;
+});
 
 /**
  * Pull requests into the pushed branch that merged before their closed delivery arrived: the Store hears it now, so
- * their Conditional Syncs freeze and a push with the merge commit carries them. Asks GitHub only when one stands.
+ * the merge lands before the push and deploys with it. Asks GitHub only when one awaits its merge. Resolves to the
+ * Deployments the landing admitted.
  * ponytail: a PR Environment this closes leaves the Servers at the next sweep.
  */
-const freezeMerged = Effect.fn("StoreGithub.freezeMerged")(function* (
+const observeMerged = Effect.fn("StoreGithub.observeMerged")(function* (
   store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData,
 ) {
-  const { standing } = yield* storeTry(() => store.pendingSyncs(organizationId, payload.repositoryId, payload.branch));
-  for (const number of standing) {
+  const awaiting = yield* storeTry(() => store.awaitingMerge(organizationId, payload.repositoryId, payload.branch));
+  const deployments: ConfigDeploymentAdmittedEventData[] = [];
+  for (const number of awaiting) {
     const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, number).pipe(
       Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)),
     );
     const { updatedAt } = live ?? {};
     if (!live?.mergeCommitSha || live.targetBranch !== payload.branch || !updatedAt) continue;
-    yield* storeSystem(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, null));
+    const targetHead = yield* mergedInto(payload.installationId, payload.repositoryId, live);
+    const written = yield* storeSystem(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, targetHead));
+    deployments.push(...admittedEvents(organizationId, written));
   }
-});
-
-/** The merge commits of frozen Conditional Syncs on the branch that `head` contains: the push carries those. */
-const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
-  store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData, repository: GithubResolvedRepository, head: string,
-) {
-  const { merged } = yield* storeTry(() => store.pendingSyncs(organizationId, payload.repositoryId, payload.branch));
-  const carried: string[] = [];
-  for (const commit of merged) {
-    if (yield* descendsFrom(payload.installationId, repository, commit, head)) carried.push(commit);
-  }
-  return carried;
+  return deployments;
 });
 
 /**
@@ -90,8 +88,7 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
   store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData,
   repository: GithubResolvedRepository, head: string | null,
 ) {
-  yield* freezeMerged(store, organizationId, payload);
-  const merged = head === null ? [] : yield* mergedInto(store, organizationId, payload, repository, head);
+  const merged = yield* observeMerged(store, organizationId, payload);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const base = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, payload.branch));
     // No changed paths (a force-push, diverged or long history) deploys every Service that follows the branch.
@@ -104,13 +101,13 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
       );
     }
     const event: SystemEvent = {
-      event: "branch_head", repository_id: payload.repositoryId, branch: payload.branch, base, head, changed, merged,
+      event: "branch_head", repository_id: payload.repositoryId, branch: payload.branch, base, head, changed,
     };
     const written = yield* storeSystem(organizationId, event).pipe(
       Effect.map((written) => ({ written })),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
-    if (written !== null) return admittedEvents(organizationId, written.written);
+    if (written !== null) return [...merged, ...admittedEvents(organizationId, written.written)];
   }
   return yield* new StoreGithubFailure({ message: "The branch's head kept moving while Cloud compared it." });
 });

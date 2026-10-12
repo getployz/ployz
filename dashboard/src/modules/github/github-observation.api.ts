@@ -454,7 +454,7 @@ const checkRunsResponseSchema = Schema.Struct({
 export const postInstallationCheckRun = Effect.fn(
   "Github.postInstallationCheckRun",
 )(function* (installationId: number, repositoryId: number, input: {
-  headSha: string; name: string; externalId: string; conclusion: "success" | "action_required"; detailsUrl: string; title: string; summary: string;
+  headSha: string; name: string; externalId: string; conclusion: "success" | "neutral"; detailsUrl: string; title: string; summary: string;
 }) {
   if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
     return yield* githubObservationError({ code: "invalid_input", operation: "create_check_run", retriable: false });
