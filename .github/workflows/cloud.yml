@@ -42,6 +42,8 @@ env:
   KACHE_S3_ENDPOINT: ${{ vars.KACHE_S3_ENDPOINT }}
   KACHE_S3_ACCESS_KEY_ID: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID || secrets.KACHE_S3_READ_ACCESS_KEY_ID }}
   KACHE_S3_SECRET_ACCESS_KEY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_SECRET_ACCESS_KEY || secrets.KACHE_S3_READ_SECRET_ACCESS_KEY }}
+  # Without write keys a main push silently falls back to read keys, so setup-rust fails it instead.
+  KACHE_S3_WRITES: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.KACHE_S3_ACCESS_KEY_ID != '' && secrets.KACHE_S3_SECRET_ACCESS_KEY != '' && vars.KACHE_S3_BUCKET != '' }}
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
   CARGO_INCREMENTAL: 0

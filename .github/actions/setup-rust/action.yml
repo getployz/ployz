@@ -25,7 +25,7 @@ runs:
       if: github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
       shell: bash
       run: |
-        if [ -z "$KACHE_S3_BUCKET" ]; then
+        if [ "$KACHE_S3_WRITES" != true ]; then
           echo "::error::Main push has no R2 write credentials, so the compiler cache would not be saved."
           exit 1
         fi
