@@ -354,6 +354,10 @@ case "$*" in
   'receive -A tank/ployz-mirror/data/fs')
     require tank/ployz-mirror/data/fs
     rm -f '{props}/tank/ployz-mirror/data/fs/receive_resume_token'
+    # Like ZFS, aborting an interrupted first receive destroys the dataset it began.
+    if [ ! -s '{props}/tank/ployz-mirror/data/fs/snapshots' ]; then
+      rm -rf '{mirror_fs}' '{props}/tank/ployz-mirror/data/fs'
+    fi
     ;;
   'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/data/fs'|'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/seed/fs')
     echo $$ > '{props}/receive-pid'

@@ -593,7 +593,9 @@ impl VolumeStorage {
     }
 
     /// One receive of `stream`. When the writer no longer has the base or the token the
-    /// stream names, the slot's copy starts over from a full send.
+    /// stream names, the slot's copy starts over from a full send. The copy is dropped
+    /// only once the writer answers the full send, so a writer without the target leaves
+    /// the slot's newest snapshot in place.
     async fn pull_stream(
         &self,
         from: ployz_core::ManagementAddress,
@@ -622,14 +624,21 @@ impl VolumeStorage {
             }
             SendSource::Incremental { target, .. } => target.clone(),
         };
-        self.zfs(&["destroy", "-r", fs])
-            .await
-            .map_err(|error| error.to_string())?;
         let full = SendStream {
             name: stream.name,
             source: SendSource::Full { target },
         };
-        self.receive(from, &full, fs, bound, fault)
+        let opened = self
+            .open_stream(from, &full)
+            .await
+            .map_err(|failure| failure.to_string())?;
+        // Aborting an interrupted first receive destroys the copy it began.
+        if self.exists(fs).await.map_err(|error| error.to_string())? {
+            self.zfs(&["destroy", "-r", fs])
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        self.receive_opened(opened, fs, bound, fault)
             .await
             .map_err(|failure| failure.to_string())
     }

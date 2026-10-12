@@ -714,6 +714,72 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
 }
 
 #[tokio::test]
+async fn a_pull_whose_target_the_writer_lacks_keeps_the_slot_copy() {
+    let source = Source::start(Some(BOUND), "").await;
+    source.answer(
+        "",
+        StatusCode::NOT_FOUND,
+        "no snapshot w-1-2 on tank/ployz/data",
+    );
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+    assert!(
+        copy.pointer("/Ok/pull/failure")
+            .is_some_and(|failure| !failure.is_null()),
+        "{copy}"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("11")),
+        "{copy}"
+    );
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
+    assert!(
+        !commands(&test).contains("destroy -r"),
+        "{}",
+        commands(&test)
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_whose_token_the_writer_lost_after_a_first_receive_broke_lands_in_one_pull() {
+    let source = Source::start(Some(BOUND), "break\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    let copy = landed(&socket, "w-1-1").await;
+    assert_eq!(
+        copy.pointer("/Ok/resume_token"),
+        Some(&json!("token-1")),
+        "{copy}"
+    );
+
+    source.answer("target=w-1-1", StatusCode::OK, "snapshot w-1-1 77\n");
+    source.answer("token=", StatusCode::NOT_FOUND, "token-1 is not resumable");
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    let copy = landed(&socket, "w-1-1").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("77")),
+        "{copy}"
+    );
+    assert_eq!(
+        source.requests()[3..],
+        [
+            "/volume-send/data?target=w-1-1&token=token-1",
+            "/volume-send/data?target=w-1-1",
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_for_another_target_while_a_receive_runs_refuses_busy_and_keeps_the_label() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
     let test = TestDir::new();

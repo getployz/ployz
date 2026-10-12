@@ -327,6 +327,13 @@ impl VolumeStorage {
         Ok(dataset)
     }
 
+    pub(super) async fn exists(&self, dataset: &str) -> Result<bool> {
+        let names = self
+            .zfs(&["list", "-H", "-o", "name", "-t", "filesystem"])
+            .await?;
+        Ok(names.lines().any(|name| name == dataset))
+    }
+
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {
         checked_command(&self.zfs, args).await
     }

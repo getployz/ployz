@@ -69,6 +69,12 @@ impl Receives {
     }
 }
 
+/// A stream the writer answered 200 for, not yet read.
+pub(super) struct OpenedStream {
+    url: String,
+    response: reqwest::Response,
+}
+
 /// Why a receive did not land its stream.
 #[derive(Debug)]
 pub(super) enum ReceiveFailure {
@@ -97,6 +103,16 @@ impl VolumeStorage {
         bound: u64,
         fault: &'static str,
     ) -> Result<(), ReceiveFailure> {
+        let opened = self.open_stream(from, stream).await?;
+        self.receive_opened(opened, fs, bound, fault).await
+    }
+
+    /// The writer's answer to `stream`, before anything touches the slot.
+    pub(super) async fn open_stream(
+        &self,
+        from: ManagementAddress,
+        stream: &SendStream,
+    ) -> Result<OpenedStream, ReceiveFailure> {
         let url = format!(
             "http://[{}]:{}{}",
             from.0,
@@ -122,6 +138,17 @@ impl VolumeStorage {
         let response = response
             .error_for_status()
             .map_err(|error| ReceiveFailure::Failed(format!("GET {url}: {error}")))?;
+        Ok(OpenedStream { url, response })
+    }
+
+    /// Pulls an opened stream into `fs`.
+    pub(super) async fn receive_opened(
+        &self,
+        OpenedStream { url, response }: OpenedStream,
+        fs: &str,
+        bound: u64,
+        fault: &'static str,
+    ) -> Result<(), ReceiveFailure> {
         let refquota = format!("refquota={bound}");
         let mut child = Command::new(&self.zfs)
             .args([
