@@ -390,18 +390,21 @@ const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
 /// Container that wrote them, scrubbed of each one's env as the Machine reports it. Env
 /// values stay readable only where `plain` holds the same value under the same name. A
 /// Container whose env cannot be read, as after a redeploy removed it, has its lines left
-/// out; they are withheld only when no Container's env can be read. The error says why
-/// the Machine did not answer in time.
+/// out; they are withheld only when no Container's env can be read. None when `selector`
+/// picks no lines there. The error says why the Machine did not answer in time.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
     selector: LogHistoryRequest,
     cap: LineCap,
     plain: &BTreeMap<String, String>,
-) -> Result<LogText, RpcError> {
+) -> Result<Option<LogText>, RpcError> {
     let target = MachineTarget::from(&machine);
     let read = async {
         let newest = newest_lines(client, &target, selector, LineCap::MAX).await?;
+        if newest.is_empty() {
+            return Ok(None);
+        }
         let mut containers: Vec<ContainerId> = Vec::new();
         for (container, _) in &newest {
             if !containers.contains(container) {
@@ -428,7 +431,7 @@ pub(crate) async fn service_tail(
                 .filter(|(container, _)| readable.contains(container))
                 .map(|(_, text)| text),
         );
-        Ok(LogExcerpt::scrub(frames, &secrets, cap))
+        Ok(Some(LogExcerpt::scrub(frames, &secrets, cap)))
     };
     tokio::time::timeout(SERVICE_TAIL_READ, read)
         .await
@@ -652,6 +655,34 @@ mod tests {
         assert!(reader.next().await.unwrap().is_none());
         assert_eq!(started.elapsed(), Duration::from_secs(11));
         writer.await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_server_with_no_lines_has_no_tail() {
+        let (session, sender, server) = streaming_session().await;
+        sender
+            .send(Ok(HistoryRow::End { next: None }.encode().unwrap()))
+            .await
+            .unwrap();
+        drop(sender);
+        let selector = LogHistoryRequest {
+            namespace: Some("app".into()),
+            service: Some("web".into()),
+            ..LogHistoryRequest::default()
+        };
+        let cap = LineCap::new(50).unwrap();
+        let client = session.client().unwrap();
+        let tail = service_tail(
+            &client,
+            MachineId::random(),
+            selector,
+            cap,
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+        assert!(tail.is_none(), "{tail:?}");
         server.abort();
     }
 

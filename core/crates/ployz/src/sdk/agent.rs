@@ -225,10 +225,11 @@ async fn logs(session: &Session, query: LogsQuery) -> Result<LogsAnswer, RpcErro
             let mut notes = Vec::new();
             for (machine, read) in invited.iter().zip(reads) {
                 match read {
-                    Ok(text) => servers.push(ServerLog {
+                    Ok(Some(text)) => servers.push(ServerLog {
                         server: machine.machine.name.clone(),
                         text,
                     }),
+                    Ok(None) => {}
                     Err(error) => {
                         unanswered.insert(machine.machine.id);
                         notes.push(format!(
