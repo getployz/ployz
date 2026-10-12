@@ -328,8 +328,11 @@ describe("volume runs", () => {
         receive(fake);
         fake.stopped = false;
         const copy = fake.copy;
-        // The daemon answers a failed receive once, and the next resend retries it.
-        if (copy?.kind === "slot" && copy.pull?.target === want.target && copy.pull.failure !== null) {
+        // The daemon answers a failed receive once, and the next resend retries it. Only a request its planner lets
+        // through gets the answer: a source, and the expect matching or naming this slot.
+        const passes = copy?.kind === "slot" && want.from !== null
+          && ((expected.kind === "mirror" && expected.slot === copy.slot) || matches(copy, expected));
+        if (passes && copy.pull?.target === want.target && copy.pull.failure !== null) {
           fake.copy = { ...copy, pull: { ...copy.pull, failure: null } };
           return Effect.succeed({ copy });
         }
@@ -1205,6 +1208,22 @@ describe("volume runs", () => {
 
       expect(answer).toEqual({ ok: false, reason, copy: writerCopy(), message });
       expect(await rows()).toMatchObject([{ state: "running", message: null }]);
+    });
+
+    it("a pull naming an old slot refuses mismatch and leaves the failed receive for a request on this slot", async () => {
+      const run = await requested({ kind: "sync", args: { full: false } });
+      await running(run.id);
+      const failed = slotCopy(base, { target: "f-1", failure: "disk full" }, "1002");
+      machines[1] = { name: "fsn-2", pool: true, copy: failed };
+      const fsn2 = { id: idOf("fsn-2"), name: "fsn-2" } as const;
+      const pull = (slot: string) => runEffect(setVolumeCopy(context(run.id), "run-1", fsn2,
+        { kind: "mirror", slot, newest: base.guid }, { kind: "mirror", from: idOf("fsn-1"), target: "f-1", drain: 3_000 }));
+
+      const stale = await pull("1001");
+      const current = await pull("1002");
+
+      expect(stale).toMatchObject({ ok: false, reason: "mismatch", copy: failed });
+      expect(current).toEqual({ ok: true, copy: failed });
     });
 
     it("a failure with no refusal fails only the attempt, keeping the Machine's message", async () => {
