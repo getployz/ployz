@@ -1,8 +1,6 @@
-//! Local ownership of Machine upgrade replay, admission, and durable inspection.
+//! Local ownership of Machine upgrade replay and admission.
 
-use ployz_core::{
-    InspectMachineUpgradeRequest, MachineUpgradeAttempt, RequestMachineUpgradeRequest,
-};
+use ployz_core::{MachineUpgradeAttempt, RequestMachineUpgradeRequest};
 
 use super::{Error, LocalMachine};
 
@@ -22,7 +20,9 @@ impl LocalMachine {
     ) -> Result<MachineUpgradeAttempt, Error> {
         let data_dir = self.owner.data_dir().to_owned();
         let run_dir = self.owner.run_dir().to_owned();
-        if let Some(attempt) = crate::installer::upgrade::existing_request(&request, &data_dir)? {
+        if let Some(attempt) =
+            crate::installer::upgrade::replay(&request, &data_dir, &run_dir).await?
+        {
             return Ok(attempt);
         }
         let _local = self
@@ -37,24 +37,5 @@ impl LocalMachine {
         crate::installer::upgrade::request(request, data_dir, run_dir, installation)
             .await
             .map_err(Into::into)
-    }
-
-    /// Read one durable Machine upgrade attempt and reconcile positively stopped work.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Upgrade`] when no matching receipt exists or worker and ownership
-    /// evidence cannot be read.
-    pub(crate) async fn inspect_upgrade(
-        &self,
-        request: InspectMachineUpgradeRequest,
-    ) -> Result<MachineUpgradeAttempt, Error> {
-        crate::installer::upgrade::inspect(
-            request.attempt_id,
-            self.owner.data_dir(),
-            self.owner.run_dir(),
-        )
-        .await
-        .map_err(Into::into)
     }
 }

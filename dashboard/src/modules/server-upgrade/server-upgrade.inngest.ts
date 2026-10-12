@@ -109,8 +109,8 @@ async function upgradeServer(
   let outcome = finalOutcome(attempt);
   poll: for (let poll = 0; outcome === null; poll += 1) {
     await step.sleep(`wait-${machineId}-${poll}`, POLL_INTERVAL_MS);
-    const polled = await step.run(`inspect-upgrade-${machineId}-${poll}`, () =>
-      runEffect(pollUpgradeOnServer({ organizationId, machineId, attemptId })));
+    const polled = await step.run(`poll-upgrade-${machineId}-${poll}`, () =>
+      runEffect(pollUpgradeOnServer({ organizationId, machineId, attemptId, channel })));
     switch (polled.kind) {
       case "expired":
         break poll;

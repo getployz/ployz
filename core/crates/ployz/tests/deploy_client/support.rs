@@ -502,6 +502,7 @@ impl MachineRpc for DeployService {
             management_clients: Vec::new(),
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),
+            upgrade: None,
         }))
     }
     async fn machine_token(
@@ -539,12 +540,6 @@ impl MachineRpc for DeployService {
         unused()
     }
     async fn request_machine_upgrade(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn inspect_machine_upgrade(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

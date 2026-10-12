@@ -2065,12 +2065,6 @@ accepts_services: boolean,
  */
 accepts_ingress: boolean, };
 
-export type InspectMachineUpgradeRequest = {
-/**
- * Required attempt identity, or the latest local attempt when absent.
- */
-attempt_id?: MachineUpgradeAttemptId | null, };
-
 export type InspectVolumeCopyRequest = { name: DockerVolumeName, };
 
 export type Instead = { "kind": "reference", value: string, } | { "kind": "sealed" };
@@ -2204,7 +2198,11 @@ telemetry: TelemetryObservation | null,
 /**
  * Current local storage evidence when the daemon advertises support.
  */
-storage: MachineStorageObservation | null, };
+storage: MachineStorageObservation | null,
+/**
+ * Latest upgrade attempt, reconciled against its worker.
+ */
+upgrade?: MachineUpgradeAttempt | null, };
 
 export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 

@@ -4,8 +4,8 @@ use std::{collections::BTreeSet, time::Duration};
 
 use clap::ArgMatches;
 use ployz_core::{
-    InspectMachineUpgradeRequest, Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
+    Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
@@ -39,9 +39,10 @@ trait UpgradeRequests {
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
 
-    async fn inspect_upgrade(
+    /// Resend an accepted request to read its attempt, waiting out the daemon restart.
+    async fn poll_upgrade(
         &mut self,
-        request: InspectMachineUpgradeRequest,
+        request: RequestMachineUpgradeRequest,
         machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
@@ -67,13 +68,13 @@ impl UpgradeRequests for Client {
         .await
     }
 
-    async fn inspect_upgrade(
+    async fn poll_upgrade(
         &mut self,
-        request: InspectMachineUpgradeRequest,
+        request: RequestMachineUpgradeRequest,
         machine: &Machine,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-        self.call_repeatable_for::<op::InspectMachineUpgrade>(
+        self.call_repeatable_for::<op::RequestMachineUpgrade>(
             request,
             Some(&MachineTarget::from(&machine.id)),
             Some(machine.name.as_str()),
@@ -485,7 +486,7 @@ async fn run_one(
     };
     let accepted = match client
         // A Server that cannot take the request within a minute is down, not busy.
-        .request_upgrade(request, machine, crate::setup_retry::WAIT)
+        .request_upgrade(request.clone(), machine, crate::setup_retry::WAIT)
         .await
     {
         Ok(accepted) => accepted,
@@ -506,10 +507,8 @@ async fn run_one(
             return Err(uncertain_timeout(machine, attempt_id));
         }
         let observed = client
-            .inspect_upgrade(
-                InspectMachineUpgradeRequest {
-                    attempt_id: Some(attempt_id),
-                },
+            .poll_upgrade(
+                request.clone(),
                 machine,
                 deadline.saturating_duration_since(Instant::now()),
             )
@@ -620,13 +619,13 @@ mod tests {
             self.request.take().expect("one request result")
         }
 
-        async fn inspect_upgrade(
+        async fn poll_upgrade(
             &mut self,
-            _request: InspectMachineUpgradeRequest,
+            _request: RequestMachineUpgradeRequest,
             _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-            panic!("an unaccepted request is not inspected")
+            panic!("an unaccepted request is not polled")
         }
 
         async fn move_ingress(&mut self, _image: IngressImage) -> Result<Option<Outcome>, Error> {
@@ -655,13 +654,13 @@ mod tests {
             })
         }
 
-        async fn inspect_upgrade(
+        async fn poll_upgrade(
             &mut self,
-            _request: InspectMachineUpgradeRequest,
+            _request: RequestMachineUpgradeRequest,
             _machine: &Machine,
             _wait: Duration,
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
-            panic!("terminal answers are not inspected")
+            panic!("terminal answers are not polled")
         }
 
         async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
@@ -813,41 +812,40 @@ mod tests {
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
     }
 
-    /// A ployzd generation that accepts upgrades. The first inspect with `hang`
-    /// signals and never answers. An absent `inspect` outcome answers with an
-    /// Unknown gRPC status.
+    /// A ployzd generation serving upgrade requests. With `accept`, the first request
+    /// answers Accepted. Each later resend answers `poll`; the first with `hang` signals and
+    /// never answers, and an absent `poll` outcome answers with an Unknown gRPC status.
     fn daemon(
         path: &std::path::Path,
-        inspect: Option<MachineUpgradeOutcome>,
+        accept: bool,
+        poll: Option<MachineUpgradeOutcome>,
         hang: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> tokio::runtime::Runtime {
         use ployz_core::{RpcRequestBody, RpcResponse};
+        let accept = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(accept));
         let hang = std::sync::Arc::new(std::sync::Mutex::new(hang));
         let target = ployz_core::MachineVersion::parse("1.2.3").unwrap();
         crate::connect::test_support::unix_daemon(path, move |body| {
-            let (hang, inspect, target) = (hang.clone(), inspect.clone(), target.clone());
+            let (accept, hang, poll, target) =
+                (accept.clone(), hang.clone(), poll.clone(), target.clone());
             async move {
-                #[expect(
-                    clippy::wildcard_enum_match_arm,
-                    reason = "this fixture serves only upgrade RPCs"
-                )]
-                let (attempt_id, outcome) = match body {
-                    RpcRequestBody::RequestMachineUpgrade(request) => {
-                        (request.attempt_id, MachineUpgradeOutcome::Accepted)
-                    }
-                    RpcRequestBody::InspectMachineUpgrade(request) => {
-                        let hang = hang.lock().unwrap().take();
-                        if let Some(hang) = hang {
-                            hang.send(()).unwrap();
-                            std::future::pending::<()>().await;
-                        }
-                        let Some(outcome) = inspect else {
-                            return Err(tonic::Status::unknown("upgrade record is unreadable"));
-                        };
-                        (request.attempt_id.unwrap(), outcome)
-                    }
-                    body => panic!("unexpected request: {body:?}"),
+                let RpcRequestBody::RequestMachineUpgrade(request) = body else {
+                    panic!("unexpected request: {body:?}");
                 };
+                let outcome = if accept.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    MachineUpgradeOutcome::Accepted
+                } else {
+                    let hang = hang.lock().unwrap().take();
+                    if let Some(hang) = hang {
+                        hang.send(()).unwrap();
+                        std::future::pending::<()>().await;
+                    }
+                    let Some(outcome) = poll else {
+                        return Err(tonic::Status::unknown("upgrade record is unreadable"));
+                    };
+                    outcome
+                };
+                let attempt_id = request.attempt_id;
                 Ok(RpcResponse::from(MachineUpgradeAttempt {
                     attempt_id,
                     target,
@@ -888,17 +886,23 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
         let (hung, restarting) = tokio::sync::oneshot::channel();
-        let old = daemon(&path, Some(MachineUpgradeOutcome::Accepted), Some(hung));
+        let old = daemon(
+            &path,
+            true,
+            Some(MachineUpgradeOutcome::Accepted),
+            Some(hung),
+        );
         let mut client = crate::connect::test_support::unix_client(&path).await;
         let machine = machine('e', 5);
         let restart = async {
             restarting.await.unwrap();
-            // The old process exits with the inspect read in flight.
+            // The old process exits with the resend in flight.
             old.shutdown_background();
             std::fs::remove_file(&path).unwrap();
             tokio::time::sleep(Duration::from_secs(2)).await;
             daemon(
                 &path,
+                false,
                 Some(MachineUpgradeOutcome::Succeeded {
                     version: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
                 }),
@@ -928,7 +932,7 @@ mod tests {
     async fn daemon_error_answer_fails_the_upgrade_without_retrying() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ployz.sock");
-        let daemon = daemon(&path, None, None);
+        let daemon = daemon(&path, true, None, None);
         let mut client = crate::connect::test_support::unix_client(&path).await;
         let started = Instant::now();
         let mut seen = None;

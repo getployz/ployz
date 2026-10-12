@@ -14,14 +14,14 @@ use ployz_core::{
     GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
     ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig,
-    InspectMachineUpgradeRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
-    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachineRelease,
-    MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
-    ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PublicIpDiscovery,
-    PublicIpUpdate, PublishCertificateMaterialRequest, PullImageFromMachineRequest,
-    RESET_MACHINE_CAPABILITY, RemoveImagesRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
+    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
+    MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess,
+    MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
+    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NAMESPACE_LABEL,
+    NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    PartialResult, PortPublication, PublicIpDiscovery, PublicIpUpdate,
+    PublishCertificateMaterialRequest, PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY,
+    RemoveImagesRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
     RequestMachineUpgradeRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind,
     RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
     UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
@@ -1658,19 +1658,6 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
             .body,
         RpcRequestBody::RequestMachineUpgrade(request)
     );
-    let inspect = InspectMachineUpgradeRequest {
-        attempt_id: Some(attempt_id),
-    };
-    assert_eq!(
-        op::InspectMachineUpgrade::into_request(inspect.clone())
-            .encode()
-            .unwrap()
-            .decode_request()
-            .unwrap()
-            .body,
-        RpcRequestBody::InspectMachineUpgrade(inspect)
-    );
-
     let attempt = MachineUpgradeAttempt {
         attempt_id,
         target: MachineVersion::parse("1.2.3-beta.4").unwrap(),
@@ -1679,16 +1666,38 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
             error: "checksum mismatch".into(),
         },
     };
-    let response = RpcResponse::from(attempt.clone());
     assert_eq!(
-        response
-            .clone()
+        RpcResponse::from(attempt.clone())
             .decode::<op::RequestMachineUpgrade>()
             .unwrap(),
         attempt
     );
+
+    let mut details = ployz_core::MachineDetails {
+        id: MachineId::parse(MACHINE_ID).unwrap(),
+        phase: ployz_core::LocalMachinePhase::Participating,
+        machine: None,
+        public_key: ployz_core::WireGuardPublicKey([7; 32]),
+        advertised_endpoints: Vec::new(),
+        store_version: BTreeMap::new(),
+        rtts: Vec::new(),
+        management_clients: Vec::new(),
+        telemetry: None,
+        storage: None,
+        upgrade: None,
+    };
+    let encoded = serde_json::to_value(&details).unwrap();
+    assert!(encoded.get("upgrade").is_none(), "{encoded}");
     assert_eq!(
-        response.decode::<op::InspectMachineUpgrade>().unwrap(),
-        attempt
+        serde_json::from_value::<ployz_core::MachineDetails>(encoded).unwrap(),
+        details
+    );
+    details.upgrade = Some(attempt);
+    assert_eq!(
+        serde_json::from_value::<ployz_core::MachineDetails>(
+            serde_json::to_value(&details).unwrap()
+        )
+        .unwrap(),
+        details
     );
 }

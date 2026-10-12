@@ -620,17 +620,6 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn inspect_machine_upgrade(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .inspect_upgrade(expect::<op::InspectMachineUpgrade>(request)?)
-                .await,
-        )
-    }
-
     async fn remove_local_machine(
         &self,
         request: Request<OpaquePayload>,

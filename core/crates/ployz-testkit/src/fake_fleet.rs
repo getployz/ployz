@@ -729,6 +729,7 @@ impl Fleet {
                         management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,
+                        upgrade: machine.upgrades.last().cloned(),
                     }
                     .into(),
                 )
@@ -836,26 +837,6 @@ impl Fleet {
                 machine.version = target_version;
                 machine.upgrades.push(attempt.clone());
                 unary(attempt.into())
-            }
-            RpcRequestBody::InspectMachineUpgrade(request) => {
-                let machine = self.by_id(target)?;
-                let attempt = match request.attempt_id {
-                    Some(id) => machine
-                        .upgrades
-                        .iter()
-                        .find(|attempt| attempt.attempt_id == id),
-                    None => machine.upgrades.last(),
-                };
-                unary(match attempt {
-                    Some(attempt) => attempt.clone().into(),
-                    None => RpcError {
-                        code: RpcErrorCode::NotFound,
-                        message: format!("{} has no such upgrade attempt", machine.name),
-                        details: Value::Null,
-                        cause: Vec::new(),
-                    }
-                    .into(),
-                })
             }
             RpcRequestBody::TailLogs(request) => {
                 let machine = self.by_id(target)?;

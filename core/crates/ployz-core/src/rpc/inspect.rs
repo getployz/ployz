@@ -42,4 +42,8 @@ pub struct MachineDetails {
     /// Current local storage evidence when the daemon advertises support.
     #[serde(default)]
     pub storage: Option<MachineStorageObservation>,
+    /// Latest upgrade attempt, reconciled against its worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub upgrade: Option<crate::MachineUpgradeAttempt>,
 }

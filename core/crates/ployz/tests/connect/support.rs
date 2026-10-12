@@ -551,6 +551,7 @@ impl MachineRpc for DiscoveryService {
                 management_clients: self.management_clients.lock().unwrap().clone(),
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
+                upgrade: None,
             })
             .encode()
             .unwrap(),
@@ -761,28 +762,6 @@ impl MachineRpc for DiscoveryService {
         if self.lose_upgrade_reply.swap(false, Ordering::SeqCst) {
             return Err(Status::unavailable("reply lost after dispatch"));
         }
-        Ok(Response::new(reply.encode().unwrap()))
-    }
-
-    async fn inspect_machine_upgrade(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::InspectMachineUpgrade(body) = self.upgrade_call(request).body else {
-            return Err(Status::invalid_argument("expected inspect_machine_upgrade"));
-        };
-        let stored = self.upgrade_attempt.lock().unwrap().clone();
-        let reply = match stored {
-            Some(attempt) if body.attempt_id.is_none_or(|id| id == attempt.attempt_id) => {
-                RpcResponse::from(attempt)
-            }
-            _ => RpcResponse::from(RpcError {
-                code: RpcErrorCode::NotFound,
-                message: "Machine upgrade attempt was not found".into(),
-                details: Value::Null,
-                cause: Vec::new(),
-            }),
-        };
         Ok(Response::new(reply.encode().unwrap()))
     }
 

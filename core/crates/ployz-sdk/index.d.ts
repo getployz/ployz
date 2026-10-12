@@ -38,7 +38,6 @@ import type {
   MetricHistory,
   MetricHistoryInput,
   RequestMachineUpgradeRequest,
-  InspectMachineUpgradeRequest,
   ObservedDataLoss,
   LocalMachineRemoved,
   DataLossConfirmation,
@@ -352,15 +351,10 @@ export declare class Client {
     machine: MachineTarget,
     request: R,
   ): Promise<VolumeSwitchReply<R["command"]>>;
-  /** Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt. */
+  /** Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt, so resending it is the poll. Its daemon restarts during the Upgrade, so a caller polling for the outcome keeps polling through `unavailable`. */
   requestMachineUpgrade(
     machine: MachineTarget,
     request: RequestMachineUpgradeRequest,
-  ): Promise<MachineUpgradeAttempt>;
-  /** Read one Machine's Upgrade attempt. Its daemon restarts during the Upgrade, so a caller polling for the outcome keeps polling through `unavailable`. */
-  inspectMachineUpgrade(
-    machine: MachineTarget,
-    request: InspectMachineUpgradeRequest,
   ): Promise<MachineUpgradeAttempt>;
   dataLossIfNamespaceDestroyed(
     namespace: Namespace,

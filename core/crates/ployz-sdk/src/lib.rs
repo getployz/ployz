@@ -6,7 +6,7 @@
 //! about / runtime.watch / runtime.metricHistory / prepare / build / preview / run /
 //! previewNamespaceRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
-//! requestMachineUpgrade / inspectMachineUpgrade /
+//! requestMachineUpgrade /
 //! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
 //! destroyCluster / close, the Config Store's openConfigStore / read / write, and the
 //! agent tools' agentTools / agentStart / agentResume / agentAsk.
@@ -596,7 +596,8 @@ impl Client {
         to_json(&updated)
     }
 
-    /// Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that attempt.
+    /// Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that
+    /// attempt, so resending it is the poll.
     #[napi]
     pub async fn request_machine_upgrade(
         &self,
@@ -608,24 +609,6 @@ impl Client {
         let attempt = self
             .inner
             .request_machine_upgrade(&machine, request)
-            .await
-            .map_err(rpc_to_napi)?;
-        to_json(&attempt)
-    }
-
-    /// Read one Machine's Upgrade attempt. Its daemon restarts during the Upgrade, so a caller
-    /// polling for the outcome keeps polling through `unavailable`.
-    #[napi]
-    pub async fn inspect_machine_upgrade(
-        &self,
-        machine: String,
-        request: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let request: ployz_core::InspectMachineUpgradeRequest =
-            from_js(request).map_err(invalid_argument)?;
-        let attempt = self
-            .inner
-            .inspect_machine_upgrade(&machine, request)
             .await
             .map_err(rpc_to_napi)?;
         to_json(&attempt)

@@ -83,6 +83,7 @@ async fn starting_machine() -> (
                         management_clients: Vec::new(),
                         telemetry: None,
                         storage: None,
+                        upgrade: None,
                     };
                     Ok(Response::new(RpcResponse::from(details).encode().unwrap()))
                 }
@@ -217,6 +218,7 @@ async fn reset_lost_to_a_daemon_restart_is_observed_not_resent() {
                 management_clients: Vec::new(),
                 telemetry: None,
                 storage: None,
+                upgrade: None,
             }))
         })
     };

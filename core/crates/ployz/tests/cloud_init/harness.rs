@@ -398,6 +398,7 @@ impl MachineRpc for JoinDaemon {
                 .collect(),
             telemetry,
             storage: None,
+            upgrade: None,
         })
     }
 
@@ -493,13 +494,6 @@ impl MachineRpc for JoinDaemon {
     }
 
     async fn request_machine_upgrade(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-
-    async fn inspect_machine_upgrade(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

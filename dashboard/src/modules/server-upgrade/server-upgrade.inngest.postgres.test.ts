@@ -48,15 +48,16 @@ describe("roll-out-server-upgrade", () => {
   let frame: RuntimeWatchView;
   /** What the fake Server answers the request with; `busy` refuses it as Busy, `unreachable` never answers. */
   let requestAnswer: Partial<Attempt> | "busy" | "unreachable";
-  /** What each inspect answers, in order; the last repeats. `unreadable` fails like a restarting daemon. */
-  let inspectAnswers: Array<Partial<Attempt> | "unreadable">;
+  /** What each resend answers, in order; the last repeats. `unreadable` fails like a restarting daemon. */
+  let pollAnswers: Array<Partial<Attempt> | "unreadable">;
   /** Per-Server answers, over the two above. */
   let requestAnswerFor: Record<string, Partial<Attempt> | "busy">;
-  let inspectAnswersFor: Record<string, Array<Partial<Attempt> | "unreadable">>;
-  /** After this many inspects, every attempt's `startedAt` moves past the observation limit; null never. */
-  let outliveAfterInspects: number | null;
-  let inspects: number;
+  let pollAnswersFor: Record<string, Array<Partial<Attempt> | "unreadable">>;
+  /** After this many resends, every attempt's `startedAt` moves past the observation limit; null never. */
+  let outliveAfterPolls: number | null;
+  let polls: number;
   let requests: Array<{ machine: string; attemptId: string; release: string }>;
+  let resends: Array<{ machine: string; attemptId: string; release: string }>;
   /** Each request and each terminal answer, in the order the Servers saw them. */
   let log: string[];
   let captured: Parameters<PostHogService["capture"]>[0][];
@@ -64,6 +65,20 @@ describe("roll-out-server-upgrade", () => {
 
   const attempt = (attemptId: string, answer: Partial<Attempt>) =>
     ({ attempt_id: attemptId as MachineUpgradeAttemptId, target: published, ...answer }) as Attempt;
+  /** A resend of a request the Server already took: the poll. */
+  const poll = (machine: string, attemptId: string) => {
+    polls += 1;
+    const outlive = polls === outliveAfterPolls
+      ? Effect.promise(() => harness.pool.query("update server_upgrade_attempt set started_at = started_at - interval '20 minutes'"))
+      : Effect.void;
+    const answers = pollAnswersFor[machine] ??= [...pollAnswers];
+    const answer = answers.length > 1 ? answers.shift() : answers[0];
+    if (answer === undefined || answer === "unreadable") {
+      return Effect.andThen(outlive, Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "unavailable" } })));
+    }
+    if (answer.outcome !== "running") log.push(`${answer.outcome} ${machine}`);
+    return Effect.andThen(outlive, Effect.succeed(attempt(attemptId, answer)));
+  };
   const runEffect = makeInngestEffectRunner(<A, E>(operation: Effect.Effect<A, E, Database | OrganizationRuntime | InngestClient>) =>
     harness.runEffect(operation.pipe(
       Effect.provideService(InngestClient, inngest),
@@ -77,6 +92,10 @@ describe("roll-out-server-upgrade", () => {
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           watchFirstFrame: () => Effect.succeed(frame),
           requestMachineUpgrade: (machine: string, attemptId: string, release: string) => {
+            if (requests.some((sent) => sent.machine === machine && sent.attemptId === attemptId)) {
+              resends.push({ machine, attemptId, release });
+              return poll(machine, attemptId);
+            }
             requests.push({ machine, attemptId, release });
             log.push(`request ${machine}`);
             const answer = requestAnswerFor[machine] ?? requestAnswer;
@@ -86,19 +105,6 @@ describe("roll-out-server-upgrade", () => {
             return answer === "busy"
               ? Effect.fail(new PloyzProviderError({ operation: "request machine upgrade", cause: { code: "conflict", message: "busy" } }))
               : Effect.succeed(attempt(attemptId, answer));
-          },
-          inspectMachineUpgrade: (machine: string, attemptId: string) => {
-            inspects += 1;
-            const outlive = inspects === outliveAfterInspects
-              ? Effect.promise(() => harness.pool.query("update server_upgrade_attempt set started_at = started_at - interval '20 minutes'"))
-              : Effect.void;
-            const answers = inspectAnswersFor[machine] ??= [...inspectAnswers];
-            const answer = answers.length > 1 ? answers.shift() : answers[0];
-            if (answer === undefined || answer === "unreadable") {
-              return Effect.andThen(outlive, Effect.fail(new PloyzProviderError({ operation: "inspect machine upgrade", cause: { code: "unavailable" } })));
-            }
-            if (answer.outcome !== "running") log.push(`${answer.outcome} ${machine}`);
-            return Effect.andThen(outlive, Effect.succeed(attempt(attemptId, answer)));
           },
         }) }),
       }),
@@ -110,7 +116,7 @@ describe("roll-out-server-upgrade", () => {
   const rollOutRequested = (data: ServerUpgradeRequestedEventData) => new InngestTestEngine({
     function: createRollOutServerUpgrade(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "server/upgrade.requested", data }],
-    // Each poll's sleep ends at once; `outliveAfterInspects` moves the clock instead.
+    // Each poll's sleep ends at once; `outliveAfterPolls` moves the clock instead.
     steps: frame.machines.flatMap(({ machine }) =>
       Array.from({ length: 80 }, (_, poll) => ({ id: `wait-${machine.id}-${poll}`, handler: () => undefined }))),
   }).execute();
@@ -137,12 +143,13 @@ describe("roll-out-server-upgrade", () => {
       }),
     })] });
     requestAnswer = { outcome: "accepted" };
-    inspectAnswers = [running("restarting"), { outcome: "succeeded", version: "0.2.2" }];
+    pollAnswers = [running("restarting"), { outcome: "succeeded", version: "0.2.2" }];
     requestAnswerFor = {};
-    inspectAnswersFor = {};
-    outliveAfterInspects = null;
-    inspects = 0;
+    pollAnswersFor = {};
+    outliveAfterPolls = null;
+    polls = 0;
     requests = [];
+    resends = [];
     log = [];
     captured = [];
     identified = [];
@@ -164,6 +171,7 @@ describe("roll-out-server-upgrade", () => {
     expect(output.error).toBeUndefined();
     expect(output.result).toMatchObject({ results: [{ machineId, outcome: "succeeded" }] });
     expect(requests).toEqual([{ machine: machineId, attemptId: expect.stringMatching(/^[0-9a-f]{32}$/u), release: "stable" }]);
+    expect(resends).toEqual([requests[0], requests[0]]);
     expect(await rows()).toEqual([{
       attempt_id: requests[0]?.attemptId,
       trigger: "manual",
@@ -186,7 +194,7 @@ describe("roll-out-server-upgrade", () => {
 
   it("records a failure with its stage and exact error, polling through an unreadable daemon", async () => {
     const error = "readiness timed out; restored 0.2.1";
-    inspectAnswers = [running("activating"), "unreadable", { outcome: "failed", stage: "readiness", error }];
+    pollAnswers = [running("activating"), "unreadable", { outcome: "failed", stage: "readiness", error }];
 
     const output = await rollOut();
 
@@ -199,7 +207,7 @@ describe("roll-out-server-upgrade", () => {
   });
 
   it("records an interrupted attempt with the stage it reached", async () => {
-    inspectAnswers = [{ outcome: "interrupted", stage: "restarting" }];
+    pollAnswers = [{ outcome: "interrupted", stage: "restarting" }];
 
     await rollOut();
 
@@ -210,25 +218,25 @@ describe("roll-out-server-upgrade", () => {
   });
 
   it("records unknown with the last stage seen twenty minutes after the attempt started without an outcome", async () => {
-    inspectAnswers = [running("readiness"), "unreadable"];
-    outliveAfterInspects = 3;
+    pollAnswers = [running("readiness"), "unreadable"];
+    outliveAfterPolls = 3;
 
     const output = await rollOut();
 
     expect(output.result).toMatchObject({ results: [{ outcome: "unknown" }] });
-    expect(inspects).toBe(3);
+    expect(polls).toBe(3);
     expect(await rows()).toMatchObject([{ outcome: "unknown", stage: "readiness", error: null }]);
     expect(captured).toEqual([expect.objectContaining({ event: "server_upgrade_unknown", properties: expect.objectContaining({ stage: "readiness" }) })]);
   });
 
   it("records unknown, as the sweep and the Server page read it, for an outcome that arrives after twenty minutes", async () => {
-    inspectAnswers = [running("readiness"), { outcome: "succeeded", version: "0.2.2" }];
-    outliveAfterInspects = 1;
+    pollAnswers = [running("readiness"), { outcome: "succeeded", version: "0.2.2" }];
+    outliveAfterPolls = 1;
 
     const output = await rollOut();
 
     expect(output.result).toMatchObject({ results: [{ outcome: "unknown" }] });
-    expect(inspects).toBe(1);
+    expect(polls).toBe(1);
     expect(await rows()).toMatchObject([{ outcome: "unknown", stage: "readiness" }]);
   });
 
@@ -277,7 +285,7 @@ describe("roll-out-server-upgrade", () => {
     });
 
     it("stops at the first outcome that isn't succeeded, so the rest aren't attempted", async () => {
-      inspectAnswersFor[serverId("2")] = [{ outcome: "failed", stage: "readiness", error: "readiness timed out; restored 0.2.1" }];
+      pollAnswersFor[serverId("2")] = [{ outcome: "failed", stage: "readiness", error: "readiness timed out; restored 0.2.1" }];
 
       const output = await rollOut(null);
 
@@ -333,10 +341,10 @@ describe("roll-out-server-upgrade", () => {
 
     /** web-1 upgraded and web-2 failed (and restored), so the rollout halted on 0.2.2 before web-3. */
     const halt = async () => {
-      inspectAnswersFor[serverId("2")] = [failure];
+      pollAnswersFor[serverId("2")] = [failure];
       await rollOut(null, "automatic");
       frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "0.2.2"), server("2", "web-2", "0.2.1"), server("3", "web-3", "0.2.1")] });
-      inspectAnswersFor = {};
+      pollAnswersFor = {};
       requests = [];
       captured = [];
     };
@@ -399,7 +407,7 @@ describe("roll-out-server-upgrade", () => {
     });
 
     it("an automatic rollout halts at the first non-success, and the halt holds across hourly runs", async () => {
-      inspectAnswersFor[serverId("2")] = [failure];
+      pollAnswersFor[serverId("2")] = [failure];
 
       await rollOut(null, "automatic");
 
@@ -438,10 +446,10 @@ describe("roll-out-server-upgrade", () => {
       // Its own release line, so the pointer this test moves stays out of the other tests' pointer cache.
       published = "1.0.1";
       frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "1.0.0"), server("2", "web-2", "1.0.0"), server("3", "web-3", "1.0.0")] });
-      inspectAnswersFor[serverId("2")] = [failure];
+      pollAnswersFor[serverId("2")] = [failure];
       await rollOut(null, "automatic");
       frame = runtimeWatchFrameFixture({ machines: [server("1", "web-1", "1.0.1"), server("2", "web-2", "1.0.0"), server("3", "web-3", "1.0.0")] });
-      inspectAnswersFor = {};
+      pollAnswersFor = {};
       requests = [];
       await rollOut(null, "automatic");
       expect(requests).toEqual([]);
@@ -480,7 +488,7 @@ describe("roll-out-server-upgrade", () => {
       publishedBeta = "3.0.1-beta.1";
       const beta = { outcome: "succeeded", version: publishedBeta, target: publishedBeta } as const;
       requestAnswer = { outcome: "accepted", target: publishedBeta };
-      inspectAnswers = [beta];
+      pollAnswers = [beta];
       frame = runtimeWatchFrameFixture({ machines: [
         server("1", "web-1", "3.0.0"), server("2", "web-2", "3.0.0"), server("3", "web-3", "3.0.0-beta.2", { membership: "down" }),
       ] });
@@ -499,7 +507,7 @@ describe("roll-out-server-upgrade", () => {
       ] });
       requests = [];
       requestAnswer = { outcome: "accepted" };
-      inspectAnswers = [{ outcome: "succeeded", version: "3.0.0" }];
+      pollAnswers = [{ outcome: "succeeded", version: "3.0.0" }];
 
       await rollOut(null, "automatic");
 

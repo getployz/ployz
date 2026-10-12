@@ -12,15 +12,6 @@ pub struct RequestMachineUpgradeRequest {
     pub release: crate::MachineRelease,
 }
 
-/// Read the latest attempt, optionally requiring one exact retry identity.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct InspectMachineUpgradeRequest {
-    /// Required attempt identity, or the latest local attempt when absent.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub attempt_id: Option<crate::MachineUpgradeAttemptId>,
-}
-
 crate::value::open_string_enum!(MachineUpgradeStage, Unknown {
     Launching => "launching",
     Preparing => "preparing",

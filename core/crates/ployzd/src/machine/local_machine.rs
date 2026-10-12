@@ -347,6 +347,16 @@ impl LocalMachine {
         } else {
             None
         };
+        let upgrade =
+            match crate::installer::upgrade::latest(self.owner.data_dir(), self.owner.run_dir())
+                .await
+            {
+                Ok(upgrade) => upgrade,
+                Err(error) => {
+                    tracing::warn!(%error, "could not read the latest upgrade attempt");
+                    None
+                }
+            };
         Ok(MachineDetails {
             id: record.id(),
             phase: record.phase(),
@@ -358,6 +368,7 @@ impl LocalMachine {
             management_clients: record.management_clients().cloned().collect(),
             telemetry,
             storage,
+            upgrade,
         })
     }
 
@@ -906,6 +917,24 @@ mod tests {
         )
         .unwrap();
         (dir, owner)
+    }
+
+    #[tokio::test]
+    async fn inspect_answers_when_upgrade_evidence_cannot_be_read() {
+        let (dir, owner) = owner();
+        std::fs::write(dir.path().join("upgrade-attempt.json"), b"not json").unwrap();
+        let details = super::LocalMachine::new(owner)
+            .inspect(ployz_core::InspectRequest {
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+                public_ip_override: None,
+                include_rtts: false,
+                include_storage: false,
+                telemetry: ployz_core::InspectTelemetry::None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(details.upgrade, None);
     }
 
     #[test]

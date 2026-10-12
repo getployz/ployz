@@ -18,9 +18,8 @@ use ployz::{
     sdk::{self, ContainerLogInput},
 };
 use ployz_core::{
-    InspectMachineUpgradeRequest, MachineName, MachineRelease, MachineTarget,
-    MachineUpgradeAttemptId, MachineVersion, RequestMachineUpgradeRequest, RpcErrorCode,
-    StopContainerRequest, op,
+    MachineName, MachineRelease, MachineTarget, MachineUpgradeAttemptId, MachineVersion,
+    RequestMachineUpgradeRequest, StopContainerRequest, op,
 };
 use ployz_testkit::fake_fleet::{
     FakeFleet, FakeFleetError, FleetFile, LedgerEntry, Scenario, container_id,
@@ -244,25 +243,10 @@ async fn an_upgrade_resent_with_its_attempt_id_creates_one_attempt() {
         .request_machine_upgrade("web-1", request())
         .await
         .unwrap();
-    let other = MachineUpgradeAttemptId::parse("fedcba9876543210fedcba9876543210").unwrap();
-    let missing = session
-        .inspect_machine_upgrade(
-            "web-1",
-            InspectMachineUpgradeRequest {
-                attempt_id: Some(other),
-            },
-        )
-        .await
-        .unwrap_err();
 
     assert_eq!(first, again);
     assert_eq!(first.target, target);
-    assert_eq!(missing.code, RpcErrorCode::NotFound);
-    let latest = session
-        .inspect_machine_upgrade("web-1", InspectMachineUpgradeRequest { attempt_id: None })
-        .await
-        .unwrap();
-    assert_eq!(latest, first);
+    assert_eq!(session.inspect().await.unwrap().upgrade, Some(first));
     assert_eq!(session.about().await.unwrap().daemon_version, "0.5.0");
 }
 

@@ -35,7 +35,6 @@ export type CapabilityName =
   | "ployz.machine.storage-observation.v1"
   | "ployz.machine.token.v1"
   | "ployz.machine.update.v1"
-  | "ployz.machine.upgrade.inspect.v1"
   | "ployz.machine.upgrade.request.v1"
   | "ployz.metrics.history.v1"
   | "ployz.rpc.describe-contract.v1"

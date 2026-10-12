@@ -92,15 +92,11 @@ export interface PloyzSession {
     machine: MachineTarget,
     scope: DrainScope,
   ) => Effect.Effect<DrainReport, PloyzSdkError>;
-  /** Ask one Server to Upgrade; repeating it with the same attempt ID returns that attempt. */
+  /** Ask one Server to Upgrade; resending it with the same attempt ID is the poll. */
   readonly requestMachineUpgrade: (
     machine: MachineTarget,
     attemptId: MachineUpgradeAttemptId,
     release: string,
-  ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
-  readonly inspectMachineUpgrade: (
-    machine: MachineTarget,
-    attemptId: MachineUpgradeAttemptId,
   ) => Effect.Effect<MachineUpgradeAttempt, PloyzSdkError>;
   readonly volumeSwitch: <R extends VolumeSwitchRequest>(
     machine: MachineTarget,
@@ -284,8 +280,6 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("copy container image", () => client.copyContainerImage(source, container, dest)),
     requestMachineUpgrade: (machine, attemptId, release) =>
       sdkPromise("request machine upgrade", () => client.requestMachineUpgrade(machine, { attempt_id: attemptId, release })),
-    inspectMachineUpgrade: (machine, attemptId) =>
-      sdkPromise("inspect machine upgrade", () => client.inspectMachineUpgrade(machine, { attempt_id: attemptId })),
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,
