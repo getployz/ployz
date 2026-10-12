@@ -10,8 +10,8 @@ use std::{
 };
 
 use ployz_core::{
-    LocalMachinePhase, Machine, MachineId, MachineUpdate, MachineUpdateError,
-    ManagementClientLabel, SelectedEndpoint, apply_machine_update,
+    EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId, MachineNow, MachineUpdate,
+    MachineUpdateError, ManagementClientLabel, Registered, SelectedEndpoint, apply_machine_update,
 };
 use thiserror::Error;
 
@@ -50,6 +50,43 @@ pub(crate) struct PreparedReset {
 pub(crate) struct Installation {
     body: LocalMachineBody,
     wireguard_mtu: Option<u32>,
+}
+
+impl Installation {
+    pub(crate) fn machine(&self) -> Option<&Machine> {
+        self.body.machine()
+    }
+}
+
+/// What an Enroll does on this Machine.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EnrollPlan {
+    Fresh,
+    /// Already enrolled exactly as asked; the stored Machine.
+    Replay(Machine),
+    /// Enrolled as someone else, or resetting.
+    Conflict(MachineNow),
+}
+
+/// Replay when the stored Machine and MTU equal what the request would produce.
+pub(crate) fn plan_enroll(
+    now: &MachineNow,
+    stored_mtu: Option<u32>,
+    wanted: &Machine,
+    wanted_mtu: Option<u32>,
+) -> EnrollPlan {
+    match now.phase {
+        LocalMachinePhase::Uninitialized => EnrollPlan::Fresh,
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+            if now.machine.as_ref() == Some(wanted) && stored_mtu == wanted_mtu =>
+        {
+            EnrollPlan::Replay(wanted.clone())
+        }
+        LocalMachinePhase::Joining
+        | LocalMachinePhase::Participating
+        | LocalMachinePhase::Resetting
+        | LocalMachinePhase::Unrecognized(_) => EnrollPlan::Conflict(now.clone()),
+    }
 }
 
 impl PreparedReset {
@@ -242,39 +279,74 @@ impl LocalMachineStore {
         })
     }
 
-    /// Persist the first participating assignment with its complete admission policy.
+    /// Persist a fresh enrollment. A replay or a conflict changes nothing.
     ///
     /// # Errors
-    /// Rejects an initialized Machine, missing endpoints, invalid network, or a failed save.
-    pub fn initialize(
-        &mut self,
-        request: ployz_core::InitializeRequest,
-    ) -> Result<Machine, StoreError> {
-        let (machine, installation) = self.plan_initialize(request)?;
-        self.install(installation)?;
-        Ok(machine)
+    /// Rejects missing endpoints or peers, an invalid network, an assignment for
+    /// another Machine or key, or a failed save.
+    pub fn enroll(&mut self, request: EnrollRequest) -> Result<EnrollPlan, StoreError> {
+        let (plan, installation) = self.plan_enrollment(request)?;
+        if matches!(plan, EnrollPlan::Fresh) {
+            self.install(installation)?;
+        }
+        Ok(plan)
     }
 
-    pub(crate) fn plan_initialize(
+    /// The Installation this request would persist, and whether this Machine
+    /// takes it fresh, already holds it, or holds another enrollment.
+    pub(crate) fn plan_enrollment(
         &self,
-        request: ployz_core::InitializeRequest,
-    ) -> Result<(Machine, Installation), StoreError> {
-        let ployz_core::InitializeRequest {
-            initial_policy,
-            name,
-            cluster_network,
-            public_ip,
-            advertised_endpoints,
+        request: EnrollRequest,
+    ) -> Result<(EnrollPlan, Installation), StoreError> {
+        let EnrollRequest {
+            role,
             wireguard_mtu,
         } = request;
-        let founding_cluster = FoundingCluster {
-            network: cluster_network,
+        let body = match role {
+            EnrollAs::Founder {
+                name,
+                cluster_network,
+                initial_policy,
+                public_ip,
+                advertised_endpoints,
+            } => self.founder(
+                name,
+                FoundingCluster {
+                    network: cluster_network,
+                },
+                initial_policy,
+                public_ip,
+                advertised_endpoints,
+            )?,
+            EnrollAs::Member { registration } => self.member(registration)?,
         };
-        self.require_uninitialized()?;
+        let wanted = body.machine().expect("an enrollment owns its Machine");
+        let plan = plan_enroll(
+            &self.record.now(),
+            self.record.wireguard_mtu,
+            wanted,
+            wireguard_mtu,
+        );
+        Ok((
+            plan,
+            Installation {
+                body,
+                wireguard_mtu,
+            },
+        ))
+    }
+
+    fn founder(
+        &self,
+        name: ployz_core::MachineName,
+        cluster: FoundingCluster,
+        initial_policy: ployz_core::InitialMachinePolicy,
+        public_ip: Option<std::net::IpAddr>,
+        advertised_endpoints: Vec<ployz_core::AdvertisedEndpoint>,
+    ) -> Result<LocalMachineBody, StoreError> {
         if advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        let public_key = self.record.wireguard_private_key.public_key();
         let machine = Machine {
             labels: initial_policy.labels,
             accepts_builds: initial_policy.accepts_builds,
@@ -282,90 +354,45 @@ impl LocalMachineStore {
             accepts_ingress: initial_policy.accepts_ingress,
             id: self.record.id(),
             name,
-            subnet: allocate_machine_subnet(founding_cluster.network, []).map_err(|error| {
+            subnet: allocate_machine_subnet(cluster.network, []).map_err(|error| {
                 StoreError::InvalidNetwork(ployz_core::error_chain::inline(&error))
             })?,
-            public_key,
+            public_key: self.record.wireguard_private_key.public_key(),
             public_ip,
             advertised_endpoints,
             runtime: local_runtime(),
             build_concurrency: None,
         };
-        let installation = Installation {
-            body: LocalMachineBody::Participating {
-                machine: machine.clone(),
-                origin: ParticipationOrigin::Founder {
-                    cluster: founding_cluster,
-                },
-            },
-            wireguard_mtu,
-        };
-        Ok((machine, installation))
+        Ok(LocalMachineBody::Participating {
+            machine,
+            origin: ParticipationOrigin::Founder { cluster },
+        })
     }
 
-    /// Returns true when this assignment was already durably accepted.
-    pub fn join(
-        &mut self,
-        assigned_machine: Machine,
-        visible_peers: Vec<Machine>,
-        target_versions: BTreeMap<String, i64>,
-        wireguard_mtu: Option<u32>,
-    ) -> Result<bool, StoreError> {
-        let Some(installation) = self.plan_join(
-            assigned_machine,
+    fn member(&self, registration: Registered) -> Result<LocalMachineBody, StoreError> {
+        let Registered {
+            assigned_machine: mut machine,
             visible_peers,
             target_versions,
-            wireguard_mtu,
-        )?
-        else {
-            return Ok(true);
-        };
-        self.install(installation)?;
-        Ok(false)
-    }
-
-    /// `None` when this assignment was already durably accepted.
-    pub(crate) fn plan_join(
-        &self,
-        mut assigned_machine: Machine,
-        visible_peers: Vec<Machine>,
-        target_versions: BTreeMap<String, i64>,
-        wireguard_mtu: Option<u32>,
-    ) -> Result<Option<Installation>, StoreError> {
-        if self.record.id() != assigned_machine.id {
+        } = registration;
+        if self.record.id() != machine.id {
             return Err(StoreError::IdentityMismatch);
         }
         if visible_peers.is_empty() {
             return Err(StoreError::MissingPeers);
         }
-        if self.record.wireguard_private_key.public_key() != assigned_machine.public_key {
+        if self.record.wireguard_private_key.public_key() != machine.public_key {
             return Err(StoreError::KeyMismatch);
         }
-        if assigned_machine.advertised_endpoints.is_empty() {
+        if machine.advertised_endpoints.is_empty() {
             return Err(StoreError::MissingEndpoints);
         }
-        assigned_machine.runtime = local_runtime();
-        match &self.record.body {
-            LocalMachineBody::Joining { machine, .. }
-            | LocalMachineBody::Participating {
-                machine,
-                origin: ParticipationOrigin::Join { .. },
-            } if machine == &assigned_machine && self.record.wireguard_mtu == wireguard_mtu => {
-                return Ok(None);
-            }
-            LocalMachineBody::Uninitialized { .. } => {}
-            LocalMachineBody::Joining { .. }
-            | LocalMachineBody::Participating { .. }
-            | LocalMachineBody::Resetting { .. } => return Err(StoreError::AlreadyInitialized),
-        }
-        Ok(Some(Installation {
-            body: LocalMachineBody::Joining {
-                machine: assigned_machine,
-                bootstrap: visible_peers,
-                min_store_version: target_versions,
-            },
-            wireguard_mtu,
-        }))
+        machine.runtime = local_runtime();
+        Ok(LocalMachineBody::Joining {
+            machine,
+            bootstrap: visible_peers,
+            min_store_version: target_versions,
+        })
     }
 
     pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
@@ -620,4 +647,93 @@ pub enum StoreError {
     ResetPreparationLost(PathBuf),
     #[error("a reset of data directory {} did not finish; start the ployz daemon to finish it", display_data_directory(.0))]
     ResetInterrupted(PathBuf),
+}
+
+#[cfg(test)]
+mod plan_enroll_tests {
+    use ployz_core::{
+        AdvertisedEndpoint, LocalMachinePhase, Machine, MachineId, MachineName, MachineNow,
+        WireGuardPublicKey,
+    };
+
+    use super::{EnrollPlan, plan_enroll};
+
+    fn wanted(id: &MachineId) -> Machine {
+        Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            id: *id,
+            name: MachineName::parse("edge").unwrap(),
+            subnet: "10.210.1.0/24".parse().unwrap(),
+            public_key: WireGuardPublicKey([1; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            runtime: Default::default(),
+            build_concurrency: None,
+        }
+    }
+
+    #[test]
+    fn plan_enroll_replays_only_the_same_record_and_mtu() {
+        let id = MachineId::random();
+        let wanted = wanted(&id);
+        let mut renamed = wanted.clone();
+        renamed.name = MachineName::parse("other").unwrap();
+        let now = |phase, machine: Option<&Machine>| MachineNow {
+            id,
+            phase,
+            machine: machine.cloned(),
+        };
+        let participating = now(LocalMachinePhase::Participating, Some(&wanted));
+        let joining = now(LocalMachinePhase::Joining, Some(&wanted));
+        let different = now(LocalMachinePhase::Participating, Some(&renamed));
+        let resetting = now(LocalMachinePhase::Resetting, None);
+        let cases = [
+            (
+                "fresh",
+                now(LocalMachinePhase::Uninitialized, None),
+                None,
+                EnrollPlan::Fresh,
+            ),
+            (
+                "same record replays",
+                participating.clone(),
+                Some(1400),
+                EnrollPlan::Replay(wanted.clone()),
+            ),
+            (
+                "same joining record replays",
+                joining.clone(),
+                Some(1400),
+                EnrollPlan::Replay(wanted.clone()),
+            ),
+            (
+                "different record refused",
+                different.clone(),
+                Some(1400),
+                EnrollPlan::Conflict(different),
+            ),
+            (
+                "MTU differs",
+                participating.clone(),
+                None,
+                EnrollPlan::Conflict(participating),
+            ),
+            (
+                "resetting refused",
+                resetting.clone(),
+                Some(1400),
+                EnrollPlan::Conflict(resetting),
+            ),
+        ];
+        for (case, now, stored_mtu, expected) in cases {
+            assert_eq!(
+                plan_enroll(&now, stored_mtu, &wanted, Some(1400)),
+                expected,
+                "{case}"
+            );
+        }
+    }
 }

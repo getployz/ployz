@@ -730,6 +730,7 @@ impl Fleet {
                         telemetry: None,
                         storage: None,
                         upgrade: machine.upgrades.last().cloned(),
+                        token: None,
                     }
                     .into(),
                 )

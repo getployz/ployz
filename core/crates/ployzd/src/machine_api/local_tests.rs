@@ -962,18 +962,20 @@ async fn fake_docker_service(
     crate::docker::test_support::FakeDocker,
 ) {
     use crate::docker::test_support::{FakeDocker, fake_runtime_with};
-    use ployz_core::{InitializeRequest, MachineName};
+    use ployz_core::MachineName;
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
     store
-        .initialize(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("local").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                "192.0.2.1:51820".parse().unwrap(),
-            )],
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: MachineName::parse("local").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                    "192.0.2.1:51820".parse().unwrap(),
+                )],
+            },
             wireguard_mtu: None,
         })
         .unwrap();

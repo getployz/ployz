@@ -221,26 +221,11 @@ impl MachineRpc for MachineService {
         finish(self.local.inspect(expect::<op::Inspect>(request)?).await)
     }
 
-    async fn machine_token(
+    async fn enroll(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .machine_token(expect::<op::MachineToken>(request)?)
-                .await,
-        )
-    }
-
-    async fn initialize(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .initialize(expect::<op::Initialize>(request)?)
-                .await,
-        )
+        finish(self.local.enroll(expect::<op::Enroll>(request)?).await)
     }
 
     async fn register(
@@ -248,13 +233,6 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         finish(self.local.register(expect::<op::Register>(request)?).await)
-    }
-
-    async fn join(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        finish(self.local.join(expect::<op::Join>(request)?).await)
     }
 
     async fn set_management_client(
@@ -897,9 +875,6 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             details: Value::Null,
             cause: Vec::new(),
         }),
-        LocalMachineError::IsolationLocked => {
-            respond(unavailable(&ployz_core::error_chain::inline(&error)))
-        }
         LocalMachineError::Admission(crate::mutation::Error::Busy) => respond(RpcError {
             code: RpcErrorCode::Conflict,
             message: "a Ployz installation or upgrade is active".into(),

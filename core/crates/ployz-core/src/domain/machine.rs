@@ -257,7 +257,7 @@ impl FromStr for StorageChoice {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "address")]
 pub enum PublicIpDiscovery {
     #[default]
@@ -266,7 +266,7 @@ pub enum PublicIpDiscovery {
     Override(IpAddr),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineToken {
     pub id: MachineId,
     pub public_key: WireGuardPublicKey,

@@ -12,7 +12,7 @@ use harness::{
     EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN, founder_machine,
     ingress_on, registration, serve_machine,
 };
-use ployz_core::{InitializeRequest, InspectRequest, LocalMachinePhase, Registered, op};
+use ployz_core::{EnrollAs, EnrollRequest, InspectRequest, LocalMachinePhase, Registered, op};
 use serde_json::json;
 
 #[tokio::test]
@@ -57,8 +57,8 @@ async fn cloud_init_join_participates() {
     assert!(stdout.contains("Joined Server joiner."), "{stdout}");
     assert_eq!(
         daemon.join_attempts(),
-        1,
-        "lost Join reply must be recovered by Inspect"
+        2,
+        "a lost Enroll reply is resent and replayed"
     );
     let joined = daemon.join_request();
     assert_eq!(joined.registration.assigned_machine.id, machine_id);
@@ -514,13 +514,15 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
     client
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: Default::default(),
-                name: founder.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: founder.advertised_endpoints,
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: founder.name,
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: founder.advertised_endpoints,
+                },
                 wireguard_mtu: None,
             },
             None,
@@ -563,16 +565,18 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
     client
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: ployz_core::InitialMachinePolicy {
-                    accepts_ingress: false,
-                    ..Default::default()
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: ployz_core::InitialMachinePolicy {
+                        accepts_ingress: false,
+                        ..Default::default()
+                    },
+                    name: founder.name.clone(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: founder.advertised_endpoints.clone(),
                 },
-                name: founder.name.clone(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: founder.advertised_endpoints.clone(),
                 wireguard_mtu: None,
             },
             None,
@@ -620,13 +624,15 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
         .await
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: Default::default(),
-                name: founder.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: founder.advertised_endpoints,
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: founder.name,
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: founder.advertised_endpoints,
+                },
                 wireguard_mtu: None,
             },
             None,
@@ -685,13 +691,15 @@ async fn reset_enroll_posts_the_rotated_public_key() {
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
     client
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: Default::default(),
-                name: local.assigned_machine.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: local.assigned_machine.advertised_endpoints,
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: local.assigned_machine.name,
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: local.assigned_machine.advertised_endpoints,
+                },
                 wireguard_mtu: None,
             },
             None,
@@ -751,13 +759,15 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
     client
-        .call::<op::Initialize>(
-            InitializeRequest {
-                initial_policy: Default::default(),
-                name: local.assigned_machine.name,
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: local.assigned_machine.advertised_endpoints,
+        .call::<op::Enroll>(
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: local.assigned_machine.name,
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: local.assigned_machine.advertised_endpoints,
+                },
                 wireguard_mtu: None,
             },
             None,

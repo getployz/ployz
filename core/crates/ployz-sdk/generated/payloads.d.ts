@@ -2206,7 +2206,11 @@ storage: MachineStorageObservation | null,
 /**
  * Latest upgrade attempt, reconciled against its worker.
  */
-upgrade?: MachineUpgradeAttempt | null, };
+upgrade?: MachineUpgradeAttempt | null,
+/**
+ * Present only when the request asked for it.
+ */
+token?: MachineToken | null, };
 
 export type MachineFailure<E> = { machine_id: MachineId, error: E, };
 
@@ -2327,6 +2331,8 @@ docker_root_total_bytes: number,
  * Docker-root filesystem free bytes.
  */
 docker_root_free_bytes: number, };
+
+export type MachineToken = { id: MachineId, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, memory_total_bytes: number | null, disk_total_bytes: number | null, disk_available_bytes: number | null, };
 
 export type MachineUpdate = {
 /**

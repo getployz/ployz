@@ -53,13 +53,13 @@ async fn session_observes_and_registers_saved_assignment_until_closed() {
 }
 
 #[tokio::test]
-async fn register_isolation_locked_is_rpc_error() {
+async fn register_on_a_machine_not_participating_is_rpc_error() {
     let description = advertised_description();
     let session = UnixSession::start().await;
     let service = enrollment_service(description.clone());
     service.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
-        message: "this Machine is isolation-locked".into(),
+        message: "Machine is not participating".into(),
         details: serde_json::Value::Null,
         cause: Vec::new(),
     });
@@ -73,17 +73,17 @@ async fn register_isolation_locked_is_rpc_error() {
     let error = client
         .register(&assignment)
         .await
-        .expect_err("isolation lock is RpcError");
+        .expect_err("a Machine not participating refuses with RpcError");
     client.close().await;
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert_eq!(error.message, "this Machine is isolation-locked");
+    assert_eq!(error.message, "Machine is not participating");
 }
 
 #[tokio::test]
 async fn node_smoke_covers_session_register() {
     let description = advertised_description();
-    let isolated_id = MachineId::parse("ffffffffffffffffffffffffffffffff").unwrap();
+    let not_participating_id = MachineId::parse("ffffffffffffffffffffffffffffffff").unwrap();
     let session = UnixSession::start().await;
     let _entry = session
         .spawn_machine(
@@ -91,24 +91,29 @@ async fn node_smoke_covers_session_register() {
             enrollment_service(description.clone()),
         )
         .await;
-    let isolated = enrollment_service(ployz_core::ContractDescription {
-        machine_id: isolated_id,
+    let not_participating = enrollment_service(ployz_core::ContractDescription {
+        machine_id: not_participating_id,
         ..description.clone()
     });
-    isolated.set_register_error(RpcError {
+    not_participating.set_register_error(RpcError {
         code: RpcErrorCode::Unavailable,
-        message: "this Machine is isolation-locked".into(),
+        message: "Machine is not participating".into(),
         details: serde_json::Value::Null,
         cause: Vec::new(),
     });
-    let _isolated = session.spawn_machine(isolated_id, isolated).await;
+    let _not_participating = session
+        .spawn_machine(not_participating_id, not_participating)
+        .await;
 
     session
         .assert_sdk_script(
             "node_register.js",
             description.machine_id,
             &[
-                ("PLOYZ_ISOLATED_MACHINE_ID", isolated_id.as_str()),
+                (
+                    "PLOYZ_NOT_PARTICIPATING_MACHINE_ID",
+                    not_participating_id.as_str(),
+                ),
                 ("PLOYZ_UNKNOWN_MACHINE_ID", MachineId::random().as_str()),
             ],
         )

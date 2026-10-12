@@ -1,7 +1,5 @@
 use clap::ArgMatches;
-use ployz_core::{
-    InspectRequest, JoinRequest, LocalMachinePhase, MachineName, RegisterRequest, op,
-};
+use ployz_core::{EnrollAs, EnrollRequest, LocalMachinePhase, MachineName, RegisterRequest};
 
 use super::super::{connect_context, runtime};
 use super::{ConnectionOptions, helpers, target};
@@ -41,18 +39,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         } else {
             helpers::reconnect_direct(matches, &connection).await?
         };
-        let mut token = target_client
-            .call_repeatable::<op::MachineToken>(token_request.clone(), None)
-            .await?;
-        let details = target_client
-            .call_repeatable::<op::Inspect>(
-                InspectRequest {
-                    advertised_endpoints: token.advertised_endpoints.clone(),
-                    ..Default::default()
-                },
-                None,
-            )
-            .await?;
+        let (details, mut token) =
+            helpers::inspect_token(&mut target_client, token_request.clone()).await?;
         let history = config.path().with_extension("enrollment");
         let resuming = crate::enrollment::local::has_assignment(&history, &snapshot, token.id)?
             || snapshot
@@ -63,9 +51,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
             helpers::reset(&mut target_client).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
-            token = target_client
-                .call_repeatable::<op::MachineToken>(token_request, None)
-                .await?;
+            token = helpers::inspect_token(&mut target_client, token_request)
+                .await?
+                .1;
         }
         let name = helpers::machine_name(requested_name, &token)?;
 
@@ -86,10 +74,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         )?;
         let assigned = assignment.machine.clone();
         let registration = crate::enrollment::publish_enrollment(&mut entry, &assignment).await?;
-        helpers::join(
+        helpers::enroll(
             &mut target_client,
-            JoinRequest {
-                registration,
+            EnrollRequest {
+                role: EnrollAs::Member { registration },
                 wireguard_mtu,
             },
         )

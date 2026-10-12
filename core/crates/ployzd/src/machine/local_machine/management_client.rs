@@ -97,14 +97,16 @@ mod tests {
         let store = LocalMachineStore::open(dir).unwrap();
         let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
         local
-            .initialize(ployz_core::InitializeRequest {
-                initial_policy: Default::default(),
-                name: ployz_core::MachineName::parse("first").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                    "192.0.2.1:51820".parse().unwrap(),
-                )],
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: ployz_core::MachineName::parse("first").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
                 wireguard_mtu: None,
             })
             .await

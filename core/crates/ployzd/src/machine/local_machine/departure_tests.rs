@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    AdvertisedEndpoint, DockerVolume, InitializeRequest, JoinRequest, LocalMachinePhase, Machine,
-    MachineId, MachineName, Registered, RemoveLocalMachineRequest, RpcErrorCode,
+    AdvertisedEndpoint, DockerVolume, EnrollAs, EnrollRequest, Enrolled, LocalMachinePhase,
+    Machine, MachineId, MachineName, Registered, RemoveLocalMachineRequest, RpcErrorCode,
 };
 use serde_json::json;
 
@@ -13,7 +13,7 @@ use super::{Error, LocalMachine};
 use crate::{
     corrosion::{AdminClient, fake_cluster},
     docker::test_support::{FakeDocker, fake_runtime_with, provisioned_source, spec_with_sources},
-    machine::{LocalMachineStore, RecordOwner, StoreError},
+    machine::{LocalMachineStore, RecordOwner},
     storage::test_support::FakePlugin,
 };
 
@@ -30,13 +30,15 @@ impl Drop for Harness {
     }
 }
 
-fn initialize_request() -> InitializeRequest {
-    InitializeRequest {
-        initial_policy: Default::default(),
-        name: MachineName::parse("local").unwrap(),
-        cluster_network: "10.210.0.0/16".parse().unwrap(),
-        public_ip: None,
-        advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+fn initialize_request() -> EnrollRequest {
+    EnrollRequest {
+        role: EnrollAs::Founder {
+            initial_policy: Default::default(),
+            name: MachineName::parse("local").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+        },
         wireguard_mtu: None,
     }
 }
@@ -48,7 +50,7 @@ async fn harness(initialized: bool) -> Harness {
     std::fs::create_dir_all(&data_dir).unwrap();
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
     if initialized {
-        store.initialize(initialize_request()).unwrap();
+        store.enroll(initialize_request()).unwrap();
     }
     let plugin = FakePlugin::default();
     plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
@@ -79,7 +81,7 @@ fn forgot_data(docker: &FakeDocker) -> bool {
         .any(|(method, path)| method == "DELETE" && path.ends_with("/volumes/data"))
 }
 
-fn join_request(record: &crate::machine::LocalMachineRecord) -> JoinRequest {
+fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
     let assigned_machine = Machine {
         labels: Default::default(),
         accepts_builds: true,
@@ -96,11 +98,13 @@ fn join_request(record: &crate::machine::LocalMachineRecord) -> JoinRequest {
     };
     let mut peer = assigned_machine.clone();
     peer.id = MachineId::random();
-    JoinRequest {
-        registration: Registered {
-            assigned_machine,
-            visible_peers: vec![peer],
-            target_versions: BTreeMap::new(),
+    EnrollRequest {
+        role: EnrollAs::Member {
+            registration: Registered {
+                assigned_machine,
+                visible_peers: vec![peer],
+                target_versions: BTreeMap::new(),
+            },
         },
         wireguard_mtu: None,
     }
@@ -132,7 +136,7 @@ async fn local_removal_departs_storage_before_the_phase_commits() {
 #[tokio::test]
 async fn initialize_departs_storage_a_prior_identity_left_behind() {
     let test = harness(false).await;
-    test.local.initialize(initialize_request()).await.unwrap();
+    test.local.enroll(initialize_request()).await.unwrap();
     assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
     assert!(forgot_data(&test.docker));
 }
@@ -141,7 +145,7 @@ async fn initialize_departs_storage_a_prior_identity_left_behind() {
 async fn join_departs_storage_a_prior_identity_left_behind() {
     let test = harness(false).await;
     let request = join_request(&test.local.record());
-    test.local.join(request).await.unwrap();
+    test.local.enroll(request).await.unwrap();
     assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
     assert!(forgot_data(&test.docker));
 }
@@ -298,24 +302,21 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
 async fn a_resumed_join_does_not_depart_again() {
     let test = harness(false).await;
     let request = join_request(&test.local.record());
-    test.local.join(request.clone()).await.unwrap();
-    let again = test.local.join(request).await.unwrap();
-    assert!(again.already_accepted);
+    let first = test.local.enroll(request.clone()).await.unwrap();
+    let again = test.local.enroll(request).await.unwrap();
+    assert_eq!(again, first);
     assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
 }
 
 #[tokio::test]
-async fn a_refused_initialize_does_not_depart() {
+async fn a_refused_enroll_does_not_depart() {
     let test = harness(true).await;
-    let error = test
-        .local
-        .initialize(initialize_request())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, Error::Store(StoreError::AlreadyInitialized)),
-        "{error}"
-    );
+    let mut request = initialize_request();
+    if let EnrollAs::Founder { name, .. } = &mut request.role {
+        *name = MachineName::parse("other").unwrap();
+    }
+    let refused = test.local.enroll(request).await.unwrap();
+    assert!(matches!(refused, Enrolled::Refused { .. }), "{refused:?}");
     assert!(test.plugin.routes_called().is_empty());
     assert!(!forgot_data(&test.docker));
 }
@@ -328,7 +329,7 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
         "Storage.Demote",
         json!({"Err": {"code": "internal", "message": "zfs rename failed", "details": null}}),
     );
-    let error = test.local.join(request.clone()).await.unwrap_err();
+    let error = test.local.enroll(request.clone()).await.unwrap_err();
     assert!(matches!(error, Error::Cleanup(_)), "{error}");
     assert_eq!(
         test.local.record().phase(),
@@ -336,8 +337,7 @@ async fn a_join_whose_departure_fails_stays_uninitialized_and_retries() {
     );
 
     test.plugin.reply("Storage.Demote", json!({"Ok": ["data"]}));
-    let joined = test.local.join(request).await.unwrap();
-    assert!(!joined.already_accepted);
+    test.local.enroll(request).await.unwrap();
     assert_eq!(
         test.plugin.routes_called(),
         ["Storage.Demote", "Storage.Demote"]

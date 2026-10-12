@@ -513,12 +513,16 @@ mod tests {
             std::env::temp_dir().join(format!("ployzd-role-admission-{}", MachineId::random()));
         let mut store = LocalMachineStore::open(&data_dir).unwrap();
         store
-            .initialize(ployz_core::InitializeRequest {
-                initial_policy: Default::default(),
-                name: MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
                 wireguard_mtu: None,
             })
             .unwrap();
@@ -630,14 +634,16 @@ mod tests {
                 std::env::temp_dir().join(format!("ployzd-admission-{}", MachineId::random()));
             let mut store = LocalMachineStore::open(&data_dir).unwrap();
             store
-                .initialize(ployz_core::InitializeRequest {
-                    initial_policy: Default::default(),
-                    name: MachineName::parse("local").unwrap(),
-                    cluster_network: "10.210.0.0/16".parse().unwrap(),
-                    public_ip: None,
-                    advertised_endpoints: vec![AdvertisedEndpoint(
-                        "192.0.2.1:51820".parse().unwrap(),
-                    )],
+                .enroll(ployz_core::EnrollRequest {
+                    role: ployz_core::EnrollAs::Founder {
+                        initial_policy: Default::default(),
+                        name: MachineName::parse("local").unwrap(),
+                        cluster_network: "10.210.0.0/16".parse().unwrap(),
+                        public_ip: None,
+                        advertised_endpoints: vec![AdvertisedEndpoint(
+                            "192.0.2.1:51820".parse().unwrap(),
+                        )],
+                    },
                     wireguard_mtu: None,
                 })
                 .unwrap();
@@ -764,7 +770,18 @@ mod tests {
         let mut peer = machine.clone();
         peer.id = MachineId::random();
         owner
-            .mutate(move |store| store.join(machine, vec![peer], Default::default(), None))
+            .mutate(move |store| {
+                store.enroll(ployz_core::EnrollRequest {
+                    role: ployz_core::EnrollAs::Member {
+                        registration: ployz_core::Registered {
+                            assigned_machine: machine,
+                            visible_peers: vec![peer],
+                            target_versions: Default::default(),
+                        },
+                    },
+                    wireguard_mtu: None,
+                })
+            })
             .await
             .unwrap()
             .unwrap();
@@ -801,12 +818,16 @@ mod tests {
             std::env::temp_dir().join(format!("ployzd-removal-admission-{}", MachineId::random()));
         let mut store = LocalMachineStore::open(&data_dir).unwrap();
         store
-            .initialize(ployz_core::InitializeRequest {
-                initial_policy: Default::default(),
-                name: MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
                 wireguard_mtu: None,
             })
             .unwrap();

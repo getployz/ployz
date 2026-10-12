@@ -1,19 +1,19 @@
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CapabilityAdvertisement,
-    CapabilityName, DESCRIBE_CONTRACT_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EXEC_CONTAINER_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY, INITIALIZE_MACHINE_CAPABILITY,
+    CapabilityName, DESCRIBE_CONTRACT_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
     INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, JOIN_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    MACHINE_TOKEN_CAPABILITY, MARK_CONTAINER_STOPPING_CAPABILITY, METRIC_HISTORY_CAPABILITY,
-    MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
-    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY, REMOVE_LOCAL_MACHINE_CAPABILITY,
-    REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY,
-    RESET_MACHINE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, START_CONTAINER_CAPABILITY,
-    STOP_CONTAINER_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, op,
+    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
+    LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
+    LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    MARK_CONTAINER_STOPPING_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
+    PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
+    REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    REQUEST_MACHINE_UPGRADE_CAPABILITY, RESET_MACHINE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
+    SEED_VOLUME_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
+    START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -26,10 +26,8 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.rpc.describe-contract.v1",
         ),
         (INSPECT_MACHINE_CAPABILITY, "ployz.machine.inspect.v1"),
-        (MACHINE_TOKEN_CAPABILITY, "ployz.machine.token.v1"),
-        (INITIALIZE_MACHINE_CAPABILITY, "ployz.machine.initialize.v1"),
+        (ENROLL_MACHINE_CAPABILITY, "ployz.machine.enroll.v1"),
         (REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1"),
-        (JOIN_MACHINE_CAPABILITY, "ployz.machine.join.v1"),
         (
             SET_MANAGEMENT_CLIENT_CAPABILITY,
             "ployz.machine.set-management-client.v1",
@@ -116,10 +114,8 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         [
             "ployz.rpc.describe-contract.v1",
             "ployz.machine.inspect.v1",
-            "ployz.machine.token.v1",
-            "ployz.machine.initialize.v1",
+            "ployz.machine.enroll.v1",
             "ployz.machine.register.v1",
-            "ployz.machine.join.v1",
             "ployz.machine.set-management-client.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
@@ -127,7 +123,6 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.remove-local.v1",
             "ployz.machine.remove.v1",
             "ployz.machine.reset.v1",
-            "ployz.runtime.watch.v1",
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
         ]
@@ -171,6 +166,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
         [
             "ployz.container.observations.v1",
             "ployz.certificates.publish.v1",
+            "ployz.runtime.watch.v1",
         ]
     );
 }

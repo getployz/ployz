@@ -15,9 +15,9 @@ use ployz_core::{
     GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation, ImageDigest,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
     ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig,
-    InspectBuildGrantRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
-    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachineRelease,
-    MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt,
+    InspectBuildGrantRequest, InspectRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
+    MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
+    MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate, MachineUpgradeAttempt,
     MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
     ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PruneImagesRequest,
@@ -25,8 +25,8 @@ use ployz_core::{
     PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
     RemoveMachineRequest, RequestMachineUpgradeRequest, ResetAccepted, ResetRequest,
     ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource, encode_grpc_frame,
-    grpc_frames, op,
+    RpcResponseBody, ServiceId, ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource,
+    encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -1650,8 +1650,10 @@ fn remove_volumes_request_identifies_each_volume_by_machine_and_name() {
 #[test]
 fn machine_administration_requests_round_trip_as_typed_payloads() {
     let requests = [
-        op::MachineToken::into_request(MachineTokenRequest {
-            public_ip: PublicIpDiscovery::Override("203.0.113.7".parse().unwrap()),
+        op::Inspect::into_request(InspectRequest {
+            token: Some(TokenRequest {
+                public_ip: PublicIpDiscovery::Override("203.0.113.7".parse().unwrap()),
+            }),
             ..Default::default()
         }),
         op::UpdateMachine::into_request(UpdateMachineRequest {
@@ -1718,6 +1720,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         telemetry: None,
         storage: None,
         upgrade: None,
+        token: None,
     };
     let encoded = serde_json::to_value(&details).unwrap();
     assert!(encoded.get("upgrade").is_none(), "{encoded}");

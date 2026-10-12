@@ -132,16 +132,19 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let mut machine_store = crate::machine::LocalMachineStore::open(&root.0).unwrap();
-    let machine = machine_store
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("stream-test").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(address)],
+    machine_store
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: MachineName::parse("stream-test").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(address)],
+            },
             wireguard_mtu: None,
         })
         .unwrap();
+    let machine = machine_store.record().machine().unwrap().clone();
     let machine_store = crate::machine::RecordOwner::spawn(machine_store).unwrap();
     let specs = MachineSpecStore::open(root.0.join("machine.db"))
         .await

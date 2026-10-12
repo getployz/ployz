@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use clap::ArgMatches;
 use ployz_core::{
-    DOCKER_NETWORK_CONFLICT_RECOVERY, InspectRequest, LocalMachinePhase, MACHINE_START_WAIT,
-    MachineName, MachineToken, MachineTokenRequest, PublicIpDiscovery, RpcErrorCode, op,
+    DOCKER_NETWORK_CONFLICT_RECOVERY, EnrollRequest, Enrolled, InspectRequest, LocalMachinePhase,
+    MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken, PublicIpDiscovery,
+    RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
@@ -14,7 +15,7 @@ use crate::{
     handlers::{Error, string_values},
 };
 
-pub(super) fn token_request(matches: &ArgMatches) -> Result<MachineTokenRequest, Error> {
+pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Error> {
     let public_ip = match matches
         .get_one::<String>("public-ip")
         .map(String::as_str)
@@ -28,10 +29,29 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<MachineTokenRequest,
                 .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?,
         ),
     };
-    Ok(MachineTokenRequest {
+    Ok(InspectRequest {
         advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"))?,
-        public_ip,
+        token: Some(TokenRequest { public_ip }),
+        ..Default::default()
     })
+}
+
+/// Inspect a newcomer for the token a Cluster registers it with.
+pub(in crate::handlers) async fn inspect_token(
+    client: &mut Client,
+    request: InspectRequest,
+) -> Result<(MachineDetails, MachineToken), Error> {
+    let mut details = client.call_repeatable::<op::Inspect>(request, None).await?;
+    let token = details.token.take().ok_or_else(|| {
+        Error::coded(
+            RpcErrorCode::Unsupported,
+            format!(
+                "{} runs a Ployz that cannot report its join token. Upgrade Ployz on this Server, then retry.",
+                client.connection()
+            ),
+        )
+    })?;
+    Ok((details, token))
 }
 
 pub(in crate::handlers) fn machine_name(
@@ -138,56 +158,21 @@ pub(in crate::handlers) async fn check_listed(client: &mut Client) -> Result<(),
     Ok(())
 }
 
-/// Recover a lost Initialize reply without initializing or resetting twice.
-pub(in crate::handlers) async fn initialize(
+/// Enroll, resending until a reply arrives: a resend replays the stored enrollment.
+pub(in crate::handlers) async fn enroll(
     client: &mut Client,
-    request: ployz_core::InitializeRequest,
-) -> Result<ployz_core::Initialized, Error> {
-    let identity = client
-        .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
-        .await?;
-    let name = request.name.clone();
-    let initial_policy = request.initial_policy.clone();
-    match client
-        .call_unretried::<op::Initialize>(
-            request,
-            None,
-            crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT,
-        )
+    request: EnrollRequest,
+) -> Result<Machine, Error> {
+    let enrolled = client
+        .call_repeatable_for::<op::Enroll>(request, None, None, None, MACHINE_START_WAIT)
         .await
-    {
-        Ok(initialized) => Ok(initialized),
-        Err(error) if error.is_setup_retryable() => {
-            let details = observe_mutation(
-                client,
-                "Initialization",
-                error,
-                MACHINE_START_WAIT,
-                |details| {
-                    details.phase == LocalMachinePhase::Participating
-                        && details
-                            .machine
-                            .as_ref()
-                            .is_some_and(|machine| machine.name == name)
-                },
-            )
-            .await?;
-            if details.id != identity.id || details.public_key != identity.public_key {
-                return Err(Error::conflict(
-                    "Initialization outcome belongs to a different Server identity; inspect the Server before retrying; do not reset it",
-                ));
-            }
-            let machine = details
-                .machine
-                .expect("observed predicate verified the initialized Server");
-            if !initial_policy.matches(&machine) {
-                return Err(Error::conflict(
-                    "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
-                ));
-            }
-            Ok(ployz_core::Initialized { machine })
-        }
-        Err(error) => Err(error.into()),
+        .map_err(|error| match error {
+            crate::setup_retry::Error::Permanent(error) => error,
+            exhausted => ConnectError::Exhausted(Box::new(exhausted)),
+        })?;
+    match enrolled {
+        Enrolled::Enrolled { machine } => Ok(machine),
+        Enrolled::Refused { error, .. } => Err(ConnectError::Remote(error).into()),
     }
 }
 
@@ -211,48 +196,6 @@ pub(in crate::handlers) async fn reset(client: &mut Client) -> Result<(), Error>
         )
         .await
         .map(drop),
-        Err(error) => Err(error.into()),
-    }
-}
-
-/// A lost Join reply is success only when the assigned identity is observed joining.
-pub(in crate::handlers) async fn join(
-    client: &mut Client,
-    request: ployz_core::JoinRequest,
-) -> Result<(), Error> {
-    let assigned = &request.registration.assigned_machine;
-    let initial_policy = ployz_core::InitialMachinePolicy {
-        labels: assigned.labels.clone(),
-        accepts_builds: assigned.accepts_builds,
-        accepts_services: assigned.accepts_services,
-        accepts_ingress: assigned.accepts_ingress,
-    };
-    let assigned = assigned.id;
-    match client
-        .call_unretried::<op::Join>(request, None, crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT)
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(error) if error.is_setup_retryable() => {
-            let details = observe_mutation(client, "Join", error, MACHINE_START_WAIT, |details| {
-                details.id == assigned
-                    && matches!(
-                        details.phase,
-                        LocalMachinePhase::Joining | LocalMachinePhase::Participating
-                    )
-            })
-            .await?;
-            if !details
-                .machine
-                .as_ref()
-                .is_some_and(|machine| initial_policy.matches(machine))
-            {
-                return Err(Error::conflict(
-                    "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
-                ));
-            }
-            Ok(())
-        }
         Err(error) => Err(error.into()),
     }
 }

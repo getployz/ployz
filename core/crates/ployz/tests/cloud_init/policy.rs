@@ -25,17 +25,19 @@ async fn cloud_resume_refuses_policy_mismatch_without_editing_the_machine() {
         let address = serve_machine(daemon.clone()).await;
         connect_daemon(address)
             .await
-            .call::<op::Initialize>(
-                InitializeRequest {
-                    initial_policy: ployz_core::InitialMachinePolicy {
-                        accepts_services: false,
-                        accepts_ingress: false,
-                        ..Default::default()
+            .call::<op::Enroll>(
+                EnrollRequest {
+                    role: EnrollAs::Founder {
+                        initial_policy: ployz_core::InitialMachinePolicy {
+                            accepts_services: false,
+                            accepts_ingress: false,
+                            ..Default::default()
+                        },
+                        name: founder.name,
+                        cluster_network: "10.210.0.0/16".parse().unwrap(),
+                        public_ip: None,
+                        advertised_endpoints: founder.advertised_endpoints,
                     },
-                    name: founder.name,
-                    cluster_network: "10.210.0.0/16".parse().unwrap(),
-                    public_ip: None,
-                    advertised_endpoints: founder.advertised_endpoints,
                     wireguard_mtu: None,
                 },
                 None,

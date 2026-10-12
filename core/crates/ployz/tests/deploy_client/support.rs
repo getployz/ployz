@@ -503,15 +503,10 @@ impl MachineRpc for DeployService {
             telemetry,
             storage: self.machines.first().and_then(|machine| machine.storage),
             upgrade: None,
+            token: None,
         }))
     }
-    async fn machine_token(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn initialize(
+    async fn enroll(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -519,13 +514,6 @@ impl MachineRpc for DeployService {
         unused()
     }
     async fn register(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
-    }
-    async fn join(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

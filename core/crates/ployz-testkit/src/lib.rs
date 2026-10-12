@@ -16,7 +16,7 @@ use std::{
 
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_API_PORT, CORROSION_GOSSIP_PORT, ContainerId,
-    DescribeContractRequest, DockerVolumeName, InitializeRequest, InspectRequest, JoinRequest,
+    DescribeContractRequest, DockerVolumeName, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
     ListImagesRequest, LocalMachinePhase, MACHINE_API_PORT, Machine, MachineName, MachineRpcClient,
     MembershipObservation, OpaquePayload, Registered, ResetRequest, RpcResponse, RpcResponseBody,
     op,
@@ -120,15 +120,17 @@ impl ClusterPlan {
 }
 
 #[must_use]
-pub fn join_request(first: &Machine, registration: &Registered) -> JoinRequest {
+pub fn join_request(first: &Machine, registration: &Registered) -> EnrollRequest {
     let mut visible_peers = registration.visible_peers.clone();
     if !visible_peers.iter().any(|machine| machine.id == first.id) {
         visible_peers.push(first.clone());
     }
-    JoinRequest {
-        registration: Registered {
-            visible_peers,
-            ..registration.clone()
+    EnrollRequest {
+        role: EnrollAs::Member {
+            registration: Registered {
+                visible_peers,
+                ..registration.clone()
+            },
         },
         wireguard_mtu: None,
     }
@@ -379,37 +381,26 @@ impl Cluster {
     /// Returns when the Machine RPC is unavailable or rejects initialization.
     pub async fn initialize_first(&self) -> Result<Machine, TestkitError> {
         let mut client = self.client(0).await?;
-        Ok(response(
-            client
-                .initialize(
-                    op::Initialize::into_request(InitializeRequest {
-                        initial_policy: Default::default(),
-                        name: MachineName::parse("machine-1")?,
-                        cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
-                        public_ip: None,
-                        advertised_endpoints: vec![self.endpoint(0)?],
-                        wireguard_mtu: None,
-                    })
-                    .encode()?,
-                )
-                .await?
-                .into_inner(),
-        )?
-        .decode::<op::Initialize>()?
-        .machine)
+        enroll(
+            &mut client,
+            EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("machine-1")?,
+                    cluster_network: "10.210.0.0/16".parse().expect("static network is valid"),
+                    public_ip: None,
+                    advertised_endpoints: vec![self.endpoint(0)?],
+                },
+                wireguard_mtu: None,
+            },
+        )
+        .await
     }
 
-    pub async fn join(&self, index: usize, request: JoinRequest) -> Result<(), TestkitError> {
-        let mut client = self.client(index).await?;
-        response(
-            client
-                .join(op::Join::into_request(request).encode()?)
-                .await?
-                .into_inner(),
-        )?
-        .decode::<op::Join>()
-        .map(|_| ())
-        .map_err(Into::into)
+    pub async fn join(&self, index: usize, request: EnrollRequest) -> Result<(), TestkitError> {
+        enroll(&mut self.client(index).await?, request)
+            .await
+            .map(|_| ())
     }
 
     fn seed_observation(&self, index: usize) -> Result<(), TestkitError> {
@@ -1086,6 +1077,23 @@ fn response(payload: OpaquePayload) -> Result<RpcResponse, TestkitError> {
     }
 }
 
+async fn enroll(
+    client: &mut MachineRpcClient<tonic::transport::Channel>,
+    request: EnrollRequest,
+) -> Result<Machine, TestkitError> {
+    match response(
+        client
+            .enroll(op::Enroll::into_request(request).encode()?)
+            .await?
+            .into_inner(),
+    )?
+    .decode::<op::Enroll>()?
+    {
+        Enrolled::Enrolled { machine } => Ok(machine),
+        Enrolled::Refused { error, .. } => Err(TestkitError::Rpc(error.message)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,10 +1187,13 @@ mod tests {
             visible_peers: Vec::new(),
             target_versions: BTreeMap::from([("actor".to_owned(), 7)]),
         };
-        let join = join_request(&first, &registration);
-        assert_eq!(join.registration.assigned_machine, second);
-        assert_eq!(join.registration.visible_peers, vec![first]);
-        assert_eq!(join.registration.target_versions.get("actor"), Some(&7));
+        let EnrollAs::Member { registration: join } = join_request(&first, &registration).role
+        else {
+            panic!("join_request enrolls a member");
+        };
+        assert_eq!(join.assigned_machine, second);
+        assert_eq!(join.visible_peers, vec![first]);
+        assert_eq!(join.target_versions.get("actor"), Some(&7));
     }
 
     #[test]

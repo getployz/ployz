@@ -835,17 +835,19 @@ async fn docker_events_and_rescans_publish_redacted_local_observations() {
         .unwrap();
     let docker = LocalDocker::connect().unwrap();
     let mut local = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
-    let machine_id = local
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("observer").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
+    local
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: MachineName::parse("observer").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("127.0.0.1:51820".parse().unwrap())],
+            },
             wireguard_mtu: None,
         })
-        .unwrap()
-        .id;
+        .unwrap();
+    let machine_id = local.record().id();
     let local = crate::machine::RecordOwner::spawn(local).unwrap();
     let foreign_machine_id = MachineId::random();
     let service_id = ServiceId::parse("a".repeat(32)).unwrap();

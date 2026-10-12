@@ -47,8 +47,8 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
     let expected = assigned.clone();
     let joiner = LocalMachine::new(RecordOwner::spawn(joiner_store).unwrap());
     joiner
-        .join(JoinRequest {
-            registration,
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Member { registration },
             wireguard_mtu: None,
         })
         .await
@@ -69,7 +69,7 @@ async fn registration_publishes_initial_policy_and_join_persists_it() {
 }
 
 #[tokio::test]
-async fn registration_replay_refuses_current_policy_mismatch_without_publication() {
+async fn registration_with_a_changed_policy_overwrites_the_published_row() {
     let (local, replicated, _founder, data_dir, server) = participating().await;
     let identity = request("peer", WireGuardPublicKey([7; 32]));
     let assigned = local
@@ -77,51 +77,33 @@ async fn registration_replay_refuses_current_policy_mismatch_without_publication
         .await
         .unwrap()
         .assigned_machine;
-    let replay = local.register(identity.clone()).await.unwrap();
-    assert_eq!(replay.assigned_machine, assigned);
-    for changed in [
-        ployz_core::InitialMachinePolicy {
-            accepts_services: false,
-            ..Default::default()
-        },
-        ployz_core::InitialMachinePolicy {
-            labels: [("pool".parse().unwrap(), "build".parse().unwrap())].into(),
-            ..Default::default()
-        },
-    ] {
-        let outcome = local
-            .register(RegisterRequest {
-                initial_policy: changed,
-                ..identity.clone()
-            })
-            .await;
-        assert!(
-            outcome.is_err(),
-            "enrollment must refuse a different current policy"
-        );
-        assert_eq!(
-            replicated
-                .machine(assigned.id.as_str())
-                .await
-                .unwrap()
-                .as_ref(),
-            Some(&assigned)
-        );
-    }
-    let mut edited = assigned;
-    edited.accepts_builds = false;
-    replicated.publish_local_machine(&edited).await.unwrap();
-    assert!(
-        local.register(identity).await.is_err(),
-        "an old enrollment retry must not overwrite an operator edit"
-    );
     assert_eq!(
-        replicated
-            .machine(edited.id.as_str())
+        local
+            .register(identity.clone())
             .await
             .unwrap()
-            .as_ref(),
-        Some(&edited)
+            .assigned_machine,
+        assigned
+    );
+    let mut edited = assigned.clone();
+    edited.accepts_builds = false;
+    replicated.publish_local_machine(&edited).await.unwrap();
+    let changed = local
+        .register(RegisterRequest {
+            initial_policy: ployz_core::InitialMachinePolicy {
+                accepts_services: false,
+                ..Default::default()
+            },
+            ..identity
+        })
+        .await
+        .unwrap()
+        .assigned_machine;
+    assert!(!changed.accepts_services);
+    assert!(changed.accepts_builds);
+    assert_eq!(
+        replicated.machine(assigned.id.as_str()).await.unwrap(),
+        Some(changed)
     );
     server.abort();
     drop(local);

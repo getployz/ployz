@@ -25,9 +25,9 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, DescribeContractRequest, InitializeRequest, MANAGEMENT_ALPN, MachineId,
-    MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel, RpcErrorCode,
-    SetManagementClientRequest, op,
+    AdvertisedEndpoint, DescribeContractRequest, EnrollAs, EnrollRequest, MANAGEMENT_ALPN,
+    MachineId, MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel,
+    RpcErrorCode, SetManagementClientRequest, op,
 };
 use ployzd::{
     machine::{LocalMachine, LocalMachineStore, RecordOwner},
@@ -901,12 +901,14 @@ async fn participating_in(network: &str) -> (tempfile::TempDir, RecordOwner, Loc
     let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
     let local = LocalMachine::new(owner.clone());
     local
-        .initialize(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: network.parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+        .enroll(EnrollRequest {
+            role: EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: MachineName::parse("first").unwrap(),
+                cluster_network: network.parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            },
             wireguard_mtu: None,
         })
         .await
@@ -954,8 +956,8 @@ async fn rotate(channel: Channel) -> ManagementCapability {
 
 async fn activate(channel: Channel) {
     MachineRpcClient::new(channel)
-        .machine_token(
-            op::MachineToken::into_request(ployz_core::MachineTokenRequest::default())
+        .inspect(
+            op::Inspect::into_request(ployz_core::InspectRequest::default())
                 .encode()
                 .unwrap(),
         )
@@ -964,7 +966,7 @@ async fn activate(channel: Channel) {
         .into_inner()
         .decode_response()
         .unwrap()
-        .decode::<op::MachineToken>()
+        .decode::<op::Inspect>()
         .unwrap();
 }
 

@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use ployz_core::{
-    AdvertisedEndpoint, InspectRequest, JoinRequest, ListMachinesRequest, LocalMachinePhase,
-    Machine, MachineId, MachineName, MachineToken, MachineTokenRequest, MachineUpdate,
-    RegisterRequest, RemoveMachineRequest, RttObservation, UpdateMachineRequest, op,
+    AdvertisedEndpoint, EnrollAs, EnrollRequest, InspectRequest, ListMachinesRequest,
+    LocalMachinePhase, Machine, MachineId, MachineName, MachineToken, MachineUpdate,
+    RegisterRequest, RemoveMachineRequest, RttObservation, TokenRequest, UpdateMachineRequest, op,
 };
 
 use super::{Cluster, TestkitError, command_error, docker_output, response};
@@ -43,8 +43,8 @@ impl Cluster {
         let assigned = registration.assigned_machine.clone();
         self.join(
             target,
-            JoinRequest {
-                registration,
+            EnrollRequest {
+                role: EnrollAs::Member { registration },
                 wireguard_mtu: None,
             },
         )
@@ -179,11 +179,12 @@ impl Cluster {
         advertised_endpoints: Vec<AdvertisedEndpoint>,
     ) -> Result<MachineToken, TestkitError> {
         let mut client = self.client(index).await?;
-        Ok(response(
+        response(
             client
-                .machine_token(
-                    op::MachineToken::into_request(MachineTokenRequest {
+                .inspect(
+                    op::Inspect::into_request(InspectRequest {
                         advertised_endpoints,
+                        token: Some(TokenRequest::default()),
                         ..Default::default()
                     })
                     .encode()?,
@@ -191,7 +192,9 @@ impl Cluster {
                 .await?
                 .into_inner(),
         )?
-        .decode::<op::MachineToken>()?)
+        .decode::<op::Inspect>()?
+        .token
+        .ok_or_else(|| TestkitError::Rpc("this Server's Ployz does not report a token".into()))
     }
 
     /// Read one Machine container's WireGuard device with `wg show dump`.

@@ -552,20 +552,14 @@ impl MachineRpc for DiscoveryService {
                 telemetry,
                 storage: inspect.include_storage.then_some(self.storage),
                 upgrade: None,
+                token: None,
             })
             .encode()
             .unwrap(),
         ))
     }
 
-    async fn machine_token(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
-    async fn initialize(
+    async fn enroll(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -621,13 +615,6 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),
         ))
-    }
-
-    async fn join(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
 
     async fn set_management_client(

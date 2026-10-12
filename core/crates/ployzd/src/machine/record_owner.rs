@@ -311,12 +311,16 @@ mod tests {
 
     fn initialize(store: &mut LocalMachineStore) -> Result<(), crate::machine::StoreError> {
         store
-            .initialize(ployz_core::InitializeRequest {
-                initial_policy: Default::default(),
-                name: MachineName::parse("local").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("local").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![AdvertisedEndpoint(
+                        "192.0.2.1:51820".parse().unwrap(),
+                    )],
+                },
                 wireguard_mtu: None,
             })
             .map(|_| ())

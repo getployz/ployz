@@ -37,10 +37,8 @@ macro_rules! rpc_catalog {
             unary {
                 DescribeContract: (describe_contract, "DescribeContract", DescribeContractRequest, "describe_contract", ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, "ployz.rpc.describe-contract.v1", Always),
                 Inspect: (inspect, "Inspect", InspectRequest, "inspect", MachineDetails, INSPECT_MACHINE_CAPABILITY, "ployz.machine.inspect.v1", Always),
-                MachineToken: (machine_token, "MachineToken", MachineTokenRequest, "machine_token", MachineToken, MACHINE_TOKEN_CAPABILITY, "ployz.machine.token.v1", Always),
-                Initialize: (initialize, "Initialize", InitializeRequest, "initialize", Initialized, INITIALIZE_MACHINE_CAPABILITY, "ployz.machine.initialize.v1", Always),
+                Enroll: (enroll, "Enroll", EnrollRequest, "enroll", Enrolled, ENROLL_MACHINE_CAPABILITY, "ployz.machine.enroll.v1", Always),
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always),
-                Join: (join, "Join", JoinRequest, "join", JoinAccepted, JOIN_MACHINE_CAPABILITY, "ployz.machine.join.v1", Always),
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always),
@@ -76,7 +74,7 @@ macro_rules! rpc_catalog {
             server_streaming {
                 LogHistory: (log_history, "LogHistory", LogHistoryRequest, "log_history", LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container),
                 TailLogs: (tail_logs, "TailLogs", TailLogsRequest, "tail_logs", TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1", Container),
-                RuntimeWatch: (runtime_watch, "RuntimeWatch", RuntimeWatchRequest, "runtime_watch", RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Always),
+                RuntimeWatch: (runtime_watch, "RuntimeWatch", RuntimeWatchRequest, "runtime_watch", RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Cluster),
             }
         }
     };

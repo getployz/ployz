@@ -1,4 +1,4 @@
-//! Real setup RPC deadlines and initialization recovery under virtual time.
+//! Real setup RPC deadlines and Enroll resends under virtual time.
 
 use std::{
     sync::{
@@ -10,19 +10,15 @@ use std::{
 
 use crate::connect::Client;
 use ployz_core::{
-    InitializeRequest, InspectRequest, LocalMachinePhase, Machine, MachineDetails, MachineId,
-    MachineName, OpaquePayload, RpcRequestBody, RpcResponse, WireGuardPublicKey, op,
+    EnrollAs, EnrollRequest, Enrolled, InspectRequest, LocalMachinePhase, Machine, MachineDetails,
+    MachineId, MachineName, MachineNow, OpaquePayload, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, WireGuardPublicKey, op,
 };
 use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 
-async fn starting_machine() -> (
-    Client,
-    Machine,
-    Arc<AtomicUsize>,
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-) {
-    let machine = Machine {
+fn founder() -> Machine {
+    Machine {
         labels: Default::default(),
         accepts_builds: true,
         accepts_services: true,
@@ -35,14 +31,23 @@ async fn starting_machine() -> (
         advertised_endpoints: Vec::new(),
         runtime: Default::default(),
         build_concurrency: None,
-    };
-    let initialized = Arc::new(AtomicUsize::new(0));
-    let calls = initialized.clone();
-    let observed = machine.clone();
+    }
+}
+
+/// Every Enroll before `ready` hangs; later ones get `reply`.
+async fn enrolling_machine(
+    reply: Enrolled,
+) -> (
+    Client,
+    Arc<AtomicUsize>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let enrolls = Arc::new(AtomicUsize::new(0));
+    let calls = enrolls.clone();
     let ready = Instant::now() + Duration::from_secs(70);
     let rpc = move |request: Request<OpaquePayload>| {
         let calls = calls.clone();
-        let machine = observed.clone();
+        let reply = reply.clone();
         async move {
             #[expect(
                 clippy::wildcard_enum_match_arm,
@@ -51,7 +56,7 @@ async fn starting_machine() -> (
             match request.into_inner().decode_request().unwrap().body {
                 RpcRequestBody::DescribeContract(_) => Ok(Response::new(
                     RpcResponse::from(ployz_core::ContractDescription {
-                        machine_id: machine.id,
+                        machine_id: MachineId::random(),
                         protocol_major: ployz_core::PROTOCOL_MAJOR,
                         daemon_version: "fixture".into(),
                         capabilities: Default::default(),
@@ -59,73 +64,92 @@ async fn starting_machine() -> (
                     .encode()
                     .unwrap(),
                 )),
-                RpcRequestBody::Initialize(_) | RpcRequestBody::Join(_) => {
+                RpcRequestBody::Enroll(_) => {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    std::future::pending::<Result<Response<OpaquePayload>, Status>>().await
+                    if Instant::now() < ready {
+                        std::future::pending::<Result<Response<OpaquePayload>, Status>>().await
+                    } else {
+                        Ok(Response::new(RpcResponse::from(reply).encode().unwrap()))
+                    }
                 }
                 RpcRequestBody::Inspect(_) => {
-                    let started = calls.load(Ordering::SeqCst) > 0;
-                    if started {
-                        tokio::time::sleep_until(ready).await;
-                    }
-                    let details = MachineDetails {
-                        id: machine.id,
-                        phase: if started {
-                            LocalMachinePhase::Participating
-                        } else {
-                            LocalMachinePhase::Uninitialized
-                        },
-                        public_key: machine.public_key,
-                        advertised_endpoints: Vec::new(),
-                        machine: started.then_some(machine),
-                        store_version: Default::default(),
-                        rtts: Vec::new(),
-                        management_clients: Vec::new(),
-                        telemetry: None,
-                        storage: None,
-                        upgrade: None,
-                    };
-                    Ok(Response::new(RpcResponse::from(details).encode().unwrap()))
+                    std::future::pending::<Result<Response<OpaquePayload>, Status>>().await
                 }
                 request => panic!("unexpected setup request: {request:?}"),
             }
         }
     };
     let (client, server) = crate::connect::test_support::rpc_client(rpc).await;
-    (client, machine, initialized, server)
+    (client, enrolls, server)
 }
 
-fn initialize_request(machine: &Machine) -> InitializeRequest {
-    InitializeRequest {
-        initial_policy: Default::default(),
-        name: machine.name.clone(),
-        cluster_network: "10.210.0.0/16".parse().unwrap(),
-        public_ip: None,
-        advertised_endpoints: Vec::new(),
+fn founder_request(machine: &Machine) -> EnrollRequest {
+    EnrollRequest {
+        role: EnrollAs::Founder {
+            initial_policy: Default::default(),
+            name: machine.name.clone(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: Vec::new(),
+        },
         wireguard_mtu: None,
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn initialize_recovers_beyond_the_read_budget_without_replaying_the_mutation() {
+async fn enroll_resends_past_the_read_budget_until_the_machine_replies() {
+    let machine = founder();
+    let (mut client, enrolls, server) = enrolling_machine(Enrolled::Enrolled {
+        machine: machine.clone(),
+    })
+    .await;
     let started = Instant::now();
-    let (mut client, machine, calls, server) = starting_machine().await;
-    let result = super::initialize(&mut client, initialize_request(&machine))
+    let enrolled = super::enroll(&mut client, founder_request(&machine))
         .await
         .unwrap();
-    assert_eq!(result.machine, machine);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(Instant::now() - started, Duration::from_secs(70));
+    assert_eq!(enrolled, machine);
+    assert!(Instant::now() - started >= Duration::from_secs(70));
+    assert!(enrolls.load(Ordering::SeqCst) > 1, "a lost reply is resent");
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_enroll_is_reported_not_resent() {
+    let machine = founder();
+    let refused = Enrolled::Refused {
+        now: MachineNow {
+            id: machine.id,
+            phase: LocalMachinePhase::Participating,
+            machine: Some(machine.clone()),
+        },
+        error: RpcError {
+            code: RpcErrorCode::Conflict,
+            message: "holds a different enrollment".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        },
+    };
+    let (mut client, enrolls, server) = enrolling_machine(refused).await;
+    tokio::time::advance(Duration::from_secs(71)).await;
+    let error = super::enroll(&mut client, founder_request(&machine))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("holds a different enrollment"));
+    assert_eq!(enrolls.load(Ordering::SeqCst), 1);
     server.abort();
 }
 
 #[tokio::test(start_paused = true)]
 async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
-    let (mut client, machine, calls, server) = starting_machine().await;
+    let machine = founder();
+    let (mut client, enrolls, server) = enrolling_machine(Enrolled::Enrolled {
+        machine: machine.clone(),
+    })
+    .await;
     let started = Instant::now();
     let error = client
-        .call_unretried::<op::Initialize>(
-            initialize_request(&machine),
+        .call_unretried::<op::Enroll>(
+            founder_request(&machine),
             None,
             crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT,
         )
@@ -133,7 +157,7 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(5));
     assert!(crate::ui::chain_text(&error).contains("Machine setup mutation reply timed out"));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(enrolls.load(Ordering::SeqCst), 1);
     let started = Instant::now();
     let error = client
         .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
@@ -142,45 +166,6 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
     assert_eq!(Instant::now() - started, Duration::from_secs(60));
     assert!(crate::ui::chain_text(&error).contains("Machine setup read timed out"));
     server.abort();
-}
-
-#[tokio::test(start_paused = true)]
-async fn lost_creation_replies_refuse_an_observed_policy_mismatch() {
-    for joining in [false, true] {
-        let (mut client, machine, calls, server) = starting_machine().await;
-        let result = if joining {
-            let mut assigned = machine.clone();
-            assigned.accepts_services = false;
-            super::join(
-                &mut client,
-                ployz_core::JoinRequest {
-                    registration: ployz_core::Registered {
-                        assigned_machine: assigned,
-                        visible_peers: Vec::new(),
-                        target_versions: Default::default(),
-                    },
-                    wireguard_mtu: None,
-                },
-            )
-            .await
-        } else {
-            let mut request = initialize_request(&machine);
-            request.initial_policy.accepts_services = false;
-            super::initialize(&mut client, request).await.map(drop)
-        };
-        assert!(
-            result.is_err(),
-            "matching identity cannot prove a different initial policy completed"
-        );
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("initial policy differs")
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        server.abort();
-    }
 }
 
 #[tokio::test]
@@ -219,6 +204,7 @@ async fn reset_lost_to_a_daemon_restart_is_observed_not_resent() {
                 telemetry: None,
                 storage: None,
                 upgrade: None,
+                token: None,
             }))
         })
     };

@@ -1,11 +1,7 @@
-use std::{io, path::PathBuf};
-
 use ployz_core::{
-    AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineName, MachineRpc,
-    MachineRuntime, RegisterRequest, Registered, RpcError, RpcResponseBody, WireGuardPublicKey, op,
+    AdvertisedEndpoint, Machine, MachineId, MachineName, MachineRpc, MachineRuntime,
+    RegisterRequest, Registered, RpcError, RpcResponseBody, WireGuardPublicKey, op,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixListener, UnixStream};
 use tonic::Request;
 
 use super::super::{LocalMachine, LocalMachineStore, RecordOwner};
@@ -34,16 +30,19 @@ pub(super) async fn participating() -> (
 pub(super) fn open_store(prefix: &str) -> (std::path::PathBuf, RecordOwner, Machine) {
     let data_dir = std::env::temp_dir().join(format!("{prefix}-{}", MachineId::random()));
     let mut store = LocalMachineStore::open(&data_dir).unwrap();
-    let founder = store
-        .initialize(ployz_core::InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("edge").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+    store
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Founder {
+                initial_policy: Default::default(),
+                name: MachineName::parse("edge").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                public_ip: None,
+                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
+            },
             wireguard_mtu: None,
         })
         .unwrap();
+    let founder = store.record().machine().unwrap().clone();
     (data_dir, RecordOwner::spawn(store).unwrap(), founder)
 }
 
@@ -60,88 +59,6 @@ pub(super) fn machine_service(
         Some(port) => service.with_machine_api_port(port),
         None => service,
     }
-}
-
-pub(super) async fn publish_peers(replicated: &ReplicatedStore, count: usize) -> Vec<Machine> {
-    let mut peers = Vec::with_capacity(count);
-    for index in 0..count {
-        let seed = u8::try_from(index + 10).expect("peer seeds fit u8");
-        let machine = Machine {
-            labels: Default::default(),
-            accepts_builds: true,
-            accepts_services: true,
-            accepts_ingress: true,
-            id: MachineId::random(),
-            name: MachineName::parse(format!("peer-{seed}")).unwrap(),
-            subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
-            public_key: WireGuardPublicKey([seed; 32]),
-            public_ip: None,
-            advertised_endpoints: vec![AdvertisedEndpoint(
-                format!("192.0.2.{seed}:51820").parse().unwrap(),
-            )],
-            runtime: MachineRuntime::default(),
-            build_concurrency: None,
-        };
-        replicated.publish_local_machine(&machine).await.unwrap();
-        peers.push(machine);
-    }
-    peers
-}
-
-pub(super) async fn serve_membership(
-    states: &[(&Machine, &'static str)],
-) -> (tokio::task::JoinHandle<()>, PathBuf, PathBuf) {
-    let states: Vec<_> = states
-        .iter()
-        .map(|&(machine, state)| {
-            (
-                format!(
-                    "[{}]:{CORROSION_GOSSIP_PORT}",
-                    machine.management_address().0
-                ),
-                state,
-            )
-        })
-        .collect();
-    let root = std::env::temp_dir().join(format!("ployzd-register-admin-{}", MachineId::random()));
-    std::fs::create_dir_all(&root).unwrap();
-    let path = root.join("admin.sock");
-    let listener = UnixListener::bind(&path).unwrap();
-    let server = tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                break;
-            };
-            if read_admin_frame(&mut stream).await.is_err() {
-                continue;
-            }
-            for (addr, state) in &states {
-                let payload = serde_json::json!({
-                    "Json": {"id": {"addr": addr}, "state": state}
-                });
-                if write_admin_frame(&mut stream, &serde_json::to_vec(&payload).unwrap())
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            let _ = write_admin_frame(&mut stream, br#""Success""#).await;
-        }
-    });
-    (server, path, root)
-}
-
-pub(super) async fn read_admin_frame(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
-    let length = stream.read_u32().await?;
-    let mut data = vec![0; length as usize];
-    stream.read_exact(&mut data).await?;
-    Ok(data)
-}
-
-pub(super) async fn write_admin_frame(stream: &mut UnixStream, data: &[u8]) -> io::Result<()> {
-    stream.write_u32(data.len() as u32).await?;
-    stream.write_all(data).await
 }
 
 pub(super) fn request(name: &str, public_key: WireGuardPublicKey) -> RegisterRequest {

@@ -24,8 +24,8 @@ use thiserror::Error;
 use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, Machine, MachineId, MachineLogService, MachineName, MachineObservation,
-    MachineRuntime, MachineToken, MachineUpdate, ManagementCapability, ManagementClientLabel,
-    Namespace, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice, WireGuardPublicKey,
+    MachineRuntime, MachineUpdate, ManagementCapability, ManagementClientLabel, Namespace,
+    ResolvedServiceSpec, StorageChoice, WireGuardPublicKey,
 };
 
 mod docker;
@@ -220,24 +220,57 @@ pub struct DescribeContractRequest {}
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetRequest {}
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct MachineTokenRequest {
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    pub public_ip: PublicIpDiscovery,
+/// This Machine's own enrollment facts, returned with every lifecycle refusal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MachineNow {
+    pub id: MachineId,
+    pub phase: crate::LocalMachinePhase,
+    #[serde(default)]
+    pub machine: Option<Machine>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InitializeRequest {
-    /// Complete policy committed in the first Machine assignment, before participation.
-    pub initial_policy: crate::InitialMachinePolicy,
-    pub name: MachineName,
-    pub cluster_network: Ipv4Net,
-    #[serde(default)]
-    pub public_ip: Option<IpAddr>,
-    pub advertised_endpoints: Vec<AdvertisedEndpoint>,
-    #[serde(default)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct EnrollRequest {
+    #[serde(rename = "as")]
+    pub role: EnrollAs,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wireguard_mtu: Option<u32>,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EnrollAs {
+    /// First Machine of a new Cluster.
+    Founder {
+        name: MachineName,
+        #[ts(type = "string")]
+        cluster_network: Ipv4Net,
+        /// Complete policy committed in the first Machine assignment, before participation.
+        initial_policy: crate::InitialMachinePolicy,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(type = "string | null")]
+        public_ip: Option<IpAddr>,
+        #[serde(default)]
+        advertised_endpoints: Vec<AdvertisedEndpoint>,
+    },
+    /// Joins with the registration a Cluster member issued.
+    Member { registration: Registered },
+}
+
+/// A resend replays `Enrolled` with the stored record; the daemon restarts only
+/// after a fresh enrollment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Enrolled {
+    Enrolled {
+        machine: Machine,
+    },
+    /// Enrolled as someone else. `error.code` is `conflict`.
+    Refused {
+        now: MachineNow,
+        error: RpcError,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -258,13 +291,6 @@ pub struct RegisterRequest {
     pub advertised_endpoints: Vec<AdvertisedEndpoint>,
     #[serde(default)]
     pub runtime: MachineRuntime,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct JoinRequest {
-    pub registration: Registered,
-    #[serde(default)]
-    pub wireguard_mtu: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -843,23 +869,11 @@ struct RequestHeader {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResetAccepted {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Initialized {
-    pub machine: Machine,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Registered {
     pub assigned_machine: Machine,
     pub visible_peers: Vec<Machine>,
     pub target_versions: BTreeMap<String, i64>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct JoinAccepted {
-    /// The matching assignment was already durably accepted; no restart requested.
-    #[serde(default)]
-    pub already_accepted: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1041,10 +1055,8 @@ define_responses! {
     ContractDescription(ContractDescription) => "contract_description";
     SetVolumeCopyReply(SetVolumeCopyReply) => "set_volume_copy_reply";
     MachineDetails(MachineDetails) => "machine_details";
-    MachineToken(MachineToken) => "machine_token";
-    Initialized(Initialized) => "initialized";
+    Enrolled(Enrolled) => "enrolled";
     Registered(Registered) => "registered";
-    JoinAccepted(JoinAccepted) => "join_accepted";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
@@ -1391,26 +1403,33 @@ mod set_management_client_wire {
     }
 
     #[test]
-    fn initialize_and_join_carry_no_pairing() {
-        let initialize = serde_json::to_value(InitializeRequest {
-            initial_policy: Default::default(),
-            name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
-            public_ip: None,
-            advertised_endpoints: machine().advertised_endpoints,
-            wireguard_mtu: None,
-        })
-        .unwrap();
-        let join = serde_json::to_value(JoinRequest {
-            registration: Registered {
-                assigned_machine: machine(),
-                visible_peers: vec![machine()],
-                target_versions: BTreeMap::new(),
+    fn enroll_names_its_role_and_carries_no_pairing() {
+        let founder = serde_json::to_value(EnrollRequest {
+            role: EnrollAs::Founder {
+                name: MachineName::parse("first").unwrap(),
+                cluster_network: "10.210.0.0/16".parse().unwrap(),
+                initial_policy: Default::default(),
+                public_ip: None,
+                advertised_endpoints: machine().advertised_endpoints,
             },
             wireguard_mtu: None,
         })
         .unwrap();
-        for request in [initialize, join] {
+        let member = serde_json::to_value(EnrollRequest {
+            role: EnrollAs::Member {
+                registration: Registered {
+                    assigned_machine: machine(),
+                    visible_peers: vec![machine()],
+                    target_versions: BTreeMap::new(),
+                },
+            },
+            wireguard_mtu: Some(1380),
+        })
+        .unwrap();
+        assert_eq!(founder.pointer("/as/kind"), Some(&json!("founder")));
+        assert_eq!(member.pointer("/as/kind"), Some(&json!("member")));
+        assert_eq!(member.get("wireguard_mtu"), Some(&json!(1380)));
+        for request in [founder, member] {
             assert!(request.get("cloud_pairing").is_none(), "{request}");
             assert!(!request.to_string().contains("secret"), "{request}");
         }

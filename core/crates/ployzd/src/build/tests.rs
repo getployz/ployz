@@ -44,18 +44,21 @@ impl Fixture {
         )
         .unwrap();
         let mut store = LocalMachineStore::open(root.join("machine")).unwrap();
-        let machine = store
-            .initialize(ployz_core::InitializeRequest {
-                initial_policy: Default::default(),
-                name: ployz_core::MachineName::parse("builder").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                    "127.0.0.1:7569".parse().unwrap(),
-                )],
+        store
+            .enroll(ployz_core::EnrollRequest {
+                role: ployz_core::EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: ployz_core::MachineName::parse("builder").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: None,
+                    advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                        "127.0.0.1:7569".parse().unwrap(),
+                    )],
+                },
                 wireguard_mtu: None,
             })
             .unwrap();
+        let machine = store.record().machine().unwrap().clone();
         let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();

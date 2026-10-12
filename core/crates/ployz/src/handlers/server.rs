@@ -44,7 +44,7 @@ mod upgrade;
 use add::add;
 pub(super) use enroll::requested_storage;
 pub(super) use helpers::{
-    check_listed, confirm, connect_direct, initialize, join, machine_name,
+    check_listed, confirm, connect_direct, enroll, inspect_token, machine_name,
     readiness_timeout_message, reset,
 };
 use init::init;
