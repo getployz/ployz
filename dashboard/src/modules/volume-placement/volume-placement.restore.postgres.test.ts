@@ -146,7 +146,8 @@ it.live("drops a left-behind restore's row before asking the Servers, so a Serve
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
 }));
 
-it.live("takes back a restore whose copy failed: the source keeps its mounts and the empty Volume is not staged", () => Effect.gen(function* () {
+/** A restore staged and stamped by a Deploy whose copy then failed, and the Store's record of that failure. */
+const restoreThatFailed = Effect.fn(function* () {
   const { services, store } = yield* deployedShop();
   yield* Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -175,7 +176,11 @@ it.live("takes back a restore whose copy failed: the source keeps its mounts and
   if (failed.kind !== "failed") throw new Error("expected the Deploy to fail");
   const { environment } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deployment }));
   yield* failStoreDeploymentUnrun(ORGANIZATION, environment.id, deployment, "storage-run", failed.message, failed.restore).pipe(Effect.provide(services));
+  return { services, store, deployment };
+});
 
+it.live("takes back a restore whose copy failed: the source keeps its mounts and the empty Volume is not staged", () => Effect.gen(function* () {
+  const { services, store } = yield* restoreThatFailed();
   expect((yield* Effect.promise(() => store.read(ORGANIZATION, { query: "volumes", environment: shop }))).volumes.map(({ name, mounts, change }) => ({ name, mounts, change })))
     .toEqual([{ name: "data", mounts: [{ service: "web", path: "/data" }], change: null }]);
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
@@ -352,4 +357,40 @@ it.live("holds a restore staged while a Deploy is admitted until the Deploy is w
   expect(nodes.flatMap((node) => node.type === "volume" ? [node.name] : [])).toEqual(["data"]);
   expect(restored).toMatchObject({ ok: true, placement: { deploymentId: null } });
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toMatchObject([{ deploymentId: null, staged: { seed: { sourceVolumeId: SOURCE } } }]);
+}));
+
+it.live("refuses to Redeploy a Deploy whose restore failed, and ships nothing", () => Effect.gen(function* () {
+  const { services, store, deployment } = yield* restoreThatFailed();
+  const writes: ConfigCommand[] = [];
+  const refused = yield* writeAdmitted(ORGANIZATION, { command: "admit", admit: "retry", id: "00000000-0000-4000-8000-00000000d00e", deployment }, (command) => {
+    writes.push(command);
+    return storeTry(() => store.write(ORGANIZATION, command, { ...acmeWeb(), servers: 1 }));
+  }).pipe(Effect.flip, Effect.provide(services));
+  expect(refused).toMatchObject({ _tag: "StoreRefused", code: "conflict", message: "Restore failed. Restore again." });
+  expect(writes).toEqual([]);
+}));
+
+it.live("fails a Deploy whose restore it didn't stamp before any run, so the Volume isn't created empty", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  const writer = () => Effect.succeed([member("web-1", "writer")]);
+  const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, writer).pipe(Effect.provide(services));
+  if (!staged.ok) throw new Error(staged.refusal.message);
+  const deployment = "00000000-0000-4000-8000-00000000d00f";
+  const admitted = yield* writeAdmitted(ORGANIZATION, {
+    command: "admit", admit: "deploy", id: deployment, environment: shop, services: [], version: null, accept_volume_loss: [],
+  }, (command) => Effect.gen(function* () {
+    // The admission's transaction breaks after the check, so the stamp after the Store write fails.
+    yield* (yield* Database).drizzle.execute(sql`select 1/0`).pipe(Effect.ignore);
+    return yield* storeTry(() => store.write(ORGANIZATION, command, { ...acmeWeb(), servers: 1 }));
+  }), writer).pipe(Effect.provide(services));
+  expect(admitted).toMatchObject({ written: "deployment", id: deployment });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toMatchObject([{ deploymentId: null }]);
+
+  const name = (yield* Effect.promise(() => store.read(ORGANIZATION, { query: "volumes", environment: shop })))
+    .volumes.find((volume) => volume.id === staged.placement.volumeId)?.name;
+  expect(yield* advancePlacement(ORGANIZATION, deployment, null, writer, () => Effect.succeed([])).pipe(Effect.provide(services)))
+    .toEqual({ kind: "failed", message: `${name}: the restore waits for the next Deploy.` });
+  expect(yield* Effect.gen(function* () {
+    return yield* (yield* Database).drizzle.execute(sql`select id from volume_run`);
+  }).pipe(Effect.provide(services))).toMatchObject({ rowCount: 0 });
 }));

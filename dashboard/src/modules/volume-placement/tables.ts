@@ -21,3 +21,12 @@ export const volumePlacement = pgTable(
   },
   (table) => [index("volume_placement_environment_idx").on(table.organizationId, table.environmentId)],
 );
+
+/** A restored Volume whose copy failed: a Deploy or Redeploy that still holds it would mount it empty. */
+export const failedRestore = pgTable("failed_restore", {
+  volumeId: text("volume_id").primaryKey(),
+  organizationId: uuid("organization_id")
+    .notNull()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  createdAt,
+});

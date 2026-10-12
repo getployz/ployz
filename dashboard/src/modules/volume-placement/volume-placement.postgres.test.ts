@@ -320,7 +320,9 @@ describe("volume placement", () => {
         return yield* database.transaction(Effect.gen(function* () {
           yield* restoreSettled("env-1");
           return yield* Effect.promise(async () => (await harness.pool.query(
-            "select count(*)::int as held from pg_locks where locktype = 'advisory'",
+            `select count(*)::int as held from pg_locks where locktype = 'advisory'
+              and database = (select oid from pg_database where datname = current_database())
+              and objid::bigint = hashtext('volume-environment:env-1')::bigint & 4294967295`,
           )).rows[0].held);
         }));
       }));

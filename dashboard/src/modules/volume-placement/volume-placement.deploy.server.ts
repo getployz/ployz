@@ -1,14 +1,14 @@
 import "@tanstack/react-start/server-only";
-import type { CopyObservation, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome } from "@ployz/sdk";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
-import { volumePlacement } from "#/modules/volume-placement/tables";
-import { discardPlacement, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
+import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
+import { discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
 import {
   appliedMirrors, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
 } from "#/modules/volume-placement/volume-placement";
@@ -91,8 +91,13 @@ export const releasePlacementClaims = Effect.fn("VolumePlacement.releaseClaims")
   if (!deployment.inFlight) yield* release(organizationId, deploymentId, deployment.failed);
 });
 
-/** Discards `restore` once its Deploy has failed. Refused, it stays staged for Discard or the next Deploy. */
+/**
+ * Discards `restore` once its Deploy has failed. Refused, it stays staged for Discard or the next Deploy. Either way its
+ * Volume is marked, so no Redeploy ships the failed Deploy's revision with it empty.
+ */
 export const discardFailedRestore = Effect.fn("VolumePlacement.discardFailedRestore")(function* (organizationId: string, restore: FailedRestore) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(failedRestore).values({ volumeId: restore.volumeId, organizationId }).onConflictDoNothing();
   const refusal = yield* discardPlacement(organizationId, null, restore.volumeId, restore.environment).pipe(
     Effect.map((discarded) => discarded.ok ? null : discarded.refusal.message),
     Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refused.message)),
@@ -120,6 +125,29 @@ const settleClaimed = Effect.fn("VolumePlacement.settleClaimed")(function* (
 });
 
 /**
+ * Why Deploy `deploymentId` can't start, if its revision holds a restored Volume it would create empty: one whose restore
+ * this Deploy didn't take, or whose copy already failed.
+ */
+const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
+  organizationId: string, deploymentId: string, nodes: readonly NodeOutcome[],
+) {
+  const held = nodes.flatMap((node) => node.type === "volume" ? [node] : []);
+  if (held.length === 0) return null;
+  const ids = held.map((node) => node.id);
+  const { drizzle } = yield* Database;
+  const failed = yield* drizzle.select({ volumeId: failedRestore.volumeId }).from(failedRestore)
+    .where(and(eq(failedRestore.organizationId, organizationId), inArray(failedRestore.volumeId, ids)));
+  const unstamped = yield* drizzle.select({ volumeId: volumePlacement.volumeId }).from(volumePlacement).where(and(
+    eq(volumePlacement.organizationId, organizationId), inArray(volumePlacement.volumeId, ids),
+    sql`${volumePlacement.staged} ? 'seed' and ${volumePlacement.deploymentId} is distinct from ${deploymentId}`,
+  ));
+  const name = (volumeId: string) => held.find((node) => node.id === volumeId)?.name ?? volumeId;
+  if (failed[0] !== undefined) return `${name(failed[0].volumeId)}: ${RESTORE_FAILED.message}`;
+  if (unstamped[0] !== undefined) return `${name(unstamped[0].volumeId)}: the restore waits for the next Deploy.`;
+  return null;
+});
+
+/**
  * One step of Deploy `deploymentId`'s storage, before its Services: settle the run it waited on, then start the next run
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
@@ -136,6 +164,11 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   }
   const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  const unseeded = yield* unseededVolume(organizationId, deploymentId, deployment.nodes);
+  if (unseeded !== null) {
+    yield* release(organizationId, deploymentId, true);
+    return { kind: "failed", message: unseeded } satisfies PlacementAdvance;
+  }
   if (waited !== null) {
     const run = yield* getVolumeRun(organizationId, waited.runId);
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
