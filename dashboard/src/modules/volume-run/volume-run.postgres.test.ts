@@ -185,11 +185,18 @@ describe("volume runs", () => {
     }
   };
 
-  /** SetVolumeCopy as the daemon answers it: at the wanted state is success, else the expect, else the transition. */
+  /**
+   * SetVolumeCopy as the daemon answers it: at the wanted state is success, then a landed pull of the wanted target
+   * finishes whatever the expect, else the expect, else the transition. A receive lands on an inspect and keeps `pull`.
+   */
   const transition = (fake: FakeMachine, expect: ExpectedCopy, want: WantedCopy): CopyRefusal | null => {
     if (atWant(fake, want)) return null;
-    if (!matches(fake.copy, expect)) return "mismatch";
     const copy = fake.copy;
+    if (want.kind === "mirror" && copy?.kind === "slot" && copy.pull?.target === want.target && copy.newest?.name === want.target) {
+      fake.copy = { ...copy, pull: null };
+      return null;
+    }
+    if (!matches(fake.copy, expect)) return "mismatch";
     if (copy?.kind === "root") {
       switch (want.kind) {
         case "mirror":
@@ -245,7 +252,7 @@ describe("volume runs", () => {
       else if (fault?.target === pull.target) {
         fake.pullFault = undefined;
         fake.copy = { ...copy, pull: null };
-      } else fake.copy = { ...copy, newest: snapshots.get(pull.target) ?? copy.newest, pull: null };
+      } else fake.copy = { ...copy, newest: snapshots.get(pull.target) ?? copy.newest };
     }
     return { copy: fake.copy, lease: null };
   };
@@ -579,7 +586,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
-      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
       expect(sent[1]).toEqual({ name: dockerVolume, expect: { kind: "none" }, want: { kind: "mirror", from: expect.any(String), target: "ployz-10", drain: 3_000 } });
       expect(machines[1]?.copy).toMatchObject({ kind: "slot", newest: base, pull: null });
     });
@@ -592,11 +599,11 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, rounds: 3 });
       expect(verbs).toEqual([
-        "snapshot@fsn-1(w-1-0)", "pull@fsn-2(w-1-0)",
-        "snapshot@fsn-1(w-1-1)", "pull@fsn-2(w-1-1)",
-        "snapshot@fsn-1(w-1-2)", "pull@fsn-2(w-1-2)",
+        "snapshot@fsn-1(w-1-0)", "pull@fsn-2(w-1-0)", "pull@fsn-2(w-1-0)",
+        "snapshot@fsn-1(w-1-1)", "pull@fsn-2(w-1-1)", "pull@fsn-2(w-1-1)",
+        "snapshot@fsn-1(w-1-2)", "pull@fsn-2(w-1-2)", "pull@fsn-2(w-1-2)",
       ]);
-      expect(sent[3]?.expect).toEqual({ kind: "mirror", newest: snapshots.get("w-1-0")?.guid, slot: "1001" });
+      expect(sent[4]?.expect).toEqual({ kind: "mirror", newest: snapshots.get("w-1-0")?.guid, slot: "1001" });
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
@@ -637,7 +644,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
-      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
+      expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
       expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: "10", slot: "1" });
       expect(sent[1]?.expect).toEqual({ kind: "writer", epoch: 0 });
     });
@@ -697,9 +704,9 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
       expect(verbs).toEqual([
-        "snapshot@fsn-1(w-1-0)", "pull@fsn-2(w-1-0)", "snapshot@fsn-1(w-1-1)",
+        "snapshot@fsn-1(w-1-0)", "pull@fsn-2(w-1-0)", "pull@fsn-2(w-1-0)", "snapshot@fsn-1(w-1-1)",
         "copy_image@fsn-1->fsn-2(web-fsn-1)",
-        "cut@fsn-1(f-1)", "pull@fsn-2(f-1)",
+        "cut@fsn-1(f-1)", "pull@fsn-2(f-1)", "pull@fsn-2(f-1)",
         "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)",
       ]);
       const G = at("f-1");
@@ -760,7 +767,7 @@ describe("volume runs", () => {
       const retried = await execute(run.id);
 
       expect(retried.result).toEqual({ runId: run.id, moved: "fsn-2" });
-      expect(verbs).toEqual(["pull@fsn-2(f-1)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+      expect(verbs).toEqual(["pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
     });
 
     it("a final pull that fails forgets nothing B lacks and makes A the writer again", async () => {
@@ -783,7 +790,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
-      expect(verbs.filter((verb) => verb === "pull@fsn-2(f-1)")).toHaveLength(2);
+      expect(verbs.filter((verb) => verb === "pull@fsn-2(f-1)")).toHaveLength(3);
     });
 
     it("again after the cut continues from the final pull", async () => {
@@ -794,7 +801,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
-      expect(verbs).toEqual(["pull@fsn-2(f-1)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
+      expect(verbs).toEqual(["pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "writer@fsn-2(create)", "remove@fsn-1(web-fsn-1)"]);
       expect(await rows()).toMatchObject([{ epoch: "2" }]);
     });
 

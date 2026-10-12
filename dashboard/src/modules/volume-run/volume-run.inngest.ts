@@ -154,7 +154,10 @@ const slotAt = (copy: VolumeCopy | null): SlotAt | null =>
 const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
   copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid;
 
-/** B pulls `target` from A and the run checks until the pull lands; a pull that stopped without landing is asked again. */
+/**
+ * B pulls `target` from A and the run checks until the pull lands. A landed pull, or one that stopped without landing,
+ * is asked again: the same request finishes a landed pull and starts a stopped one.
+ */
 async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot }) {
   const { step, runEffect, run, runId } = steps;
   const { B, target } = ctx;
@@ -166,7 +169,7 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
     if (failure !== null) throw new NonRetriableError(`${slot} could not receive ${target.name}: ${failure}`);
-    if (copy?.kind === "slot" && copy.pull === null) {
+    if (copy?.kind === "slot" && (copy.pull === null || copy.newest?.guid === target.guid)) {
       copy = await mustSet(steps, `${prefix}-pull-${poll}`, B, expectOf(copy), want, still);
       continue;
     }
