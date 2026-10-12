@@ -6,8 +6,9 @@ use std::{
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
-    CADDY_ADMIN_ENV, ContainerId, ContainerObservation, CopyRole, DockerVolume, DockerVolumeName,
-    DockerVolumeStorageObservation, LocalMachinePhase, MIRROR_ROOT, VolumeInventory,
+    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    CopyRole, DockerVolume, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
+    MIRROR_ROOT, VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -213,10 +214,12 @@ impl ContainerRuntime {
         let inventory = self.docker.managed_container_ids().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
+        let mut observed = Vec::with_capacity(container_ids.len());
         for container_id in &container_ids {
             match self.inspect_managed(container_id, &machine_id).await {
                 Ok(observation) => {
                     live.observed(redacted_container(&observation));
+                    observed.push(observation);
                 }
                 Err(error) => {
                     eprintln!(
@@ -225,6 +228,14 @@ impl ContainerRuntime {
                     )
                 }
             }
+        }
+        if let Some(container_id) = stranded_ingress(&observed)
+            && let Err(error) = self.start(&container_id).await
+        {
+            eprintln!(
+                "Ingress Proxy {container_id} is still not started: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
         }
         let publication = sink.replicated.machine_publication().await;
         let local = sink.local.record();
@@ -393,9 +404,28 @@ fn local_volume_changes(
     }
 }
 
+/// The newest local Ingress Proxy, when Docker never started it and no other one runs.
+///
+/// Docker's restart policy covers an ingress that ran and died, not one whose first
+/// start failed, such as when another process held port 80. A stopped newest copy
+/// stays stopped.
 fn stranded_ingress(observations: &[ContainerObservation]) -> Option<ContainerId> {
-    let _ = observations;
-    None
+    let ingresses = observations.iter().filter(|observation| {
+        observation.kind == ContainerKind::ServiceContainer
+            && crate::ingress::is_system_ingress(observation)
+    });
+    let at_rest = ingresses.clone().all(|observation| {
+        matches!(
+            observation.runtime,
+            ContainerRuntimeObservation::Created
+                | ContainerRuntimeObservation::Exited { .. }
+                | ContainerRuntimeObservation::Dead
+        )
+    });
+    let newest = ingresses
+        .max_by_key(|observation| (observation.created_at_unix_nanos, observation.container_id))?;
+    (at_rest && newest.runtime == ContainerRuntimeObservation::Created)
+        .then_some(newest.container_id)
 }
 
 #[cfg(test)]

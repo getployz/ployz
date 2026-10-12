@@ -454,6 +454,18 @@ continues after the command that started it returns, which bet 3 flags. It is
 serving, not reconciling: it reads one spec, answers queries, and does no work
 on other Machines or on its own schedule.
 
+**Ingress the Machine already holds starts.** Docker's restart policy restarts an
+Ingress Proxy that ran and died, but never one whose first start failed, as when
+another process held port 80 at enrollment. A Deploy or catch-up keeps that
+container, so the Machine would stay without ingress until someone redeployed.
+On each local container scan (Docker events and a 30 second rescan) the daemon
+starts the newest local Ingress Proxy when Docker never started it and no other
+local one is running or restarting. It decides from its own Docker alone. It
+never creates, replaces, moves or removes a container, and a stopped Ingress
+Proxy stays stopped. This extends Docker's restart policy to Machine-local
+serving infrastructure. It is behavior on the daemon's own schedule, which bet 3
+flags, and it is the only Service Container the daemon starts unasked.
+
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers, a daemon stop
 path that stops serving infrastructure, a second writer of `dns.json` or the DNS
