@@ -651,6 +651,35 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
 }
 
 #[test]
+fn server_clean_signed_in_refuses_another_clusters_servers() {
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", "http://127.0.0.1:1"),
+    ];
+    for args in [
+        &["server", "clean", "--context", "staging", "--json"][..],
+        &[
+            "server",
+            "clean",
+            "--namespace",
+            "stray",
+            "--context",
+            "staging",
+            "--json",
+        ],
+        &["server", "clean", "--connect", "10.0.0.1:4317", "--json"],
+    ] {
+        let (code, json, _) = run_json_with(args, &token);
+        assert_eq!(code, Some(2), "{args:?}: {json}");
+        assert_eq!(
+            message(&json),
+            "server clean reads your Organization's Servers; drop --context and --connect",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
 fn root_help_ends_with_the_catalog_pointer() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
         .arg("--help")
