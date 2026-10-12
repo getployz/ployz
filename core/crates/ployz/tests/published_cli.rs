@@ -1,5 +1,9 @@
 //! Cloud-published commands against a fake Cloud: the first run fetches the manifest,
 //! runs print what Cloud answers, and the cache follows what Cloud says.
+#![expect(
+    clippy::indexing_slicing,
+    reason = "Fixed test fixtures use indexing; missing entries must fail the test."
+)]
 
 use std::{
     io::{BufRead, BufReader, Read, Write},
