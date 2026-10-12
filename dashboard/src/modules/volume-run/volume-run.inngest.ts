@@ -9,7 +9,7 @@ import {
   inngestFunctionFinishedEventType,
   volumeRunRequestedEventType,
 } from "#/modules/inngest/events";
-import { participantsOf, type PlanInput, type Planned, planFromCopies, undoClearsTarget } from "#/modules/volume-run/plan";
+import { participantsOf, type PlanInput, type Planned, planFromCopies } from "#/modules/volume-run/plan";
 import { copyName, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
 import {
   claimVolumeRun,
@@ -130,10 +130,6 @@ export async function runVolume(
     if (holder !== null) {
       const thaw = sourceRequest(steps, holder, { seq: 13, round: 0, sub: 0 });
       await containerStep(steps, "13-thaw", sendSwitch(run, runId, phase.source.machine, { command: "thaw", payload: thaw }), `${phase.source.machine.name} is still starting ${holder.redactedSpec.name}`);
-    }
-    if (phase.mirror !== null) {
-      const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
-      await verb("14-clear-final", sendSwitch(run, runId, phase.mirror.machine, { command: "clear_final", payload: clear }));
     }
     await step.run("15-finish", () => runEffect(endRun(run, runId, "done", null)));
     return { runId: run.id, released: phase.source.machine.name };
@@ -354,10 +350,6 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, lease: number
       }), `${A.name} is still starting ${required(holder).redactedSpec.name}`);
     } catch {
       return fail("13-unanswered", `${A.name} did not answer; volume move ${name} --to ${B.name} or volume release ${name} when it is back`);
-    }
-    if (undoClearsTarget(phase)) {
-      const clear = mirrorRequest({ seq: 14, round: 0, sub: 0 });
-      await switchStep("14-clear-final", B, { command: "clear_final", payload: clear });
     }
     return fail("14-undone", message);
   };

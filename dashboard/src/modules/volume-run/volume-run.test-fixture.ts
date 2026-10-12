@@ -10,7 +10,6 @@ export const COPIES = {
   switching: { kind: "root", writer: { phase: "frozen", guid: "11" }, readonly: true, newest: snapshot },
   handed: { kind: "root", writer: { phase: "handed", guid: "11" }, readonly: true, newest: snapshot },
   mirror: { kind: "slot", mirror: { phase: "idle" }, readonly: true, newest: snapshot, resume_token: null },
-  final: { kind: "slot", mirror: { phase: "final", guid: "11" }, readonly: true, newest: snapshot, resume_token: null },
   stale: { kind: "slot", mirror: { phase: "handed_in", guid: "11" }, readonly: true, newest: snapshot, resume_token: null },
   promoting: { kind: "slot", mirror: { phase: "promoting" }, readonly: true, newest: snapshot, resume_token: null },
   stopping: { kind: "root", writer: { phase: "stopping" }, readonly: false, newest: snapshot },

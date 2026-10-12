@@ -47,10 +47,6 @@ export type Planned =
   | { readonly ok: false; readonly refusal: Refusal };
 
 type Phase = Extract<Planned, { ok: true }>["phase"];
-type MovePhase = Extract<Phase, { kind: "move" }>;
-
-/** Undo clears the target's final only when the target holds a slot that this or an earlier attempt filled. */
-export const undoClearsTarget = (phase: MovePhase) => phase.start === "rounds" || phase.target.view.copy?.kind === "slot";
 
 /** The Machines the planned phase sends a verb to; only their records may raise the next lease. */
 export function participantsOf(phase: Phase): readonly AnsweredMember[] {
@@ -60,9 +56,8 @@ export function participantsOf(phase: Phase): readonly AnsweredMember[] {
     case "move":
       switch (phase.start) {
         case "close":
-          return [phase.writer];
         case "undo":
-          return undoClearsTarget(phase) ? [phase.writer, phase.target] : [phase.writer];
+          return [phase.writer];
         case "rounds":
         case "handover":
         case "accept":
@@ -73,7 +68,7 @@ export function participantsOf(phase: Phase): readonly AnsweredMember[] {
     case "sync":
       return [phase.writer, phase.mirror];
     case "release":
-      return [...(phase.thaw ? [phase.source] : []), ...(phase.mirror === null ? [] : [phase.mirror])];
+      return phase.thaw ? [phase.source] : [];
     case "delete_mirror":
       return [...phase.destroy, ...(phase.forget === null ? [] : [phase.forget]), ...phase.forgetLease];
     case "restore":
@@ -105,7 +100,6 @@ export function roleOf(member: Member): Role {
   }
   switch (copy.mirror.phase) {
     case "idle":
-    case "final":
       return "mirror";
     case "handed_in":
     case "promoting":
@@ -130,12 +124,10 @@ function holds(member: AnsweredMember, guid: SnapshotGuid): boolean {
 /** Past `handover` a Move only goes forward, so the target's copy names the next step and Accept never re-runs on it. */
 function handedStart(target: AnsweredMember): MoveStart {
   const copy = target.view.copy;
-  if (copy?.kind === "slot") return copy.mirror.phase === "idle" || copy.mirror.phase === "final" ? "accept" : "promote";
+  if (copy?.kind === "slot") return copy.mirror.phase === "idle" ? "accept" : "promote";
   if (copy?.readonly !== false) return "promote";
   return target.view.lease?.cycle === "open" ? "start" : "close";
 }
-
-const isFinal = (member: AnsweredMember) => member.view.copy?.kind === "slot" && member.view.copy.mirror.phase === "final";
 
 const isDestination = ({ to, machine }: VolumeRunArgs["move"], member: Member) =>
   machine === undefined ? member.machine.name === to : member.machine.id === machine;
@@ -197,7 +189,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
         if (holder === undefined) return refuse("handed", `${name} is handed off`);
         return { ok: false, refusal: { code: "handed", message: handedTo(holder.machine.name), to: holder.machine.name } };
       }
-      return { ok: true, phase: { kind: "release", source, mirror: holder ?? mirrors.find(isFinal) ?? null, thaw: true } };
+      return { ok: true, phase: { kind: "release", source, mirror: holder ?? null, thaw: true } };
     }
     if (input.kind === "move") {
       const { to } = input.args;
@@ -223,7 +215,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (firstStale !== undefined) {
     return refuse("stale_slot", `${named(firstStale)} holds a stale copy; volume mirror rm ${named(firstStale)} first`);
   }
-  if (input.kind === "release") return { ok: true, phase: { kind: "release", source: writer, mirror: mirrors.find(isFinal) ?? null, thaw: false } };
+  if (input.kind === "release") return { ok: true, phase: { kind: "release", source: writer, mirror: null, thaw: false } };
 
   if (input.kind === "sync") {
     const [mirror, second] = mirrors;

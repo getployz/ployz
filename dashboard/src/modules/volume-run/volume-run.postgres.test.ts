@@ -495,7 +495,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ lease: "8", state: "failed" }]);
     });
 
-    it("an undo that clears the target counts the target's record", async () => {
+    it("an undo onto a filled slot ignores the slot's record too", async () => {
       machines = [
         { name: "fsn-1", pool: true, copy: sourceCopy("stopping"), lease: { lease: 3, pos: { seq: 6, round: 0, sub: 0 }, cycle: "open" } },
         { name: "fsn-2", pool: true, copy: slotCopy("30"), lease: { lease: 9, pos: { seq: 4, round: 0, sub: 5 }, cycle: "closed" } },
@@ -504,8 +504,8 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
-      expect(await rows()).toMatchObject([{ lease: "10", state: "failed" }]);
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)"]);
+      expect(await rows()).toMatchObject([{ lease: "4", state: "failed" }]);
     });
 
     it("lease_above_records_after_db_reset: above an earlier run's lease when the Machines hold less", async () => {
@@ -793,14 +793,14 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "running", message: null }]);
     });
 
-    it("move: a refused HandOver thaws the source and clears the target's final", async () => {
+    it("move: a refused HandOver thaws the source", async () => {
       failNext.set("hand_over@fsn-1", refused);
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
 
       expect(output.error).toBeDefined();
-      expect(afterRounds(verbs).slice(-3)).toEqual(["hand_over@fsn-1(8,0,0)", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(afterRounds(verbs).slice(-2)).toEqual(["hand_over@fsn-1(8,0,0)", "thaw@fsn-1(13,0,0)"]);
       expect(machines[0]?.copy).toMatchObject({ kind: "root", writer: { phase: "idle" }, readonly: false });
       expect(await rows()).toMatchObject([{ state: "failed", message: "data's copy on fsn-1 changed under this run" }]);
     });
@@ -887,7 +887,7 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)"]);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data's earlier move was undone; volume move data --to fsn-2 to move it" }]);
     });
 
@@ -901,7 +901,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", lease: null, message: "data has no Service container on fsn-1; a move needs exactly one" }]);
     });
 
-    it("release: thaws a frozen source and clears the final on its mirror", async () => {
+    it("release: thaws a frozen source and leaves its mirror alone", async () => {
       machines = [
         { name: "fsn-1", pool: true, copy: sourceCopy("frozen"), lease: null },
         { name: "fsn-2", pool: true, copy: slotCopy("30"), lease: null },
@@ -911,7 +911,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)"]);
       expect(machines[0]?.copy).toMatchObject({ writer: { phase: "idle" }, readonly: false });
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
@@ -927,7 +927,7 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
-      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "thaw@fsn-1(13,0,0)", "clear_final@fsn-2(14,0,0)"]);
+      expect(ordered(verbs)).toEqual(["thaw@fsn-1(13,0,0)", "thaw@fsn-1(13,0,0)"]);
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
