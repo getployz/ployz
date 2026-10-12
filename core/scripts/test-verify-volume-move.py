@@ -552,14 +552,14 @@ class VolumeMove:
         states = self.states()
         result.update(ended=self.clock(), states=states, final_writer=final_writer(states), runs=self.runs()[:6])
         lost = self.lost()
-        gap, between = window_gap(read_acks(self.probe_log), started, result["ended"])
-        result["probe"] = dict(lost=lost, longest_gap_seconds=gap, longest_gap_between=between)
+        result["probe"] = dict(lost=lost)
         result["failures"] = assess(states, lost)
         if case["trigger"] and not result.get("triggered"):
             result["failures"].append("the trigger never fired before the run ended")
         result["passed"] = not result["failures"]
         if not result["passed"]:
             result["heal"] = self.heal(destination)
+        result["settled"] = self.clock()
         self.evidence(case["name"], started)
         (self.out / f"{case['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(dict(case=case["name"], passed=result["passed"], final_writer=result["final_writer"],
@@ -591,6 +591,12 @@ class VolumeMove:
                     results.append(result)
         finally:
             report = self.stop_probe()
+        acks = read_acks(self.probe_log)
+        for result in results:
+            if "settled" in result:
+                gap, between = window_gap(acks, result["started"], result["settled"])
+                result["probe"].update(longest_gap_seconds=gap, longest_gap_between=between)
+                (self.out / f"{result['name']}.json").write_text(json.dumps(result, indent=2) + "\n")
         summary = dict(
             manifest=str(self.manifest), head=subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"],
                                                               capture_output=True, text=True).stdout.strip(),
