@@ -17,6 +17,8 @@ export const OPERATION_TOOLS = [
   "volume_move",
   "volume_release",
   "volume_mirror_remove",
+  "volume_restore",
+  "volume_seed",
   "service_restart",
   "service_start",
   "service_stop",
