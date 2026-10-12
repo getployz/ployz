@@ -120,6 +120,13 @@ describe("Refresh now", () => {
     expect(await runs()).toEqual([]);
   });
 
+  it("names the silent Server when the runtime can't say which Servers answer", async () => {
+    members = [member("web-1", "writer"), member("web-2", "unanswered")];
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.fail("down"), () => Effect.succeed(copies), () => Effect.succeed(members))))
+      .toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
+    expect(await runs()).toEqual([]);
+  });
+
   it("refuses a Volume with no mirror", async () => {
     await harness.pool.query(`update volume_placement set mirrors = '[]'`);
     expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "No mirror", details: null } });
