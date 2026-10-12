@@ -344,6 +344,8 @@ struct Server {
     setup: Option<Setup>,
     /// The published commands as last read, replaced when a reply names a newer revision.
     published: Mutex<Option<Published>>,
+    /// A revision whose reread failed, so later calls that name it don't try again.
+    unread: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -371,6 +373,7 @@ impl Server {
             waiting: Waiting::default(),
             setup: None,
             published: Mutex::new(None),
+            unread: Mutex::new(None),
         }
     }
 
@@ -422,7 +425,7 @@ impl Server {
     }
 
     /// Reread the published commands when `revision` is not the one held, and tell the
-    /// host the list changed.
+    /// host the list changed. A revision whose reread failed is tried once.
     async fn follow(&self, revision: Option<String>, context: &RequestContext<RoleServer>) {
         let (Some(revision), Some(setup)) = (revision, &self.setup) else {
             return;
@@ -434,7 +437,16 @@ impl Server {
         {
             return;
         }
+        let unread = || {
+            self.unread
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        if unread().as_ref() == Some(&revision) {
+            return;
+        }
         let Some(refreshed) = self.refreshed(setup).await else {
+            *unread() = Some(revision);
             return;
         };
         *self.held() = Some(refreshed);
@@ -652,6 +664,21 @@ impl ServerHandler for Server {
         let Some(gate) = self.gates.get(tool).copied() else {
             return self.call_published(tool, request.arguments, &context).await;
         };
+        let result = self.call_compiled(gate, request, &context).await;
+        // A compiled tool that reached Cloud kept the revision Cloud named.
+        self.follow(cloud_account::revision_seen(), &context).await;
+        result
+    }
+}
+
+impl Server {
+    async fn call_compiled(
+        &self,
+        gate: Gate,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let tool: &str = &request.name;
         let mut input = request.arguments.unwrap_or_default();
         let approval = match (gate, input.remove(APPROVAL)) {
             (Gate::Never, Some(given)) => {
@@ -706,7 +733,7 @@ impl ServerHandler for Server {
         tokio::select! {
             // A write past the deadline settles to its refusal before the arm below fires.
             biased;
-            result = self.settle(&call, step, state, approval, answered, &context) => result,
+            result = self.settle(&call, step, state, approval, answered, context) => result,
             () = context.ct.cancelled() => {
                 Err(McpError::internal_error("the call was cancelled", None))
             }

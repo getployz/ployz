@@ -1933,6 +1933,58 @@ mod published {
         );
     }
 
+    fn manifest_reads(fake: &Fake) -> usize {
+        fake.requests()
+            .iter()
+            .filter(|seen| seen.path == "/api/cli/manifest")
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_compiled_tool_whose_reply_names_a_newer_revision_rereads_the_list() {
+        let publisher = publisher();
+        let fake = fake_publisher(publisher.clone());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        publisher.lock().unwrap().manifest["revision"] = json!("compiled-later");
+        let shown = transcript("environment_show", in_org());
+        client
+            .send(&request(
+                2,
+                "tools/call",
+                json!({ "name": shown.tool, "arguments": shown.input }),
+            ))
+            .await;
+        let changed = client.reply().await;
+        assert_eq!(
+            changed["method"], "notifications/tools/list_changed",
+            "{changed}"
+        );
+        assert_eq!(client.reply().await["id"], 2);
+        assert_eq!(manifest_reads(&fake), 2);
+    }
+
+    #[tokio::test]
+    async fn a_revision_whose_reread_failed_is_not_read_again() {
+        let publisher = publisher();
+        let fake = fake_publisher(publisher.clone());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing().into_iter().next().unwrap();
+        {
+            let mut state = publisher.lock().unwrap();
+            state.manifest["revision"] = json!("unreadable");
+            state.down = true;
+        }
+        for id in [2, 3] {
+            let done = client.call(id, name(&entry), arguments(&entry)).await;
+            assert_eq!(done["id"], id, "{done}");
+        }
+        assert_eq!(manifest_reads(&fake), 2);
+    }
+
     #[tokio::test]
     async fn a_reply_naming_the_held_revision_costs_no_reread_and_no_notice() {
         let fake = fake_publisher(publisher());
