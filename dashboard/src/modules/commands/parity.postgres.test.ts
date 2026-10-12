@@ -2,8 +2,8 @@ import { it } from "@effect/vitest";
 import type { JsonValue } from "@ployz/sdk";
 import { EventType, type StreamChunk } from "@tanstack/ai";
 import { fakeText } from "@tanstack/ai/testing";
-import { asc, eq } from "drizzle-orm";
-import { Cause, ConfigProvider, Effect, Exit, Layer, Schema } from "effect";
+import { asc, eq, sql } from "drizzle-orm";
+import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schedule, Schema } from "effect";
 import { expect } from "vitest";
 import { asRecord } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
@@ -11,9 +11,11 @@ import { agentChat } from "#/modules/agent/agent-chat.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { manifest } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { organizationServerUpgrades } from "#/modules/server-upgrade/tables";
+import { uptimeCheck } from "#/modules/uptime/tables";
 import { handleRunRequest } from "#/routes/api/cli/-handlers";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
@@ -21,6 +23,13 @@ import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c301";
+const PROJECT = "00000000-0000-4000-8000-00000000c302";
+const ENVIRONMENT = "00000000-0000-4000-8000-00000000c303";
+const SERVICE = "00000000-0000-4000-8000-00000000c304";
+const SERVES_500 = JSON.stringify({
+  quorum: { oneRegion: { probes: 2, spacingMs: 30000 } },
+  observations: [{ region: "eu-west", kind: "routine", verdict: "fail", status: 500, failedPhase: null, error: null, remoteIp: null, at: "2026-10-12T00:00:00.000Z" }],
+});
 
 /** A tool result as the model reads it: a command's outcome, or the agent's word that no such tool exists. */
 const Heard = Schema.fromJsonString(Schema.Union([
@@ -29,8 +38,10 @@ const Heard = Schema.fromJsonString(Schema.Union([
 ]));
 
 /**
- * Shop with two pending approvals, Ada in her sidebar, and an Organization Token of hers for the route. `route` and
- * `sidebar` call one command the way `ployz` and the agent do; `rows` is everything a published command can change.
+ * Shop with two pending approvals, Service web answering its uptime check with 500 and an incident open, Ada in her
+ * sidebar, and an Organization Token of hers for the route. `route` and `sidebar` call one command the way `ployz` and
+ * the agent do; `rows` is everything a published command can change. `checker` answers each probe request the way the
+ * uptime checker does, with a triggered 500 from eu-west.
  */
 const parity = Effect.fn(function* () {
   const cloud = yield* storeTestCloud();
@@ -50,6 +61,31 @@ const parity = Effect.fn(function* () {
       }),
     }))).returning({ id: operationApprovals.id });
   }));
+  const store = yield* provided(cloudStore);
+  const here = { project: null, environment: null };
+  yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT }));
+  yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_service", id: SERVICE, environment: here, name: "web", image: "nginx:1" }));
+  const execute = (statement: ReturnType<typeof sql>) => provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(statement);
+  }));
+  const failed = (at: ReturnType<typeof sql>, kind: string) => sql`
+    select id, organization_id, 'eu-west', ${at}, ${kind}, 0, 'fail', 500, 'none', '', '', 1, 2, 3, 40, 46, 'agent-1'`;
+  const resultColumns = sql`(check_id, organization_id, region, scheduled_at, kind, start_lag_ms, verdict, status, failed_phase, error,
+    detail, dns_ms, connect_ms, tls_ms, ttfb_ms, total_ms, agent)`;
+  yield* execute(sql`insert into uptime_check (organization_id, name, url, environment_id, service_id)
+    values (${ORGANIZATION}, 'web', 'https://web.shop.test/', ${ENVIRONMENT}, ${SERVICE})`);
+  yield* execute(sql`insert into uptime_result ${resultColumns} ${failed(sql`date_trunc('seconds', now()) - interval '2 minutes'`, "routine")} from uptime_check`);
+  yield* execute(sql`insert into uptime_incident (id, organization_id, check_id, check_revision, opened_at, opened_by)
+    select gen_random_uuid(), organization_id, id, 1, date_trunc('seconds', now()) - interval '2 minutes', ${SERVES_500} from uptime_check`);
+  const checker = execute(sql`
+    with asked as (
+      update uptime_check set probe_answered_at = date_trunc('milliseconds', probe_requested_at)
+      where probe_requested_at is not null and (probe_answered_at is null or probe_answered_at < date_trunc('milliseconds', probe_requested_at))
+      returning id, organization_id, date_trunc('milliseconds', probe_requested_at) as at)
+    insert into uptime_result ${resultColumns} ${failed(sql`at`, "triggered")} from asked`).pipe(
+    Effect.orDie, Effect.repeat(Schedule.spaced("100 millis")), Effect.asVoid,
+  );
 
   const route = (name: string, input: JsonValue) => Effect.gen(function* () {
     const request = new Request(`http://localhost:3000/api/cli/run/${name}`, {
@@ -101,7 +137,9 @@ const parity = Effect.fn(function* () {
       .from(organizationServerUpgrades).where(eq(organizationServerUpgrades.organizationId, ORGANIZATION));
     const decided = yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status, reason: operationApprovals.reason, by: operationApprovals.decidedByUserId })
       .from(operationApprovals).where(eq(operationApprovals.organizationId, ORGANIZATION)).orderBy(asc(operationApprovals.subject));
-    return { upgrades, decided };
+    const checks = yield* drizzle.select({ url: uptimeCheck.url, interval: uptimeCheck.intervalSeconds, timeout: uptimeCheck.timeoutMs, enabled: uptimeCheck.enabled })
+      .from(uptimeCheck).where(eq(uptimeCheck.organizationId, ORGANIZATION));
+    return { upgrades, decided, checks };
   }));
 
   const restore = (to: Effect.Success<typeof rows>) => provided(Effect.gen(function* () {
@@ -110,7 +148,7 @@ const parity = Effect.fn(function* () {
     if (to.upgrades.length > 0) yield* drizzle.insert(organizationServerUpgrades).values(to.upgrades.map((row) => ({ organizationId: ORGANIZATION, ...row })));
   }));
 
-  return { route, sidebar, listed, rows, restore, approvals: approvals.map(({ id }) => id), userId };
+  return { route, sidebar, listed, rows, restore, checker, approvals: approvals.map(({ id }) => id), userId };
 });
 
 it.live("lists each agent command in the sidebar with the manifest's input schema, so the agent never calls a command with a different input than ployz", () =>
@@ -133,8 +171,10 @@ it.live("gives the same answer and leaves the same rows through ployz and the si
       ["server_upgrade_policy_set", { channel: "beta" }],
       ["org_approval_ls", {}],
       ["org_approval_show", { id: first ?? "" }],
+      ["uptime_show", { service: "web" }],
     ];
-    expect(fixtures.map(([name]) => name).sort()).toEqual(COMMANDS.filter((command) => command.agents).map((command) => command.name).sort());
+    const raced = ["uptime_check"];
+    expect([...fixtures.map(([name]) => name), ...raced].sort()).toEqual(COMMANDS.filter((command) => command.agents).map((command) => command.name).sort());
     for (const [name, input] of fixtures) {
       const before = yield* rows;
       const viaRoute = yield* route(name, input);
@@ -178,4 +218,39 @@ it.live("answers approvals only through ployz, records who decided, and keeps th
       { id: data, status: "approved", reason: null, by: userId },
       { id: logs, status: "denied", reason: "not during the demo", by: userId },
     ]);
+  }));
+
+it.live("shows a Service's 500s and open incident by name, so an agent diagnosing it hears what the check got back", () =>
+  Effect.gen(function* () {
+    const { route } = yield* parity();
+    const shown = yield* route("uptime_show", { service: "web" });
+    expect(shown).toMatchObject({
+      status: 200,
+      body: { output: {
+        service: "web",
+        url: "https://web.shop.test/",
+        status: "unreachable",
+        uptime: "0%",
+        regions: [{ region: "eu-west", latest: { kind: "routine", verdict: "fail", answer: "500" } }],
+        incidents: [{ closed_at: null, cause: "500", observations: [{ region: "eu-west", verdict: "fail", answer: "500" }] }],
+      } },
+    });
+    const missing = yield* route("uptime_show", { service: "api" });
+    expect(missing).toMatchObject({ body: { error: { code: "not_found" } } });
+  }));
+
+it.live("checks a Service now through ployz and the sidebar alike, returns the round the checker answered, and changes no setting", () =>
+  Effect.gen(function* () {
+    const { route, sidebar, rows, checker } = yield* parity();
+    const before = yield* rows;
+    const answering = yield* Effect.forkChild(checker);
+    const viaRoute = yield* route("uptime_check", { service: "web" });
+    const viaSidebar = yield* sidebar("uptime_check", { service: "web" });
+    yield* Fiber.interrupt(answering);
+    const round = { service: "web", url: "https://web.shop.test/", status: "unreachable", answered: true,
+      results: [{ region: "eu-west", kind: "triggered", verdict: "fail", answer: "500", ms: 46 }] };
+    expect(viaRoute).toMatchObject({ status: 200, body: { output: round } });
+    expect(asRecord(viaRoute.body)?.["message"]).toBeUndefined();
+    expect(viaSidebar).toMatchObject({ ok: true, value: round });
+    expect(yield* rows).toEqual(before);
   }));
