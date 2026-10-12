@@ -514,7 +514,7 @@ async fn a_refused_tail_names_the_capability_and_the_server() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
+        stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
         "{stderr}"
     );
     assert!(!stderr.contains("Machine RPC failed"), "{stderr}");
@@ -545,7 +545,7 @@ async fn a_refused_exec_names_the_capability_and_the_server() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("one needs a newer Ployz. It cannot serve ployz.container.exec.v1."),
+        stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.container.exec.v1."),
         "{stderr}"
     );
 
@@ -575,7 +575,7 @@ async fn a_refused_tail_after_history_ends_the_json_stream_partial() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
+        stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
         "{stderr}"
     );
     server.abort();
@@ -596,7 +596,7 @@ async fn a_refused_history_read_names_the_capability_not_a_silent_server() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("! old needs a newer Ployz. It cannot serve ployz.logs.history.v2."),
+        stderr.contains("! Server old needs a newer Ployz. It cannot serve ployz.logs.history.v2."),
         "{stderr}"
     );
     assert!(!stderr.contains("old did not answer"), "{stderr}");
