@@ -228,15 +228,31 @@ pub(crate) fn freeze(
             .any(|old| old.resource_id == config.resource_id);
         targeted.contains(&true) && (fresh || !targeted.contains(&false))
     };
+    // A removed Config leaves with the Services that mounted it, once every one ships.
+    let unmounts = |old: &SavedConfigIntent| {
+        let targeted: Vec<bool> = applied
+            .services
+            .iter()
+            .filter(|service| {
+                service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == old.resource_id)
+            })
+            .map(|service| nodes.iter().any(|node| node.id() == service.id))
+            .collect();
+        targeted.contains(&true) && !targeted.contains(&false)
+    };
     let configs: Vec<TargetNode> = saved
         .configs
         .iter()
         .filter(|config| full || applies(config))
         .chain(applied.configs.iter().filter(|old| {
-            full && !saved
+            !saved
                 .configs
                 .iter()
                 .any(|new| new.resource_id == old.resource_id)
+                && (full || unmounts(old))
         }))
         .map(TargetNode::config)
         .collect::<Result<_, _>>()?;

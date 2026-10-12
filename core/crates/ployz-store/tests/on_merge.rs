@@ -3183,3 +3183,39 @@ fn a_retry_after_undo_never_tears_down_what_saved_holds_again() {
     let refused = retry(&store, &who, &teardown).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
 }
+
+#[test]
+fn a_merge_that_removes_a_mounted_config_takes_it_out_with_the_service() {
+    let (store, who) = shop_with_nodes();
+    let full = deploy_by_hand(&store, &who, &[]);
+    run(&store, &full, &["web", "worker", "db"]);
+    watching(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: at("pr-5"),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let [admitted] = pushed.admitted.as_slice() else {
+        panic!("one Deployment: {pushed:?}")
+    };
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: admitted.deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert_eq!(nodes, vec!["web".to_owned(), "sentry".to_owned()]);
+}
