@@ -405,7 +405,7 @@ impl AsyncWrite for ChildIo {
 
 /// Name the capability and target on a bare `Unsupported` for a catalogued route.
 #[must_use]
-pub fn name_refusal(mut error: RpcError, path: &str, target: &MachineTarget) -> RpcError {
+pub(crate) fn name_refusal(mut error: RpcError, path: &str, target: &MachineTarget) -> RpcError {
     if error.code == RpcErrorCode::Unsupported
         && error.details.is_null()
         && let Some(details) = refusal_details(path, target)
