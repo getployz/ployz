@@ -4,27 +4,29 @@ use std::{
 };
 
 use ployz_core::{
-    CREATE_CONTAINER_CAPABILITY, CapabilityName, CertificateHost, CertificateMaterialChange,
-    CertificateMaterialPublished, CodecError, ContainerCreated, ContainerHostname, ContainerId,
-    ContainerKind, ContainerLabels, ContainerObservationMap, ContainerRuntimeObservation,
-    ContractDescription, CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY,
-    DescribeContractRequest, DiskSpace, DockerVolumeName, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EnsureImageIngestRequest, ExtraHost, FanoutFailure, FanoutOutcome, FanoutResponse,
-    FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation,
+    BuildGrantId, BuildGrantInspected, CREATE_CONTAINER_CAPABILITY, CapabilityName,
+    CertificateHost, CertificateMaterialChange, CertificateMaterialPublished, CodecError,
+    ContainerCreated, ContainerHostname, ContainerId, ContainerKind, ContainerLabels,
+    ContainerObservationMap, ContainerRuntimeObservation, ContractDescription,
+    CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace,
+    DockerVolumeName, ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost,
+    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
+    GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
+    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation, ImageDigest,
     ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
     ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig,
-    LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway,
-    MachineId, MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess,
-    MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt, MachineUpgradeAttemptId,
-    MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion, ManagementAddress, NAMESPACE_LABEL,
-    NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-    PartialResult, PortPublication, PublicIpDiscovery, PublicIpUpdate,
-    PublishCertificateMaterialRequest, PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY,
-    RemoveImagesRequest, RemoveLocalMachineRequest, RemoveMachineRequest,
-    RequestMachineUpgradeRequest, ResetAccepted, ResetRequest, ResolvedServiceSpec, ResponseKind,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
-    UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    InspectBuildGrantRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest, MANAGED_LABEL,
+    MachineFailure, MachineGateway, MachineId, MachineImages, MachineName, MachineRelease,
+    MachineSubnet, MachineSuccess, MachineTokenRequest, MachineUpdate, MachineUpgradeAttempt,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
+    ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PruneImagesRequest,
+    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
+    RemoveMachineRequest, RequestMachineUpgradeRequest, ResetAccepted, ResetRequest,
+    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RpcResponseBody, ServiceId, ServiceName, UpdateMachineRequest, VolumeSource, encode_grpc_frame,
+    grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -767,12 +769,12 @@ fn image_list_contract_keeps_machine_local_store_and_platforms() {
 }
 
 #[test]
-fn image_removal_contract_reports_each_reference_without_force() {
-    let request = op::RemoveImages::into_request(RemoveImagesRequest {
-        references: vec!["ployz-build/web:ployz-sha256-1".into()],
+fn image_pruning_contract_names_repositories_and_reports_each_reference() {
+    let request = op::PruneImages::into_request(PruneImagesRequest {
+        repositories: vec!["ghcr.io/acme/api".into()],
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
-    assert_eq!(request.body.command(), "remove_images");
+    assert_eq!(request.body.command(), "prune_images");
 
     let removed = ImagesRemoved {
         results: vec![
@@ -801,9 +803,40 @@ fn image_removal_contract_reports_each_reference_without_force() {
             .unwrap()
             .decode_response()
             .unwrap()
-            .decode::<op::RemoveImages>()
+            .decode::<op::PruneImages>()
             .unwrap(),
         removed
+    );
+}
+
+#[test]
+fn build_grant_inspection_omits_an_absent_push() {
+    let id = BuildGrantId::parse("a".repeat(64)).unwrap();
+    let request = op::InspectBuildGrant::into_request(InspectBuildGrantRequest { id });
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+    assert_eq!(request.body.command(), "inspect_build_grant");
+
+    let open = BuildGrantInspected {
+        pushed: None,
+        expires_in_seconds: 60,
+    };
+    assert_eq!(
+        serde_json::to_value(&open).unwrap(),
+        json!({ "expires_in_seconds": 60 })
+    );
+    let pushed = BuildGrantInspected {
+        pushed: Some(ImageDigest::parse(format!("sha256:{}", "b".repeat(64))).unwrap()),
+        expires_in_seconds: 0,
+    };
+    assert_eq!(
+        RpcResponse::from(pushed.clone())
+            .encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::InspectBuildGrant>()
+            .unwrap(),
+        pushed
     );
 }
 

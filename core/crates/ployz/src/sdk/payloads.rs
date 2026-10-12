@@ -64,10 +64,10 @@ pub fn typescript_declarations() -> String {
         seen: BTreeSet::new(),
         by_name: BTreeMap::new(),
     };
-    declarations.add::<ployz_core::BuildGrantEnded>();
+    declarations.add::<ployz_core::BuildGrantInspected>();
     declarations.add::<ployz_core::BuildGrantMinted>();
     declarations.add::<ClusterTeardown>();
-    declarations.add::<ployz_core::EndBuildGrantRequest>();
+    declarations.add::<ployz_core::InspectBuildGrantRequest>();
     declarations.add::<ployz_core::MintBuildGrantRequest>();
     declarations.add::<ContractDescription>();
     declarations.add::<DataLossConfirmation>();

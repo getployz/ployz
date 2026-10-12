@@ -754,17 +754,17 @@ async fn volume_copy_inspect_refuses_a_machine_outside_the_cluster() {
 }
 
 #[tokio::test]
-async fn image_removal_without_docker_reports_an_error() {
+async fn image_pruning_without_docker_reports_an_error() {
     let data_dir = std::env::temp_dir().join(format!(
-        "ployzd-remove-images-{}",
+        "ployzd-prune-images-{}",
         ployz_core::MachineId::random()
     ));
     let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
     let service = MachineService::with_cluster(store, None);
     let response = service
-        .remove_images(Request::new(
-            op::RemoveImages::into_request(ployz_core::RemoveImagesRequest {
-                references: vec!["ployz-build/web:ployz-sha256-a".into()],
+        .prune_images(Request::new(
+            op::PruneImages::into_request(ployz_core::PruneImagesRequest {
+                repositories: vec!["ployz-build/web".into()],
             })
             .encode()
             .unwrap(),
@@ -775,14 +775,14 @@ async fn image_removal_without_docker_reports_an_error() {
         .decode_response()
         .unwrap();
     let ployz_core::RpcResponseBody::Error(error) = response.body else {
-        panic!("removal without Docker must fail: {response:?}");
+        panic!("pruning without Docker must fail: {response:?}");
     };
     assert_eq!(error.code, ployz_core::RpcErrorCode::Unavailable);
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]
-async fn ending_an_unknown_build_grant_is_not_found() {
+async fn inspecting_an_unknown_build_grant_is_not_found() {
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-build-grant-{}",
         ployz_core::MachineId::random()
@@ -796,8 +796,8 @@ async fn ending_an_unknown_build_grant_is_not_found() {
         error.code
     };
     let response = service
-        .end_build_grant(Request::new(
-            op::EndBuildGrant::into_request(ployz_core::EndBuildGrantRequest {
+        .inspect_build_grant(Request::new(
+            op::InspectBuildGrant::into_request(ployz_core::InspectBuildGrantRequest {
                 id: ployz_core::BuildGrantId::parse("a".repeat(64)).unwrap(),
             })
             .encode()

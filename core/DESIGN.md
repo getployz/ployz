@@ -92,9 +92,9 @@ runs.
 
 Under rule 6's second branch, these Machine RPC verbs are removed within the
 major with no shim: InspectWireguard, CreateVolume, InspectVolume,
-InspectMachineUpgrade. A daemon without one stops advertising its capability and
-refuses the route. A client that sends one names the capability from its own
-catalog.
+InspectMachineUpgrade, RemoveImages, EndBuildGrant. A daemon without one stops
+advertising its capability and refuses the route. A client that sends one names
+the capability from its own catalog.
 
 **Red flags:** a required new field, a migration step, a reader that rejects
 unknown fields on replicated data, a daemon behaviour that depends on every

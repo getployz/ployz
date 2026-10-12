@@ -4,7 +4,7 @@
 use std::{collections::BTreeMap, fs, time::Duration};
 
 use ployz::sdk::PreparationInput;
-use ployz_core::{EndBuildGrantRequest, MintBuildGrantRequest, ServiceName};
+use ployz_core::{InspectBuildGrantRequest, MintBuildGrantRequest, ServiceName};
 use ployz_testkit::{Cluster, ClusterPlan};
 use serde_json::Value;
 
@@ -92,12 +92,15 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
         )
         .unwrap();
     assert_eq!(held.trim(), digest);
-    let ended = session
-        .end_build_grant(EndBuildGrantRequest { id: minted.id })
+    let inspected = session
+        .inspect_build_grant(InspectBuildGrantRequest { id: minted.id })
         .await
         .unwrap();
     assert_eq!(
-        ended.pushed.as_ref().map(ployz_core::ImageDigest::as_str),
+        inspected
+            .pushed
+            .as_ref()
+            .map(ployz_core::ImageDigest::as_str),
         Some(digest)
     );
     session.close().await;

@@ -102,6 +102,8 @@ servers, or fix the reason after the colon:
   for the Ployz GitHub App in GitHub.
 - `GitHub builds one platform, and this Service runs on linux/amd64 and linux/arm64`: a
   service on both x86 and ARM servers builds on your servers.
+- `GitHub builds need a newer Ployz on web-1`:
+  [upgrade Ployz](../servers/manage-servers.md#upgrade-ployz-on-a-server) on that server.
 - `no runner started the build in time`, `the run ended before it started the build`,
   `the run ran out of time` or `the run ended without pushing an image`: check the run on
   GitHub. If it's still queued, your GitHub account may be out of Actions minutes or at its

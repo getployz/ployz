@@ -2,7 +2,7 @@
 // Do not edit.
 
 export type CapabilityName =
-  | "ployz.build.grant.end.v1"
+  | "ployz.build.grant.inspect.v1"
   | "ployz.build.grant.mint.v1"
   | "ployz.build.v1"
   | "ployz.certificates.policy.v1"
@@ -18,8 +18,8 @@ export type CapabilityName =
   | "ployz.container.stop.v1"
   | "ployz.image.ingest.ensure.v1"
   | "ployz.image.list.v1"
+  | "ployz.image.prune.v1"
   | "ployz.image.pull-from-machine.v1"
-  | "ployz.image.remove.v1"
   | "ployz.ingress.config.v1"
   | "ployz.logs.history.v2"
   | "ployz.logs.tail.v1"

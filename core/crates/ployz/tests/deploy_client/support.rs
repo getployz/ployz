@@ -351,7 +351,7 @@ impl MachineRpc for DeployService {
                     ployz_core::BUILD_CAPABILITY,
                     ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY,
                     ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY,
-                    ployz_core::REMOVE_IMAGES_CAPABILITY,
+                    ployz_core::PRUNE_IMAGES_CAPABILITY,
                 ]
                 .map(|name| CapabilityName::parse(name).unwrap()),
             );
@@ -860,17 +860,20 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn end_build_grant(
+    async fn inspect_build_grant(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn remove_images(
+    async fn prune_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        if self.builds.is_none() {
+            return unused();
+        }
+        encoded(RpcResponse::from(ployz_core::ImagesRemoved::default()))
     }
     async fn pull_image_from_machine(
         &self,

@@ -6,7 +6,8 @@ use ployz_core::{
     ContainerChanged, ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CopyRefusal, DockerVolumeName, Drain, ImageIngestOpened,
     ImageIngestReason, ImagePulled, ImagesRemoved, LocalMachinePhase, MachineStorageObservation,
-    Namespace, PullImageFromMachineRequest, ResolvedServiceSpec, StopOptions, VolumeRemoved,
+    Namespace, PruneImagesRequest, PullImageFromMachineRequest, ResolvedServiceSpec, StopOptions,
+    VolumeRemoved,
 };
 
 use super::super::ingress::admit_ingress_service;
@@ -373,16 +374,16 @@ impl LocalMachine {
         .await
     }
 
-    /// Remove unused image references while holding Machine mutation admission, so no
-    /// Container is created from a reference as it is removed.
+    /// Remove each repository's superseded build images while holding Machine mutation
+    /// admission, so no Container is created from a reference as it is removed.
     ///
     /// # Errors
     ///
     /// Returns when Docker is unavailable, admission is busy, or Docker cannot list
-    /// Containers.
-    pub(crate) async fn remove_images(
+    /// images or Containers.
+    pub(crate) async fn prune_images(
         &self,
-        references: Vec<String>,
+        request: PruneImagesRequest,
     ) -> Result<ImagesRemoved, Error> {
         let local = self.clone();
         self.finish_mutation(async move {
@@ -390,7 +391,7 @@ impl LocalMachine {
                 .containers
                 .as_ref()
                 .ok_or(Error::DockerUnavailable)?
-                .remove_images(&references)
+                .prune_images(&request.repositories)
                 .await?)
         })
         .await

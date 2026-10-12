@@ -384,7 +384,7 @@ async function openConfigStore(url, sealingSecret) {
     githubCheckIn: (build, claims, connections) => withRpcError(store.githubCheckIn(build, claims, connections)),
     githubReport: (build, claims, report) => withRpcError(store.githubReport(build, claims, report)),
     githubFinish: (build, timedOut, connections) => withRpcError(store.githubFinish(build, timedOut, connections)),
-    githubCancel: (deployment, connections) => withRpcError(store.githubCancel(deployment, connections)),
+    githubCancel: (deployment) => withRpcError(store.githubCancel(deployment)),
   };
 }
 

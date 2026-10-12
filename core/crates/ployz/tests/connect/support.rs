@@ -1169,13 +1169,13 @@ impl MachineRpc for DiscoveryService {
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn end_build_grant(
+    async fn inspect_build_grant(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         Err(Status::unimplemented("unused"))
     }
-    async fn remove_images(
+    async fn prune_images(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

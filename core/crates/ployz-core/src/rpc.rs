@@ -583,15 +583,16 @@ impl PeerImagePull {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {}
 
-/// Remove image references from this Machine's store. Never forced: a reference
-/// whose image any Container uses is kept and reported in use.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveImagesRequest {
-    pub references: Vec<String>,
+/// Remove the superseded build images of each repository from this Machine's store.
+/// Repositories are Docker's short names, so a registry prefix stays. Never forced:
+/// a reference whose image any Container uses is kept and reported in use.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PruneImagesRequest {
+    pub repositories: Vec<String>,
 }
 
-/// One result per requested reference, in request order.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+/// One result per superseded reference found; empty in the steady state.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ImagesRemoved {
     pub results: Vec<ImageRemoval>,
 }
@@ -1061,7 +1062,7 @@ define_responses! {
     ImagePulled(ImagePulled) => "image_pulled";
     ImagesRemoved(ImagesRemoved) => "images_removed";
     BuildGrantMinted(BuildGrantMinted) => "build_grant_minted";
-    BuildGrantEnded(BuildGrantEnded) => "build_grant_ended";
+    BuildGrantInspected(BuildGrantInspected) => "build_grant_inspected";
     IngressProxyConfig(IngressProxyConfig) => "ingress_proxy_config";
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";

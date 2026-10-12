@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { requirementFor, requirements, ServerLacks, serverSupports } from "./daemon-compat";
+import { requirementFor, requirements, ServerLacks, serversLacking, serverSupports } from "./daemon-compat";
 import { asSdkFailure, PloyzProviderError, sdkFailureMessage } from "./ployz.server";
 
 describe("serverSupports", () => {
@@ -9,8 +9,22 @@ describe("serverSupports", () => {
     expect(serverSupports({ capabilities: [] }, requirements.volumeMove)).toBe("unknown");
   });
 
+  it("names only the Servers whose records lack the capability, attempting those that list none", () => {
+    const listingNone = { name: "ash-1", capabilities: [] };
+    const servers = [
+      { name: "fsn-1", capabilities: [requirements.buildGrantInspect.capability] },
+      { name: "hel-1", capabilities: [requirements.liveLogs.capability] },
+      listingNone,
+    ];
+    expect(serverSupports(listingNone, requirements.buildGrantInspect)).toBe("unknown");
+    expect(serversLacking(servers, requirements.buildGrantInspect)).toEqual(["hel-1"]);
+    expect(serversLacking(servers, requirements.pruneImages)).toEqual(["fsn-1", "hel-1"]);
+  });
+
   it("names the feature a refused capability belongs to", () => {
     expect(requirementFor("ployz.logs.tail.v1")).toBe(requirements.liveLogs);
+    expect(requirementFor("ployz.build.grant.inspect.v1")).toBe(requirements.buildGrantInspect);
+    expect(requirementFor("ployz.image.prune.v1")).toBe(requirements.pruneImages);
     expect(requirementFor("ployz.something.v9")).toBeNull();
   });
 });

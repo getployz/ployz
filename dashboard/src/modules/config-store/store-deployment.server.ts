@@ -168,7 +168,7 @@ export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(funct
   organizationId: string, deploymentId: string, runId: string,
 ) {
   const store = yield* cloudStore;
-  const cancelled = yield* Effect.exit(cancelStoreGithubBuilds(organizationId, deploymentId));
+  const cancelled = yield* Effect.exit(cancelStoreGithubBuilds(deploymentId));
   const stopped = yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, storeDeploymentRunner(runId)) })).pipe(
     // It never claimed it, or another runner owns it now.
     Effect.catchIf(refusedWith("conflict"), (refused) => failUnclaimed(store, organizationId, deploymentId, runId, refused.message)),

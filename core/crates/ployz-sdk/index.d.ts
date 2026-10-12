@@ -445,10 +445,10 @@ export interface ConfigStore {
   githubCheckIn(build: string, claims: GithubClaims, connections: Connection[]): Promise<GithubCheckIn>;
   /** The steps route only: take a runner's report (`{from, events, platforms?, installFailed?}`). */
   githubReport(build: string, claims: GithubClaims, report: unknown): Promise<{ received: number; ended: boolean }>;
-  /** Cloud only: end a build whose run reported its end, completed or timed out: end its grant, write its receipt. */
+  /** Cloud only: end a build whose run reported its end, completed or timed out: read its grant, write its receipt. */
   githubFinish(build: string, timedOut: boolean, connections: Connection[]): Promise<GithubFinish>;
-  /** Cloud only: end the grants of a Deployment's builds still on GitHub and fail them; cancel the returned runs. */
-  githubCancel(deployment: string, connections: Connection[]): Promise<GithubBuild[]>;
+  /** Cloud only: fail a Deployment's builds still on GitHub; cancel the returned runs. Their grants expire by themselves. */
+  githubCancel(deployment: string): Promise<GithubBuild[]>;
 }
 export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string };
 export type GithubCheckIn = { grant: string; commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };

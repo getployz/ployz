@@ -280,18 +280,22 @@ export type BuildConcurrency = number;
 
 export type BuildConcurrencyUpdate = { "action": "keep" } | { "action": "automatic" } | { "action": "set", "value": BuildConcurrency };
 
-export type BuildGrantEnded = {
-/**
- * `sha256:` digest of the manifest the Machine verified and stored, when the
- * push completed; absent when nothing was pushed.
- */
-pushed: ImageDigest | null, };
-
 export type BuildGrantId = string & { readonly __brand: "BuildGrantId" };
+
+export type BuildGrantInspected = {
+/**
+ * `sha256:` digest of the manifest the Machine verified and stored, once the
+ * push completed.
+ */
+pushed?: ImageDigest | null,
+/**
+ * The grant ends by itself this long from now.
+ */
+expires_in_seconds: number, };
 
 export type BuildGrantMinted = {
 /**
- * Handle for [`EndBuildGrantRequest`]; not secret.
+ * Handle for [`InspectBuildGrantRequest`]; not secret.
  */
 id: BuildGrantId,
 /**
@@ -1601,8 +1605,6 @@ typed_addresses: Array<TypedAddresses>, };
 
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
 
-export type EndBuildGrantRequest = { id: BuildGrantId, };
-
 export type EnrollmentAssignment = {
 /**
  * Retry identity inputs, excluding assigned subnet and runtime observations.
@@ -2064,6 +2066,8 @@ accepts_services: boolean,
  * Whether to admit the trusted Ingress Proxy; revocation preserves existing work.
  */
 accepts_ingress: boolean, };
+
+export type InspectBuildGrantRequest = { id: BuildGrantId, };
 
 export type InspectVolumeCopyRequest = { name: DockerVolumeName, };
 

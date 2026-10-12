@@ -383,16 +383,16 @@ impl Session {
         .await
     }
 
-    /// End a Build Grant on the entry Machine and read what it received. Idempotent.
+    /// Read what a Build Grant on the entry Machine received. Reading does not end it.
     ///
     /// # Errors
     /// Returns cancellation, transport errors, or `not_found` once the grant expired
     /// or the Machine restarted.
-    pub async fn end_build_grant(
+    pub async fn inspect_build_grant(
         &self,
-        request: ployz_core::EndBuildGrantRequest,
-    ) -> Result<ployz_core::BuildGrantEnded, RpcError> {
-        self.unary::<op::EndBuildGrant>(request).await
+        request: ployz_core::InspectBuildGrantRequest,
+    ) -> Result<ployz_core::BuildGrantInspected, RpcError> {
+        self.unary::<op::InspectBuildGrant>(request).await
     }
 
     /// Describe the entry Machine contract.

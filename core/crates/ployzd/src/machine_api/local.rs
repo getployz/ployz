@@ -658,12 +658,15 @@ impl MachineRpc for MachineService {
         respond(images)
     }
 
-    async fn remove_images(
+    async fn prune_images(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::RemoveImages>(request)?;
-        finish(self.local.remove_images(request.references).await)
+        finish(
+            self.local
+                .prune_images(expect::<op::PruneImages>(request)?)
+                .await,
+        )
     }
 
     async fn ensure_image_ingest(
@@ -712,13 +715,13 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn end_build_grant(
+    async fn inspect_build_grant(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::EndBuildGrant>(request)?;
-        match self.grants.end(&request.id) {
-            Ok(ended) => respond(ended),
+        let request = expect::<op::InspectBuildGrant>(request)?;
+        match self.grants.inspect(&request.id) {
+            Ok(inspected) => respond(inspected),
             Err(error) => respond(error),
         }
     }

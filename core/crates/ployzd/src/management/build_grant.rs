@@ -5,9 +5,9 @@
 //!
 //! A grant allows the OCI Distribution calls one `docker push` makes into its one
 //! repository, and ends after one tagged manifest lands (or the ingest confirms it
-//! already holds that tag at its digest), when its Build ends
-//! ([`BuildGrants::end`]), after [`GRANT_LIFETIME`], or when the daemon stops.
-//! The Machine RPC handlers only forward to [`mint_for`] and [`BuildGrants::end`].
+//! already holds that tag at its digest), after [`GRANT_LIFETIME`], or when the daemon
+//! stops. The Machine RPC handlers only forward to [`mint_for`] and
+//! [`BuildGrants::inspect`].
 
 use std::{
     collections::HashMap,
@@ -28,7 +28,7 @@ use iroh::{
     endpoint::{Connection, VarInt},
 };
 use ployz_core::{
-    BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, BuildGrantEnded, BuildGrantId,
+    BUILD_GRANT_ENDED, BUILD_GRANT_REFUSED, BuildGrant, BuildGrantId, BuildGrantInspected,
     BuildGrantMinted, BuildGrantRepository, ImageDigest, ManagementIdentity, MintBuildGrantRequest,
     RETAINED_DIGEST_TAG_PREFIX, RpcError, RpcErrorCode,
 };
@@ -36,7 +36,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-/// How long a grant lives when its Build never ends it. Ployz Cloud mints it at
+/// How long a grant lives. Ployz Cloud mints it at
 /// check-in and gives the run 2h from there (`GITHUB_RUN_BUDGET_MS` in the dashboard's
 /// `github-image-builds.server.ts`), so this must outlive that budget: a run Cloud
 /// still waits on never loses its grant mid-push.
@@ -55,7 +55,6 @@ struct Grant {
     repository: BuildGrantRepository,
     ingest: SocketAddr,
     expires: Instant,
-    ended: CancellationToken,
     push: Mutex<Push>,
 }
 
@@ -81,7 +80,6 @@ impl BuildGrants {
             repository,
             ingest,
             expires: Instant::now() + GRANT_LIFETIME,
-            ended: CancellationToken::new(),
             push: Mutex::new(Push::Open),
         });
         let mut grants = self.grants.lock().expect("grant registry lock");
@@ -94,17 +92,17 @@ impl BuildGrants {
         }
     }
 
-    /// End a grant, closing its connections, and report what it pushed. Ending again
-    /// repeats the report, so a retried call loses nothing.
+    /// Report what a live grant pushed. Reading does not spend or end it.
     ///
     /// # Errors
     /// `NotFound` when this Machine holds no such grant: it expired or the daemon restarted.
-    pub fn end(&self, id: &BuildGrantId) -> Result<BuildGrantEnded, RpcError> {
+    pub fn inspect(&self, id: &BuildGrantId) -> Result<BuildGrantInspected, RpcError> {
         let grant = Arc::clone(
             self.grants
                 .lock()
                 .expect("grant registry lock")
                 .get(id)
+                .filter(|grant| grant.expires > Instant::now())
                 .ok_or_else(|| RpcError {
                     code: RpcErrorCode::NotFound,
                     message:
@@ -114,12 +112,17 @@ impl BuildGrants {
                     cause: Vec::new(),
                 })?,
         );
-        grant.ended.cancel();
         let pushed = match &*grant.push.lock().expect("grant push lock") {
             Push::Pushed(digest) => Some(digest.clone()),
             Push::Open | Push::Pushing => None,
         };
-        Ok(BuildGrantEnded { pushed })
+        Ok(BuildGrantInspected {
+            pushed,
+            expires_in_seconds: grant
+                .expires
+                .saturating_duration_since(Instant::now())
+                .as_secs(),
+        })
     }
 
     /// The live, unused grant `key` holds.
@@ -130,8 +133,7 @@ impl BuildGrants {
                 .expect("grant registry lock")
                 .get(&grant_id(key))?,
         );
-        (grant.expires > Instant::now() && !grant.ended.is_cancelled() && !grant.pushed())
-            .then_some(grant)
+        (grant.expires > Instant::now() && !grant.pushed()).then_some(grant)
     }
 }
 
@@ -179,7 +181,6 @@ pub(super) async fn serve(
     let mut streams = tokio::task::JoinSet::new();
     loop {
         let (send, recv) = tokio::select! {
-            () = grant.ended.cancelled() => break,
             () = tokio::time::sleep_until(grant.expires) => break,
             () = shutdown.cancelled() => break,
             _ = streams.join_next(), if !streams.is_empty() => continue,
