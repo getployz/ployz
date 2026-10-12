@@ -87,7 +87,8 @@ it leaves running keeps its staged changes on its card.
 ## Follow a deployment
 
 While a deployment runs, the bottom bar shows it. Once it ends, the bar shows **Deployed** for a
-few seconds, or **Failed** until you dismiss it, with **Logs** to open its page.
+few seconds, or **Failed** until you dismiss it, with **Logs** to open its page. **Failed** stays
+after a reload and in other tabs, as long as the failed deployment is the newest one.
 
 **Deployments** in the sidebar lists every deployment, newest first. A deployment's page shows
 its status, who started it and the commit it ships, and if it failed, the reason in red under the
@@ -124,8 +125,10 @@ their recorded outcomes.
 ## Redeploy or cancel a deployment
 
 - **Redeploy**, on a failed, cancelled or unknown deployment, ships the same commit and settings
-  again. Your staged changes, volume changes included, wait for your next deploy. To ship a fix,
-  change it and deploy instead.
+  again. Your staged changes, volume changes included, wait for your next deploy, and **Copies wait
+  for Deploy** beside the button says so when volume changes are staged. To ship a fix, change it
+  and deploy instead. A deployment whose restore failed can't be redeployed, because it would mount
+  the new volume empty. Redeploy refuses with "Restore failed. Restore again."
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →
@@ -171,7 +174,7 @@ the dropped change leaves behind depends on how far it got:
   your service stays down until the move finishes there. The move stays in your changes, so
   deploy again to finish it. See [When a move stops](../services/move-a-volume.md#when-a-move-stops).
 - A restore that failed is taken back. Your services mount the old volume again, and the new
-  volume goes away. Restore again once you fix the cause.
+  volume goes away. Restore again once you fix the cause. Redeploying that deployment is refused.
 
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a

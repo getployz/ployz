@@ -80,6 +80,11 @@ deploy and every 15 minutes. A move leaves an old copy on the server it left. Op
 look under **Copies**. Its top line says "No copies" in amber until the volume has a mirror, and
 "Mirror behind" when the mirror is more than an hour old.
 
+Copy changes, like a new mirror or a restore, go out with your next deploy. **Redeploy** on a past
+deployment ships what that deployment froze, so it leaves them staged and says **Copies wait for
+Deploy**. A restore that failed is taken back, and that deployment can't be redeployed. Restore
+again instead.
+
 ## Move a volume
 
 With Ployz Cloud, **Make primary** on a mirror or `ployz volume move data --to web-2` moves a
