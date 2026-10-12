@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { FollowHint, OnMergeCheck, PrPlan, PullRequestView, RowId } from "@ployz/sdk";
-import { CHECK_SUMMARY_LIMIT, hintNotes, planSummary, storePrCheckRun } from "./store-pull-requests";
+import type { FollowHint, MergeRow, OnMerge, OnMergeCheck, PrPlan, PullRequestView, RowId } from "@ployz/sdk";
+import { CHECK_SUMMARY_LIMIT, hintNotes, onMergeCount, onMergeLists, planSummary, storePrCheckRun } from "./store-pull-requests";
 
 const plan: PrPlan = {
   repository: "acme/web", repository_id: 11, installation_id: 7, enabled: true, start_from: "production",
@@ -22,6 +22,28 @@ describe("hintNotes", () => {
     const notes = hintNotes([hint("startCommand"), hint("env.KEY")], new Set(["w:startCommand" as RowId]));
     expect(notes.at("w:startCommand" as RowId).map((note) => note.name)).toEqual(["startCommand"]);
     expect(notes.rest.map((note) => note.name)).toEqual(["env.KEY"]);
+  });
+});
+
+describe("the On merge list", () => {
+  const removal = (node: string, extra: Partial<MergeRow>): MergeRow => ({
+    row: `${node}:node` as RowId, node, kind: "service", name: null, production: { image: `${node}:1` }, preview: null, lands: null,
+    ride: "rides", conflict: false, requires: null, ...extra,
+  });
+  const merge = (rows: MergeRow[]): OnMerge => ({
+    environment: { id: "pr", project: "shop", name: "pr-5", revision: 1 }, pull_request: { repository_id: 1, number: 5 },
+    destinations: [{ name: "production", rows }],
+  });
+  const view = merge([
+    removal("db", {}),
+    removal("cache", { refused_by: [{ row: "w:variables.CACHE" as RowId, node: "web", kind: "service", name: "env.CACHE" }] }),
+    removal("volumes.data", { kind: "volume", ride: "kept", lands: { size: "10GB" }, production: { size: "10GB" } }),
+    removal("worker", { ride: "production_keeps" }),
+  ]);
+
+  it("lists a Kept Volume but counts only the removals the merge lands", () => {
+    expect(onMergeLists(view)[0]?.rows.map((row) => [row.node, row.ride])).toEqual([["db", "rides"], ["cache", "rides"], ["volumes.data", "kept"]]);
+    expect(onMergeCount(view)).toBe(1);
   });
 });
 
