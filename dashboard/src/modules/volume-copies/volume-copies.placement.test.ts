@@ -26,7 +26,7 @@ describe("copiesFromPlacement", () => {
   it("puts the primary in Live and the mirror Elsewhere, named data-<server>", () => {
     const model = copies(row(["web-2"]));
     expect(model.live.server?.name).toBe("web-1");
-    expect(model.elsewhere[0]).toMatchObject({ kind: "mirror", name: "pg-data-web-2", skipped: false });
+    expect(model.elsewhere[0]).toMatchObject({ kind: "mirror", name: "pg-data-web-2", skipped: null });
     expect(traySpeech(model)).toBeNull();
   });
 
@@ -56,8 +56,8 @@ describe("copiesFromPlacement", () => {
     expect(traySpeech(moving)).toEqual({ tone: "busy", words: "Moving to web-3" });
   });
 
-  it("marks the mirror skipped when its last refresh failed", () => {
-    expect(copies(row(["web-2"]), undefined, null, run("sync", { full: false }, "failed")).elsewhere[0]).toMatchObject({ skipped: true });
+  it("marks the mirror skipped by a failed refresh when its Server answers", () => {
+    expect(copies(row(["web-2"]), undefined, null, run("sync", { full: false }, "failed")).elsewhere[0]).toMatchObject({ skipped: "failed" });
   });
 
   it("ages a mirror whose Server is silent from the last round that ended done, and marks it skipped", () => {
@@ -66,7 +66,7 @@ describe("copiesFromPlacement", () => {
     const failed = run("sync", { full: false }, "failed");
     const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "unanswered")], null, failed, done);
     const [mirror] = model.elsewhere;
-    expect(mirror).toMatchObject({ kind: "mirror", skipped: true, refreshedAt: new Date("2026-10-09T00:00:00.000Z") });
+    expect(mirror).toMatchObject({ kind: "mirror", skipped: "silent", refreshedAt: new Date("2026-10-09T00:00:00.000Z") });
     expect(safetyLine(model, now)).toEqual({ tone: "warn", words: "Mirror behind", detail: "3 hours ago" });
     expect(mirror && cardLine(mirror, now).stale).toBe(true);
   });
@@ -77,14 +77,14 @@ describe("copiesFromPlacement", () => {
     const done = { ...run("sync", { full: false }, "done"), finished_at: new Date(now.getTime() - 5 * 60_000).toISOString() };
     const model = copies(row(["web-2"]), undefined, null, done, done);
     const [mirror] = model.elsewhere;
-    expect(mirror).toMatchObject({ kind: "mirror", skipped: false, refreshedAt: new Date(now.getTime() - 5 * 60_000) });
+    expect(mirror).toMatchObject({ kind: "mirror", skipped: null, refreshedAt: new Date(now.getTime() - 5 * 60_000) });
     expect(safetyLine(model, now).tone).not.toBe("warn");
     expect(mirror && cardLine(mirror, now)).toMatchObject({ stale: false, age: "5 minutes ago" });
   });
 
   it("marks a silent mirror skipped with no age when no round ever ended done", () => {
     const model = copies(row(["web-2"]), [member("web-1", "writer"), member("web-2", "unanswered")]);
-    expect(model.elsewhere[0]).toMatchObject({ kind: "mirror", skipped: true, refreshedAt: null });
+    expect(model.elsewhere[0]).toMatchObject({ kind: "mirror", skipped: "silent", refreshedAt: null });
   });
 
   it("marks only the mirror Refreshing while a refresh runs, leaving an old copy free", () => {

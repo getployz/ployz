@@ -107,7 +107,7 @@ describe("Config Store nodes", () => {
   describe("copies", () => {
     const server = (name: string) => ({ id: name as MachineId, name });
     const mirror = (name: string): MirrorCopy =>
-      ({ kind: "mirror", id: name, server: server(name), name, refreshedAt: null, skipped: false, staged: null, busy: null });
+      ({ kind: "mirror", id: name, server: server(name), name, refreshedAt: null, skipped: null, staged: null, busy: null });
     const offsite: OffsiteCopy = { kind: "offsite", id: "b", bucket: "b", region: "r", keep: 7, uploadedAt: null, staged: null, busy: null };
     const old: OldCopy = { kind: "old", id: "web-9", server: server("web-9"), name: "old", since: null, bytes: null, staged: null, busy: null };
     const copiesOf = (id: string, elsewhere: VolumeCopies["elsewhere"]): VolumeCopies => ({

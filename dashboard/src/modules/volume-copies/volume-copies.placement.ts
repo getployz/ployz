@@ -26,7 +26,7 @@ export function copiesFromPlacement(input: {
   const observed = observePlacement(members);
   const moving = form.primary.change !== null && row?.staged?.seed === undefined;
   const promoted = moving && appliedMirrors(observed, row).includes(form.primary.server.id);
-  const skipped = input.lastSync !== null && ["failed", "lost"].includes(input.lastSync.state);
+  const failed = input.lastSync !== null && ["failed", "lost"].includes(input.lastSync.state);
   const silent = new Set(members.filter((member) => !member.answered).map((member) => member.machine.id));
   const doneAt = input.lastDone?.finished_at == null ? null : new Date(input.lastDone.finished_at);
   const target = active === null ? null : runTarget(active);
@@ -45,7 +45,7 @@ export function copiesFromPlacement(input: {
       server: item.server,
       name: copyName(volume.name, item.server.name),
       refreshedAt: quiet ? doneAt : syncedAt(item.newest, doneAt),
-      skipped: skipped || quiet,
+      skipped: quiet ? "silent" : failed ? "failed" : null,
       staged,
       busy: active?.kind === "sync" ? "Refreshing" : busyOn(item.server.name),
     };
