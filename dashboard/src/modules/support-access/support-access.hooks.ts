@@ -7,6 +7,12 @@ import { applySupportAccessChange, SUPPORT_SHOWS_NONE, type SupportAccessChange,
 import { setSupportAccessServerFn } from "./support-access.functions";
 
 /**
+ * Each Organization's changes save one at a time, in order: a switch turned on while support access is still being
+ * turned on would otherwise reach the server first and be dropped.
+ */
+const saving = new Map<string, Promise<unknown>>();
+
+/**
  * Whether Ployz support may open the Organization, and what it may read inside. A change shows at once, saves in the
  * background, and rolls back with a toast.
  */
@@ -23,8 +29,13 @@ export function useSupportAccess(organizationSlug: string) {
       if (current === undefined) collection.insert(next);
       else collection.update(organizationId, (draft) => { Object.assign(draft, next); });
     },
-    mutationFn: (change) => setSupportAccessServerFn({ data: { organizationSlug, change } })
-      .then((saved) => collection.writeCommitted(saved)),
+    mutationFn: (change) => {
+      const saved = (saving.get(organizationSlug) ?? Promise.resolve()).catch(() => undefined)
+        .then(() => setSupportAccessServerFn({ data: { organizationSlug, change } }))
+        .then((row) => collection.writeCommitted(row));
+      saving.set(organizationSlug, saved);
+      return saved;
+    },
   });
   return {
     row,
