@@ -1118,17 +1118,26 @@ mod set_volume_copy {
             .count()
     }
 
-    /// A root at epoch 1 that the Writer route raises to epoch 2.
-    fn raising_plugin() -> FakePlugin {
+    /// A root at epoch 1 that the Writer route raises to epoch 2. With `stop`, every
+    /// running holder exits while the route runs.
+    fn raising_plugin(stop: Option<&FakeDocker>) -> FakePlugin {
         let plugin = FakePlugin::default();
         plugin.reply(INSPECT_ROUTE, writer_root(1, Some(snapshot("f-1", 7))));
         plugin.reply(WRITER_ROUTE, writer_root(2, Some(snapshot("f-1", 7))));
         let replies = plugin.replies.clone();
+        let holders = stop.and_then(|fake| fake.named_containers.clone());
         plugin.on(WRITER_ROUTE, move || {
             replies.lock().unwrap().insert(
                 INSPECT_ROUTE.into(),
                 writer_root(2, Some(snapshot("f-1", 7))),
             );
+            if let Some(holders) = &holders {
+                for container in holders.lock().unwrap().values_mut() {
+                    if container.pointer("/State/Running") == Some(&json!(true)) {
+                        container["State"] = json!({"Status":"exited", "Running":false});
+                    }
+                }
+            }
         });
         plugin
     }
@@ -1136,7 +1145,7 @@ mod set_volume_copy {
     #[tokio::test]
     async fn a_raise_whose_kept_start_another_holder_superseded_starts_nothing() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-kept-held").await;
-        let plugin = raising_plugin();
+        let plugin = raising_plugin(None);
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
         let kept = stopped_container(&service).await;
@@ -1161,7 +1170,7 @@ mod set_volume_copy {
     async fn a_raise_whose_create_start_another_holder_superseded_creates_nothing() {
         let (data_dir, _store, service, fake) =
             fake_docker_service("ployzd-copy-create-held").await;
-        let plugin = raising_plugin();
+        let plugin = raising_plugin(None);
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
         running_holder(&service, &fake).await;
@@ -1185,6 +1194,69 @@ mod set_volume_copy {
             .filter(|(_, path)| path.ends_with("/containers/create"))
             .count();
         assert_eq!(creates, 1, "the raise created the superseded Container");
+        assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_raise_whose_holder_exited_during_the_raise_starts_the_kept_container() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-kept-exited").await;
+        let plugin = raising_plugin(Some(&fake));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let kept = stopped_container(&service).await;
+        running_holder(&service, &fake).await;
+        let raise = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+            "want":{"kind":"writer", "at":"7", "epoch":2,
+                "start":{"kind":"kept", "container_id":kept.to_string()}}});
+
+        reply(&set_copy(&service, raise).await);
+
+        let kept_status = fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values()
+            .find(|container| container["Id"] == kept.to_string().as_str())
+            .and_then(|container| container.pointer("/State/Status").cloned());
+        assert_eq!(
+            kept_status,
+            Some(json!("running")),
+            "{:?}",
+            holder_status(&fake)
+        );
+        assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_raise_whose_holder_exited_during_the_raise_creates_and_starts_its_container() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-create-exited").await;
+        let plugin = raising_plugin(Some(&fake));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+        let raise = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+            "want":{"kind":"writer", "at":"7", "epoch":2, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "creation_key":"move-1"}}});
+
+        reply(&set_copy(&service, raise).await);
+
+        let creates = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.ends_with("/containers/create"))
+            .count();
+        assert_eq!(creates, 2, "the raise created no Container");
         assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();

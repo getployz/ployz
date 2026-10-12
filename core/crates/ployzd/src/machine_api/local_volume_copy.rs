@@ -88,14 +88,19 @@ impl MachineService {
                         epoch: held,
                         ..
                     }) if readonly || held != epoch => {
-                        self.plugin_copy(WRITER_ROUTE, &WriterRequest { name, at, epoch })
-                            .await?
+                        let request = WriterRequest {
+                            name: name.clone(),
+                            at,
+                            epoch,
+                        };
+                        self.plugin_copy(WRITER_ROUTE, &request).await?
                     }
                     copy => copy,
                 };
-                // Another holder already runs: starting this one too would run two.
+                // Another holder already runs: starting this one too would run two. Read
+                // again here, since a holder can exit while the Writer route runs.
                 if let Some(start) = start
-                    && !start_running
+                    && self.start_state(&start, &name).await? != StartState::Running
                 {
                     self.run_start(&start).await?;
                 }
