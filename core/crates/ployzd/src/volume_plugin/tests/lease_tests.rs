@@ -134,6 +134,7 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
         response.pointer("/Ok/copy").unwrap(),
         &json!({
             "kind": "slot",
+            "slot": "1",
             "mirror": {"phase": "handed_in", "guid": "9"},
             "readonly": true,
             "newest": null,

@@ -3,7 +3,7 @@
 use axum::{Json, extract::State};
 use ployz_core::{
     Cycle, FenceDecision, InspectVolumeCopyRequest, LeaseRecord, MirrorMarker, Pull, RpcError,
-    RpcErrorCode, Snapshot, SnapshotGuid, SnapshotName, Switch, SwitchError, SwitchReply,
+    RpcErrorCode, SlotId, Snapshot, SnapshotGuid, SnapshotName, Switch, SwitchError, SwitchReply,
     VolumeCopy, VolumeCopyView, WriterEpoch, WriterMarker,
 };
 use ployzd::machine_pool::MachinePool;
@@ -234,6 +234,15 @@ impl VolumeStorage {
         }
     }
 
+    async fn slot_id(&self, parent: &str) -> Result<SlotId> {
+        let value = self.property(parent, "guid").await?.unwrap_or_default();
+        value.parse().map(SlotId::new).map_err(|error| {
+            VolumeError::from(format!(
+                "{parent} carries an unreadable guid {value:?}: {error}"
+            ))
+        })
+    }
+
     /// The SetVolumeCopy pull in flight on a slot, with the failure its last receive hit.
     pub(super) async fn pull(
         &self,
@@ -283,6 +292,7 @@ impl VolumeStorage {
             None => (slot.readonly, None, None),
         };
         Ok(Some(VolumeCopy::Slot {
+            slot: self.slot_id(&slot.name).await?,
             mirror: self.mirror_marker(slot).await?,
             readonly,
             newest,

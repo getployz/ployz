@@ -201,6 +201,46 @@ impl From<SnapshotGuid> for String {
     }
 }
 
+/// ZFS `guid` of a slot parent dataset. A slot is created fresh and destroyed whole, so the
+/// guid names one incarnation of the slot: a slot pulled again after a Forget gets a new one
+/// even when it lands the same snapshot.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
+pub struct SlotId(u64);
+
+impl SlotId {
+    #[must_use]
+    pub const fn new(guid: u64) -> Self {
+        Self(guid)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for SlotId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl TryFrom<String> for SlotId {
+    type Error = std::num::ParseIntError;
+
+    fn try_from(guid: String) -> Result<Self, Self::Error> {
+        guid.parse().map(Self)
+    }
+}
+
+impl From<SlotId> for String {
+    fn from(guid: SlotId) -> Self {
+        guid.to_string()
+    }
+}
+
 /// Name of a run's snapshot without the `@`: `w-<lease>-<round>` taken warm, `f-<lease>` taken final.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
@@ -389,6 +429,8 @@ pub enum VolumeCopy {
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
     Slot {
+        /// The slot parent's guid, which changes when the slot is destroyed and created again.
+        slot: SlotId,
         mirror: MirrorMarker,
         readonly: bool,
         newest: Option<Snapshot>,
@@ -783,6 +825,7 @@ mod tests {
             })
         };
         let slot = Some(VolumeCopy::Slot {
+            slot: SlotId::new(1),
             mirror: MirrorMarker::Idle,
             readonly: true,
             newest: None,

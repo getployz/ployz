@@ -54,6 +54,7 @@ async fn declare_mirror_creates_a_read_only_bounded_slot_parent() {
             "lease": {"lease": 1, "pos": {"seq": 3, "round": 0, "sub": 0}, "cycle": "closed"},
             "copy": {
                 "kind": "slot",
+                "slot": "100",
                 "mirror": {"phase": "idle"},
                 "readonly": true,
                 "newest": null,
@@ -152,6 +153,7 @@ async fn begin_round_aborts_a_partial_receive_and_clears_the_record() {
         response.pointer("/Ok/copy").unwrap(),
         &json!({
             "kind": "slot",
+            "slot": "1",
             "mirror": {"phase": "idle"},
             "readonly": true,
             "newest": null,

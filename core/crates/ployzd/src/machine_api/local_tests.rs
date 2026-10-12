@@ -1675,7 +1675,7 @@ mod set_volume_copy {
     }
 
     fn slot(newest: Option<Value>) -> Value {
-        json!({"Ok": {"kind":"slot", "mirror":{"phase":"idle"}, "readonly":true,
+        json!({"Ok": {"kind":"slot", "slot":"1", "mirror":{"phase":"idle"}, "readonly":true,
             "newest":newest, "resume_token":null, "pull":null}})
     }
 
@@ -1902,7 +1902,7 @@ mod set_volume_copy {
         });
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        let request = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900"},
+        let request = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
             "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
                 "kind":"create", "namespace":"app", "resolved_spec":spec(),
                 "creation_key":"move-1"}}});

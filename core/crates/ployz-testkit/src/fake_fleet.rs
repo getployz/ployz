@@ -33,7 +33,7 @@ use ployz_core::{
     MembershipObservation, MirrorMarker, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
     ProvisionedCopy, ProvisionedVolumeMaximumBytes, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RuntimeWatchFrame, ServiceId, ServiceName, StorageBacking, StorageCapacity, VolumeCopy,
+    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, StorageBacking, StorageCapacity, VolumeCopy,
     VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, WriterMarker,
     encode_runtime_watch_frame,
 };
@@ -800,6 +800,7 @@ impl Fleet {
                     .find(|copy| copy.name == request.name)
                     .map(|copy| match copy.role {
                         CopyRole::Slot => VolumeCopy::Slot {
+                            slot: SlotId::new(1),
                             mirror: MirrorMarker::Idle,
                             readonly: true,
                             newest: None,

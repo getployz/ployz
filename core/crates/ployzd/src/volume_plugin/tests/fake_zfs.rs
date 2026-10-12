@@ -49,6 +49,7 @@ pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
     let seed_fs = directory.join("seed-fs");
     let seed_volume = directory.join("seed-volume");
     let props = directory.join("props");
+    let next_guid = directory.join("next-guid");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
@@ -73,6 +74,11 @@ prop() {{
     while [ -z "$value" ]; do sleep 0.01; value=$(cat "$f"); done
     printf '%s\n' "$value"
   else printf '%s\n' "$3"; fi
+}}
+# A dataset made by `create` gets a guid no earlier dataset had.
+new_guid() {{
+  if [ -e '{next_guid}' ]; then guid=$(cat '{next_guid}'); else guid=100; fi
+  printf '%s\n' "$((guid + 1))" > '{next_guid}'
 }}
 exists() {{
   case "$1" in
@@ -174,6 +180,10 @@ case "$*" in
       printf '%s\t%s\n' "${{f##*/}}" "$(cat "$f")"
     done
     ;;
+  'get -H -o value guid '*)
+    require "$6"
+    prop "$6" guid 1
+    ;;
   'get -H -o value '*)
     require "$6"
     prop "$6" "$5" -
@@ -237,12 +247,16 @@ case "$*" in
     touch '{mirror}'
     mkdir -p '{props}/tank/ployz-mirror/data'
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/data/refquota'
+    new_guid
+    printf '%s\n' "$guid" > '{props}/tank/ployz-mirror/data/guid'
     ;;
   'create -o canmount=off -o readonly=on -o refquota='*' tank/ployz-mirror/seed')
     if [ -e '{seed_slot}' ]; then echo "cannot create 'tank/ployz-mirror/seed': dataset already exists" >&2; exit 1; fi
     touch '{seed_slot}'
     mkdir -p '{props}/tank/ployz-mirror/seed'
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/seed/refquota'
+    new_guid
+    printf '%s\n' "$guid" > '{props}/tank/ployz-mirror/seed/guid'
     ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
   'unmount tank/ployz/data')
@@ -404,6 +418,7 @@ esac
         seed_volume = seed_volume.display(),
         slot_bound = SLOT_BOUND_BYTES,
         props = props.display(),
+        next_guid = next_guid.display(),
     );
     fs::write(&script, script_body).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();

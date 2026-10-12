@@ -217,7 +217,7 @@ async fn a_plain_deploy_mounts_only_on_the_writer() {
         }})
     };
     let slot = json!({"Ok": {
-        "copy": {"kind": "slot", "mirror": {"phase": "idle"}, "readonly": true, "newest": null, "resume_token": null},
+        "copy": {"kind": "slot", "slot": "1", "mirror": {"phase": "idle"}, "readonly": true, "newest": null, "resume_token": null},
         "lease": null,
     }});
     let nothing = json!({"Ok": {"copy": null, "lease": null}});

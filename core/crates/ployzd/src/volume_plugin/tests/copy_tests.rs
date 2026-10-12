@@ -87,7 +87,13 @@ fn state(test: &TestDir) -> Vec<(String, String)> {
             } else if path.is_file()
                 && !matches!(
                     name.as_str(),
-                    "commands" | "fake-zfs" | "zfs" | "zpool" | "receive-pid" | "fail-command"
+                    "commands"
+                        | "fake-zfs"
+                        | "zfs"
+                        | "zpool"
+                        | "receive-pid"
+                        | "fail-command"
+                        | "next-guid"
                 )
             {
                 let relative = path.strip_prefix(root).unwrap().display().to_string();
@@ -980,4 +986,84 @@ async fn an_undone_cut_restores_the_writer_and_refuses_to_cut_at_a_stale_target(
             request.2
         );
     }
+}
+
+/// What the daemon does for a `SetVolumeCopy` Writer want against a slot: plan against
+/// the inspected copy, and call the Writer route only on `MirrorToWriter`.
+async fn set_writer(machine: &Machine, expect: ployz_core::ExpectedCopy, at: &str) -> Value {
+    let copy = parsed_copy(&machine.copy().await);
+    let want = ployz_core::WantedCopy::Writer {
+        at: ployz_core::SnapshotGuid::new(at.parse().unwrap()),
+        epoch: ployz_core::WriterEpoch::new(1),
+        start: None,
+    };
+    let plan = ployz_core::plan(copy.as_ref(), false, &expect, &want);
+    if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToWriter) {
+        return json!({"Planned": format!("{plan:?}")});
+    }
+    machine
+        .call(
+            "/Volume.Copy.Writer",
+            json!({"name": "data", "at": at, "epoch": 1}),
+        )
+        .await
+}
+
+fn parsed_copy(reply: &Value) -> Option<ployz_core::VolumeCopy> {
+    serde_json::from_value(reply.get("Ok").cloned().unwrap()).unwrap()
+}
+
+fn mirror_expect(copy: &Value) -> ployz_core::ExpectedCopy {
+    let Some(ployz_core::VolumeCopy::Slot {
+        slot,
+        newest: Some(newest),
+        ..
+    }) = parsed_copy(copy)
+    else {
+        panic!("not a slot with a snapshot: {copy}");
+    };
+    ployz_core::ExpectedCopy::Mirror {
+        newest: newest.guid,
+        slot,
+    }
+}
+
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn a_writer_planned_against_a_forgotten_slot_refuses_the_slot_pulled_again() {
+    let (a, b) = pair(&["root", "volume", "mounted"], &["root"]).await;
+    assert!(
+        a.call(
+            "/Volume.Copy.Snapshot",
+            json!({"name": "data", "snapshot": "w-1-1"})
+        )
+        .await
+        .get("Ok")
+        .is_some()
+    );
+    pull_until_pruned(&b, "w-1-1").await;
+    let first = b.copy().await;
+    assert_eq!(
+        b.call("/Volume.Copy.Destroy", json!({"name": "data"}))
+            .await,
+        json!({"Ok": null})
+    );
+    pull_until_pruned(&b, "w-1-1").await;
+    let again = b.copy().await;
+    let at = guid(&again).to_owned();
+    assert_eq!(guid(&first), at);
+    assert_ne!(first["Ok"]["slot"], again["Ok"]["slot"]);
+
+    let stale = set_writer(&b, mirror_expect(&first), &at).await;
+    assert_eq!(stale, json!({"Planned": "Refuse(Mismatch)"}));
+    assert_eq!(b.copy().await, again);
+    assert_eq!(writable_roots(&a, &b).await, 1);
+
+    let promoted = set_writer(&b, mirror_expect(&again), &at).await;
+    assert_eq!(
+        promoted.pointer("/Ok/kind"),
+        Some(&json!("root")),
+        "{promoted}"
+    );
+    assert_eq!(promoted.pointer("/Ok/readonly"), Some(&json!(false)));
 }

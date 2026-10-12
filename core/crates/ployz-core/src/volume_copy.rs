@@ -8,7 +8,7 @@ use ts_rs::TS;
 
 use crate::{
     ContainerId, DockerVolumeName, ManagementAddress, Namespace, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, SnapshotGuid, SnapshotName, VolumeCopy,
+    RpcErrorCode, SlotId, SnapshotGuid, SnapshotName, VolumeCopy,
 };
 
 /// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
@@ -148,7 +148,7 @@ pub struct SetVolumeCopyRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExpectedCopy {
     Writer { epoch: WriterEpoch },
-    Mirror { newest: SnapshotGuid },
+    Mirror { newest: SnapshotGuid, slot: SlotId },
     None,
 }
 
@@ -405,11 +405,15 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
         }
         (
             Some(VolumeCopy::Slot {
+                slot,
                 newest: Some(newest),
                 ..
             }),
-            ExpectedCopy::Mirror { newest: expected },
-        ) => newest.guid == *expected,
+            ExpectedCopy::Mirror {
+                newest: expected,
+                slot: expected_slot,
+            },
+        ) => newest.guid == *expected && slot == expected_slot,
         (Some(VolumeCopy::Slot { newest: None, .. }) | None, ExpectedCopy::None) => true,
         _ => false,
     }
@@ -439,6 +443,7 @@ mod tests {
 
     fn slot(newest: Option<Snapshot>, pull: Option<Pull>) -> VolumeCopy {
         VolumeCopy::Slot {
+            slot: SLOT,
             mirror: MirrorMarker::Idle,
             readonly: true,
             newest,
@@ -474,8 +479,10 @@ mod tests {
     const WRITER_1: ExpectedCopy = ExpectedCopy::Writer {
         epoch: WriterEpoch::new(1),
     };
+    const SLOT: SlotId = SlotId::new(1);
     const MIRROR_AT_10: ExpectedCopy = ExpectedCopy::Mirror {
         newest: SnapshotGuid::new(10),
+        slot: SLOT,
     };
 
     type Row = (
@@ -578,6 +585,7 @@ mod tests {
                 false,
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
+                    slot: SLOT,
                 },
                 writer(10, 2, true),
                 Refuse(Behind),
@@ -588,6 +596,7 @@ mod tests {
                 false,
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
+                    slot: SLOT,
                 },
                 writer(10, 2, true),
                 Refuse(Mismatch),
@@ -655,6 +664,7 @@ mod tests {
                 false,
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
+                    slot: SLOT,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -673,6 +683,7 @@ mod tests {
                 false,
                 ExpectedCopy::Mirror {
                     newest: SnapshotGuid::new(9),
+                    slot: SLOT,
                 },
                 mirror(false, "f-1"),
                 Refuse(NoSource),
@@ -829,6 +840,21 @@ mod tests {
                 plan(copy.as_ref(), *start_running, expect, want),
                 *expected,
                 "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mirror_expect_refuses_a_slot_created_again_at_the_same_snapshot() {
+        let mut again = slot(Some(snapshot("f-1", 10)), None);
+        if let VolumeCopy::Slot { slot, .. } = &mut again {
+            *slot = SlotId::new(2);
+        }
+        for want in [writer(10, 2, true), mirror(true, "f-2"), WantedCopy::Forget] {
+            assert_eq!(
+                plan(Some(&again), false, &MIRROR_AT_10, &want),
+                CopyPlan::Refuse(CopyRefusal::Mismatch),
+                "{want:?}"
             );
         }
     }
