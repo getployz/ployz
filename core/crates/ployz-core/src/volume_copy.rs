@@ -299,7 +299,8 @@ pub enum CopyPlan {
 /// counts as nothing for `expect`, so a pull resent after a crash between the slot and
 /// its first snapshot converges. A root already at a Writer want's snapshot and epoch
 /// resumes its start whatever `expect` says, so a promote resent after its ZFS half
-/// converges too.
+/// converges too. A slot whose pull for the want's target landed finishes that pull
+/// whatever `expect` says, since the landing itself moved `newest` past the expect.
 #[must_use]
 pub fn plan(
     copy: Option<&VolumeCopy>,
@@ -377,8 +378,14 @@ pub fn plan(
             Refuse(CopyRefusal::Behind)
         }
         (Some(VolumeCopy::Slot { newest, pull, .. }), WantedCopy::Mirror { from, target, .. }) => {
-            if pull.is_none() && newest.as_ref().is_some_and(|newest| newest.name == *target) {
+            let landed = newest.as_ref().is_some_and(|newest| newest.name == *target);
+            if landed && pull.is_none() {
                 return AtWant;
+            }
+            // This request's own pull landed and moved `newest` past its expect: finish it.
+            if landed && from.is_some() && pull.as_ref().is_some_and(|pull| pull.target == *target)
+            {
+                return Transition(MirrorToMirror);
             }
             if from.is_none() {
                 return refuse(CopyRefusal::NoSource);
@@ -677,6 +684,17 @@ mod tests {
                 Some(slot(Some(g.clone()), Some(pull.clone()))),
                 false,
                 MIRROR_AT_10,
+                mirror(true, "f-1"),
+                Transition(MirrorToMirror),
+            ),
+            (
+                "mirror landed under its own pull finishes whatever expect",
+                Some(slot(Some(g.clone()), Some(pull.clone()))),
+                false,
+                ExpectedCopy::Mirror {
+                    newest: SnapshotGuid::new(9),
+                    slot: SLOT,
+                },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
             ),

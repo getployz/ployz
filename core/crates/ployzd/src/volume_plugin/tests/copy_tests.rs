@@ -1105,3 +1105,58 @@ async fn a_writer_planned_against_a_forgotten_slot_refuses_the_slot_pulled_again
     );
     assert_eq!(promoted.pointer("/Ok/readonly"), Some(&json!(false)));
 }
+
+/// What the daemon does for a `SetVolumeCopy` Mirror want: plan against the inspected
+/// copy, call the Pull route on a pull transition, and answer the copy when at the want.
+async fn set_mirror(machine: &Machine, expect: &ployz_core::ExpectedCopy, target: &str) -> Value {
+    let copy = parsed_copy(&machine.copy().await);
+    let want = ployz_core::WantedCopy::Mirror {
+        from: Some(ployz_core::ManagementAddress("::1".parse().unwrap())),
+        target: target.parse().unwrap(),
+        drain: ployz_core::Drain::NONE,
+    };
+    match ployz_core::plan(copy.as_ref(), false, expect, &want) {
+        ployz_core::CopyPlan::AtWant => json!({"AtWant": copy}),
+        ployz_core::CopyPlan::Transition(
+            ployz_core::CopyTransition::MirrorToMirror | ployz_core::CopyTransition::NoneToMirror,
+        ) => machine.call("/Volume.Copy.Pull", pull(target)).await,
+        plan => json!({"Planned": format!("{plan:?}")}),
+    }
+}
+
+#[tokio::test]
+async fn a_pull_resent_after_it_landed_finishes_it_whatever_the_expect_says() {
+    let (a, b) = pair(&["root", "volume", "mounted"], &["root"]).await;
+    let snapshot = |name: &str| json!({"name": "data", "snapshot": name});
+    assert!(
+        a.call("/Volume.Copy.Snapshot", snapshot("w-1-1"))
+            .await
+            .get("Ok")
+            .is_some()
+    );
+    pull_until_pruned(&b, "w-1-1").await;
+    assert!(
+        a.call("/Volume.Copy.Snapshot", snapshot("w-1-2"))
+            .await
+            .get("Ok")
+            .is_some()
+    );
+    let expect = mirror_expect(&b.copy().await);
+
+    let started = set_mirror(&b, &expect, "w-1-2").await;
+    assert_eq!(
+        started.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-2")),
+        "{started}"
+    );
+    landed(&b.socket, "w-1-2").await;
+    let finished = set_mirror(&b, &expect, "w-1-2").await;
+    assert_eq!(finished.pointer("/Ok/pull"), Some(&Value::Null), "{finished}");
+    assert_eq!(finished.pointer("/Ok/newest/name"), Some(&json!("w-1-2")));
+    assert_eq!(snapshot_names(&b.test, SLOT_FS), ["w-1-2"]);
+    assert!(property(&b.test, SLOT, "ployz:pull").is_none());
+
+    let again = set_mirror(&b, &expect, "w-1-2").await;
+    assert_eq!(again.pointer("/AtWant/pull"), Some(&Value::Null), "{again}");
+    assert_eq!(again.pointer("/AtWant/newest/name"), Some(&json!("w-1-2")));
+}
