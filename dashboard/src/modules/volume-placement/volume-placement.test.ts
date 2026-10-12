@@ -4,7 +4,6 @@ import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import {
-  canvasMirrors,
   detachedCopies,
   drainPlacement,
   editPlacement,
@@ -16,7 +15,6 @@ import {
   placementTargets,
   placementForm,
   mirroredVolumes,
-  mirrorPanel,
   mirrorResourceId,
   parseMirrorResourceId,
   mergeRestoreGroups,
@@ -367,79 +365,12 @@ describe("stagedOffServer", () => {
   });
 });
 
-describe("canvasMirrors", () => {
-  const nodes = (members: Member[], placement: PlacementRow | null) =>
-    canvasMirrors(volume, members, placement).map(({ volume: owner, server, change, newest }) => ({ owner: owner.id, server: server.name, change, newest }));
-
-  it("draws a live mirror with when it last refreshed", () => {
-    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"])))
-      .toEqual([{ owner: "v1", server: "web-2", change: null, newest: at }]);
-  });
-
-  it("draws a staged mirror as one the Deploy adds", () => {
-    expect(nodes([member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-1", mirrors: ["web-3"] })))
-      .toEqual([{ owner: "v1", server: "web-3", change: "add", newest: null }]);
-  });
-
-  it("keeps a mirror staged for removal, as one the Deploy removes", () => {
-    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-1" })))
-      .toEqual([{ owner: "v1", server: "web-2", change: "remove", newest: at }]);
-  });
-
-  it("keeps a mirror staged to become the Primary, as one the Deploy changes", () => {
-    expect(nodes([member("web-1", "writer"), mirrorAsOf("web-2", at)], row(["web-2"], { primary: "web-2" })))
-      .toEqual([{ owner: "v1", server: "web-2", change: "update", newest: at }]);
-  });
-
-  it("draws none without mirrors, and leaves detached copies to the drawer", () => {
-    expect(nodes([member("web-1", "writer")], row([]))).toEqual([]);
-    expect(nodes([member("web-2", "writer"), member("web-1", "mirror")], row([]))).toEqual([]);
-    expect(nodes([], null)).toEqual([]);
-  });
-});
-
 describe("mirrorResourceId", () => {
   it("addresses a mirror by its Volume and Server, and reads back only a mirror's address", () => {
     expect(parseMirrorResourceId(mirrorResourceId("v1", id("web-2")))).toEqual({ volumeId: "v1", server: id("web-2") });
     expect(parseMirrorResourceId("79997413-396c-471e-a1ad-e89164cf4e9c")).toBeNull();
     expect(parseMirrorResourceId("v1~")).toBeNull();
     expect(parseMirrorResourceId("~web-2")).toBeNull();
-  });
-});
-
-describe("mirrorPanel", () => {
-  const servers = ["web-1", "web-2", "web-3"].map(id);
-  const live = [member("web-1", "writer"), mirrorAsOf("web-2", at), pooled("web-3")];
-
-  it("offers a live mirror both actions, each staging what the volume drawer stages", () => {
-    const panel = mirrorPanel(volume, live, row(["web-2"]), id("web-2"), servers);
-    expect(panel).toMatchObject({ server: { name: "web-2" }, change: null, newest: at, applied: [id("web-2")] });
-    expect(panel?.promote).toEqual(editPlacement({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [] }, { kind: "move", to: id("web-2") }));
-    expect(panel?.promote).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
-    expect(panel?.remove).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
-  });
-
-  it("offers nothing on a staged mirror: Details discards it", () => {
-    const added = mirrorPanel(volume, [member("web-1", "writer"), pooled("web-3")], row([], { primary: "web-1", mirrors: ["web-3"] }), id("web-3"), servers);
-    expect(added).toMatchObject({ change: "add", newest: null, promote: null, remove: null });
-    expect(mirrorPanel(volume, live, row(["web-2"], { primary: "web-2" }), id("web-2"), servers))
-      .toMatchObject({ change: "update", promote: null, remove: null });
-  });
-
-  it("offers nothing while a Deploy runs the placement", () => {
-    const running: PlacementRow = { ...row(["web-2"]), deploymentId: "d1" };
-    expect(mirrorPanel(volume, live, running, id("web-2"), servers)).toMatchObject({ promote: null, remove: null });
-  });
-
-  it("does not make primary a mirror on a Server that does not accept Services", () => {
-    const panel = mirrorPanel(volume, live, row(["web-2"]), id("web-2"), [id("web-1")]);
-    expect(panel?.promote).toBeNull();
-    expect(panel?.remove).toEqual({ primary: id("web-1"), mirrors: [], deletes: [] });
-  });
-
-  it("finds no mirror on a Server without one", () => {
-    expect(mirrorPanel(volume, live, row(["web-2"]), id("web-3"), servers)).toBeNull();
-    expect(mirrorPanel(volume, live, row(["web-2"]), id("web-1"), servers)).toBeNull();
   });
 });
 

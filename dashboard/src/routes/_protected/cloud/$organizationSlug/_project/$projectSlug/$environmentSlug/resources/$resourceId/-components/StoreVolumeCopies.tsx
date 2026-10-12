@@ -22,7 +22,7 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, failover, lossTime, mirrorPanel, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type RestorePoint, restorePoints, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
@@ -312,10 +312,14 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
   onBack, now = new Date() }:
   Resolved & { copy: MirrorCopy; onBack: () => void }) {
   const blocked = upgrade.length > 0;
-  const panel = mirrorPanel(volume, members, row, copy.server.id, accepting);
-  const promote = blocked ? null : panel?.promote ?? null;
-  const remove = blocked ? null : panel?.remove ?? null;
-  const applied = panel?.applied ?? [];
+  const observed = observePlacement(members);
+  const target = targetPlacement(observed, row);
+  const applied = appliedMirrors(observed, row);
+  // A staged mirror is Details' to discard, and a Deploy running the placement holds it.
+  const offered = !blocked && copy.staged === null && !deploying ? target : null;
+  const movable = placementTargets(volume, members, row, accepting).move.some((machine) => machine.id === copy.server.id);
+  const promote = offered !== null && movable ? editPlacement(offered, { kind: "move", to: copy.server.id }) : null;
+  const remove = offered === null ? null : editPlacement(offered, { kind: "remove_mirror", server: copy.server.id });
   const locked = disabled || deploying;
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
