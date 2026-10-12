@@ -352,7 +352,9 @@ fn review_reads_domain_changes_as_domains() {
     let review = call(&store, "review", json!({}), "review-1").ok();
     let lines = review["lines"].as_array().unwrap();
     assert!(
-        lines.iter().any(|line| line == "  web.domains: added shop.<cluster domain>"),
+        lines
+            .iter()
+            .any(|line| line == "  web.domains: added shop.<cluster domain>"),
         "{review}"
     );
     assert!(

@@ -690,7 +690,7 @@ pub(crate) fn shown(value: &serde_json::Value) -> String {
 }
 
 /// A staged Setting change as lines, `web.replicas: 1 → 3`. A domain change reads as
-/// one line per domain, `web.domains: added shop`, never as the field storing it.
+/// one line per domain, `web.domains: added shop.acme.ployz.app`, never as the field storing it.
 pub(crate) fn changed(row: &ployz_core::config::ServiceSettingChange) -> Vec<String> {
     let Some(domains) = ployz_store::DomainChange::of(row) else {
         return vec![format!(
@@ -856,7 +856,17 @@ mod tests {
             "after": [{ "prefix": "web", "targetPort": null }, { "prefix": "shop", "targetPort": null }],
         }))
         .unwrap();
-        assert_eq!(changed(&row), ["web.domains: added shop"]);
+        assert_eq!(changed(&row), ["web.domains: added shop.<cluster domain>"]);
+        let named: ployz_core::config::ServiceSettingChange = serde_json::from_value(json!({
+            "path": "web.managedHostnames", "kind": "update", "canRestore": false,
+            "before": [], "after": [{ "prefix": "shop", "targetPort": 8080 }],
+            "hostnames": { "shop": "shop.acme.ployz.app" },
+        }))
+        .unwrap();
+        assert_eq!(
+            changed(&named),
+            ["web.domains: added shop.acme.ployz.app on port 8080"]
+        );
         let route: ployz_core::config::ServiceSettingChange =
             serde_json::from_value(serde_json::json!({
                 "path": "web.routes.r1", "kind": "remove", "canRestore": false,
