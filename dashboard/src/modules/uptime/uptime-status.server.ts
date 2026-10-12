@@ -170,7 +170,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
   ])];
   const named = yield* drizzle.select({ region: uptimeRegion.region, name: uptimeRegion.name }).from(uptimeRegion);
   const regions = { ...Object.fromEntries(codes.map((code) => [code, null])), ...Object.fromEntries(named.map((row) => [row.region, row.name])) };
-  const latest = (yield* Effect.forEach(Object.keys(regions), (region) => readLatest(of, region, rawFrom, to))).flat();
+  const latest = (yield* Effect.forEach(Object.keys(regions), (region) => readLatest(of, region, rawFrom, to), { concurrency: 4 })).flat();
   const probe = probeRequestedAt === null || now.getTime() - probeRequestedAt.getTime() > probeShownMs(timeoutMs) ? null : {
     requestedAt: probeRequestedAt.toISOString(),
     // Both read to the millisecond, the precision the checker answers with.
