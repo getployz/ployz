@@ -39,10 +39,10 @@ pub(crate) struct Retire {
 }
 
 /// What tearing down the Services `removed` takes once Saved revision `saved`
-/// dropped them: each by the runtime Services Applied State and every started
-/// Deployment since the last one that removed it ran it as. One still in `saved`,
-/// or that never ran, has nothing to tear down, and a runtime Service another kept
-/// Service runs is never one.
+/// dropped them: each by the runtime Services Applied State and every started or
+/// queued Deployment since the last one that removed it runs it as. One still in
+/// `saved`, or that never ran nor will, has nothing to tear down, and a runtime
+/// Service another kept Service runs is never one.
 pub(crate) fn retirements(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -81,7 +81,8 @@ pub(crate) fn retirements(
         }
         let rows = tx.query(
             "SELECT nodes, run FROM config_deployment \
-             WHERE environment_id = ?1 AND started IS NOT NULL AND nodes LIKE ?2 \
+             WHERE environment_id = ?1 AND (started IS NOT NULL OR status = 'queued') \
+             AND nodes LIKE ?2 \
              ORDER BY number DESC",
             &[
                 environment.as_str().into(),

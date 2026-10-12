@@ -3091,3 +3091,35 @@ fn a_full_deploy_that_tore_the_service_down_leaves_the_push_nothing() {
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     assert!(pushed.admitted.is_empty(), "{pushed:?}");
 }
+
+#[test]
+fn a_removal_supersedes_a_queued_deploy_that_would_run_the_service() {
+    let (store, who) = shop_with_lone_db();
+    watching(&store, &who);
+    let queued = deploy_by_hand(&store, &who, &["db"]);
+    remove_service(&store, &who, "pr-5", "db");
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+    assert!(store.claim(&queued, &runner()).is_err());
+}
+
+#[test]
+fn a_removal_tears_down_what_a_deploy_claimed_before_its_push() {
+    let (store, who) = shop_with_lone_db();
+    watching(&store, &who);
+    let queued = deploy_by_hand(&store, &who, &["db"]);
+    remove_service(&store, &who, "pr-5", "db");
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    store.claim(&queued, &runner()).unwrap();
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+}
