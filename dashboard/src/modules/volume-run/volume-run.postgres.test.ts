@@ -607,6 +607,24 @@ describe("volume runs", () => {
       }
     });
 
+    it("move: a Server already on the channel's release says Volume move is not in it yet, with no upgrade", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null, lacks: "0.2.4" };
+      // The beta channel keeps this pointer out of the process-wide cache the stable-channel cases fill.
+      await harness.pool.query("insert into organization_server_upgrades (organization_id, channel) values ($1, 'beta')", [organizationId]);
+      vi.stubGlobal("fetch", async () => new Response("v0.2.4\n"));
+      try {
+        const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+        const output = await execute(run.id);
+
+        expect(output.result).toMatchObject({ refused: { code: "server_lacks" } });
+        expect(verbs).toEqual([]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume move is not in Ployz 0.2.4 on fsn-2 yet.", lease: null }]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
     it("delete_mirror: a lacking Server's refusal names Mirror removal", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null, lacks: "0.2.4" };
       vi.stubGlobal("fetch", async () => new Response("v0.2.5\n"));
