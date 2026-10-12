@@ -38,7 +38,7 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} unknown={[]} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
-    deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false} clock={(at) => at.toISOString().slice(11, 16)}
+    deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
     open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
   return { stage, deleteCopy, restore, onOpen, refresh };
 }
@@ -178,7 +178,7 @@ describe("mirror detail", () => {
   it("says why a silent mirror's refresh was skipped", () => {
     panel(silent(), row(["web-2"]), { open: "web-2", lastDone: doneAgo(135) });
     expect(screen.getByText("Refresh skipped")).toBeTruthy();
-    expect(screen.getByText(/^web-2 stopped answering at 10:00\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
+    expect(screen.getByText(/^web-2 is not answering\. Ployz retries every 15 minutes\. Until it catches up, a failover loses 2 hours of writes\.$/)).toBeTruthy();
     expect(refreshNow().disabled).toBe(false);
   });
 
