@@ -2022,6 +2022,87 @@ mod set_volume_copy {
     }
 
     #[tokio::test]
+    async fn a_late_writer_create_after_the_service_moved_on_starts_nothing() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-moved").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 900))));
+        plugin.reply(WRITER_ROUTE, writer_root(1, Some(snapshot("f-1", 900))));
+        let replies = plugin.replies.clone();
+        plugin.on(WRITER_ROUTE, move || {
+            replies.lock().unwrap().insert(
+                INSPECT_ROUTE.into(),
+                writer_root(1, Some(snapshot("f-1", 900))),
+            );
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let step_five = json!({"name":VOLUME,
+            "expect":{"kind":"mirror", "newest":"900", "slot":"1"},
+            "want":{"kind":"writer", "at":"900", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "creation_key":"move-1"}}});
+        reply(&set_copy(&service, step_five.clone()).await);
+        fake.named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .clear();
+        running_holder(&service, &fake).await;
+
+        let late = reply(&set_copy(&service, step_five).await);
+
+        assert_eq!(
+            serde_json::to_value(&late).unwrap(),
+            json!({"copy": writer_root(1, Some(snapshot("f-1", 900)))["Ok"]})
+        );
+        assert_eq!(holder_status(&fake), vec![json!("running")]);
+        let creates = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.ends_with("/containers/create"))
+            .count();
+        assert_eq!(creates, 2, "the late step 5 created the old Container again");
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_kept_start_docker_no_longer_has_refuses_no_transition() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-gone").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(1, Some(snapshot("f-1", 7))));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let gone = ContainerId::parse("c".repeat(64)).unwrap();
+        let request = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+            "want":{"kind":"writer", "at":"7", "epoch":1,
+                "start":{"kind":"kept", "container_id":gone.to_string()}}});
+
+        let error = refusal(&set_copy(&service, request.clone()).await);
+        assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
+        assert_eq!(error.details["reason"], json!("no_transition"));
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+
+        running_holder(&service, &fake).await;
+        let held = reply(&set_copy(&service, request).await);
+        assert_eq!(
+            serde_json::to_value(&held).unwrap(),
+            json!({"copy": writer_root(1, Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_replayed_writer_create_finds_the_same_container_by_its_key() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-create").await;

@@ -2,7 +2,7 @@
 //! through the routes in [`crate::volume_copy`].
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerRuntimeObservation, CopyPlan, CopyRefusal, CopyTransition,
+    ContainerKind, ContainerRuntimeObservation, CopyPlan, CopyRefusal, CopyTransition,
     DockerVolumeName, OpaquePayload, SetVolumeCopyRefused, SetVolumeCopyReply,
     SetVolumeCopyRequest, Start, VolumeCopy, WantedCopy, op,
 };
@@ -18,6 +18,14 @@ use crate::{
 };
 
 type Copy = Option<VolumeCopy>;
+
+/// What Docker shows of a Writer's start before the plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartState {
+    Running,
+    Stopped,
+    Gone,
+}
 
 impl MachineService {
     pub(super) async fn set_copy(
@@ -54,18 +62,22 @@ impl MachineService {
     ) -> Result<Copy, LocalMachineError> {
         let SetVolumeCopyRequest { name, expect, want } = request;
         let copy = self.inspect_copy(&name).await?;
-        let start_running = match &want {
+        let start = match &want {
             WantedCopy::Writer {
                 start: Some(start), ..
-            } => self.start_container_id(start).await?.is_some(),
+            } => Some(self.start_state(start, &name).await?),
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget => false,
+            | WantedCopy::Forget => None,
         };
+        let start_running = start == Some(StartState::Running);
         let transition = match ployz_core::plan(copy.as_ref(), start_running, &expect, &want) {
             CopyPlan::AtWant => return Ok(copy),
             CopyPlan::Refuse(reason) => return Err(refused(reason, copy, &name)),
+            CopyPlan::Transition(_) if start == Some(StartState::Gone) => {
+                return Err(refused(CopyRefusal::NoTransition, copy, &name));
+            }
             CopyPlan::Transition(transition) => transition,
         };
         match (transition, want) {
@@ -161,16 +173,19 @@ impl MachineService {
             .map_err(LocalMachineError::StoragePreparation)
     }
 
-    /// The Container `start` names when Docker runs it now. A Kept Container that is
-    /// gone is an error, not a stopped start: the caller's id is wrong.
-    async fn start_container_id(
+    /// Whether the Writer's start already runs. It runs when Docker runs the Container
+    /// `start` names, or any other holder of the Volume: a Service that moved on to a
+    /// new Container after the start landed has the start's effect already. A Kept
+    /// Container Docker no longer has is gone, and nothing can start it again.
+    async fn start_state(
         &self,
         start: &Start,
-    ) -> Result<Option<ContainerId>, LocalMachineError> {
+        name: &DockerVolumeName,
+    ) -> Result<StartState, LocalMachineError> {
         let containers = self.containers()?;
         let machine_id = self.local.record().id();
         let container_id = match start {
-            Start::Kept { container_id } => *container_id,
+            Start::Kept { container_id } => Some(*container_id),
             Start::Create {
                 namespace,
                 resolved_spec,
@@ -180,7 +195,7 @@ impl MachineService {
                 let machine = record
                     .machine()
                     .ok_or(LocalMachineError::NotParticipating)?;
-                match containers
+                containers
                     .find_creation(
                         machine,
                         namespace,
@@ -189,20 +204,30 @@ impl MachineService {
                         creation_key.as_str(),
                     )
                     .await?
-                {
-                    Some(created) => created.container_id,
-                    None => return Ok(None),
-                }
+                    .map(|created| created.container_id)
             }
         };
-        let observed = containers
-            .inspect_managed(&container_id, &machine_id)
-            .await?;
-        Ok(matches!(
-            observed.runtime,
-            ContainerRuntimeObservation::Running { .. }
-        )
-        .then_some(container_id))
+        let observed = match container_id {
+            Some(container_id) => match containers
+                .inspect_managed(&container_id, &machine_id)
+                .await
+            {
+                Ok(observed) => Some(observed),
+                Err(crate::docker::Error::ContainerNotFound(_)) => None,
+                Err(error) => return Err(error.into()),
+            },
+            None => None,
+        };
+        if observed.as_ref().is_some_and(|observed| {
+            matches!(observed.runtime, ContainerRuntimeObservation::Running { .. })
+        }) || self.local.volume_holder_running(name).await?
+        {
+            return Ok(StartState::Running);
+        }
+        Ok(match (start, observed) {
+            (Start::Kept { .. }, None) => StartState::Gone,
+            _ => StartState::Stopped,
+        })
     }
 
     /// Create the Container when `start` asks for one and it is absent, then start it.
