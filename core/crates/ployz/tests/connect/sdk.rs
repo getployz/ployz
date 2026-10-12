@@ -14,6 +14,43 @@ use super::support::DiscoveryService;
 use super::unix_session::{self, UnixSession};
 
 #[tokio::test]
+async fn a_refused_container_tail_names_the_capability_and_the_machine() {
+    let description = advertised_description();
+    let session = UnixSession::start().await;
+    let mut service = DiscoveryService::new(description.clone());
+    service.tail_failure = Some(tonic::Status::unimplemented(""));
+    let _machine = session.spawn_machine(description.machine_id, service).await;
+    let client = timeout(
+        Duration::from_secs(5),
+        unix_session::connect(&session.directory, description.machine_id.as_str()),
+    )
+    .await
+    .expect("connect must not hang")
+    .unwrap();
+
+    let Err(error) = client
+        .container_logs(ployz::sdk::ContainerLogInput {
+            machine_id: description.machine_id,
+            container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+            tail: 10,
+            follow: true,
+            since_unix_seconds: None,
+        })
+        .await
+    else {
+        panic!("a refused tail must not open a stream");
+    };
+    assert_eq!(error.code, RpcErrorCode::Unsupported);
+    assert_eq!(
+        error.details,
+        serde_json::json!({
+            "capability": "ployz.logs.tail.v1",
+            "target": description.machine_id.as_str(),
+        })
+    );
+}
+
+#[tokio::test]
 async fn connect_about_returns_contract_and_branches_on_capability_names() {
     let description = advertised_description();
     let session = UnixSession::start().await;
