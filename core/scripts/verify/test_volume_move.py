@@ -263,10 +263,11 @@ class VolumeMoveTests(unittest.TestCase):
         two["machine-2"]["readonly"]["fs"] = "off"
         self.assertIsNone(volume_move.final_writer(two))
 
-    def test_window_gap_counts_only_pairs_touching_the_window(self):
+    def test_window_gap_belongs_to_the_case_where_the_gap_began(self):
         acks = [(1, 0.0), (2, 1.0), (3, 30.0), (4, 31.0), (5, 100.0)]
         self.assertEqual(volume_move.window_gap(acks, 0.5, 31.0), (29.0, [2, 3]))
         self.assertEqual(volume_move.window_gap(acks, 30.5, 32.0), (69.0, [4, 5]))
+        self.assertEqual(volume_move.window_gap(acks, 31.5, 120.0), (None, None))
         self.assertEqual(volume_move.window_gap([], 0, 1), (None, None))
 
     def test_downtime_reports_median_and_max_over_moves(self):

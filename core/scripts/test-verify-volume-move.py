@@ -248,7 +248,7 @@ def read_acks(path):
 
 def window_gap(acks, start, end):
     gaps = [(later[1] - earlier[1], earlier[0], later[0]) for earlier, later in zip(acks, acks[1:])
-            if later[1] >= start and earlier[1] < end]
+            if start <= earlier[1] < end]
     if not gaps:
         return None, None
     gap = max(gaps)
