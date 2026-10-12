@@ -19,7 +19,8 @@ async fn settled(socket: &Path) -> Value {
         let copy = reply
             .pointer("/Ok/copy")
             .unwrap_or_else(|| panic!("{reply}"));
-        let copying = copy["kind"] == "slot" && copy["pull"]["failure"].is_null();
+        let copying = copy.get("kind").is_some_and(|kind| kind == "slot")
+            && copy.pointer("/pull/failure").is_none_or(Value::is_null);
         if !copying {
             return reply;
         }
@@ -38,21 +39,21 @@ fn assert_landed(test: &TestDir) {
         "the slot parent is gone"
     );
     assert_eq!(
-        property(&test, "tank/ployz/seed", "ployz:seed").as_deref(),
+        property(test, "tank/ployz/seed", "ployz:seed").as_deref(),
         Some("77")
     );
     assert_eq!(
-        property(&test, "tank/ployz/seed", "ployz:promote").as_deref(),
+        property(test, "tank/ployz/seed", "ployz:promote").as_deref(),
         Some("on"),
         "the root stays unregistered until Docker's Create adopts it"
     );
     assert_eq!(
-        property(&test, "tank/ployz/seed", "readonly").as_deref(),
+        property(test, "tank/ployz/seed", "readonly").as_deref(),
         Some("off")
     );
-    assert!(property(&test, "tank/ployz/seed", "mountpoint").is_none());
+    assert!(property(test, "tank/ployz/seed", "mountpoint").is_none());
     assert_eq!(
-        snapshot_names(&test, "tank/ployz/seed"),
+        snapshot_names(test, "tank/ployz/seed"),
         Vec::<String>::new(),
         "the received snapshot's name belongs to the source"
     );
