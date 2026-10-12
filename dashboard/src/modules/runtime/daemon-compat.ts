@@ -24,16 +24,6 @@ export class ServerLacks extends Data.TaggedError("ServerLacks")<{
   }
 }
 
-export function lacks<F extends { readonly machineId: string; readonly capability?: string | undefined }>(failures: readonly F[]) {
-  const found: ServerLacks[] = [];
-  const rest: F[] = [];
-  for (const failure of failures) {
-    if (failure.capability === undefined) rest.push(failure);
-    else found.push(new ServerLacks({ machineId: failure.machineId, capability: failure.capability }));
-  }
-  return { lacks: found, rest };
-}
-
 /** Whether a Server's record lists the capability; `unknown` when it lists none, as from a daemon older than the list. */
 export function serverSupports(machine: { readonly capabilities: readonly string[] }, requirement: Requirement): boolean | "unknown" {
   if (machine.capabilities.length === 0) return "unknown";

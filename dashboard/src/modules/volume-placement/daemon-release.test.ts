@@ -13,7 +13,7 @@ const daemonOf = (daemon: Daemon) =>
   : { daemonVersion: daemon, capabilities: [] };
 
 const server = (id: string, daemon: Daemon, more: { acceptsServices?: boolean; storage?: "stateless" | "ready" | "pool" | null } = {}) =>
-  ({ id, name: id, ...daemonOf(daemon), acceptsServices: more.acceptsServices ?? true, storage: more.storage ?? "pool" });
+  ({ id, name: id, ...daemonOf(daemon), acceptsServices: more.acceptsServices ?? true, storage: more.storage === undefined ? "pool" : more.storage });
 
 describe("runsPlacement", () => {
   it("needs a daemon that serves the volume move capability", () => {

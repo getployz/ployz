@@ -10,8 +10,6 @@ import { Input } from "#/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "#/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
-import { lacks, type ServerLacks } from "#/modules/runtime/daemon-compat";
-import { ServerLackLine } from "./server-lack-line";
 import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
@@ -47,11 +45,9 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && matches(row)).sort(compareLogRows);
   const failures = [...Object.entries(missing.live).flatMap(([machineId, { machineName, failed }]) =>
     Object.values(failed).map(reason => ({ machineId, machineName, ...reason }))), ...missing.history];
-  const split = lacks(failures);
-  const lacking = new Map<string, ServerLacks>();
-  for (const lack of split.lacks) if (!lacking.has(lack.machineId)) lacking.set(lack.machineId, lack);
-  const names = new Map(failures.map(server => [server.machineId, server.machineName]));
-  const missingServers = split.rest.filter((server, index) => split.rest.findIndex(other => other.machineId === server.machineId) === index);
+  const lacking = [...new Map(failures.filter(server => server.capability !== undefined).map(server => [server.machineId, server.machineName]))];
+  const rest = failures.filter(server => server.capability === undefined);
+  const missingServers = rest.filter((server, index) => rest.findIndex(other => other.machineId === server.machineId) === index);
   const touchY = useRef(0);
   const dragging = useRef(false);
   function loadAtTop(delta = 0) {
@@ -70,12 +66,22 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   // A line names its service and server only where they vary; a filter shows only with something to pick.
   const servicesVary = !selection.serviceId && services.length > 1;
   const machinesVary = machines.size > 1;
-  const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className="underline underline-offset-4">Check your servers</Link>;
+  const linkClass = "underline underline-offset-4";
+  const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Check your servers</Link>;
+  const [only] = lacking.length === 1 ? lacking : [];
+  const lack = !lacking.length ? null : only ? {
+    title: `Upgrade ${only[1]} to see its logs`, note: `${only[1]} needs an upgrade to show its logs.`,
+    link: <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug: selection.organizationSlug, serverId: only[0] }} className={linkClass}>Open {only[1]}</Link>,
+  } : {
+    title: `Upgrade ${lacking.length} servers to see their logs`, note: `${lacking.length} servers need an upgrade to show their logs.`,
+    link: <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Open Servers</Link>,
+  };
   const empty = rows.length ? null
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened || (historyPending && !loaded.length) ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
     : loaded.length ? <LogEmpty title="No logs match your filters">{stream.hasOlder ? "Scroll up or press Home to check older logs." : null}</LogEmpty>
+    : lack ? <LogEmpty title={lack.title}>{lack.link}</LogEmpty>
     : failures.length ? null
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
   return <div className="flex min-h-0 grow flex-col gap-3">
@@ -89,7 +95,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     </div>
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
-    {[...lacking.values()].map(lack => <ServerLackLine key={lack.machineId} organizationSlug={selection.organizationSlug} lack={lack} name={names.get(lack.machineId) ?? lack.machineId} />)}
+    {lack && loaded.length > 0 ? <p className="text-muted-foreground">{lack.note} {lack.link}</p> : null}
     {missingServers.length ? <Alert role="alert">
       <AlertTitle>{missingServers.length === 1 ? "A server’s logs are missing" : `${missingServers.length} servers’ logs are missing`}</AlertTitle>
       <AlertDescription><ul>{missingServers.map(server => <li key={server.machineId}><span className="font-medium">{server.machineName}</span>: {server.message}</li>)}</ul></AlertDescription>

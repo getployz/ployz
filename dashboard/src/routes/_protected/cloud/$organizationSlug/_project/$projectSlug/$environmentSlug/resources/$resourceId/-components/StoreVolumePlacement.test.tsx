@@ -128,10 +128,13 @@ describe("VolumePlacementPanel", () => {
   });
 
   it("only shows the placement while a Server with storage can't say what it serves, and claims no Upgrade", () => {
-    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36)), member("web-3", "mirror")], row(["web-2"]), null, [], [], ["db-quiet"]);
+    panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36)), member("web-3", "mirror")], row(["web-2"]), null, undefined, [], ["db-quiet"]);
     expect(screen.getByText("Ployz can’t tell whether db-quiet can move volumes")).toBeTruthy();
     expect(screen.queryByText(/Upgrade/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Use mirror" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: /^Remove mirror on/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete copy on/ })).toBeNull();
+    expect(primary().hasAttribute("data-disabled") || primary().hasAttribute("disabled")).toBe(true);
   });
 
   it("only shows the placement while a Server with storage runs an older daemon", () => {

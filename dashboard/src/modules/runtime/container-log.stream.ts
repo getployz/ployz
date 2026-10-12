@@ -24,8 +24,6 @@ const INITIAL: LogStreamState = { opened: false, offline: false, refused: false,
 const SHORT_TAIL = 200;
 /** Pages whose lines the live tail already had, read before giving the viewer older ones. */
 const OVERLAP_PAGES = 4;
-/** How often a just-upgraded Server's refusals reopen the stream before its failure shows. */
-const RESTART_ATTEMPTS = 6;
 /** Scrollback stops growing here, until the viewer follows the newest lines again and the page trims it. */
 const SCROLLBACK_LIMIT = LIVE_LOG_LIMIT * 3;
 
@@ -36,11 +34,6 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   // The Log Store's position: not read yet, a cursor, or null once it has nothing older.
   let cursor: string | null | undefined;
   const stored = new Set<string>();
-  // Servers whose lines arrived since the stream last connected. Logs and older logs shipped in one release, so a refusal of older logs naming one of them is stale or another daemon's.
-  const serving = new Set<string>();
-  // A Server's first line came while a history read was out, so that read may pass the page it refused.
-  let reread = false;
-  const servedFailures = (failures: readonly MissingServer[]) => failures.filter(server => server.capability === undefined || !serving.has(server.machineId));
   // Bumped by each reset, so a read begun before it lands nothing.
   let generation = 0;
   const resetHistory = () => {
@@ -95,101 +88,44 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           publish({ ...snapshot, missing: { ...snapshot.missing, live: Object.keys(failed).length ? { ...live, [machineId]: { ...server, failed } } : live } });
         };
         const machines = getRuntimeCollections(selection.organizationSlug, scope).machines;
-        // A just-upgraded Server refuses until its new daemon serves; each refusal reopens the stream, backing off.
-        const restarting = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>();
-        const settle = (machineId: string) => { clearTimeout(restarting.get(machineId)?.timer); restarting.delete(machineId); };
-        const awaitRestart = (machineId: string) => {
-          const server = restarting.get(machineId);
-          if (!server || server.attempts >= RESTART_ATTEMPTS) { settle(machineId); return false; }
-          server.timer ??= setTimeout(() => {
-            server.timer = undefined;
-            server.attempts++;
-            close();
-            close = open();
-          }, Math.min(1_000 * 2 ** server.attempts, 30_000));
-          return true;
-        };
-        const serves = (machineId: string) => {
-          if (serving.has(machineId)) return;
-          serving.add(machineId);
-          const history = servedFailures(snapshot.missing.history);
-          const hid = history.length !== snapshot.missing.history.length;
-          if (hid) publish({ ...snapshot, missing: { ...snapshot.missing, history } });
-          if (snapshot.historyPending) reread = true;
-          else if (hid) { resetHistory(); void loadOlder(); }
-        };
-        const open = () => {
-          controller = new AbortController();
-          const stop = liveStream(`/api/runtime/logs?${query}`, {
-            onOpen: () => {
-              serving.clear();
-              if (controller.signal.aborted) controller = new AbortController();
+        controller = new AbortController();
+        const stop = liveStream(`/api/runtime/logs?${query}`, {
+          onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
+          // Any loss says so, so a first connection that fails never sits on the loading skeleton; only a refused one
+          // also ends its history reads.
+          onLost: (why) => {
+            if (why === "refused") {
+              controller.abort();
+              publish({ ...snapshot, historyPending: false });
+            }
+            if (!snapshot.offline && !snapshot.refused) publish({ ...snapshot, refused: true });
+          },
+          on: {
+            live: () => {
+              publish({ ...snapshot, opened: true, offline: false, refused: false });
+              land();
+              if (cursor === undefined && collection.size < SHORT_TAIL) void loadOlder();
             },
-            onLost: (why) => {
-              if (why === "refused") {
-                controller.abort();
-                publish({ ...snapshot, historyPending: false });
+            offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
+            log: (event) => {
+              const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
+              if (decoded._tag === "None") return;
+              if (decoded.value.type === "record") {
+                recovered(decoded.value.record.machineId, decoded.value.record.containerId);
+                pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
+              } else if (decoded.value.type === "source_gone") {
+                recovered(decoded.value.machineId, decoded.value.containerId);
+              } else {
+                const { type: _, machineId, containerId, ...reason } = decoded.value;
+                const machineName = machines.get(machineId)?.name ?? [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
+                const { [containerId]: __, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
+                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: reason } } } } });
               }
-              if (!snapshot.offline && !snapshot.refused) publish({ ...snapshot, refused: true });
             },
-            on: {
-              live: () => {
-                publish({ ...snapshot, opened: true, offline: false, refused: false });
-                land();
-                if (cursor === undefined && collection.size < SHORT_TAIL) void loadOlder();
-              },
-              offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
-              log: (event) => {
-                const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
-                if (decoded._tag === "None") return;
-                if (decoded.value.type === "record") {
-                  settle(decoded.value.record.machineId);
-                  recovered(decoded.value.record.machineId, decoded.value.record.containerId);
-                  serves(decoded.value.record.machineId);
-                  pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
-                } else if (decoded.value.type === "source_gone") {
-                  recovered(decoded.value.machineId, decoded.value.containerId);
-                } else {
-                  const { type: _, machineId, containerId, ...reason } = decoded.value;
-                  if (reason.capability !== undefined) serving.delete(machineId);
-                  if (reason.capability === undefined && awaitRestart(machineId)) return;
-                  settle(machineId);
-                  const machineName = machines.get(machineId)?.name ?? [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
-                  const { [containerId]: __, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
-                  publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: reason } } } } });
-                }
-              },
-            },
-          });
-          return () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
-        };
-        let close = open();
-        const lacking = (machineId: string) =>
-          Object.values(snapshot.missing.live[machineId]?.failed ?? {}).some(reason => reason.capability !== undefined)
-          || snapshot.missing.history.some(server => server.machineId === machineId && server.capability !== undefined);
-        // @ployz/sdk never reopens a source it marked failed, so a lacking Server's new daemon needs a fresh stream.
-        // Released daemons publish no capabilities, so the version tells an upgrade apart too.
-        const daemons = new Map<string, string>();
-        const upgrades = machines.subscribeChanges((changes) => {
-          const upgraded = new Set<string>();
-          for (const change of changes) {
-            if (change.type === "delete") continue;
-            const daemon = `${change.value.daemonVersion}|${change.value.capabilities.join(",")}`;
-            if (daemons.get(change.value.id) !== daemon && lacking(change.value.id)) upgraded.add(change.value.id);
-            daemons.set(change.value.id, daemon);
-          }
-          if (!upgraded.size) return;
-          for (const machineId of upgraded) { settle(machineId); restarting.set(machineId, { attempts: 0 }); }
-          close();
-          resetHistory();
-          const live = Object.fromEntries(Object.entries(snapshot.missing.live).filter(([machineId]) => !upgraded.has(machineId)));
-          const history = snapshot.missing.history.filter(server => !upgraded.has(server.machineId));
-          publish({ ...snapshot, missing: { live, history }, historyPending: false });
-          close = open();
-        }, { includeInitialState: true });
+          },
+        });
+        const close = () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
         return () => {
-          upgrades.unsubscribe();
-          for (const machineId of [...restarting.keys()]) settle(machineId);
           pending = [];
           land = () => {};
           following = true;
@@ -237,17 +173,11 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         const now = oldest();
         if (failures.length || reached === null || (now !== null && now < reached)) break;
       }
-      publish({ ...snapshot, missing: { ...snapshot.missing, history: servedFailures(failures) }, historyPending: false });
+      publish({ ...snapshot, missing: { ...snapshot.missing, history: failures }, historyPending: false });
     } catch {
       if (!streamSignal.aborted) publish({ ...snapshot, historyPending: false, historyError: true });
     } finally {
       streamSignal.removeEventListener("abort", cancelHistory);
-    }
-    const again = reread;
-    reread = false;
-    if (again && !streamSignal.aborted) {
-      resetHistory();
-      void loadOlder();
     }
   }
   return {

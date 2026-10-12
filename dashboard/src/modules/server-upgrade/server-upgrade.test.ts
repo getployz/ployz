@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { requirements } from "#/modules/runtime/daemon-compat";
 import {
-  remedy,
   compareVersions,
   newMajorLine,
   releaseFromPointer,
@@ -244,48 +242,5 @@ describe("serverUpgradeLines", () => {
       current: { kind: "upgrading" },
       behind: { kind: "behind", canUpgrade: false },
     });
-  });
-});
-
-describe("remedy", () => {
-  const server = { name: "web-2", daemonVersion: "0.2.3" };
-  const resolved = (release: string | null) => ({ state: "resolved", release }) as const;
-
-  it("offers Upgrade with the channel's release when the Server is behind", () => {
-    expect(remedy({ feature: requirements.liveLogs, server, release: resolved("0.2.4"), line: { kind: "behind", release: "0.2.4", canUpgrade: true } }))
-      .toEqual({ kind: "behind", sentence: "Logs need a newer Ployz on web-2. 0.2.4 is out.", canUpgrade: true });
-    expect(remedy({ feature: requirements.volumeMove, server, release: resolved("0.2.4"), line: { kind: "behind", release: "0.2.4", canUpgrade: false } }))
-      .toEqual({ kind: "behind", sentence: "Volume move needs a newer Ployz on web-2. 0.2.4 is out.", canUpgrade: false });
-  });
-
-  it("returns an Upgrade under way, failed, or waiting for the Server unchanged", () => {
-    const lines = [
-      { kind: "upgrading", target: "0.2.4" },
-      { kind: "failed", target: "0.2.4", nothingChanged: true, details: "boom", canRetry: true },
-      { kind: "when-back", release: "0.2.4" },
-    ] as const;
-    for (const line of lines) expect(remedy({ feature: requirements.liveLogs, server, release: resolved("0.2.4"), line })).toBe(line);
-  });
-
-  it("says the feature is not in the Server's version yet when it runs the channel's release", () => {
-    expect(remedy({ feature: requirements.volumeMove, server: { name: "web-2", daemonVersion: "0.2.4" }, release: resolved("0.2.4"), line: null }))
-      .toEqual({ kind: "lack", sentence: "Volume move is not in Ployz 0.2.4 on web-2 yet." });
-    expect(remedy({ feature: requirements.olderLogs, server: { name: "web-2", daemonVersion: "0.2.4" }, release: resolved("0.2.4"), line: null }))
-      .toEqual({ kind: "lack", sentence: "Older logs are not in Ployz 0.2.4 on web-2 yet." });
-  });
-
-  it("claims nothing current without a resolved release or a known version", () => {
-    const needs = { kind: "lack", sentence: "Logs need a newer Ployz on web-2." };
-    expect(remedy({ feature: requirements.liveLogs, server, release: { state: "pending" }, line: null })).toEqual(needs);
-    expect(remedy({ feature: requirements.liveLogs, server, release: { state: "failed" }, line: null })).toEqual(needs);
-    expect(remedy({ feature: requirements.liveLogs, server, release: resolved(null), line: null })).toEqual(needs);
-    expect(remedy({ feature: requirements.liveLogs, server: { name: "web-2", daemonVersion: "" }, release: resolved("0.2.4"), line: null })).toEqual(needs);
-  });
-
-  it("names only the Server for a capability Cloud has no feature for", () => {
-    expect(remedy({ feature: null, server, release: resolved("0.2.4"), line: { kind: "behind", release: "0.2.4", canUpgrade: true } }))
-      .toEqual({ kind: "behind", sentence: "web-2 needs a newer Ployz. 0.2.4 is out.", canUpgrade: true });
-    expect(remedy({ feature: null, server: { name: "web-2", daemonVersion: "0.2.4" }, release: resolved("0.2.4"), line: null }))
-      .toEqual({ kind: "lack", sentence: "web-2 needs a newer Ployz." });
   });
 });

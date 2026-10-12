@@ -1,19 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { lacks, requirementFor, requirements, ServerLacks, serverSupports } from "./daemon-compat";
+import { requirementFor, requirements, ServerLacks, serverSupports } from "./daemon-compat";
 import { asSdkFailure, PloyzProviderError, sdkFailureMessage } from "./ployz.server";
-
-describe("lacks", () => {
-  it("splits the Servers that named a capability from every other failure", () => {
-    const ordinary = { machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." };
-    const split = lacks([
-      { machineId: "hel-1", machineName: "hel-1", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
-      ordinary,
-      { machineId: "nbg-1", machineName: "nbg-1", message: "refused", code: "unsupported" },
-    ]);
-    expect(split.lacks).toEqual([new ServerLacks({ machineId: "hel-1", capability: "ployz.logs.history.v2" })]);
-    expect(split.rest.map(failure => failure.machineId)).toEqual(["fsn-1", "nbg-1"]);
-  });
-});
 
 describe("serverSupports", () => {
   it("reads the Server's record, and claims nothing when the record lists no capabilities", () => {

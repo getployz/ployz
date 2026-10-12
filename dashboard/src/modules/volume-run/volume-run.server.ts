@@ -16,7 +16,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { type Requirement, requirementFor, requirements } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
-import { releaseLine, remedy, serverUpgradeLine, type ReleaseState } from "#/modules/server-upgrade/server-upgrade";
+import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
@@ -576,24 +576,15 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
   const required = requirementFor(capability) ?? requirements.volumeMove;
   const feature: Requirement = kind === undefined ? required : { capability: required.capability, feature: RUN_FEATURES[kind] };
   const line = releaseLine(server.daemonVersion);
-  const release: ReleaseState = line === null ? { state: "resolved", release: null } : yield* organizationReleaseChannel(organizationId).pipe(
+  const release = line === null ? null : yield* organizationReleaseChannel(organizationId).pipe(
     Effect.flatMap((channel) => channelRelease(channel, line)),
-    Effect.map((release): ReleaseState => ({ state: "resolved", release })),
     Effect.timeout(OBSERVE_TIMEOUT),
-    Effect.orElseSucceed((): ReleaseState => ({ state: "failed" })),
+    Effect.orElseSucceed(() => null),
   );
-  const upgrade = serverUpgradeLine({
-    version: server.daemonVersion,
-    status: "online",
-    release: release.state === "resolved" ? release.release : null,
-    latest: null,
-    pendingFrom: undefined,
-    now: Date.now(),
-    automatic: false,
-    rolloutRunning: false,
-  });
-  const said = remedy({ feature, server, release, line: upgrade });
-  return "sentence" in said ? said.sentence : `${feature.feature} needs a newer Ployz on ${server.name}.`;
+  const needs = `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}.`;
+  if (release === null) return needs;
+  if (isBehind(server.daemonVersion, release)) return `${needs} ${release} is out.`;
+  return isCurrent(server.daemonVersion, release) ? `${feature.feature} ${feature.plural ? "are" : "is"} not in Ployz ${server.daemonVersion} on ${server.name} yet.` : needs;
 });
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
