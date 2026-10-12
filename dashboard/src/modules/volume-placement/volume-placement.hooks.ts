@@ -6,7 +6,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import { useActiveVolumeRuns, volumeMembersQueryOptions, volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
+import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
   appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
@@ -50,13 +50,17 @@ export function useStageRestore(organizationSlug: string, environment: Environme
   return { restore, pending };
 }
 
-/** Delete an old copy now. */
+/** Delete an old copy now, and say how it ended once the Server finishes. */
 export function useDeleteCopy(organizationSlug: string, environment: EnvironmentRef, volume: PlacementVolume) {
   const queryClient = useQueryClient();
+  const { watch } = useWatchVolumeRun(organizationSlug, (run) => {
+    if (run?.state === "done") toast.success("Copy deleted");
+    else toast.error(run?.message ?? `Could not delete the copy of ${volume.name}`);
+    void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
+  });
   return (server: MachineName) => deleteCopyServerFn({ data: { organizationSlug, volumeId: volume.id, environment, server } }).then((result) => {
-    if (result.ok) toast.success("Copy deleted");
+    if (result.ok) watch(result.run.id);
     else toast.error(result.refusal.message);
-    void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
   }, (error: Error) => { toast.error(toErrorMessage(error, `Could not delete the copy of ${volume.name}`)); });
 }
 
