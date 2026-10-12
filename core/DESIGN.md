@@ -459,10 +459,15 @@ Ingress Proxy that ran and died, but never one whose first start failed, as when
 another process held port 80 at enrollment. A Deploy or catch-up keeps that
 container, so the Machine would stay without ingress until someone redeployed.
 On each local container scan (Docker events and a 30 second rescan) the daemon
-starts the newest local Ingress Proxy when Docker never started it and no other
-local one is running or restarting. It decides from its own Docker alone. It
-never creates, replaces, moves or removes a container, and a stopped Ingress
-Proxy stays stopped. This extends Docker's restart policy to Machine-local
+starts the newest local Ingress Proxy when Docker recorded its failed first start
+and no other local one is running or restarting. It does so only while the
+Machine participates and its own record still accepts ingress, and only after a
+scan that inspected every local container. It decides from its own Docker and
+record alone. It never creates, replaces, moves or removes a container. A stopped
+Ingress Proxy stays stopped: a requested stop holds the container down, even one
+that never ran, until a requested start; the hold lives in daemon memory, so a
+daemon restart forgets it. A stop-first replacement therefore stops the old
+container even at rest. This extends Docker's restart policy to Machine-local
 serving infrastructure. It is behavior on the daemon's own schedule, which bet 3
 flags, and it is the only Service Container the daemon starts unasked. Docker
 also drops a container's network when its start fails, so every daemon start
