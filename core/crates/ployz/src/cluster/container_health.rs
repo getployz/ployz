@@ -3,11 +3,15 @@
 use std::{future::Future, time::Duration};
 
 use ployz_core::{
-    ContainerDetails, ContainerObservation, ContainerRuntimeObservation, HealthFailure,
-    HealthObservation, HealthcheckSpec, LastHealthCheck, healthcheck_deadline,
+    ContainerDetails, ContainerId, ContainerObservation, ContainerRuntimeObservation,
+    HealthFailure, HealthObservation, HealthcheckSpec, InspectContainerRequest, LastHealthCheck,
+    MachineId, MachineTarget, RpcError, healthcheck_deadline, op,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+
+use super::Client;
+use crate::connect::TARGET_RPC_TIMEOUT;
 
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const DEFAULT_HEALTH_MONITOR: Duration = Duration::from_secs(5);
@@ -86,6 +90,35 @@ pub(crate) async fn wait_until_ready<E, F: Future<Output = Result<ContainerDetai
             }
             () = tokio::time::sleep_until(std::cmp::min(now + POLL_INTERVAL, wake_deadline)) => {}
         }
+    }
+}
+
+impl Client {
+    /// Wait for Container `container_id` on `machine_id`, started just now, to be ready.
+    pub(crate) async fn wait_until_ready(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        cancellation: &CancellationToken,
+    ) -> Result<(), HealthWaitError<RpcError>> {
+        let target = MachineTarget::from(machine_id);
+        wait_until_ready(
+            None,
+            DEFAULT_HEALTH_MONITOR,
+            Instant::now(),
+            cancellation,
+            || {
+                self.invoke::<op::InspectContainer>(
+                    InspectContainerRequest {
+                        container_id: *container_id,
+                    },
+                    &target,
+                    Some(TARGET_RPC_TIMEOUT),
+                )
+            },
+            |_| {},
+        )
+        .await
     }
 }
 
@@ -198,8 +231,6 @@ pub(crate) fn health_deadline_for(
 #[cfg(test)]
 mod tests {
     use ployz_core::{ConfiguredHealthcheck, HealthcheckCommand};
-
-    use ployz_core::RpcError;
 
     use super::*;
     use crate::global_fixtures::{machine, running_on};
