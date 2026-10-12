@@ -8,9 +8,9 @@ use bollard::{
     },
 };
 use ployz_core::{
-    ContainerCreated, ContainerId, ContainerKind, Machine, MachineId, MachineStorageObservation,
-    Namespace, ResolvedServiceSpec, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    ServicePlacementUnknownReason,
+    ContainerCreated, ContainerId, ContainerKind, ContainerObservation, Machine, MachineId,
+    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, ServicePlacementUnknownReason, SlotKey,
 };
 
 #[cfg(test)]
@@ -187,7 +187,8 @@ impl ContainerRuntime {
             spec.container.pull_policy,
             registry_auth,
         )
-        .await?;
+        .await
+        .map_err(Error::ImagePull)?;
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
         if let (Some(name), Some(key)) = (&reserved_name, creation_key)
@@ -311,6 +312,34 @@ impl ContainerRuntime {
         name: &str,
         key: &str,
     ) -> Result<Option<ContainerCreated>, Error> {
+        let Some(existing) = self.keyed_container(&machine.id, name, key).await? else {
+            return Ok(None);
+        };
+        if !same_creation(&existing, namespace, kind, spec) {
+            return Err(Error::SlotNameOccupied(name.into()));
+        }
+        Ok(Some(ContainerCreated {
+            container_id: existing.container_id,
+            display_name: existing.into_parts().display_name,
+        }))
+    }
+
+    pub(crate) async fn inspect_slot(
+        &self,
+        machine_id: &MachineId,
+        slot: &SlotKey,
+    ) -> Result<Option<ContainerObservation>, Error> {
+        let key = slot.creation_key.as_str();
+        let name = creation_name(machine_id, &slot.namespace, slot.kind, key);
+        self.keyed_container(machine_id, &name, key).await
+    }
+
+    async fn keyed_container(
+        &self,
+        machine_id: &MachineId,
+        name: &str,
+        key: &str,
+    ) -> Result<Option<ContainerObservation>, Error> {
         let inspected = match self.docker.client.inspect_container(name, None).await {
             Ok(inspected) => inspected,
             Err(DockerError::DockerResponseServerError {
@@ -335,17 +364,9 @@ impl ContainerRuntime {
             field: "container ID",
             source,
         })?;
-        let existing = self.inspect_managed(&container_id, &machine.id).await?;
-        if existing.namespace != *namespace
-            || existing.kind != kind
-            || existing.resolved_spec != *spec
-        {
-            return Err(Error::SlotNameOccupied(name.into()));
-        }
-        Ok(Some(ContainerCreated {
-            container_id: existing.container_id,
-            display_name: existing.into_parts().display_name,
-        }))
+        self.inspect_managed(&container_id, machine_id)
+            .await
+            .map(Some)
     }
 
     async fn admit_and_ensure_volumes(
@@ -461,7 +482,7 @@ impl ContainerRuntime {
         Ok(())
     }
 
-    async fn ensure_managed(&self, container_id: &ContainerId) -> Result<(), Error> {
+    pub(super) async fn ensure_managed(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self
             .docker
             .client
@@ -561,6 +582,15 @@ fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
                 ..
             }
         )
+}
+
+pub(crate) fn same_creation(
+    observed: &ContainerObservation,
+    namespace: &Namespace,
+    kind: ContainerKind,
+    spec: &ResolvedServiceSpec,
+) -> bool {
+    observed.namespace == *namespace && observed.kind == kind && observed.resolved_spec == *spec
 }
 
 fn creation_name(

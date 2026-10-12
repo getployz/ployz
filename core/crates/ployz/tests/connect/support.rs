@@ -1005,6 +1005,13 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
+    async fn ensure_container(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     #[expect(clippy::result_large_err)] // tonic fixes the public RPC error type.
     async fn exec(
         &self,

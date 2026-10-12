@@ -19,7 +19,31 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let docker_address = docker_listener.local_addr().unwrap();
     let (release_inspection, inspection_released) = tokio::sync::oneshot::channel();
+    let container_id = ContainerId::parse("a".repeat(64)).unwrap();
+    let spec = crate::docker::test_support::spec_with_sources(vec![]);
+    let managed = serde_json::json!({
+        "Id": container_id.as_str(),
+        "Config": {"Labels": {
+            LABEL_MANAGED: "",
+            LABEL_NAMESPACE: "app",
+            LABEL_SERVICE_ID: spec.service_id.to_string(),
+            LABEL_SERVICE_NAME: spec.name.to_string(),
+        }},
+    })
+    .to_string();
     let docker_server = tokio::spawn(async move {
+        let mut inspect_container = accept_docker_request(&docker_listener).await;
+        inspect_container
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{managed}",
+                    managed.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        drop(inspect_container);
         let mut create = accept_docker_request(&docker_listener).await;
         create
             .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 13\r\nConnection: close\r\n\r\n{\"Id\":\"slow\"}")
@@ -54,6 +78,12 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     let specs = MachineSpecStore::open(root.0.join("machine.db"))
         .await
         .unwrap();
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, &spec)
+        .await
+        .unwrap();
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
     let api = MachineApi::builder(crate::machine::RecordOwner::spawn(machine_store).unwrap())
         .with_optional_containers(Some(runtime))
@@ -65,7 +95,7 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     let mut client = MachineRpcClient::connect(format!("http://{address}"))
         .await
         .unwrap();
-    let config = exec_config(&ContainerId::parse("a".repeat(64)).unwrap(), ["sh"], false);
+    let config = exec_config(&container_id, ["sh"], false);
     let mut output = client
         .exec(Request::new(tokio_stream::iter([config])))
         .await

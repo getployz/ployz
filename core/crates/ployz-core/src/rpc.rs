@@ -440,6 +440,77 @@ pub struct RemoveContainerRequest {
     pub force: bool,
 }
 
+/// The place one Container creation lands on a Machine. The same slot names the
+/// same Container across resends; a different spec in it is an occupied slot.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, TS)]
+pub struct SlotKey {
+    pub namespace: Namespace,
+    pub kind: ContainerKind,
+    pub creation_key: crate::CreationKey,
+}
+
+/// A Container named either by its Docker id or by the slot its creation landed on.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerLocator {
+    Id(ContainerId),
+    Key(SlotKey),
+}
+
+/// Ask a Machine to make one Container match a wanted state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct EnsureContainerRequest {
+    pub want: ContainerWant,
+}
+
+/// The state a driver wants one Container in. The Machine converges to it and
+/// answers with what it then observes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "state", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a Running want carries the whole resolved spec; one request holds one"
+)]
+pub enum ContainerWant {
+    Running {
+        container: RunTarget,
+    },
+    Stopped {
+        container: ContainerLocator,
+        drain: crate::Drain,
+        #[serde(default)]
+        stop: crate::StopOptions,
+    },
+    Gone {
+        container: ContainerLocator,
+        drain: crate::Drain,
+    },
+}
+
+/// What `Running` runs: a new creation in a slot, or a Container that already exists.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a new creation carries the whole resolved spec; one request holds one"
+)]
+pub enum RunTarget {
+    New(NewContainer),
+    Existing(ContainerLocator),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NewContainer {
+    pub slot: SlotKey,
+    pub resolved_spec: ResolvedServiceSpec,
+    /// Correlation metadata, never part of the Service configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<crate::DeploymentLogId>,
+    /// Credentials for pulling the image; used for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<crate::RegistryAuth>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LogsOptions {
     pub follow: bool,
@@ -946,6 +1017,54 @@ pub struct ContainerChanged {
     pub container_id: ContainerId,
 }
 
+/// The Machine's answer to `EnsureContainer`: the Container as now observed, and
+/// the refusal when the want could not be met.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnsuredContainer {
+    Ensured {
+        now: ContainerNow,
+    },
+    Refused {
+        now: ContainerNow,
+        refusal: ContainerRefusal,
+    },
+}
+
+/// What the Machine observes at the asked-for Container, after any effect.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "is", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a present Container is the whole observation; one reply holds one"
+)]
+pub enum ContainerNow {
+    Present(ContainerObservation),
+    Absent { of: ContainerLocator },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ContainerRefusal {
+    pub reason: ContainerRefusalReason,
+    pub message: String,
+}
+
+/// Why a Machine would not meet a want. An unknown reason from a newer Machine
+/// reads as `Unrecognized`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerRefusalReason {
+    NotParticipating,
+    NotEligible,
+    InvalidIngress,
+    SlotOccupied,
+    ImagePullFailed,
+    VolumesNotPrepared,
+    NotFound,
+    #[serde(other)]
+    Unrecognized,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImageSummary {
     pub id: String,
@@ -1087,6 +1206,7 @@ define_responses! {
     ContainerObservationMap(ContainerObservationMap) => "container_observation_map";
     ContainerCreated(ContainerCreated) => "container_created";
     ContainerChanged(ContainerChanged) => "container_changed";
+    EnsuredContainer(EnsuredContainer) => "ensured_container";
     StorageCapacity(crate::StorageCapacity) => "storage_capacity";
     PreparedVolumes(PreparedVolumes) => "prepared_volumes";
     VolumeInventory(VolumeInventory) => "volume_inventory";

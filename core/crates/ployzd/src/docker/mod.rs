@@ -50,7 +50,7 @@ use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
-pub(crate) use lifecycle::{ContainerRequest, require_eligible};
+pub(crate) use lifecycle::{ContainerRequest, require_eligible, same_creation};
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
 pub use spec_store::{Error as SpecStoreError, MachineSpecStore};
@@ -834,6 +834,8 @@ pub enum Error {
     ContainerNotFound(ContainerId),
     #[error("Docker name '{0}' is occupied by incompatible creation inputs")]
     SlotNameOccupied(String),
+    #[error("image pull failed")]
+    ImagePull(#[source] bollard::errors::Error),
     #[error("pre-deploy container requested without a pre-deploy hook")]
     MissingPreDeployHook,
     #[error("container duration exceeds Docker's range")]
@@ -866,8 +868,16 @@ impl Error {
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
                 ..
+            })
+            | Self::ImagePull(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
             }) => RpcErrorCode::NotFound,
             Self::Docker(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409,
+                ..
+            })
+            | Self::ImagePull(bollard::errors::Error::DockerResponseServerError {
                 status_code: 409,
                 ..
             })
@@ -895,6 +905,7 @@ impl Error {
             | Self::InvalidValue { .. }
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
+            | Self::ImagePull(_)
             | Self::Io(_)
             | Self::Json(_)
             | Self::Network(_)

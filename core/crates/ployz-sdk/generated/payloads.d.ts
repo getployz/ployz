@@ -716,7 +716,11 @@ export type ContainerKind = "service_container" | "pre_deploy_hook";
 
 export type ContainerLabels = { [key in string]: string };
 
+export type ContainerLocator = { "id": ContainerId } | { "key": SlotKey };
+
 export type ContainerLogRecord = { source: LogMetadata, timestamp_nanos: string, channel: LogChannel, message: string, };
+
+export type ContainerNow = { "is": "present" } & ContainerObservation | { "is": "absent", of: ContainerLocator, };
 
 export type ContainerObservation = { container_id: ContainerId,
 /**
@@ -738,6 +742,10 @@ resolved_spec: ResolvedServiceSpec, address: ContainerAddress | null, labels: { 
 
 export type ContainerPath = string;
 
+export type ContainerRefusal = { reason: ContainerRefusalReason, message: string, };
+
+export type ContainerRefusalReason = "not_participating" | "not_eligible" | "invalid_ingress" | "slot_occupied" | "image_pull_failed" | "volumes_not_prepared" | "not_found" | "unrecognized";
+
 export type ContainerReport = { server: MachineName, service: ServiceName, state: ContainerState, exit_code: number | null, health: Health | null,
 /**
  * Absent when the Server does not report it.
@@ -749,6 +757,8 @@ export type ContainerResources = { cpu_nanos: CpuNanos | null, memory_bytes: Byt
 export type ContainerRuntimeObservation = { "state": "created" } | { "state": "running", health: HealthObservation, } | { "state": "paused" } | { "state": "restarting" } | { "state": "exited", code: number, } | { "state": "removing" } | { "state": "dead" } | { "state": "unrecognized", raw: JsonValue, };
 
 export type ContainerState = "created" | "running" | "restarting" | "paused" | "exited" | "dead";
+
+export type ContainerWant = { "state": "running", container: RunTarget, } | { "state": "stopped", container: ContainerLocator, drain: Drain, stop: StopOptions, } | { "state": "gone", container: ContainerLocator, drain: Drain, };
 
 export type ContainersAnswer = { containers: Array<ContainerReport>,
 /**
@@ -1101,6 +1111,8 @@ remaining_bytes: number, } | { "type": "unbudgeted_disk_usage" } | { "type": "ob
 machine_id: MachineId, } | { "type": "ingress_hostname", message: string, } | { "type": "observer_relative_hostname_conflict" } | { "type": "skipped_dependency_health", dependent: QualifiedService, dependency: QualifiedService, };
 
 export type DeploymentId = string;
+
+export type DeploymentLogId = string;
 
 export type DeploymentQuery = { id: DeploymentId, };
 
@@ -1632,6 +1644,10 @@ machines: Array<Machine>,
  * Entry Machine store versions to carry into publication and Join.
  */
 target_versions: { [key in string]: number }, };
+
+export type EnsureContainerRequest = { want: ContainerWant, };
+
+export type EnsuredContainer = { "status": "ensured", now: ContainerNow, } | { "status": "refused", now: ContainerNow, refusal: ContainerRefusal, };
 
 export type EnvironmentCreated = {
 /**
@@ -2619,6 +2635,16 @@ kind: EnvironmentNodeType,
  */
 name: string | null, };
 
+export type NewContainer = { slot: SlotKey, resolved_spec: ResolvedServiceSpec,
+/**
+ * Correlation metadata, never part of the Service configuration.
+ */
+deployment_id?: DeploymentLogId | null,
+/**
+ * Credentials for pulling the image; used for this pull only, never stored.
+ */
+registry_auth?: RegistryAuth | null, };
+
 export type NodeChange = {
 /**
  * Its name.
@@ -3440,6 +3466,8 @@ export type RunEnd = { "end": "built", platforms: Array<string>, } | { "end": "f
 
 export type RunState = "accepted" | "running" | "done" | "failed" | "unknown" | "superseded";
 
+export type RunTarget = { "new": NewContainer } | { "existing": ContainerLocator };
+
 export type RunnerId = string;
 
 export type RuntimeFailureKind = "machine" | "health" | "dependency_health" | "hook" | "cancelled";
@@ -4031,6 +4059,8 @@ reason: string, };
 
 export type SlotId = string;
 
+export type SlotKey = { namespace: Namespace, kind: ContainerKind, creation_key: CreationKey, };
+
 export type Snapshot = { name: SnapshotName, guid: SnapshotGuid, created_unix_seconds: number, };
 
 export type SnapshotGuid = string;
@@ -4052,6 +4082,8 @@ export type Step = { "step": "read", asks: Array<Ask>, } | { "step": "write", wr
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 
 export type StopContainerPurpose = "lifecycle" | "free_host_ports";
+
+export type StopOptions = { signal: string | null, grace_period_seconds: number | null, };
 
 export type StorageBudget = {
 /**

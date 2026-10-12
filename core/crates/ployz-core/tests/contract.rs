@@ -1644,6 +1644,110 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
 }
 
 #[test]
+fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire() {
+    use ployz_core::{
+        ContainerLocator, ContainerNow, ContainerRefusal, ContainerRefusalReason, ContainerWant,
+        CreationKey, Drain, ENSURE_CONTAINER_CAPABILITY, EnsureContainerRequest, EnsuredContainer,
+        NewContainer, RunTarget, SlotKey, StopOptions,
+    };
+
+    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": "11111111111111111111111111111111",
+        "name": "api",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "alpine:3.23.3", "pull_policy": "missing" }
+    }))
+    .unwrap();
+    let slot = SlotKey {
+        namespace: Namespace::parse("shop").unwrap(),
+        kind: ContainerKind::ServiceContainer,
+        creation_key: CreationKey::try_from("deploy/slot-1".to_owned()).unwrap(),
+    };
+    let slot_json = json!({
+        "namespace": "shop",
+        "kind": "service_container",
+        "creation_key": "deploy/slot-1"
+    });
+    let running = EnsureContainerRequest {
+        want: ContainerWant::Running {
+            container: RunTarget::New(NewContainer {
+                slot: slot.clone(),
+                resolved_spec: spec.clone(),
+                deployment_id: None,
+                registry_auth: None,
+            }),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&running).unwrap(),
+        json!({ "want": { "state": "running", "container": { "new": {
+            "slot": slot_json, "resolved_spec": spec
+        } } } })
+    );
+    let request = op::EnsureContainer::into_request(running);
+    assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);
+
+    let id = ContainerId::parse("a".repeat(64)).unwrap();
+    let stopped: EnsureContainerRequest = serde_json::from_value(json!({
+        "want": { "state": "stopped", "container": { "id": id }, "drain": 250 }
+    }))
+    .unwrap();
+    assert_eq!(
+        stopped.want,
+        ContainerWant::Stopped {
+            container: ContainerLocator::Id(id),
+            drain: Drain::try_from(250).unwrap(),
+            stop: StopOptions::default(),
+        }
+    );
+    let gone: EnsureContainerRequest = serde_json::from_value(json!({
+        "want": { "state": "gone", "container": { "key": slot_json }, "drain": 0 }
+    }))
+    .unwrap();
+    assert_eq!(
+        gone.want,
+        ContainerWant::Gone {
+            container: ContainerLocator::Key(slot.clone()),
+            drain: Drain::NONE,
+        }
+    );
+    assert!(
+        serde_json::from_value::<EnsureContainerRequest>(json!({
+            "want": { "state": "stopped", "container": { "id": id } }
+        }))
+        .is_err(),
+        "a Stopped want names its drain"
+    );
+
+    let refused = EnsuredContainer::Refused {
+        now: ContainerNow::Absent {
+            of: ContainerLocator::Key(slot),
+        },
+        refusal: ContainerRefusal {
+            reason: ContainerRefusalReason::NotFound,
+            message: "no Container at the slot".into(),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&refused).unwrap(),
+        json!({
+            "status": "refused",
+            "now": { "is": "absent", "of": { "key": slot_json } },
+            "refusal": { "reason": "not_found", "message": "no Container at the slot" }
+        })
+    );
+    let response = RpcResponse::from(refused.clone());
+    assert_eq!(response.decode::<op::EnsureContainer>().unwrap(), refused);
+    let later: ContainerRefusal = serde_json::from_value(json!({
+        "reason": "quota_exhausted",
+        "message": "a reason this build does not know"
+    }))
+    .unwrap();
+    assert_eq!(later.reason, ContainerRefusalReason::Unrecognized);
+    assert_eq!(ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1");
+}
+
+#[test]
 fn remove_volumes_request_identifies_each_volume_by_machine_and_name() {
     use ployz_core::{DockerVolumeId, DockerVolumeName, RemoveVolumesRequest};
 

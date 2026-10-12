@@ -940,6 +940,13 @@ impl MachineRpc for JoinDaemon {
             container_id: remove.container_id,
         })
     }
+
+    async fn ensure_container(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn list_images(
         &self,
         _request: Request<OpaquePayload>,

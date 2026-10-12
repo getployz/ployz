@@ -146,6 +146,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::SetVolumeCopyRequest>();
     declarations.add::<ployz_core::SetVolumeCopyReply>();
     declarations.add::<ployz_core::SetVolumeCopyRefused>();
+    declarations.add::<ployz_core::EnsureContainerRequest>();
+    declarations.add::<ployz_core::EnsuredContainer>();
     declarations.add::<ployz_store::tools::ToolDef>();
     declarations.add::<ployz_store::tools::Place>();
     declarations.add::<ployz_store::tools::Step>();

@@ -40,6 +40,9 @@ impl ContainerRuntime {
         if config.options.command.is_empty() {
             return Err(Status::invalid_argument("exec command cannot be empty"));
         }
+        self.ensure_managed(&config.container_id)
+            .await
+            .map_err(docker_status)?;
         let create = CreateExecOptions {
             attach_stdin: Some(config.options.attach_stdin),
             attach_stdout: Some(config.options.attach_stdout),

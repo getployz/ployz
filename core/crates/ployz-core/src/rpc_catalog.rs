@@ -53,6 +53,7 @@ macro_rules! rpc_catalog {
                 StopContainer: (stop_container, "StopContainer", StopContainerRequest, "stop_container", ContainerChanged, STOP_CONTAINER_CAPABILITY, "ployz.container.stop.v1", Container),
                 MarkContainerStopping: (mark_container_stopping, "MarkContainerStopping", MarkContainerStoppingRequest, "mark_container_stopping", ContainerDetails, MARK_CONTAINER_STOPPING_CAPABILITY, "ployz.container.mark-stopping.v1", Container),
                 RemoveContainer: (remove_container, "RemoveContainer", RemoveContainerRequest, "remove_container", ContainerChanged, REMOVE_CONTAINER_CAPABILITY, "ployz.container.remove.v1", Container),
+                EnsureContainer: (ensure_container, "EnsureContainer", EnsureContainerRequest, "ensure_container", EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container),
                 InspectStorage: (inspect_storage, "InspectStorage", InspectStorageRequest, "inspect_storage", StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container),
                 PrepareVolumes: (prepare_volumes, "PrepareVolumes", PrepareVolumesRequest, "prepare_volumes", PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container),
                 ListVolumes: (list_volumes, "ListVolumes", ListVolumesRequest, "list_volumes", VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container),

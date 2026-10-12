@@ -1683,3 +1683,454 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 }
+
+mod ensure_container {
+    use std::time::Duration;
+
+    use axum::http::Method;
+    use ployz_core::{
+        ContainerNow, ContainerRefusalReason, EnsuredContainer, ExecConfig, ExecOptions,
+        ExecRequestFrame, MachineRpcClient,
+    };
+    use serde_json::{Value, json};
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
+
+    use super::*;
+    use crate::docker::test_support::{FakeDocker, ordinary_source, spec_with_sources};
+
+    fn spec(image: &str) -> Value {
+        spec_with(image, vec![])
+    }
+
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    fn spec_with(image: &str, sources: Vec<ployz_core::VolumeSource>) -> Value {
+        let mut spec = serde_json::to_value(spec_with_sources(sources)).unwrap();
+        spec["container"]["image"] = json!(image);
+        spec
+    }
+
+    fn slot(key: &str) -> Value {
+        json!({"namespace":"app", "kind":"service_container", "creation_key":key})
+    }
+
+    fn run_new(key: &str, spec: Value) -> Value {
+        json!({"want":{"state":"running", "container":{"new":{"slot":slot(key), "resolved_spec":spec}}}})
+    }
+
+    async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
+        service
+            .ensure_container(Request::new(
+                op::EnsureContainer::into_request(serde_json::from_value(request).unwrap())
+                    .encode()
+                    .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::EnsureContainer>()
+            .unwrap()
+    }
+
+    fn present(reply: &EnsuredContainer) -> &ContainerObservation {
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(observed),
+        } = reply
+        else {
+            panic!("expected an ensured present Container, got {reply:?}");
+        };
+        observed
+    }
+
+    fn requests(fake: &FakeDocker) -> Vec<(Method, String)> {
+        fake.requests.lock().unwrap().clone()
+    }
+
+    fn requests_since(fake: &FakeDocker, seen: usize) -> Vec<(Method, String)> {
+        requests(fake).split_off(seen)
+    }
+
+    fn ends_with<'a>(
+        requests: &'a [(Method, String)],
+        method: Method,
+        suffix: &'a str,
+    ) -> impl Iterator<Item = &'a (Method, String)> + 'a {
+        requests
+            .iter()
+            .filter(move |(seen, path)| *seen == method && path.ends_with(suffix))
+    }
+
+    fn set_state(fake: &FakeDocker, id: &ContainerId, state: Value) {
+        for container in fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            if container["Id"] == id.as_str() {
+                container["State"] = state.clone();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_running_want_creates_in_the_slot_once_and_resends_change_nothing() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-run").await;
+        let spec = spec("example.test/api:1");
+
+        let first = ensure(&service, run_new("k1", spec.clone())).await;
+        let observed = present(&first);
+        assert!(matches!(
+            observed.runtime,
+            ContainerRuntimeObservation::Running { .. }
+        ));
+        assert_eq!(
+            observed
+                .labels
+                .get("ployz.creation.key")
+                .map(String::as_str),
+            Some("k1")
+        );
+        let seen = requests(&fake);
+        assert_eq!(
+            ends_with(&seen, Method::POST, "/containers/create").count(),
+            1
+        );
+        assert_eq!(ends_with(&seen, Method::POST, "/start").count(), 1);
+
+        let again = ensure(&service, run_new("k1", spec)).await;
+        assert_eq!(again, first);
+        let later = requests_since(&fake, seen.len());
+        assert!(
+            later.iter().all(|(method, _)| *method == Method::GET),
+            "a resend only observes: {later:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_slot_holding_another_spec_refuses_and_shows_the_occupant() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-occupied").await;
+        let first = ensure(&service, run_new("k1", spec("example.test/api:1"))).await;
+        let occupant = present(&first).container_id;
+        let seen = requests(&fake).len();
+
+        let reply = ensure(&service, run_new("k1", spec("example.test/api:2"))).await;
+        let EnsuredContainer::Refused {
+            now: ContainerNow::Present(observed),
+            refusal,
+        } = reply
+        else {
+            panic!("expected a refusal naming the occupant, got {reply:?}");
+        };
+        assert_eq!(refusal.reason, ContainerRefusalReason::SlotOccupied);
+        assert_eq!(observed.container_id, occupant);
+        assert!(
+            requests_since(&fake, seen)
+                .iter()
+                .all(|(method, _)| *method == Method::GET),
+            "a refusal has no effect"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_running_want_for_an_existing_container_starts_it() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-start").await;
+        let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+            .container_id;
+        set_state(&fake, &id, json!({"Status":"exited", "ExitCode":0}));
+        let seen = requests(&fake).len();
+
+        let reply = ensure(
+            &service,
+            json!({"want":{"state":"running", "container":{"existing":{"id":id}}}}),
+        )
+        .await;
+        assert!(matches!(
+            present(&reply).runtime,
+            ContainerRuntimeObservation::Running { .. }
+        ));
+        assert_eq!(
+            ends_with(&requests_since(&fake, seen), Method::POST, "/start").count(),
+            1
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stopped_want_stops_a_running_container_and_leaves_a_stopped_one_without_a_drain() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-stop").await;
+        let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+            .container_id;
+        let seen = requests(&fake).len();
+
+        let stopped = json!({"want":{"state":"stopped", "container":{"id":id}, "drain":0,
+            "stop":{"signal":"SIGINT"}}});
+        let reply = ensure(&service, stopped).await;
+        assert!(matches!(
+            present(&reply).runtime,
+            ContainerRuntimeObservation::Exited { .. }
+        ));
+        let later = requests_since(&fake, seen);
+        assert_eq!(ends_with(&later, Method::POST, "/stop").count(), 1);
+        let seen = requests(&fake).len();
+
+        let slow = json!({"want":{"state":"stopped", "container":{"id":id}, "drain":30000}});
+        let again = tokio::time::timeout(Duration::from_secs(5), ensure(&service, slow))
+            .await
+            .expect("an already stopped Container waits no drain");
+        assert_eq!(again, reply);
+        assert!(
+            requests_since(&fake, seen)
+                .iter()
+                .all(|(method, _)| *method == Method::GET)
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_gone_want_stops_then_removes_and_a_resend_reads_absent() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-gone").await;
+        let spec = spec_with("example.test/api:1", vec![ordinary_source("data")]);
+        fake.volumes.lock().unwrap().insert(
+            "data".into(),
+            json!({"Name":"data", "Driver":"example-driver", "Mountpoint":"/volumes/data"}),
+        );
+        let id = present(&ensure(&service, run_new("k1", spec)).await).container_id;
+        let seen = requests(&fake).len();
+
+        let gone = json!({"want":{"state":"gone", "container":{"key":slot("k1")}, "drain":0}});
+        let reply = ensure(&service, gone.clone()).await;
+        assert_eq!(
+            reply,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Absent {
+                    of: serde_json::from_value(json!({"key":slot("k1")})).unwrap(),
+                },
+            }
+        );
+        let later = requests_since(&fake, seen);
+        assert_eq!(ends_with(&later, Method::POST, "/stop").count(), 1);
+        assert_eq!(
+            ends_with(&later, Method::DELETE, &format!("/containers/{id}")).count(),
+            1
+        );
+        assert!(
+            !later
+                .iter()
+                .any(|(method, path)| *method == Method::DELETE && path.contains("/volumes/")),
+            "a remove never touches a named Volume: {later:?}"
+        );
+        assert!(fake.volumes.lock().unwrap().contains_key("data"));
+        let seen = requests(&fake).len();
+
+        let again = ensure(&service, gone).await;
+        assert_eq!(again, reply);
+        assert!(
+            requests_since(&fake, seen)
+                .iter()
+                .all(|(method, _)| *method == Method::GET),
+            "a resend of a Gone only observes"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_resent_hook_want_after_the_hook_exited_runs_it_once_and_returns_its_exit() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-hook").await;
+        let hook = json!({"want":{"state":"running", "container":{"new":{
+            "slot":{"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
+            "resolved_spec":spec("example.test/api:1")}}}});
+        let id = present(&ensure(&service, hook.clone()).await).container_id;
+        // The hook ran and exited, and the reply was lost.
+        set_state(&fake, &id, json!({"Status":"exited", "ExitCode":3}));
+        let seen = requests(&fake).len();
+
+        let reply = ensure(&service, hook).await;
+        assert_eq!(present(&reply).container_id, id);
+        assert_eq!(
+            present(&reply).runtime,
+            ContainerRuntimeObservation::Exited { code: 3 }
+        );
+        let later = requests_since(&fake, seen);
+        assert_eq!(
+            ends_with(&later, Method::POST, "/start").count(),
+            0,
+            "a hook runs once: {later:?}"
+        );
+        assert_eq!(
+            ends_with(&requests(&fake), Method::POST, "/start").count(),
+            1
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn replies_redact_env_and_config_values_even_on_a_refusal() {
+        use std::os::unix::fs::MetadataExt;
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-ensure-redact").await;
+        let owner = std::fs::metadata(&data_dir).unwrap();
+        let secret_spec = |image: &str| {
+            json!({
+                "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
+                "mode":{"mode":"replicated", "replicas":1},
+                "container":{
+                    "image":image, "pull_policy":"missing",
+                    "environment":{"TOKEN":"secret"},
+                    "config_mounts":[{"config_name":"settings", "target":"/etc/api/settings",
+                        "uid":owner.uid(), "gid":owner.gid()}]
+                },
+                "pre_deploy":{"command":["migrate"], "environment":{"DATABASE_URL":"postgres://secret"}},
+                "configs":[{"name":"settings", "content":b"token=config-secret".to_vec()}]
+            })
+        };
+        let redacted = |observed: &ContainerObservation| {
+            let spec = &observed.resolved_spec;
+            assert_eq!(
+                spec.container.environment.get("TOKEN").map(String::as_str),
+                Some("<redacted>")
+            );
+            assert_eq!(
+                spec.pre_deploy
+                    .as_ref()
+                    .unwrap()
+                    .environment
+                    .get("DATABASE_URL")
+                    .map(String::as_str),
+                Some("<redacted>")
+            );
+            let graph = spec.mount_graph.config_graph();
+            assert!(
+                graph
+                    .configs()
+                    .iter()
+                    .all(|config| config.content.is_empty())
+            );
+            assert!(!serde_json::to_string(observed).unwrap().contains("secret"));
+        };
+
+        let created = ensure(&service, run_new("k1", secret_spec("example.test/api:1"))).await;
+        redacted(present(&created));
+        let EnsuredContainer::Refused {
+            now: ContainerNow::Present(occupant),
+            ..
+        } = ensure(&service, run_new("k1", secret_spec("example.test/api:2"))).await
+        else {
+            panic!("expected a refusal naming the occupant");
+        };
+        redacted(&occupant);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_gone_want_by_id_for_a_container_docker_lost_deletes_its_spec() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-ensure-gone-lost").await;
+        let id = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+            .container_id;
+        let (name, container) = {
+            let mut containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
+            let name = containers
+                .iter()
+                .find(|(_, container)| container["Id"] == id.as_str())
+                .map(|(name, _)| name.clone())
+                .unwrap();
+            let container = containers.remove(&name).unwrap();
+            (name, container)
+        };
+
+        let reply = ensure(
+            &service,
+            json!({"want":{"state":"gone", "container":{"id":id}, "drain":0}}),
+        )
+        .await;
+        assert_eq!(
+            reply,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Absent {
+                    of: serde_json::from_value(json!({"id":id})).unwrap(),
+                },
+            }
+        );
+
+        // Put the Docker object back: with its spec row gone it is no longer managed.
+        fake.named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .insert(name, container);
+        let local = service.local();
+        let inspected = local
+            .containers()
+            .unwrap()
+            .inspect_managed(&id, &local.record().id())
+            .await;
+        assert!(
+            matches!(inspected, Err(crate::docker::Error::SpecNotFound(lost)) if lost == id),
+            "the spec row outlived Gone: {inspected:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn exec_refuses_a_container_this_machine_does_not_manage() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-exec").await;
+        let stray = ContainerId::parse("b".repeat(64)).unwrap();
+        fake.named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .insert(
+                "stray".into(),
+                json!({"Id": stray, "Name":"/stray", "Config":{}, "State":{"Status":"running"}}),
+            );
+        let api = crate::machine_api::MachineApi::from_local(service);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
+        );
+        let mut client = MachineRpcClient::connect(format!("http://{address}"))
+            .await
+            .unwrap();
+
+        for (id, code) in [
+            (ContainerId::parse("a".repeat(64)).unwrap(), Code::NotFound),
+            (stray, Code::InvalidArgument),
+        ] {
+            let config = ExecRequestFrame::Config(ExecConfig {
+                container_id: id,
+                options: ExecOptions {
+                    command: vec!["sh".into()],
+                    attach_stdin: false,
+                    attach_stdout: true,
+                    attach_stderr: true,
+                    tty: false,
+                    detach: false,
+                },
+            })
+            .encode()
+            .unwrap();
+            let status = client
+                .exec(Request::new(tokio_stream::iter([config])))
+                .await
+                .expect_err("exec must refuse before any Docker exec is created");
+            assert_eq!(status.code(), code, "{id}");
+        }
+        assert!(
+            !requests(&fake)
+                .iter()
+                .any(|(_, path)| path.ends_with("/exec")),
+            "no exec reached Docker"
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}

@@ -386,6 +386,14 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn ensure_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::EnsureContainer>(request)?;
+        finish(self.local.ensure_container(request.want).await)
+    }
+
     async fn remove_container(
         &self,
         request: Request<OpaquePayload>,

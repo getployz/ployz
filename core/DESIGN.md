@@ -326,7 +326,8 @@ flowchart LR
   another's state is pending.
 - A clock-based safety wait. That includes a deadline, a budget, or a grace
   period whose expiry is what makes an effect safe. A driver bounding its own
-  patience is fine.
+  patience is fine. A drain that a driver asks a Machine to wait before stopping
+  its own Container is patience, not a safety wait.
 - A resource identity meaningful without its Machine, or a required round trip
   to an allocator.
 - A Cluster-side single writer, or machinery that prevents two operators instead

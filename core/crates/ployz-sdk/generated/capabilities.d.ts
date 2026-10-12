@@ -8,6 +8,7 @@ export type CapabilityName =
   | "ployz.certificates.policy.v1"
   | "ployz.certificates.publish.v1"
   | "ployz.container.create.v1"
+  | "ployz.container.ensure.v1"
   | "ployz.container.exec.v1"
   | "ployz.container.inspect.v1"
   | "ployz.container.list.v1"
