@@ -1,10 +1,14 @@
 import "@tanstack/react-start/server-only";
-import { agentCloudCall } from "@ployz/sdk";
+import { createRequire } from "node:module";
+import type * as PloyzSdk from "@ployz/sdk";
 import { Effect, Result } from "effect";
 import { type CloudCall, callCloud } from "#/modules/agent/call-cloud.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { Validation } from "#/server/public-error";
+
+// SAFETY: the package exports this named CommonJS SDK surface at runtime.
+const { agentCloudCall } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "agentCloudCall">;
 
 /** `POST /api/cli/agent/ask` and `/act`: `ployz mcp` hands an agent tool's Cloud part to Cloud, as the Caller. */
 export const handleAgentRequest = Effect.fn("Agent.handleCli")(function* (request: Request, part: "ask" | "act") {
