@@ -8,7 +8,7 @@ import type { Actor } from "#/modules/identity/actor";
 import {
   type DataLossList,
 } from "#/modules/runtime/data-loss-confirm";
-import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
+import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage } from "#/modules/runtime/ployz.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type {
@@ -54,6 +54,16 @@ export function asRemoveMachineOutcome<R>(
         kind: "missing_identities" as const,
         identities: cause.identities,
       } satisfies RemoveMachineOutcome),
+    ),
+    // A refusal changed nothing and says why; retrying it only delays the same answer.
+    Effect.catchIf(
+      (cause) => rpcErrorCode(cause) === "conflict",
+      (cause) =>
+        Effect.succeed({
+          kind: "refused" as const,
+          failureCode: "conflict",
+          message: rpcErrorMessage(cause) ?? "The Server refused its removal.",
+        } satisfies RemoveMachineOutcome),
     ),
     Effect.mapError(
       (cause) =>

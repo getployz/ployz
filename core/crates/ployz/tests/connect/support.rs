@@ -1085,6 +1085,14 @@ impl MachineRpc for DiscoveryService {
             "Volume switch verbs are not used by this fixture",
         ))
     }
+    async fn seed_volume(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
     async fn declare_mirror(
         &self,
         _request: Request<OpaquePayload>,
@@ -1158,6 +1166,15 @@ impl MachineRpc for DiscoveryService {
         ))
     }
     async fn forget_lease(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+
+    async fn demote_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -1571,6 +1588,19 @@ pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest)
 
 fn created_container_id() -> ContainerId {
     ContainerId::parse("1".repeat(64)).unwrap()
+}
+
+/// A Machine's storage holding no Volume copies.
+pub(super) fn empty_storage() -> ployz_core::StorageCapacity {
+    ployz_core::StorageCapacity {
+        backing: ployz_core::StorageBacking::Unallocated {
+            host_total_bytes: 100 * ployz_core::STORAGE_GIB,
+            host_available_bytes: 90 * ployz_core::STORAGE_GIB,
+        },
+        unmanaged_used_bytes: 0,
+        volumes: BTreeMap::new(),
+        copies: BTreeMap::new(),
+    }
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

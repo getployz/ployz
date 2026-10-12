@@ -41,6 +41,8 @@ type BottomBarProps = {
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
+  /** A running Deploy's storage step, in words, while it moves or copies a Volume before its Services. */
+  storage?: (deploymentId: string) => string | null;
   /** Details' notes: where changes came from, and merged pull requests' and the Parent's values. */
   notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "originFor" | "after">;
   /** Changes open pull requests saved here, going live when each merges. */
@@ -67,6 +69,7 @@ export function BottomBar({
   onDiscardNode,
   onDiscardRow,
   active: newestFirst,
+  storage = () => null,
   notes,
   waiting = [],
   noServers = false,
@@ -157,7 +160,7 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shown ? <AttemptState deployment={shown} /> : waiting.length ? (
+  ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} /> : waiting.length ? (
     <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />}
       title={waiting.map(({ number }) => `PR #${number}`).join(", ")}
       detail={waiting.map(({ number, changes }) => goLiveWhen(changes, number)).join(" · ")}>
@@ -191,10 +194,10 @@ export function BottomBar({
 }
 
 /** An in-flight Deployment, the CLI's or this dashboard's: its status, what it ships, and Logs to open its page. */
-function AttemptState({ deployment }: { deployment: DeploymentSummary }) {
+function AttemptState({ deployment, storage }: { deployment: DeploymentSummary; storage: string | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const deploys = deploysLabel(deployment);
-  const detail = deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys;
+  const detail = storage ?? (deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys);
   return (
     <Row icon={<DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />}
       title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={detail}>

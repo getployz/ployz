@@ -1936,6 +1936,7 @@ fn the_catalog_describes_settings_without_a_store() {
     }
     assert_eq!(classified("volume mirror"), ("never", "cloud"));
     assert_eq!(classified("volume mirror rm"), ("always", "cloud"));
+    assert_eq!(classified("volume restore"), ("always", "cloud"));
     assert_eq!(classified("deploy"), ("depends", "cloud"));
     assert_eq!(classified("mcp"), ("never", "local"));
     assert!(

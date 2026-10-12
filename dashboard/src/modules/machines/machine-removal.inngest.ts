@@ -90,6 +90,19 @@ export async function executeProcessMachineRemove({
     runInngestEffect(Effect.scoped(removeMachineActivity(attempt))),
   );
 
+  if (removed.kind === "refused") {
+    await step.run("complete-refused", () =>
+      runInngestEffect(
+        completeMachineRemoveAttemptActivity({
+          attemptId,
+          inngestRunId: runId,
+          completion: { state: "failed", failureCode: removed.failureCode, failureMessage: removed.message },
+          now: new Date(),
+        }),
+      ),
+    );
+    return { attemptId, status: "failed" as const };
+  }
   if (removed.kind === "missing_identities") {
     await step.run("complete-missing-identities", () =>
       runInngestEffect(

@@ -3413,7 +3413,7 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "The Server's name, typed to confirm its removal"
+        "help": "The Server's name, typed to confirm its removal; dead for a Server removed with --no-reset that does not answer"
       },
       {
         "name": "SERVER",
@@ -4770,6 +4770,61 @@
         "multiple": false,
         "index": 2,
         "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "volume restore",
+    "about": "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--from",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Server whose copy becomes the writer; it must hold the Volume's only copy"
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the run to end; it fails unless the run is done",
+        "keeps_running": true
       }
     ]
   },

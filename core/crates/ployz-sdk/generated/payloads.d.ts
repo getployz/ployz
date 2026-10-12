@@ -899,7 +899,11 @@ mounts: Array<Mount>,
 /**
  * Let more than one container write it; off refuses a second writer.
  */
-shared_writes?: boolean, };
+shared_writes?: boolean,
+/**
+ * Fix its storage now, as a Deploy would. A restored Volume keeps the storage of the copy it lands on.
+ */
+storage_locked?: boolean, };
 
 export type Cycle = "open" | "closed";
 
@@ -3731,7 +3735,7 @@ now: number, };
 
 export type Switch = { lease: Lease, pos: Pos, };
 
-export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "no_capacity" };
+export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "restore_point_gone" } | { "reason": "no_capacity" };
 
 export type SwitchReply = { decision: FenceDecision,
 /**

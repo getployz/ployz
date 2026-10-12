@@ -872,6 +872,15 @@ impl MachineRpc for MachineService {
         }
     }
 
+    async fn seed_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SeedVolume>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("SeedVolume", "Volume.Seed", &request)
+            .await
+    }
+
     async fn declare_mirror(
         &self,
         request: Request<OpaquePayload>,
@@ -979,6 +988,15 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::ForgetLease>(request)?;
         self.switch_verb::<ployz_core::SwitchReply>("ForgetLease", "Volume.ForgetLease", &request)
+            .await
+    }
+
+    async fn demote_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::DemoteVolume>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("DemoteVolume", "Volume.Demote", &request)
             .await
     }
 

@@ -23,6 +23,7 @@ import { PostHog } from "#/modules/analytics/posthog.server";
 import { NotFound } from "#/server/public-error";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { CommittedViews, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
@@ -179,6 +180,10 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     yield* cancelStoreGithubBuilds(organizationId, command.deployment).pipe(
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
+  }
+  // A Deploy takes the Volume placements staged in its Environment before its worker can look for them.
+  if (command.command === "admit" && written.written === "deployment" && written.status !== "applied") {
+    yield* stampPlacements(organizationId, written.environment_id, written.id);
   }
   // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
   if (command.command === "admit" || command.command === "start") {
