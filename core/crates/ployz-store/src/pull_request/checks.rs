@@ -221,6 +221,7 @@ fn list<'a>(
     let mut any = false;
     for row in rows {
         let _ = match is_removal(row) && lands_here(row) {
+            true if row.conflict => writeln!(summary, "- Removes `{}` · Changed there", label(row)),
             true => writeln!(summary, "- Removes `{}`", label(row)),
             false => writeln!(summary, "- `{}`: {}", label(row), line(row)),
         };

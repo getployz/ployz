@@ -2746,6 +2746,21 @@ fn the_check_names_a_removal_apart_from_values_and_reads_neutral_while_it_is_in_
     );
 }
 
+#[test]
+fn the_check_says_a_removal_was_changed_there() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    set(&store, &who, "production", &[("db.env.POOL", json!("10"))]);
+    save(&store, &who, "production");
+    assert_eq!(
+        check(&store, &who).unwrap().summary,
+        "- `web · DB_URL`: ${{ db.PLOYZ_PRIVATE_DOMAIN }} → db.internal\n\n\
+         ### Changed in production\n\n\
+         - Removes `db` · Changed there\n\n\
+         The merge sets these. Undo in Ployz History reverts it."
+    );
+}
+
 fn runner() -> ployz_store::RunnerId {
     ployz_store::RunnerId::parse("runner").unwrap()
 }

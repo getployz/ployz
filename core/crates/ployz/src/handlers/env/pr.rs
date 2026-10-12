@@ -191,9 +191,8 @@ fn shown_row(row: &MergeRow) -> Shown {
     // A new node's row is a node row too; only a removal has no preview.
     if *row.at.row().at() == At::Node && row.preview.is_null() {
         let (lands, tone) = match row.ride {
-            Ride::Kept => ("Kept".to_owned(), crate::ui::Tone::Muted),
+            Ride::Kept | Ride::ProductionKeeps => ("Kept".to_owned(), crate::ui::Tone::Muted),
             Ride::Excluded => ("Excluded".to_owned(), crate::ui::Tone::Muted),
-            Ride::ProductionKeeps => ("keeps its own".to_owned(), crate::ui::Tone::Muted),
             Ride::Rides | Ride::Edited if !row.refused_by.is_empty() => {
                 details.extend(row.refused_by.iter().map(ToString::to_string));
                 ("In use".to_owned(), crate::ui::Tone::Muted)
@@ -347,6 +346,10 @@ mod tests {
         );
         assert_eq!(
             removal("kept", false, json!([])),
+            shown("Kept", Tone::Muted, &[])
+        );
+        assert_eq!(
+            removal("production_keeps", false, json!([])),
             shown("Kept", Tone::Muted, &[])
         );
     }
