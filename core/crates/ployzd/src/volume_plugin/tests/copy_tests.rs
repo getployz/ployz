@@ -616,6 +616,20 @@ async fn landed(socket: &Path, target: &str) -> Value {
     panic!("the pull never settled");
 }
 
+/// Resends the Pull until it finishes the landed receive. Inspect shows the target a
+/// moment before the receive task records its outcome, and a resend in that window
+/// still finds the receive running.
+async fn finished(socket: &Path, target: &str) -> Value {
+    for _ in 0..300 {
+        let reply = post(socket, "/Volume.Copy.Pull", pull(target)).await;
+        if reply.pointer("/Ok/pull") == Some(&Value::Null) {
+            return reply;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the pull of {target} never finished");
+}
+
 #[tokio::test]
 async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target() {
     let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
@@ -641,8 +655,7 @@ async fn a_pull_into_no_slot_sizes_the_slot_from_the_writer_and_lands_the_target
     );
     assert_eq!(property(&test, SLOT_FS, "readonly").as_deref(), Some("on"));
 
-    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
-    assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null));
+    let reply = finished(&socket, "w-1-1").await;
     assert_eq!(reply.pointer("/Ok/newest/name"), Some(&json!("w-1-1")));
     assert!(property(&test, SLOT, "ployz:pull").is_none());
     assert_eq!(
@@ -718,8 +731,7 @@ async fn a_pull_resumes_an_interrupted_receive_then_prunes_to_the_target() {
     post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
     let copy = landed(&socket, "w-1-2").await;
     assert_eq!(copy.pointer("/Ok/newest/guid"), Some(&json!("12")));
-    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
-    assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null));
+    finished(&socket, "w-1-2").await;
     assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-2"]);
     assert_eq!(
         source.requests(),
@@ -754,8 +766,7 @@ async fn a_pull_resent_after_a_restart_resumes_the_stopped_receive_by_its_token(
         Some(&json!("12")),
         "{copy}"
     );
-    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
-    assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
+    finished(&socket, "w-1-2").await;
     assert_eq!(
         source.requests(),
         [
@@ -958,12 +969,7 @@ async fn a_pull_converges_after_a_failure_before_the_receive_starts() {
         let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
         assert!(reply.get("Ok").is_some(), "{step}: {reply}");
         landed(&socket, "w-1-1").await;
-        let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
-        assert_eq!(
-            reply.pointer("/Ok/pull"),
-            Some(&Value::Null),
-            "{step}: {reply}"
-        );
+        finished(&socket, "w-1-1").await;
         assert_eq!(
             property(&test, SLOT, "refquota").as_deref(),
             Some("1073741824")
@@ -1131,8 +1137,7 @@ async fn pull_until_pruned(machine: &Machine, target: &str) {
         Some(&json!(target)),
         "{copy}"
     );
-    let reply = machine.call("/Volume.Copy.Pull", pull(target)).await;
-    assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
+    finished(&machine.socket, target).await;
 }
 
 #[tokio::test]
@@ -1425,7 +1430,15 @@ async fn a_pull_resent_after_it_landed_finishes_it_whatever_the_expect_says() {
         "{started}"
     );
     landed(&b.socket, "w-1-2").await;
-    let finished = set_mirror(&b, &expect, "w-1-2").await;
+    let mut finished = set_mirror(&b, &expect, "w-1-2").await;
+    // Inspect shows the target before the receive task records its outcome.
+    for _ in 0..300 {
+        if finished.pointer("/Ok/pull") == Some(&Value::Null) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        finished = set_mirror(&b, &expect, "w-1-2").await;
+    }
     assert_eq!(
         finished.pointer("/Ok/pull"),
         Some(&Value::Null),

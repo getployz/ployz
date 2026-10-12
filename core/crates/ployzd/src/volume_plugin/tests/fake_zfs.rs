@@ -70,11 +70,10 @@ prop() {{
   check_property "$2"
   f='{props}'/"$1/$2"
   # A write truncates before it fills, so a concurrent read can catch the file empty; no property is.
-  if [ -e "$f" ]; then
-    value=$(cat "$f")
-    while [ -z "$value" ]; do sleep 0.01; value=$(cat "$f"); done
-    printf '%s\n' "$value"
-  else printf '%s\n' "$3"; fi
+  # A concurrent receive can remove the file between reads, which reads as unset, as in ZFS.
+  value=$(cat "$f" 2>/dev/null) || value=
+  while [ -z "$value" ] && [ -e "$f" ]; do sleep 0.01; value=$(cat "$f" 2>/dev/null) || value=; done
+  printf '%s\n' "${{value:-$3}}"
 }}
 # A dataset made by `create` gets a guid no earlier dataset had.
 new_guid() {{
