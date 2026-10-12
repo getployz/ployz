@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
@@ -149,6 +149,24 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     .where(and(eq(volumePlacement.volumeId, id), isNotNull(sql`${volumePlacement.staged}->'seed'`)))
     .returning();
   return { ok: true, placement: view(committed ?? row) } satisfies PlacementWrite;
+});
+
+/**
+ * Mark committed every staged restore in `environment` whose Volume the Store lists, so its row stays discardable once a
+ * Store discard removes that Volume. Covers rows staged before the marker, or whose server stopped before writing it.
+ */
+export const markCommittedRestores = Effect.fn("VolumePlacement.markCommittedRestores")(function* (organizationId: string, environment: EnvironmentRef) {
+  const read = yield* readStore(organizationId, { query: "volumes", environment });
+  if (read.volumes.length === 0) return;
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumePlacement)
+    .set({ staged: sql`jsonb_set(${volumePlacement.staged}, '{seed,committed}', 'true')`, updatedAt: new Date() })
+    .where(and(
+      eq(volumePlacement.organizationId, organizationId),
+      eq(volumePlacement.environmentId, read.environment.id),
+      inArray(volumePlacement.volumeId, read.volumes.map((volume) => volume.id)),
+      isNotNull(sql`${volumePlacement.staged}->'seed'`),
+    ));
 });
 
 /**

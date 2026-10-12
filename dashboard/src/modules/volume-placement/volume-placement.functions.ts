@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
+import { discardPlacement, listPlacements, markCommittedRestores, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -40,6 +40,13 @@ export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(VolumeInput))
   .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
     Effect.flatMap((organization) => discardPlacement(organization.id, context.actor.userId, data.volumeId, data.environment)),
+  )));
+
+export const markCommittedRestoresServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(Schema.Struct({ ...Organization.fields, environment: Environment })))
+  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
+    Effect.flatMap((organization) => markCommittedRestores(organization.id, data.environment)),
   )));
 
 /** `at` is the restore point's time in Unix seconds. */
