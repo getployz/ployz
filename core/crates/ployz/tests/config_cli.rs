@@ -976,6 +976,26 @@ fn an_agent_adds_checks_and_removes_domains() {
         );
         let usage = failed(store, &["domain", "add", "web", "not a host"], 2);
         assert!(!usage["message"].as_str().unwrap().contains("not a host"));
+
+        // `SERVICE.domains` reads like a Setting; the domain commands change it.
+        let got = ok(store, &["get", "web.domains"]);
+        assert_eq!(got["settings"], json!([]));
+        let hostnames = got["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["domain"]["prefix"].as_str().or(row["domain"]["hostname"].as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(hostnames, [Some("web"), Some("app.example.com")]);
+        let explained = ok(store, &["explain", "web.domains"]);
+        assert_eq!(explained["path"], json!("web.domains"));
+        assert_eq!(explained["schema"]["readOnly"], json!(true));
+        assert_eq!(explained["example"], json!("ployz domain add web"));
+        for edit in [&["set", "web.domains=shop"][..], &["unset", "web.domains"]] {
+            let refused = error(store, edit);
+            assert_eq!(refused["code"], json!("invalid_argument"), "{edit:?}");
+            assert_eq!(refused["details"]["next"], json!("ployz domain add web"), "{edit:?}");
+        }
         let staged = ok(store, &["diff"]);
         assert!(
             staged["domain_changes"]
