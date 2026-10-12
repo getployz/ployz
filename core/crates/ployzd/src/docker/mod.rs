@@ -70,6 +70,9 @@ pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 pub struct LocalDocker {
     client: Docker,
     endpoint_creates: Arc<Mutex<()>>,
+    /// Counts container creates, so a stranded ingress retry can tell a newer
+    /// container may have appeared since its scan.
+    creates: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LocalDocker {
@@ -81,6 +84,7 @@ impl LocalDocker {
         Self {
             client,
             endpoint_creates: Arc::new(Mutex::new(())),
+            creates: Arc::default(),
         }
     }
 
@@ -102,6 +106,10 @@ impl LocalDocker {
             .driver_status
             .as_deref()
             .is_some_and(containerd_store))
+    }
+
+    fn creates(&self) -> u64 {
+        self.creates.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {

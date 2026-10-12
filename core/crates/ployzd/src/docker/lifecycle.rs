@@ -393,8 +393,8 @@ impl ContainerRuntime {
     }
 
     /// Start an Ingress Proxy whose last start failed, unless a request stopped it
-    /// or is about to.
-    pub(super) async fn start_stranded(&self, container_id: &ContainerId) {
+    /// or is about to, or a container was created since `creates` was read.
+    pub(super) async fn start_stranded(&self, container_id: &ContainerId, creates: u64) {
         let gate = self
             .stranded()
             .await
@@ -402,7 +402,9 @@ impl ContainerRuntime {
             .entry(*container_id)
             .or_default()
             .clone();
-        let _gate = gate.lock().await;
+        let Ok(_gate) = gate.try_lock() else {
+            return;
+        };
         if self.stranded().await.held.contains(container_id)
             || self.stopping.borrow().contains_key(container_id)
         {
@@ -410,7 +412,8 @@ impl ContainerRuntime {
         }
         let result = async {
             let inspected = self.ensure_managed(container_id).await?;
-            if !failed_start(&inspected) {
+            // A newer Ingress Proxy may be about to take port 80; the next scan decides.
+            if !failed_start(&inspected) || self.docker.creates() != creates {
                 return Ok(());
             }
             self.start_inspected(container_id, &inspected).await
@@ -578,6 +581,8 @@ impl super::LocalDocker {
         if self.bridge_capacity().await?.free_endpoints() == 0 {
             return Err(Error::EndpointCapacity);
         }
+        self.creates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.client.create_container(options, body).await?)
     }
 }
@@ -826,17 +831,23 @@ mod tests {
     async fn a_stranded_ingress_starts_until_a_request_stops_it() {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
         assert!(started(&fake), "a failed first start is retried");
 
         runtime.stop(&container_id, None, None).await.unwrap();
         fake.requests.lock().unwrap().clear();
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
         assert!(!started(&fake), "a stopped ingress stays stopped");
 
         runtime.start(&container_id).await.unwrap();
         fake.requests.lock().unwrap().clear();
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
         assert!(started(&fake), "a requested start lifts the stop");
     }
 
@@ -845,7 +856,9 @@ mod tests {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
         runtime.mark_stopping(container_id);
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
 
         assert!(!started(&fake));
     }
@@ -865,7 +878,11 @@ mod tests {
 
         let starting = tokio::spawn({
             let runtime = runtime.clone();
-            async move { runtime.start_stranded(&container_id).await }
+            async move {
+                runtime
+                    .start_stranded(&container_id, runtime.docker.creates())
+                    .await
+            }
         });
         barrier.wait().await;
         let stopping = tokio::spawn({
@@ -899,8 +916,35 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(lifecycle, ["start", "stop"]);
         fake.requests.lock().unwrap().clear();
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
         assert!(!started(&fake), "the stop holds");
+    }
+
+    #[tokio::test]
+    async fn a_container_created_since_the_scan_voids_the_start() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        let creates = runtime.docker.creates();
+        let stranded = fake.existing_container.lock().unwrap().clone();
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                container_request(
+                    ContainerKind::ServiceContainer,
+                    &Namespace::parse("app").unwrap(),
+                    &spec_with_sources(Vec::new()),
+                    std::future::ready(None),
+                ),
+            )
+            .await
+            .unwrap();
+        *fake.existing_container.lock().unwrap() = stranded;
+        fake.requests.lock().unwrap().clear();
+
+        runtime.start_stranded(&container_id, creates).await;
+
+        assert!(!started(&fake), "the next scan decides");
     }
 
     #[tokio::test]
@@ -919,7 +963,11 @@ mod tests {
 
         let starting = tokio::spawn({
             let runtime = runtime.clone();
-            async move { runtime.start_stranded(&container_id).await }
+            async move {
+                runtime
+                    .start_stranded(&container_id, runtime.docker.creates())
+                    .await
+            }
         });
         barrier.wait().await;
         tokio::time::timeout(std::time::Duration::from_secs(1), runtime.forget(&other))
@@ -933,7 +981,9 @@ mod tests {
     async fn an_ingress_docker_never_tried_to_start_is_left_alone() {
         let (runtime, fake, container_id) = stranded("").await;
 
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
 
         assert!(!started(&fake));
     }
@@ -945,7 +995,9 @@ mod tests {
         let (runtime, fake, container_id) =
             stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
 
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
 
         assert!(started(&fake));
     }
@@ -955,7 +1007,9 @@ mod tests {
         let (runtime, fake, container_id) =
             stranded_with("exited", "", FakeDocker::default()).await;
 
-        runtime.start_stranded(&container_id).await;
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
 
         assert!(!started(&fake));
     }

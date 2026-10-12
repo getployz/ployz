@@ -224,6 +224,7 @@ impl ContainerRuntime {
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
         // TODO: preserve stale rows when Docker cannot provide a complete inventory.
         let machine_id = sink.local.record().id();
+        let creates = self.docker.creates();
         let inventory = self.docker.managed_container_ids().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
@@ -264,7 +265,9 @@ impl ContainerRuntime {
             && let Some(container_id) =
                 stranded_ingress(&observed, observed.len() == container_ids.len())
         {
-            self.start_stranded(&container_id).await;
+            // Off the event loop, so a slow Docker start never delays later scans.
+            let runtime = self.clone();
+            tokio::spawn(async move { runtime.start_stranded(&container_id, creates).await });
         }
         Ok(())
     }

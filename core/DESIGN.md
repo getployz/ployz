@@ -462,7 +462,8 @@ redeployed. On each local container scan (Docker events and a 30 second rescan)
 the daemon starts the newest local Ingress Proxy when Docker recorded its failed
 last start and no other local one is running or restarting. It does so only
 while the Machine participates and its own record still accepts ingress, and
-only after a scan that inspected every local container. It decides from its own
+only after a scan that inspected every local container, and no container was
+created since that scan began, so a newer Ingress Proxy keeps port 80. It decides from its own
 Docker and record alone. It never creates, replaces, moves or removes a
 container. A stopped Ingress Proxy stays stopped: a requested stop holds the
 container down, even one that never ran, until a requested start; the hold lives
