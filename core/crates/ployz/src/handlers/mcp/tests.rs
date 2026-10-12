@@ -416,6 +416,7 @@ async fn replays(transcript: &Transcript, server: Server) {
 }
 
 #[tokio::test]
+#[ignore = "agent replay, run by hand: see core/docs/RELEASE.md"]
 async fn every_cloud_transcript_replays_through_ployz_mcp() {
     for transcript in transcripts()
         .iter()
@@ -436,6 +437,7 @@ async fn every_cloud_transcript_replays_through_ployz_mcp() {
 }
 
 #[tokio::test]
+#[ignore = "agent replay, run by hand: see core/docs/RELEASE.md"]
 async fn every_local_transcript_replays_against_a_local_store() {
     for transcript in transcripts()
         .iter()
