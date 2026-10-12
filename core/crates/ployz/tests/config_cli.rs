@@ -816,7 +816,7 @@ fn an_agent_creates_and_edits_an_image_service() {
         assert_eq!(human.lines().count(), 1);
         assert!(!human.contains('\u{1b}'));
         assert!(!human.contains('\t'));
-        assert!(human.contains("alpha\\nweb.env.SPOOF = true\\t\\u{1b}[31mcafé"));
+        assert!(human.contains(r#""alpha\nweb.env.SPOOF = true\t\u001b[31mcafé""#));
 
         // Unsetting the image disconnects the source: the Service is empty again.
         ok(store, &["unset", "web.image"]);
@@ -860,6 +860,17 @@ fn an_agent_adds_lists_renames_and_removes_services() {
         );
         let inspected = ok(store, &["service", "inspect", "frontend"]);
         assert_eq!(inspected["private_dns"], json!("web"));
+        // The name stays, but unset would now restore the new one.
+        let private = &ok(store, &["get", "frontend.privateDns"])["settings"][0];
+        assert_eq!(
+            (&private["value"], &private["default"]),
+            (&json!("web"), &json!("frontend"))
+        );
+        let explained = ok(store, &["explain", "frontend.privateDns"]);
+        assert_eq!(
+            explained.pointer("/schema/default"),
+            Some(&json!("frontend"))
+        );
         assert_eq!(inspected["values"]["image"], json!("nginx:1"));
         assert_eq!(inspected["lineage"], inspected["id"]);
 
@@ -971,30 +982,54 @@ fn an_agent_adds_checks_and_removes_domains() {
         );
         let usage = failed(store, &["domain", "add", "web", "not a host"], 2);
         assert!(!usage["message"].as_str().unwrap().contains("not a host"));
-        let staged = ok(store, &["diff"]);
-        assert!(
-            staged["domain_changes"]
-                .as_array()
-                .unwrap()
-                .contains(&json!({ "path": "web.domains", "change": "added app.example.com" })),
-            "{staged}"
-        );
-        let planned = ok(store, &["deploy", "--plan"]);
-        assert!(
-            planned["domain_changes"]
-                .as_array()
-                .unwrap()
-                .contains(&json!({ "path": "web.domains", "change": "added app.example.com" })),
-            "{planned}"
-        );
-        let inspected = ok(store, &["service", "inspect", "web"]);
-        assert!(
-            inspected["domain_changes"]
-                .as_array()
-                .unwrap()
-                .contains(&json!({ "path": "web.domains", "change": "added app.example.com" })),
-            "{inspected}"
-        );
+
+        // `SERVICE.domains` reads like a Setting; the domain commands change it.
+        let got = ok(store, &["get", "web.domains"]);
+        assert_eq!(got["settings"], json!([]));
+        let hostnames = got["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["prefix"].as_str().or(row["hostname"].as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(hostnames, [Some("app.example.com"), Some("web")]);
+        let explained = ok(store, &["explain", "web.domains"]);
+        assert_eq!(explained["path"], json!("web.domains"));
+        assert_eq!(explained["schema"]["readOnly"], json!(true));
+        assert_eq!(explained["example"], json!("ployz domain add web"));
+        let edits = [
+            &["set", "web.domains=shop"][..],
+            &["unset", "web.domains"],
+            &["discard", "web.domains"],
+        ];
+        for edit in edits {
+            let refused = error(store, edit);
+            assert_eq!(refused["code"], json!("invalid_argument"), "{edit:?}");
+            assert_eq!(
+                refused["details"]["next"],
+                json!("ployz domain add web"),
+                "{edit:?}"
+            );
+        }
+        // A generated domain reads as its full hostname, under a placeholder until a
+        // Cluster Domain is known.
+        let generated = if cloud {
+            "added web.acme.ployz.app on port 8080"
+        } else {
+            "added web.<cluster domain> on port 8080"
+        };
+        let reads = [
+            ok(store, &["diff"]),
+            ok(store, &["deploy", "--plan"]),
+            ok(store, &["service", "inspect", "web"]),
+        ];
+        for read in reads {
+            let changes = read["domain_changes"].as_array().unwrap();
+            for change in ["added app.example.com", generated] {
+                let line = json!({ "path": "web.domains", "change": change });
+                assert!(changes.contains(&line), "{read}");
+            }
+        }
 
         let listed = ok(store, &["domain", "ls"]);
         let first = &listed["domains"][0];

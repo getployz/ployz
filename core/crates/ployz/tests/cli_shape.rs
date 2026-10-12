@@ -1038,7 +1038,7 @@ fn results_on_stdout_side_channel_on_stderr() {
     let (stdout, stderr) = run(&["service", "inspect", "web"]);
     assert!(stdout.starts_with("service = web\n"), "{stdout}");
     assert!(
-        stdout.contains("\nimage = nginx:1 (default -)\n"),
+        stdout.contains("\nimage = \"nginx:1\" (default -)\n"),
         "{stdout}"
     );
     assert!(stdout.contains("\nreplicas = 1 (default)\n"), "{stdout}");

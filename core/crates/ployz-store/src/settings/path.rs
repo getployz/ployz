@@ -263,6 +263,8 @@ pub(crate) enum Target {
     Mount(VolumeName),
     /// The directory the Service mounts a Config at.
     ConfigMount(ConfigRef),
+    /// Its domains, read here; the domain commands change them.
+    Domains,
 }
 
 impl SettingPath {
@@ -357,6 +359,7 @@ impl SettingPath {
                 Some(Target::ConfigMount(ConfigRef::parse(config)?))
             }
             Some("source") => Some(Target::Source),
+            Some("domains") => Some(Target::Domains),
             Some(rest) => Some(match rest.strip_prefix("env.") {
                 None => Target::Setting(ServiceSetting::parse(rest)?),
                 Some(variable) => match variable.split_once('.') {
@@ -422,6 +425,15 @@ impl SettingPath {
         match &self.0 {
             Addressed::Service(service, _) => Some(service),
             Addressed::Volume(..) | Addressed::Config(..) => None,
+        }
+    }
+
+    /// The Service whose domains it reads, when it is `SERVICE.domains`.
+    #[must_use]
+    pub fn domains_of(&self) -> Option<&ServiceName> {
+        match &self.0 {
+            Addressed::Service(service, Some(Target::Domains)) => Some(service),
+            Addressed::Service(..) | Addressed::Volume(..) | Addressed::Config(..) => None,
         }
     }
 
@@ -492,6 +504,7 @@ impl fmt::Display for SettingPath {
         match target {
             Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),
             Some(Target::Source) => write!(formatter, "{service}.source"),
+            Some(Target::Domains) => write!(formatter, "{service}.domains"),
             Some(Target::Variable(key)) => write!(formatter, "{service}.env.{key}"),
             Some(Target::Exported(key)) => write!(formatter, "{service}.env.{key}.exported"),
             Some(Target::Mount(volume)) => write!(formatter, "{service}.mounts.{volume}"),
@@ -515,6 +528,15 @@ impl From<SettingPath> for String {
     fn from(value: SettingPath) -> Self {
         value.to_string()
     }
+}
+
+/// `SERVICE.domains` read-only: an edit to it points at the command that changes them.
+pub(crate) fn domains_are_read_only(path: &SettingPath, service: &ServiceName) -> RpcError {
+    let next = format!("ployz domain add {service}");
+    error::invalid(
+        format!("{path}: use {next} instead"),
+        json!({ "next": next }),
+    )
 }
 
 /// A path that stops at its node: name one of its Settings.

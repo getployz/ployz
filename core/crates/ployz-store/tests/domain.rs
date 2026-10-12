@@ -11,11 +11,11 @@ use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AddDomain, Admit, Approval, Cancel, ClusterDomain, ClusterDomainStatus, Command,
     ConfigStore, CreateEnvironment, CreateProject, CreateService, Deploy, DeploymentId,
-    DestructiveKind, DiffQuery, DiffView, DnsLookup, DomainAction, DomainEvidence, DomainQuery,
-    DomainRow, DomainStatus, DomainsQuery, EnvironmentId, EnvironmentName, EnvironmentRef,
-    Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName, Publish, PublishedHostname, Query,
-    RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId, ServiceLineageId,
-    SetGeneratedDomain, Trusted, View, Written,
+    DestructiveKind, DiffQuery, DiffView, DnsLookup, DomainAction, DomainChange, DomainEvidence,
+    DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId, EnvironmentName,
+    EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName, Publish,
+    PublishedHostname, Query, RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId,
+    ServiceLineageId, SetGeneratedDomain, Trusted, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -558,6 +558,51 @@ fn a_removed_generated_domain_is_named_under_the_cluster_domain_it_runs_under() 
             "web.acme.ployz.app".to_owned(),
             "web.managedHostnames".to_owned()
         )]
+    );
+}
+
+#[test]
+fn a_staged_generated_domain_reads_by_the_hostname_it_runs_under() {
+    let (store, who) = deployed_generated_domain();
+    store
+        .write_trusted(
+            &who,
+            &RemoveDomain {
+                environment: EnvironmentRef::default(),
+                domain: "web".into(),
+            },
+            &cloud(),
+        )
+        .unwrap();
+    store
+        .write_trusted(&who, &add_prefix("shop"), &cloud())
+        .unwrap();
+    let mut other = cloud();
+    other.domains.cluster_domain = Some(ClusterDomain {
+        name: host("other.ployz.app"),
+        status: ClusterDomainStatus::Ready,
+    });
+    let read = |trusted: &Trusted| -> Vec<String> {
+        let diff: DiffView = store
+            .read_trusted(&who, &DiffQuery::default(), trusted)
+            .unwrap();
+        diff.changes
+            .iter()
+            .flat_map(|change| &change.settings)
+            .filter_map(DomainChange::of)
+            .flatten()
+            .map(|domain| domain.to_string())
+            .collect()
+    };
+    // The deployed one keeps its hostname; the new one takes the current Cluster Domain.
+    assert_eq!(
+        read(&other),
+        ["removed web.acme.ployz.app", "added shop.other.ployz.app"]
+    );
+    // Without Cloud's evidence the last Deployment's Cluster Domain stands in.
+    assert_eq!(
+        read(&Trusted::default()),
+        ["removed web.acme.ployz.app", "added shop.acme.ployz.app"]
     );
 }
 

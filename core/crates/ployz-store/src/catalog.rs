@@ -2,7 +2,7 @@
 //! completion show. It is rendered from the Setting types in [`crate::settings`],
 //! so the catalog, `get` and validation never disagree. Keys come out sorted.
 
-use ployz_core::RpcError;
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
@@ -34,12 +34,15 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
             "type": "object",
             "patternProperties": { NODE_NAME: { "$ref": "#/$defs/service" } },
             "additionalProperties": false,
-            "$defs": { "service": service() },
+            "$defs": { "service": service(None) },
         })));
     };
     let path = SettingPath::parse(path)?;
-    path.settings_of()?;
-    Ok(versioned(path.target().map_or_else(service, target)))
+    let named = Some(path.settings_of()?);
+    Ok(versioned(
+        path.target()
+            .map_or_else(|| service(named), |one| target(one, named)),
+    ))
 }
 
 /// One Setting: its canonical path and its schema.
@@ -63,7 +66,7 @@ pub fn explain(path: &str) -> Result<Explained, RpcError> {
         return Err(crate::settings::name_a_setting(service));
     };
     Ok(Explained {
-        schema: target(one),
+        schema: target(one, Some(service)),
         path: parsed,
     })
 }
@@ -90,10 +93,11 @@ fn versioned(mut schema: Value) -> Value {
     schema
 }
 
-pub(crate) fn service() -> Value {
+/// A Service's Settings, with the defaults that follow its name when `named` is given.
+pub(crate) fn service(named: Option<&ServiceName>) -> Value {
     let mut properties = ServiceSetting::ALL
         .into_iter()
-        .map(|one| (one.name().to_owned(), setting(one)))
+        .map(|one| (one.name().to_owned(), setting(one, named)))
         .collect::<Map<_, _>>();
     properties.insert(
         "env".to_owned(),
@@ -177,11 +181,17 @@ fn config_mount() -> Value {
     })
 }
 
-fn target(target: &Target) -> Value {
+fn target(target: &Target, named: Option<&ServiceName>) -> Value {
     match target {
         Target::Mount(_) => mount(),
         Target::ConfigMount(_) => config_mount(),
-        Target::Setting(one) => setting(*one),
+        Target::Setting(one) => setting(*one, named),
+        Target::Domains => json!({
+            "title": "Domains",
+            "description": "The Service's generated and custom domains. Read here; domain add, domain set and domain rm change them.",
+            "readOnly": true,
+            "x-ployz-apply": "staged",
+        }),
         Target::Source => json!({
             "title": "Source",
             "description": "Where the Service runs from, as one change: its image, or its repository and root directory. Discard takes it back whole; set image or repository to change it.",
@@ -200,13 +210,14 @@ fn target(target: &Target) -> Value {
     }
 }
 
-fn setting(one: ServiceSetting) -> Value {
+fn setting(one: ServiceSetting, named: Option<&ServiceName>) -> Value {
     let mut schema = one.expected();
     let object = schema.as_object_mut().expect("expected values are objects");
     object.insert("title".into(), json!(one.label()));
     object.insert("description".into(), json!(one.description()));
-    if !one.default().is_null() {
-        object.insert("default".into(), one.default());
+    let default = one.default(named);
+    if !default.is_null() {
+        object.insert("default".into(), default);
     }
     object.insert("examples".into(), one.examples());
     object.insert("x-ployz-apply".into(), json!(one.apply()));
@@ -234,9 +245,31 @@ mod tests {
             serde_json::to_string(&schema(None).unwrap()).unwrap()
         );
         let whole = schema(None).unwrap();
+        let mut named = schema(Some("web")).unwrap()["properties"].clone();
+        named["privateDns"]
+            .as_object_mut()
+            .unwrap()
+            .remove("default");
+        assert_eq!(named, whole["$defs"]["service"]["properties"]);
+    }
+
+    #[test]
+    fn a_private_dns_name_defaults_to_the_service_named_in_the_path() {
+        let whole = schema(None).unwrap();
         assert_eq!(
-            schema(Some("web")).unwrap()["properties"],
-            whole["$defs"]["service"]["properties"]
+            whole["$defs"]["service"]["properties"]["privateDns"].get("default"),
+            None
+        );
+        let service = schema(Some("shop")).unwrap();
+        assert_eq!(
+            service["properties"]["privateDns"]["default"],
+            json!("shop")
+        );
+        let one = explain("shop.privateDns").unwrap();
+        assert_eq!(one.schema["default"], json!("shop"));
+        assert_eq!(
+            schema(Some("shop.privateDns")).unwrap()["default"],
+            json!("shop")
         );
     }
 
