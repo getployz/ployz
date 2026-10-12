@@ -885,8 +885,8 @@ fn removal_dependents(next: &Intent, removals: &[&PlannedRow]) -> BTreeMap<RowId
 struct Uncelled<'service> {
     /// Each variable's description and whether it is exported, by key.
     labels: BTreeMap<&'service str, (Option<&'service str>, bool)>,
-    /// Each route's target port, by hostname.
-    ports: BTreeMap<&'service str, Option<u16>>,
+    /// Each route's hostname and target port, sorted.
+    ports: Vec<(&'service str, Option<u16>)>,
     template: Option<&'service ServiceTemplate>,
 }
 
@@ -898,12 +898,16 @@ impl<'service> Uncelled<'service> {
                 .iter()
                 .map(|v| (v.key.as_str(), (v.description.as_deref(), v.exported)))
                 .collect(),
-            ports: service
-                .config
-                .routes
-                .iter()
-                .map(|route| (route.hostname.as_str(), route.target_port))
-                .collect(),
+            ports: {
+                let mut ports: Vec<_> = service
+                    .config
+                    .routes
+                    .iter()
+                    .map(|route| (route.hostname.as_str(), route.target_port))
+                    .collect();
+                ports.sort_unstable();
+                ports
+            },
             template: service.config.template.as_ref(),
         }
     }
