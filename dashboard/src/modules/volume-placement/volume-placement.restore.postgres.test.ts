@@ -107,10 +107,16 @@ const orphanedRestore = Effect.fn(function* () {
   return { services, store, volumeId: staged.placement.volumeId };
 });
 
+/** A Deploy takes every placement staged, as one admitted with nothing more staged would. */
+const stampStaged = (services: Effect.Success<ReturnType<typeof storeTestCloud>>, deployment: string) => Effect.gen(function* () {
+  const staged = (yield* listPlacements(ORGANIZATION)).filter((row) => row.staged !== null).map((row) => row.volumeId);
+  yield* stampPlacements(ORGANIZATION, staged, deployment);
+}).pipe(Effect.provide(services));
+
 const stampedDeploy = (services: Effect.Success<ReturnType<typeof storeTestCloud>>, store: ConfigStore, deployment: string) => Effect.gen(function* () {
   const admitted = yield* Effect.promise(() => admitDeploy(store, deployment));
   if (admitted.written !== "deployment") throw new Error("expected a Deployment");
-  yield* stampPlacements(ORGANIZATION, admitted.environment_id, admitted.id).pipe(Effect.provide(services));
+  yield* stampStaged(services, admitted.id);
 });
 
 it.live("discards an orphaned restore's row once no request is staging it", () => Effect.gen(function* () {
@@ -168,7 +174,7 @@ it.live("writes the restore's row before its Store write, so a Deploy admitted r
     const written = await store.write(organizationId, command, trusted, principal);
     const admitted = await admitDeploy(store, deployment);
     if (admitted.written !== "deployment") throw new Error("expected a Deployment");
-    await Effect.runPromise(stampPlacements(ORGANIZATION, admitted.environment_id, admitted.id).pipe(Effect.provide(services)));
+    await Effect.runPromise(stampStaged(services, admitted.id));
     return written;
   };
   const proxy = asTestDouble<ConfigStore>()({ read: (...args: Parameters<ConfigStore["read"]>) => store.read(...args), write });
@@ -251,7 +257,7 @@ it.live("drops a discarded restore's row once a Deploy admitted between the Stor
   const deployment = "00000000-0000-4000-8000-00000000d008";
   const admitted = yield* Effect.promise(() => admitDeploy(store, deployment));
   if (admitted.written !== "deployment") throw new Error("expected a Deployment");
-  yield* stampPlacements(ORGANIZATION, admitted.environment_id, admitted.id).pipe(Effect.provide(services));
+  yield* stampStaged(services, admitted.id);
   expect(yield* discardPlacement(ORGANIZATION, null, staged.placement.volumeId, shop).pipe(Effect.provide(services)))
     .toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
 

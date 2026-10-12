@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import type { BatchCommand, ConfigCommand, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
+import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Option, Semaphore } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
@@ -228,55 +228,86 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
 });
 
 /**
- * Admits `command` against what its Deploy takes from the Servers, where every path to the Store meets it: the
- * dashboard, the CLI, MCP and the agent. Any other command passes through. The Deploy is refused `confirmation_required`,
- * as the Store refuses one that deletes Volumes, unless it names each Volume whose copy or writes go, and `unavailable`
- * while a Server holding one doesn't answer. The names consumed here leave `accept_volume_loss`, since the Store refuses
- * a name it doesn't delete itself.
+ * Writes `command` through `write`, where every path to the Store meets it: the dashboard, the CLI, MCP and the agent.
+ * An admitted Deploy takes the placements staged in its Environment, and only one admit stamps: a Redeploy ships what
+ * its Deployment froze, so they wait for the next Deploy. The Deploy is refused `confirmation_required`, as the Store
+ * refuses one that deletes Volumes, unless it names each Volume whose copy or writes go, and `unavailable` while a
+ * Server holding one doesn't answer. The rows stay locked from that check to the stamp, so an edit staged meanwhile
+ * waits and then finds the Deploy holds its row. The names consumed here leave `accept_volume_loss`, since the Store
+ * refuses a name it doesn't delete itself.
  */
-export const placementAdmission = Effect.fn("VolumePlacement.admission")(function* (
-  organizationId: string, command: ConfigCommand, inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
-) {
-  if (command.command !== "admit" || command.admit !== "deploy") return command;
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(volumePlacement)
-    .where(and(eq(volumePlacement.organizationId, organizationId), isNotNull(volumePlacement.staged)));
-  if (rows.length === 0) return command;
-  const { environment, volumes } = yield* readStore(organizationId, { query: "volumes", environment: command.environment });
-  const lost: PlacementLost[] = [];
-  for (const row of rows) {
-    const volume = volumes.find((entry) => entry.id === row.volumeId);
-    if (row.environmentId !== environment.id || volume === undefined) continue;
-    const members = yield* inspect(organizationId, command.environment, row.volumeId).pipe(Effect.option);
-    if (Option.isNone(members)) return yield* new StoreRefused(UNANSWERED);
-    lost.push(...placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value, view(row))));
-  }
-  const names = [...new Set(lost.map(({ volume }) => volume.name))];
-  const accepted = command.accept_volume_loss ?? [];
-  if (!names.every((name) => accepted.includes(name))) {
-    const version = command.version ?? (yield* readStore(organizationId, { query: "diff", environment: command.environment })).version;
-    return yield* new StoreRefused({
-      code: "confirmation_required",
-      message: `Deploying loses data of ${names.join(", ")}. Accept each by name`,
-      details: {
-        volumes: lossByVolume(lost),
-        accept: [...new Set([...accepted, ...names])],
-        version,
-      },
-    });
-  }
-  const deleted = (name: string) => volumes.some((volume) => volume.name === name && volume.change === "delete");
-  return { ...command, accept_volume_loss: accepted.filter((name) => !names.includes(name) || deleted(name)) };
-});
+export const writeAdmitted = <R>(
+  organizationId: string,
+  command: ConfigCommand,
+  write: (command: ConfigCommand) => Effect.Effect<ConfigCommitted, StoreRefused, R>,
+  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
+) => Effect.gen(function* () {
+  if (command.command !== "admit" || command.admit !== "deploy") return yield* write(command);
+  const database = yield* Database;
+  let written: ConfigCommitted | undefined;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const rows = yield* drizzle.select().from(volumePlacement)
+      .where(and(eq(volumePlacement.organizationId, organizationId), isNotNull(volumePlacement.staged)))
+      .orderBy(volumePlacement.volumeId)
+      .for("update");
+    const staging = new Set<string>();
+    for (const row of rows) {
+      if (row.staged?.seed !== undefined && !(yield* restoreSettled(row.volumeId))) staging.add(row.volumeId);
+    }
+    const { environment, volumes } = rows.length === 0
+      ? { environment: null, volumes: [] }
+      : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
+    const lost: PlacementLost[] = [];
+    const taken: string[] = [];
+    for (const row of rows) {
+      if (row.environmentId !== environment?.id) continue;
+      const volume = volumes.find((entry) => entry.id === row.volumeId);
+      if (volume === undefined) {
+        if (staging.has(row.volumeId)) return yield* new StoreRefused(STAGING);
+        continue;
+      }
+      const members = yield* inspect(organizationId, command.environment, row.volumeId).pipe(Effect.option);
+      if (Option.isNone(members)) return yield* new StoreRefused(UNANSWERED);
+      lost.push(...placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value, view(row))));
+      taken.push(row.volumeId);
+    }
+    const names = [...new Set(lost.map(({ volume }) => volume.name))];
+    const accepted = command.accept_volume_loss ?? [];
+    if (!names.every((name) => accepted.includes(name))) {
+      const version = command.version ?? (yield* readStore(organizationId, { query: "diff", environment: command.environment })).version;
+      return yield* new StoreRefused({
+        code: "confirmation_required",
+        message: `Deploying loses data of ${names.join(", ")}. Accept each by name`,
+        details: {
+          volumes: lossByVolume(lost),
+          accept: [...new Set([...accepted, ...names])],
+          version,
+        },
+      });
+    }
+    const deleted = (name: string) => volumes.some((volume) => volume.name === name && volume.change === "delete");
+    written = yield* write({ ...command, accept_volume_loss: accepted.filter((name) => !names.includes(name) || deleted(name)) });
+    if (written.written === "deployment" && written.status !== "applied") yield* stampPlacements(organizationId, taken, written.id);
+    return written;
+  })).pipe(
+    // The Store write committed: nothing after it may answer as its refusal. The rows stay staged for the next Deploy.
+    Effect.catchCause((cause) => written === undefined
+      ? Effect.failCause(cause)
+      : Effect.logWarning("A committed Deploy didn't take its Volume placements.", cause).pipe(Effect.as(written))),
+    Effect.catchTags({ SqlError: Effect.die, DatabasePostCommitFailure: Effect.die }),
+  );
+}).pipe(Effect.withSpan("VolumePlacement.writeAdmitted"));
 
-/** Deploy `deploymentId` takes every placement staged in its Environment. */
-export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (organizationId: string, environmentId: string, deploymentId: string) {
+/** Deploy `deploymentId` takes the placements staged on `volumeIds`. */
+export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (organizationId: string, volumeIds: readonly string[], deploymentId: string) {
+  if (volumeIds.length === 0) return;
   const { drizzle } = yield* Database;
   yield* drizzle.update(volumePlacement)
     .set({ deploymentId, staged: sql`${volumePlacement.staged} - 'unreached'`, updatedAt: new Date() })
     .where(and(
       eq(volumePlacement.organizationId, organizationId),
-      eq(volumePlacement.environmentId, environmentId),
+      inArray(volumePlacement.volumeId, [...volumeIds]),
       isNotNull(volumePlacement.staged),
     ));
 });
@@ -304,7 +335,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
 
 /**
  * Requests `run` unless a Deploy still runs the Volume's placement, or, for an old copy's delete, the placement now keeps
- * the copy on `deletes`. The row lock makes the check and the insert one step against stampPlacements and staging: a
+ * the copy on `deletes`. The row lock makes the check and the insert one step against writeAdmitted's stamp and staging: a
  * Deploy stamped after it finds the run going and waits for it.
  */
 export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
