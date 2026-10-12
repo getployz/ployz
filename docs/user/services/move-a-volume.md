@@ -50,6 +50,8 @@ Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a vol
 bottom bar and the deployment page say what it is doing, for example "Moving to web-2". Cancel
 lets the step under way finish, and the rest waits for your next deploy. If the deploy fails, the
 change that failed is dropped and the changes it never reached wait for your next deploy again.
+A move that already handed the volume to its new server is not dropped, since only finishing it
+brings the volume back; see [When a move stops](#when-a-move-stops).
 
 On the canvas the mirror hangs under its volume's tray as its own small card, for example
 `data-web-2` with "Mirror · 4 minutes ago". A mirror more than an hour behind shows its age in
