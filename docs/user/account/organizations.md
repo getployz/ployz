@@ -86,6 +86,11 @@ How you answer depends on where the command runs:
 A retry of a command you denied is still denied, even once it would destroy nothing. A retry of
 one still waiting for your answer still waits, unless it no longer destroys anything.
 
+You can answer from a terminal too. `ployz org approval ls` lists the approvals waiting,
+`ployz org approval show ID` shows what one would remove, and `ployz org approval approve ID` or
+`ployz org approval deny ID --reason "keep the volume"` answers it. Approving asks you to type the
+organization's name, so it needs a terminal.
+
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop one that's
 trying to get around it: anything that holds your login or token can approve its own request.
 Keep tokens you give an agent short-lived, and keep

@@ -92,6 +92,23 @@ started keeps going in Cloud, and the error names the tool that shows where it s
 stopped while Cloud had not yet answered its change says the change may have landed, and the
 agent can resend it without running it twice.
 
+## Commands from Ployz Cloud
+
+Some commands come from Ployz Cloud instead of the CLI itself, so a new one reaches you without
+an upgrade. Today they are `ployz server upgrade-policy show` and `set`, and `ployz org approval
+ls`, `show`, `approve` and `deny`.
+
+When you're signed in, `ployz --help` lists them with the others, and they take `--json` like any
+command. `ployz schema --json` marks each one `"origin": "cloud"`. The first one you run fetches
+the list from Ployz Cloud and keeps a copy on this computer, so `--help` still shows them offline.
+If Cloud no longer has a command, it fails with `unknown_command`; `ployz --help` then shows the
+current list.
+
+Your coding agent gets the ones meant for agents as tools from `ployz mcp`, and its tool list
+follows Ployz Cloud without a restart. Commands that ask you to type a name, such as
+`ployz org approval approve`, run only in a terminal. Without Ployz Cloud, none of these commands
+exist.
+
 ## Deploy a directory
 
 > [!WARNING]
