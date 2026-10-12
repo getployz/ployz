@@ -36,6 +36,9 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   // The Log Store's position: not read yet, a cursor, or null once it has nothing older.
   let cursor: string | null | undefined;
   const stored = new Set<string>();
+  // Servers whose lines arrived on this connection. Logs and older logs shipped in one release, so a refusal of older logs naming one of them is stale or another daemon's.
+  const serving = new Set<string>();
+  const servedFailures = (failures: readonly MissingServer[]) => failures.filter(server => server.capability === undefined || !serving.has(server.machineId));
   // Bumped by each reset, so a read begun before it lands nothing.
   let generation = 0;
   const resetHistory = () => {
@@ -104,8 +107,19 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           }, Math.min(1_000 * 2 ** server.attempts, 30_000));
           return true;
         };
+        const serves = (machineId: string) => {
+          if (serving.has(machineId)) return;
+          serving.add(machineId);
+          const history = servedFailures(snapshot.missing.history);
+          if (history.length === snapshot.missing.history.length) return;
+          publish({ ...snapshot, missing: { ...snapshot.missing, history } });
+          if (snapshot.historyPending) return;
+          resetHistory();
+          void loadOlder();
+        };
         const open = () => {
           controller = new AbortController();
+          serving.clear();
           const stop = liveStream(`/api/runtime/logs?${query}`, {
             onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
             onLost: (why) => {
@@ -128,11 +142,13 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
                 if (decoded.value.type === "record") {
                   settle(decoded.value.record.machineId);
                   recovered(decoded.value.record.machineId, decoded.value.record.containerId);
+                  serves(decoded.value.record.machineId);
                   pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
                 } else if (decoded.value.type === "source_gone") {
                   recovered(decoded.value.machineId, decoded.value.containerId);
                 } else {
                   const { type: _, machineId, containerId, ...reason } = decoded.value;
+                  if (reason.capability !== undefined) serving.delete(machineId);
                   if (reason.capability === undefined && awaitRestart(machineId)) return;
                   settle(machineId);
                   const machineName = machines.get(machineId)?.name ?? [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
@@ -218,7 +234,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         const now = oldest();
         if (failures.length || reached === null || (now !== null && now < reached)) break;
       }
-      publish({ ...snapshot, missing: { ...snapshot.missing, history: failures }, historyPending: false });
+      publish({ ...snapshot, missing: { ...snapshot.missing, history: servedFailures(failures) }, historyPending: false });
     } catch {
       if (!streamSignal.aborted) publish({ ...snapshot, historyPending: false, historyError: true });
     } finally {
