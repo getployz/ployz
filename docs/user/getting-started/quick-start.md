@@ -26,7 +26,7 @@ Ployz creates your organization and opens **Add your app**.
 
 ![The GitHub Repository picker with the example's URL pasted](../images/service-source-github.png)
 
-Ployz creates a project with a name like `gentle-frog`, and the app appears on its canvas as the
+Ployz creates a project named `express-hello-world`, and the app appears on its canvas as the
 service `express-hello-world`. Nothing runs yet: your changes wait in the bottom bar until you
 deploy.
 
