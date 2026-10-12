@@ -30,12 +30,12 @@ describe("machine remove Inngest boundary", () => {
 
   it("ignores cancellation events owned by another function", async () => {
     const output = await new InngestTestEngine({
-      function: createCancelMachineRemove(new Inngest({ id: "test" })),
+      function: createCancelMachineRemove(new Inngest({ id: "ployz-cloud" })),
       events: [
         {
           name: "inngest/function.cancelled",
           data: {
-            function_id: "process-environment-deployment",
+            function_id: "ployz-cloud-process-environment-deployment",
             run_id: "run-1",
           },
         },
@@ -47,6 +47,21 @@ describe("machine remove Inngest boundary", () => {
       "decode-machine-remove-cancellation-event",
       expect.any(Function),
     );
+  });
+
+  it("cancels the attempt when Inngest cancels the app's process-machine-remove", async () => {
+    const output = await new InngestTestEngine({
+      function: createCancelMachineRemove(new Inngest({ id: "ployz-cloud" })),
+      events: [
+        {
+          name: "inngest/function.cancelled",
+          data: { function_id: "ployz-cloud-process-machine-remove", run_id: "run-1" },
+        },
+      ],
+      steps: [{ id: "cancel-machine-remove", handler: () => ({ cancelled: true }) }],
+    }).execute();
+
+    expect(output.result).toEqual({ cancelled: true });
   });
 
   it("rejects malformed cancellation envelopes in the owned step", async () => {
@@ -97,5 +112,22 @@ describe("machine remove Inngest boundary", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("fails the attempt, and releases nothing, when the Server refuses its removal", async () => {
+    const attemptId = "00000000-0000-4000-8000-000000000a01";
+    const output = await new InngestTestEngine({
+      function: createProcessMachineRemove(new Inngest({ id: "test" })),
+      events: [{ name: "machine/remove.requested", data: { attemptId } }],
+      steps: [
+        { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
+        { id: "remove-machine", handler: () => ({ kind: "refused", failureCode: "conflict", message: "Server two answers and holds copies of Volumes data; removing it without a reset leaves them behind. No changes made." }) },
+        { id: "complete-refused", handler: () => undefined },
+      ],
+    }).execute();
+
+    expect(output.result).toEqual({ attemptId, status: "failed" });
+    expect(output.ctx.step.run).toHaveBeenCalledWith("complete-refused", expect.any(Function));
+    expect(output.ctx.step.run).not.toHaveBeenCalledWith("release-server", expect.any(Function));
   });
 });

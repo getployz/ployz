@@ -22,6 +22,7 @@ import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
+import { useCanvasMirrors } from "#/modules/volume-placement/volume-placement.hooks";
 import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
@@ -84,6 +85,7 @@ function CanvasWithData() {
     query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.environmentId, environmentId))
       .select(({ position }) => position),
   });
+  const mirrors = useCanvasMirrors(organizationSlug, ref, environmentId, volumesResult.ok ? volumesResult.value.volumes : []);
   // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
   if ([servicesResult, settingsResult, diffResult, volumesResult, domainsResult, configsResult].some((r) => !r.ok && r.refusal.code === "not_found")) {
     return <PendingCanvas />;
@@ -120,6 +122,7 @@ function CanvasWithData() {
     configs: configListings,
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,
+    mirrors,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };

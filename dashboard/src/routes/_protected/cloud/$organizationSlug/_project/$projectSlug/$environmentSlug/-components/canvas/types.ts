@@ -1,5 +1,6 @@
 import type { ConfigListing, DiffView, DomainRow, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
+import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
 import type { Node } from "@xyflow/react";
 
 export type CanvasResourceType = "service" | "volume" | "config";
@@ -31,6 +32,8 @@ export type StoreCanvasService = {
 export type MountedVolume = { volume: VolumeListing; sharedWith: string[]; mountChanged: boolean; writers: number };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
+  /** The mirrors of its trays' Volumes it shows, under its trays. */
+  mirrors: readonly CanvasMirror[];
   resourceType: "service";
   resourceId: string;
   environmentId: string;
@@ -39,6 +42,7 @@ export type CanvasStoreServiceNode = Node<StoreCanvasService & {
 /** A Config Store Volume on the canvas, as the Store lists it. */
 export type CanvasStoreVolumeNode = Node<{
   volume: VolumeListing;
+  mirrors: readonly CanvasMirror[];
   resourceType: "volume";
   resourceId: string;
   environmentId: string;
@@ -78,6 +82,8 @@ export type StoreCanvas = {
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
   diff: DiffView;
+  /** Each Volume's mirrors by Volume id, as the Servers and the staged placement have them; empty until they answer. */
+  mirrors: ReadonlyMap<string, readonly CanvasMirror[]>;
 };
 
 export type CanvasResourceNode =

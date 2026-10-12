@@ -7,6 +7,7 @@ import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
+import { releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
@@ -94,13 +95,16 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
     // Its Deployment was replaced, cancelled or ended, another runner owns it, or this one lost track of it.
     Effect.catchIf(refusedWith("conflict"), (refused) => Effect.succeed({ nothingToRun: refused.message })),
     Effect.ensuring(released(store, data.organizationId, data.deploymentId)),
-    // Its outcome may move a PR check.
-    Effect.tap(() => storeTry(() => store.checks(data.environmentId)).pipe(
-      Effect.flatMap((pulls) => requestChecks(data.organizationId, pulls)),
-      Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { data, error })),
-    )),
+    Effect.tap(() => recheck(store, data.organizationId, data.environmentId)),
   );
 });
+
+/** A Deployment's outcome may move a PR check. */
+const recheck = (store: ConfigStore, organizationId: string, environmentId: string) =>
+  storeTry(() => store.checks(environmentId)).pipe(
+    Effect.flatMap((pulls) => requestChecks(organizationId, pulls)),
+    Effect.catch((error) => Effect.logWarning("The PR checks were not requested.", { organizationId, environmentId, error })),
+  );
 
 /** Delete the Deployment's upload if it has ended; a failure leaves it for the next run or upload to find. */
 const released = (store: ConfigStore, organizationId: string, deploymentId: string) =>
@@ -115,13 +119,26 @@ const released = (store: ConfigStore, organizationId: string, deploymentId: stri
  */
 const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string, runId: string, why: string,
+  failure = "Cloud's worker stopped before it started this Deployment. Deploy again.",
 ) {
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
   if (view.status !== "queued" || view.runner !== null) return { nothingToRun: why };
-  yield* storeTry(() => store.runDeployment(organizationId, deploymentId, storeDeploymentRunner(runId), [], {
-    failure: "Cloud's worker stopped before it started this Deployment. Deploy again.",
-  }));
+  yield* storeTry(() => store.runDeployment(organizationId, deploymentId, storeDeploymentRunner(runId), [], { failure }));
   return { failed: deploymentId };
+});
+
+/** Run `runId` could not move the Deployment's Volumes: the Store records it failed with `failure`, before it claims it. */
+export const failStoreDeploymentStorage = Effect.fn("StoreDeployment.failStorage")(function* (
+  organizationId: string, environmentId: string, deploymentId: string, runId: string, failure: string,
+) {
+  const store = yield* cloudStore;
+  const failed = yield* failUnclaimed(store, organizationId, deploymentId, runId, failure, failure).pipe(
+    Effect.ensuring(released(store, organizationId, deploymentId)),
+  );
+  yield* recheck(store, organizationId, environmentId);
+  yield* releasePlacementClaims(organizationId, deploymentId);
+  yield* forgetStoreDeploymentRun(runId);
+  return failed;
 });
 
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */
@@ -157,6 +174,7 @@ export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(funct
     Effect.catchIf(refusedWith("conflict"), (refused) => failUnclaimed(store, organizationId, deploymentId, runId, refused.message)),
     Effect.ensuring(released(store, organizationId, deploymentId)),
   );
+  yield* releasePlacementClaims(organizationId, deploymentId);
   yield* cancelled;
   yield* forgetStoreDeploymentRun(runId);
   return stopped;

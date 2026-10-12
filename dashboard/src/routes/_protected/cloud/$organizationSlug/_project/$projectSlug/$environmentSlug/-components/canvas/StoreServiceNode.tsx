@@ -16,6 +16,8 @@ import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
+import { MirrorNodes } from "./MirrorNode";
+import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
@@ -97,10 +99,13 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   );
 }
 
-export function StoreServiceNode({ data }: { data: StoreCanvasService }) {
+export function StoreServiceNode({ data }: { data: StoreCanvasService & { mirrors: readonly CanvasMirror[] } }) {
   const pick = useNodePick(data.service.name);
   const { selectedNodeId } = useCanvasInspectorSelection();
-  const trays = <ServiceTrays trays={data.trays} configTrays={data.configTrays} selectedNodeId={selectedNodeId} />;
+  const trays = <>
+    <ServiceTrays trays={data.trays} configTrays={data.configTrays} selectedNodeId={selectedNodeId} />
+    <MirrorNodes mirrors={data.mirrors} />
+  </>;
   if (pick) {
     return <>
       <div className="relative z-10">

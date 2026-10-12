@@ -720,6 +720,15 @@
         "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
       },
       {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
+      },
+      {
         "name": "--message",
         "required": false,
         "value": true,
@@ -2678,6 +2687,71 @@
     "args": []
   },
   {
+    "command": "metrics",
+    "about": "Show CPU, memory, network and disk for a Service or a Server",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--context",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "short": "c",
+        "trailing": false
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "SERVICE",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false,
+        "help": "Service name"
+      },
+      {
+        "name": "--server",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "A Server's own totals instead of a Service"
+      },
+      {
+        "name": "--since",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "1h",
+        "trailing": false,
+        "help": "Range start: 10m, 2h, 7d or an RFC 3339 timestamp"
+      }
+    ]
+  },
+  {
     "command": "org build-order",
     "about": "Show or set which Builders build Git Services, in turn",
     "json": true,
@@ -2981,6 +3055,15 @@
         "multiple": false,
         "trailing": false,
         "help": "Message saved with the new revision"
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },
@@ -3285,6 +3368,15 @@
         "multiple": false,
         "trailing": false,
         "help": "The Namespace, typed to confirm its removal"
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },
@@ -3312,6 +3404,15 @@
         "multiple": false,
         "index": 1,
         "trailing": false
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },
@@ -3499,7 +3600,7 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "The Server's name, typed to confirm its removal"
+        "help": "The Server's name, typed to confirm its removal; dead for a Server removed with --no-reset that does not answer"
       },
       {
         "name": "SERVER",
@@ -3509,6 +3610,15 @@
         "multiple": false,
         "index": 1,
         "trailing": false
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       },
       {
         "name": "--accept-volume-loss",
@@ -4415,6 +4525,15 @@
         "multiple": false,
         "trailing": false,
         "help": "Refuse unless this is still the reviewed version; a data-loss refusal names it"
+      },
+      {
+        "name": "--approval",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Go ahead with the approval a human gave in Ployz Cloud; an approval refusal names it"
       }
     ]
   },
@@ -4818,6 +4937,61 @@
         "multiple": false,
         "index": 2,
         "trailing": false
+      }
+    ]
+  },
+  {
+    "command": "volume restore",
+    "about": "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
+    "json": true,
+    "approval": "always",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      },
+      {
+        "name": "VOLUME",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--from",
+        "required": true,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "The Server whose copy becomes the writer; it must hold the Volume's only copy"
+      },
+      {
+        "name": "--wait",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Wait for the run to end; it fails unless the run is done",
+        "keeps_running": true
       }
     ]
   },
