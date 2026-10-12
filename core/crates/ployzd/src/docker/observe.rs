@@ -229,13 +229,8 @@ impl ContainerRuntime {
                 }
             }
         }
-        if let Some(container_id) = stranded_ingress(&observed)
-            && let Err(error) = self.start(&container_id).await
-        {
-            eprintln!(
-                "Ingress Proxy {container_id} is still not started: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            );
+        if let Some(container_id) = stranded_ingress(&observed, true) {
+            self.start_stranded(&container_id).await;
         }
         let publication = sink.replicated.machine_publication().await;
         let local = sink.local.record();
@@ -409,7 +404,7 @@ fn local_volume_changes(
 /// Docker's restart policy covers an ingress that ran and died, not one whose first
 /// start failed, such as when another process held port 80. A stopped newest copy
 /// stays stopped.
-fn stranded_ingress(observations: &[ContainerObservation]) -> Option<ContainerId> {
+fn stranded_ingress(observations: &[ContainerObservation], _complete: bool) -> Option<ContainerId> {
     let ingresses = observations.iter().filter(|observation| {
         observation.kind == ContainerKind::ServiceContainer
             && crate::ingress::is_system_ingress(observation)
@@ -477,16 +472,22 @@ mod tests {
     #[test]
     fn ingress_that_never_started_is_started_again() {
         let created = json!({ "state": "created" });
-        assert_eq!(stranded_ingress(&[ingress('a', 1, created)]), Some(id('a')));
+        assert_eq!(
+            stranded_ingress(&[ingress('a', 1, created)], true),
+            Some(id('a'))
+        );
     }
 
     #[test]
     fn newest_unstarted_ingress_is_started_when_none_runs() {
         assert_eq!(
-            stranded_ingress(&[
-                ingress('a', 1, json!({ "state": "exited", "code": 0 })),
-                ingress('d', 2, json!({ "state": "created" })),
-            ]),
+            stranded_ingress(
+                &[
+                    ingress('a', 1, json!({ "state": "exited", "code": 0 })),
+                    ingress('d', 2, json!({ "state": "created" })),
+                ],
+                true
+            ),
             Some(id('d'))
         );
     }
@@ -496,21 +497,36 @@ mod tests {
         let created = json!({ "state": "created" });
         let running = json!({ "state": "running", "health": "healthy" });
         assert_eq!(
-            stranded_ingress(&[ingress('a', 1, running), ingress('d', 2, created.clone())]),
+            stranded_ingress(
+                &[ingress('a', 1, running), ingress('d', 2, created.clone())],
+                true
+            ),
             None
         );
         assert_eq!(
-            stranded_ingress(&[
-                ingress('a', 2, json!({ "state": "exited", "code": 0 })),
-                ingress('d', 1, created.clone()),
-            ]),
+            stranded_ingress(
+                &[
+                    ingress('a', 2, json!({ "state": "exited", "code": 0 })),
+                    ingress('d', 1, created.clone()),
+                ],
+                true
+            ),
             None
         );
         assert_eq!(
-            stranded_ingress(&[container('a', "app", "ingress", 1, created.clone())]),
+            stranded_ingress(
+                &[container('a', "app", "ingress", 1, created.clone())],
+                true
+            ),
             None
         );
-        assert_eq!(stranded_ingress(&[]), None);
+        assert_eq!(stranded_ingress(&[], true), None);
+    }
+
+    #[test]
+    fn a_scan_that_could_not_inspect_every_container_starts_no_ingress() {
+        let created = json!({ "state": "created" });
+        assert_eq!(stranded_ingress(&[ingress('a', 1, created)], false), None);
     }
 
     #[test]

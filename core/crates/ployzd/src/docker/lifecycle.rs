@@ -378,6 +378,16 @@ impl ContainerRuntime {
         idempotent_lifecycle_result(container_id, result)
     }
 
+    /// Start an Ingress Proxy whose first start failed.
+    pub(super) async fn start_stranded(&self, container_id: &ContainerId) {
+        if let Err(error) = self.start(container_id).await {
+            eprintln!(
+                "Ingress Proxy {container_id} is still not started: {error}",
+                error = ployz_core::error_chain::inline(&error),
+            );
+        }
+    }
+
     pub async fn stop(
         &self,
         container_id: &ContainerId,
@@ -644,6 +654,9 @@ fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::docker::test_support::{
+        FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+    };
 
     fn inspected(network_mode: &str, networks: serde_json::Value) -> ContainerInspectResponse {
         serde_json::from_value(serde_json::json!({
@@ -675,6 +688,94 @@ mod tests {
             "host",
             serde_json::json!({})
         )));
+    }
+
+    async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+            ..Default::default()
+        })
+        .await;
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                container_request(
+                    ContainerKind::ServiceContainer,
+                    &namespace,
+                    &spec,
+                    std::future::ready(None),
+                ),
+            )
+            .await
+            .unwrap();
+        let labels = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1["Labels"]
+            .clone();
+        *fake.existing_container.lock().unwrap() = Some(serde_json::json!({
+            "Id": created.container_id.as_str(),
+            "Config": { "Labels": labels },
+            "HostConfig": { "NetworkMode": "ployz" },
+            "NetworkSettings": { "Networks": {} },
+            "State": { "Status": "created", "ExitCode": 128, "Error": error },
+        }));
+        fake.requests.lock().unwrap().clear();
+        (runtime, fake, created.container_id)
+    }
+
+    fn started(fake: &FakeDocker) -> bool {
+        fake.requests
+            .lock()
+            .unwrap()
+            .drain(..)
+            .any(|(method, path)| method == axum::http::Method::POST && path.ends_with("/start"))
+    }
+
+    const PORT_TAKEN: &str = "failed to bind host port 0.0.0.0:80/tcp: address already in use";
+
+    #[tokio::test]
+    async fn a_stranded_ingress_starts_until_a_request_stops_it() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+
+        runtime.start_stranded(&container_id).await;
+        assert!(started(&fake), "a failed first start is retried");
+
+        runtime.stop(&container_id, None, None).await.unwrap();
+        fake.requests.lock().unwrap().clear();
+        runtime.start_stranded(&container_id).await;
+        assert!(!started(&fake), "a stopped ingress stays stopped");
+
+        runtime.start(&container_id).await.unwrap();
+        fake.requests.lock().unwrap().clear();
+        runtime.start_stranded(&container_id).await;
+        assert!(started(&fake), "a requested start lifts the stop");
+    }
+
+    #[tokio::test]
+    async fn an_ingress_docker_never_tried_to_start_is_left_alone() {
+        let (runtime, fake, container_id) = stranded("").await;
+
+        runtime.start_stranded(&container_id).await;
+
+        assert!(!started(&fake));
+    }
+
+    #[tokio::test]
+    async fn a_start_that_races_another_for_the_network_still_starts() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        fake.connect_raced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        runtime.start(&container_id).await.unwrap();
+
+        assert!(started(&fake));
     }
 
     #[test]

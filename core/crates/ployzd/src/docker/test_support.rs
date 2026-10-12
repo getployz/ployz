@@ -38,6 +38,8 @@ pub(crate) struct FakeDocker {
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
+    /// Another start attaches the network first, so this connect finds it attached.
+    pub(crate) connect_raced: Arc<AtomicBool>,
 }
 
 async fn fake_docker(
@@ -336,6 +338,18 @@ async fn fake_docker(
             fake.volume_users.lock().unwrap().remove(name);
             fake.volumes.lock().unwrap().remove(name);
             (StatusCode::NO_CONTENT, serde_json::Value::Null)
+        }
+    } else if method == Method::POST && path.ends_with("/connect") {
+        if let Some(container) = fake.existing_container.lock().unwrap().as_mut() {
+            container["NetworkSettings"]["Networks"]["ployz"] = serde_json::json!({});
+        }
+        if fake.connect_raced.load(Ordering::SeqCst) {
+            (
+                StatusCode::FORBIDDEN,
+                serde_json::json!({"message":"endpoint with name api already exists in network ployz"}),
+            )
+        } else {
+            (StatusCode::OK, serde_json::Value::Null)
         }
     } else if method == Method::DELETE && path.contains("/containers/") {
         fake.existing_container.lock().unwrap().take();
