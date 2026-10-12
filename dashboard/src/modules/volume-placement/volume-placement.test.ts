@@ -235,6 +235,13 @@ describe("dropChange", () => {
     expect(drop(members, placement, "move")).toEqual(placement.staged);
   });
 
+  it("drops only the failed move when the primary isn't answering, returning its siblings to the silent primary", () => {
+    const members = [member("web-1", "unanswered"), member("web-2", "mirror"), pooled("web-3")];
+    const dropped = drop(members, row(["web-2"], { primary: "web-2", mirrors: ["web-3"] }), "move");
+    expect(dropped).toEqual({ primary: id("web-1"), mirrors: [id("web-3"), id("web-2")], deletes: [] });
+    expect(changes(members, { ...row(["web-2"]), staged: dropped }).map(changeKey)).toEqual([{ kind: "add_mirror", server: id("web-3") }]);
+  });
+
   it("drops the row when the primary isn't answering, so nothing moves to a Server that may be gone", () => {
     const members = [member("web-1", "unanswered"), member("web-2", "mirror")];
     expect(drop(members, row(["web-2"], { primary: "web-2" }), "move")).toBeNull();
