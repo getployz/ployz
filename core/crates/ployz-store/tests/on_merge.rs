@@ -3123,3 +3123,63 @@ fn a_removal_tears_down_what_a_deploy_claimed_before_its_push() {
         [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
     );
 }
+
+fn cancel(store: &ConfigStore, who: &Actor, id: &ployz_store::DeploymentId) {
+    store
+        .write(
+            who,
+            &ployz_store::Cancel {
+                deployment: id.clone(),
+            },
+        )
+        .unwrap();
+}
+
+fn retry(
+    store: &ConfigStore,
+    who: &Actor,
+    source: &ployz_store::DeploymentId,
+) -> Result<ployz_store::DeploymentId, ployz_core::RpcError> {
+    let id = ployz_store::DeploymentId::parse(::uuid::Uuid::new_v4().to_string()).unwrap();
+    store.write_trusted(
+        who,
+        &ployz_store::Admit::Retry(ployz_store::Retry {
+            id: id.clone(),
+            deployment: source.clone(),
+        }),
+        &Trusted::default(),
+    )?;
+    Ok(id)
+}
+
+#[test]
+fn a_retry_takes_over_the_teardown_it_supersedes() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let worker = deploy_by_hand(&store, &who, &["worker"]);
+    cancel(&store, &who, &worker);
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+
+    let retried = retry(&store, &who, &worker).unwrap();
+    let [_, removals, _] = told(&store, &who, &retried);
+    assert_eq!(removals, vec!["db".to_owned()]);
+}
+
+#[test]
+fn a_retry_after_undo_never_tears_down_what_saved_holds_again() {
+    let (store, who) = shop_with_lone_db();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_service(&store, &who, "pr-5", "db");
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let teardown = landed.admitted[0].deployment.id.clone();
+    cancel(&store, &who, &teardown);
+
+    undo_merge(&store, &who);
+    let refused = retry(&store, &who, &teardown).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+}
