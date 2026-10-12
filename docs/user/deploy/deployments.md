@@ -86,6 +86,9 @@ it leaves running keeps its staged changes on its card.
 
 ## Follow a deployment
 
+While a deployment runs, the bottom bar shows it. Once it ends, the bar shows **Deployed** for a
+few seconds, or **Failed** until you dismiss it, with **Logs** to open its page.
+
 **Deployments** in the sidebar lists every deployment, newest first. A deployment's page shows
 its status, who started it and the commit it ships, and if it failed, the reason in red under the
 header. Each service it included has a tab with its **Build** and **Deploy**
@@ -157,9 +160,6 @@ was already replaced keeps the new version, and services later in the order stay
 > Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
 > database keeps the change while the old version of your app runs against it.
 
-While a deployment runs, the bottom bar shows it. Once it ends, the bar shows **Deployed** for a
-few seconds, or **Failed** until you dismiss it, with **Logs** to open its page.
-
 A failed deploy drops the volume change it failed on, so the volume stays where it was. Volume
 changes it never got to go back to your staged changes, and **Details** marks them **Not
 reached**. Deploy again to run them.
@@ -171,9 +171,10 @@ Or click **Fix it on a branch** on the deployment's page to try the fix in a
 ## Confirm a deploy that deletes data
 
 When a deploy would delete a volume's data, like a deleted volume or database, a removed mirror or
-a detached copy, **Deletes data** lists what goes. When it uses a mirror because the primary
-isn't answering, the title is **Data loss**: changes after the mirror's last refresh are lost.
-Type your `project/environment`, like `my-app/production`, and click **Deploy**. If you didn't mean it, cancel, then discard the deletion in **Details**.
+an old copy a move replaces, **Deletes data** lists what goes. When it makes a mirror the primary
+because the primary's server isn't answering, the title reads **Data loss**, since the writes after
+the mirror's last refresh are lost. Type your `project/environment`, like `my-app/production`, and
+click **Deploy**. If you didn't mean it, cancel, then discard the change in **Details**.
 
 **Publish** asks the same way, under **Publishing deletes data on the next deploy**. Publishing
 deletes nothing and starts no deploy: it saves the deletion, and your next deploy takes it along.
