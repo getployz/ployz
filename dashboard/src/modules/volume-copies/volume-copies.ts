@@ -3,29 +3,24 @@ import { formatRelativeTime } from "#/utils/relative-time";
 
 export type ServerRef = { readonly id: MachineId; readonly name: MachineName };
 
-/** What the next Deploy does to a copy, as its badge says it. */
 export type StagedCopy = "new" | "removing" | "primary";
 
 type CopyBase = {
   /** Stable within the Volume: the Server id for a mirror or old copy, the bucket for an offsite copy. */
   readonly id: string;
   readonly staged: StagedCopy | null;
-  /** What runs on this copy now, in one word: "Seeding", "Refreshing", "Uploading", "Removing". */
   readonly busy: string | null;
 };
 
-/** A read-only copy on another Server, refreshed every 15 minutes and on every Deploy. */
 export type MirrorCopy = CopyBase & {
   readonly kind: "mirror";
   readonly server: ServerRef;
-  /** `data-web-2`. */
   readonly name: string;
   readonly refreshedAt: Date | null;
   /** The last refresh did not run, so the age keeps growing until it catches up. */
   readonly skipped: boolean;
 };
 
-/** A copy in an S3 bucket, uploaded daily. Its points are Backups. */
 export type OffsiteCopy = CopyBase & {
   readonly kind: "offsite";
   readonly bucket: string;
@@ -34,7 +29,6 @@ export type OffsiteCopy = CopyBase & {
   readonly uploadedAt: Date | null;
 };
 
-/** The copy a move left behind. It serves nothing and never refreshes. */
 export type OldCopy = CopyBase & {
   readonly kind: "old";
   readonly server: ServerRef;
@@ -48,7 +42,6 @@ export type AddableCopy = Exclude<VolumeCopy["kind"], "old">;
 
 export type SnapshotKind = "hourly" | "daily" | "manual" | "before_deploy" | "after_deploy" | "before_restore";
 
-/** A point on the live Server. Snapshots show only in the drawer. */
 export type Snapshot = {
   readonly id: string;
   readonly at: Date;
@@ -58,27 +51,21 @@ export type Snapshot = {
   readonly bytes: number;
 };
 
-/** The Live group: the primary Server, a restore waiting for Deploy, a move waiting for Deploy, and its Snapshots. */
 export type LiveCopy = {
   readonly server: ServerRef | null;
-  /** The point a staged restore brings back: "11:42", "Oct 3 07:04". */
   readonly restore: { readonly label: string } | null;
-  /** The Server a staged move makes primary. */
   readonly moveTo: ServerRef | null;
-  /** What runs on the whole Volume now: "Moving to web-2", "Snapshotting". */
   readonly busy: string | null;
   /** Null where the Server does not serve snapshots. */
   readonly snapshots: readonly Snapshot[] | null;
 };
 
-/** A Volume's copies as places: Live, then Elsewhere (mirror, offsite, old copies). */
 export type VolumeCopies = {
   readonly volume: { readonly id: string; readonly name: string };
   readonly live: LiveCopy;
   readonly elsewhere: readonly VolumeCopy[];
 };
 
-/** A mirror older than this reads behind. */
 export const STALE_AFTER_MS = 60 * 60_000;
 
 export const COPY_WORDS = { mirror: "Mirror", offsite: "Offsite", old: "Old copy" } as const satisfies Record<VolumeCopy["kind"], string>;
@@ -102,18 +89,15 @@ export function isStale(copy: VolumeCopy, now: Date): boolean {
     && now.getTime() - copy.refreshedAt.getTime() > STALE_AFTER_MS;
 }
 
-/** Copies that hang under the tray on the canvas. Old copies stay in the drawer. */
 export const hangingCopies = (copies: VolumeCopies): readonly (MirrorCopy | OffsiteCopy)[] =>
   copies.elsewhere.filter((copy): copy is MirrorCopy | OffsiteCopy => copy.kind !== "old");
 
-/** Add copy shows while a kind the Servers serve is still missing. */
 export function addableCopies(copies: VolumeCopies, served: readonly AddableCopy[]): readonly AddableCopy[] {
   return served.filter((kind) => !copies.elsewhere.some((copy) => copy.kind === kind));
 }
 
 export type SafetyLine = { readonly tone: "ok" | "warn"; readonly words: string; readonly detail: string | null };
 
-/** The drawer's line under the Volume's name: "No copies", "Mirror behind", or "2 copies · 13 snapshots". */
 export function safetyLine(copies: VolumeCopies, now: Date): SafetyLine {
   const places = hangingCopies(copies).filter((copy) => copy.staged !== "new");
   const snapshots = copies.live.snapshots;
@@ -131,7 +115,7 @@ export function safetyLine(copies: VolumeCopies, now: Date): SafetyLine {
 
 export type CardLine = { readonly spin: boolean; readonly words: string; readonly age: string | null; readonly stale: boolean };
 
-/** A copy card's second line: what runs on it, else its kind and age. A staged removal drops the kind for its badge. */
+/** A staged removal drops the kind word so the Removing badge reads alone. */
 export function cardLine(copy: VolumeCopy, now: Date): CardLine {
   if (copy.busy !== null) return { spin: true, words: copy.busy, age: null, stale: false };
   if (copy.staged !== null) return { spin: false, words: copy.staged === "removing" ? "" : COPY_WORDS[copy.kind], age: null, stale: false };
@@ -141,7 +125,6 @@ export function cardLine(copy: VolumeCopy, now: Date): CardLine {
 
 export type TraySpeech = { readonly tone: "busy" | "staged"; readonly words: string };
 
-/** The tray speaks only while something runs or waits for Deploy. */
 export function traySpeech(copies: VolumeCopies): TraySpeech | null {
   const { live } = copies;
   if (live.busy !== null) return { tone: "busy", words: live.busy };

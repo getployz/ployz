@@ -187,7 +187,7 @@ When a server's release can't serve a feature, the feature names that server:
   web-2 to see its logs** with **Open web-2**, or **Upgrade 2 servers to see their logs** with
   **Open Servers**. Upgrade the server from its page, then refresh the logs page. See
   [Logs](../observe/logs.md).
-- **Placement** on a volume names the servers to upgrade before any volume moves or mirrors. See
+- **Copies** on a volume names the servers to upgrade before any volume moves or mirrors. See
   [Move a volume](../services/move-a-volume.md).
 - **`ployz volume move`** onto such a server fails. If the server already runs the newest release
   on your channel, a later release brings the feature, and the message reads:
