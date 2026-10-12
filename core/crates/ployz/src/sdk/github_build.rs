@@ -532,7 +532,8 @@ mod tests {
         let input = serde_json::json!({
             "namespace": "production",
             "snapshots": [{"config": {"privateDns": "web"}}, {"config": {"privateDns": "api"}}],
-            "selected": [{"name": "web"}],
+            "selected": [{"name": "web"}, {"name": "old"}],
+            "removals": ["old"],
             "configs": [{"configResourceId": "cfg", "name": "sentry", "references": [],
                 "files": {"config.yml": {"content": "dsn: redis.internal", "mode": "0444", "uid": 0, "gid": 0}}}],
         });

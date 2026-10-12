@@ -521,10 +521,14 @@ pub(super) fn of_nodes(
     }
     let mut nodes = BTreeMap::new();
     for node in &stored.nodes {
-        if let TargetNode::Service { id, runtime, .. } = node
-            && let Some(rows) = by_service.get(runtime)
-        {
-            nodes.insert(id.as_str().to_owned(), rows.values().cloned().collect());
+        let rows: Vec<_> = node
+            .runtimes()
+            .into_iter()
+            .filter_map(|runtime| by_service.get(runtime))
+            .flat_map(|rows| rows.values().cloned())
+            .collect();
+        if !rows.is_empty() {
+            nodes.insert(node.id().to_owned(), rows);
         }
     }
     if !stored

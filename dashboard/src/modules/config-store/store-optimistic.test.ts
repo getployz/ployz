@@ -244,6 +244,26 @@ describe("the On merge list", () => {
     expect(rows()?.[0]).toEqual({ name: "env.CACHE_TTL", ride: "rides", lands: "60" });
   });
 
+  it("never moves a Kept Volume, and a removal excluded or included again still lands nothing", async () => {
+    const queryClient = new QueryClient();
+    const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, onMergeQuery(pr)).queryKey;
+    const node = (name: string, ride: MergeRow["ride"], lands: MergeRow["lands"]): MergeRow => ({
+      row: `${name}:node` as RowId, node: name, kind: name.startsWith("volumes.") ? "volume" : "service", name: null,
+      production: { image: "x" }, preview: null, lands, ride, conflict: false, requires: null,
+    });
+    queryClient.setQueryData<unknown>(key, { ok: true, value: {
+      environment: { ...environment, name: "pr-146" }, pull_request: { repository_id: 1, number: 146 },
+      destinations: [{ name: "production", rows: [node("db", "rides", null), node("volumes.data", "kept", { size: "10GB" })] }],
+    } satisfies OnMerge });
+    const rows = () => queryClient.getQueryData<{ value: OnMerge }>(key)?.value.destinations[0]?.rows
+      .map(({ node: at, ride, lands }) => [at, ride, lands]);
+    const both = ["db:node", "volumes.data:node"];
+    await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: pr, rows: both });
+    expect(rows()).toEqual([["db", "excluded", null], ["volumes.data", "kept", { size: "10GB" }]]);
+    await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: pr, rows: both, off: true });
+    expect(rows()).toEqual([["db", "rides", null], ["volumes.data", "kept", { size: "10GB" }]]);
+  });
+
   it("lands an Edit's value at once, a secret's sealed, and taken back lands the PR Environment's", async () => {
     const { queryClient, rows } = listed();
     const into = { project: "shop", environment: "production" };

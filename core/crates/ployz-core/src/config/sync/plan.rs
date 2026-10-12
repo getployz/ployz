@@ -353,9 +353,18 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     let id = id.clone();
                     let sides = cells_at(&id);
                     let [b, f, i] = &sides;
-                    if let Some(verdict) = policy.verdict(&id, b, f, i) {
-                        push(id, sides, None, verdict);
-                    }
+                    let Some(verdict) = policy.verdict(&id, b, f, i) else {
+                        continue;
+                    };
+                    // A merge keeps the Volume its sender removed, so it keeps the
+                    // mounts on it too: a Service left without its data loses it all
+                    // the same.
+                    let kept = matches!(&id.at, At::Mount(volume)
+                        if policy.way == Way::Merge
+                            && !from_nodes.contains_key(volume.as_str())
+                            && into_nodes.contains_key(volume.as_str())
+                            && base_nodes.contains_key(volume.as_str()));
+                    push(id, sides, None, if kept { Verdict::Kept } else { verdict });
                 }
                 if let (NodeRef::Volume(_), NodeRef::Volume(_)) = (from_node, into_node) {
                     let id = RowId {

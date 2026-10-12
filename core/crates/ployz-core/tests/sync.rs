@@ -2224,6 +2224,31 @@ fn a_merge_keeps_a_volume_the_sender_removed_whatever_its_marks() {
 }
 
 #[test]
+fn a_merge_keeps_the_mount_of_a_volume_the_sender_removed() {
+    let mount = format!("{API}:mounts.{DATA}");
+    let from = without(production(), DATA);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    assert_eq!(
+        row(&plan, &mount).verdict,
+        Verdict::Kept,
+        "{:#?}",
+        summary(&plan)
+    );
+
+    // Unless the sender removed the Service too: then it goes whole, mount and all.
+    let from = without(from, API);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    assert!(
+        matches!(
+            row(&plan, &format!("{API}:node")).verdict,
+            Verdict::Moves { .. }
+        ) && plan.rows().iter().all(|row| row.id.to_string() != mount),
+        "{:#?}",
+        summary(&plan)
+    );
+}
+
+#[test]
 fn a_removed_node_the_sender_still_uses_differs_as_live() {
     let from = without(production(), WORKER);
     let plan = compare(Some(&production()), &from, &production(), Way::Merge);

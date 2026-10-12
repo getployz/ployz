@@ -99,7 +99,7 @@ const BEFORE_OFFERS: &str = "
     ALTER TABLE config_waiting_deploy ADD COLUMN syncs TEXT NOT NULL DEFAULT '[]';
     DELETE FROM config_migration WHERE name IN
     ('0008_proposal_offer', '0009_offer_conditional_syncs', '0010_drop_conditional_sync',
-    '0011_retire_offers', '0012_on_merge');
+    '0011_retire_offers', '0012_on_merge', '0014_merge_removed_services');
 ";
 
 /// The schema as it was before `0002_sync`: one base per Branch.
@@ -477,7 +477,8 @@ const BEFORE_RETIRE: &str = "
     ALTER TABLE config_pull_request DROP COLUMN unlanded;
     ALTER TABLE config_proposal ADD COLUMN offered TEXT
         CHECK (offered IS NULL OR number IS NOT NULL);
-    DELETE FROM config_migration WHERE name IN ('0011_retire_offers', '0012_on_merge');
+    DELETE FROM config_migration
+    WHERE name IN ('0011_retire_offers', '0012_on_merge', '0014_merge_removed_services');
     INSERT INTO config_proposal (id, organization_id, environment_id, source_environment_id,
         repository_id, number, source_name, source_revision, first_sync, last_sync, offered)
     VALUES

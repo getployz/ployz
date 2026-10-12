@@ -2442,6 +2442,10 @@ conflict: boolean,
  */
 requires: RowId | null,
 /**
+ * The rows that still reference the node it removes: it stays until they change.
+ */
+refused_by?: Array<NamedRow>,
+/**
  * What commands name it by; stable across renames.
  */
 row: RowId,
@@ -2808,7 +2812,12 @@ placement_seed: number,
 /**
  * Service Names this command applies. Empty means full reconciliation.
  */
-selected: Array<ServiceAttempt>, };
+selected: Array<ServiceAttempt>,
+/**
+ * Services this targeted command retires. Each is also in `selected` and
+ * absent from the target.
+ */
+removals?: Array<ServiceName>, };
 
 export type PlanQuery = { environment: EnvironmentRef,
 /**
@@ -3416,7 +3425,7 @@ export type ReviewStateProjection = { token: string, nodes: Array<ReviewNodeProj
 
 export type Revision = number;
 
-export type Ride = "rides" | "edited" | "excluded" | "production_keeps";
+export type Ride = "rides" | "edited" | "excluded" | "production_keeps" | "kept";
 
 export type RowId = string & { readonly __brand: "RowId" };
 

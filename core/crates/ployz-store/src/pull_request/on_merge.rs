@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use ployz_core::config::{
     Arrives, At, Cell, Cells, PRIVATE_DOMAIN_KEY, Plan, RowId, SERVICE_NAME_KEY,
     SavedEnvironmentIntent, SavedVariableValue, SealedCell, ServiceGitBranch, ServiceSource,
-    Setting, ValuePart, ValuePartOwner, Verdict, Why, marks_on,
+    Setting, ValuePart, ValuePartOwner, Verdict, Why, canonicalize_environment_intent, marks_on,
 };
 use serde_json::Value;
 
@@ -20,6 +20,7 @@ use crate::branch::{
     Carried, Move, NamedRow, RowRef, config, end_included, json_of, named, resolve_one, row_id,
     share, shown,
 };
+use crate::id::ServiceLineageId;
 use crate::storage;
 use crate::variables::{self, VariableKey};
 
@@ -75,6 +76,10 @@ pub struct MergeRow {
     pub conflict: bool,
     /// The row of the new node it is in, which rides with it.
     pub requires: Option<RowId>,
+    /// The rows that still reference the node it removes: it stays until they change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<NamedRow>>", optional)]
+    pub refused_by: Vec<NamedRow>,
 }
 
 /// Whether a row lands at the merge.
@@ -89,6 +94,8 @@ pub enum Ride {
     Excluded,
     /// The Destination marks it Never sync: it keeps its own value.
     ProductionKeeps,
+    /// A Volume the PR Environment removed: the Destination keeps it and its data.
+    Kept,
 }
 
 impl Ride {
@@ -127,11 +134,11 @@ pub(crate) struct Landing {
 }
 
 impl Landing {
-    /// The rows that land.
+    /// The rows that land: a removal something still references doesn't.
     pub(crate) fn riding(&self) -> BTreeSet<RowId> {
         self.rows
             .iter()
-            .filter(|row| row.ride.rides())
+            .filter(|row| row.ride.rides() && row.refused_by.is_empty())
             .map(|row| row.at.row.clone())
             .collect()
     }
@@ -196,10 +203,6 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
     let (from_names, into_names) = (from.names(), into.names());
     let mut rows = Vec::new();
     for row in plan.rows() {
-        // A node removal waits for the merge to prune by Node Introductions.
-        if *row.id.at() == At::Node && row.from == Cell::Absent {
-            continue;
-        }
         let (ride, conflict, arrives) = match &row.verdict {
             Verdict::Moves {
                 ticked: true,
@@ -226,23 +229,27 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
                 };
                 (ride, false, Arrives::AsIs)
             }
-            Verdict::Moves { ticked: false, .. } | Verdict::Differs(_) | Verdict::Kept => continue,
+            Verdict::Kept => (Ride::Kept, false, Arrives::AsIs),
+            Verdict::Moves { ticked: false, .. } | Verdict::Differs(_) => continue,
         };
         let at = named(&[&from.working, &saved], &row.id)
             .ok_or_else(|| error::corrupt("On merge row"))?;
         let preview = shown(&from.working, &from_names, &row.id, &row.from);
+        let production = shown(&saved, &into_names, &row.id, &row.into);
         let lands = match (stored.get(&row.id), arrives) {
+            _ if ride == Ride::Kept => production.clone(),
             (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &into_names),
             (_, Arrives::NeedsValue) => json!({ "secret": false }),
             _ => preview.clone(),
         };
         rows.push(MergeRow {
-            production: shown(&saved, &into_names, &row.id, &row.into),
+            production,
             lands,
             preview,
             ride,
             conflict,
             requires: row.requires.clone(),
+            refused_by: Vec::new(),
             at,
         });
     }
@@ -262,7 +269,49 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
             row.ride = Ride::Excluded;
         }
     }
+    let mut picks: BTreeSet<RowId> = rows
+        .iter()
+        .filter(|row| row.ride.rides())
+        .map(|row| row.at.row.clone())
+        .collect();
+    let values = edited_values(stored, &rows);
+    // Dropping a refused removal keeps its node, whose own references can refuse
+    // another removal, so repeat until none is refused.
+    let mut refused = BTreeMap::new();
+    loop {
+        let found = plan.removal_dependents(&picks, &values).map_err(config)?;
+        if found.is_empty() {
+            break;
+        }
+        for (removal, dependents) in found {
+            picks.remove(&removal);
+            refused.insert(removal, dependents);
+        }
+    }
+    for row in &mut rows {
+        if let Some(dependents) = refused.remove(&row.at.row) {
+            row.refused_by = dependents
+                .iter()
+                .map(|dependent| {
+                    named(&[&from.working, &saved], dependent)
+                        .ok_or_else(|| error::corrupt("On merge dependent"))
+                })
+                .collect::<Result<_, _>>()?;
+        }
+    }
     Ok(Landing { into, plan, rows })
+}
+
+/// The Edits of the rows that land with one.
+fn edited_values(
+    mut stored: BTreeMap<RowId, SealedCell>,
+    rows: &[MergeRow],
+) -> BTreeMap<RowId, SealedCell> {
+    stored.retain(|id, _| {
+        rows.iter()
+            .any(|row| row.at.row == *id && row.ride == Ride::Edited)
+    });
+    stored
 }
 
 /// An Edit as reads show it.
@@ -441,7 +490,10 @@ pub(crate) fn holds(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<
     {
         return Ok(false);
     }
-    Ok(landings.iter().any(|landing| !landing.rows.is_empty()))
+    // A Kept Volume stays where it is: nothing of it lands.
+    Ok(landings
+        .iter()
+        .any(|landing| landing.rows.iter().any(|row| row.ride != Ride::Kept)))
 }
 
 /// What a Destination didn't take when the pull request merged.
@@ -511,19 +563,46 @@ pub(crate) struct Merging<'a> {
     pub(crate) trusted: &'a Trusted,
 }
 
+/// What a pull request's merge did across its Destinations.
+pub(crate) struct Merged {
+    /// Whether every Destination took it; false when there is none.
+    pub(crate) all: bool,
+}
+
+/// What a merge changed in one Destination's Services, which its Deploy takes.
+#[derive(Default)]
+pub(crate) struct MergedServices {
+    /// The IDs of the Services it changed that Saved State still has.
+    pub(crate) updates: BTreeSet<String>,
+    /// The Services it removed, as Saved State had them before: the Deploy tears
+    /// down what they ran.
+    pub(crate) removals: BTreeSet<ServiceLineageId>,
+}
+
+impl MergedServices {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.updates.is_empty() && self.removals.is_empty()
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.updates.extend(other.updates);
+        self.removals.extend(other.removals);
+    }
+}
+
 /// Land what PR Environment `from`'s pull request lands in each Destination, one
-/// Saved revision each, and deploy the Services it changed there. A Destination
-/// that can't take it is skipped and keeps what it had; returns whether every one
-/// took it, and false when there is none: a merge into a branch nothing deploys
-/// lands nowhere, so the PR Environment keeps what it holds. What didn't land, or landed but didn't deploy, goes in `unlanded`. The
-/// caller holds the locks.
+/// Saved revision each, and deploy the Services it changed or removed there. A Destination
+/// that can't take it is skipped and keeps what it had. A merge into a branch
+/// nothing deploys lands nowhere, so the PR Environment keeps what it holds. What
+/// didn't land, or landed but didn't deploy, goes in `unlanded`. The caller holds
+/// the locks.
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
     from: &EnvironmentId,
     merge: &Merging<'_>,
     (automated, unlanded): (&mut Automated, &mut Vec<Unlanded>),
-) -> Result<bool, RpcError> {
+) -> Result<Merged, RpcError> {
     let from = scope::load_by_id(tx, from)?;
     let (pull_request, landings) = landings(tx, who, &from)?;
     let mut all = !landings.is_empty();
@@ -533,8 +612,10 @@ pub(crate) fn land(
             land_one(tx, who, &from, landing, (&pull_request, merge.target))
         });
         match landed {
-            Ok(services) if services.is_empty() => {}
             Ok(services) => {
+                if services.is_empty() {
+                    continue;
+                }
                 let skipped = automated.skipped.len();
                 automation::deploy_landed(
                     tx,
@@ -578,45 +659,41 @@ pub(crate) fn land(
             Err(error) => return Err(error),
         }
     }
-    Ok(all)
+    Ok(Merged { all })
 }
 
 /// Land `landing` in its Destination: Saved State takes every riding row, and
 /// Working State each one it still holds as Saved did, so an edit staged there
 /// stays and wins at the next Save. A Git Service it introduces from the merged
-/// repository lands tracking the branch it merged into. Returns the IDs of the
-/// Services it changed.
+/// repository lands tracking the branch it merged into.
 fn land_one(
     tx: &mut dyn Tx,
     who: &Actor,
     from: &Environment,
     landing: Landing,
     (pull_request, target): (&PullRequestRef, &BranchName),
-) -> Result<Vec<String>, RpcError> {
+) -> Result<MergedServices, RpcError> {
     let picks = landing.riding();
-    let edited: BTreeSet<RowId> = landing
-        .rows
-        .iter()
-        .filter(|row| row.ride == Ride::Edited)
-        .map(|row| row.at.row.clone())
-        .collect();
     let Landing {
         into: mut destination,
         plan,
-        ..
+        rows,
     } = landing;
     if picks.is_empty() {
-        return Ok(Vec::new());
+        return Ok(MergedServices::default());
     }
     let into = destination.summary.id.clone();
-    let mut values = edits(tx, &from.summary.id, &into)?;
-    values.retain(|row, _| edited.contains(row));
+    let values = edited_values(edits(tx, &from.summary.id, &into)?, &rows);
     let mut applied = plan.apply(&picks, &values).map_err(config)?;
-    let arriving: BTreeSet<&str> = picks
+    let (removed, arriving): (BTreeSet<&str>, BTreeSet<&str>) = picks
         .iter()
         .filter(|pick| *pick.at() == At::Node)
         .map(RowId::lineage)
-        .collect();
+        .partition(|lineage| {
+            plan.rows()
+                .iter()
+                .any(|row| row.id == RowId::node(lineage) && row.from == Cell::Absent)
+        });
     for service in &mut applied.next.services {
         if let ServiceSource::Git {
             repository_id,
@@ -635,6 +712,13 @@ fn land_one(
     let old = latest
         .as_ref()
         .map_or_else(|| destination.working.clone(), |saved| saved.intent.clone());
+    let removals = old
+        .services
+        .iter()
+        .filter(|service| removed.contains(service.lineage_id.as_str()))
+        .map(|service| ServiceLineageId::parse(service.id.as_str()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| error::corrupt("Service ID"))?;
     let (saved, _) = scope::checked(
         tx,
         &destination.summary,
@@ -679,17 +763,54 @@ fn land_one(
     let way = Move::merge(tx, from, &destination)?;
     let old_cells = Cells::of(&old, &way.hostnames.into);
     let mirror = way.plan(&working);
-    let staged: BTreeSet<RowId> = mirror
+    // A node's cells leave out some of what a draft can change, such as whether a
+    // variable is exported, so a removal compares the whole record.
+    let (drafted, before) = (
+        canonicalize_environment_intent(working.clone()),
+        canonicalize_environment_intent(old.clone()),
+    );
+    let unchanged = |lineage: &str| {
+        let service = |intent: &SavedEnvironmentIntent| {
+            intent
+                .services
+                .iter()
+                .find(|s| s.lineage_id == lineage)
+                .cloned()
+        };
+        let config = |intent: &SavedEnvironmentIntent| {
+            intent
+                .configs
+                .iter()
+                .find(|c| c.resource_lineage_id == lineage)
+                .cloned()
+        };
+        service(&drafted) == service(&before) && config(&drafted) == config(&before)
+    };
+    let mut staged: BTreeSet<RowId> = mirror
         .rows()
         .iter()
         .filter(|row| {
             picks.contains(&row.id)
                 && !arriving.contains(row.id.lineage())
                 && matches!(row.verdict, Verdict::Moves { .. })
-                && row.into == *old_cells.at(&row.id)
+                && if removed.contains(row.id.lineage()) {
+                    unchanged(row.id.lineage())
+                } else {
+                    row.into == *old_cells.at(&row.id)
+                }
         })
         .map(|row| row.id.clone())
         .collect();
+    // A draft that still references a removed node keeps it in Working State.
+    loop {
+        let refused = mirror
+            .removal_dependents(&staged, &values)
+            .map_err(config)?;
+        if refused.is_empty() {
+            break;
+        }
+        staged.retain(|row| !refused.contains_key(row));
+    }
     if !staged.is_empty() {
         let next = mirror.apply(&staged, &values).map_err(config)?.next;
         working = with_variable_ids_of(&saved, &working, next);
@@ -716,13 +837,16 @@ fn land_one(
         "DELETE FROM config_merge_value WHERE environment_id = ?1 AND destination_id = ?2",
         &[from.summary.id.as_str().into(), into.as_str().into()],
     )?;
-    Ok(affected(&saved, &picks))
+    Ok(MergedServices {
+        updates: affected(&saved, &picks),
+        removals,
+    })
 }
 
 /// The IDs of the Services of `saved` that `picks` changed: their own rows, a Volume
 /// or Config they mount, or a variable they read, through other variables or a
 /// mounted Config's files too.
-fn affected(saved: &SavedEnvironmentIntent, picks: &BTreeSet<RowId>) -> Vec<String> {
+fn affected(saved: &SavedEnvironmentIntent, picks: &BTreeSet<RowId>) -> BTreeSet<String> {
     let lineages: BTreeSet<&str> = picks.iter().map(RowId::lineage).collect();
     // A Service's Private DNS also produces its built-in address variables.
     let mut changed: BTreeSet<(String, String)> = picks
