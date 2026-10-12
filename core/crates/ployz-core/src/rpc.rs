@@ -74,6 +74,7 @@ macro_rules! define_capabilities {
             matches!(path, $(concat!("/", $package, ".MachineRpc/", $unary_route))|+ | $(concat!("/", $package, ".MachineRpc/", $stream_route))|+)
         }
 
+        /// The capability that names the route at `path`, or `None` for an uncatalogued path.
         #[must_use]
         pub fn capability_of(path: &str) -> Option<&'static str> {
             match path {
@@ -85,7 +86,9 @@ macro_rules! define_capabilities {
             }
         }
 
+        /// gRPC path of the Exec stream.
         pub const EXEC_PATH: &str = concat!("/", $package, ".MachineRpc/Exec");
+        /// gRPC path of the Build stream.
         pub const BUILD_PATH: &str = concat!("/", $package, ".MachineRpc/Build");
 
         /// Bidirectional exec is outside the unary catalog.

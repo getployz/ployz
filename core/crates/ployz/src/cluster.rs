@@ -34,8 +34,8 @@ use tonic::{
 use crate::{
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
-        TransportError, UNARY_RETRY_DELAYS, apply_timeout, name_refusal, rpc_error,
-        stop_rpc_timeout, target_request,
+        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout,
+        target_request,
     },
     context::{Connection, ConnectionSource},
     deploy::{DeploySnapshot, VolumeSnapshot},
@@ -352,12 +352,12 @@ impl Client {
                     PathAndQuery::from_static(path),
                     ProstCodec::<OpaquePayload, OpaquePayload>::default(),
                 )
-                .await?
+                .await
+                .map_err(|status| refused(status, path, Some(target)))?
                 .into_inner()
                 .decode_response()?)
         })
         .await
-        .map_err(|error| name_refusal(error, path, target))
     }
 
     fn machine_rpc(&self) -> MachineRpcClient<Channel> {
@@ -443,18 +443,6 @@ impl Client {
         payload: OpaquePayload,
         target: Option<&MachineTarget>,
     ) -> Result<T::Response, ConnectError> {
-        let result = self.call_once_unnamed::<T>(payload, target).await;
-        match target {
-            Some(target) => result.map_err(|error| error.name_refusal(T::PATH, target)),
-            None => result,
-        }
-    }
-
-    async fn call_once_unnamed<T: Rpc>(
-        &self,
-        payload: OpaquePayload,
-        target: Option<&MachineTarget>,
-    ) -> Result<T::Response, ConnectError> {
         let mut grpc = tonic::client::Grpc::new(self.channel.clone());
         grpc.ready().await?;
         let response = grpc
@@ -463,7 +451,8 @@ impl Client {
                 PathAndQuery::from_static(T::PATH),
                 ProstCodec::<OpaquePayload, OpaquePayload>::default(),
             )
-            .await?
+            .await
+            .map_err(|status| refused(status, T::PATH, target))?
             .into_inner()
             .decode_response()?;
         if let RpcResponseBody::Error(error) = &response.body {
@@ -1107,6 +1096,16 @@ impl Client {
         let capacity = capacity::observe(self, &machines).await;
         snapshot_from_partial(machines, containers, volumes, capacity).map_err(ConnectError::Remote)
     }
+}
+
+/// Only a gRPC status can mean an old daemon lacks the route. An error body
+/// is the daemon's own answer, so it keeps the daemon's sentence.
+fn refused(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
+    let error = TransportError::from(status);
+    ConnectError::Rpc(match target {
+        Some(target) => error.name_refusal(path, target),
+        None => error,
+    })
 }
 
 pub(crate) fn snapshot_from_partial(
