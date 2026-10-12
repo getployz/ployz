@@ -9,7 +9,7 @@ import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import {
-  lossTime, oldCopies, observePlacement, placementChanges, placementLosses, type Placement, type PlacementLost, type PlacementRow, type Seed,
+  lossByVolume, lossTime, oldCopies, observePlacement, placementChanges, placementLosses, type Placement, type PlacementLost, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
 import { dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
@@ -259,7 +259,7 @@ export const placementAdmission = Effect.fn("VolumePlacement.admission")(functio
       code: "confirmation_required",
       message: `Deploying loses data of ${names.join(", ")}. Accept each by name`,
       details: {
-        volumes: names.map((name) => ({ name, deletes: lost.filter(({ volume }) => volume.name === name).map(({ server }) => ({ machine_id: server.id })) })),
+        volumes: lossByVolume(lost),
         accept: [...new Set([...accepted, ...names])],
         version,
       },

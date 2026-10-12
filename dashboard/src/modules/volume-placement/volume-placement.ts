@@ -502,6 +502,17 @@ export function placementLosses(changes: readonly PlacementChange[]): PlacementL
 }
 
 /**
+ * Each Volume that loses something, as a `confirmation_required` refusal names it: the Servers losing a copy, and
+ * `writes` when it is a restore dropping writes, so a refused Deploy titles its confirm as the local check does.
+ */
+export function lossByVolume(lost: readonly PlacementLost[]) {
+  return [...new Set(lost.map(({ volume }) => volume.name))].map((name) => {
+    const of = lost.filter(({ volume }) => volume.name === name);
+    return { name, deletes: of.map(({ server }) => ({ machine_id: server.id })), loss: of.some(({ after }) => after !== null) ? "writes" : "data" };
+  });
+}
+
+/**
  * What a Deploy of staged changes takes, for its typed confirm: what goes, whether a restore drops writes, and the name
  * of each Volume that loses something, which the Deploy accepts as it accepts a Volume the Store deletes.
  */

@@ -68,6 +68,8 @@ const decodeVolumeLoss = Schema.decodeUnknownOption(Schema.Struct({
   volumes: Schema.Array(Schema.Struct({
     name: Schema.String,
     deletes: Schema.Array(Schema.Struct({ machine_id: Schema.String })),
+    /** Cloud's admission sets it; the Store's own refusal never drops writes, so it omits it. */
+    loss: Schema.optional(Schema.Literals(["data", "writes"])),
   })),
   accept: Schema.Array(Schema.String),
   version: Schema.String,

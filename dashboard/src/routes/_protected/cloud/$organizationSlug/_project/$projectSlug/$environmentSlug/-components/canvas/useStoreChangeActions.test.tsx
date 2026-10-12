@@ -99,6 +99,17 @@ it("titles the ask Data loss when a restore drops writes", async () => {
   expect(screen.queryByText("Deletes data")).toBeNull();
 });
 
+it("titles the ask Data loss when Cloud refuses a Deploy whose staged restore drops writes", async () => {
+  const test = setup();
+  const restore = { volumes: [{ name: "pg-data", deletes: [{ machine_id: "m1" }], loss: "writes" }], accept: ["pg-data"], version: "9:1:0.1" };
+  test.write.mockResolvedValueOnce(refusal("confirmation_required", restore));
+
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await screen.findByText("pg-data");
+  expect(screen.getByText("Data loss")).toBeTruthy();
+  expect(screen.queryByText("Deletes data")).toBeNull();
+});
+
 it("discards a Setting by its Store path, through the Environment's queue", async () => {
   const test = setup();
   test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded", environment: { revision: 4 } } } as never);

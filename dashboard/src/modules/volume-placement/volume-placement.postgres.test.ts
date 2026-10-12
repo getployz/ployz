@@ -208,7 +208,7 @@ describe("volume placement", () => {
       expect(await admission(admit([]))).toEqual({ ok: false, refusal: {
         code: "confirmation_required",
         message: "Deploying loses data of data. Accept each by name",
-        details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-2") }] }], accept: ["data"], version: "v1" },
+        details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-2") }], loss: "data" }], accept: ["data"], version: "v1" },
       } });
       expect(await admission(admit(["other"], null))).toMatchObject({ ok: false, refusal: { details: { accept: ["other", "data"], version: "diff-7" } } });
       expect(await admission(admit(["data", "other"]))).toEqual({ ok: true, command: admit(["other"]) });
