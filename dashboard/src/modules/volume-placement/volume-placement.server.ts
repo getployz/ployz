@@ -229,7 +229,7 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
 export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (organizationId: string, environmentId: string, deploymentId: string) {
   const { drizzle } = yield* Database;
   yield* drizzle.update(volumePlacement)
-    .set({ deploymentId, updatedAt: new Date() })
+    .set({ deploymentId, staged: sql`${volumePlacement.staged} - 'unreached'`, updatedAt: new Date() })
     .where(and(
       eq(volumePlacement.organizationId, organizationId),
       eq(volumePlacement.environmentId, environmentId),

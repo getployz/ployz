@@ -40,6 +40,10 @@ Details, and you drop it in Details. **Remove mirror** asks you to type your
   or else to the first other server that runs services. The page says "Next deploy moves 2
   volumes". Each environment's next deploy moves them.
 
+Details lists the steps each change takes at the next deploy. Making a mirror the primary reads
+"Final sync · Stop · Start", with "Catch up" first when the mirror last refreshed over an hour
+ago. A new mirror reads "Seed", and removing a copy reads "Delete".
+
 Mirrors refresh on every deploy and every 15 minutes. While a deploy moves a volume, its tray, the
 bottom bar and the deployment page say what it is doing, for example "Moving to web-2". Cancel
 lets the step under way finish, and the rest waits for your next deploy. If the deploy fails, the

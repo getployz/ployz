@@ -21,6 +21,7 @@ import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { SafetyLine, useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
+import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
@@ -148,7 +149,7 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
                   </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={environment}
                     services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} />}
                 <SettingsSection id="danger" title="Danger">
-                  <StoreVolumeDanger state={state} params={params} version={diff.version} />
+                  <StoreVolumeDanger state={state} params={params} version={diff.version} environmentId={diff.environment.id} volumes={volumes} />
                 </SettingsSection>
               </div>
             </div>
@@ -194,12 +195,15 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
   );
 }
 
-function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; params: VolumeResourceRouteParams; version: string }) {
+function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
+  state: StoreVolume; params: VolumeResourceRouteParams; version: string; environmentId: string; volumes: readonly VolumeListing[];
+}) {
   const writer = useStoreWriter(state.organizationSlug);
   const navigate = useNavigate();
+  const placements = useStagedPlacements(state.organizationSlug, state.environment, environmentId, volumes);
   // Its data goes with the Deploy that removes it, which asks first; that Deploy opens its page.
   const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
-    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
+    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }), placements.loss);
   const { volume } = state;
   const removing = volume.change === "delete";
   const mounts = volume.mounts.length;

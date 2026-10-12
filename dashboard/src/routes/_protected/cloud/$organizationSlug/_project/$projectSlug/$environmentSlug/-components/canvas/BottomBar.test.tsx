@@ -25,6 +25,8 @@ const onPublish = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
 let storage: (deploymentId: string) => string | null = () => null;
+/** Moves Deployments between in flight and ended while the bar stays mounted. */
+let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] }) => void = () => {};
 
 beforeEach(() => {
   active = [];
@@ -41,11 +43,13 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", component: Outlet });
   const canvas = createRoute({ getParentRoute: () => environment, id: "_canvas", component: function Canvas() {
     const [slot, setSlot] = useState<HTMLElement | null>(null);
+    const [lists, setLists] = useState({ active, ended: [] as DeploymentSummary[] });
+    settle = setLists;
     return (
       <BottomBarSlot.Provider value={slot}>
         <div ref={setSlot} />
         <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
-          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={active} storage={storage} notes={{}}
+          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}}
           proposals={{ included: [] }} />
         <Outlet />
       </BottomBarSlot.Provider>
@@ -126,6 +130,34 @@ it("words a Deploy's storage step while it moves a Volume before its Services", 
   const shown = await bar();
   expect(shown.getByText("Queued · Deployment #2")).toBeTruthy();
   expect(shown.getByText("pg-data · Moving to web-2")).toBeTruthy();
+});
+
+it("shows how a Deployment it watched ended, until dismissed, and a Deployed one only for a few seconds", async () => {
+  active = [deployment(running, "running", 1)];
+  open(canvasUrl);
+  expect((await bar()).getByText("Deploying · Deployment #1")).toBeTruthy();
+  act(() => settle({ active: [], ended: [deployment(running, "failed", 1), deployment(queued, "applied", 0)] }));
+  const failed = await bar();
+  expect(failed.getByText("Failed · Deployment #1")).toBeTruthy();
+  expect(failed.getByRole("link", { name: "Logs" })).toBeTruthy();
+  fireEvent.click(failed.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  act(() => settle({ active: [deployment(queued, "running", 2)], ended: [] }));
+  expect((await bar()).getByText("Deploying · Deployment #2")).toBeTruthy();
+  act(() => settle({ active: [], ended: [deployment(queued, "applied", 2), deployment(running, "failed", 1)] }));
+  expect((await bar()).getByText("Deployed · Deployment #2")).toBeTruthy();
+  act(() => { vi.advanceTimersByTime(6_000); });
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+  vi.useRealTimers();
+});
+
+it("never shows a Deployment that ended before it was watched", async () => {
+  open(canvasUrl);
+  act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
+  await act(async () => {});
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });
 
 it("hides while nothing is staged or running, and while the only Deployment's page is open", async () => {

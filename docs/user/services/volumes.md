@@ -122,7 +122,7 @@ Deleting a deployed volume deletes its data from your servers for good.
 
 1. Open the volume and click **Delete volume** under **Danger**. **Keep volume** undoes it.
 2. Click **Delete data**, or **Deploy**.
-3. Ployz shows **Deploy deletes data** with what goes. Type your `project/environment`, like
+3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like
    `my-app/production`, and click **Deploy**.
 
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.

@@ -148,9 +148,11 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
                 <p className="flex min-w-0 items-baseline gap-2">
                   <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
+                  {group.unreached ? <span className="shrink-0 text-muted-foreground">Not reached</span> : null}
                 </p>
                 {row.loss !== undefined ? <p className="text-destructive">{row.loss}</p> : null}
                 {row.detail !== undefined ? <p className="text-muted-foreground">{row.detail}</p> : null}
+                {row.steps?.length ? <p className="text-muted-foreground">{row.steps.join(" · ")}</p> : null}
                 {restarts}
                 {row.configFile ? <ConfigFileValue {...row.configFile} /> : null}
                 {note ? <div className="text-muted-foreground">{note}</div> : null}

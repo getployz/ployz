@@ -2,7 +2,6 @@ import { Suspense, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentSummary, DeploymentView, NodeOutcome } from "@ployz/sdk";
 import { DatabaseIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon } from "lucide-react";
-import { toast } from "sonner";
 import { ContainerLogs } from "#/components/container-logs";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { Badge } from "#/components/ui/badge";
@@ -262,15 +261,12 @@ function StoreDeploymentActions({ deployment, storage, noServers }: { deployment
     }
   }
 
-  // Retry ships what the Deployment froze; Deploy now starts a queued one nothing is running yet.
+  // Redeploy ships what the Deployment froze; Deploy now starts a queued one while nothing else runs.
   const buttons = {
     add_server: <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>,
-    retry: <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button>,
+    retry: <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Redeploy</Button>,
     start: (
-      <Button size="sm" variant="outline" onClick={() => {
-        writer.commit({ command: "start", deployment: deployment.id });
-        toast.success(`Deployment #${deployment.number} starts now`);
-      }}>Deploy now</Button>
+      <Button size="sm" variant="outline" onClick={() => writer.commit({ command: "start", deployment: deployment.id })}>Deploy now</Button>
     ),
     cancel: <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button>,
   } satisfies Record<DeploymentAction, ReactNode>;

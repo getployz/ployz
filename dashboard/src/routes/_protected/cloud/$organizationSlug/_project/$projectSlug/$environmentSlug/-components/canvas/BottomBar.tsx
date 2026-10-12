@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
-import { MoreVerticalIcon } from "lucide-react";
+import { MoreVerticalIcon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -26,6 +26,8 @@ import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_or
  */
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
+const DEPLOYED_SHOWS_MS = 6_000;
+
 type BottomBarProps = {
   groups: ChangeGroup[];
   totalChanges: number;
@@ -41,6 +43,8 @@ type BottomBarProps = {
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
   active: DeploymentSummary[];
+  /** Its latest ended Deployments, newest first: one seen in flight here shows how it ended. */
+  ended?: DeploymentSummary[];
   /** A running Deploy's storage step, in words, while it moves or copies a Volume before its Services. */
   storage?: (deploymentId: string) => string | null;
   /** Details' notes: where changes came from, and the Parent's deployed values. */
@@ -70,6 +74,7 @@ export function BottomBar({
   onDiscardNode,
   onDiscardRow,
   active: newestFirst,
+  ended = [],
   storage = () => null,
   notes,
   proposals,
@@ -90,6 +95,21 @@ export function BottomBar({
   const hasChanges = totalChanges > 0 || canPublish;
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
+  const [watched, setWatched] = useState<ReadonlySet<string>>(new Set());
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (active.every((deployment) => watched.has(deployment.id))) return;
+    setWatched(new Set([...watched, ...active.map((deployment) => deployment.id)]));
+  }, [active, watched]);
+  const latest = ended.find((deployment) => watched.has(deployment.id));
+  const outcome = hasChanges || shown || latest === undefined || dismissed.has(latest.id) || latest.id === viewedId ? undefined : latest;
+  const dismiss = (id: string) => setDismissed((ids) => new Set([...ids, id]));
+  const deployed = outcome?.status === "applied" ? outcome.id : null;
+  useEffect(() => {
+    if (deployed === null) return;
+    const timer = setTimeout(() => setDismissed((ids) => new Set([...ids, deployed])), DEPLOYED_SHOWS_MS);
+    return () => clearTimeout(timer);
+  }, [deployed]);
 
   function deploy() {
     if (admitting) return;
@@ -159,7 +179,8 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} /> : null;
+  ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} />
+    : outcome ? <AttemptState deployment={outcome} storage={null} onDismiss={() => dismiss(outcome.id)} /> : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 
   const includeNewer = proposals?.onIncludeNewer;
@@ -187,8 +208,8 @@ export function BottomBar({
   );
 }
 
-/** An in-flight Deployment, the CLI's or this dashboard's: its status, what it ships, and Logs to open its page. */
-function AttemptState({ deployment, storage }: { deployment: DeploymentSummary; storage: string | null }) {
+/** A Deployment, the CLI's or this dashboard's. */
+function AttemptState({ deployment, storage, onDismiss }: { deployment: DeploymentSummary; storage: string | null; onDismiss?: () => void }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const deploys = deploysLabel(deployment);
   const detail = storage ?? (deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys);
@@ -198,6 +219,9 @@ function AttemptState({ deployment, storage }: { deployment: DeploymentSummary; 
       <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>
+      {onDismiss ? (
+        <Button size="icon" variant="ghost" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}><XIcon /></Button>
+      ) : null}
     </Row>
   );
 }

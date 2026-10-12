@@ -1,5 +1,7 @@
 import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
+import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
+import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
 import { planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -38,6 +40,8 @@ export type Placement = {
   readonly mirrors: readonly MachineId[];
   readonly deletes: readonly MachineId[];
   readonly seed?: Seed;
+  /** A failed Deploy gave this back before it got to it. */
+  readonly unreached?: true;
 };
 
 /**
@@ -65,6 +69,8 @@ export type PlacementChange =
     readonly how: MoveHow;
     /** Restore only: writes after this time are lost. */
     readonly lostAfter: Date | null;
+    /** When the copy it moves to last refreshed. */
+    readonly refreshedAt: Date | null;
     /** Detached copies the move deletes first, since a Volume holds one copy besides its primary for now. */
     readonly clears: readonly MachineRef[];
   }
@@ -197,6 +203,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
       to: machine(staged.primary),
       how,
       lostAfter: how === "restore" ? target?.newest ?? null : null,
+      refreshedAt: target?.newest ?? null,
       clears: how === "copy" ? clearing(staged.primary) : [],
     });
   }
@@ -467,6 +474,53 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
   return next === null || placementChanges(volume, members, { ...row, staged: next }).length === 0 ? null : next;
 }
 
+/** A restore's steps; Download only when the restore point is offsite. */
+export const restoreSteps = (download: boolean): readonly string[] =>
+  [...download ? ["Download"] : [], "Save current", "Stop", "Swap", "Start"];
+
+/** What a Deploy does for the change, in the words its steps show. */
+export function changeSteps(change: PlacementChange, now: Date): readonly string[] {
+  const clears = "clears" in change && change.clears.length > 0 ? ["Delete"] : [];
+  switch (change.kind) {
+    case "move": {
+      if (change.how === "restore") return ["Stop", "Start"];
+      const behind = change.how === "promote" && change.refreshedAt !== null && now.getTime() - change.refreshedAt.getTime() > STALE_AFTER_MS;
+      return [...clears, ...change.how === "copy" ? ["Seed"] : [], ...behind ? ["Catch up"] : [], "Final sync", "Stop", "Start"];
+    }
+    case "add_mirror":
+      return [...clears, "Seed"];
+    case "remove_mirror":
+    case "delete_copy":
+      return ["Delete"];
+    case "seed":
+      return restoreSteps(false);
+  }
+}
+
+/** What a Deploy of staged changes takes from the Servers, for its typed confirm: copies it deletes, and whether a restore drops writes. */
+export type PlacementLoss = { readonly items: readonly DeletionItem[]; readonly losesWrites: boolean };
+
+export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
+  const copy = (volume: PlacementVolume, server: MachineRef): DeletionItem => ({ kind: "volume", name: volume.name, detail: server.name });
+  return {
+    items: changes.flatMap((change) => {
+      const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
+      switch (change.kind) {
+        case "move":
+          return change.how === "restore" && change.from !== null ? [...cleared, copy(change.volume, change.from)] : cleared;
+        case "add_mirror":
+          return cleared;
+        case "remove_mirror":
+        case "delete_copy":
+          return [copy(change.volume, change.server)];
+        case "seed":
+          return [];
+      }
+    }),
+    losesWrites: changes.some((change) => change.kind === "move" && change.how === "restore"),
+  };
+}
+
 function detailsRow(volume: PlacementVolume, change: PlacementChange) {
   const clears = "clears" in change && change.clears.length > 0 ? `Deletes ${detachedName(volume)} first` : undefined;
   switch (change.kind) {
@@ -493,7 +547,8 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
   }
 }
 
-export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[]): ChangeGroup {
+/** Details' group for a Volume's staged changes. */
+export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[], now: Date, unreached = false): ChangeGroup {
   return {
     owner: "placement",
     nodeType: "volume",
@@ -505,12 +560,14 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     changeCount: changes.length,
     restarts: [],
     canDiscard: true,
+    unreached,
     rows: changes.map((change, index) => {
       const words = detailsRow(volume, change);
       return {
         changeKey: `${volume.id}:placement:${index}`,
         label: words.name,
         ...words,
+        steps: changeSteps(change, now),
         variable: false,
         kind: CHANGE_KINDS[change.kind],
         path: String(index),

@@ -27,7 +27,7 @@ import { useVolumeCreator } from "./useVolumeCreator";
 import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
-import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-deployments";
 import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
@@ -216,11 +216,11 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const navigate = useNavigate();
   const ref = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store;
   const { diff } = store;
-  const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
-    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
-  const inFlight = useInFlightDeployments(params.organizationSlug, ref);
-  const { noServers } = use(RuntimeLensContext);
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
+  const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
+    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }), placements.loss);
+  const latest = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
+  const { noServers } = use(RuntimeLensContext);
   const storage = useStorageSteps(params.organizationSlug);
   const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
@@ -244,7 +244,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardNode={discardNode}
         onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path)
           : actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
-        active={inFlight}
+        active={latest.filter((deployment) => deployment.in_flight)}
+        ended={latest.filter((deployment) => !deployment.in_flight)}
         storage={storage}
         notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
         proposals={{
