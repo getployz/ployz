@@ -1,7 +1,7 @@
 //! Departure over fake ZFS: every root becomes a slot, and the roles Storage.Inspect and
 //! Mount derive from the markers.
 
-use super::lease_tests::{set_property, start};
+use super::inspect_tests::{set_property, start};
 use super::*;
 
 #[tokio::test]

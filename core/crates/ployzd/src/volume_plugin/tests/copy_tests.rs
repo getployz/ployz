@@ -11,7 +11,7 @@ use axum::{Router, extract::Request, http::StatusCode, response::IntoResponse};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-use super::lease_tests::{set_property, start};
+use super::inspect_tests::{set_property, start};
 use super::*;
 
 const ROOT: &str = "tank/ployz/data";

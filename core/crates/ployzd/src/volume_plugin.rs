@@ -22,7 +22,7 @@ use tower_service::Service;
 mod capacity;
 mod copy;
 mod departure;
-mod lease;
+mod inspect;
 mod mirror;
 mod pool;
 mod removal;
@@ -169,7 +169,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route("/Storage.Inspect", post(capacity::inspect))
         .route("/Storage.Prepare", post(capacity::prepare))
         .route("/Storage.Demote", post(departure::demote))
-        .route("/Volume.Inspect", post(lease::inspect))
+        .route("/Volume.Inspect", post(inspect::inspect))
         .route("/Volume.Seed", post(seed::seed_volume))
         .route("/Volume.Copy.Inspect", post(copy::inspect))
         .route("/Volume.Copy.Cut", post(copy::cut))
@@ -367,8 +367,8 @@ mod tests {
     #[path = "dataset_safety_tests.rs"]
     mod dataset_safety_tests;
 
-    #[path = "lease_tests.rs"]
-    mod lease_tests;
+    #[path = "inspect_tests.rs"]
+    mod inspect_tests;
 
     #[path = "slot_tests.rs"]
     mod slot_tests;

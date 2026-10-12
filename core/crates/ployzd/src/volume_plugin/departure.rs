@@ -10,7 +10,7 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, Place, VolumeStorage,
-    lease::{MIRROR_PROPERTY, WRITER_PROPERTY, internal},
+    inspect::{MIRROR_PROPERTY, WRITER_PROPERTY, internal},
     storage::{slot_fs, slot_parent},
 };
 

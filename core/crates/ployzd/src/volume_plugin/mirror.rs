@@ -6,7 +6,7 @@ use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, MIRROR_ROOT, VolumeStorage,
-    lease::{MIRROR_PROPERTY, internal},
+    inspect::{MIRROR_PROPERTY, internal},
 };
 
 pub(super) const MIRROR_MOUNT_ROOT: &str = "/var/lib/ployz-mirror";

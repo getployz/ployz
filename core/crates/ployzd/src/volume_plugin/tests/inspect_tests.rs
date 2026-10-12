@@ -1,4 +1,4 @@
-//! Lease records, switch verbs and the writer guard through the plugin routes.
+//! Volume.Inspect through the plugin route, and the helpers other plugin tests start from.
 
 use super::*;
 

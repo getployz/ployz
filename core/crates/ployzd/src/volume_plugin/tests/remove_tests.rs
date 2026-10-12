@@ -1,6 +1,6 @@
 //! Docker Volume removal and lookup behavior through plugin routes.
 
-use super::lease_tests::set_property;
+use super::inspect_tests::set_property;
 use super::*;
 
 #[tokio::test]

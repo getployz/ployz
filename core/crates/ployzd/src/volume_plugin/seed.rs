@@ -11,7 +11,7 @@ use tokio::process::Command;
 
 use super::{
     VolumeStorage,
-    lease::internal,
+    inspect::internal,
     mirror,
     storage::{PROMOTE_PROPERTY, PULL_PROPERTY, root_dataset, slot_fs, slot_parent},
 };

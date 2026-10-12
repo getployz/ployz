@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::lease_tests::{set_property, start};
+use super::inspect_tests::{set_property, start};
 use super::*;
 
 const POINT: &str = "tank/ployz/data@w-1-1\t77\t1700000000";

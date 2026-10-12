@@ -1,7 +1,7 @@
 //! The hidden slot layout: Docker never sees a slot, the Pool still pays for it.
 
 use super::super::storage::committed_bytes;
-use super::lease_tests::start;
+use super::inspect_tests::start;
 use super::*;
 
 #[tokio::test]

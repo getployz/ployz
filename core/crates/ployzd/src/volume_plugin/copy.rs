@@ -17,7 +17,7 @@ use ployzd::{
 
 use super::{
     Dataset, DockerVolumeName, VolumeError, VolumeStorage,
-    lease::internal,
+    inspect::internal,
     mirror,
     storage::{
         CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY,
