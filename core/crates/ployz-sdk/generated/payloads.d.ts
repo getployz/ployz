@@ -445,7 +445,7 @@ export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
-export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" } | { "kind": "no_servers" } | { "kind": "no_public_ip" } | { "kind": "port_80", addresses: Array<string>, } | { "kind": "https_down" };
+export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" } | { "kind": "no_servers" } | { "kind": "no_public_ip" } | { "kind": "port_80", addresses: Array<string>, } | { "kind": "port_80_taken", addresses: Array<string>, } | { "kind": "https_down" };
 
 export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 

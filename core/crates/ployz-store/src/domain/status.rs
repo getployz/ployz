@@ -102,6 +102,15 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
                 None,
             );
         }
+        Some(ClusterDomainStatus::Port80Taken { addresses }) => {
+            return attention(
+                format!(
+                    "Something else answers on port 80 of {}",
+                    addresses.join(", ")
+                ),
+                None,
+            );
+        }
         _ => {}
     }
     let hostname = match &domain.name {
@@ -409,6 +418,30 @@ mod tests {
                 Some(DomainAction::AddServer)
             )
         );
+        for (port_80, reason) in [
+            (
+                ClusterDomainStatus::Port80 {
+                    addresses: vec!["203.0.113.7".into()],
+                },
+                "Port 80 is closed on 203.0.113.7",
+            ),
+            (
+                ClusterDomainStatus::Port80Taken {
+                    addresses: vec!["203.0.113.7".into(), "2001:db8::1".into()],
+                },
+                "Something else answers on port 80 of 203.0.113.7, 2001:db8::1",
+            ),
+        ] {
+            let mut blocked = ready.clone();
+            blocked.cluster_domain = blocked.cluster_domain.map(|cluster| ClusterDomain {
+                status: port_80,
+                ..cluster
+            });
+            assert_eq!(
+                status(&domain, Deployed::Yes, &blocked),
+                (DomainStatus::NeedsAttention, Some(reason.into()), None)
+            );
+        }
     }
 
     #[test]

@@ -125,15 +125,20 @@ traffic, in your hosting provider's firewall (like a Hetzner Cloud Firewall or a
 group) as well as the server's own. Then click **Check again** under **Domain** in
 **Organization → General**.
 
-If port 80 answers from your own computer, something else on that server holds it, often Caddy
-or nginx in front of a [self-hosted Ployz Cloud](../self-hosting.md#choose-where-it-runs). See
-what does:
+## Something else answers on port 80
+
+You'll see **Something else answers on port 80 of 203.0.113.10**. The server answers on port 80,
+but not as Ployz: another web server holds the port, often Caddy or nginx in front of a
+[self-hosted Ployz Cloud](../self-hosting.md#choose-where-it-runs). Until Ployz gets the port
+back, Ployz leaves that server out of your organization's domain. See what holds it:
 
 ```sh
 sudo ss -ltnp '( sport = :80 or sport = :443 )'
 ```
 
-Move that proxy to another server, or publish Ployz Cloud through a Cloudflare Tunnel instead.
+Stop that web server, or move it to another server. To keep Ployz Cloud on the same server,
+publish it through a Cloudflare Tunnel instead. Then click **Check again** under **Domain** in
+**Organization → General**.
 
 ## None of my servers takes web traffic
 

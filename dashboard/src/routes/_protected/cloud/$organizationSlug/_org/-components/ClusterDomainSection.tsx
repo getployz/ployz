@@ -28,6 +28,8 @@ function statusCopy(status: ClusterDomainStatus) {
       return { message: "None of your servers has a public IP address.", action: "servers" } as const;
     case "port_80":
       return { message: `Traffic can’t reach ${status.addresses.join(", ")}. Make sure port 80 is open.`, action: "check" } as const;
+    case "port_80_taken":
+      return { message: `Something else answers on port 80 of ${status.addresses.join(", ")}. Free the port for Ployz.`, action: "check" } as const;
     case "https_down":
       return { message: "HTTPS isn’t working right now. We’re fixing it.", action: null } as const;
   }

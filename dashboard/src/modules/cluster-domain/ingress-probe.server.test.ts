@@ -2,10 +2,9 @@ import { createServer, type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import type { MachineId } from "#/db/tables";
 import { probeIngress } from "#/modules/cluster-domain/ingress-probe.server";
 
-const machineId = "a".repeat(32) as MachineId;
+const machineId = "a".repeat(32);
 const servers: ReturnType<typeof createServer>[] = [];
 
 async function listen(handler: RequestListener) {

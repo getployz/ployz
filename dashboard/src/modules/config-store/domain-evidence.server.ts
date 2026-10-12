@@ -32,7 +32,9 @@ function clusterDomain(row: OrganizationClusterDomain | null): ConfigDomainEvide
   const status = clusterDomainStatus(row, new Date());
   const seen: StoreClusterDomainStatus = status.kind !== "attention"
     ? { kind: status.kind }
-    : status.reason === "port_80" ? { kind: "port_80", addresses: [...status.addresses] } : { kind: status.reason };
+    : status.reason === "port_80" || status.reason === "port_80_taken"
+    ? { kind: status.reason, addresses: [...status.addresses] }
+    : { kind: status.reason };
   return { name: row.name, status: seen };
 }
 

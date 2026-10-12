@@ -19,7 +19,7 @@ export type ClusterDomainStatus =
   | { readonly kind: "setting_up" }
   | { readonly kind: "ready" }
   | { readonly kind: "attention"; readonly reason: "no_servers" | "no_public_ip" | "https_down" }
-  | { readonly kind: "attention"; readonly reason: "port_80"; readonly addresses: readonly string[] };
+  | { readonly kind: "attention"; readonly reason: "port_80" | "port_80_taken"; readonly addresses: readonly string[] };
 
 export function clusterDomainStatus(
   domain: Pick<ClusterDomainRow, "recordsSyncedAt" | "traffic" | "certificateNotAfter">,
@@ -29,6 +29,9 @@ export function clusterDomainStatus(
   if (traffic?.kind === "no_servers" || traffic?.kind === "no_public_ip") return { kind: "attention", reason: traffic.kind };
   if (traffic?.kind === "probed" && traffic.unreachable.length > 0) {
     return { kind: "attention", reason: "port_80", addresses: traffic.unreachable.map((server) => server.address) };
+  }
+  if (traffic?.kind === "probed" && traffic.taken?.length) {
+    return { kind: "attention", reason: "port_80_taken", addresses: traffic.taken.map((server) => server.address) };
   }
   if (domain.certificateNotAfter !== null && domain.certificateNotAfter <= now) return { kind: "attention", reason: "https_down" };
   if (domain.recordsSyncedAt === null || domain.certificateNotAfter === null) return { kind: "setting_up" };
