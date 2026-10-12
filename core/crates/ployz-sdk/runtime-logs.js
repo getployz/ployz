@@ -23,7 +23,6 @@ function compare(a, b) {
   const time = BigInt(a.timestamp_nanos) - BigInt(b.timestamp_nanos);
   return time < 0n ? -1 : time > 0n ? 1 : a.id.localeCompare(b.id);
 }
-/** A refusal's code and, when it names one, the capability the Server lacks. */
 function failure(error) {
   const capability = error.details?.capability;
   return {

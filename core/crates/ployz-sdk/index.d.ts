@@ -146,7 +146,7 @@ export type LogFilter = {
 /** What a line says about itself; a line that says nothing is `info`, stderr included. */
 export type LogLevel = "error" | "warn" | "info" | "debug";
 export type LogRecord = ContainerLogRecord & { id: string; level: LogLevel };
-/** `code` and `capability` come from the refusal; `capability` names what the Server lacks. */
+/** `capability` names what the Server lacks. */
 export type LogSourceError = {
   type: "source_error"; machineId: string; containerId: string; message: string;
   code?: RpcErrorCode; capability?: string;
