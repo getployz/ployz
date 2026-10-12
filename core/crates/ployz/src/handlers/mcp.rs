@@ -666,7 +666,9 @@ impl ServerHandler for Server {
         };
         let result = self.call_compiled(gate, request, &context).await;
         // A compiled tool that reached Cloud kept the revision Cloud named.
-        self.follow(cloud_account::revision_seen(), &context).await;
+        let revision =
+            (self.setup.as_ref()).and_then(|setup| cloud_account::revision_seen(&setup.cloud));
+        self.follow(revision, &context).await;
         result
     }
 }

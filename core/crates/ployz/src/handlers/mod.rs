@@ -70,10 +70,10 @@ pub fn run() -> Result<(), Error> {
 /// Every `/api/cli` reply names Cloud's manifest revision. One the cache lacks means
 /// the next `--help` would be stale, so fetch it now, after the command's own output.
 fn follow_cloud_revision() {
-    let Some(seen) = crate::cloud_account::revision_seen() else {
+    let setup = crate::published::Setup::from_env();
+    let Some(seen) = crate::cloud_account::revision_seen(&setup.cloud) else {
         return;
     };
-    let setup = crate::published::Setup::from_env();
     if setup
         .cached()
         .is_some_and(|published| published.revision == seen)

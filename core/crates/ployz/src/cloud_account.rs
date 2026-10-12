@@ -560,7 +560,7 @@ async fn store_answer<T: DeserializeOwned>(
         PublicError { code: String, message: String },
     }
     let status = response.status();
-    notice_revision(response.headers());
+    notice_revision(&response);
     let bytes = response
         .bytes()
         .await
@@ -839,7 +839,7 @@ pub(crate) async fn call<T: DeserializeOwned>(
     let url = format!("{}/api/cli/{path}", credential.cloud());
     let response = send(credential, method, &url, body).await?;
     let status = response.status();
-    notice_revision(response.headers());
+    notice_revision(&response);
     let body = response
         .bytes()
         .await
@@ -850,18 +850,20 @@ pub(crate) async fn call<T: DeserializeOwned>(
     answer(credential, status, &body)
 }
 
-/// The manifest revision Cloud names on every `/api/cli` reply, from the latest one.
-static REVISION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// The manifest revision each Cloud named on its latest `/api/cli` reply, by origin.
+static REVISION: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 pub(crate) const REVISION_HEADER: &str = "x-ployz-manifest";
 
 /// Keep the revision a reply names, so a command can refresh the published
 /// commands after it prints when Cloud moved on.
-pub(crate) fn notice_revision(headers: &reqwest::header::HeaderMap) {
-    if let Some(revision) = revision_of(headers) {
-        *REVISION
+pub(crate) fn notice_revision(response: &reqwest::Response) {
+    if let Some(revision) = revision_of(response.headers()) {
+        REVISION
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(revision);
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(response.url().origin().ascii_serialization(), revision);
     }
 }
 
@@ -872,12 +874,17 @@ fn revision_of(headers: &reqwest::header::HeaderMap) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// The revision the latest `/api/cli` reply named, if one did.
-pub(crate) fn revision_seen() -> Option<String> {
+/// The revision `cloud`'s latest `/api/cli` reply named, if one did.
+pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
+    let origin = reqwest::Url::parse(cloud)
+        .ok()?
+        .origin()
+        .ascii_serialization();
     REVISION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+        .get(&origin)
+        .cloned()
 }
 
 /// Cloud's refusal of a call, as it sent it.

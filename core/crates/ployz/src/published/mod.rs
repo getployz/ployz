@@ -331,7 +331,7 @@ impl Setup {
                 .map_err(|error| cloud_login::unreachable(&self.cloud, error))?;
         }
         let status = response.status();
-        cloud_account::notice_revision(response.headers());
+        cloud_account::notice_revision(&response);
         let bytes = response
             .bytes()
             .await
