@@ -2,7 +2,7 @@ import { projectContainerLog, projectLogExit, projectLogGap } from "#/modules/ru
 import { createFileRoute } from "@tanstack/react-router";
 import { Option, Schema } from "effect";
 import { logHistorySchema, logSearchSchema, openContainerLogs } from "#/modules/runtime/container-logs.server";
-import { containerLogResponse, offlineLogResponse } from "#/modules/runtime/container-log-events.server";
+import { containerLogResponse, hiddenLogResponse, offlineLogResponse } from "#/modules/runtime/container-log-events.server";
 import { runAppEffect } from "#/server/run.server";
 import { publicErrorResponse, Validation } from "#/server/public-error";
 
@@ -14,6 +14,7 @@ export const Route = createFileRoute("/api/runtime/logs")({
         if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "Invalid log selection." }));
         const result = await runAppEffect(openContainerLogs(request, search.value), { signal: request.signal });
         if (result.type === "offline") return offlineLogResponse(request);
+        if (result.type === "hidden") return hiddenLogResponse(request);
         if (result.type === "stream") return containerLogResponse(request, result.events, () => runAppEffect(result.close));
         throw new Error("A followed log read answered with a page.");
       } catch (cause) { return publicErrorResponse(cause); }

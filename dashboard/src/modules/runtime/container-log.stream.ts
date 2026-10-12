@@ -11,15 +11,16 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
  * `opened`: the server has answered once, so an empty log means no output rather than not loaded yet.
  * `offline`: the organization's servers are unreachable, the one state the viewer can act on.
  * `refused`: the last connect got an error response; it keeps retrying until one opens.
+ * `hidden`: the Organization hides its container logs from Ployz support; the stream closes and asks no more.
  * `missing`: Servers whose logs aren't here, by ID, with why; the live stream's and the last history page's.
  */
 type LogStreamState = {
-  opened: boolean; offline: boolean; refused: boolean;
+  opened: boolean; offline: boolean; refused: boolean; hidden: boolean;
   missing: { live: Record<string, { machineName: string; failed: Readonly<Record<string, MissingReason>> }>; history: readonly MissingServer[] };
   historyPending: boolean; historyError: boolean;
 };
 
-const INITIAL: LogStreamState = { opened: false, offline: false, refused: false, missing: { live: {}, history: [] }, historyPending: false, historyError: false };
+const INITIAL: LogStreamState = { opened: false, offline: false, refused: false, hidden: false, missing: { live: {}, history: [] }, historyPending: false, historyError: false };
 /** Fewer lines than this from the live tail, as an old Deployment's stopped containers give, reads the Log Store at once. */
 const SHORT_TAIL = 200;
 /** Pages whose lines the live tail already had, read before giving the viewer older ones. */
@@ -107,6 +108,11 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
               if (cursor === undefined && collection.size < SHORT_TAIL) void loadOlder();
             },
             offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
+            hidden: () => {
+              stop();
+              controller.abort();
+              publish({ ...snapshot, opened: true, hidden: true, refused: false });
+            },
             log: (event) => {
               const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
               if (decoded._tag === "None") return;

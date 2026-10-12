@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { useLoaderData } from "@tanstack/react-router";
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Switch } from "#/components/ui/switch";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
@@ -14,12 +15,15 @@ const SHOWS = [
 /** "Allow support access": whether Ployz support may open this Organization and act in it, and what it may read there. */
 export function SupportAccessSection({ organizationSlug }: { organizationSlug: string }) {
   const { row, change } = useSupportAccess(organizationSlug);
+  // Only the Organization decides what Ployz support may do, so support sees these switches but can't move them.
+  const locked = useLoaderData({ from: "/_protected/cloud/$organizationSlug" }).access === "support";
   return (
     <SettingsSection id="support-access" title="Support">
       <SupportSwitch
         label="Allow support access"
         description="Let Ployz support open this Organization and act in it."
         checked={row.allowed}
+        disabled={locked}
         onChange={(on) => change({ setting: "allowed", on })}
       />
       {row.allowed ? (
@@ -30,6 +34,7 @@ export function SupportAccessSection({ organizationSlug }: { organizationSlug: s
               label={label}
               description={description}
               checked={row[setting]}
+              disabled={locked}
               onChange={(on) => change({ setting, on } satisfies SupportAccessChange)}
             />
           ))}
@@ -39,10 +44,11 @@ export function SupportAccessSection({ organizationSlug }: { organizationSlug: s
   );
 }
 
-function SupportSwitch({ label, description, checked, onChange }: {
+function SupportSwitch({ label, description, checked, disabled, onChange }: {
   label: string;
   description: string;
   checked: boolean;
+  disabled: boolean;
   onChange: (on: boolean) => void;
 }) {
   const switchId = useId();
@@ -52,7 +58,7 @@ function SupportSwitch({ label, description, checked, onChange }: {
         <FieldLabel htmlFor={switchId}>{label}</FieldLabel>
         <FieldDescription>{description}</FieldDescription>
       </FieldContent>
-      <Switch id={switchId} checked={checked} onCheckedChange={onChange} />
+      <Switch id={switchId} aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </Field>
   );
 }

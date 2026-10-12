@@ -48,6 +48,7 @@ const HISTORY_PAGE = 500;
 export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch, history?: { cursor?: string }) {
   const access = yield* authorizeRequest(request.headers, search.organizationSlug, "operate");
   if (access.kind === "support" && !access.shows.logs) {
+    if (history === undefined) return { type: "hidden" as const };
     return yield* new Forbidden({ message: "This Organization doesn't show its container logs to Ployz support." });
   }
   const organizationId = access.organization.id;

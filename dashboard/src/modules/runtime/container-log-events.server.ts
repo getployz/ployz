@@ -77,6 +77,11 @@ export function offlineLogResponse(request: Request) {
   return eventStreamResponse(request.signal, async function* () { yield sseEvent({ event: "offline", data: {} }); }, { heartbeatMs: 15_000, retryMs: OFFLINE_RETRY_MS });
 }
 
+/** The Organization hides its container logs from Ployz support: say so once; the viewer stops asking. */
+export function hiddenLogResponse(request: Request) {
+  return eventStreamResponse(request.signal, async function* () { yield sseEvent({ event: "hidden", data: {} }); }, { heartbeatMs: 15_000 });
+}
+
 async function* containerLogEvents(events: AsyncIterable<ContainerLogStreamEvent>) {
   try {
     for await (const event of events) {

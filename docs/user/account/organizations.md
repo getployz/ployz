@@ -39,10 +39,12 @@ more it sees:
 - **Variables**: values of variables that aren't sealed. Off, they read as sealed.
 - **Config files**: what's in each config file. Off, support sees each file's name and mount but
   not its contents.
-- **Container logs**: what your containers print. Build logs are always visible.
+- **Container logs**: what your containers print, including a failed health check's output.
+  Build logs are always visible.
 
 All three start off, and turning support access off turns them off. Each applies on support's
-next request. Support can still change anything you can, including a value it can't read.
+next request. Support sees these switches but can't change them. It can still change anything
+else you can, including a value it can't read.
 
 ## Destructive actions ask first
 

@@ -144,6 +144,47 @@ it("says a refused log stream failed instead of loading forever, and keeps retry
   }
 });
 
+it("settles on hidden when the Organization hides its container logs from Ployz support, and asks no more", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    static CLOSED = 2;
+    readyState = 0;
+    constructor() { super(); sources.push(this); }
+    close() { this.readyState = 2; }
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const fetchHistory = vi.fn(async () => Response.json({ rows: [], failures: [], cursor: null }));
+  vi.stubGlobal("fetch", fetchHistory);
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const selection = { organizationSlug: "acme", environmentSlug: "hidden" };
+  const stream = getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" });
+  try {
+    render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+      <ContainerLogs selection={selection} />
+    </RouterContextProvider></DbProvider></QueryClientProvider>);
+    const source = sources.at(-1);
+    if (!source) throw new Error("Viewer did not open its log stream");
+    await act(async () => source.dispatchEvent(new Event("hidden")));
+    expect(screen.getByText("Container logs are hidden from Ployz support.")).toBeTruthy();
+    expect(source.readyState).toBe(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(sources).toHaveLength(1);
+    expect(fetchHistory).not.toHaveBeenCalled();
+    expect(screen.queryByText("Couldn’t load logs")).toBeNull();
+    expect(screen.getByText("Container logs are hidden from Ployz support.")).toBeTruthy();
+  } finally {
+    cleanup();
+    await stream.collection.cleanup();
+    await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.useRealTimers();
+  }
+});
+
 it("offers a service or server filter only once there is more than one to pick", async () => {
   const sources: FakeEventSource[] = [];
   class FakeEventSource extends EventTarget {

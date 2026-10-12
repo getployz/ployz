@@ -33,7 +33,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const stream = getContainerLogStream(selection, scope);
   const { collection } = stream;
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
-  const { opened, offline, refused, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const { opened, offline, refused, hidden, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
   const timestamp = logTimestamp(useTimeZone());
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
@@ -76,7 +76,8 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     title: `Upgrade ${lacking.length} servers to see their logs`, note: `${lacking.length} servers need an upgrade to show their logs.`,
     link: <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Open Servers</Link>,
   };
-  const empty = rows.length ? null
+  const empty = hidden ? <LogEmpty title="Container logs are hidden from Ployz support." />
+    : rows.length ? null
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened || (historyPending && !loaded.length) ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
