@@ -42,7 +42,7 @@ and GitHub releases.
 Run Ployz Cloud on a server that **isn't** one of your Ployz servers. A Ployz server that takes
 web traffic needs ports 80 and 443 for your apps, and the TLS proxy in front of Ployz Cloud
 wants the same two ports. If both run on one server, the proxy wins: your domains show
-**Port 80 is closed on …** and visitors get an SSL handshake error, even though port 80 answers.
+**Something else answers on port 80 of …** and visitors get an SSL handshake error.
 
 | Your setup | What to do |
 | --- | --- |

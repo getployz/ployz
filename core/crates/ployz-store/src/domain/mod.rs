@@ -93,6 +93,11 @@ pub enum ClusterDomainStatus {
     Port80 {
         addresses: Vec<String>,
     },
+    /// Something other than Ployz answers on port 80 of these ingress Servers.
+    #[serde(rename = "port_80_taken")]
+    Port80Taken {
+        addresses: Vec<String>,
+    },
     /// Its wildcard certificate expired.
     HttpsDown,
 }

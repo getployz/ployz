@@ -49,4 +49,13 @@ describe("ClusterDomainSection", () => {
     rerender(<ClusterDomainSection organizationSlug="acme" domain={{ ...blocked, checkedAt: new Date() }} onCheck={onCheck} />);
     expect(button().disabled).toBe(false);
   });
+
+  it("says when something else answers on port 80", () => {
+    const taken = { ...ready, traffic: { kind: "probed", unreachable: [], taken: [{ machineId: "a", address: "203.0.113.1" }] } } as Omit<ClusterDomainRow, "id">;
+    render(<ClusterDomainSection organizationSlug="acme" domain={taken} onCheck={vi.fn()} />);
+
+    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Something else answers on port 80 of 203.0.113.1. Free the port for Ployz.")).toBeTruthy();
+    expect(screen.getByText("Check again")).toBeTruthy();
+  });
 });

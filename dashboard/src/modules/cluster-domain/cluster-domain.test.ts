@@ -20,6 +20,11 @@ describe("clusterDomainStatus", () => {
     ["no public IP", { ...ready, traffic: { kind: "no_public_ip" } }, { kind: "attention", reason: "no_public_ip" }],
     ["port 80 blocked", { ...ready, traffic: { kind: "probed", unreachable: blocked } },
       { kind: "attention", reason: "port_80", addresses: ["203.0.113.1", "2001:db8::1"] }],
+    ["something else on port 80", { ...ready, traffic: { kind: "probed", unreachable: blocked.slice(0, 0), taken: blocked } },
+      { kind: "attention", reason: "port_80_taken", addresses: ["203.0.113.1", "2001:db8::1"] }],
+    ["port 80 closed on one Server, taken on another",
+      { ...ready, traffic: { kind: "probed", unreachable: blocked.slice(0, 1), taken: blocked.slice(1) } },
+      { kind: "attention", reason: "port_80", addresses: ["203.0.113.1"] }],
     ["wildcard expired", { ...ready, certificateNotAfter: new Date("2026-09-24T00:00:00Z") },
       { kind: "attention", reason: "https_down" }],
     // What the user can fix comes before what Ployz is fixing or still setting up.

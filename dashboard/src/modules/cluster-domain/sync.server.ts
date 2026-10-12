@@ -5,6 +5,7 @@ import type { PublishCertificateMaterialRequest } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { type IngressAnswer, probeIngress } from "#/modules/cluster-domain/ingress-probe.server";
 import {
   HostedDnsError,
   type HostedDomainTarget,
@@ -23,9 +24,6 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
-const PROBE_TIMEOUT_MS = 5_000;
-/** Caddy answers it on port 80 of every ingress Server with the Machine id (core `INGRESS_VERIFY_PATH`). */
-const INGRESS_VERIFY_PATH = "/.ployz-verify";
 /** The wildcard is replaced once it has less than this left. */
 const CERTIFICATE_RENEW_BEFORE_MS = 30 * 86_400_000;
 /** A failed replacement with fewer days than this left is an operator error, not a warning. */
@@ -49,7 +47,7 @@ export class ClusterDomainUnusable extends Data.TaggedError("ClusterDomainUnusab
 export type IngressProbe =
   | { kind: "unknown" }
   | Exclude<ClusterDomainTraffic, { kind: "probed" }>
-  | { kind: "probed"; reachable: IngressServerAddress[]; unreachable: IngressServerAddress[] };
+  | { kind: "probed"; reachable: IngressServerAddress[]; unreachable: IngressServerAddress[]; taken: IngressServerAddress[] };
 
 /** Publishes Certificate Material to the Organization's Cluster. False when no Cluster is connected. */
 const publishToCluster = Effect.fn("ClusterDomain.publishToCluster")(function* (
@@ -78,16 +76,6 @@ export const withClusterDomain = <A, R>(
   ));
 });
 
-/** True when `GET http://<ip>/.ployz-verify` answers with the Machine id within five seconds. */
-const probeIngressServer = (server: IngressServerAddress) => Effect.tryPromise(async (signal) => {
-  const host = isIPv6(server.address) ? `[${server.address}]` : server.address;
-  const response = await fetch(`http://${host}${INGRESS_VERIFY_PATH}`, {
-    redirect: "manual",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)]),
-  });
-  return response.status === 200 && (await response.text()).trim() === server.machineId;
-}).pipe(Effect.orElseSucceed(() => false));
-
 /** Probes every ingress Server with a public IP in the Cluster's runtime frame. */
 export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
@@ -99,11 +87,14 @@ export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers"
     machine.accepts_ingress && machine.public_ip !== null ? [{ machineId: machine.id, address: machine.public_ip }] : []);
   if (servers.length === 0) return { kind: "no_public_ip" } satisfies IngressProbe;
   const probed = yield* Effect.forEach(servers, (server) =>
-    probeIngressServer(server).pipe(Effect.map((reachable) => ({ server, reachable }))), { concurrency: "unbounded" });
+    probeIngress(`http://${isIPv6(server.address) ? `[${server.address}]` : server.address}`, server.machineId)
+      .pipe(Effect.map((answer) => ({ server, answer }))), { concurrency: "unbounded" });
+  const answering = (wanted: IngressAnswer) => probed.flatMap(({ server, answer }) => answer === wanted ? [server] : []);
   return {
     kind: "probed",
-    reachable: probed.flatMap(({ server, reachable }) => reachable ? [server] : []),
-    unreachable: probed.flatMap(({ server, reachable }) => reachable ? [] : [server]),
+    reachable: answering("ployz"),
+    unreachable: answering("closed"),
+    taken: answering("taken"),
   } satisfies IngressProbe;
 }, Effect.scoped, Effect.catch((error) =>
   Effect.logWarning("No runtime frame for the Cluster Domain sync; records stay as published.", error)
@@ -115,7 +106,7 @@ function storedTraffic(probe: IngressProbe): ClusterDomainTraffic | null {
     case "unknown":
       return null;
     case "probed":
-      return { kind: "probed", unreachable: probe.unreachable };
+      return { kind: "probed", unreachable: probe.unreachable, taken: probe.taken };
     case "no_servers":
     case "no_public_ip":
       return probe;
