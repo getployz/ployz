@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "0e41fdfc-78df-46cc-a37f-e9b124b618c1",
+  "id": "7e1c163d-8c81-4e54-9a28-8f8ecbcb4a91",
   "prevIds": [
-    "88de59fd-a900-4b79-9332-9532e2c6c543"
+    "3fc74f63-2964-47ef-a7ea-5147ed7649ef"
   ],
   "ddl": [
     {
@@ -165,6 +165,12 @@
     {
       "isRlsEnabled": false,
       "name": "server_upgrade_attempt",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "organization_support_access",
       "entityType": "tables",
       "schema": "public"
     },
@@ -3412,6 +3418,97 @@
       "entityType": "columns",
       "schema": "public",
       "table": "server_upgrade_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "allowed",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "variables",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "configs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "logs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "changed_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
     },
     {
       "type": "uuid",
@@ -7745,6 +7842,40 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "organization_support_access_kLfPQs8MyHZC_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "changed_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "organization_support_access_changed_by_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "volume_run_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -8411,6 +8542,16 @@
     },
     {
       "columns": [
+        "organization_id"
+      ],
+      "nameExplicit": false,
+      "name": "organization_support_access_pkey",
+      "schema": "public",
+      "table": "organization_support_access",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -8925,6 +9066,13 @@
       "entityType": "checks",
       "schema": "public",
       "table": "server_upgrade_attempt"
+    },
+    {
+      "value": "\"allowed\" or not (\"variables\" or \"configs\" or \"logs\")",
+      "name": "organization_support_access_shows_only_when_allowed",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_support_access"
     },
     {
       "value": "\"kind\" in ('mirror','sync','delete_mirror','move','release','restore','seed','restore_snapshot')",
