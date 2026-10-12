@@ -2,7 +2,7 @@ import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
-import { lossWords, snapshotClock } from "#/modules/volume-copies/volume-snapshots";
+import { lossWords, snapshotClock, spanWords } from "#/modules/volume-copies/volume-snapshots";
 import { planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -44,7 +44,12 @@ export type SnapshotRestore = {
   readonly save: string;
   /** The writer epoch the snapshot was listed under. */
   readonly expect: number;
+  /** `from` is a backup in this project bucket, downloaded before the swap. Writes since it aren't counted, only dated. */
+  readonly offsite?: { readonly bucket: string; readonly bytes: number };
 };
+
+/** Whether the restore drops writes: a snapshot counts them, and an offsite backup is always behind the live data. */
+export const restoreLoses = (restore: SnapshotRestore) => restore.losesBytes > 0 || restore.offsite !== undefined;
 
 /** Where the user wants the Volume. `deletes` names detached copies to delete. */
 export type Placement = {
@@ -256,16 +261,11 @@ const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirr
 const STEPS = {
   restore_snapshot: {
     order: 0,
-    runs: (change, deploy) => [{
-      kind: "restore_snapshot",
-      args: {
-        from: change.restore.from,
-        save: change.restore.save,
-        expect: change.restore.expect,
-        note: `#${deploy}`,
-        mirror: change.mirrors[0]?.name ?? null,
-      },
-    }],
+    runs: (change, deploy) => {
+      const { from, save, expect, offsite } = change.restore;
+      const args = { from, save, expect, note: `#${deploy}`, mirror: change.mirrors[0]?.name ?? null };
+      return [{ kind: "restore_snapshot", args: offsite === undefined ? args : { ...args, offsite: { bucket: offsite.bucket } } }];
+    },
   },
   delete_copy: { order: 1, runs: (change) => [deleteSlot(change.server)] },
   remove_mirror: { order: 2, runs: (change) => [deleteSlot(change.server)] },
@@ -552,7 +552,7 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
     case "seed":
       return RESTORE_STEPS;
     case "restore_snapshot":
-      return [...RESTORE_STEPS, ...change.mirrors.length > 0 ? ["Seed"] : []];
+      return [...change.restore.offsite === undefined ? [] : ["Download"], ...RESTORE_STEPS, ...change.mirrors.length > 0 ? ["Seed"] : []];
   }
 }
 
@@ -679,7 +679,9 @@ const restoreAt = (restore: SnapshotRestore) => new Date(restore.at * 1000);
 export const restoreLabel = (restore: SnapshotRestore, now = new Date(), clock = restoreClock) => clock.when(restoreAt(restore), now);
 
 function restoreLoss(restore: SnapshotRestore, now = new Date()) {
-  return [`back to ${restoreLabel(restore, now)}`, lossWords({ at: restoreAt(restore), losesBytes: restore.losesBytes }, now)].filter(Boolean).join(" · ");
+  const at = restoreAt(restore);
+  const lost = restore.offsite === undefined ? lossWords({ at, losesBytes: restore.losesBytes }, now) : `${spanWords(now.getTime() - at.getTime())} of writes`;
+  return [`back to ${restoreLabel(restore, now)}`, lost].filter(Boolean).join(" · ");
 }
 
 function detailsRow(volume: PlacementVolume, change: PlacementChange, now: Date) {
@@ -709,7 +711,7 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange, now: Date)
       const { restore } = change;
       return {
         name: "Restore", currentValue: "", newValue: restoreLabel(restore, now),
-        loss: restore.losesBytes > 0 ? `Changes after ${lossTime(restoreAt(restore))} lost` : undefined,
+        loss: restoreLoses(restore) ? `Changes after ${lossTime(restoreAt(restore))} lost` : undefined,
         detail: "Current data saved as Before restore",
       };
     }

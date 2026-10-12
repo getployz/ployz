@@ -30,6 +30,7 @@ import {
   type RunContext,
   runningHolders,
   sendSwitch,
+  setOffsite,
   setSnapshot,
   startHanded,
   SwitchAttemptError,
@@ -290,23 +291,59 @@ async function seedVolume({ step, runEffect, run, runId }: RestoreSteps, phase: 
  * A snapshot restore saves the writer's data as a Before restore snapshot and swaps the snapshot in, with the Service
  * stopped, since the writer refuses the swap while a container holds the Volume. The writer answers a resent swap with
  * the swap it already made, so a retried step restores once. A mirror shares no snapshot with the restored data, so it
- * starts over from it.
+ * starts over from it. An offsite restore first downloads the backup to the writer while the Service runs, so the
+ * stop covers only the swap.
  */
 async function restoreSnapshot({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"restore_snapshot">) {
   // SAFETY: the run's kind is restore_snapshot, so its args are restore_snapshot's.
   const args = run.args as VolumeRunArgs["restore_snapshot"];
   const writer = phase.writer.machine;
+  const offsite = args.offsite;
+  if (offsite !== undefined) {
+    const download = { bucket: offsite.bucket, backup: args.from, want: { kind: "downloaded", save: args.save } } as const;
+    let failed: string | null = `${run.volumeName} is still downloading after ${MAX_POLLS} checks`;
+    for (let poll = 0; poll < MAX_POLLS; poll += 1) {
+      if (poll > 0) await step.sleep(`01-download-wait-${poll}`, POLL_INTERVAL);
+      const got = await step.run(`01-download-${poll}`, () => runEffect(setOffsite(run, runId, writer, download).pipe(
+        Effect.map((status) => ({ ok: true as const, done: status.kind === "done" })),
+        Effect.catchIf((error) => error instanceof NonRetriableError, (error) => Effect.succeed({ ok: false as const, message: error.message })),
+      )));
+      if (!got.ok) {
+        failed = got.message;
+        break;
+      }
+      if (got.done) {
+        failed = null;
+        break;
+      }
+    }
+    if (failed !== null) {
+      const message = failed;
+      await step.run("01-download-failed", () => runEffect(endRun(run, runId, "failed", message)));
+      throw new NonRetriableError(message);
+    }
+  }
   const running = await step.run("02-running", () => runEffect(runningHolders(run, runId, writer)));
   for (const [index, container] of running.entries()) {
     await step.run(`03-stop-${index}`, () => runEffect(holderVerb(run, runId, writer, container, "stop")));
   }
   let refused: string | null = null;
   try {
-    await containerStep({ step, runEffect }, "04-swap", setSnapshot(run, runId, writer, {
-      name: run.dockerVolume,
-      expect: args.expect,
-      want: { kind: "restored", from: args.from, save: args.save, label: { kind: "before_restore", note: args.note } },
-    }), `${writer.name} is still busy with ${run.volumeName}`);
+    const label = { kind: "before_restore", note: args.note } as const;
+    const swap = offsite === undefined
+      ? setSnapshot(run, runId, writer, {
+        name: run.dockerVolume,
+        expect: args.expect,
+        want: { kind: "restored", from: args.from, save: args.save, label },
+      })
+      : setOffsite(run, runId, writer, {
+        bucket: offsite.bucket,
+        backup: args.from,
+        want: { kind: "restored", expect: args.expect, save: args.save, label },
+      }).pipe(Effect.flatMap((status) => status.kind === "done"
+        ? Effect.void
+        : Effect.fail(new SwitchAttemptError("busy", `${run.volumeName} is still swapping on ${writer.name}`))));
+    await containerStep({ step, runEffect }, "04-swap", swap, `${writer.name} is still busy with ${run.volumeName}`);
   } catch (error) {
     refused = error instanceof Error ? error.message : String(error);
   }
@@ -357,7 +394,7 @@ async function attempt(
   { step, runEffect, run, runId }: RunSteps,
   id: string,
   machine: MachineRef,
-  request: Exclude<VolumeSwitchRequest, { command: "inspect_volume_copy" | "inspect_receive" | "set_volume_snapshot" | "list_volume_snapshots" }>,
+  request: Exclude<VolumeSwitchRequest, { command: "inspect_volume_copy" | "inspect_receive" | "set_volume_snapshot" | "list_volume_snapshots" | "set_volume_offsite" | "inspect_volume_offsite" | "check_offsite" }>,
 ) {
   const result = await step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, { onRefusal: "throw" }).pipe(
     Effect.map((reply) => ({ ok: true as const, reply })),

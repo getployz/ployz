@@ -19,6 +19,7 @@ import { type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
+import { sealedBucket } from "#/modules/volume-copies/offsite-bucket.server";
 import {
   ACTIVE_VOLUME_RUN_STATES,
   type AnsweredMember,
@@ -537,28 +538,54 @@ type SetSnapshot = Extract<VolumeSwitchRequest, { command: "set_volume_snapshot"
  * the Service again before it fails the run. A Mismatch never retries: the writer moved since the snapshot was listed,
  * and only a fresh listing names the right epoch.
  */
+const writerRefusal = (ctx: RunContext, writer: MachineRef, command: string, missing: string) =>
+  (error: PloyzSdkError): Effect.Effect<never, Error> => {
+    switch (snapshotRefusalOf(error)) {
+      case "busy":
+        return Effect.fail(new SwitchAttemptError("busy", `${ctx.volumeName} is busy on ${writer.name}`));
+      case "mismatch":
+        return Effect.fail(new NonRetriableError(`${ctx.volumeName} moved since its snapshots were listed; restore again`));
+      case "no_writer":
+        return Effect.fail(new NonRetriableError(`${ctx.volumeName} has no writer on ${writer.name}`));
+      case "not_found":
+        return Effect.fail(new NonRetriableError(missing));
+      case null:
+        return Effect.fail(new SwitchAttemptError(null, `${command} on ${writer.name}: ${sdkFailureMessage(error, [writer])}`));
+    }
+  };
+
 export const setSnapshot = (ctx: RunContext, inngestRunId: string, writer: MachineRef, payload: SetSnapshot["payload"]) =>
   Effect.gen(function* () {
     yield* requireOwner(ctx.id, inngestRunId);
     const session = yield* openSession(ctx.organizationId);
     return yield* session.volumeSwitch(writer.id, { command: "set_volume_snapshot", payload } satisfies SetSnapshot).pipe(
       Effect.asVoid,
-      Effect.catch((error): Effect.Effect<never, Error> => {
-        const reason = snapshotRefusalOf(error);
-        switch (reason) {
-          case "busy":
-            return Effect.fail(new SwitchAttemptError("busy", `${ctx.volumeName} is busy on ${writer.name}`));
-          case "mismatch":
-            return Effect.fail(new NonRetriableError(`${ctx.volumeName} moved since its snapshots were listed; restore again`));
-          case "no_writer":
-            return Effect.fail(new NonRetriableError(`${ctx.volumeName} has no writer on ${writer.name}`));
-          case "not_found":
-            return Effect.fail(new NonRetriableError("Snapshot not found"));
-          case null:
-            return Effect.fail(new SwitchAttemptError(null, `set_volume_snapshot on ${writer.name}: ${sdkFailureMessage(error, [writer])}`));
-        }
-      }),
+      Effect.catch(writerRefusal(ctx, writer, "set_volume_snapshot", "Snapshot not found")),
     );
+  }).pipe(Effect.scoped);
+
+type SetOffsite = Extract<VolumeSwitchRequest, { command: "set_volume_offsite" }>;
+
+/**
+ * One offsite step on the writer. The bucket's secret is decrypted inside the step and sent with the request; only the
+ * status comes back, so the secret never reaches step output or the run's args. A failed status is final.
+ */
+export const setOffsite = (
+  ctx: RunContext,
+  inngestRunId: string,
+  writer: MachineRef,
+  request: { readonly bucket: string; readonly backup: string; readonly want: SetOffsite["payload"]["want"] },
+) =>
+  Effect.gen(function* () {
+    yield* requireOwner(ctx.id, inngestRunId);
+    const bucket = yield* sealedBucket(ctx.organizationId, request.bucket);
+    const session = yield* openSession(ctx.organizationId);
+    const payload = { name: ctx.dockerVolume, bucket, backup: request.backup, want: request.want };
+    const { status } = yield* session.volumeSwitch(writer.id, { command: "set_volume_offsite", payload } satisfies SetOffsite).pipe(
+      Effect.catch(writerRefusal(ctx, writer, "set_volume_offsite", "Backup not found")),
+    );
+    if (status.kind === "failed") return yield* Effect.fail(new NonRetriableError(status.reason));
+    return status;
   }).pipe(Effect.scoped);
 
 /** Restore registers the Volume with the spec of the newest Service container that mounts it, stopped ones included. */

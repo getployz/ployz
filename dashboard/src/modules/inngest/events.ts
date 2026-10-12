@@ -83,6 +83,7 @@ export type VolumeRunRequestedEventData = {
   runId: string;
 };
 export const volumeSnapshotScheduledEvent = "volume/snapshot.scheduled";
+export const volumeOffsiteScheduledEvent = "volume/offsite.scheduled";
 
 /** `tick` is the hour the schedule ran for, as an ISO string; the snapshot's id is minted from it. */
 export type VolumeSnapshotScheduledEventData = {
@@ -91,6 +92,9 @@ export type VolumeSnapshotScheduledEventData = {
   volumeId: string;
   tick: string;
 };
+
+/** `tick` is the UTC day the offsite pass ran for, as an ISO string; the day's backup id is minted from it. */
+export type VolumeOffsiteScheduledEventData = VolumeSnapshotScheduledEventData;
 export const serverDrainRequestedEvent = "server/drain.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
@@ -286,6 +290,10 @@ export const volumeSnapshotScheduledEventType = eventType(
   volumeSnapshotScheduledEvent,
   { schema: staticSchema<VolumeSnapshotScheduledEventData>() },
 );
+export const volumeOffsiteScheduledEventType = eventType(
+  volumeOffsiteScheduledEvent,
+  { schema: staticSchema<VolumeOffsiteScheduledEventData>() },
+);
 export const inngestFunctionFinishedEventType = eventType(
   "inngest/function.finished",
   { schema: staticSchema<{ function_id: string; run_id: string; error?: { name: string; message: string } | null }>() },
@@ -388,6 +396,11 @@ export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData)
 /** Keyed by the Volume and the tick: a retried schedule sends nothing new. */
 export function createVolumeSnapshotScheduledEvent(data: VolumeSnapshotScheduledEventData) {
   return { id: `volume-snapshot-${data.volumeId}-${Date.parse(data.tick) / 1000}`, name: volumeSnapshotScheduledEvent, data } as const;
+}
+
+/** Keyed by the Volume and the day: a retried schedule sends nothing new. */
+export function createVolumeOffsiteScheduledEvent(data: VolumeOffsiteScheduledEventData) {
+  return { id: `volume-offsite-${data.volumeId}-${Date.parse(data.tick) / 1000}`, name: volumeOffsiteScheduledEvent, data } as const;
 }
 
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
@@ -574,6 +587,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServiceActRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createVolumeSnapshotScheduledEvent>
+  | ReturnType<typeof createVolumeOffsiteScheduledEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>

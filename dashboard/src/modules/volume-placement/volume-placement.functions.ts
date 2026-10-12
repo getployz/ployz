@@ -10,7 +10,10 @@ import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } fro
 const Organization = Schema.Struct({ organizationSlug: Schema.NonEmptyString });
 const Machine = rustMachineIdSchema;
 const SnapshotId = Schema.String.check(Schema.isPattern(/^[a-z0-9-]{1,64}$/));
-const SnapshotRestore = Schema.Struct({ from: SnapshotId, at: Schema.Number, losesBytes: Schema.Number, save: SnapshotId, expect: Schema.Number });
+const SnapshotRestore = Schema.Struct({
+  from: SnapshotId, at: Schema.Number, losesBytes: Schema.Number, save: SnapshotId, expect: Schema.Number,
+  offsite: Schema.optionalKey(Schema.Struct({ bucket: Schema.String.check(Schema.isUUID()), bytes: Schema.Number })),
+});
 const Placement = Schema.Struct({
   primary: Machine, mirrors: Schema.Array(Machine), deletes: Schema.Array(Machine), restore: Schema.optionalKey(SnapshotRestore),
 });
