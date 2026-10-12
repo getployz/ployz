@@ -16,10 +16,19 @@ const place: Place = { project: "shop", environment: "production", store: "cloud
 
 type Step = { readonly tool: string; readonly input: JsonValue; readonly callKey?: string; readonly hears: object };
 
-/** GitHub as the Store checks a Git Service's source: `acme/docs` is public, with a `dev` branch. */
+/** GitHub as the Store and github_ls read it: `acme/docs` is public, with a `dev` branch and two files on `main`. */
 const github = fakeGithubApi({
   "https://api.github.com/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
   "https://api.github.com/repos/acme/docs/git/ref/heads%2Fdev": { ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) } },
+  "https://api.github.com/repos/acme/docs/commits/main": { commit: { tree: { sha: "b".repeat(40) } } },
+  [`https://api.github.com/repos/acme/docs/git/trees/${"b".repeat(40)}?recursive=1`]: {
+    truncated: false,
+    tree: [
+      { path: "README.md", type: "blob", mode: "100644" },
+      { path: "src", type: "tree", mode: "040000" },
+      { path: "src/index.md", type: "blob", mode: "100644" },
+    ],
+  },
 });
 
 const refused = (code: string) => ({ ok: false, refusal: { code } });
@@ -106,8 +115,16 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     ],
   },
   {
-    name: "a GitHub read the sidebar can't reach yet is refused unavailable",
-    steps: [{ tool: "github_ls", input: { repository: "acme/web" }, hears: refused("unavailable") }],
+    name: "a repository the Organization can't read is refused not_found",
+    steps: [{ tool: "github_ls", input: { repository: "acme/web" }, hears: refused("not_found") }],
+  },
+  {
+    name: "github_ls lists a public repository at its default branch",
+    steps: [{
+      tool: "github_ls",
+      input: { repository: "acme/docs" },
+      hears: { ok: true, value: { repository: "acme/docs", ref: "main", entries: [{ path: "README.md", kind: "file" }, { path: "src", kind: "directory" }] } },
+    }],
   },
   {
     name: "project_create makes a Project the next read shows",
