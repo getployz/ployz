@@ -1,9 +1,9 @@
 import { useRef, useState } from "react";
 import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
-import { DeletionDialog, type DeletionCheck } from "#/components/deletion-dialog";
+import { DeletionDialog } from "#/components/deletion-dialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
+import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [] };
@@ -27,7 +27,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
-  const [loss, setLoss] = useState<{ action: Action; check: DeletionCheck<Acceptance>; message: Message } | null>(null);
+  const [loss, setLoss] = useState<{ action: Action; check: VolumeLossCheck; message: Message } | null>(null);
   // One admission at a time: a double click must not admit two Deployments.
   const [admitting, setAdmitting] = useState(false);
   const inFlight = useRef(false);
@@ -52,7 +52,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   function deploy(message: Message) {
     if (inFlight.current) return;
     if (placementLoss.items.length > 0) {
-      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version } }, message });
+      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version }, losesWrites: placementLoss.losesWrites }, message });
       return;
     }
     inFlight.current = true;
@@ -85,12 +85,12 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
       <DeletionDialog
         open={loss !== null}
         onOpenChange={(open) => { if (!open) setLoss(null); }}
-        title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : placementLoss.losesWrites ? "Data loss" : "Deletes data"}
+        title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}
         confirmLabel={loss?.action === "publish" ? "Save" : "Deploy"}
         items={loss?.check.items}
         callbacks={{
-          load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" } }),
+          load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" }, losesWrites: false }),
           // Servers holding more by now: the Store asks again, and so does the dialog.
           confirm: async (evidence) => loss ? (await run(loss.action, evidence, loss.message))?.check : undefined,
         }}

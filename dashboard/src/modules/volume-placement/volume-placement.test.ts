@@ -20,6 +20,8 @@ import {
   mergeRestoreGroups,
   placementGroup,
   placementLoss,
+  placementLosses,
+  lossByVolume,
   restorePoints,
   stagedOffServer,
   storageStep,
@@ -462,6 +464,23 @@ describe("placementLoss", () => {
       } },
     };
     expect(lossOf([], seeded)).toEqual({ items: [{ kind: "volume", name: "data", detail: "changes after 10:36" }], losesWrites: true, accept: ["data"] });
+  });
+});
+
+describe("lossByVolume", () => {
+  it("tells a Deploy's refusal which Volume a restore drops writes of, and which only loses copies", () => {
+    const seeded: PlacementRow = {
+      ...row([], { primary: "web-1" }),
+      staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: {
+        sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
+      } },
+    };
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const lost = [...placementLosses(changes([], seeded)), ...placementLosses(changes(members, row(["web-2"], { primary: "web-1" })))];
+    expect(lossByVolume(lost)).toEqual([
+      { name: "data", deletes: [{ machine_id: id("web-1") }], loss: "writes" },
+      { name: "pg-data", deletes: [{ machine_id: id("web-2") }], loss: "data" },
+    ]);
   });
 });
 
