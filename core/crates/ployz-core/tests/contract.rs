@@ -10,23 +10,22 @@ use ployz_core::{
     ContainerObservationMap, ContainerRuntimeObservation, ContractDescription,
     CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest, DiskSpace,
     DockerVolumeName, ENSURE_IMAGE_INGEST_CAPABILITY, EnsureImageIngestRequest, ExtraHost,
-    FanoutFailure, FanoutOutcome, FanoutResponse, FramingError,
-    GET_CONTAINER_OBSERVATIONS_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-    GetContainerObservationsRequest, GetIngressProxyConfigRequest, HealthObservation, ImageDigest,
-    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval,
-    ImageRemovalOutcome, ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig,
-    InspectBuildGrantRequest, InspectRequest, LIST_IMAGES_CAPABILITY, ListImagesRequest,
-    MANAGED_LABEL, MachineFailure, MachineGateway, MachineId, MachineImages, MachineName,
-    MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage, MachineVersion,
-    ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload, PROTOCOL_MAJOR,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication, PruneImagesRequest,
-    PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
-    PullImageFromMachineRequest, RESET_MACHINE_CAPABILITY, RemoveLocalMachineRequest,
-    RemoveMachineRequest, RequestMachineUpgradeRequest, ResetAccepted, ResetRequest,
-    ResolvedServiceSpec, ResponseKind, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RpcResponseBody, ServiceId, ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource,
-    encode_grpc_frame, grpc_frames, op,
+    FORGET_MACHINE_CAPABILITY, FanoutFailure, FanoutOutcome, FanoutResponse, ForgetRequest,
+    Forgotten, FramingError, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
+    GET_INGRESS_PROXY_CONFIG_CAPABILITY, GetContainerObservationsRequest,
+    GetIngressProxyConfigRequest, HealthObservation, ImageDigest, ImageIngestDestination,
+    ImageIngestOpened, ImageIngestReason, ImagePulled, ImageRemoval, ImageRemovalOutcome,
+    ImageSummary, ImagesRemoved, IngressHost, IngressProxyConfig, InspectBuildGrantRequest,
+    InspectRequest, LEAVE_MACHINE_CAPABILITY, LIST_IMAGES_CAPABILITY, LeaveRequest, Left,
+    LeftPhase, ListImagesRequest, MANAGED_LABEL, MachineFailure, MachineGateway, MachineId,
+    MachineImages, MachineName, MachineRelease, MachineSubnet, MachineSuccess, MachineUpdate,
+    MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome, MachineUpgradeStage,
+    MachineVersion, ManagementAddress, NAMESPACE_LABEL, NameMatches, Namespace, OpaquePayload,
+    PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
+    PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
+    PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
+    TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -1514,17 +1513,44 @@ fn typed_errors_preserve_future_error_codes() {
 }
 
 #[test]
-fn reset_command_and_acknowledgement_have_a_stable_capability() {
-    let request = op::Reset::into_request(ResetRequest {}).encode().unwrap();
+fn leave_and_forget_round_trip_under_stable_capabilities() {
+    let requests = [
+        op::Leave::into_request(LeaveRequest {}),
+        op::Forget::into_request(ForgetRequest {
+            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
+        }),
+    ];
+    for request in requests {
+        assert_eq!(
+            request.clone().encode().unwrap().decode_request().unwrap(),
+            request
+        );
+    }
+    let left = RpcResponse::from(Left::Left {
+        phase: LeftPhase::Resetting,
+        reset_warning: None,
+    });
+    assert_eq!(left.kind(), ResponseKind::Left);
     assert_eq!(
-        request.decode_request().unwrap(),
-        op::Reset::into_request(ResetRequest {})
+        left.encode()
+            .unwrap()
+            .decode_response()
+            .unwrap()
+            .decode::<op::Leave>()
+            .unwrap(),
+        Left::Left {
+            phase: LeftPhase::Resetting,
+            reset_warning: None,
+        }
     );
-
-    let response = RpcResponse::from(ResetAccepted {});
-    assert_eq!(response.kind(), ResponseKind::ResetAccepted);
-    assert!(response.decode::<op::Reset>().is_ok());
-    assert_eq!(RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1");
+    let forgotten = RpcResponse::from(Forgotten::Forgotten);
+    assert_eq!(forgotten.kind(), ResponseKind::Forgotten);
+    assert_eq!(
+        forgotten.decode::<op::Forget>().unwrap(),
+        Forgotten::Forgotten
+    );
+    assert_eq!(LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1");
+    assert_eq!(FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1");
 }
 
 #[test]
@@ -1663,10 +1689,6 @@ fn machine_administration_requests_round_trip_as_typed_payloads() {
                 advertised_endpoints: None,
                 ..Default::default()
             },
-        }),
-        op::RemoveLocalMachine::into_request(RemoveLocalMachineRequest::default()),
-        op::RemoveMachine::into_request(RemoveMachineRequest {
-            machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         }),
     ];
     for request in requests {

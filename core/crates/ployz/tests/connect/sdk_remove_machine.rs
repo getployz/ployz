@@ -1,12 +1,13 @@
 //! Façade tests for Cloud session Machine removal with named Data Loss.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::atomic::Ordering, time::Duration};
 
 use ployz::sdk;
 use ployz_core::{
     ContractDescription, DataLoss, DockerVolumeId, DockerVolumeName, MachineId, MachineObservation,
-    MembershipObservation, RpcErrorCode, UnconfirmedDataLoss,
+    MembershipObservation, RpcError, RpcErrorCode, UnconfirmedDataLoss,
 };
+use serde_json::{Value, json};
 use tokio::time::timeout;
 
 use ployz::connect::Remover;
@@ -45,6 +46,273 @@ async fn remove_machine_destroys_a_peer_after_named_data_loss_confirmation() {
         .await
         .unwrap();
     assert!(none.reset_warning.is_none());
+}
+
+#[tokio::test]
+async fn sending_a_removal_again_skips_a_machine_already_forgotten_by_id() {
+    let (client, worker, _empty, service, _session, _machine) = removal_session().await;
+    let confirmed = confirmation(
+        client
+            .data_loss_if_machine_removed(worker.name.as_str())
+            .await
+            .unwrap()
+            .data_loss,
+    );
+    client
+        .remove_machine(worker.name.as_str(), &confirmed)
+        .await
+        .unwrap();
+
+    let again = client
+        .remove_machine(worker.id.as_str(), &confirmed)
+        .await
+        .unwrap();
+    assert_eq!(
+        again.reset_warning.as_deref(),
+        Some("its reset couldn't be confirmed: it was already gone from the Cluster")
+    );
+    client
+        .remove_machine_membership(worker.id.as_str())
+        .await
+        .unwrap();
+    // Neither send reached the Machine: one Leave and one Forget, from the first removal.
+    assert_eq!(
+        service.reset_machines.lock().unwrap().as_slice(),
+        &[worker.id]
+    );
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[worker.id]
+    );
+    // A name that no longer resolves isn't taken as removed.
+    let error = client
+        .remove_machine(worker.name.as_str(), &confirmed)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_removal_sent_again_after_a_failed_read_runs_every_guard_again() {
+    let (_description, _entry, mut service) = last_machine_cluster();
+    let worker = machine('b', "worker");
+    service.machines.push(worker.clone());
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let target = ployz_core::MachineTarget::from(&worker.machine.id);
+    let partial = confirmation([volume(worker.machine.id, "data")]);
+
+    // The Machine doesn't answer its Data Loss read, twice: nothing leaves either time.
+    for _ in 0..2 {
+        let error = client
+            .remove_machine(&target, &partial, Remover::Cloud)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Unavailable, "{}", error.message);
+    }
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+
+    // It answers the next send with Data Loss the confirmation doesn't cover.
+    service.listed_volumes.lock().unwrap().insert(
+        worker.machine.id,
+        vec![
+            docker_volume(worker.machine.id, "data"),
+            docker_volume(worker.machine.id, "logs"),
+        ],
+    );
+    let error = client
+        .remove_machine(&target, &partial, Remover::Cloud)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        RpcErrorCode::InvalidArgument,
+        "{}",
+        error.message
+    );
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+
+    let full = confirmation([
+        volume(worker.machine.id, "data"),
+        volume(worker.machine.id, "logs"),
+    ]);
+    client
+        .remove_machine(&target, &full, Remover::Cloud)
+        .await
+        .unwrap();
+    assert_eq!(
+        service.reset_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_membership_removal_sent_again_after_a_failed_storage_read_reads_it_again() {
+    let (_description, peer, mut service) = cluster_with_a_held_peer(MembershipObservation::Up);
+    service.storage_capacity = None;
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let target = ployz_core::MachineTarget::from(&peer.machine.id);
+
+    for _ in 0..2 {
+        let error = client.remove_machine_membership(&target).await.unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Unavailable, "{}", error.message);
+    }
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn an_unreachable_leave_forgets_and_a_resend_still_cannot_confirm_the_reset() {
+    let (_description, worker, _empty, mut service) = removal_cluster();
+    service.leave_unavailable = true;
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let target = ployz_core::MachineTarget::from(&worker.machine.id);
+    let confirmed = confirmation([
+        volume(worker.machine.id, "data"),
+        volume(worker.machine.id, "logs"),
+    ]);
+
+    let first = client
+        .remove_machine(&target, &confirmed, Remover::Cloud)
+        .await
+        .unwrap();
+    assert!(
+        first
+            .reset_warning
+            .as_deref()
+            .is_some_and(|warning| warning.starts_with("target is unreachable")),
+        "{first:?}"
+    );
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+
+    let again = client
+        .remove_machine(&target, &confirmed, Remover::Cloud)
+        .await
+        .unwrap();
+    assert_eq!(
+        again.reset_warning.as_deref(),
+        Some("its reset couldn't be confirmed: it was already gone from the Cluster")
+    );
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_leave_the_entry_no_longer_routes_still_forgets_without_confirming_the_reset() {
+    let (_description, worker, _empty, mut service) = removal_cluster();
+    service.leave_error = Some(RpcError {
+        code: RpcErrorCode::NotFound,
+        message: "unknown Machine".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    });
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let confirmed = confirmation([
+        volume(worker.machine.id, "data"),
+        volume(worker.machine.id, "logs"),
+    ]);
+
+    let removed = client
+        .remove_machine(
+            &ployz_core::MachineTarget::from(&worker.machine.id),
+            &confirmed,
+            Remover::Cloud,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        removed.reset_warning.as_deref(),
+        Some("its reset couldn't be confirmed: it was already gone from the Cluster")
+    );
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_forget_that_fails_after_left_carries_the_leave_reply() {
+    let (_description, worker, _empty, service) = removal_cluster();
+    *service.reset_warning.lock().unwrap() = Some("Docker reset failed".into());
+    service.forget_failures.store(1, Ordering::SeqCst);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let target = ployz_core::MachineTarget::from(&worker.machine.id);
+    let confirmed = confirmation([
+        volume(worker.machine.id, "data"),
+        volume(worker.machine.id, "logs"),
+    ]);
+
+    let error = client
+        .remove_machine(&target, &confirmed, Remover::Cloud)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable, "{}", error.message);
+    assert_eq!(
+        error.details,
+        json!({ "left": true, "reset_warning": "Docker reset failed" })
+    );
+    assert_eq!(
+        service.reset_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+/// The reset target's own row delete failed and so did the entry's Forget. Once the target
+/// reads Down, a full removal can't read it, and the membership removal still forgets it.
+#[tokio::test]
+async fn a_reset_target_that_forget_missed_is_forgotten_by_membership_removal() {
+    let (_description, worker, _empty, service) = removal_cluster();
+    service.forget_failures.store(1, Ordering::SeqCst);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let target = ployz_core::MachineTarget::from(&worker.machine.id);
+    let confirmed = confirmation([
+        volume(worker.machine.id, "data"),
+        volume(worker.machine.id, "logs"),
+    ]);
+    client
+        .remove_machine(&target, &confirmed, Remover::Cloud)
+        .await
+        .unwrap_err();
+    server.abort();
+
+    let mut after_reset = service.clone();
+    for observed in &mut after_reset.machines {
+        if observed.machine.id == worker.machine.id {
+            observed.membership = MembershipObservation::Down;
+        }
+    }
+    let (mut client, server, _) = connected_client(after_reset).await;
+    let unread = client
+        .remove_machine(&target, &confirmed, Remover::Cloud)
+        .await
+        .unwrap_err();
+    assert_eq!(unread.code, RpcErrorCode::Unavailable, "{}", unread.message);
+    client.remove_machine_membership(&target).await.unwrap();
+    assert_eq!(
+        service.reset_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+    assert_eq!(
+        service.removed_machines.lock().unwrap().as_slice(),
+        &[worker.machine.id]
+    );
+    server.abort();
 }
 
 #[tokio::test]

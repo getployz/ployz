@@ -17,14 +17,13 @@ use ployz::{
 use ployz_core::{
     AdvertisedEndpoint, ContainerCreated, ContainerId, ContainerList, ContractDescription,
     CreateVolumeRequest, DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId,
-    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, LocalMachineRemoved,
-    MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
-    MachineStorageObservation, MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss,
-    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
-    RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
-    RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
-    WireGuardPublicKey, encode_runtime_watch_frame, op,
+    DockerVolumeName, DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase,
+    LocalMachinePhase, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
+    MachineObservation, MachinePath, MachineRpc, MachineRpcServer, MachineStorageObservation,
+    MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode, RpcRequestBody,
+    RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure,
+    VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -185,6 +184,12 @@ pub(super) struct DiscoveryService {
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
     /// Inspect fails, so who manages the Machine can't be read.
     pub(super) inspect_fails: bool,
+    /// Leave fails in transport, as when the entry can't reach its target.
+    pub(super) leave_unavailable: bool,
+    /// Leave's refusal payload, as when the entry no longer lists its target.
+    pub(super) leave_error: Option<RpcError>,
+    /// How many Forgets fail as unavailable, before any of them deletes a row.
+    pub(super) forget_failures: Arc<AtomicUsize>,
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
@@ -240,6 +245,9 @@ impl DiscoveryService {
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             management_clients: Arc::default(),
             inspect_fails: false,
+            leave_unavailable: false,
+            leave_error: None,
+            forget_failures: Arc::new(AtomicUsize::new(0)),
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
@@ -1211,13 +1219,6 @@ impl MachineRpc for DiscoveryService {
         Err(Status::unimplemented("unused"))
     }
 
-    async fn reset(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn update_machine(
         &self,
         request: Request<OpaquePayload>,
@@ -1246,20 +1247,26 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn remove_local_machine(
+    async fn leave(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let request = request.into_inner().decode_request().unwrap();
-        assert!(matches!(
-            request.body,
-            RpcRequestBody::RemoveLocalMachine(_)
-        ));
+        assert!(matches!(request.body, RpcRequestBody::Leave(_)));
+        if self.leave_unavailable {
+            return Err(Status::unavailable("target unavailable"));
+        }
+        if let Some(error) = &self.leave_error {
+            return Ok(Response::new(
+                RpcResponse::from(error.clone()).encode().unwrap(),
+            ));
+        }
         self.reset_machines.lock().unwrap().push(machine_id);
         Ok(Response::new(
-            RpcResponse::from(LocalMachineRemoved {
+            RpcResponse::from(Left::Left {
+                phase: LeftPhase::Resetting,
                 reset_warning: self.reset_warning.lock().unwrap().clone(),
             })
             .encode()
@@ -1267,18 +1274,35 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn remove_machine(
+    async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = request.into_inner().decode_request().unwrap();
-        let RpcRequestBody::RemoveMachine(RemoveMachineRequest { machine_id }) = request.body
-        else {
-            return Err(Status::invalid_argument("expected remove_machine"));
+        let RpcRequestBody::Forget(ForgetRequest { machine_id }) = request.body else {
+            return Err(Status::invalid_argument("expected forget"));
         };
+        if self
+            .forget_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Ok(Response::new(
+                RpcResponse::from(RpcError {
+                    code: RpcErrorCode::Unavailable,
+                    message: "the Cluster store is unavailable".into(),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                })
+                .encode()
+                .unwrap(),
+            ));
+        }
         self.removed_machines.lock().unwrap().push(machine_id);
         Ok(Response::new(
-            RpcResponse::from(MachineRemoved {}).encode().unwrap(),
+            RpcResponse::from(Forgotten::Forgotten).encode().unwrap(),
         ))
     }
 }

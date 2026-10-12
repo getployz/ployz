@@ -43,8 +43,8 @@ macro_rules! rpc_catalog {
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always),
                 RequestMachineUpgrade: (request_machine_upgrade, "RequestMachineUpgrade", RequestMachineUpgradeRequest, "request_machine_upgrade", MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always),
-                RemoveLocalMachine: (remove_local_machine, "RemoveLocalMachine", RemoveLocalMachineRequest, "remove_local_machine", LocalMachineRemoved, REMOVE_LOCAL_MACHINE_CAPABILITY, "ployz.machine.remove-local.v1", Always),
-                RemoveMachine: (remove_machine, "RemoveMachine", RemoveMachineRequest, "remove_machine", MachineRemoved, REMOVE_MACHINE_CAPABILITY, "ployz.machine.remove.v1", Always),
+                Leave: (leave, "Leave", LeaveRequest, "leave", Left, LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1", Always),
+                Forget: (forget, "Forget", ForgetRequest, "forget", Forgotten, FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1", Always),
                 ListContainers: (list_containers, "ListContainers", ListContainersRequest, "list_containers", ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container),
                 InspectContainer: (inspect_container, "InspectContainer", InspectContainerRequest, "inspect_container", ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container),
                 GetContainerObservations: (get_container_observations, "GetContainerObservations", GetContainerObservationsRequest, "get_container_observations", ContainerObservationMap, GET_CONTAINER_OBSERVATIONS_CAPABILITY, "ployz.container.observations.v1", Cluster),
@@ -69,7 +69,6 @@ macro_rules! rpc_catalog {
                 GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
                 MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
-                Reset: (reset, "Reset", ResetRequest, "reset", ResetAccepted, RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1", Always),
             }
             server_streaming {
                 LogHistory: (log_history, "LogHistory", LogHistoryRequest, "log_history", LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container),

@@ -3,9 +3,10 @@ mod test_dir;
 use std::{collections::BTreeMap, fs, net::SocketAddr, os::unix::fs::PermissionsExt};
 
 use ployz_core::{
-    AdvertisedEndpoint, EnrollAs, EnrollRequest, Enrolled, InspectRequest, LocalMachinePhase,
-    Machine, MachineId, MachineName, MachineRuntime, MachineUpdate, ManagementClientLabel,
-    PublicIpUpdate, Registered, SelectedEndpoint, SetManagementClientRequest,
+    AdvertisedEndpoint, EnrollAs, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
+    LeftPhase, LocalMachinePhase, Machine, MachineId, MachineName, MachineRuntime, MachineUpdate,
+    ManagementClientLabel, PublicIpUpdate, Registered, SelectedEndpoint,
+    SetManagementClientRequest,
 };
 use ployzd::machine::{
     EnrollPlan, LocalMachine, LocalMachineBody, LocalMachineError, LocalMachinePrior,
@@ -531,18 +532,21 @@ async fn inspect_lists_management_clients_holding_keys() {
 }
 
 #[tokio::test]
-async fn repeated_reset_returns_a_typed_conflict() {
+async fn leave_resent_to_a_resetting_machine_answers_left() {
     let dir = TestDir::new("ployzd-state");
     let mut store = LocalMachineStore::open(&dir.0).unwrap();
     store.begin_reset().unwrap();
     let local = LocalMachine::new(RecordOwner::spawn(store).unwrap());
 
-    let error = local.reset().await.unwrap_err();
+    let left = local.leave(LeaveRequest::default()).await.unwrap();
 
-    assert!(matches!(
-        error,
-        LocalMachineError::Store(StoreError::AlreadyResetting)
-    ));
+    assert_eq!(
+        left,
+        Left::Left {
+            phase: LeftPhase::Resetting,
+            reset_warning: None,
+        }
+    );
 }
 
 #[test]

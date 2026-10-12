@@ -898,13 +898,6 @@ impl MachineRpc for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn reset(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        self.record_mutation();
-        unused()
-    }
     async fn update_machine(
         &self,
         _request: Request<OpaquePayload>,
@@ -912,14 +905,14 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
-    async fn remove_local_machine(
+    async fn leave(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
         unused()
     }
-    async fn remove_machine(
+    async fn forget(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

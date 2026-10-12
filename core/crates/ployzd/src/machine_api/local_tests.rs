@@ -5,11 +5,10 @@ use crate::corrosion::{AdminClient, fake_cluster};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
+    ContainerRuntimeObservation, ForgetRequest, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
     GetContainerObservationsRequest, HealthObservation, MachineId, MachineRelease, MachineRpc,
-    MachineUpgradeAttemptId, Namespace, RequestMachineUpgradeRequest, ResetRequest,
-    ResolvedServiceSpec, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, ServiceId,
-    ServiceName, op,
+    MachineUpgradeAttemptId, Namespace, RequestMachineUpgradeRequest, ResolvedServiceSpec,
+    RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, ServiceId, ServiceName, op,
 };
 use std::{
     collections::BTreeMap,
@@ -103,8 +102,12 @@ async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
 
     std::fs::write(data_dir.join(".upgrade-active"), "attempt").unwrap();
     let response = service
-        .reset(Request::new(
-            op::Reset::into_request(ResetRequest {}).encode().unwrap(),
+        .forget(Request::new(
+            op::Forget::into_request(ForgetRequest {
+                machine_id: MachineId::random(),
+            })
+            .encode()
+            .unwrap(),
         ))
         .await
         .unwrap()

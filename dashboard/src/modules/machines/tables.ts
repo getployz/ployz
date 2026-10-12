@@ -56,7 +56,7 @@ export const machineRemoveAttempt = pgTable(
       mode: "date",
       withTimezone: true,
     }),
-    /** When the run asked the Server to leave: a run that finds it set never asks again. */
+    /** When a run first asked the Server to leave. Every retry asks again and keeps this time. */
     removeSentAt: timestamp("remove_sent_at", {
       mode: "date",
       withTimezone: true,

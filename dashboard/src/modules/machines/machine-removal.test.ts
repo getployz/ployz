@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { toMachineRemoveAttemptView } from "./machine-removal";
+import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
+import { removalLack, toMachineRemoveAttemptView } from "./machine-removal";
 
 const entry = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as MachineId;
 
@@ -78,5 +79,27 @@ describe("toMachineRemoveAttemptView", () => {
         missingIdentities: [],
       }),
     ).toThrow("missing_identities attempt has no identities.");
+  });
+});
+
+describe("removalLack", () => {
+  const listed = [requirements.leave.capability, requirements.forget.capability];
+  const lacking = ["ployz.machine.inspect.v1"];
+  const removal = { target: "target", entries: ["entry", "target"], noReset: false };
+
+  it("asks when every record lists the steps or lists nothing", () => {
+    expect(removalLack([{ id: "target", capabilities: listed }, { id: "entry", capabilities: listed }], removal)).toBeNull();
+    expect(removalLack([{ id: "target", capabilities: [] }, { id: "entry", capabilities: [] }], removal)).toBeNull();
+  });
+
+  it("names Leave on a target that lacks it, and skips it without a reset", () => {
+    const servers = [{ id: "target", capabilities: lacking }, { id: "entry", capabilities: listed }];
+    expect(removalLack(servers, removal)).toEqual(new ServerLacks({ machineId: "target", capability: "ployz.machine.leave.v1" }));
+    expect(removalLack(servers, { ...removal, noReset: true })).toBeNull();
+  });
+
+  it("names Forget on an entry that lacks it", () => {
+    const servers = [{ id: "target", capabilities: listed }, { id: "entry", capabilities: lacking }];
+    expect(removalLack(servers, removal)).toEqual(new ServerLacks({ machineId: "entry", capability: "ployz.machine.forget.v1" }));
   });
 });

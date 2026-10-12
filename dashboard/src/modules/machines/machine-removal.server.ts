@@ -1,15 +1,15 @@
 import "@tanstack/react-start/server-only";
 
 import type { LocalMachineRemoved, MachineId } from "@ployz/sdk";
-import { Data, Effect } from "effect";
+import { Data, Effect, Option } from "effect";
 import { createMachineRemoveRequestedEvent } from "#/modules/inngest/events";
 import type { Actor } from "#/modules/identity/actor";
 import {
   type DataLossList,
 } from "#/modules/runtime/data-loss-confirm";
-import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage } from "#/modules/runtime/ployz.server";
+import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import type {
   EnqueueMachineRemoveInput,
   GetMachineRemoveAttemptInput,
@@ -18,13 +18,14 @@ import type {
   RemoveMachineOutcome,
   ServerRelease,
 } from "#/modules/machines/machine-removal";
+import { removalLack } from "#/modules/machines/machine-removal";
 import {
   claimMachineRemoveAttempt,
   completeMachineRemoveAttempt,
   loadAuthorizedMachineRemoveAttempt,
   loadMachineRemoveAttempt,
   loadMachineRemoveAttemptByRun,
-  markMachineRemoveSent,
+  markOwnedMachineRemoveSent,
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -32,6 +33,7 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { planRemove } from "#/modules/machines/server-operations.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 
 function asMachineId(machineId: string): MachineId {
@@ -47,9 +49,21 @@ export class MachineRemovalProviderFailure extends Data.TaggedError(
 
 export function asRemoveMachineOutcome<R>(
   run: Effect.Effect<LocalMachineRemoved, PloyzSdkError, R>,
+  servers: readonly { readonly id: string; readonly name: string }[] = [],
 ) {
   return run.pipe(
     Effect.map((removed): RemoveMachineOutcome => ({ kind: "removed", resetWarning: removed.reset_warning })),
+    // The Leave's reply is the only proof the Server reset; the step's result keeps it for the Forget after it.
+    Effect.catchTag("LeftNotForgotten", (left) =>
+      Effect.succeed({ kind: "left" as const, resetWarning: left.resetWarning } satisfies RemoveMachineOutcome),
+    ),
+    Effect.catchTag("ServerLacks", (lack) =>
+      Effect.succeed({
+        kind: "refused" as const,
+        failureCode: "server_lacks",
+        message: sdkFailureMessage(lack, servers),
+      } satisfies RemoveMachineOutcome),
+    ),
     Effect.catchTag("MissingDataLossIdentities", (cause) =>
       Effect.succeed({
         kind: "missing_identities" as const,
@@ -96,14 +110,19 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
   completeMachineRemoveAttempt(input));
 
 /**
- * Resets the Server under Cloud's own connection, asking it at most once per attempt: a retry after the ask went
- * answers `lost`, since the Server may be reset already. The pairing generation Cloud reached it through comes back
- * with the outcome, as the witness `releaseServerActivity` checks before it lets go of anything.
+ * Resets the Server under Cloud's own connection. A step retry sends the same removal again, and the SDK runs every
+ * guard again while the Server is listed; one already gone by its Machine ID answers removed, its reset unconfirmed,
+ * so Cloud keeps its row with that reason. A Server that answered its Leave but whose row the entry couldn't Forget
+ * answers left; given that reply as `left`, this sends Forget alone and answers removed with the Leave's warning.
+ * A run whose attempt is no longer its running attempt asks nothing and answers superseded. The pairing generation
+ * Cloud reached it through comes back with the outcome, as the witness `releaseServerActivity` checks before it lets
+ * go of anything.
  */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
   function* (attempt: Pick<MachineRemoveAttemptContext, "id" | "organizationId" | "machineId" | "confirmDataLoss" | "noReset"> & {
     readonly inngestRunId: string;
-  }) {
+  }, left: { readonly resetWarning: string | null } | null = null) {
+    const forgetOnly = attempt.noReset || left !== null;
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(attempt.organizationId);
@@ -113,13 +132,28 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
         cause: session,
       });
     }
-    if (!(yield* markMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId }))) {
-      return { kind: "lost" } as const;
+    // Without a frame every Server's capabilities are unknown, and an unknown capability attempts.
+    const frame = yield* Effect.option(session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS));
+    const servers = Option.match(frame, {
+      onNone: () => [],
+      onSome: ({ machines }) => machines.map(({ machine }) => ({
+        id: machine.id, name: machine.name, capabilities: machine.runtime.capabilities ?? [],
+      })),
+    });
+    const lack = removalLack(servers, {
+      target: attempt.machineId,
+      entries: access.connections.flatMap((connection) => connection.machine_id ?? []),
+      noReset: forgetOnly,
+    });
+    if (lack !== null) {
+      return { kind: "refused", failureCode: "server_lacks", message: sdkFailureMessage(lack, servers), generation: access.generation } as const;
     }
     const machine = asMachineId(attempt.machineId);
-    const outcome = yield* asRemoveMachineOutcome(attempt.noReset
-      ? session.connected.removeMachineMembership(machine).pipe(Effect.as({ reset_warning: null }))
-      : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }));
+    const owned = yield* markOwnedMachineRemoveSent({ attemptId: attempt.id, inngestRunId: attempt.inngestRunId });
+    if (!owned) return { kind: "superseded" } as const;
+    const outcome = yield* asRemoveMachineOutcome(forgetOnly
+      ? session.connected.removeMachineMembership(machine).pipe(Effect.as({ reset_warning: left?.resetWarning ?? null }))
+      : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }), servers);
     return { ...outcome, generation: access.generation };
   },
 );
@@ -264,6 +298,11 @@ export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
       actor,
       input.organizationSlug,
     );
+    // The same frame check an agent's removal runs: a Server Cloud doesn't see is never sent a removal.
+    const plan = yield* planRemove(organization.id, input.machineId, input.confirmDataLoss);
+    if (plan === null) {
+      return yield* new NotFound({ message: "The Server was not found." });
+    }
     return yield* startMachineRemove({
       organizationId: organization.id,
       requestedByUserId: actor.userId,

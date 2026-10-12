@@ -10,7 +10,7 @@ use std::{
 
 use crate::connect::Client;
 use ployz_core::{
-    EnrollAs, EnrollRequest, Enrolled, InspectRequest, LocalMachinePhase, Machine, MachineDetails,
+    EnrollAs, EnrollRequest, Enrolled, InspectRequest, Left, LeftPhase, LocalMachinePhase, Machine,
     MachineId, MachineName, MachineNow, OpaquePayload, RpcError, RpcErrorCode, RpcRequestBody,
     RpcResponse, WireGuardPublicKey, op,
 };
@@ -151,11 +151,11 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
         .call_unretried::<op::Enroll>(
             founder_request(&machine),
             None,
-            crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT,
+            crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
         )
         .await
         .unwrap_err();
-    assert_eq!(Instant::now() - started, Duration::from_secs(5));
+    assert_eq!(Instant::now() - started, Duration::from_secs(60));
     assert!(crate::ui::chain_text(&error).contains("Machine setup mutation reply timed out"));
     assert_eq!(enrolls.load(Ordering::SeqCst), 1);
     let started = Instant::now();
@@ -169,46 +169,44 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
 }
 
 #[tokio::test]
-async fn reset_lost_to_a_daemon_restart_is_observed_not_resent() {
+async fn leave_lost_to_a_daemon_restart_is_resent() {
     use crate::connect::test_support::{unix_client, unix_daemon};
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("ployz.sock");
-    let (reset, restarting) = tokio::sync::oneshot::channel();
-    let reset = Arc::new(std::sync::Mutex::new(Some(reset)));
+    let (leave, restarting) = tokio::sync::oneshot::channel();
+    let leave = Arc::new(std::sync::Mutex::new(Some(leave)));
     let old = unix_daemon(&path, move |body| {
-        let reset = reset.lock().unwrap().take();
+        let leave = leave.lock().unwrap().take();
         async move {
-            assert!(matches!(body, RpcRequestBody::Reset(_)), "{body:?}");
-            reset.unwrap().send(()).unwrap();
+            assert!(matches!(body, RpcRequestBody::Leave(_)), "{body:?}");
+            leave.unwrap().send(()).unwrap();
             std::future::pending().await
         }
     });
     let mut client = unix_client(&path).await;
-    let restart = async {
-        restarting.await.unwrap();
-        // The daemon exits with the Reset reply in flight.
-        old.shutdown_background();
-        std::fs::remove_file(&path).unwrap();
-        // A resent Reset would fail this assertion instead of being observed.
-        unix_daemon(&path, |body| async move {
-            assert!(matches!(body, RpcRequestBody::Inspect(_)), "{body:?}");
-            Ok(RpcResponse::from(MachineDetails {
-                id: MachineId::random(),
-                phase: LocalMachinePhase::Uninitialized,
-                public_key: WireGuardPublicKey([3; 32]),
-                advertised_endpoints: Vec::new(),
-                machine: None,
-                store_version: Default::default(),
-                rtts: Vec::new(),
-                management_clients: Vec::new(),
-                telemetry: None,
-                storage: None,
-                upgrade: None,
-                token: None,
-            }))
-        })
+    let resent = Arc::new(AtomicUsize::new(0));
+    let restart = {
+        let resent = Arc::clone(&resent);
+        async move {
+            restarting.await.unwrap();
+            // The daemon exits with the Leave reply in flight.
+            old.shutdown_background();
+            std::fs::remove_file(&path).unwrap();
+            unix_daemon(&path, move |body| {
+                let resent = Arc::clone(&resent);
+                async move {
+                    assert!(matches!(body, RpcRequestBody::Leave(_)), "{body:?}");
+                    resent.fetch_add(1, Ordering::SeqCst);
+                    Ok(RpcResponse::from(Left::Left {
+                        phase: LeftPhase::Uninitialized,
+                        reset_warning: None,
+                    }))
+                }
+            })
+        }
     };
-    let (result, new) = tokio::join!(super::reset(&mut client), restart);
+    let (result, new) = tokio::join!(super::leave(&mut client), restart);
     new.shutdown_background();
     result.unwrap();
+    assert_eq!(resent.load(Ordering::SeqCst), 1);
 }

@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    AdvertisedEndpoint, DockerVolume, EnrollAs, EnrollRequest, Enrolled, LocalMachinePhase,
-    Machine, MachineId, MachineName, Registered, RemoveLocalMachineRequest, RpcErrorCode,
+    AdvertisedEndpoint, DockerVolume, EnrollAs, EnrollRequest, Enrolled, LeaveRequest,
+    LocalMachinePhase, Machine, MachineId, MachineName, Registered, RpcErrorCode,
 };
 use serde_json::json;
 
@@ -111,23 +111,9 @@ fn join_request(record: &crate::machine::LocalMachineRecord) -> EnrollRequest {
 }
 
 #[tokio::test]
-async fn reset_departs_storage_before_the_phase_commits() {
+async fn leave_departs_storage_before_the_phase_commits() {
     let test = harness(true).await;
-    test.local.reset().await.unwrap();
-    assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
-    assert!(forgot_data(&test.docker));
-    assert_eq!(test.local.record().phase(), LocalMachinePhase::Resetting);
-}
-
-#[tokio::test]
-async fn local_removal_departs_storage_before_the_phase_commits() {
-    let test = harness(true).await;
-    test.local
-        .remove_local(RemoveLocalMachineRequest {
-            restart_on_cleanup_failure: false,
-        })
-        .await
-        .unwrap();
+    test.local.leave(LeaveRequest::default()).await.unwrap();
     assert_eq!(test.plugin.routes_called(), ["Storage.Demote"]);
     assert!(forgot_data(&test.docker));
     assert_eq!(test.local.record().phase(), LocalMachinePhase::Resetting);
@@ -157,7 +143,7 @@ async fn a_failed_departure_keeps_the_machine_in_place() {
         "Storage.Demote",
         json!({"Err": {"code": "internal", "message": "zfs rename failed", "details": null}}),
     );
-    let error = test.local.reset().await.unwrap_err();
+    let error = test.local.leave(LeaveRequest::default()).await.unwrap_err();
     assert!(
         matches!(&error, Error::Cleanup(message) if message.contains("zfs rename failed")),
         "{error}"
@@ -167,19 +153,6 @@ async fn a_failed_departure_keeps_the_machine_in_place() {
         LocalMachinePhase::Participating
     );
     assert!(!forgot_data(&test.docker));
-
-    let error = test
-        .local
-        .remove_local(RemoveLocalMachineRequest {
-            restart_on_cleanup_failure: false,
-        })
-        .await
-        .unwrap_err();
-    assert!(matches!(error, Error::Cleanup(_)), "{error}");
-    assert_eq!(
-        test.local.record().phase(),
-        LocalMachinePhase::Participating
-    );
 }
 
 fn held(machine_id: MachineId, role: &str) -> DockerVolume {

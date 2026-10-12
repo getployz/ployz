@@ -216,10 +216,6 @@ pub enum CodecError {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DescribeContractRequest {}
 
-/// The empty payload of the reset command.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ResetRequest {}
-
 /// This Machine's own enrollment facts, returned with every lifecycle refusal.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MachineNow {
@@ -267,6 +263,50 @@ pub enum Enrolled {
         machine: Machine,
     },
     /// Enrolled as someone else. `error.code` is `conflict`.
+    Refused {
+        now: MachineNow,
+        error: RpcError,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct LeaveRequest {}
+
+/// A successful Leave cannot report a Machine that still participates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum LeftPhase {
+    Resetting,
+    Uninitialized,
+}
+
+/// A resend on a Machine already Resetting or Uninitialized replies `Left` with that phase.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Left {
+    Left {
+        phase: LeftPhase,
+        /// Publication removal failed best effort; the local leave happened.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_warning: Option<String>,
+    },
+    /// An upgrade attempt is nonterminal. `error.code` is `conflict`.
+    Refused { now: MachineNow, error: RpcError },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ForgetRequest {
+    pub machine_id: MachineId,
+}
+
+/// A missing row is success.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum Forgotten {
+    Forgotten,
+    /// `machine_id` is this Machine; a Machine leaves itself with Leave. `error.code` is `invalid_argument`.
     Refused {
         now: MachineNow,
         error: RpcError,
@@ -696,17 +736,6 @@ pub struct UpdateMachineRequest {
     pub update: MachineUpdate,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveLocalMachineRequest {
-    #[serde(default)]
-    pub restart_on_cleanup_failure: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RemoveMachineRequest {
-    pub machine_id: MachineId,
-}
-
 macro_rules! define_request_body {
     (
         package $package:literal
@@ -866,9 +895,6 @@ struct RequestHeader {
     command: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ResetAccepted {}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Registered {
     pub assigned_machine: Machine,
@@ -979,9 +1005,6 @@ pub struct LocalMachineRemoved {
     pub reset_warning: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct MachineRemoved {}
-
 /// Envelope identity: one row is the wire kind and the payload stored in that
 /// variant. Callers lift with [`RpcResponse::decode`] and read fields on the envelope.
 trait FromResponseBody: Sized {
@@ -1079,9 +1102,8 @@ define_responses! {
     CertificateMaterialPublished(CertificateMaterialPublished) => "certificate_material_published";
     MachineUpdated(MachineUpdated) => "machine_updated";
     MachineUpgradeAttempt(MachineUpgradeAttempt) => "machine_upgrade_attempt";
-    LocalMachineRemoved(LocalMachineRemoved) => "local_machine_removed";
-    MachineRemoved(MachineRemoved) => "machine_removed";
-    ResetAccepted(ResetAccepted) => "reset_accepted";
+    Left(Left) => "left";
+    Forgotten(Forgotten) => "forgotten";
     MetricHistoryReply(MetricHistoryReply) => "metric_history";
     Error(RpcError) => "error";
 }

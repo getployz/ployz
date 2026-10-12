@@ -9,11 +9,11 @@ use ployz_core::{
     AdvertisedEndpoint, ContainerChanged, ContainerCreated, ContainerDetails, ContainerId,
     ContainerKind, ContainerList, ContainerObservation, ContainerRuntimeObservation,
     ContractDescription, CreateContainerRequest, DESCRIBE_CONTRACT_CAPABILITY, EnrollAs,
-    EnrollRequest, Enrolled, HealthObservation, LocalMachinePhase, Machine, MachineDetails,
-    MachineId, MachineImages, MachineList, MachineName, MachineNow, MachineObservation, MachineRpc,
-    MachineToken, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, Registered, ResetAccepted,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SetManagementClientResponse,
-    VolumeInventory, WireGuardPublicKey,
+    EnrollRequest, Enrolled, HealthObservation, Left, LeftPhase, LocalMachinePhase, Machine,
+    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineNow,
+    MachineObservation, MachineRpc, MachineToken, MembershipObservation, OpaquePayload,
+    PROTOCOL_MAJOR, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
 
 /// The Management Capability the fake daemon mints for any Management Client Set.
@@ -998,10 +998,18 @@ impl MachineRpc for JoinDaemon {
     ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
-    async fn reset(
+    async fn leave(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        if !self.inner.joined.load(Ordering::SeqCst)
+            && self.inner.enrolled.lock().unwrap().is_none()
+        {
+            return rpc_ok(Left::Left {
+                phase: LeftPhase::Uninitialized,
+                reset_warning: None,
+            });
+        }
         self.inner.resets.fetch_add(1, Ordering::SeqCst);
         self.inner.joined.store(false, Ordering::SeqCst);
         *self.inner.enrolled.lock().unwrap() = None;
@@ -1014,15 +1022,12 @@ impl MachineRpc for JoinDaemon {
         {
             return Err(Status::unavailable("lost lifecycle reply"));
         }
-        rpc_ok(ResetAccepted {})
+        rpc_ok(Left::Left {
+            phase: LeftPhase::Resetting,
+            reset_warning: None,
+        })
     }
-    async fn remove_local_machine(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn remove_machine(
+    async fn forget(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {

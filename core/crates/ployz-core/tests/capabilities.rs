@@ -1,16 +1,16 @@
 use ployz_core::{
     CERTIFICATE_POLICY_CAPABILITY, CREATE_CONTAINER_CAPABILITY, CapabilityAdvertisement,
     CapabilityName, DESCRIBE_CONTRACT_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
-    ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY, GET_INGRESS_PROXY_CONFIG_CAPABILITY,
-    INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
+    ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY,
+    GET_INGRESS_PROXY_CONFIG_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY,
+    INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY,
+    INSPECT_VOLUME_COPY_CAPABILITY, LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
     LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
     LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     MARK_CONTAINER_STOPPING_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
     PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_CONTAINER_CAPABILITY,
-    REMOVE_LOCAL_MACHINE_CAPABILITY, REMOVE_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RESET_MACHINE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
+    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc,
     SEED_VOLUME_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
     START_CONTAINER_CAPABILITY, STOP_CONTAINER_CAPABILITY, TAIL_LOGS_CAPABILITY,
     UPDATE_MACHINE_CAPABILITY, op,
@@ -85,12 +85,8 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.certificates.publish.v1",
         ),
         (UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1"),
-        (
-            REMOVE_LOCAL_MACHINE_CAPABILITY,
-            "ployz.machine.remove-local.v1",
-        ),
-        (REMOVE_MACHINE_CAPABILITY, "ployz.machine.remove.v1"),
-        (RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1"),
+        (LEAVE_MACHINE_CAPABILITY, "ployz.machine.leave.v1"),
+        (FORGET_MACHINE_CAPABILITY, "ployz.machine.forget.v1"),
         (
             CERTIFICATE_POLICY_CAPABILITY,
             "ployz.certificates.policy.v1",
@@ -120,9 +116,8 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
             "ployz.machine.upgrade.request.v1",
-            "ployz.machine.remove-local.v1",
-            "ployz.machine.remove.v1",
-            "ployz.machine.reset.v1",
+            "ployz.machine.leave.v1",
+            "ployz.machine.forget.v1",
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
         ]
@@ -184,7 +179,7 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         op::DescribeContract::PATH,
         "/ployz.rpc.v1.MachineRpc/DescribeContract"
     );
-    assert_eq!(op::Reset::PATH, "/ployz.rpc.v1.MachineRpc/Reset");
+    assert_eq!(op::Leave::PATH, "/ployz.rpc.v1.MachineRpc/Leave");
     assert_eq!(
         op::GetIngressProxyConfig::PATH,
         "/ployz.rpc.v1.MachineRpc/GetIngressProxyConfig"

@@ -800,7 +800,7 @@ mod tests {
     use crate::dns::DnsSupervision;
     use ployz_core::{
         CERTIFICATE_POLICY_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, DescribeContractRequest,
-        LIST_CONTAINERS_CAPABILITY, MachineRpcClient, ResetRequest, op,
+        LIST_CONTAINERS_CAPABILITY, LeaveRequest, MachineRpcClient, op,
     };
     use tonic::transport::Endpoint;
 
@@ -862,20 +862,34 @@ mod tests {
             .clone()
     }
 
-    async fn reset(path: &Path) {
+    async fn leave(path: &Path) -> ployz_core::Left {
         let channel = Endpoint::from_shared(format!("unix:{}", path.display()))
             .unwrap()
             .connect()
             .await
             .unwrap();
         let response = MachineRpcClient::new(channel)
-            .reset(op::Reset::into_request(ResetRequest {}).encode().unwrap())
+            .leave(
+                op::Leave::into_request(LeaveRequest::default())
+                    .encode()
+                    .unwrap(),
+            )
             .await
             .unwrap()
             .into_inner()
             .decode_response()
             .unwrap();
-        response.decode::<op::Reset>().unwrap();
+        response.decode::<op::Leave>().unwrap()
+    }
+
+    async fn reset(daemon: &Daemon) {
+        daemon
+            .local
+            .mutate(LocalMachineStore::begin_reset)
+            .await
+            .unwrap()
+            .unwrap();
+        daemon.local.request_restart();
     }
 
     #[tokio::test]
@@ -1024,7 +1038,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_keeps_machine_id_and_reset_clears_data_dir() {
+    async fn restart_keeps_machine_id_and_leave_leaves_an_uninitialized_machine_alone() {
         let root = TestDir::new("ployzd-daemon-reset");
         let (config, socket) = test_config(&root.0, ContainerMode::Absent);
         let data_dir = config.data_dir.clone();
@@ -1036,9 +1050,17 @@ mod tests {
         let (config, socket) = test_config(&root.0, ContainerMode::Absent);
         let daemon = Daemon::start(config).await.unwrap();
         assert_eq!(describe(&socket).await.machine_id, first.machine_id);
-        reset(&socket).await;
+        assert_eq!(
+            leave(&socket).await,
+            ployz_core::Left::Left {
+                phase: ployz_core::LeftPhase::Uninitialized,
+                reset_warning: None,
+            }
+        );
+        assert_eq!(describe(&socket).await.machine_id, first.machine_id);
+        daemon.request_stop();
         daemon.wait().await.unwrap();
-        assert!(!data_dir.exists());
+        assert!(data_dir.exists());
     }
 
     #[tokio::test]
@@ -1074,7 +1096,7 @@ mod tests {
         let data_dir = config.data_dir.clone();
         let daemon = Daemon::start(config).await.unwrap();
         let _held = tokio::net::UnixStream::connect(&socket).await.unwrap();
-        reset(&socket).await;
+        reset(&daemon).await;
         tokio::time::timeout(std::time::Duration::from_secs(10), daemon.wait())
             .await
             .expect("reset shutdown must not wait on a held Machine API connection")

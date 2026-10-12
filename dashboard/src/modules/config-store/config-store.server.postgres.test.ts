@@ -22,7 +22,7 @@ import { resolveCaller } from "#/modules/identity/caller.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
-import { organizationMachine } from "#/modules/machines/tables";
+import { machineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 import {
   completeMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
@@ -32,7 +32,8 @@ import {
 import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { LeftNotForgotten, PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { Database } from "#/server/database.server";
@@ -325,7 +326,9 @@ it.live(
           ...enrolled, machineId: other as MachineId, isDialEntry: false, encryptedCapability: encryption.encrypt("ployz1:other"),
         });
         const warnings: Array<string | null> = ["Docker reset failed: busy volume", null];
+        // No Server answers the runtime watch, so their capabilities are unknown and every removal still goes out.
         const connected = asTestDouble<PloyzSession>()({
+          watchFirstFrame: () => Effect.fail(new RuntimeConnectionFailure({ cause: "timed out" })),
           removeMachine: () => Effect.sync(() => ({ reset_warning: warnings.shift() ?? null })),
           removeMachineMembership: () => Effect.void,
         });
@@ -389,6 +392,124 @@ it.live(
         assert.strictEqual(replay.kind, "kept");
         assert.strictEqual((yield* drizzle.select().from(organizationPairing)).length, 1);
         assert.strictEqual((yield* drizzle.select().from(organizationMachine)).length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a removal retried after a provider failure sends the same removal again, and a run that lost the attempt sends none",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const caller = yield* resolveCaller(new Headers({ cookie: alice }));
+        const organizationId = caller.organization.id;
+        yield* enrollStoreServer(organizationId);
+        const machineId = "0".repeat(32);
+        const { drizzle } = yield* Database;
+        const sent: Array<{ machine: string; confirmed: readonly unknown[] }> = [];
+        const replies = [
+          Effect.fail(new PloyzProviderError({ operation: "remove machine", cause: "reply lost" })),
+          Effect.succeed({ reset_warning: null }),
+        ];
+        const connected = asTestDouble<PloyzSession>()({
+          watchFirstFrame: () => Effect.fail(new RuntimeConnectionFailure({ cause: "timed out" })),
+          removeMachine: (machine: string, confirm: { confirmed: readonly unknown[] }) =>
+            Effect.suspend(() => {
+              sent.push({ machine, confirmed: confirm.confirmed });
+              return replies.shift() ?? Effect.die("asked too often");
+            }),
+        });
+        const runtime = {
+          cancel: () => Effect.void,
+          open: () => Effect.succeed({ status: "connected" as const, connected }),
+        };
+        const removal = { organizationId, machineId, confirmDataLoss: [], noReset: false };
+        const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
+        const inngestRunId = "run-retry";
+        yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
+        const remove = (run: string) => Effect.scoped(removeMachineActivity({ ...removal, id: attempt.id, inngestRunId: run }))
+          .pipe(Effect.provideService(OrganizationRuntime, runtime));
+
+        // The first step fails at the provider; Inngest retries the step, which asks the same way again.
+        const failed = yield* Effect.exit(remove(inngestRunId));
+        assert.isTrue(Exit.isFailure(failed));
+        const [asked] = yield* drizzle.select().from(machineRemoveAttempt).where(eq(machineRemoveAttempt.id, attempt.id));
+        const firstAsk = asked?.removeSentAt ?? assert.fail("no ask stamped");
+        const removed = yield* remove(inngestRunId);
+        assert.deepStrictEqual(sent, [
+          { machine: machineId, confirmed: [] },
+          { machine: machineId, confirmed: [] },
+        ]);
+        if (removed.kind !== "removed") return assert.fail(`not removed: ${removed.kind}`);
+        assert.isNull(removed.resetWarning);
+        const [retried] = yield* drizzle.select().from(machineRemoveAttempt).where(eq(machineRemoveAttempt.id, attempt.id));
+        assert.deepStrictEqual(retried?.removeSentAt, firstAsk);
+
+        // A run that no longer owns the attempt asks nothing.
+        const superseded = yield* remove("run-stale");
+        assert.strictEqual(superseded.kind, "superseded");
+        assert.strictEqual(sent.length, 2);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a Server that reset before its Forget failed is forgotten without another removal, and keeps the Leave's warning",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const caller = yield* resolveCaller(new Headers({ cookie: alice }));
+        const organizationId = caller.organization.id;
+        yield* enrollStoreServer(organizationId);
+        const machineId = "0".repeat(32);
+        const resetWarning = "Docker reset failed";
+        const sent: string[] = [];
+        const forgets = [
+          Effect.fail(new PloyzProviderError({ operation: "remove machine membership", cause: { code: "unavailable", message: "suspect" } })),
+          Effect.void,
+        ];
+        const connected = asTestDouble<PloyzSession>()({
+          watchFirstFrame: () => Effect.fail(new RuntimeConnectionFailure({ cause: "timed out" })),
+          removeMachine: () =>
+            Effect.suspend(() => {
+              sent.push("remove");
+              return Effect.fail(new LeftNotForgotten({ resetWarning, cause: "forget failed" }));
+            }),
+          removeMachineMembership: () =>
+            Effect.suspend(() => {
+              sent.push("forget");
+              return forgets.shift() ?? Effect.die("asked too often");
+            }),
+        });
+        const runtime = {
+          cancel: () => Effect.void,
+          open: () => Effect.succeed({ status: "connected" as const, connected }),
+        };
+        const removal = { organizationId, machineId, confirmDataLoss: [], noReset: false };
+        const attempt = yield* requestMachineRemoveAttempt({ ...removal, requestedByUserId: caller.userId });
+        const inngestRunId = "run-left";
+        yield* prepareMachineRemoveAttemptActivity({ attemptId: attempt.id, inngestRunId, now: new Date() });
+        const step = (left: { resetWarning: string | null } | null) =>
+          Effect.scoped(removeMachineActivity({ ...removal, id: attempt.id, inngestRunId }, left))
+            .pipe(Effect.provideService(OrganizationRuntime, runtime));
+
+        const first = yield* step(null);
+        if (first.kind !== "left") return assert.fail(`not left: ${first.kind}`);
+        assert.strictEqual(first.resetWarning, resetWarning);
+        // The Forget step retries while the Server still reads as suspect, and never sends the removal again.
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(step(first))));
+        const removed = yield* step(first);
+        assert.deepStrictEqual(sent, ["remove", "forget", "forget"]);
+        if (removed.kind !== "removed") return assert.fail(`not removed: ${removed.kind}`);
+        assert.strictEqual(removed.resetWarning, resetWarning);
+        const release = yield* releaseServerActivity({ ...removal, ...removed });
+        assert.strictEqual(release.kind, "kept");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -384,7 +384,7 @@ async fn updates_removes_and_inspects_machine_network_state() {
     cluster
         .seed_container_row(0, &other_container, &first.id)
         .unwrap();
-    cluster.remove_machine(0, second.id).await.unwrap();
+    cluster.forget(0, second.id).await.unwrap();
     assert!(
         !cluster
             .replicated_row_exists(0, "machines", second.id.as_str())

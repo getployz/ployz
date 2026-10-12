@@ -659,7 +659,7 @@ async fn ensure_uninitialized(
         ));
     }
     crate::handlers::server::confirm(yes, "Reset this Server before joining the Cluster?")?;
-    crate::handlers::server::reset(&mut client).await?;
+    crate::handlers::server::leave(&mut client).await?;
     wait_phase(
         matches,
         LocalMachinePhase::Uninitialized,

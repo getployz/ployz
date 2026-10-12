@@ -130,4 +130,48 @@ describe("machine remove Inngest boundary", () => {
     expect(output.ctx.step.run).toHaveBeenCalledWith("complete-refused", expect.any(Function));
     expect(output.ctx.step.run).not.toHaveBeenCalledWith("release-server", expect.any(Function));
   });
+
+  it("leaves a superseded attempt alone: nothing is released, completed or synced", async () => {
+    const attemptId = "00000000-0000-4000-8000-000000000a02";
+    const output = await new InngestTestEngine({
+      function: createProcessMachineRemove(new Inngest({ id: "test" })),
+      events: [{ name: "machine/remove.requested", data: { attemptId } }],
+      steps: [
+        { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId } }) },
+        { id: "remove-machine", handler: () => ({ kind: "superseded" }) },
+      ],
+    }).execute();
+
+    expect(output.result).toEqual({ attemptId, status: "superseded", skipped: true });
+    const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
+    expect(steps).toEqual(["normalize-machine-remove-attempt-id", "claim-machine-remove", "remove-machine"]);
+    expect(output.ctx.step.sendEvent).not.toHaveBeenCalled();
+  });
+
+  it("finishes a Server that reset before its Forget with Forget alone, then releases it", async () => {
+    const attemptId = "00000000-0000-4000-8000-000000000a03";
+    const output = await new InngestTestEngine({
+      function: createProcessMachineRemove(new Inngest({ id: "test" })),
+      events: [{ name: "machine/remove.requested", data: { attemptId } }],
+      steps: [
+        { id: "claim-machine-remove", handler: () => ({ kind: "ready", attempt: { id: attemptId, organizationId: "org-1", machineId: "machine-1", noReset: false } }) },
+        { id: "remove-machine", handler: () => ({ kind: "left", resetWarning: "Docker reset failed", generation: "1" }) },
+        { id: "forget-machine", handler: () => ({ kind: "removed", resetWarning: "Docker reset failed", generation: "1" }) },
+        { id: "release-server", handler: () => ({ kind: "kept", reason: "its reset didn't finish" }) },
+        { id: "complete-succeeded", handler: () => undefined },
+        { id: "request-cluster-domain-sync", handler: () => undefined },
+      ],
+    }).execute();
+
+    expect(output.result).toEqual({ attemptId, status: "succeeded" });
+    const steps = output.ctx.step.run.mock.calls.map(([id]) => id);
+    expect(steps).toEqual([
+      "normalize-machine-remove-attempt-id",
+      "claim-machine-remove",
+      "remove-machine",
+      "forget-machine",
+      "release-server",
+      "complete-succeeded",
+    ]);
+  });
 });

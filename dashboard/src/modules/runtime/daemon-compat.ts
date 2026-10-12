@@ -9,6 +9,8 @@ export const requirements = {
   volumeMove: { capability: "ployz.volume.copy.set.v1", feature: "Volume move" },
   pruneImages: { capability: "ployz.image.prune.v1", feature: "Image cleanup" },
   buildGrantInspect: { capability: "ployz.build.grant.inspect.v1", feature: "GitHub builds", plural: true },
+  leave: { capability: "ployz.machine.leave.v1", feature: "Server removal" },
+  forget: { capability: "ployz.machine.forget.v1", feature: "Server removal" },
 } as const satisfies Record<string, Requirement>;
 
 export function requirementFor(capability: string): Requirement | null {

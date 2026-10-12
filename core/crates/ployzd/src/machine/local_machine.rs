@@ -9,18 +9,18 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolumeName, EnrollRequest, Enrolled, InspectRequest, LocalMachinePhase,
-    LocalMachineRemoved, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineObservation, MachineRemoved, MachineToken, MachineUpdated, ManagementAddress,
-    MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered, RemoveLocalMachineRequest,
-    RemoveMachineRequest, ResetAccepted, RpcError, RpcErrorCode, RttObservation, RttStatistics,
-    SelectedEndpoint, UpdateMachineRequest, synthesize_membership,
+    DockerVolumeName, EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest,
+    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
+    MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
+    ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest,
+    synthesize_membership,
 };
 use thiserror::Error;
 
 use super::{
-    EnrollPlan, LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped, StoreError,
-    local_runtime, store::Installation,
+    EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
+    store::Installation,
 };
 
 use crate::{
@@ -566,65 +566,77 @@ impl LocalMachine {
         Ok(MachineUpdated { machine })
     }
 
-    /// Remove a peer Machine from the Cluster. Restarting when the target is
-    /// this Machine in the resetting Local Machine Phase.
+    /// Forget another Machine: delete its replicated row. A missing row is success.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
     /// missing and [`Error::Cluster`] when the replicated delete fails.
-    pub async fn remove_peer(
-        &self,
-        request: RemoveMachineRequest,
-    ) -> Result<MachineRemoved, Error> {
+    pub async fn forget(&self, request: ForgetRequest) -> Result<Forgotten, Error> {
         let local = self.clone();
-        self.finish_mutation(async move { local.remove_peer_admitted(request).await })
-            .await
+        self.finish_mutation(async move {
+            let now = local.record().now();
+            if now.id == request.machine_id {
+                return Ok(Forgotten::Refused {
+                    error: refusal(
+                        RpcErrorCode::InvalidArgument,
+                        "this is the Machine itself; send Leave to it instead",
+                    ),
+                    now,
+                });
+            }
+            local
+                .replicated()?
+                .remove_machine(&request.machine_id)
+                .await?;
+            Ok(Forgotten::Forgotten)
+        })
+        .await
     }
 
-    async fn remove_peer_admitted(
-        &self,
-        request: RemoveMachineRequest,
-    ) -> Result<MachineRemoved, Error> {
-        self.replicated()?
-            .remove_machine(&request.machine_id)
-            .await?;
-        let local = self.record();
-        if local.id() == request.machine_id && local.phase() == LocalMachinePhase::Resetting {
-            self.owner.request_restart();
-        }
-        Ok(MachineRemoved {})
-    }
-
-    /// Remove this Machine: clean managed containers, persist reset, and
-    /// best-effort delete the replicated row. Once admitted, cleanup and phase commit
-    /// continue if the caller disconnects.
+    /// Leave the Cluster: clean managed containers, depart storage, persist the
+    /// reset, best-effort delete this Machine's replicated row, and restart the
+    /// daemon into the reset. Once admitted, the leave continues if the caller
+    /// disconnects. A resend on a Machine already resetting repeats the cleanup.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
-    /// missing, [`Error::DockerUnavailable`] when Docker is missing,
+    /// Returns [`Error::Upgrade`] when the upgrade receipt cannot be read,
     /// [`Error::Cleanup`] when managed container removal fails,
     /// [`Error::RecordOwner`] when the record owner has stopped,
     /// [`Error::Store`] when reset cannot be prepared or committed, and
     /// [`Error::OperationTask`] if the admitted operation task fails.
-    pub async fn remove_local(
-        &self,
-        request: RemoveLocalMachineRequest,
-    ) -> Result<LocalMachineRemoved, Error> {
+    pub async fn leave(&self, _: LeaveRequest) -> Result<Left, Error> {
+        if self.record().phase() == LocalMachinePhase::Uninitialized {
+            return Ok(Left::Left {
+                phase: LeftPhase::Uninitialized,
+                reset_warning: None,
+            });
+        }
+        match crate::installer::upgrade::latest(self.owner.data_dir(), self.owner.run_dir()).await {
+            Ok(Some(attempt)) if !attempt.is_terminal() => {
+                return Ok(Left::Refused {
+                    error: refusal(
+                        RpcErrorCode::Conflict,
+                        "an upgrade is running on this Machine; resend Leave once it finishes",
+                    ),
+                    now: self.record().now(),
+                });
+            }
+            Ok(_) => {}
+            Err(error) => return Err(error.into()),
+        }
         let local = self.clone();
-        self.finish_mutation(async move { local.remove_local_admitted(request).await })
+        self.finish_mutation(async move { local.leave_admitted().await })
             .await
     }
 
-    async fn remove_local_admitted(
-        &self,
-        request: RemoveLocalMachineRequest,
-    ) -> Result<LocalMachineRemoved, Error> {
+    async fn leave_admitted(&self) -> Result<Left, Error> {
         let machine_id = self.record().id();
-        let replicated = self.replicated()?;
-        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-        let publication = replicated.machine_publication().await;
+        let publication = match &self.cluster {
+            Some(cluster) => Some(cluster.replicated.machine_publication().await),
+            None => None,
+        };
         let prepared_reset = self
             .owner
             .mutate(|store| {
@@ -635,7 +647,9 @@ impl LocalMachine {
                 }
             })
             .await??;
-        if let Err(error) = containers.remove_all_managed().await {
+        if let Some(containers) = &self.containers
+            && let Err(error) = containers.remove_all_managed().await
+        {
             return Err(Error::Cleanup(ployz_core::error_chain::inline(&error)));
         }
         self.depart_storage().await?;
@@ -644,41 +658,15 @@ impl LocalMachine {
                 .mutate(move |store| prepared_reset.commit(store))
                 .await??;
         }
-        let reset_warning = publication
-            .remove(&machine_id)
-            .await
-            .err()
-            .map(|error| ployz_core::error_chain::inline(&error));
-        Ok(local_removal_response(
-            &self.owner,
-            reset_warning,
-            request.restart_on_cleanup_failure,
-        ))
-    }
-
-    /// Begin a Local Machine Phase reset and request daemon restart.
-    /// Once admitted, cleanup and phase commit continue if the caller disconnects.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Docker`] when managed container cleanup fails,
-    /// [`Error::RecordOwner`] when the record owner has stopped,
-    /// [`Error::Store`] when reset is not legal in the current phase, and
-    /// [`Error::OperationTask`] if the admitted operation task fails.
-    pub async fn reset(&self) -> Result<ResetAccepted, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move { local.reset_admitted().await })
-            .await
-    }
-
-    async fn reset_admitted(&self) -> Result<ResetAccepted, Error> {
-        if let Some(containers) = &self.containers {
-            containers.remove_all_managed().await?;
-        }
-        self.depart_storage().await?;
-        self.owner.mutate(LocalMachineStore::begin_reset).await??;
-        self.owner.request_restart();
-        Ok(ResetAccepted {})
+        let reset_warning = match publication {
+            Some(publication) => publication
+                .remove(&machine_id)
+                .await
+                .err()
+                .map(|error| ployz_core::error_chain::inline(&error)),
+            None => None,
+        };
+        Ok(leave_response(&self.owner, reset_warning))
     }
 }
 
@@ -796,7 +784,7 @@ fn enroll_conflict(phase: &LocalMachinePhase) -> &'static str {
         | LocalMachinePhase::Joining
         | LocalMachinePhase::Participating
         | LocalMachinePhase::Unrecognized(_) => {
-            "this Machine already holds a different enrollment; reset it before enrolling it again"
+            "this Machine already holds a different enrollment; send Leave before enrolling it again"
         }
     }
 }
@@ -814,15 +802,21 @@ fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTree
     identities
 }
 
-fn local_removal_response(
-    owner: &RecordOwner,
-    reset_warning: Option<String>,
-    restart_on_warning: bool,
-) -> LocalMachineRemoved {
-    if reset_warning.is_none() || restart_on_warning {
-        owner.request_restart();
+fn leave_response(owner: &RecordOwner, reset_warning: Option<String>) -> Left {
+    owner.request_restart();
+    Left::Left {
+        phase: LeftPhase::Resetting,
+        reset_warning,
     }
-    LocalMachineRemoved { reset_warning }
+}
+
+fn refusal(code: RpcErrorCode, message: &str) -> RpcError {
+    RpcError {
+        code,
+        message: message.into(),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -833,7 +827,7 @@ mod departure_tests;
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{RuntimeWatchTelemetry, local_removal_response, read_admin, unique_identities};
+    use super::{RuntimeWatchTelemetry, leave_response, read_admin, unique_identities};
     use crate::corrosion::AdminClient;
     use ployz_core::{
         AdvertisedEndpoint, CORROSION_GOSSIP_PORT, Machine, MachineId, MachineIdentity,
@@ -871,25 +865,18 @@ mod tests {
     }
 
     #[test]
-    fn failed_local_removal_keeps_the_daemon_available_for_entry_fallback() {
+    fn leave_with_a_publication_warning_still_restarts() {
         let (_dir, owner) = owner();
         let restart_rx = owner.restart_requested();
-        let removed =
-            local_removal_response(&owner, Some("replicated delete failed".into()), false);
+        let left = leave_response(&owner, Some("replicated delete failed".into()));
 
         assert_eq!(
-            removed.reset_warning.as_deref(),
-            Some("replicated delete failed")
+            left,
+            ployz_core::Left::Left {
+                phase: ployz_core::LeftPhase::Resetting,
+                reset_warning: Some("replicated delete failed".into()),
+            }
         );
-        assert!(!*restart_rx.borrow());
-    }
-
-    #[test]
-    fn failed_remote_removal_restarts_after_delegating_entry_fallback() {
-        let (_dir, owner) = owner();
-        let restart_rx = owner.restart_requested();
-        local_removal_response(&owner, Some("replicated delete failed".into()), true);
-
         assert!(*restart_rx.borrow());
     }
 

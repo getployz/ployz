@@ -212,6 +212,10 @@ Server web-2 needs a newer Ployz. It cannot serve ployz.container.exec.v1.
 1. Open the server and click **Remove server**.
 2. Ployz lists the volumes on the server. Type the server's name and click **Remove**.
 
+The server you remove and every server Ployz reaches it through must run a Ployz that can remove
+servers. If one doesn't, the removal stops and says "Server removal
+needs a newer Ployz on web-1". Upgrade that server, then remove again.
+
 <!-- screenshot: the Remove web-2? dialog listing one volume, with the name typed -->
 
 [Drain the server](#change-what-a-server-does) first to move its services off. While services still
@@ -234,6 +238,10 @@ ployz server rm web-2 --no-reset --confirm dead
 
 `--no-reset` is refused while the server answers and holds a copy of any volume: drop
 `--no-reset`, and the reset makes its copies read-only.
+
+If the server resets but your other servers can't forget it, `ployz server rm` says "Server web-2
+reset but is still listed." and prints `ployz server rm web-2 --no-reset` to finish. Ployz Cloud
+finishes such a removal on its own.
 
 A server removed this way doesn't know it was removed. If it comes back, its services may still be
 running on its copy of a volume. When you've restored that volume on another server, the next

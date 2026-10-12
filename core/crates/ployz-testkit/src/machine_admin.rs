@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use ployz_core::{
-    AdvertisedEndpoint, EnrollAs, EnrollRequest, InspectRequest, ListMachinesRequest,
-    LocalMachinePhase, Machine, MachineId, MachineName, MachineToken, MachineUpdate,
-    RegisterRequest, RemoveMachineRequest, RttObservation, TokenRequest, UpdateMachineRequest, op,
+    AdvertisedEndpoint, EnrollAs, EnrollRequest, ForgetRequest, Forgotten, InspectRequest,
+    ListMachinesRequest, LocalMachinePhase, Machine, MachineId, MachineName, MachineToken,
+    MachineUpdate, RegisterRequest, RttObservation, TokenRequest, UpdateMachineRequest, op,
 };
 
 use super::{Cluster, TestkitError, command_error, docker_output, response};
@@ -135,24 +135,19 @@ impl Cluster {
         )
     }
 
-    pub async fn remove_machine(
-        &self,
-        entry: usize,
-        machine_id: MachineId,
-    ) -> Result<(), TestkitError> {
+    pub async fn forget(&self, entry: usize, machine_id: MachineId) -> Result<(), TestkitError> {
         let mut client = self.client(entry).await?;
-        response(
+        match response(
             client
-                .remove_machine(
-                    op::RemoveMachine::into_request(RemoveMachineRequest { machine_id })
-                        .encode()?,
-                )
+                .forget(op::Forget::into_request(ForgetRequest { machine_id }).encode()?)
                 .await?
                 .into_inner(),
         )?
-        .decode::<op::RemoveMachine>()
-        .map(|_| ())
-        .map_err(Into::into)
+        .decode::<op::Forget>()?
+        {
+            Forgotten::Forgotten => Ok(()),
+            Forgotten::Refused { error, .. } => Err(TestkitError::Rpc(error.message)),
+        }
     }
 
     pub async fn inspect_rtts(&self, index: usize) -> Result<Vec<RttObservation>, TestkitError> {

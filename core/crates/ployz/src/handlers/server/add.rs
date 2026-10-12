@@ -49,7 +49,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .any(|machine| machine.id == token.id && machine.public_key == token.public_key);
         if details.phase != LocalMachinePhase::Uninitialized && !resuming {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
-            helpers::reset(&mut target_client).await?;
+            helpers::leave(&mut target_client).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
             token = helpers::inspect_token(&mut target_client, token_request)
                 .await?

@@ -17,9 +17,9 @@ use std::{
 use ployz_core::{
     AdvertisedEndpoint, CORROSION_API_PORT, CORROSION_GOSSIP_PORT, ContainerId,
     DescribeContractRequest, DockerVolumeName, EnrollAs, EnrollRequest, Enrolled, InspectRequest,
-    ListImagesRequest, LocalMachinePhase, MACHINE_API_PORT, Machine, MachineName, MachineRpcClient,
-    MembershipObservation, OpaquePayload, Registered, ResetRequest, RpcResponse, RpcResponseBody,
-    op,
+    LeaveRequest, Left, ListImagesRequest, LocalMachinePhase, MACHINE_API_PORT, Machine,
+    MachineName, MachineRpcClient, MembershipObservation, OpaquePayload, Registered, RpcResponse,
+    RpcResponseBody, op,
 };
 use thiserror::Error;
 
@@ -611,16 +611,19 @@ impl Cluster {
         .decode::<op::ListImages>()?)
     }
 
-    pub async fn reset(&self, index: usize) -> Result<(), TestkitError> {
+    pub async fn leave(&self, index: usize) -> Result<(), TestkitError> {
         let mut client = self.client(index).await?;
-        response(
+        match response(
             client
-                .reset(op::Reset::into_request(ResetRequest {}).encode()?)
+                .leave(op::Leave::into_request(LeaveRequest::default()).encode()?)
                 .await?
                 .into_inner(),
         )?
-        .decode::<op::Reset>()?;
-        Ok(())
+        .decode::<op::Leave>()?
+        {
+            Left::Left { .. } => Ok(()),
+            Left::Refused { error, .. } => Err(TestkitError::Rpc(error.message)),
+        }
     }
 
     pub fn docker(&self, index: usize, args: &[&str]) -> Result<(), TestkitError> {

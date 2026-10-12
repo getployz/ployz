@@ -598,26 +598,18 @@ impl MachineRpc for MachineService {
         )
     }
 
-    async fn remove_local_machine(
+    async fn leave(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .remove_local(expect::<op::RemoveLocalMachine>(request)?)
-                .await,
-        )
+        finish(self.local.leave(expect::<op::Leave>(request)?).await)
     }
 
-    async fn remove_machine(
+    async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        finish(
-            self.local
-                .remove_peer(expect::<op::RemoveMachine>(request)?)
-                .await,
-        )
+        finish(self.local.forget(expect::<op::Forget>(request)?).await)
     }
 
     async fn list_images(
@@ -773,14 +765,6 @@ impl MachineRpc for MachineService {
             Ok(()) => respond(CertificateMaterialPublished {}),
             Err(error) => respond(cluster_store_error(error)),
         }
-    }
-
-    async fn reset(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        expect::<op::Reset>(request)?;
-        finish(self.local.reset().await)
     }
 }
 

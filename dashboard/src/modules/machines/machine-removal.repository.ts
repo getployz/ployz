@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import {
@@ -189,22 +189,22 @@ export const machineRemoveAttemptConsuming = Effect.fn(
 });
 
 /**
- * Marks the run's one ask of the Server to leave, right before it goes. False when it went already: a retry then
- * can't know what the Server did, so it never asks again.
+ * Stamps each ask of the Server to leave, right before it goes, keeping the first ask's time. False when the attempt
+ * is no longer this run's running attempt: it finished, was cancelled or failed, or another run claimed it, so this
+ * run must not ask at all.
  */
-export const markMachineRemoveSent = Effect.fn(
-  "MachineRemovalRepository.markSent",
+export const markOwnedMachineRemoveSent = Effect.fn(
+  "MachineRemovalRepository.markOwnedSent",
 )(function* (input: { attemptId: string; inngestRunId: string }) {
   const { drizzle } = yield* Database;
   const marked = yield* drizzle
     .update(schemaMachineRemoveAttempt)
-    .set({ removeSentAt: new Date() })
+    .set({ removeSentAt: sql`coalesce(${schemaMachineRemoveAttempt.removeSentAt}, now())` })
     .where(
       and(
         eq(schemaMachineRemoveAttempt.id, input.attemptId),
         eq(schemaMachineRemoveAttempt.state, "running"),
         eq(schemaMachineRemoveAttempt.inngestRunId, input.inngestRunId),
-        isNull(schemaMachineRemoveAttempt.removeSentAt),
       ),
     )
     .returning({ id: schemaMachineRemoveAttempt.id });

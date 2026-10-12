@@ -56,10 +56,20 @@ export class PloyzProviderError extends Data.TaggedError(
   readonly cause: unknown;
 }> {}
 
+/**
+ * The Server answered its Leave, so it reset, but the entry couldn't Forget its row. The removal finishes with Forget
+ * alone, keeping the Leave's warning: once reset, the Server can't be read to send the whole removal again.
+ */
+export class LeftNotForgotten extends Data.TaggedError("LeftNotForgotten")<{
+  readonly resetWarning: string | null;
+  readonly cause: unknown;
+}> {}
+
 export type PloyzSdkError =
   | PloyzProviderError
   | MissingDataLossIdentities
-  | ServerLacks;
+  | ServerLacks
+  | LeftNotForgotten;
 
 export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
@@ -182,12 +192,25 @@ function serverLacksFromSdkError(cause: unknown) {
   return Option.isSome(decoded) ? new ServerLacks({ machineId: decoded.value.details.target, capability: decoded.value.details.capability }) : null;
 }
 
+const LeftNotForgottenError = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  details: Schema.Struct({ left: Schema.Literal(true), reset_warning: Schema.NullOr(Schema.String) }),
+});
+
+function leftNotForgottenFromSdkError(cause: unknown) {
+  const decoded = Schema.decodeUnknownOption(LeftNotForgottenError)(cause);
+  return Option.isSome(decoded) ? new LeftNotForgotten({ resetWarning: decoded.value.details.reset_warning, cause }) : null;
+}
+
 export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
   const missingDataLoss = missingDataLossFromSdkError(cause);
   if (missingDataLoss !== null) return missingDataLoss;
   const lack = serverLacksFromSdkError(cause);
   if (lack !== null) return lack;
-  if (cause instanceof MissingDataLossIdentities || cause instanceof ServerLacks) return cause;
+  const left = leftNotForgottenFromSdkError(cause);
+  if (left !== null) return left;
+  if (cause instanceof MissingDataLossIdentities || cause instanceof ServerLacks || cause instanceof LeftNotForgotten) return cause;
   if (cause instanceof PloyzProviderError) return cause;
   return new PloyzProviderError({ operation, cause });
 }

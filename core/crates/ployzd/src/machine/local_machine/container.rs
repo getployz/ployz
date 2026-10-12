@@ -689,7 +689,7 @@ mod tests {
                 .unwrap();
             creating.abort();
             let _ = creating.await;
-            let mut reset = Box::pin(resetting.reset());
+            let mut reset = Box::pin(resetting.leave(ployz_core::LeaveRequest::default()));
             assert!(
                 tokio::time::timeout(std::time::Duration::from_millis(50), &mut reset)
                     .await
@@ -805,14 +805,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removal_warning_keeps_recovery_available_without_container_admission() {
+    async fn removal_warning_restarts_and_keeps_recovery_available_without_container_admission() {
         use crate::{
             corrosion::{AdminClient, fake_cluster},
             docker::test_support::{FakeDocker, fake_runtime_with},
         };
         use ployz_core::{
-            AdvertisedEndpoint, ContainerKind, LocalMachinePhase, MachineName,
-            RemoveLocalMachineRequest,
+            AdvertisedEndpoint, ContainerKind, LeaveRequest, Left, LocalMachinePhase, MachineName,
         };
         let data_dir =
             std::env::temp_dir().join(format!("ployzd-removal-admission-{}", MachineId::random()));
@@ -844,14 +843,18 @@ mod tests {
             .with_containers(Some(runtime))
             .with_cluster(Some((replicated, AdminClient::new("/no/such/admin.sock"))))
             .with_plugin(plugin);
-        let removed = local
-            .remove_local(RemoveLocalMachineRequest {
-                restart_on_cleanup_failure: false,
-            })
-            .await
-            .unwrap();
-        assert!(removed.reset_warning.is_some());
-        assert!(!*restarting.borrow());
+        let left = local.leave(LeaveRequest {}).await.unwrap();
+        assert!(
+            matches!(
+                left,
+                Left::Left {
+                    reset_warning: Some(_),
+                    ..
+                }
+            ),
+            "{left:?}"
+        );
+        assert!(*restarting.borrow());
         assert_eq!(local.record().phase(), LocalMachinePhase::Resetting);
         assert!(
             local.record().machine().is_some(),

@@ -73,7 +73,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             helpers::inspect_token(&mut target, token_request.clone()).await?;
         if details.phase != LocalMachinePhase::Uninitialized {
             helpers::confirm(yes, "Reset the Server before initialising a new Cluster?")?;
-            helpers::reset(&mut target).await?;
+            helpers::leave(&mut target).await?;
             target = helpers::reconnect_direct(matches, &connection).await?;
             token = helpers::inspect_token(&mut target, token_request).await?.1;
         }
