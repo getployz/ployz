@@ -700,9 +700,29 @@ export const closeVolumeRun = Effect.fn("VolumeRun.close")(function* (
       : ended("failed", end.error.trim().length > 0 ? end.error : "the run failed");
   const rows = yield* drizzle.update(volumeRun).set(closing)
     .where(and(eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")))
-    .returning({ id: volumeRun.id });
+    .returning({ kind: volumeRun.kind, organizationId: volumeRun.organizationId, dockerVolume: volumeRun.dockerVolume });
+  for (const row of rows) {
+    if (row.kind === "restore_snapshot") yield* startStoppedHolders(row.organizationId, row.dockerVolume);
+  }
   return rows.length;
 });
+
+/**
+ * A snapshot restore stops the Service for its swap, so one that ends between Stop and Start starts it again here.
+ * Best effort: the run is already closed, and a Service left stopped shows as stopped.
+ */
+const startStoppedHolders = (organizationId: string, dockerVolume: string) => Effect.gen(function* () {
+  const session = yield* openSession(organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  const stopped = frame.containers.filter((container) =>
+    container.kind === "service_container"
+    && container.runtime.state !== "running"
+    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
+  for (const container of stopped) yield* session.startContainer(container.machine_id, container.container_id);
+}).pipe(
+  Effect.scoped,
+  Effect.catch((error) => Effect.logWarning("Starting the Service after a snapshot restore ended failed.", { organizationId, dockerVolume, error })),
+);
 
 export type InngestRunLookup<R> = (runId: string) => Effect.Effect<InngestRunStatus, unknown, R>;
 

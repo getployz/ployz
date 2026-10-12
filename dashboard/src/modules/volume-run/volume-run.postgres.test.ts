@@ -11,7 +11,7 @@ import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
-import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
+import { createCancelVolumeRun, createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import {
   closeStaleVolumeRuns,
   closeVolumeRun,
@@ -88,6 +88,7 @@ describe("volume runs", () => {
   let verbs: string[];
   let failNext: Map<string, unknown>;
   let startsAs: Map<string, "unhealthy" | "unconfirmed">;
+  let stopped: Set<string>;
   let sent: VolumeSwitchRequest[];
   let holders: string[];
   let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete" }>;
@@ -180,7 +181,11 @@ describe("volume runs", () => {
     const key = `${verb}@${machine(target).name}`;
     verbs.push(`${key}(${container})`);
     const failure = failNext.get(key);
-    if (failure === undefined) return Effect.succeed(startsAs.get(key) ?? "serving");
+    if (failure === undefined) {
+      if (verb === "stop_container") stopped.add(container);
+      else stopped.delete(container);
+      return Effect.succeed(startsAs.get(key) ?? "serving");
+    }
     failNext.delete(key);
     return Effect.fail(new PloyzProviderError({ operation: verb, cause: failure }));
   });
@@ -196,7 +201,7 @@ describe("volume runs", () => {
         kind: "service_container",
         container_id: `web-${name}`,
         namespace: "shop-production",
-        runtime: { state: "running" },
+        runtime: { state: stopped.has(`web-${name}`) ? "exited" : "running" },
         resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [{ source: { kind: "provisioned", name: dockerVolume } }] },
       })),
     }),
@@ -284,6 +289,7 @@ describe("volume runs", () => {
     verbs = [];
     failNext = new Map();
     startsAs = new Map();
+    stopped = new Set();
     sent = [];
     holders = ["fsn-1"];
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
@@ -1131,6 +1137,22 @@ describe("volume runs", () => {
       expect(output.error).toMatchObject({ name: "NonRetriableError" });
       expect(verbs).toEqual(["stop_container@fsn-1(web-fsn-1)", "set_volume_snapshot@fsn-1", "start_container@fsn-1(web-fsn-1)"]);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data moved since its snapshots were listed; restore again" }]);
+    });
+
+    it("a restore cancelled after Stop starts the Service again", async () => {
+      const run = await requested(restoring(null));
+      await harness.pool.query(`update volume_run set state = 'running', inngest_run_id = 'run-1' where id = $1`, [run.id]);
+      stopped.add("web-fsn-1");
+
+      const cancelled = await new InngestTestEngine({
+        function: createCancelVolumeRun(new Inngest({ id: "test" }), runEffect),
+        events: [{ name: "inngest/function.cancelled", data: { function_id: "test-run-volume", run_id: "run-1" } }],
+      }).execute();
+
+      expect(cancelled.result).toEqual({ closed: 1 });
+      expect(verbs.at(-1)).toBe("start_container@fsn-1(web-fsn-1)");
+      expect(stopped.size).toBe(0);
+      expect(await rows()).toMatchObject([{ state: "cancelled" }]);
     });
 
     it("a Service that starts unhealthy after the swap fails the run and says so", async () => {
