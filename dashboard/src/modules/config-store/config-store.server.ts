@@ -99,8 +99,10 @@ export const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (o
 function statusFor(code: string) {
   switch (code) {
     case "invalid_argument":
+    case "invalid_input":
       return 422;
     case "not_found":
+    case "unknown_command":
       return 404;
     case "conflict":
     case "ambiguous":

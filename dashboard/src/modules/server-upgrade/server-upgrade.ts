@@ -92,12 +92,14 @@ export const RequestServerUpgradeInput = Schema.Struct({
 export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 
 /** The Server upgrades dialog changes one setting at a time; any it leaves out keeps its value. */
-export const SetServerUpgradeSettingsInput = Schema.Struct({
-  organizationSlug: Schema.String,
-  automatic: Schema.optionalKey(Schema.Boolean),
-  channel: Schema.optionalKey(Schema.Literals(RELEASE_CHANNELS)),
+/** What one save changes: the Release Channel, automatic upgrades, or both; a key left out stays as it is. */
+export const ServerUpgradeSettingsChange = Schema.Struct({
+  channel: Schema.optionalKey(Schema.Literals(RELEASE_CHANNELS).annotate({ description: "The Release Channel every upgrade follows" })),
+  automatic: Schema.optionalKey(Schema.Boolean.annotate({ description: "Whether Servers behind the channel upgrade on their own" })),
 });
-export type SetServerUpgradeSettingsInput = typeof SetServerUpgradeSettingsInput.Type;
+export type ServerUpgradeSettingsChange = typeof ServerUpgradeSettingsChange.Type;
+
+export const SetServerUpgradeSettingsInput = Schema.Struct({ organizationSlug: Schema.String, ...ServerUpgradeSettingsChange.fields });
 
 /** The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. */
 export type ServerUpgradeSettingsRow = { readonly id: string; readonly automatic: boolean; readonly channel: ReleaseChannel };
