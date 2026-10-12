@@ -4,9 +4,13 @@ import { useTimeZone } from "#/utils/time-zone";
 import { atFormat } from "./MetricChart";
 
 const PHASE_LABELS = { dns: "DNS", connect: "Connect", tls: "TLS", ttfb: "First byte" } satisfies Record<Phase, string>;
-// Shades of the Check line's colour, lightest first, blended into the tooltip's own background so both themes hold.
-const PHASE_SHADES = { dns: 30, connect: 55, tls: 80, ttfb: 100 } satisfies Record<Phase, number>;
-const shade = (phase: Phase) => `color-mix(in oklab, var(--chart-2) ${PHASE_SHADES[phase]}%, var(--popover))`;
+// One hue per phase so thin neighbours stay apart; First byte keeps the Check line's colour.
+const PHASE_COLORS = {
+  dns: "var(--chart-6)",
+  connect: "var(--chart-1)",
+  tls: "var(--chart-4)",
+  ttfb: "var(--chart-2)",
+} satisfies Record<Phase, string>;
 
 /** "Oct 3, 6:05 PM" for a step of 5 minutes or less, "Oct 3, 6:00 PM – 12:00 AM" for a longer one, in `timeZone`. */
 function stepLabel(at: number, end: number, timeZone: string) {
@@ -53,7 +57,7 @@ export function ResponseTooltip({ step, end, edgeMs, regions }: {
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
           {PHASES.map((phase) => (
             <span key={phase} className="flex items-center gap-1.5">
-              <span aria-hidden className="inline-block size-2 rounded-full" style={{ background: shade(phase) }} />
+              <span aria-hidden className="inline-block size-2 rounded-full" style={{ background: PHASE_COLORS[phase] }} />
               {PHASE_LABELS[phase]}
             </span>
           ))}
@@ -86,7 +90,7 @@ function RegionRow({ point, slowest, regions }: { point: UptimePoint; slowest: n
       {passes(point) > 0 && slowest > 0 ? (
         <div className="flex h-1.5 overflow-hidden rounded-full" style={{ width: `${(meanTotal(point) / slowest) * 100}%` }}>
           {phaseMeans(point).map(({ phase, ms }) => (
-            <span key={phase} className="h-full" style={{ flexGrow: ms, background: shade(phase) }} />
+            <span key={phase} className="h-full" style={{ flexGrow: ms, background: PHASE_COLORS[phase] }} />
           ))}
         </div>
       ) : null}

@@ -52,8 +52,8 @@ no service arguments, and `--follow` still use live container discovery.
   work serving those reads has a separate CPU cost.
 - **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
   so an older deployment's **Deploy** tab still shows its output. Ployz keeps up to 5% of the
-  disk for them, between 512 MB and 5 GB, for 30 days, and the oldest go first. It doesn't copy
-  them anywhere else. To search or keep logs for longer, send them from your app to a log
+  disk for them and for metrics, between 512 MB and 5 GB. Logs stay 30 days, and the oldest go
+  first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,
   so you can see why it stopped.

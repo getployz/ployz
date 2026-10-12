@@ -122,6 +122,18 @@ _Avoid_: Container name as identity, replica identity
 The Machine-local copy of the output of every container Ployz runs, kept after the container is removed, capped by size and age. It holds only the output of containers that ran on its own Machine.
 _Avoid_: log database, log cache
 
+**Observe Store**:
+The disposable Machine-local state `ployz-observe` keeps: the Log Store, Metric Samples, and Rollups. It holds only what its own Machine observed, needs no migrations, and Cloud reads it without copying it.
+_Avoid_: telemetry store, metrics database, TSDB
+
+**Metric Sample**:
+One 10 second reading of one Container's counters and gauges, or of its Machine's, stamped with the Service, Deployment, and Container it belonged to when read. Counters are raw cumulative values; rates come at query time. A value the Machine could not read is absent, never zero. Raw samples are kept 24 hours.
+_Avoid_: datapoint, stat, metric event
+
+**Rollup**:
+A 5 minute summary of Metric Samples for one Service and Deployment, or for the Machine itself, folded from a closed hour of samples and kept 90 days. It outlives the Containers it summarizes, so a removed Container's history stays under its Service. Folding the same hour again yields the same Rollup.
+_Avoid_: aggregate, archive, downsample (the query-time bucketing of points)
+
 **Container Runtime Observation**:
 A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unrecognized external state carried verbatim as its observed value. Container observations do not combine into an authoritative Service state.
 Running health `stopping` is the daemon's own overlay, not Docker's: a client marked the Container ahead of a stop so the Ingress Proxies drop it first. The mark lives in daemon memory and ends when the stop runs.

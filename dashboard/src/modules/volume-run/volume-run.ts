@@ -1,10 +1,10 @@
-import type { MachineId, MachineName, VolumeCopyView } from "@ployz/sdk";
+import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, VolumeCopyView } from "@ployz/sdk";
 
 export const VOLUME_RUN_STATES = ["requested", "running", "done", "failed", "cancelled", "lost", "not_started"] as const;
 export type VolumeRunState = (typeof VOLUME_RUN_STATES)[number];
 export const ACTIVE_VOLUME_RUN_STATES = ["requested", "running"] as const satisfies readonly VolumeRunState[];
 
-export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release"] as const;
+export const VOLUME_RUN_KINDS = ["mirror", "sync", "delete_mirror", "move", "release", "restore", "seed"] as const;
 export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 
 /** The sidebar also pins the Machine it resolved, so a renamed or reused Server name can't redirect the run. */
@@ -16,6 +16,12 @@ export type VolumeRunArgs = {
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
   move: Destination;
   release: Record<string, never>;
+  restore: { readonly from: MachineName };
+  seed: {
+    readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
+    readonly guid: string;
+    readonly name: string;
+  };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
@@ -73,3 +79,6 @@ export function parseDockerVolumeName(name: string): { namespace: string; volume
   const volumeId = name.slice(at + "_vol-".length);
   return volumeId.length === 0 ? null : { namespace: name.slice(0, at), volumeId };
 }
+
+/** A Service that mounts the Volume, as a Service container reports it with its secrets redacted. */
+export type ServiceSpec = { readonly namespace: Namespace; readonly redactedSpec: ResolvedServiceSpec };
