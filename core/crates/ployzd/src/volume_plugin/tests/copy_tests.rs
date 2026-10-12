@@ -1183,7 +1183,9 @@ async fn set_mirror(machine: &Machine, expect: &ployz_core::ExpectedCopy, target
         ployz_core::CopyPlan::Transition(
             ployz_core::CopyTransition::MirrorToMirror | ployz_core::CopyTransition::NoneToMirror,
         ) => machine.call("/Volume.Copy.Pull", pull(target)).await,
-        plan => json!({"Planned": format!("{plan:?}")}),
+        plan @ (ployz_core::CopyPlan::Refuse(_) | ployz_core::CopyPlan::Transition(_)) => {
+            json!({"Planned": format!("{plan:?}")})
+        }
     }
 }
 

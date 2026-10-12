@@ -1726,7 +1726,6 @@ mod set_volume_copy {
 
     /// A running Container that mounts the Volume, as Docker lists it for the cut,
     /// beside any holder already there.
-    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
         use ployz_core::CreateContainerRequest;
         let created = service
@@ -2025,6 +2024,7 @@ mod set_volume_copy {
     }
 
     #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_late_writer_create_after_the_service_moved_on_starts_nothing() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-moved").await;
         let plugin = FakePlugin::default();
