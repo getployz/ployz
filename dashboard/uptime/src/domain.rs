@@ -122,6 +122,11 @@ impl RegionName {
 #[error("Region display name {0:?} must be non-empty and hold no `,` or `=`.")]
 pub struct BadRegionName(String);
 
+/// How far apart a one-region round sends its probes.
+pub const ONE_REGION_SPACING: Duration = Duration::from_secs(30);
+/// The longest probe timeout, the `uptime_check` CHECK on `timeout_ms`.
+pub const MAX_TIMEOUT_MS: u64 = 30_000;
+
 /// How many observations make a decision, in both directions. Derived from the configured region
 /// count, never the live count: losing three of four regions must not let one vantage point open or
 /// close an incident.
@@ -141,7 +146,7 @@ impl Quorum {
         } else {
             Quorum::OneRegion {
                 probes: 2,
-                spacing: Duration::from_secs(30),
+                spacing: ONE_REGION_SPACING,
             }
         }
     }

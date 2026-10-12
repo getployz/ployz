@@ -151,7 +151,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
     networking: (
       <Suspense fallback={null}>
-        <StoreNetworkingSection state={state} version={diff.version} privateFirst={database}
+        <StoreNetworkingSection state={state} privateFirst={database}
           validatePrivateDns={(raw) => raw === "" ? null : settingError(serviceSetting("privateDns"), raw)
             ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>

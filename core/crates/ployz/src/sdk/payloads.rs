@@ -139,6 +139,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_store::Unclaimed>();
     declarations.add::<ployz_store::OrganizationRemoved>();
     declarations.add::<ployz_store::AppliedVolume>();
+    declarations.add::<super::MetricHistory>();
+    declarations.add::<super::MetricHistoryInput>();
     declarations.add::<super::CopyObservation>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
     declarations.add::<ployz_core::VolumeCopyView>();

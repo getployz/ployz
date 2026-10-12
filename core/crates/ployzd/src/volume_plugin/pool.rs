@@ -16,7 +16,6 @@ use super::{
     checked_output, parse_size, run_command,
 };
 
-const POOL_BACKING_PATH: &str = "/var/lib/ployz-machine-pool";
 /// Filename of the root-backed Machine Pool vdev.
 #[cfg(test)]
 pub(super) const POOL_BACKING_FILE: &str = "machine-pool";
@@ -107,7 +106,7 @@ impl PoolStorage {
             fallocate: "fallocate".into(),
             stat: "stat".into(),
             df: "df".into(),
-            backing: POOL_BACKING_PATH.into(),
+            backing: machine_pool::BACKING_FILE.into(),
             host_root: "/".into(),
             sys_dev_block: "/sys/dev/block".into(),
         }

@@ -55,6 +55,7 @@ class Client {
       watch: (options = {}) => iterateWatch(() => inner.watch(), options && options.signal),
       logs: (options = {}) => runtimeLogs.logs(logTransport, options),
       logHistory: (options) => runtimeLogs.history(logTransport, options),
+      metricHistory: (input) => withRpcError(inner.metricHistory(input)),
     };
   }
 

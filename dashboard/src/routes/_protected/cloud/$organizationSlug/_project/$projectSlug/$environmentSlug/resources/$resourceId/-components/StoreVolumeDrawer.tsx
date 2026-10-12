@@ -1,12 +1,13 @@
 import { StoreVolumeMounts } from "#/modules/config-store/StoreVolumeMounts";
 import { useState } from "react";
 import { Schema } from "effect";
-import { useLoaderData, useNavigate } from "@tanstack/react-router";
+import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
 import type { EnvironmentRef, VolumeListing } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel, FieldTitle } from "#/components/ui/field";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { DEFAULT_VOLUME_GB, effectiveVolumes, gigabytes, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
@@ -18,6 +19,9 @@ import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { StoreVolumePlacement } from "./StoreVolumePlacement";
+import { StoreVolumeBackups } from "./StoreVolumeBackups";
+import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
@@ -25,18 +29,23 @@ import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorN
 import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
 type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volume: VolumeListing };
 
+const RESOURCE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId";
+
 /**
- * A Volume in the Config Store: where Services mount it, and its removal. Mount edits and removal are staged like any
- * other change; the data goes only with a Deploy that removes a deployed Volume, which asks first.
+ * A Volume in the Config Store, in two tabs. Settings: where it lives, who mounts it, its storage, and its removal.
+ * Backups: its restore points, each one a new Volume on Restore. Every edit is staged like any other change; the data
+ * goes only with a Deploy that removes a deployed Volume, which asks first.
  */
 type VolumeResourceRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
 
 export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParams }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { tab } = useSearch({ from: RESOURCE_ROUTE_FROM });
+  const navigate = useNavigate({ from: ENVIRONMENT_RESOURCE_ROUTE_TO });
   const { organizationSlug } = params;
   const views = useStoreViews(organizationSlug, [volumesQuery(store), servicesQuery(store), diffQuery(store), environmentSettingsQuery(store)] as const);
   const listings = requireView(views[0]).volumes;
@@ -57,6 +66,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
   // A DNS label no other Volume here has.
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
     ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
+  const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -67,28 +77,51 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
             {...changedProps(renamed)}
             onRename={(name) => writer.commit({ command: "rename_volume", environment: store, volume: volume.name, name })} />
         )}
-        {/* What it is and who uses it, before any setting. */}
+        {/* What it is and who uses it; the mount paths live in Mounts. */}
         <p className="truncate text-sm text-muted-foreground">
           {[volumeStorageText(volume.storage), volume.deployed ? null : "not deployed",
-            volume.mounts.length ? `mounted by ${volume.mounts.map((mount) => `${mount.service} at ${mount.path}`).join(", ")}` : "not mounted"]
+            volume.mounts.length ? `mounted by ${volume.mounts.map((mount) => mount.service).join(", ")}` : "not mounted"]
             .filter(Boolean).join(" · ")}
         </p>
       </CanvasInspectorHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-          {removing ? <SettingsSection id="mounts" title="Mounts">
-              <Empty variant="placeholder">
-                <EmptyDescription>Removed on next deploy.</EmptyDescription>
-              </Empty>
-            </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={store}
-              services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} />}
-          <SettingsSection id="storage" title="Storage">
-            <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
-          </SettingsSection>
-          <SettingsSection id="danger" title="Danger">
-            <StoreVolumeDanger state={state} params={params} version={diff.version} />
-          </SettingsSection>
-        </div>
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <Tabs value={Schema.is(volumePageSchema)(tab) ? tab : "settings"}
+          onValueChange={(value) => {
+            if (Schema.is(volumePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
+          }}
+          className="flex min-h-0 flex-1 flex-col overflow-visible sm:overflow-clip">
+          <TabsList variant="line" className="-mx-4 max-w-none shrink-0 overflow-x-auto sm:mx-0 sm:max-w-full">
+            {VOLUME_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
+          </TabsList>
+          <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-clip">
+            <div className="h-full overflow-y-auto pr-1 pb-8">
+              <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+                {/* Copies exist once a Deploy made the managed Volume on a Server. */}
+                {managed ? <StoreVolumePlacement organizationSlug={organizationSlug} environment={store} volume={volume} /> : null}
+                {removing ? <SettingsSection id="mounts" title="Mounts">
+                    <Empty variant="placeholder">
+                      <EmptyDescription>Removed on next deploy.</EmptyDescription>
+                    </Empty>
+                  </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={store}
+                    services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} />}
+                <SettingsSection id="storage" title="Storage">
+                  <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
+                </SettingsSection>
+                <SettingsSection id="danger" title="Danger">
+                  <StoreVolumeDanger state={state} params={params} version={diff.version} />
+                </SettingsSection>
+              </div>
+            </div>
+          </TabsContent>
+          <TabsContent value="backups" className="mt-3 min-h-0 flex-1 overflow-clip">
+            <div className="h-full overflow-y-auto pr-1 pb-8">
+              <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+                <StoreVolumeBackups organizationSlug={organizationSlug} environment={store} volume={volume} removing={removing}
+                  onAddMirror={() => void navigate({ search: (prev) => ({ ...prev, tab: "settings" }), hash: "placement", replace: true })} />
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

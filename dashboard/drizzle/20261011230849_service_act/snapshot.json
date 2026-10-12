@@ -3,8 +3,8 @@
   "dialect": "postgres",
   "id": "0019f142-bd9e-45ef-ab08-635a9ae41a69",
   "prevIds": [
-    "beff0f1c-072b-486b-a2ae-7fc833d53f02",
-    "f39c6cc3-5be3-4e96-9ee9-8cb7f1c0bf66"
+    "ab6ef156-f971-4d00-a4ae-a0f3c32e8e63",
+    "beff0f1c-072b-486b-a2ae-7fc833d53f02"
   ],
   "ddl": [
     {
@@ -172,6 +172,12 @@
     {
       "isRlsEnabled": false,
       "name": "volume_run",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "volume_placement",
       "entityType": "tables",
       "schema": "public"
     },
@@ -3565,6 +3571,19 @@
       "table": "volume_run"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "service_spec",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -3641,6 +3660,110 @@
       "entityType": "columns",
       "schema": "public",
       "table": "volume_run"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "volume_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "environment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "mirrors",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "staged",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "deployment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_placement"
     },
     {
       "type": "uuid",
@@ -4873,6 +4996,19 @@
       "generated": null,
       "identity": null,
       "name": "probe_requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "uptime_check"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "probe_answered_at",
       "entityType": "columns",
       "schema": "public",
       "table": "uptime_check"
@@ -6499,6 +6635,34 @@
           "opclass": null
         },
         {
+          "value": "environment_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "volume_placement_environment_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
           "value": "digest",
           "isExpression": false,
           "asc": true,
@@ -7616,6 +7780,23 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "volume_placement_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "volume_placement"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "operation_approvals_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -8241,6 +8422,16 @@
     },
     {
       "columns": [
+        "volume_id"
+      ],
+      "nameExplicit": false,
+      "name": "volume_placement_pkey",
+      "schema": "public",
+      "table": "volume_placement",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -8737,7 +8928,7 @@
       "table": "server_upgrade_attempt"
     },
     {
-      "value": "\"kind\" in ('mirror','sync','delete_mirror','move','release')",
+      "value": "\"kind\" in ('mirror','sync','delete_mirror','move','release','restore','seed')",
       "name": "volume_run_kind_check",
       "entityType": "checks",
       "schema": "public",
