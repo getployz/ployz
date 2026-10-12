@@ -989,17 +989,20 @@ async fn replace_container<C: MachineOperations>(
                 {
                     // An ingress at rest is handed back by a start, which lifts the
                     // hold even when the start fails again. That includes one a user
-                    // stopped. Any other container at rest stays down.
-                    Ok(()) => {
-                        super::is_active_runtime(&old.runtime)
-                            || (crate::ingress::is_system_ingress(&old)
-                                && matches!(
-                                    old.runtime,
-                                    ContainerRuntimeObservation::Created
-                                        | ContainerRuntimeObservation::Exited { .. }
-                                        | ContainerRuntimeObservation::Dead
-                                ))
-                    }
+                    // stopped. Any other container at rest stays down, and one in a
+                    // runtime this client does not recognize is handed back.
+                    Ok(()) => match old.runtime {
+                        ContainerRuntimeObservation::Created
+                        | ContainerRuntimeObservation::Exited { .. }
+                        | ContainerRuntimeObservation::Dead => {
+                            crate::ingress::is_system_ingress(&old)
+                        }
+                        ContainerRuntimeObservation::Removing => false,
+                        ContainerRuntimeObservation::Running { .. }
+                        | ContainerRuntimeObservation::Paused
+                        | ContainerRuntimeObservation::Restarting
+                        | ContainerRuntimeObservation::Unknown { .. } => true,
+                    },
                     Err(error) if error.code == RpcErrorCode::NotFound => false,
                     Err(error) => {
                         return Err(machine_error(MachineAction::StopContainer, error).into());

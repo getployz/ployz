@@ -280,6 +280,47 @@ async fn stop_first_hands_an_exited_ingress_back_when_its_create_fails() {
     }
 }
 
+// A runtime Docker reports that this client does not recognize may still be serving,
+// so a stop of it is undone like the stop of a running container.
+#[tokio::test]
+async fn stop_first_hands_back_an_unrecognized_old_container_when_its_create_fails() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(
+            Call::Inspect(machine, old),
+            ContainerRuntimeObservation::Unknown {
+                raw: serde_json::json!("draining"),
+            },
+        ),
+        ok(Call::Stop(machine, old)),
+        failed(
+            Call::Create(machine, ContainerKind::ServiceContainer),
+            "pull failed",
+        ),
+        ok(Call::Start(machine, old)),
+        serving(old),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Replacement {
+                compensation: ReplacementCompensation::OldStopped {
+                    stop_new_container: None,
+                    restart_old_container: RestartAttempt::Restarted,
+                },
+                ..
+            },
+            ..
+        }
+    ));
+    client.assert_done();
+}
+
 // Only an ingress is handed back from rest. A Service container that never ran,
 // such as one a cancelled Deploy left created, stays down when its replacement fails.
 #[tokio::test]
