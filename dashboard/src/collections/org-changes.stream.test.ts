@@ -76,3 +76,18 @@ it("refetches only the named collections and re-reads a renamed organization's s
   expect(queryClient.getQueryState(organizationKeys.state("acme"))?.isInvalidated).toBe(true);
   for (const subscription of active) subscription.unsubscribe();
 });
+
+it("rereads every Store view of the Organization when what support may see changes", () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  vi.spyOn(orgStoreTables.organization_support_access("acme", scope).utils, "refetch").mockResolvedValue([]);
+  const view = ["store-view", "acme", "session", "user", { query: "environment" }];
+  const other = ["store-view", "globex", "session", "user", { query: "environment" }];
+  queryClient.setQueryData(view, { ok: true, value: {} });
+  queryClient.setQueryData(other, { ok: true, value: {} });
+
+  applyOrganizationChanges(["organization_support_access"], "acme", scope);
+
+  expect(queryClient.getQueryState(view)?.isInvalidated).toBe(true);
+  expect(queryClient.getQueryState(other)?.isInvalidated).toBe(false);
+});

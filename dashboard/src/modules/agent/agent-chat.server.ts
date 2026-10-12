@@ -41,9 +41,10 @@ import { latestPageContext, PageContext, readPageContext, renderPageContext, wit
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
-import { callStore } from "#/modules/config-store/config-store.server";
-import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
+import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
+import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
+import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { projectJsonValue } from "#/lib/json";
 import { uuidFrom } from "#/server/uuid-from";
 
@@ -109,18 +110,24 @@ const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRe
   return published && same ? { written: "published", environment, saved, created: false } : null;
 };
 
+/** A Store answer as `caller` may read it: support sees it under the Organization's rules. */
+const shownTo = <C extends StoreCall>(caller: Caller, call: C, result: StoreResult<StoreAnswer<C>>) =>
+  caller.support === null ? result : answerForSupport(call, result, caller.support);
+
 const runGated = Effect.fn("Agent.runGated")(function* (caller: Caller, asked: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return { outcome: { ok: false, refusal: denialForAgent(asked.command === "publish" ? "publish" : "deploy", trusted.refusal) } } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
-  const result = yield* callStore(caller.organization.id, caller.userId, { operation: "write", command }, AGENT, trusted.approval);
-  const landed = result.ok || reviewed === null ? null : landedPublish(command, reviewed, result.refusal);
+  const call = { operation: "write", command } as const;
+  const stored = yield* callStore(caller.organization.id, caller.userId, call, AGENT, trusted.approval);
+  const landed = stored.ok || reviewed === null ? null : landedPublish(command, reviewed, stored.refusal);
   if (landed !== null) return { outcome: { ok: true, value: landed } } satisfies Gated;
+  const result = shownTo(caller, call, stored);
   if (result.ok && trusted.approval === "required") return { outcome: { ...result, nothing_destroyed: true } } satisfies Gated;
-  if (result.ok || result.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
-  const request: StoreRefusal = yield* requestApproval(caller, command, result.refusal);
-  return asking(request) ?? { outcome: { ok: false, refusal: request } } satisfies Gated;
+  if (stored.ok || stored.refusal.code !== "approval_required") return { outcome: result } satisfies Gated;
+  const request: StoreRefusal = yield* requestApproval(caller, command, stored.refusal);
+  return asking(request) ?? { outcome: { ok: false, refusal: caller.support === null ? request : refusalForSupport(request, caller.support) } } satisfies Gated;
 });
 
 const asking = (refusal: StoreRefusal): Extract<Gated, { asking: unknown }> | null => {
@@ -158,14 +165,17 @@ type Here = { place: Place };
 const answered = (result: StoreResult<unknown>): Answer =>
   result.ok ? { value: projectJsonValue(result.value) ?? null } : { error: result.refusal };
 
+const storeAnswer = <C extends StoreCall>(caller: Caller, call: C, source?: StoreSource) =>
+  callStore(caller.organization.id, caller.userId, call, source).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
+
 const agentRead = (caller: Caller) => (ask: Ask) =>
   ask.at === "store"
-    ? callStore(caller.organization.id, caller.userId, { operation: "read", query: ask.ask }).pipe(Effect.map(answered))
+    ? storeAnswer(caller, { operation: "read", query: ask.ask })
     : callCloud(caller, { ask: ask.ask }).pipe(Effect.map(answered));
 
 const agentWrite = (caller: Caller) => (write: Write) =>
   write.at === "store"
-    ? callStore(caller.organization.id, caller.userId, { operation: "write", command: write.write }, AGENT).pipe(Effect.map(answered))
+    ? storeAnswer(caller, { operation: "write", command: write.write }, AGENT)
     : callCloud(caller, { act: write.write }).pipe(Effect.map(answered));
 
 export const runTool = (caller: Caller, tool: string, input: JsonValue, place: Place, callKey: string) =>

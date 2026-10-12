@@ -3,6 +3,7 @@ import { and, eq, type SQL } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { member } from "#/modules/identity/tables";
+import type { SupportShows } from "#/modules/support-access/support-access";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { Auth } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -13,16 +14,24 @@ import { organization } from "./tables";
 type Role = typeof member.$inferSelect.role;
 type OrganizationRef = { readonly id: string; readonly slug: string };
 
-/** A member acting in their Organization, or Ployz support in one that allows it, under the staff member's own user id. */
-type Access =
+/**
+ * A member acting in their Organization, or Ployz support in one that allows it, under the staff member's own user id.
+ * Support reads only what `shows` lets it, as of this request.
+ */
+export type Access =
   | { readonly kind: "member"; readonly userId: string; readonly role: Role; readonly organization: OrganizationRef }
-  | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef };
+  | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef; readonly shows: SupportShows };
 
 /** "operate": any member, or support. "manage": an owner or admin, or support. */
 type Need = "operate" | "manage";
 
 /** What the gate reads about one Organization for one user. `role` is null when they aren't a member. */
-type AccessFacts = { readonly organization: OrganizationRef; readonly role: Role | null; readonly supportAllowed: boolean };
+type AccessFacts = {
+  readonly organization: OrganizationRef;
+  readonly role: Role | null;
+  readonly supportAllowed: boolean;
+  readonly supportShows: SupportShows;
+};
 
 type AccessDecision = Access | { readonly kind: "forbidden" } | { readonly kind: "not_found" };
 
@@ -39,7 +48,7 @@ export const decideAccess = (input: {
     if (need === "manage" && facts.role === "member") return { kind: "forbidden" };
     return { kind: "member", userId, role: facts.role, organization: facts.organization };
   }
-  if (isStaff && facts.supportAllowed) return { kind: "support", userId, organization: facts.organization };
+  if (isStaff && facts.supportAllowed) return { kind: "support", userId, organization: facts.organization, shows: facts.supportShows };
   return { kind: "not_found" };
 };
 
@@ -68,7 +77,15 @@ const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: SQL, need:
   const staff = yield* SupportStaff;
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle
-    .select({ id: organization.id, slug: organization.slug, role: member.role, supportAllowed: organizationSupportAccess.allowed })
+    .select({
+      id: organization.id,
+      slug: organization.slug,
+      role: member.role,
+      supportAllowed: organizationSupportAccess.allowed,
+      variables: organizationSupportAccess.variables,
+      configs: organizationSupportAccess.configs,
+      logs: organizationSupportAccess.logs,
+    })
     .from(organization)
     .leftJoin(member, and(eq(member.organizationId, organization.id), eq(member.userId, actor.userId)))
     .leftJoin(organizationSupportAccess, eq(organizationSupportAccess.organizationId, organization.id))
@@ -76,7 +93,15 @@ const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: SQL, need:
     .limit(1);
   const decision = decideAccess({
     userId: actor.userId,
-    facts: row === undefined ? null : { organization: { id: row.id, slug: row.slug }, role: row.role, supportAllowed: row.supportAllowed ?? false },
+    facts:
+      row === undefined
+        ? null
+        : {
+            organization: { id: row.id, slug: row.slug },
+            role: row.role,
+            supportAllowed: row.supportAllowed ?? false,
+            supportShows: { variables: row.variables ?? false, configs: row.configs ?? false, logs: row.logs ?? false },
+          },
     isStaff: staff.isStaff(actor.userId),
     need,
   });

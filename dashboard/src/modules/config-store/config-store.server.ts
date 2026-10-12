@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
@@ -10,6 +10,7 @@ import { user } from "#/modules/identity/tables";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
 import { requireAccess } from "#/modules/organization/access.server";
+import { answerForSupport, viewForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createConfigDeploymentAdmittedEvent,
@@ -257,7 +258,9 @@ export const callStore = <C extends StoreCall>(
  * when the actor is a member of it (the same Organization gate as the Org Store's reads).
  */
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
-  return yield* callStore((yield* requireAccess(actor, organizationSlug, "operate")).organization.id, actor.userId, call);
+  const access = yield* requireAccess(actor, organizationSlug, "operate");
+  const result = yield* callStore(access.organization.id, actor.userId, call);
+  return access.kind === "support" ? answerForSupport(call, result, access.shows) : result;
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 /**
@@ -266,8 +269,11 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
  * out (the writer's refetch brings it); a command naming no Environment, or several (a Sync), carries none.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
-  const result = yield* callStore(organization.id, actor.userId, { operation: "write", command });
+  const access = yield* requireAccess(actor, organizationSlug, "operate");
+  const { organization } = access;
+  const call = { operation: "write", command } as const;
+  const stored = yield* callStore(organization.id, actor.userId, call);
+  const result = access.kind === "support" ? answerForSupport(call, stored, access.shows) : stored;
   const environment = commandEnvironment(command);
   if (!result.ok || environment === null) return result satisfies StoreWriteResult;
   const views = yield* Effect.all({
@@ -275,9 +281,10 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
     services: readStore(organization.id, { query: "services", environment }).pipe(Effect.option),
     environment: readStore(organization.id, { query: "environment", environment, path: null, all: true }).pipe(Effect.option),
   }, { concurrency: 3 });
+  const shown = <V extends ConfigView>(view: V): V => access.kind === "support" ? viewForSupport(view, access.shows) : view;
   const committed: CommittedViews = {};
-  if (Option.isSome(views.diff)) committed.diff = views.diff.value;
-  if (Option.isSome(views.services)) committed.services = views.services.value;
-  if (Option.isSome(views.environment)) committed.environment = views.environment.value;
+  if (Option.isSome(views.diff)) committed.diff = shown(views.diff.value);
+  if (Option.isSome(views.services)) committed.services = shown(views.services.value);
+  if (Option.isSome(views.environment)) committed.environment = shown(views.environment.value);
   return { ...result, views: committed } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));

@@ -98,11 +98,22 @@ export function detachedConfigMounts(diff: DiffView, configId: string) {
 /** A file's unsaved text and, when the user flipped Executable, its mode. */
 export type FileDraft = { content: string; mode?: string };
 
-/** What one Save writes: each drafted file whose text or mode differs from the Store's, or that is new. */
-export function configEdits(config: Pick<ConfigItemView, "files" | "contents">, drafts: ReadonlyMap<string, FileDraft>) {
+/** A stored file whose contents the viewer may not read: Ployz support, while its Organization keeps Config files hidden. */
+export const hiddenFile = (config: Pick<ConfigItemView, "files" | "contents">, file: string) =>
+  config.files.some((one) => one.name === file) && !Object.hasOwn(config.contents, file);
+
+/**
+ * What one Save writes: each drafted file whose text or mode differs from the Store's, that is new, or whose last save
+ * failed (a failed rollback read can leave the optimistic contents cached). A hidden file is written only once it has new
+ * text, so neither a mode change nor a retry ever empties it.
+ */
+export function configEdits(
+  config: Pick<ConfigItemView, "files" | "contents">, drafts: ReadonlyMap<string, FileDraft>, failed: ReadonlySet<string> = new Set(),
+) {
   return [...drafts].flatMap(([file, draft]) => {
+    if (hiddenFile(config, file) && draft.content === "") return [];
     const stored = config.files.find((one) => one.name === file);
-    const changed = stored === undefined || config.contents[file] !== draft.content
+    const changed = stored === undefined || failed.has(file) || config.contents[file] !== draft.content
       || (draft.mode !== undefined && draft.mode !== stored.mode);
     return changed ? [{ file, ...draft }] : [];
   });

@@ -7,7 +7,7 @@ import { changeNameSchema, storeViewNames, type ChangeName, type StoreViewName }
 import type { CollectionScope } from "./scope";
 import { useCollectionScope } from "./use-collection-scope";
 import { organizationKeys } from "#/modules/organization/organization-state.queries";
-import { refetchStoreViews } from "#/modules/config-store/store-view.queries";
+import { refetchStoreViews, storeViewPrefix } from "#/modules/config-store/store-view.queries";
 import { serverDrainKeys } from "#/modules/machines/server-drain.queries";
 import { volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
 import { volumePlacementKeys } from "#/modules/volume-placement/volume-placement.queries";
@@ -27,6 +27,11 @@ type Refetch = (organizationSlug: string, scope: CollectionScope) => void;
 /** What each change stream name other than a Store view refetches: its collection since its cursor, or the organization state. */
 const refetches = {
   ...EffectRecord.map(orgStoreTables, (get): Refetch => (organizationSlug, scope) => void get(organizationSlug, scope).utils.refetch()),
+  // What support may read changed: every Store view rereads, so support's cache drops what it may no longer see.
+  organization_support_access: (organizationSlug: string, scope: CollectionScope) => {
+    void orgStoreTables.organization_support_access(organizationSlug, scope).utils.refetch();
+    void scope.queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }, { cancelRefetch: false });
+  },
   organization: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
   server_upgrade: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverUpgradeKeys.all }),
   server_drain: (_organizationSlug: string, scope: CollectionScope) => void scope.queryClient.invalidateQueries({ queryKey: serverDrainKeys.all }),

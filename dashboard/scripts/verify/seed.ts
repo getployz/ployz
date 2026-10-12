@@ -60,7 +60,7 @@ const seed = Effect.gen(function* () {
   if (!signedIn) return yield* Effect.die("No session.");
   const cookie = encodeURIComponent(`${token}.${createHmac("sha256", env("BETTER_AUTH_SECRET")).update(token).digest("base64")}`);
   const { secret: cliToken } = yield* createOrganizationToken(
-    { userId: ada.id, organization: { id: organizationId, slug: organizationSlug }, credential: { kind: "session", id: signedIn.id } },
+    { userId: ada.id, organization: { id: organizationId, slug: organizationSlug }, credential: { kind: "session", id: signedIn.id }, support: null },
     { name: "verify", expiresInDays: 30 },
   );
 
