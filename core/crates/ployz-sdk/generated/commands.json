@@ -1101,6 +1101,21 @@
         "multiple": false,
         "trailing": false,
         "help": "Refuse unless this is still the latest `ployz diff` version"
+      },
+      {
+        "name": "--target",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "default": "head",
+        "trailing": false,
+        "help": "Head resets deploy changes; saved abandons draft reversals; review discards the displayed combined list",
+        "values": [
+          "head",
+          "saved",
+          "review"
+        ]
       }
     ]
   },
@@ -1607,6 +1622,33 @@
     ]
   },
   {
+    "command": "env on-merge",
+    "about": "Show what a PR Environment's pull request lands when it merges",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
     "command": "env pr",
     "about": "Show or change PR Environments for a repository",
     "json": true,
@@ -1959,7 +2001,7 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination",
+        "help": "Sync into ENV; with no value, the Branch's Parent",
         "conflicts": [
           "--from",
           "--take"
@@ -2054,21 +2096,6 @@
         "help": "Close the Branch once its changes landed in its Parent; refused for a kept Branch and for any other --to",
         "conflicts": [
           "--plan",
-          "--at-merge",
-          "--undo",
-          "--take"
-        ]
-      },
-      {
-        "name": "--at-merge",
-        "required": false,
-        "value": false,
-        "type": "boolean",
-        "multiple": false,
-        "trailing": false,
-        "help": "Go live in --to with the pull request's merge; the default from a PR Environment into a Destination",
-        "conflicts": [
-          "--close",
           "--undo",
           "--take"
         ]
@@ -2080,7 +2107,7 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "Undo the Sync a sync printed, or withdraw its Conditional Sync",
+        "help": "Undo the Sync a sync printed",
         "conflicts": [
           "--from",
           "--only",
@@ -2089,7 +2116,6 @@
           "--plan",
           "--version",
           "--close",
-          "--at-merge",
           "--take"
         ]
       },
@@ -2100,7 +2126,7 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them",
+        "help": "Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them",
         "conflicts": [
           "--to",
           "--from",
@@ -2108,8 +2134,7 @@
           "--value",
           "--plan",
           "--close",
-          "--undo",
-          "--at-merge"
+          "--undo"
         ]
       }
     ]
@@ -2313,6 +2338,159 @@
         "index": 1,
         "trailing": false,
         "help": "OWNER/REPO: list its branches"
+      }
+    ]
+  },
+  {
+    "command": "history",
+    "about": "Show immutable saved versions",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "history restore",
+    "about": "Stage a saved version in the draft",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "REVISION",
+        "required": true,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the latest `ployz diff` version"
+      },
+      {
+        "name": "--preview",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Show changes and overwritten draft fields without writing"
+      },
+      {
+        "name": "--accept-overwrite",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Accept the reviewed draft fields being overwritten"
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
+      }
+    ]
+  },
+  {
+    "command": "history undo",
+    "about": "Stage the inverse of one saved change",
+    "json": true,
+    "approval": "never",
+    "surface": "cloud",
+    "args": [
+      {
+        "name": "REVISION",
+        "required": true,
+        "value": true,
+        "type": "integer",
+        "multiple": false,
+        "index": 1,
+        "trailing": false
+      },
+      {
+        "name": "--version",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Refuse unless this is still the latest `ployz diff` version"
+      },
+      {
+        "name": "--preview",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Show changes and overwritten draft fields without writing"
+      },
+      {
+        "name": "--accept-overwrite",
+        "required": false,
+        "value": false,
+        "type": "boolean",
+        "multiple": false,
+        "trailing": false,
+        "help": "Accept the reviewed draft fields being overwritten"
+      },
+      {
+        "name": "--project",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Project [default: the only Project]"
+      },
+      {
+        "name": "--env",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Environment [default: the Project's Default Environment]"
       }
     ]
   },
@@ -2868,6 +3046,15 @@
         "multiple": false,
         "trailing": false,
         "help": "Refuse unless this is still the latest `ployz diff` version"
+      },
+      {
+        "name": "--message",
+        "required": false,
+        "value": true,
+        "type": "string",
+        "multiple": false,
+        "trailing": false,
+        "help": "Message saved with the new revision"
       },
       {
         "name": "--approval",
@@ -4076,8 +4263,7 @@
         "help": "Set a Service's Settings from an object shaped like `get SERVICE --json` values; omitted Settings stay; - reads stdin",
         "conflicts": [
           "--secret",
-          "--from-env-file",
-          "--at-merge"
+          "--from-env-file"
         ],
         "stdin": "on-dash"
       },
@@ -4103,25 +4289,9 @@
         "trailing": false,
         "help": "Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret",
         "conflicts": [
-          "--patch",
-          "--at-merge"
+          "--patch"
         ],
         "stdin": "on-dash"
-      },
-      {
-        "name": "--at-merge",
-        "required": false,
-        "value": true,
-        "type": "string",
-        "multiple": false,
-        "trailing": false,
-        "help": "With --secret: hold the --env Destination's value for a secret pull request PR syncs there by name only; it lands with the merge",
-        "conflicts": [
-          "--patch",
-          "--from-env-file",
-          "--expect"
-        ],
-        "stdin": "only"
       },
       {
         "name": "--expect",
@@ -4130,10 +4300,7 @@
         "type": "string",
         "multiple": false,
         "trailing": false,
-        "help": "Refuse unless Working State is still at this revision",
-        "conflicts": [
-          "--at-merge"
-        ]
+        "help": "Refuse unless Working State is still at this revision"
       }
     ]
   },

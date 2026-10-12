@@ -4,8 +4,8 @@ description: Give every pull request a temporary copy of your app at its own htt
 ---
 
 Each pull request gets a temporary copy of your app at its own https address. Every push to the
-pull request redeploys it. When the pull request merges, production deploys the merge as usual,
-with any setting changes you synced from the preview, and the copy and its data are deleted.
+pull request redeploys it. When the pull request merges, production deploys the merge with the
+setting changes the preview made, and the copy and its data are deleted.
 Closing the pull request without merging deletes it too.
 
 The dashboard calls these PR environments.
@@ -57,40 +57,50 @@ Open previews are listed under **Open now** in the panel, and in the environment
 the environment they start from. Each one is a [branch](environments.md) of that environment, so
 you change, sync and close it like any other branch.
 
-## Sync changes so they go live with the merge
+## Config changes in a pull request
 
-Code reaches production through Git. Setting changes made in the preview, like a new variable or
-a new service, don't. Sync them:
+Code reaches production through Git, and so do the preview's setting changes, like a new variable
+or a new service: when the pull request merges on GitHub, every change the preview made since it
+started lands in production.
 
-1. Open the preview. The Sync button at the top right of the canvas reads **Sync to production ·
-   3**. Click it.
-2. Check each change, as for any [sync](environments.md#sync-the-change-to-production). The dialog
-   says they go live in production when #142 merges.
-3. Click **Sync 3 changes**.
+To see what will land, open the preview and click **On merge · 3** at the top right of the canvas.
+The list reads `#142 → production`, one row per change: the service, the setting, then
+production's value → the preview's, like `CACHE_TTL 30 → 60`. In a row's ⋯ menu:
 
-Production doesn't change yet. The preview's button reads **Goes live with #142**, production's
-bottom bar shows **PR #142**, "3 changes · go live when #142 merges", and the merge deploys the
-code and these settings together. If production doesn't deploy on push, they wait there as staged
-changes.
+- **Edit** sets the value production gets instead of the preview's. The row shows **Edited** and
+  the preview's own value under it; **Reset** in the ⋯ menu goes back to the preview's.
+- **Exclude** keeps the change in the preview only. The row stays in the list, greyed, marked
+  **Excluded**; click **Include** to put it back.
 
-- **Changed the preview again?** The sync is withdrawn: sync again.
-- **Changed your mind?** Click **Undo** in the toast, or **Undo sync to production** in the Sync
-  button's ▾ menu. Closing the pull request without merging, or changing its base branch, also
-  drops it.
-- **Production changed the same setting meanwhile?** Production keeps its value. Its **Details**
-  show the pull request's value, "PR #142: …", with **Use** to take it.
-- **Added a secret?** Its value stays in the preview. Type production's value in the secret's row
-  of the dialog, or run `ployz set web.env.STRIPE_KEY --secret --env production --at-merge 142`.
-  It lands with the merge and is never shown back, only **Value set**. Until then the check reads
-  `Waiting for production's value of STRIPE_KEY`.
+A setting production changed after the preview started reads `production 45 → 60`: the preview's
+value wins when it merges. A secret the preview added that production has no value for reads
+**Not set in production**. Set it in production, or with **Edit**, before you merge; otherwise
+production's deploy skips it, and any variable that references it, and warns. Removed variables
+and settings ride too; a removed service doesn't. Replicas, CPU and memory limits, and custom domains never do.
 
-The changes go to the environment that deploys the pull request's base branch, which may not be
-the one the preview started from. Where several do, pick one from the Sync button's ▾ menu.
+Ployz posts a **Ployz · ready to merge** check on the pull request that mirrors the list, like
+`3 config changes · TOKEN not set`. It's green, or neutral when a secret is Not set or production
+changed the same setting. It never fails, so it never blocks a merge. Its **Details** link opens
+the list. A pull request into a branch no Environment deploys from reads **Nothing deploys from
+release**: its changes stay in the preview.
 
-Ployz also posts a **Ployz · ready to merge** check on the pull request, and the Sync button's ▾
-menu shows it. It asks for action, like `3 changes to sync in Ployz`, while the preview has
-changes you haven't synced. To block merging until they're synced, make it a required check in
-your repository's branch protection rules.
+When the pull request merges, production gets one saved change, **Merged #142 · 3 changes**, and
+the merge commit's push deploys it with the code. To take it back, click **Undo** beside it in
+production's **History**.
+
+The merge deploys every service it changed: one whose own settings changed, one that mounts a
+changed config, and one that reads a changed variable. It does so even for a service with
+auto-deploy off or one that doesn't build from the branch, which redeploys with the code it last
+built. An edit you staged in production but didn't save stays staged.
+
+If the merge couldn't land in production, or landed but couldn't deploy, the check says so, like
+**Didn't land in production** or **Saved in production, not deployed**, with the reason. A preview
+whose changes didn't land stays open, so nothing it held is lost.
+
+To take the changes before the merge, click **Sync · 3**, check each change as for any
+[sync](environments.md#sync-the-change-to-production), and click **Sync 3 changes**. They become
+production's changes to deploy now, and leave the On merge list. From the CLI, `ployz env sync --to
+production` from the preview does the same.
 
 ## Shut down a preview
 

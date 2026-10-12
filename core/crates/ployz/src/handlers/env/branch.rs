@@ -4,9 +4,9 @@
 use clap::ArgMatches;
 use ployz_core::ServiceName;
 use ployz_store::{
-    Branched, ConditionalSyncId, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId,
-    EnvironmentName, EnvironmentRef, HintSource, KeepBranch, RowRef, SetupCommand, SyncChanges,
-    SyncId, SyncQuery, SyncView, Synced, SyncedWhen, Take, Taken, UndoSync, Undone, When,
+    Branched, CopyNode, CreateBranch, DeploymentId, DiffQuery, EnvironmentId, EnvironmentName,
+    EnvironmentRef, HintSource, KeepBranch, RowRef, SetupCommand, SyncChanges, SyncId, SyncQuery,
+    SyncView, Synced, Take, Taken, UndoSync, Undone,
 };
 
 use super::super::config::expected;
@@ -70,22 +70,14 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if let Some(sync) = matches.get_one::<String>("undo") {
         return undo(root, sync);
     }
-    // Omitted, the Store decides: at the merge from a PR Environment into a Destination.
-    let when = match (matches.get_flag("at-merge"), matches.get_flag("close")) {
-        (true, _) => Some(When::AtMerge),
-        (false, true) => Some(When::Now { close_after: true }),
-        (false, false) => None,
-    };
     let query = match named("from")? {
         Some(from) => SyncQuery {
             from,
             into: Some(here),
-            when,
         },
         None => SyncQuery {
             from: here,
             into: named("to")?,
-            when,
         },
     };
     let store = store(root)?;
@@ -109,7 +101,7 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let request = SyncChanges {
         from: query.from,
         into: query.into,
-        when,
+        close_after: matches.get_flag("close"),
         version: matches
             .get_one::<String>("version")
             .cloned()
@@ -117,6 +109,8 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
         picks: Some(refs("only")).filter(|only| !only.is_empty()),
         skip: refs("skip"),
         values,
+        // One receipt for this run: a retry of the same request replays, not repeats.
+        id: Some(SyncId::parse(uuid::Uuid::new_v4().to_string())?),
     };
     let synced = store.try_write(&request).map_err(|error| {
         // Stale, nothing to sync, or no such row: the plan shows what there is now.
@@ -155,7 +149,7 @@ fn secret_values(matches: &ArgMatches) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
-/// `env sync --undo SYNC`: undo a Sync, or withdraw its Conditional Sync.
+/// `env sync --undo SYNC`: undo a Sync, or withdraw its offer.
 fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let request = UndoSync {
@@ -174,16 +168,13 @@ fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
     })
 }
 
-/// `env sync --take ID`: stage the hints (or those `--only` names) that the Parent
-/// named `ID`, or Conditional Sync `ID`, left in `into`.
+/// `env sync --take PARENT`: stage the hints (or those `--only` names) that the
+/// Parent named `PARENT` left in `into`.
 fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let from = ConditionalSyncId::parse(source)
-        .map(HintSource::ConditionalSync)
-        .or_else(|_| EnvironmentName::parse(source).map(HintSource::Parent))
-        .map_err(|_| {
-            Error::usage("Expected --take ID to be the Parent's name or a Conditional Sync ID")
-        })?;
+    let from = EnvironmentName::parse(source)
+        .map(HintSource::Parent)
+        .map_err(|_| Error::usage("Expected --take PARENT to be the Parent's name"))?;
     let rows: Vec<RowRef> = super::super::string_values(matches, "only")
         .iter()
         .map(|asked| asked.as_str().into())
@@ -219,16 +210,10 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
     crate::ui::finish(&Next::new(taken, next.clone()), || {
         let into = format!("{}/{}", into.project, into.name);
-        match &taken.conditional_sync {
-            Some(sync) => crate::ui::stream(format_args!(
-                "Took PR #{}'s value into {into}.",
-                sync.pull_request
-            )),
-            None => crate::ui::stream(format_args!(
-                "Took {}'s value into {into}.",
-                taken.from.name
-            )),
-        }
+        crate::ui::stream(format_args!(
+            "Took {}'s value into {into}.",
+            taken.from.name
+        ));
         if !taken.staged.is_empty() {
             crate::ui::stream(format_args!(
                 "Staged: {}",
@@ -241,20 +226,16 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
     })
 }
 
-/// `env sync --to [ENV]` or `env sync --from ENV`, and `--at-merge`, as given.
+/// `env sync --to [ENV]` or `env sync --from ENV`, as given.
 fn sync_words(matches: &ArgMatches) -> Vec<&str> {
-    let mut words = match matches.get_one::<String>("from") {
+    match matches.get_one::<String>("from") {
         Some(from) => vec!["env", "sync", "--from", from.as_str()],
         None => {
             let mut words = vec!["env", "sync", "--to"];
             words.extend(matches.get_one::<String>("to").map(String::as_str));
             words
         }
-    };
-    if matches.get_flag("at-merge") {
-        words.push("--at-merge");
     }
-    words
 }
 
 fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<(), Error> {
@@ -265,12 +246,8 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
         )
     });
     crate::ui::finish(&Next::new(view, next), || {
-        let when = view
-            .at_merge
-            .map(|number| format!(" at #{number}'s merge"))
-            .unwrap_or_default();
         crate::ui::stream(format_args!(
-            "{} → {}{when} (version {}):",
+            "{} → {} (version {}):",
             view.from.name, view.into.name, view.version
         ));
         if view.rows.is_empty() {
@@ -290,7 +267,7 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
             }
             if row.secret.is_some() {
                 notes.push(format!(
-                    "{} lacks this secret: it arrives without a value",
+                    "{} lacks this secret: it arrives Not set",
                     view.into.name
                 ));
             }
@@ -323,37 +300,27 @@ fn sync_plan(matches: &ArgMatches, words: &[&str], view: &SyncView) -> Result<()
 /// What a Sync did, and `deploy` of where it landed when it staged something.
 fn synced_out(matches: &ArgMatches, synced: &Synced) -> Result<(), Error> {
     let into = &synced.into;
-    let next = matches!(&synced.when, SyncedWhen::Now { staged, .. } if !staged.is_empty())
+    let next = (!synced.staged.is_empty())
         .then(|| in_project(matches, &["deploy", "--env", into.name.as_str()]));
-    crate::ui::finish(&Next::new(synced, next.clone()), || {
+    // The proposal is the Dashboard's to Remove; here a Sync is undone by its id.
+    let mut json = serde_json::to_value(synced).expect("a Sync serializes");
+    if let Some(json) = json.as_object_mut() {
+        json.remove("proposal");
+    }
+    crate::ui::finish(&Next::new(&json, next.clone()), || {
         let (from, into) = (&synced.from.name, format!("{}/{}", into.project, into.name));
         let undo = in_project(matches, &["env", "sync", "--undo", synced.sync.as_str()]);
-        match &synced.when {
-            SyncedWhen::AtMerge { conditional_sync } => {
-                crate::ui::stream(format_args!(
-                    "Goes live in {into} with PR #{}'s merge: {}.",
-                    conditional_sync.pull_request,
-                    crate::handlers::joined(
-                        &conditional_sync
-                            .rows
-                            .iter()
-                            .map(ployz_store::NamedRow::to_string)
-                            .collect::<Vec<_>>()
-                    )
-                ));
-                crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
-            }
-            SyncedWhen::Now { staged, closing } => {
-                crate::ui::stream(format_args!("Synced {from} → {into}."));
-                if !staged.is_empty() {
-                    crate::ui::stream(format_args!("Staged: {}", crate::handlers::joined(staged)));
-                }
-                if *closing {
-                    crate::ui::stream(format_args!("Closing {from}."));
-                }
-                crate::ui::hint(&crate::ui::Hint::Undo(undo.clone()));
-            }
+        crate::ui::stream(format_args!("Synced {from} → {into}."));
+        if !synced.staged.is_empty() {
+            crate::ui::stream(format_args!(
+                "Staged: {}",
+                crate::handlers::joined(&synced.staged)
+            ));
         }
+        if synced.closing {
+            crate::ui::stream(format_args!("Closing {from}."));
+        }
+        crate::ui::hint(&crate::ui::Hint::Undo(undo));
         if let Some(next) = &next {
             crate::ui::hint(&crate::ui::Hint::Next(next.clone()));
         }

@@ -29,6 +29,7 @@ import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { notSetVariables } from "#/modules/config-store/store-variables";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
@@ -114,6 +115,7 @@ function CanvasWithData() {
         desiredReplicas: isReplicaCount(replicas) ? replicas : null,
         trays: trays.get(service.id) ?? [],
         configTrays: configs.trays.get(service.id) ?? [],
+        notSet: notSetVariables(serviceSettingRows(settings, service.name), changes),
       };
     }),
     volumes: volumes.volumes,
@@ -155,7 +157,7 @@ export function EnvironmentCanvasScene() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, prPlan } = useCanvasInspectorSelection();
+  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, history, newBranch, prPlan } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
 
@@ -168,6 +170,7 @@ export function EnvironmentCanvasScene() {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
       } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true, returnTo: deploymentReturnTo }
+        : history ? { key: `${canvasKey}/history`, nodeId: "history" }
         : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
         : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
         : prPlan ? { key: `${canvasKey}/pr-plan`, nodeId: "pr-plan", picking: true } : null}

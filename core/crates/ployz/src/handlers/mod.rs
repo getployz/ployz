@@ -397,6 +397,7 @@ pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
         ("deployment", rest) => deploy::deployment_handler(rest),
         ("diff", "") => Some(cloud(Never, review::diff)),
         ("discard", "") => Some(cloud(Never, review::discard)),
+        ("history", "" | "restore" | "undo") => Some(cloud(Never, review::history)),
         ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
         ("exec", "") => Some(cloud(Always, operator::exec)),
