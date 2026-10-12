@@ -50,7 +50,7 @@ export function pruneIds(snapshots: readonly Pick<Snapshot, "id" | "kind" | "kep
 }
 
 /** A short stable hash in [a-z0-9], so minted ids stay inside the wire's 64 characters whatever the source id holds. */
-function digest(text: string): string {
+export function digest(text: string): string {
   let h1 = 0xdeadbeef;
   let h2 = 0x41c6ce57;
   for (let index = 0; index < text.length; index++) {
