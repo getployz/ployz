@@ -22,9 +22,12 @@ CONTRACT_SCRIPTS = {
 
 def select(paths):
     selected = select_normal(paths)
-    # Only release builds exercise the release profile, features, and native dependencies on every target.
-    manifest_changed = any(path.startswith("core/") and Path(path).name in {"Cargo.toml", "Cargo.lock"} for path in paths)
-    if manifest_changed or release_inputs_changed(paths):
+    # Only release builds exercise the release profile, features, linker flags, and native dependencies on every target.
+    cargo_changed = any(
+        path.startswith("core/.cargo/") or (path.startswith("core/") and Path(path).name in {"Cargo.toml", "Cargo.lock"})
+        for path in paths
+    )
+    if cargo_changed or release_inputs_changed(paths):
         selected.add("release-contracts")
     return selected
 
