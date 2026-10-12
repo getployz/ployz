@@ -5,29 +5,82 @@
 //! as written; the Postgres adapter rewrites `?N` to `$N`. Adding an adapter means a
 //! [`Storage`] variant and a [`Tx`] implementation; the Store's logic never changes.
 
+mod convert;
 mod pg;
 mod sqlite;
 
+pub use convert::Converted;
 use ployz_core::RpcError;
 
 use crate::error;
 
-/// Migrations, applied once, in order, each as one batch.
-const MIGRATIONS: &[(&str, &str)] = &[
+/// Migrations, applied once, in order: each a batch of SQL or a step in Rust.
+const MIGRATIONS: &[(&str, Step)] = &[
     (
         "0001_config_store",
-        include_str!("migrations/0001_config_store.sql"),
+        Step::Sql(include_str!("migrations/0001_config_store.sql")),
     ),
-    ("0002_sync", include_str!("migrations/0002_sync.sql")),
+    (
+        "0002_sync",
+        Step::Sql(include_str!("migrations/0002_sync.sql")),
+    ),
     (
         "0003_deployment_rows",
-        include_str!("migrations/0003_deployment_rows.sql"),
+        Step::Sql(include_str!("migrations/0003_deployment_rows.sql")),
     ),
     (
-        "0004_removal_mark",
-        include_str!("migrations/0004_removal_mark.sql"),
+        "0004_saved_history",
+        Step::Sql(include_str!("migrations/0004_saved_history.sql")),
+    ),
+    (
+        "0005_proposal",
+        Step::Sql(include_str!("migrations/0005_proposal.sql")),
+    ),
+    (
+        "0006_sync_receipt",
+        Step::Sql(include_str!("migrations/0006_sync_receipt.sql")),
+    ),
+    (
+        "0007_proposal_carried",
+        Step::Sql(include_str!("migrations/0007_proposal_carried.sql")),
+    ),
+    (
+        "0008_proposal_offer",
+        Step::Sql(include_str!("migrations/0008_proposal_offer.sql")),
+    ),
+    ("0009_offer_conditional_syncs", Step::Rust(convert::step)),
+    (
+        "0010_drop_conditional_sync",
+        Step::Sql(include_str!("migrations/0010_drop_conditional_sync.sql")),
+    ),
+    (
+        "0011_retire_offers",
+        Step::Sql(include_str!("migrations/0011_retire_offers.sql")),
+    ),
+    (
+        "0012_on_merge",
+        Step::Sql(include_str!("migrations/0012_on_merge.sql")),
+    ),
+    (
+        "0013_removal_mark",
+        Step::Sql(include_str!("migrations/0013_removal_mark.sql")),
     ),
 ];
+
+/// One migration.
+enum Step {
+    /// A script of parameterless statements.
+    Sql(&'static str),
+    /// Rust run inside the migrating transaction, for what SQL alone cannot convert.
+    Rust(fn(&mut dyn Tx, Backend) -> Result<Converted, RpcError>),
+}
+
+/// Which database a migration runs on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Sqlite,
+    Postgres,
+}
 
 pub(crate) enum Storage {
     Sqlite(sqlite::Sqlite),
@@ -36,16 +89,36 @@ pub(crate) enum Storage {
 
 impl Storage {
     /// Open `url` (`postgres://…`, `sqlite:PATH` or `sqlite::memory:`) and apply
-    /// pending migrations.
-    pub(crate) fn open(url: &str) -> Result<Self, RpcError> {
+    /// pending migrations, with what converting Conditional Syncs did when this open
+    /// was the one that converted them.
+    pub(crate) fn open(url: &str) -> Result<(Self, Option<Converted>), RpcError> {
+        Self::open_with(url, MIGRATIONS)
+    }
+
+    /// Open `url` with only the migrations up to and including `last` applied, as a
+    /// Store from before the later ones was.
+    #[cfg(test)]
+    pub(crate) fn open_through(url: &str, last: &str) -> Result<Self, RpcError> {
+        let end = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == last)
+            .expect("a known migration");
+        Self::open_with(url, MIGRATIONS.get(..=end).expect("a known migration"))
+            .map(|(storage, _)| storage)
+    }
+
+    fn open_with(
+        url: &str,
+        migrations: &[(&str, Step)],
+    ) -> Result<(Self, Option<Converted>), RpcError> {
         if url.starts_with("postgres://") || url.starts_with("postgresql://") {
             let storage = Self::Postgres(Box::new(pg::Postgres::open(url)?));
-            storage.write(|tx| {
+            let converted = storage.write(|tx| {
                 // Processes opening one database at once migrate it one at a time.
                 tx.execute("SELECT pg_advisory_xact_lock(1225)", &[])?;
-                migrate(tx)
+                migrate(tx, Backend::Postgres, migrations)
             })?;
-            return Ok(storage);
+            return Ok((storage, converted));
         }
         let Some(path) = url.strip_prefix("sqlite:") else {
             return Err(error::invalid(
@@ -54,8 +127,8 @@ impl Storage {
             ));
         };
         let storage = Self::Sqlite(sqlite::Sqlite::open(path)?);
-        storage.write(migrate)?;
-        Ok(storage)
+        let converted = storage.write(|tx| migrate(tx, Backend::Sqlite, migrations))?;
+        Ok((storage, converted))
     }
 
     /// Run `work` in one transaction that commits only when it returns `Ok`.
@@ -258,12 +331,17 @@ impl Row {
     }
 }
 
-fn migrate(tx: &mut dyn Tx) -> Result<(), RpcError> {
+fn migrate(
+    tx: &mut dyn Tx,
+    backend: Backend,
+    migrations: &[(&str, Step)],
+) -> Result<Option<Converted>, RpcError> {
+    let mut converted = None;
     tx.execute(
         "CREATE TABLE IF NOT EXISTS config_migration (name TEXT PRIMARY KEY)",
         &[],
     )?;
-    for (name, sql) in MIGRATIONS {
+    for (name, step) in migrations {
         let applied = tx.query(
             "SELECT name FROM config_migration WHERE name = ?1",
             &[(*name).into()],
@@ -271,11 +349,14 @@ fn migrate(tx: &mut dyn Tx) -> Result<(), RpcError> {
         if !applied.is_empty() {
             continue;
         }
-        tx.batch(sql)?;
+        match step {
+            Step::Sql(sql) => tx.batch(sql)?,
+            Step::Rust(step) => converted = Some(step(tx, backend)?),
+        }
         tx.execute(
             "INSERT INTO config_migration (name) VALUES (?1)",
             &[(*name).into()],
         )?;
     }
-    Ok(())
+    Ok(converted)
 }

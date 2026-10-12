@@ -1,4 +1,4 @@
-import type { BranchView, ConditionalSyncId, DeploymentSummary, PullRequestView, RowId, SyncRow } from "@ployz/sdk";
+import type { BranchView, DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import { rowText, settingName } from "./store-branches";
 
@@ -18,7 +18,7 @@ export function syncLine(row: SyncRow, into: string): SyncLine {
     // A whole node is named by its kind; its section names it.
     ...row.name === null ? { name: row.kind === "volume" ? "Volume" : "Service", variable: false } : settingName(row.name),
     // A secret's value never syncs, whatever else holds.
-    badge: row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
+    badge: row.held_by !== null ? `Included with ${row.held_by}` : row.secret ? "Secret" : row.change === "conflict" ? `Changed in ${into}` : row.change === "new" ? "New" : null,
     before: whole || row.secret ? "" : rowText(row.into, row.name),
     after: whole || row.secret ? "" : rowText(row.from, row.name),
   };
@@ -35,32 +35,35 @@ export function syncSections(rows: readonly SyncRow[]) {
   return [...sections.values()];
 }
 
-/**
- * What a Sync carries, from the rows the user flipped away from their default (`flipped`). A row `requires` its new
- * node: leaving the node out leaves it out; ticked, each can still be left out on its own.
- */
-export function syncPicks(rows: readonly SyncRow[], flipped: ReadonlySet<RowId>) {
-  const ticked = (row: SyncRow) => row.ticked !== flipped.has(row.row);
-  const left = new Set(rows.filter((row) => !ticked(row)).map((row) => row.row));
-  return rows.filter((row) => ticked(row) && !(row.requires !== null && left.has(row.requires)));
+/** A row as the user reviewed it: a flip holds only while the row still reads the same. */
+export function reviewed(row: SyncRow) {
+  return JSON.stringify([row.ticked, row.change, row.from, row.into]);
+}
+
+/** The rows the user flipped away from their default, each as they reviewed it. */
+export type Flips = ReadonlyMap<RowId, string>;
+
+/** Flips `row` back, or away from its default as it reads now. */
+export function flipRow(flips: Flips, row: SyncRow): Flips {
+  const next = new Map(flips);
+  if (next.get(row.row) === reviewed(row)) next.delete(row.row);
+  else next.set(row.row, reviewed(row));
+  return next;
+}
+
+/** Whether a row the user flipped changed since: it is back at its default. */
+export function flipsMoved(rows: readonly SyncRow[], flips: Flips) {
+  return rows.some((row) => flips.has(row.row) && flips.get(row.row) !== reviewed(row));
 }
 
 /**
- * A PR Environment's Destination, as its pull request's view has it: where a Sync goes live at the merge (#`number`),
- * how many changes it would hold, and whether one stands there. The first Destination, or the one a Sync stands in.
+ * What a Sync carries, from the rows the user flipped away from their default (`flips`). A row `requires` its new
+ * node: leaving the node out leaves it out; ticked, each can still be left out on its own.
  */
-export type MergeSync = {
-  number: number; into: string; changes: number;
-  /** The Conditional Sync standing there: what Undo passes. */
-  standing: ConditionalSyncId | null;
-};
-
-export function mergeSync(view: PullRequestView, environment: string): MergeSync | null {
-  const destinations = view.environments.find((row) => row.environment.name === environment)?.destinations ?? [];
-  const destination = destinations.find((row) => row.conditional_sync?.standing) ?? destinations[0];
-  if (!view.pull_request || !destination) return null;
-  const standing = destination.conditional_sync?.standing ? destination.conditional_sync.id : null;
-  return { number: view.pull_request.number, into: destination.name, changes: destination.changes, standing };
+export function syncPicks(rows: readonly SyncRow[], flips: Flips) {
+  const ticked = (row: SyncRow) => row.ticked !== (flips.get(row.row) === reviewed(row));
+  const left = new Set(rows.filter((row) => !ticked(row)).map((row) => row.row));
+  return rows.filter((row) => row.held_by === null && ticked(row) && !(row.requires !== null && left.has(row.requires)));
 }
 
 /**
@@ -70,25 +73,17 @@ export function mergeSync(view: PullRequestView, environment: string): MergeSync
 export type SyncButtonState = { label: string; into: string; changes: number; count: number | null };
 
 /**
- * The Sync button's words, the first that applies: a shutdown under way or failed, Off, a Conditional Sync standing,
- * then what a Sync into the Parent (a PR Environment's Destination, `merge`) carries. A PR Environment shuts down until
- * its next push; any other Branch comes off the Servers to close.
+ * The Sync button's words, the first that applies: a shutdown under way or failed, Off, then what a Sync into the
+ * Parent carries. A PR Environment shuts down until its next push; any other Branch comes off the Servers to close.
  */
-export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: DeploymentSummary | null,
-  merge: MergeSync | null = null): SyncButtonState {
+export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: DeploymentSummary | null): SyncButtonState {
   const shuts = branch.pull_request !== null;
-  const [into, changes] = merge ? [merge.into, merge.changes] : [branch.parent, branch.to_parent];
+  const [into, changes] = [branch.parent, branch.to_parent];
   const say = (label: string, count: number | null = null) => ({ label, into, changes, count });
   if (removal?.in_flight) return say(shuts ? "Shutting down" : "Closing");
   if (removal?.status === "applied") return say(shuts ? "Off" : "Closing");
   if (removal) return say(shuts ? "Shutdown failed" : "Closing failed");
-  if (merge?.standing) return say(`Goes live with #${merge.number}`);
-  return changes > 0 ? say(`Sync to ${into}`, changes) : say(`In sync with ${into}`);
-}
-
-/** "3 changes go live in production when #142 merges". */
-export function goesLive(changes: number, into: string, number: number) {
-  return `${plural(changes, "change")} ${changes === 1 ? "goes" : "go"} live in ${into} when #${number} merges`;
+  return changes > 0 ? say("Sync", changes) : say("In sync");
 }
 
 const DAY = 24 * 60 * 60;

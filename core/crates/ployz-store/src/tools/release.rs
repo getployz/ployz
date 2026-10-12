@@ -220,6 +220,7 @@ impl Tool for DiscardInput {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let discard = Discard {
             environment: scope.clone(),
+            target: Default::default(),
             path,
             version: None,
         };
@@ -279,6 +280,7 @@ impl Tool for PublishInput {
         let published = cx.write(&Publish {
             environment: scope,
             version: self.version,
+            message: None,
             accept_volume_loss: self.accept_volume_loss,
         })?;
         Ok(json!({

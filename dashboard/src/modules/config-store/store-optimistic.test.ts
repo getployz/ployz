@@ -1,8 +1,9 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
+import type { ConfigItemView, ConfigsView, DeploymentView, DiffView, DomainsView, EnvironmentView, MergeRow, OnMerge, RowId, ServiceId, ServiceListing, ServicesView, SyncView } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
+import { onMergeQuery } from "./store-pull-requests";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, syncQuery } from "./store-view.queries";
 
 const ref = { project: "shop", environment: "production" };
@@ -17,7 +18,7 @@ function cached() {
   const put = (query: Parameters<typeof storeViewOptions>[2], value: DiffView | EnvironmentView | ServicesView) =>
     queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   put(diffQuery(ref), {
-    environment, version: "3:1:1", saved: 1, published: false, hints: [], incoming: [], follow_hints: [], total_count: 3, changes: [
+    environment, version: "3:1:1", saved: 1, published: false, incoming: [], follow_hints: [], included: [], total_count: 3, changes: [
       { type: "service", id: "w", row: "w:node" as RowId, name: "web", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
         { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true, row: null },
         { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true, row: null },
@@ -37,22 +38,22 @@ function cached() {
   return { queryClient, read };
 }
 
-it("takes a discarded Setting out of the review at once; what the Store restores comes with its answer", async () => {
+it("keeps the current review until Discard answers with its authoritative inverse", async () => {
   const { queryClient, read } = cached();
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "web.replicas", version: null });
-  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["web.startCommand"]);
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["web.replicas", "web.startCommand"]);
   expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(3);
   expect(read<EnvironmentView>(environmentSettingsQuery(ref))?.settings.map((row) => row.value)).toEqual([3, "serve"]);
 });
 
-it("empties the review at once on a whole discard; the Services come with its answer", async () => {
+it("keeps review and Services while whole Discard is pending", async () => {
   const { queryClient, read } = cached();
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: null, version: null });
-  expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
+  expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(3);
   expect(read<ServicesView>(servicesQuery(ref))?.services.map((service) => service.change)).toEqual(["update", "create"]);
 });
 
-it("discards a Config file by exact identity, retaining its dotted sibling until whole Config discard", async () => {
+it("keeps exact Config files and affected Services visible until Discard answers", async () => {
   const { queryClient, read } = cached();
   const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
   queryClient.setQueryData<unknown>(key, { ok: true, value: {
@@ -64,10 +65,10 @@ it("discards a Config file by exact identity, retaining its dotted sibling until
     }],
   } });
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry.files.app.conf", version: null });
-  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["configs.sentry.files.app.conf.bak"]);
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["configs.sentry.files.app.conf", "configs.sentry.files.app.conf.bak"]);
   expect(read<DiffView>(diffQuery(ref))?.changes[0]?.restarts).toEqual(["web"]);
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.sentry", version: null });
-  expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
+  expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(3);
 });
 
 it("renames a Service everywhere its name keys a view, and marks a removed one", async () => {
@@ -188,10 +189,10 @@ it("takes a newly marked row out of a Sync from the marking Environment at once,
   const query = syncQuery(fix, "production");
   const offer = (name: string) => ({
     row: `a:variables.${name}` as RowId, node: "api", kind: "service" as const, name: `env.${name}`,
-    change: "changed" as const, from: "x", into: "y", ticked: true, requires: null, secret: null,
+    change: "changed" as const, from: "x", into: "y", ticked: true, requires: null, secret: null, held_by: null,
   });
   queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
-    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [offer("A"), offer("B")], never_synced: [],
+    from: { ...environment, name: "fix-api" }, into: environment, version: "1", rows: [offer("A"), offer("B")], never_synced: [], proposal: null,
   } satisfies SyncView });
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [offer("A").row] });
   const view = read<SyncView>(query);
@@ -208,13 +209,59 @@ it("takes an unmarked row's mark out of a Sync at once, dropping a row left with
     marks: environments.map((environment) => ({ environment, row: `a:variables.${name}` as RowId })),
   });
   queryClient.setQueryData<unknown>(storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, query).queryKey, { ok: true, value: {
-    from: { ...environment, name: "fix-api" }, into: environment, at_merge: null, version: "1", rows: [],
+    from: { ...environment, name: "fix-api" }, into: environment, version: "1", rows: [], proposal: null,
     never_synced: [marked("A", ["fix-api"]), marked("B", ["fix-api", "production"]), marked("C", ["fix-api"])],
   } satisfies SyncView });
   await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: fix, rows: [marked("A", []).row, marked("B", []).row], off: true });
   expect(read<SyncView>(query)?.never_synced).toEqual([marked("B", ["production"]), marked("C", ["fix-api"])]);
 });
 
+
+describe("the On merge list", () => {
+  const pr = { project: "shop", environment: "pr-146" };
+  const merging = (name: string, production: MergeRow["production"], preview: MergeRow["preview"]): MergeRow => ({
+    row: `w:variables.${name}` as RowId, node: "web", kind: "service", name: `env.${name}`, production, preview,
+    lands: preview, ride: "rides", conflict: false, requires: null,
+  });
+  function listed() {
+    const queryClient = new QueryClient();
+    const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, onMergeQuery(pr)).queryKey;
+    queryClient.setQueryData<unknown>(key, { ok: true, value: {
+      environment: { ...environment, name: "pr-146" }, pull_request: { repository_id: 1, number: 146 },
+      destinations: [{ name: "production", rows: [merging("CACHE_TTL", "30", "60"), merging("TOKEN", null, { secret: true })] }],
+    } satisfies OnMerge });
+    const rows = () => queryClient.getQueryData<{ value: OnMerge }>(key)?.value.destinations[0]?.rows
+      .map(({ name, ride, lands }) => ({ name, ride, lands }));
+    return { queryClient, rows };
+  }
+
+  it("excludes a row at once, landing nothing, and includes it again as the PR Environment has it", async () => {
+    const { queryClient, rows } = listed();
+    const cache = "w:variables.CACHE_TTL";
+    await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: pr, rows: [cache] });
+    expect(rows()?.[0]).toEqual({ name: "env.CACHE_TTL", ride: "excluded", lands: "60" });
+    await applyOptimistic(queryClient, "acme", { command: "never_sync", environment: pr, rows: [cache], off: true });
+    expect(rows()?.[0]).toEqual({ name: "env.CACHE_TTL", ride: "rides", lands: "60" });
+  });
+
+  it("lands an Edit's value at once, a secret's sealed, and taken back lands the PR Environment's", async () => {
+    const { queryClient, rows } = listed();
+    const into = { project: "shop", environment: "production" };
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.CACHE_TTL", value: "45" });
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.TOKEN", value: "tok" });
+    expect(rows()).toEqual([
+      { name: "env.CACHE_TTL", ride: "edited", lands: "45" },
+      { name: "env.TOKEN", ride: "edited", lands: { secret: true } },
+    ]);
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.CACHE_TTL" });
+    await applyOptimistic(queryClient, "acme", { command: "set_merge_value", environment: pr, into, row: "w:variables.TOKEN" });
+    // Production lacks the secret: it lands Not set.
+    expect(rows()).toEqual([
+      { name: "env.CACHE_TTL", ride: "rides", lands: "60" },
+      { name: "env.TOKEN", ride: "rides", lands: { secret: false } },
+    ]);
+  });
+});
 
 it("removes only the named Config file from both the listing and open item", async () => {
   const queryClient = new QueryClient();
@@ -287,7 +334,7 @@ it("waits for the Store when no Config listing establishes an optimistic target 
   expect(queryClient.getQueryData(key)).toEqual({ ok: true, value: old });
 });
 
-it("discards one same-name Config by identity while retaining the replacement's changes", async () => {
+it("keeps both same-name Config identities visible while Discard is pending", async () => {
   const { queryClient, read } = cached();
   const key = storeViewOptions("acme", { queryClient, sessionId: "s", userId: "u" }, diffQuery(ref)).queryKey;
   const node = (id: string): DiffView["changes"][number] => ({ type: "config", id, row: `${id}:node` as RowId,
@@ -296,5 +343,5 @@ it("discards one same-name Config by identity while retaining the replacement's 
     ] });
   queryClient.setQueryData<unknown>(key, { ok: true, value: { ...read<DiffView>(diffQuery(ref)), changes: [node("old"), node("new")] } });
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "configs.@old", version: null });
-  expect(read<DiffView>(diffQuery(ref))?.changes).toEqual([node("new")]);
+  expect(read<DiffView>(diffQuery(ref))?.changes).toEqual([node("old"), node("new")]);
 });

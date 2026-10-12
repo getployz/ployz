@@ -110,7 +110,7 @@ $ ployz deploy --expect-version 1:1:0.0
 stderr:
 ```
 The Environment changed after this review. Review the latest changes and try again
-next: ployz diff
+next: ployz deploy --expect-version 68:37:0.64
 ```
 
 ### deployment show of an unknown id 
@@ -404,7 +404,7 @@ $ ployz --json deploy --expect-version 1:1:0.0
 
 stdout:
 ```
-{"error":{"code":"conflict","details":{"diff":{"changes":[],"environment":{"id":"4b4e5354-8834-4aea-a807-e65f832680bc","name":"production","project":"shop","revision":68},"follow_hints":[],"hints":[],"incoming":[],"published":true,"saved":37,"total_count":0,"version":"68:37:0.64"},"next":"ployz diff"},"message":"The Environment changed after this review. Review the latest changes and try again"}}
+{"error":{"code":"conflict","details":{"diff":{"changes":[],"environment":{"id":"4b4e5354-8834-4aea-a807-e65f832680bc","name":"production","project":"shop","revision":68},"follow_hints":[],"hints":[],"incoming":[],"published":true,"saved":37,"total_count":0,"version":"68:37:0.64"},"next":"ployz deploy --expect-version 68:37:0.64"},"message":"The Environment changed after this review. Review the latest changes and try again"}}
 ```
 
 ### deployment show of an unknown id --json

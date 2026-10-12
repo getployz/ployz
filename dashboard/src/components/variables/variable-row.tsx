@@ -49,7 +49,7 @@ export function VariableRow({
   );
 
   const isSealed = variable.value.type === "sealed";
-  const needsValue = variable.value.type === "sealed" && variable.value.needsValue === true;
+  const notSet = variable.value.type === "sealed" && variable.value.notSet === true;
   const plainValue = variable.value.type === "plain" ? variable.value.value : "";
   const showMetadata = onUpdateMetadata != null;
   const brokenRefWarning = referencesDeletedOwner(plainValue)
@@ -93,7 +93,7 @@ export function VariableRow({
         editing={state.editing}
         editValue={state.editValue}
         isSealed={isSealed}
-        needsValue={needsValue}
+        notSet={notSet}
         plainValue={plainValue}
         unresolvedReferences={variable.unresolvedReferences}
         revealed={state.revealed}
@@ -110,7 +110,7 @@ export function VariableRow({
         editing={state.editing}
         exported={variable.exported}
         isSealed={isSealed}
-        needsValue={needsValue}
+        notSet={notSet}
         plainValue={plainValue}
         showMetadata={showMetadata}
         onCancelEdit={() => dispatch({ type: "editCancelled" })}

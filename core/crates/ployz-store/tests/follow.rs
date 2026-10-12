@@ -173,6 +173,7 @@ fn discard(store: &ConfigStore, who: &Actor, environment: &str, path: &str) {
             who,
             &Discard {
                 environment: at(environment),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: None,
             },
@@ -538,6 +539,7 @@ fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
             }),
             BatchCommand::Discard(Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(path).unwrap()),
                 version: Some(version),
             }),
@@ -546,10 +548,8 @@ fn never_sync_arrived(at_row: &str, path: &str, version: String) -> Batch {
     }
 }
 
-/// Never sync on a published healthcheck path that arrived discards it from Saved
-/// State too: the path is a part of the `healthcheck` Setting Discard takes.
 #[test]
-fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
+fn never_sync_stages_a_published_arrival_reversal_until_save() {
     let (store, who) = shop();
     set(
         &store,
@@ -570,11 +570,22 @@ fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
     let publish = Publish {
         environment: at("fix-web"),
         version: Some(diff(&store, &who, "fix-web").version),
+        message: None,
         accept_volume_loss: Vec::new(),
     };
     store
         .write_trusted(&who, &publish, &Trusted::default())
         .unwrap();
+    let history = store
+        .read(
+            &who,
+            &ployz_store::HistoryQuery {
+                environment: at("fix-web"),
+                limit: None,
+            },
+        )
+        .unwrap()
+        .revisions;
     let version = diff(&store, &who, "fix-web").version;
     store
         .write(
@@ -583,9 +594,60 @@ fn never_sync_on_a_published_arrival_discards_it_from_saved_state() {
         )
         .unwrap();
     assert_eq!(web(&store, &who, "fix-web")["healthcheck"], old);
-    assert!(
-        diff(&store, &who, "fix-web").published,
-        "Saved State follows the discard"
+    assert_eq!(
+        store
+            .read(
+                &who,
+                &ployz_store::HistoryQuery {
+                    environment: at("fix-web"),
+                    limit: None,
+                }
+            )
+            .unwrap()
+            .revisions,
+        history
+    );
+    let inverse = diff(&store, &who, "fix-web");
+    assert!(!inverse.published);
+    assert!(inverse.draft_count > 0);
+    let excluded = store
+        .read(
+            &who,
+            &EnvironmentQuery {
+                environment: at("fix-web"),
+                path: None,
+                all: false,
+            },
+        )
+        .unwrap()
+        .never_synced;
+    assert_eq!(excluded.len(), 1);
+    store
+        .write_trusted(
+            &who,
+            &Publish {
+                environment: at("fix-web"),
+                version: Some(inverse.version),
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert!(diff(&store, &who, "fix-web").published);
+    assert_eq!(
+        store
+            .read(
+                &who,
+                &EnvironmentQuery {
+                    environment: at("fix-web"),
+                    path: None,
+                    all: false
+                }
+            )
+            .unwrap()
+            .never_synced,
+        excluded
     );
 }
 
@@ -710,5 +772,102 @@ fn a_source_discarded_after_two_follows_lets_the_next_one_follow() {
     assert_eq!(
         web(&store, &who, "fix-git")["repository"],
         json!("acme/docs")
+    );
+}
+
+/// Include everything `from` offers into `into`'s draft as Sync `n`.
+fn include(store: &ConfigStore, who: &Actor, from: &str, into: &str, n: u8) -> ployz_store::Synced {
+    let view = store
+        .read(
+            who,
+            &ployz_store::SyncQuery {
+                from: at(from),
+                into: Some(at(into)),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            who,
+            &ployz_store::SyncChanges {
+                from: at(from),
+                into: Some(at(into)),
+                close_after: false,
+                version: view.version,
+                picks: None,
+                skip: Vec::new(),
+                values: std::collections::BTreeMap::new(),
+                id: Some(
+                    ployz_store::SyncId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}"))
+                        .unwrap(),
+                ),
+            },
+        )
+        .unwrap()
+}
+
+/// `environment`'s proposals: source and how many rows each still owns.
+fn included(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<(String, usize)> {
+    diff(store, who, environment)
+        .included
+        .into_iter()
+        .map(|included| {
+            let name = match included.source {
+                ployz_store::ProposalSource::Environment { name, .. }
+                | ployz_store::ProposalSource::PullRequest { name, .. } => name,
+            };
+            (name, included.changes)
+        })
+        .collect()
+}
+
+#[test]
+fn a_follow_never_overwrites_a_row_a_proposal_owns() {
+    let (store, who) = shop();
+    branch(&store, &who, 10, "fix-web", "qa");
+    set(&store, &who, "qa", &[("web.env.PLAIN", json!("qa"))]);
+    include(&store, &who, "qa", "fix-web", 1);
+    assert_eq!(included(&store, &who, "fix-web"), [("qa".to_owned(), 1)]);
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    deploy(&store, &who, "production", 2);
+    // fix-web keeps what it included; production's value is a hint, and the
+    // proposal still owns its row.
+    assert_eq!(web(&store, &who, "fix-web")["env"]["PLAIN"], json!("qa"));
+    assert_eq!(
+        hints(&store, &who, "fix-web"),
+        [r#"web.env.PLAIN = "2" from production"#]
+    );
+    assert_eq!(included(&store, &who, "fix-web"), [("qa".to_owned(), 1)]);
+}
+
+#[test]
+fn a_follow_into_a_draft_does_not_join_its_proposal() {
+    let (store, who) = shop();
+    branch(&store, &who, 10, "fix-web", "qa");
+    set(&store, &who, "qa", &[("web.env.MINE", json!("qa"))]);
+    include(&store, &who, "qa", "fix-web", 1);
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    deploy(&store, &who, "production", 2);
+    assert_eq!(web(&store, &who, "fix-web")["env"]["PLAIN"], json!("2"));
+    // What followed is fix-web's, not qa's: only MINE is the proposal's.
+    assert_eq!(included(&store, &who, "fix-web"), [("qa".to_owned(), 1)]);
+}
+
+#[test]
+fn a_follow_landing_on_a_row_its_own_pair_owns_releases_it() {
+    let (store, who) = shop();
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("2"))]);
+    // fix-web includes production's draft, then production deploys a newer value.
+    include(&store, &who, "production", "fix-web", 1);
+    assert_eq!(
+        included(&store, &who, "fix-web"),
+        [("production".to_owned(), 1)]
+    );
+    set(&store, &who, "production", &[("web.env.PLAIN", json!("3"))]);
+    deploy(&store, &who, "production", 2);
+    assert_eq!(web(&store, &who, "fix-web")["env"]["PLAIN"], json!("3"));
+    assert_eq!(
+        included(&store, &who, "fix-web"),
+        [("production".to_owned(), 0)]
     );
 }
