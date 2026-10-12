@@ -144,8 +144,9 @@ describe("everything support reads, with every switch off", () => {
     view({ view: "service", values: { env: { LOG_LEVEL: VARIABLE } }, changes: [variable, unrowed] }),
     view({ view: "config", files: ["config.yml"], contents: { "config.yml": FILE } }),
     view({ view: "sync", rows: [{ row: `${API}:variables.LOG_LEVEL`, from: VARIABLE, into: VARIABLE }, { row: file.row, from: { content: FILE }, into: null }] }),
-    view({ view: "pull_request", environments: [{ destinations }], check: { summary: `LOG_LEVEL=${VARIABLE}` } }),
+    view({ view: "pull_request", environments: [{ deployment: summary, destinations }], check: { summary: `LOG_LEVEL=${VARIABLE}` } }),
     view({ view: "on_merge", destinations }),
+    view({ view: "environments", environments: [{ removal: summary }] }),
   ];
   const refusals: ReadonlyArray<StoreRefusal> = [
     { code: "approval_required", message: "Approve it.", details: { approval: "d1", diff: { view: "diff", ...diff } } },
@@ -156,6 +157,10 @@ describe("everything support reads, with every switch off", () => {
     asTestDouble<ConfigWritten>()({ written: "deployment", ...summary }),
     asTestDouble<ConfigWritten>()({ written: "on_merge", destinations }),
     asTestDouble<ConfigWritten>()({ written: "batch", results: [{ written: "deployment", ...summary }] }),
+    asTestDouble<ConfigWritten>()({ written: "default_environment", environments: [{ removal: summary }] }),
+    asTestDouble<ConfigWritten>()({ written: "branch_setup", environments: [{ removal: summary }] }),
+    asTestDouble<ConfigWritten>()({ written: "removal", removal: "removing", left: [{ deployment: summary }], waiting_on: [] }),
+    asTestDouble<ConfigWritten>()({ written: "automated", admitted: [{ environment: "e1", deployment: summary }] }),
   ];
   const leaked = (shown: ConfigView | ConfigWritten | StoreRefusal) => MARKERS.filter((marker) => JSON.stringify(shown).includes(marker));
 

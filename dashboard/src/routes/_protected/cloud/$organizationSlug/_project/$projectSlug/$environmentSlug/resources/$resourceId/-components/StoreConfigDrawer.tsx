@@ -105,11 +105,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const current = selected !== null && fileNames.includes(selected) ? selected : fileNames[0] ?? null;
   const textOf = (file: string) => drafts.get(file)?.content ?? item.contents[file] ?? "";
   const hidden = (file: string) => hiddenFile(item, file) && textOf(file) === "";
-  const edits = configEdits(item, drafts);
-  // A failed rollback read can leave the optimistic contents cached.
-  edits.push(...[...drafts]
-    .filter(([file]) => failedSaves.has(file) && !edits.some((edit) => edit.file === file))
-    .map(([file, draft]) => ({ file, ...draft })));
+  const edits = configEdits(item, drafts, failedSaves);
   const dirty = new Set(edits.map((edit) => edit.file));
   const unsaved = new Set([...dirty, ...[...pendingSaves].flatMap((submitted) => [...submitted.keys()])]);
   const oversized = fileNames.map((file) => ({ file, error: configFileSizeError(utf8Bytes(textOf(file))) }))

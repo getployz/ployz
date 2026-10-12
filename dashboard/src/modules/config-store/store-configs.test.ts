@@ -101,6 +101,13 @@ describe("Saving drafts", () => {
       .toEqual([{ file: "config.yml", content: "b: 2", mode: "0555" }]);
   });
 
+  it("retries a failed save even when the cache holds its text, but never empties a hidden file on retry", () => {
+    const failed = new Set(["config.yml"]);
+    expect(configEdits(stored, new Map([["config.yml", { content: "a: 1" }]]), failed)).toEqual([{ file: "config.yml", content: "a: 1" }]);
+    const hidden = { ...stored, contents: {} };
+    expect(configEdits(hidden, new Map([["config.yml", { content: "" }]]), failed)).toEqual([]);
+  });
+
   it("still writes a readable file left empty on purpose", () => {
     expect(configEdits(stored, new Map([["config.yml", { content: "" }]]))).toEqual([{ file: "config.yml", content: "" }]);
   });

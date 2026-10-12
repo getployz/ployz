@@ -1,6 +1,6 @@
 import type {
-  ConfigItemView, ConfigView, ConfigWritten, DeploymentSummary, DeploymentView, DiffView, EnvironmentView, FollowHint, JsonValue, MergeRow,
-  NodeChange, OnMerge, OnMergeInto, Outcome, PullRequestView, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
+  Automated, ConfigItemView, ConfigView, ConfigWritten, DeploymentSummary, DeploymentView, DiffView, EnvironmentsView, EnvironmentView, FollowHint, JsonValue, MergeRow,
+  NodeChange, OnMerge, OnMergeInto, Outcome, PullRequestView, Removal, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
 } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
@@ -71,6 +71,7 @@ function redactions(shows: SupportShows) {
   const outcome = (shown: Outcome | null): Outcome | null =>
     shown && "cause" in shown && !shows.logs ? { ...shown, cause: shown.cause.map(withoutCheckOutput) } : shown;
   const summary = <T extends DeploymentSummary>(view: T): T => ({ ...view, outcome: outcome(view.outcome) });
+  const maybeSummary = (view: DeploymentSummary | null): DeploymentSummary | null => view && summary(view);
   return {
     environment: <T extends EnvironmentView>(view: T): T =>
       ({ ...view, settings: view.settings.map(setting), values: view.values ? values(view.values) : view.values }),
@@ -85,12 +86,19 @@ function redactions(shows: SupportShows) {
     onMerge: <T extends OnMerge>(view: T): T => ({ ...view, destinations: view.destinations.map(destination) }),
     pullRequest: <T extends PullRequestView>(view: T): T => ({
       ...view,
-      environments: view.environments.map((environment) => ({ ...environment, destinations: environment.destinations.map(destination) })),
+      environments: view.environments.map((environment) =>
+        ({ ...environment, deployment: maybeSummary(environment.deployment), destinations: environment.destinations.map(destination) })),
       // The check's summary is markdown with values in it; Cloud publishes it to GitHub, the dashboard never shows it.
       check: view.check && !shows.variables ? { ...view.check, summary: "" } : view.check,
     }),
     config: <T extends ConfigItemView>(view: T): T => shows.configs ? view : { ...view, contents: {} },
     summary,
+    environments: <T extends EnvironmentsView>(view: T): T =>
+      ({ ...view, environments: view.environments.map((listing) => ({ ...listing, removal: maybeSummary(listing.removal) })) }),
+    removal: <T extends Removal>(view: T): T =>
+      view.removal === "removing" ? { ...view, left: view.left.map((left) => ({ ...left, deployment: maybeSummary(left.deployment) })) } : view,
+    automated: <T extends Automated>(view: T): T =>
+      ({ ...view, admitted: view.admitted.map((admitted) => ({ ...admitted, deployment: summary(admitted.deployment) })) }),
     deployment: <T extends DeploymentView>(view: T): T =>
       ({ ...summary(view), nodes: view.nodes.map((node) => ({ ...node, rows: node.rows.map(server) })) }),
   };
@@ -132,7 +140,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     branch: same,
     branch_plan: same,
     build_order: same,
-    environments: same,
+    environments: redact.environments,
     projects: same,
     due: same,
     pr_plans: same,
@@ -152,6 +160,10 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
   switch (written.written) {
     case "on_merge": return redactions(shows).onMerge(written);
     case "deployment": return redactions(shows).summary(written);
+    case "default_environment":
+    case "branch_setup": return redactions(shows).environments(written);
+    case "removal": return redactions(shows).removal(written);
+    case "automated": return redactions(shows).automated(written);
     case "batch": return { ...written, results: written.results.map((result) => writtenForSupport(result, shows)) };
     case "project":
     case "project_renamed":
@@ -171,7 +183,6 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
     case "history_staged":
     case "domain_added":
     case "domain":
-    case "automated":
     case "branch":
     case "build_order":
     case "synced":
@@ -179,9 +190,6 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
     case "removed":
     case "taken":
     case "never_synced":
-    case "default_environment":
-    case "branch_setup":
-    case "removal":
     case "removal_cancelled":
     case "pr_plans":
       return written;
