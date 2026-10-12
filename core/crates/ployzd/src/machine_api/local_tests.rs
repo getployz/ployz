@@ -1007,12 +1007,12 @@ mod set_volume_copy {
     const VOLUME: &str = "app_data";
 
     fn writer_root(epoch: u32, newest: Option<Value>) -> Value {
-        json!({"Ok": {"kind":"root", "writer":{"phase":"idle"}, "readonly":false,
+        json!({"Ok": {"kind":"root", "readonly":false,
             "newest":newest, "epoch":epoch}})
     }
 
     fn slot(newest: Option<Value>) -> Value {
-        json!({"Ok": {"kind":"slot", "slot":"1", "mirror":{"phase":"idle"}, "readonly":true,
+        json!({"Ok": {"kind":"slot", "slot":"1", "readonly":true,
             "newest":newest, "resume_token":null, "pull":null}})
     }
 

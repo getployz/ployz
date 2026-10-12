@@ -433,7 +433,7 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MirrorMarker, Pull, Snapshot, WriterMarker};
+    use crate::{Pull, Snapshot};
 
     fn snapshot(name: &str, guid: u64) -> Snapshot {
         Snapshot {
@@ -445,7 +445,6 @@ mod tests {
 
     fn root(epoch: u32, readonly: bool, newest: Option<Snapshot>) -> VolumeCopy {
         VolumeCopy::Root {
-            writer: WriterMarker::Idle,
             readonly,
             newest,
             epoch: WriterEpoch::new(epoch),
@@ -455,7 +454,6 @@ mod tests {
     fn slot(newest: Option<Snapshot>, pull: Option<Pull>) -> VolumeCopy {
         VolumeCopy::Slot {
             slot: SLOT,
-            mirror: MirrorMarker::Idle,
             readonly: true,
             newest,
             resume_token: None,

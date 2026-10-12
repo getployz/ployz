@@ -86,9 +86,9 @@ const at = 1_790_000_000;
 const snap = (guid: string, name = `ployz-${guid}`): Snapshot => ({ name, guid, created_unix_seconds: at });
 const base = snap("10");
 const writerCopy = (newest: Snapshot | null = base, epoch = 0, readonly = false): VolumeCopy =>
-  ({ kind: "root", writer: { phase: "idle" }, readonly, newest, epoch });
+  ({ kind: "root", readonly, newest, epoch });
 const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null, slot = "1"): VolumeCopy =>
-  ({ kind: "slot", slot, mirror: { phase: "idle" }, readonly: true, newest, resume_token: null, pull });
+  ({ kind: "slot", slot, readonly: true, newest, resume_token: null, pull });
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
 const first = <T>(items: readonly T[]): T => {
   const item = items[0];

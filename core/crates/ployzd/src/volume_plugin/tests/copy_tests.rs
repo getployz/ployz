@@ -171,7 +171,6 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
         property(&test, SLOT, "refquota").as_deref(),
         Some("1073741824")
     );
-    assert!(property(&test, SLOT, "ployz:mirror").is_none());
     assert_eq!(snapshot_names(&test, SLOT_FS), ["f-1", "w-1-2", "w-1-1"]);
 
     let before = commands(&test);

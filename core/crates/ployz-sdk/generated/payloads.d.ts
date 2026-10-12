@@ -2509,8 +2509,6 @@ repository: BuildGrantRepository, };
 
 export type Mirror = { server: ServerRef, synced_at: Timestamp | null, };
 
-export type MirrorMarker = { "phase": "idle" } | { "phase": "handed_in", guid: SnapshotGuid, } | { "phase": "promoting" };
-
 export type MissingLiveValue = { lineageId: string, key: string, };
 
 export type Mount = {
@@ -4407,7 +4405,7 @@ export type VolumeCopies = { volume: VolumeName,
  */
 writer: ServerRef | null, mirror: Mirror | null, };
 
-export type VolumeCopy = { "kind": "root", writer: WriterMarker, readonly: boolean, newest: Snapshot | null,
+export type VolumeCopy = { "kind": "root", readonly: boolean, newest: Snapshot | null,
 /**
  * The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
  */
@@ -4415,7 +4413,7 @@ epoch: WriterEpoch, } | { "kind": "slot",
 /**
  * The slot parent's guid, which changes when the slot is destroyed and created again.
  */
-slot: SlotId, mirror: MirrorMarker, readonly: boolean, newest: Snapshot | null, resume_token: string | null,
+slot: SlotId, readonly: boolean, newest: Snapshot | null, resume_token: string | null,
 /**
  * The `SetVolumeCopy` pull in flight, from its start until its prune is done.
  */
@@ -4629,8 +4627,6 @@ export type Withheld = "no_secret_context" | "unanswered";
 export type Write = { "at": "store", "write": ConfigCommand } | { "at": "act", "write": Act };
 
 export type WriterEpoch = number;
-
-export type WriterMarker = { "phase": "idle" } | { "phase": "stopping" } | { "phase": "frozen", guid: SnapshotGuid, } | { "phase": "thawing" } | { "phase": "handed", guid: SnapshotGuid, };
 
 export type Writes = "none" | "committed" | "unknown";
 

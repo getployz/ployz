@@ -157,115 +157,12 @@ pub struct Snapshot {
     pub created_unix_seconds: i64,
 }
 
-/// `ployz:writer` on a Volume root: the phase of the copy that holds the writes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-pub enum WriterMarker {
-    Idle,
-    Stopping,
-    Frozen { guid: SnapshotGuid },
-    Thawing,
-    Handed { guid: SnapshotGuid },
-}
-
-impl fmt::Display for WriterMarker {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Idle => formatter.write_str("idle"),
-            Self::Stopping => formatter.write_str("stopping"),
-            Self::Frozen { guid } => write!(formatter, "frozen:{guid}"),
-            Self::Thawing => formatter.write_str("thawing"),
-            Self::Handed { guid } => write!(formatter, "handed:{guid}"),
-        }
-    }
-}
-
-/// `ployz:mirror` on a slot: the phase of a read-only copy.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-pub enum MirrorMarker {
-    Idle,
-    HandedIn { guid: SnapshotGuid },
-    Promoting,
-}
-
-impl fmt::Display for MirrorMarker {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Idle => formatter.write_str("idle"),
-            Self::HandedIn { guid } => write!(formatter, "handed_in:{guid}"),
-            Self::Promoting => formatter.write_str("promoting"),
-        }
-    }
-}
-
-/// A stored marker that is not one of the known phases.
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid {property} marker {value:?}")]
-pub struct MarkerParseError {
-    pub property: &'static str,
-    pub value: String,
-}
-
-fn marker_parts(value: &str) -> (&str, Option<&str>) {
-    value
-        .split_once(':')
-        .map_or((value, None), |(phase, guid)| (phase, Some(guid)))
-}
-
-fn parse_guid(guid: Option<&str>) -> Option<SnapshotGuid> {
-    guid.and_then(|guid| guid.parse().ok()).map(SnapshotGuid)
-}
-
-impl FromStr for WriterMarker {
-    type Err = MarkerParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || MarkerParseError {
-            property: "ployz:writer",
-            value: value.to_owned(),
-        };
-        Ok(match marker_parts(value) {
-            ("idle", None) => Self::Idle,
-            ("stopping", None) => Self::Stopping,
-            ("thawing", None) => Self::Thawing,
-            ("frozen", guid) => Self::Frozen {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
-            ("handed", guid) => Self::Handed {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
-            _ => return Err(invalid()),
-        })
-    }
-}
-
-impl FromStr for MirrorMarker {
-    type Err = MarkerParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || MarkerParseError {
-            property: "ployz:mirror",
-            value: value.to_owned(),
-        };
-        Ok(match marker_parts(value) {
-            ("idle", None) => Self::Idle,
-            ("promoting", None) => Self::Promoting,
-            ("handed_in", guid) => Self::HandedIn {
-                guid: parse_guid(guid).ok_or_else(invalid)?,
-            },
-            _ => return Err(invalid()),
-        })
-    }
-}
-
 /// The copy of a Volume this Machine holds, by its place in the dataset layout.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VolumeCopy {
     /// `<pool>/ployz/<name>`: the writer's dataset, mounted for Containers.
     Root {
-        writer: WriterMarker,
         readonly: bool,
         newest: Option<Snapshot>,
         /// The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
@@ -277,7 +174,6 @@ pub enum VolumeCopy {
     Slot {
         /// The slot parent's guid, which changes when the slot is destroyed and created again.
         slot: SlotId,
-        mirror: MirrorMarker,
         readonly: bool,
         newest: Option<Snapshot>,
         #[serde(default)]
@@ -527,14 +423,12 @@ mod tests {
     #[test]
     fn plain_mount_admission_table() {
         let root = |readonly| VolumeCopy::Root {
-            writer: WriterMarker::Idle,
             readonly,
             newest: None,
             epoch: WriterEpoch::default(),
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),
-            mirror: MirrorMarker::Idle,
             readonly: true,
             newest: None,
             resume_token: None,
@@ -654,48 +548,6 @@ mod tests {
             ),
             "Volume data's writer is on hel-1, so this Server cannot mount it"
         );
-    }
-
-    #[test]
-    fn markers_round_trip_through_their_property_values() {
-        for (text, marker) in [
-            ("idle", WriterMarker::Idle),
-            ("stopping", WriterMarker::Stopping),
-            (
-                "frozen:42",
-                WriterMarker::Frozen {
-                    guid: SnapshotGuid(42),
-                },
-            ),
-            ("thawing", WriterMarker::Thawing),
-            (
-                "handed:42",
-                WriterMarker::Handed {
-                    guid: SnapshotGuid(42),
-                },
-            ),
-        ] {
-            assert_eq!(marker.to_string(), text);
-            assert_eq!(text.parse::<WriterMarker>().unwrap(), marker);
-        }
-        for (text, marker) in [
-            ("idle", MirrorMarker::Idle),
-            (
-                "handed_in:9",
-                MirrorMarker::HandedIn {
-                    guid: SnapshotGuid(9),
-                },
-            ),
-            ("promoting", MirrorMarker::Promoting),
-        ] {
-            assert_eq!(marker.to_string(), text);
-            assert_eq!(text.parse::<MirrorMarker>().unwrap(), marker);
-        }
-        for invalid in ["", "frozen", "frozen:x", "idle:1", "handed", "-"] {
-            assert!(invalid.parse::<WriterMarker>().is_err(), "{invalid:?}");
-        }
-        assert!("final".parse::<MirrorMarker>().is_err());
-        assert!("thawing".parse::<MirrorMarker>().is_err());
     }
 
     fn through_javascript(value: serde_json::Value) -> serde_json::Value {

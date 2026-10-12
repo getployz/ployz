@@ -1,9 +1,9 @@
-//! What this Machine holds for one Volume name: its root or slot, the markers on it, and its newest snapshot.
+//! What this Machine holds for one Volume name: its root or slot and its newest snapshot.
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, MirrorMarker, Pull, RpcError, RpcErrorCode, SlotId, Snapshot,
-    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch, WriterMarker,
+    InspectVolumeCopyRequest, Pull, RpcError, RpcErrorCode, SlotId, Snapshot, SnapshotGuid,
+    SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
 };
 use ployzd::machine_pool::MachinePool;
 
@@ -14,9 +14,6 @@ use super::{
         slot_parent,
     },
 };
-
-pub(super) const WRITER_PROPERTY: &str = "ployz:writer";
-pub(super) const MIRROR_PROPERTY: &str = "ployz:mirror";
 
 pub(super) fn internal(error: VolumeError) -> RpcError {
     match error {
@@ -42,24 +39,6 @@ impl VolumeStorage {
 
     pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
         Ok(self.property(dataset, PROMOTE_PROPERTY).await?.is_some())
-    }
-
-    pub(super) async fn writer_marker(&self, root: &Dataset) -> Result<WriterMarker> {
-        match self.property(&root.name, WRITER_PROPERTY).await? {
-            None => Ok(WriterMarker::Idle),
-            Some(value) => value
-                .parse()
-                .map_err(|error| format!("{error} on {}", root.name).into()),
-        }
-    }
-
-    pub(super) async fn mirror_marker(&self, slot: &Dataset) -> Result<MirrorMarker> {
-        match self.property(&slot.name, MIRROR_PROPERTY).await? {
-            None => Ok(MirrorMarker::Idle),
-            Some(value) => value
-                .parse()
-                .map_err(|error| format!("{error} on {}", slot.name).into()),
-        }
     }
 
     /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
@@ -175,7 +154,6 @@ impl VolumeStorage {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             root.require_provisioned(name)?;
             return Ok(Some(VolumeCopy::Root {
-                writer: self.writer_marker(root).await?,
                 readonly: root.readonly,
                 newest: self.newest_snapshot(&root.name).await?,
                 epoch: self.epoch(&root.name).await?,
@@ -195,7 +173,6 @@ impl VolumeStorage {
         };
         Ok(Some(VolumeCopy::Slot {
             slot: self.slot_id(&slot.name).await?,
-            mirror: self.mirror_marker(slot).await?,
             readonly,
             newest,
             resume_token,

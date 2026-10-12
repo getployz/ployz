@@ -1,13 +1,10 @@
 //! Slot helpers the copy and seed routes share: the mirror root, slot naming and the
 //! snapshot cleanup a slot or root needs.
 
-use ployz_core::{MirrorMarker, RpcError, Snapshot};
+use ployz_core::{RpcError, Snapshot};
 use ployzd::machine_pool::MachinePool;
 
-use super::{
-    Dataset, DockerVolumeName, MIRROR_ROOT, VolumeStorage,
-    inspect::{MIRROR_PROPERTY, internal},
-};
+use super::{Dataset, DockerVolumeName, MIRROR_ROOT, VolumeStorage, inspect::internal};
 
 pub(super) const MIRROR_MOUNT_ROOT: &str = "/var/lib/ployz-mirror";
 
@@ -54,12 +51,6 @@ impl VolumeStorage {
             "readonly=on",
             "-o",
             &format!("refquota={refquota_bytes}"),
-            parent,
-        ])
-        .await?;
-        self.zfs(&[
-            "set",
-            &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
             parent,
         ])
         .await?;

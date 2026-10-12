@@ -5,12 +5,12 @@
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{MirrorMarker, RpcError};
+use ployz_core::RpcError;
 use ployzd::machine_pool::MachinePool;
 
 use super::{
     Dataset, DockerVolumeName, Place, VolumeStorage,
-    inspect::{MIRROR_PROPERTY, WRITER_PROPERTY, internal},
+    inspect::internal,
     storage::{slot_fs, slot_parent},
 };
 
@@ -54,8 +54,7 @@ impl VolumeStorage {
         Ok(demoted)
     }
 
-    /// Turns `name`'s root into a sealed slot with an idle marker. Answers whether it
-    /// demoted anything.
+    /// Turns `name`'s root into a sealed slot. Answers whether it demoted anything.
     async fn demote_copy(
         &self,
         pool: &MachinePool,
@@ -89,14 +88,6 @@ impl VolumeStorage {
             }
             Departure::Departed => false,
         };
-        if let Some(slot) = Self::slot(datasets, pool, name) {
-            self.zfs(&[
-                "set",
-                &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
-                &slot.name,
-            ])
-            .await?;
-        }
         Ok(demoted)
     }
 
@@ -113,11 +104,7 @@ impl VolumeStorage {
             (Some(_), _, Some(_)) => Departure::RootBesideMirror,
             (Some(root), Some(_), None) => Departure::RootBesideEmptySlot(root),
             (Some(root), None, None) => Departure::Root(root),
-            (None, _, Some(fs))
-                if !fs.readonly || self.property(&fs.name, WRITER_PROPERTY).await?.is_some() =>
-            {
-                Departure::UnsealedSlot(fs)
-            }
+            (None, _, Some(fs)) if !fs.readonly => Departure::UnsealedSlot(fs),
             (None, _, _) => Departure::Departed,
         })
     }
@@ -164,7 +151,6 @@ impl VolumeStorage {
 
     async fn seal(&self, fs: &str) -> super::Result<()> {
         self.zfs(&["set", "readonly=on", fs]).await?;
-        self.zfs(&["inherit", WRITER_PROPERTY, fs]).await?;
         Ok(())
     }
 }

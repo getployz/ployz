@@ -25,10 +25,8 @@ async fn departure_demotes_each_root_to_a_slot() {
         "zfs snapshot tank/ployz/data@dep-",
         "zfs create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror\n",
         "zfs create -o canmount=off -o readonly=on -o refquota=1073741824 tank/ployz-mirror/data\n",
-        "zfs set ployz:mirror=idle tank/ployz-mirror/data\n",
         "zfs rename tank/ployz/data tank/ployz-mirror/data/fs\n",
         "zfs set readonly=on tank/ployz-mirror/data/fs\n",
-        "zfs inherit ployz:writer tank/ployz-mirror/data/fs\n",
     ];
     let mut cursor = 0;
     for step in order {
@@ -75,22 +73,12 @@ async fn departure_on_a_machine_without_zfs_demotes_nothing() {
 }
 
 #[tokio::test]
-async fn departure_idles_a_slot_marker_and_keeps_its_data() {
+async fn departure_keeps_a_slot_and_its_data() {
     let test = TestDir::new();
-    set_property(
-        &test,
-        "tank/ployz-mirror/copy",
-        "ployz:mirror",
-        "handed_in:9",
-    );
     let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
 
     let response = post(&socket, "/Storage.Demote", json!(null)).await;
     assert_eq!(response, json!({"Ok": []}));
-    assert_eq!(
-        property(&test, "tank/ployz-mirror/copy", "ployz:mirror").as_deref(),
-        Some("idle")
-    );
     let log = commands(&test);
     assert!(!log.contains("zfs rename"), "{log}");
     assert!(!log.contains("zfs destroy"), "{log}");
@@ -103,10 +91,6 @@ async fn assert_departed_into_a_slot(test: &TestDir, socket: &Path) {
     assert_eq!(
         property(test, "tank/ployz-mirror/data/fs", "readonly").as_deref(),
         Some("on")
-    );
-    assert_eq!(
-        property(test, "tank/ployz-mirror/data/fs", "ployz:writer"),
-        None
     );
     let kept = snapshot_names(test, "tank/ployz-mirror/data/fs");
     assert!(kept.iter().any(|name| name.starts_with("dep-")), "{kept:?}");
@@ -186,74 +170,59 @@ async fn departure_interrupted_before_the_rename_finishes_on_retry() {
 
 #[tokio::test]
 async fn departure_interrupted_after_the_rename_seals_the_slot_on_retry() {
-    for toggle in ["props/fail-properties", "inherit-fails"] {
-        let test = TestDir::new();
-        set_property(&test, "tank/ployz/data", "ployz:writer", "stopping");
-        let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
-        fs::write(test.0.join(toggle), "").unwrap();
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    let toggle = test.0.join("props").join("fail-properties");
+    fs::write(&toggle, "").unwrap();
 
-        let interrupted = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert!(
-            error_message(&interrupted).contains("property unavailable"),
-            "{toggle}: {interrupted}"
-        );
-        assert!(test.0.join("mirror-fs").exists(), "{toggle}: no rename");
-        fs::remove_file(test.0.join(toggle)).unwrap();
+    let interrupted = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert!(
+        error_message(&interrupted).contains("property unavailable"),
+        "{interrupted}"
+    );
+    assert!(test.0.join("mirror-fs").exists(), "no rename");
+    fs::remove_file(&toggle).unwrap();
 
-        let retried = post(&socket, "/Storage.Demote", json!(null)).await;
-        assert_departed_into_a_slot(&test, &socket).await;
-        assert_eq!(retried, json!({"Ok": ["data"]}), "{toggle}");
-        server.abort();
-    }
+    let retried = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_departed_into_a_slot(&test, &socket).await;
+    assert_eq!(retried, json!({"Ok": ["data"]}));
+    server.abort();
 }
 
 #[tokio::test]
 async fn storage_inspection_derives_each_copy_role() {
     struct Case {
         markers: &'static [&'static str],
-        writer: Option<&'static str>,
         role: &'static str,
         listed: bool,
     }
     let cases = [
         Case {
             markers: &["root", "volume"],
-            writer: None,
             role: "writer",
             listed: true,
         },
         Case {
-            markers: &["root", "volume"],
-            writer: Some("stopping"),
-            role: "switching",
-            listed: true,
-        },
-        Case {
             markers: &["root", "volume", "readonly-volume"],
-            writer: None,
             role: "switching",
             listed: true,
         },
         Case {
             markers: &["root", "mirror", "mirror-fs"],
-            writer: None,
             role: "slot",
             listed: false,
         },
     ];
     for case in cases {
         let test = TestDir::new();
-        if let Some(writer) = case.writer {
-            set_property(&test, "tank/ployz/data", "ployz:writer", writer);
-        }
         let (socket, server) = start(&test, USABLE_POOL, case.markers);
         let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
         assert_eq!(
             capacity.pointer("/Ok/copies/data/role").unwrap(),
             &json!(case.role),
-            "{:?} {:?}: {capacity}",
-            case.markers,
-            case.writer
+            "{:?}: {capacity}",
+            case.markers
         );
         assert_eq!(
             capacity.pointer("/Ok/volumes/data").is_some(),

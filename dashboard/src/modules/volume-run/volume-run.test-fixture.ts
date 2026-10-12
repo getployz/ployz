@@ -6,12 +6,12 @@ const older = { ...snapshot, name: "w-1-3", guid: "10" };
 
 /** Each copy a Machine can answer with. */
 export const COPIES = {
-  writer: { kind: "root", writer: { phase: "idle" }, readonly: false, newest: snapshot, epoch: 1 },
-  cut: { kind: "root", writer: { phase: "idle" }, readonly: true, newest: snapshot, epoch: 1 },
-  mirror: { kind: "slot", slot: "1", mirror: { phase: "idle" }, readonly: true, newest: snapshot, resume_token: null, pull: null },
-  final: { kind: "slot", slot: "1", mirror: { phase: "idle" }, readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null },
-  behind: { kind: "slot", slot: "1", mirror: { phase: "idle" }, readonly: true, newest: older, resume_token: null, pull: null },
-  pulling: { kind: "slot", slot: "1", mirror: { phase: "idle" }, readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: null } },
+  writer: { kind: "root", readonly: false, newest: snapshot, epoch: 1 },
+  cut: { kind: "root", readonly: true, newest: snapshot, epoch: 1 },
+  mirror: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null },
+  final: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null },
+  behind: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: null },
+  pulling: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: null } },
 } satisfies Record<string, VolumeCopy>;
 
 export type Copy = keyof typeof COPIES | "empty" | "unanswered";

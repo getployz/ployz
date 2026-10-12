@@ -212,11 +212,11 @@ async fn participating() -> (Harness, MachineId) {
 async fn a_plain_deploy_mounts_only_on_the_writer() {
     let root = |readonly: bool| {
         json!({"Ok": {
-            "copy": {"kind": "root", "writer": {"phase": "idle"}, "readonly": readonly, "newest": null},
+            "copy": {"kind": "root", "readonly": readonly, "newest": null},
         }})
     };
     let slot = json!({"Ok": {
-        "copy": {"kind": "slot", "slot": "1", "mirror": {"phase": "idle"}, "readonly": true, "newest": null, "resume_token": null},
+        "copy": {"kind": "slot", "slot": "1", "readonly": true, "newest": null, "resume_token": null},
     }});
     let nothing = json!({"Ok": {"copy": null}});
     /// Case name, the plugin's inspection, a copy elsewhere (role, Machine still listed),

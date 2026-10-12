@@ -4,7 +4,6 @@ use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
 };
-use ployz_core::WriterMarker;
 use ployzd::{VolumePluginStatus, machine_pool::MachinePool};
 use serde::Serialize;
 
@@ -30,14 +29,6 @@ impl VolumeStorage {
         if self.unregistered(&dataset.name).await? {
             return Err(format!(
                 "VolumeSwitching: Volume {name} is a promoted root Docker has not registered yet; refusing to remove {}",
-                dataset.name
-            )
-            .into());
-        }
-        let writer = self.writer_marker(dataset).await?;
-        if writer != WriterMarker::Idle {
-            return Err(format!(
-                "VolumeSwitching: Volume {name} is mid-run on this Machine (writer {writer}); refusing to remove {}",
                 dataset.name
             )
             .into());

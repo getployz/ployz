@@ -66,7 +66,14 @@ impl VolumeStorage {
                 let name = ployz_core::DockerVolumeName::parse(name)
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
                 let (role, maximum_bytes) = match place {
-                    super::Place::Root(_) => (self.root_role(dataset).await?, dataset.refquota),
+                    super::Place::Root(_) => (
+                        if dataset.readonly {
+                            CopyRole::Switching
+                        } else {
+                            CopyRole::Writer
+                        },
+                        dataset.refquota,
+                    ),
                     super::Place::Slot(_) => {
                         let bound = super::storage::committed_bytes(dataset, pool.name());
                         if bound == 0 {
@@ -109,16 +116,6 @@ impl VolumeStorage {
                 copies,
             },
             slot_bound_bytes,
-        })
-    }
-
-    /// Writer while idle and writable; Switching while a run holds the root.
-    async fn root_role(&self, root: &super::Dataset) -> super::Result<CopyRole> {
-        let idle = self.writer_marker(root).await? == ployz_core::WriterMarker::Idle;
-        Ok(if idle && !root.readonly {
-            CopyRole::Writer
-        } else {
-            CopyRole::Switching
         })
     }
 

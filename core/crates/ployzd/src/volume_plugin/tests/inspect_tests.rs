@@ -25,14 +25,9 @@ pub(super) fn set_property(test: &TestDir, dataset: &str, property: &str, value:
     fs::write(directory.join(property), format!("{value}\n")).unwrap();
 }
 
-fn commands(test: &TestDir) -> String {
-    fs::read_to_string(test.0.join("commands")).unwrap()
-}
-
 #[tokio::test]
-async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
+async fn inspect_reports_a_root_with_its_newest_snapshot() {
     let test = TestDir::new();
-    set_property(&test, "tank/ployz/data", "ployz:writer", "frozen:42");
     set_property(
         &test,
         "tank/ployz/data",
@@ -47,7 +42,6 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
         json!({"Ok": {
             "copy": {
                 "kind": "root",
-                "writer": {"phase": "frozen", "guid": "42"},
                 "readonly": false,
                 "newest": {"name": "f-2", "guid": "42", "created_unix_seconds": 1_700_000_000},
                 "epoch": 0,
@@ -60,12 +54,6 @@ async fn inspect_reports_a_root_with_its_marker_and_newest_snapshot() {
 #[tokio::test]
 async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
     let test = TestDir::new();
-    set_property(
-        &test,
-        "tank/ployz-mirror/copy",
-        "ployz:mirror",
-        "handed_in:9",
-    );
     let (socket, server) = start(&test, USABLE_POOL, &["root", "slot"]);
 
     let response = post(&socket, "/Volume.Inspect", json!({"name": "copy"})).await;
@@ -74,7 +62,6 @@ async fn inspect_reports_a_slot_and_nothing_for_an_unknown_name() {
         &json!({
             "kind": "slot",
             "slot": "1",
-            "mirror": {"phase": "handed_in", "guid": "9"},
             "readonly": true,
             "newest": null,
             "resume_token": null,
@@ -92,43 +79,5 @@ async fn inspect_without_a_pool_holds_nothing() {
     let (socket, server) = start(&test, "", &[]);
     let response = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
     assert_eq!(response, json!({"Ok": {"copy": null}}));
-    server.abort();
-}
-
-#[tokio::test]
-async fn inspect_refuses_a_marker_it_cannot_read() {
-    let test = TestDir::new();
-    set_property(&test, "tank/ployz/data", "ployz:writer", "melting");
-    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
-    let response = post(&socket, "/Volume.Inspect", json!({"name": "data"})).await;
-    assert!(
-        response
-            .pointer("/Err/message")
-            .and_then(Value::as_str)
-            .is_some_and(|message| message.contains("melting")),
-        "{response}"
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn remove_refuses_handed_root() {
-    let test = TestDir::new();
-    set_property(&test, "tank/ployz/data", "ployz:writer", "handed:42");
-    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
-
-    let response = post(&socket, "/VolumeDriver.Remove", json!({"Name": "data"})).await;
-    let message = error(&response);
-    assert!(message.starts_with("VolumeSwitching:"), "{message}");
-    assert!(message.contains("handed:42"), "{message}");
-    assert!(!commands(&test).contains("zfs destroy"));
-    assert!(test.0.join("volume").exists());
-
-    set_property(&test, "tank/ployz/data", "ployz:writer", "idle");
-    assert_eq!(
-        post(&socket, "/VolumeDriver.Remove", json!({"Name": "data"})).await,
-        json!({"Err": ""})
-    );
-    assert!(commands(&test).contains("zfs destroy -r tank/ployz/data"));
     server.abort();
 }

@@ -50,7 +50,6 @@ fn other_machine_verbs_are_refused_before_anything_is_sent() {
 fn a_set_volume_copy_reply_and_its_refusal_pass_through_as_the_machine_sent_them() {
     let copy = json!({
         "kind": "root",
-        "writer": { "phase": "idle" },
         "readonly": false,
         "newest": { "name": "f-1", "guid": "13", "created_unix_seconds": 1700000000 },
         "epoch": 2,

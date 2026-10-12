@@ -30,12 +30,11 @@ use ployz_core::{
     LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine, MachineDetails, MachineId,
     MachineList, MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc,
     MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
-    MembershipObservation, MirrorMarker, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    MembershipObservation, NAMESPACE_LABEL, Namespace, OpaquePayload, PROTOCOL_MAJOR,
     ProvisionedCopy, ProvisionedVolumeMaximumBytes, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RuntimeWatchFrame, ServiceId, ServiceName, SlotId, StorageBacking, StorageCapacity, VolumeCopy,
-    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, WriterMarker,
-    encode_runtime_watch_frame,
+    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -801,14 +800,12 @@ impl Fleet {
                     .map(|copy| match copy.role {
                         CopyRole::Slot => VolumeCopy::Slot {
                             slot: SlotId::new(1),
-                            mirror: MirrorMarker::Idle,
                             readonly: true,
                             newest: None,
                             resume_token: None,
                             pull: None,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
-                            writer: WriterMarker::Idle,
                             readonly: false,
                             newest: None,
                             epoch: WriterEpoch::default(),
