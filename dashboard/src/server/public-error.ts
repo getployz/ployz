@@ -53,6 +53,7 @@ export const PublicErrorCategory = Schema.Literals([
   "not-found",
   "conflict",
   "build-grant-unavailable",
+  "server-lacks",
   "internal",
 ]);
 
@@ -66,6 +67,9 @@ const decodePublicFailure = Schema.decodeUnknownOption(
 );
 const decodeUserFacingMessage = Schema.decodeUnknownOption(
   Schema.Struct({ userFacing: Schema.Literal(true), message: Schema.String }),
+);
+const decodeServerLacks = Schema.decodeUnknownOption(
+  Schema.Struct({ machineId: Schema.String, capability: Schema.String }),
 );
 const decodeTaggedFailure = Schema.decodeUnknownOption(
   Schema.Struct({ _tag: Schema.String }),
@@ -144,6 +148,12 @@ function userFacingMessage(cause: unknown, fallback: string): string {
   return Option.isSome(failure) ? failure.value.message : fallback;
 }
 
+const internal = () => encode({
+  _tag: "PublicError",
+  code: "INTERNAL",
+  message: "The request could not be completed.",
+});
+
 export function encodePublicError(cause: unknown): PublicErrorData {
   switch (publicCategory(cause)) {
     case "validation":
@@ -182,12 +192,18 @@ export function encodePublicError(cause: unknown): PublicErrorData {
         code: "BUILD_GRANT_UNAVAILABLE",
         message: "Your Cluster could not mint a Build Grant.",
       });
-    case "internal":
+    case "server-lacks": {
+      const lack = decodeServerLacks(cause);
+      if (Option.isNone(lack)) return internal();
       return encode({
         _tag: "PublicError",
-        code: "INTERNAL",
-        message: "The request could not be completed.",
+        code: "SERVER_LACKS",
+        message: "A server needs a newer Ployz.",
+        ...lack.value,
       });
+    }
+    case "internal":
+      return internal();
   }
 }
 
@@ -210,6 +226,7 @@ export function statusForPublicError(error: PublicErrorData): number {
     case "NOT_FOUND":
       return 404;
     case "CONFLICT":
+    case "SERVER_LACKS":
       return 409;
     case "BUILD_GRANT_UNAVAILABLE":
       return 503;

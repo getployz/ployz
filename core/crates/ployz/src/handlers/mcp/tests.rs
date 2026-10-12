@@ -147,7 +147,10 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
             .to_owned(),
         approval,
         bearer,
-        body: serde_json::from_slice(&body).unwrap(),
+        body: match body.as_slice() {
+            [] => Value::Null,
+            body => serde_json::from_slice(body).unwrap(),
+        },
     }
 }
 
@@ -263,7 +266,12 @@ fn writes(seen: &[Seen]) -> Vec<&Seen> {
 }
 
 fn fixed(place: Place) -> Locate {
-    Box::new(move || Ok(place.clone()))
+    Box::new(move |store| {
+        Ok(Place {
+            store,
+            ..place.clone()
+        })
+    })
 }
 
 fn on_cloud(fake: &Fake, place: Place) -> Server {
@@ -274,6 +282,7 @@ fn on_cloud(fake: &Fake, place: Place) -> Server {
                 config: PathBuf::from("/nonexistent/config.toml"),
                 token: Some("ployz_acme".to_owned()),
                 cloud: Some(fake.url.clone()),
+                organization: OnceCell::new_with(Some(org())),
             },
             Store::Cloud,
             fixed(place),
@@ -281,8 +290,18 @@ fn on_cloud(fake: &Fake, place: Place) -> Server {
     }
 }
 
+fn org() -> OrganizationId {
+    OrganizationId::parse("org").unwrap()
+}
+
+fn in_org() -> StoreAt {
+    StoreAt::Cloud {
+        organization: org(),
+    }
+}
+
 fn who() -> Actor {
-    Actor::system(OrganizationId::parse("org").unwrap())
+    Actor::system(org())
 }
 
 fn shop() -> ConfigStore {
@@ -420,7 +439,7 @@ async fn replays(transcript: &Transcript, server: Server) {
 async fn every_cloud_transcript_replays_through_ployz_mcp() {
     for transcript in transcripts()
         .iter()
-        .filter(|each| each.place.store == StoreAt::Cloud)
+        .filter(|each| each.place.store == in_org())
     {
         let fake = fake_cloud(script(transcript), None, Duration::ZERO);
         replays(transcript, on_cloud(&fake, transcript.place.clone())).await;
@@ -445,6 +464,38 @@ async fn every_local_transcript_replays_against_a_local_store() {
     {
         replays(transcript, on_local(transcript.place.clone())).await;
     }
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn an_organization_token_mints_in_its_organization_asked_once() {
+    let transcript = transcript("project_create", in_org());
+    let organizations = Scripted {
+        path: "/api/cli/organizations".to_owned(),
+        body: Value::Null,
+        answer: Answered::Value(json!({ "organizations": [
+            { "id": "org", "slug": "acme", "name": "Acme", "current": true },
+        ] })),
+    };
+    let mut cloud = vec![organizations];
+    cloud.extend(script(&transcript));
+    cloud.extend(script(&transcript));
+    let fake = fake_cloud(cloud, None, Duration::ZERO);
+    let mut server = on_cloud(&fake, transcript.place.clone());
+    server.account.organization.take();
+    let mut client = Client::initialized(server, json!({})).await;
+    let (result, _) = outcome(&transcript);
+    for id in [2, 3] {
+        let done = client
+            .call(id, "project_create", transcript.input.clone())
+            .await;
+        assert_eq!(done["result"]["structuredContent"], result, "{done}");
+    }
+    let asked = fake
+        .requests()
+        .into_iter()
+        .filter(|seen| seen.path == "/api/cli/organizations");
+    assert_eq!(asked.count(), 1, "the token's Organization is asked once");
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -479,7 +530,7 @@ async fn a_local_backend_answers_a_cloud_ask_not_here() {
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
-    let place = transcript("deploy", StoreAt::Cloud).place;
+    let place = transcript("deploy", in_org()).place;
     let mut client = Client::initialized(on_local(place), json!({})).await;
     client.send(&request(2, "tools/list", json!({}))).await;
     let listed = client.reply().await;
@@ -508,7 +559,7 @@ async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
 
 #[tokio::test]
 async fn the_instructions_are_the_registry_s() {
-    let place = transcript("deploy", StoreAt::Cloud).place;
+    let place = transcript("deploy", in_org()).place;
     let mut client = Client::connect(on_local(place));
     client
         .send(&request(
@@ -533,7 +584,7 @@ async fn the_instructions_are_the_registry_s() {
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn a_line_that_is_not_json_gets_a_parse_error_and_the_server_keeps_serving() {
-    let place = transcript("deploy", StoreAt::Cloud).place;
+    let place = transcript("deploy", in_org()).place;
     let mut client = Client::initialized(on_local(place), json!({})).await;
     client.write.write_all(b"{not json\n").await.unwrap();
     let parse = client.reply().await;
@@ -554,7 +605,7 @@ async fn a_line_that_is_not_json_gets_a_parse_error_and_the_server_keeps_serving
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn an_unknown_tool_is_an_invalid_params_error() {
-    let place = transcript("deploy", StoreAt::Cloud).place;
+    let place = transcript("deploy", in_org()).place;
     let mut client = Client::initialized(on_local(place), json!({})).await;
     let unknown = client.call(2, "kubectl", json!({})).await;
     assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
@@ -563,7 +614,7 @@ async fn an_unknown_tool_is_an_invalid_params_error() {
 
 #[tokio::test]
 async fn a_replayed_request_without_a_key_writes_under_the_same_id() {
-    let transcript = transcript("service_add", StoreAt::Cloud);
+    let transcript = transcript("service_add", in_org());
     let fake = fake_cloud(
         (0..4).flat_map(|_| script(&transcript)).collect(),
         None,
@@ -630,7 +681,7 @@ struct Approving {
 }
 
 fn approving_with(slow: Duration) -> Approving {
-    let deploy = transcript("deploy", StoreAt::Cloud);
+    let deploy = transcript("deploy", in_org());
     // A second call on the same server reads again before it writes.
     let mut twice = script(&deploy);
     twice.extend(script(&deploy));
@@ -748,7 +799,7 @@ fn removal_asks() -> Value {
 }
 
 async fn remove_trial(content: Value) -> (Value, Value, Vec<Seen>) {
-    let removal = transcript("project_remove", StoreAt::Cloud);
+    let removal = transcript("project_remove", in_org());
     let fake = fake_cloud(script(&removal), Some(removal_asks()), Duration::ZERO);
     let mut client = eliciting(on_cloud(&fake, removal.place.clone())).await;
     client
@@ -1129,7 +1180,7 @@ async fn two_calls_asking_about_one_approval_each_keep_their_dialog() {
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[test]
 fn a_held_dialog_past_its_deadline_is_dropped_when_another_is_held() {
-    let deploy = transcript("deploy", StoreAt::Cloud);
+    let deploy = transcript("deploy", in_org());
     let held = |until| {
         let (_, state) = tools::start("deploy", deploy.input.clone(), &deploy.place, "call");
         let read = deploy.turns[0]
@@ -1374,7 +1425,7 @@ fn servers_answer() -> Value {
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn a_lost_reply_to_a_write_says_it_may_have_landed_and_retries_under_the_same_key() {
-    let deploy = transcript("deploy", StoreAt::Cloud);
+    let deploy = transcript("deploy", in_org());
     let Some(Answered::Value(services)) = deploy.turns[0].answers.first().cloned() else {
         panic!("deploy reads its Services first");
     };
@@ -1417,7 +1468,7 @@ async fn a_lost_reply_to_a_write_says_it_may_have_landed_and_retries_under_the_s
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn a_write_unanswered_at_the_deadline_may_have_landed_and_retries_under_the_same_key() {
-    let place = transcript("deploy", StoreAt::Cloud).place;
+    let place = transcript("deploy", in_org()).place;
     let answers = HashMap::from([("/api/cli/agent/ask", servers_answer())]);
     let cloud = lossy_cloud(answers, Lost::Unanswered);
     let mut server = Server {
@@ -1451,7 +1502,7 @@ async fn a_write_unanswered_at_the_deadline_may_have_landed_and_retries_under_th
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn a_lost_reply_to_a_read_wrote_nothing() {
-    let place = transcript("deploy", StoreAt::Cloud).place;
+    let place = transcript("deploy", in_org()).place;
     let cloud = lossy_cloud(HashMap::new(), Lost::Dropped);
     let refusal = refusal_on(&cloud, place, "server_drain", json!({ "server": "web-2" })).await;
     assert_eq!(refusal["writes"], "none", "{refusal}");

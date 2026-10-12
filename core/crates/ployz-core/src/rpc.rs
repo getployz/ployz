@@ -74,6 +74,23 @@ macro_rules! define_capabilities {
             matches!(path, $(concat!("/", $package, ".MachineRpc/", $unary_route))|+ | $(concat!("/", $package, ".MachineRpc/", $stream_route))|+)
         }
 
+        /// The capability that names the route at `path`, or `None` for an uncatalogued path.
+        #[must_use]
+        pub fn capability_of(path: &str) -> Option<&'static str> {
+            match path {
+                $(concat!("/", $package, ".MachineRpc/", $unary_route) => Some($unary_capability),)+
+                $(concat!("/", $package, ".MachineRpc/", $stream_route) => Some($stream_capability),)+
+                EXEC_PATH => Some(EXEC_CONTAINER_CAPABILITY),
+                BUILD_PATH => Some(BUILD_CAPABILITY),
+                _ => None,
+            }
+        }
+
+        /// gRPC path of the Exec stream.
+        pub const EXEC_PATH: &str = concat!("/", $package, ".MachineRpc/Exec");
+        /// gRPC path of the Build stream.
+        pub const BUILD_PATH: &str = concat!("/", $package, ".MachineRpc/Build");
+
         /// Bidirectional exec is outside the unary catalog.
         pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
         /// One admitted Build over the existing bidirectional Machine stream.
@@ -101,6 +118,15 @@ macro_rules! define_capabilities {
 }
 
 crate::rpc_catalog!(define_capabilities);
+
+/// Every capability name this binary can serve, whether or not a unit is on now.
+#[must_use]
+pub fn served_capabilities() -> BTreeSet<String> {
+    CATALOGUED_CAPABILITIES
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect()
+}
 
 /// The only protobuf-shaped value understood by tonic and the transparent proxy.
 #[derive(Clone, PartialEq, Message)]
@@ -1434,6 +1460,37 @@ mod set_management_client_wire {
 }
 
 #[cfg(test)]
+mod served_capabilities_tests {
+    use super::*;
+
+    macro_rules! catalog_capabilities {
+        (
+            package $package:literal
+            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+        ) => {
+            [$($unary_capability_name,)+ $($stream_capability_name,)+]
+        };
+    }
+
+    #[test]
+    fn served_capabilities_cover_every_catalog_row_and_the_four_without_one() {
+        let served = served_capabilities();
+        let rows = crate::rpc_catalog!(catalog_capabilities);
+        let without_row = [
+            "ployz.container.exec.v1",
+            "ployz.build.v1",
+            "ployz.certificates.policy.v1",
+            "ployz.machine.storage-observation.v1",
+        ];
+        for name in rows.iter().chain(&without_row) {
+            assert!(served.contains(*name), "{name} is not served");
+        }
+        assert_eq!(served.len(), rows.len() + without_row.len());
+    }
+}
+
+#[cfg(test)]
 mod streaming_routing_tests {
     #[test]
     fn only_catalogued_single_request_methods_allow_fanout() {
@@ -1444,6 +1501,47 @@ mod streaming_routing_tests {
             "/other.Service/Inspect",
         ] {
             assert!(!super::supports_fanout(path));
+        }
+    }
+
+    macro_rules! assert_capability_of {
+        (
+            package $package:literal
+            unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
+            server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+        ) => {
+            $(assert_eq!(
+                super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $unary_route)),
+                Some($unary_capability_name),
+            );)+
+            $(assert_eq!(
+                super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $stream_route)),
+                Some($stream_capability_name),
+            );)+
+        };
+    }
+
+    #[test]
+    fn capability_of_names_every_catalogued_route() {
+        crate::rpc_catalog!(assert_capability_of);
+        assert_eq!(
+            super::capability_of("/ployz.rpc.v1.MachineRpc/Exec"),
+            Some("ployz.container.exec.v1")
+        );
+        assert_eq!(
+            super::capability_of("/ployz.rpc.v1.MachineRpc/Build"),
+            Some("ployz.build.v1")
+        );
+        assert_eq!(
+            super::capability_of("/ployz.rpc.v1.MachineRpc/DeclareMirror"),
+            Some("ployz.volume.mirror.declare.v1")
+        );
+        for path in [
+            "/ployz.rpc.v1.MachineRpc/Nope",
+            "/other.Service/Inspect",
+            "",
+        ] {
+            assert_eq!(super::capability_of(path), None);
         }
     }
 }

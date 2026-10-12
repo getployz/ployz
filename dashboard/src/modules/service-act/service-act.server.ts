@@ -132,15 +132,22 @@ export const claimServiceAct = Effect.fn("ServiceAct.claim")(function* (request:
   return { kind: "claimed", verb: claimed.verb, legs: claimed.legs } satisfies ClaimedAct;
 }, Effect.scoped);
 
+/** What a start leg records for each answer the Server gives. */
+const STARTED = {
+  serving: (leg: ServiceActLeg) => ["done", leg.reason] as const,
+  unconfirmed: (leg: ServiceActLeg) => ["unknown", `${leg.server} started it, but it isn't serving.`] as const,
+  unhealthy: (leg: ServiceActLeg) => ["failed", `${leg.server} started it, but it isn't healthy.`] as const,
+} satisfies Record<"serving" | "unconfirmed" | "unhealthy", (leg: ServiceActLeg) => readonly [LegStep, string | null]>;
+
 const writeLegs = (request: ActRequest, runId: string, legs: ServiceActLeg[]) =>
   Effect.flatMap(Database, ({ drizzle }) =>
     drizzle.update(serviceAct).set({ legs }).where(and(owned(request, runId), eq(serviceAct.state, "running"))).returning({ id: serviceAct.id }))
     .pipe(Effect.map((rows) => rows.length > 0));
 
-export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
+export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
   request: ActRequest,
   runId: string,
-  machine: string,
+  container: string,
   side: "stop" | "start",
 ) {
   const row = yield* readAct(request.actId);
@@ -155,7 +162,7 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
     });
   const session = yield* (yield* OrganizationRuntime).open(request.organizationId);
   for (const leg of legs) {
-    if (leg.machine !== machine || !takes(leg, side) || leg[side] !== null && leg[side] !== "sent") continue;
+    if (leg.container !== container || !takes(leg, side) || leg[side] !== null && leg[side] !== "sent") continue;
     if (leg[side] === "sent") {
       if (!(yield* write(leg, "unknown", `${leg.server} didn't answer.`))) return legs;
       continue;
@@ -172,7 +179,7 @@ export const actOnServer = Effect.fn("ServiceAct.leg")(function* (
     const sent: Effect.Effect<readonly [LegStep, string | null], PloyzSdkError> = side === "stop"
       ? session.connected.stopContainer(leg.machine, leg.container).pipe(Effect.as(["done", leg.reason] as const))
       : session.connected.startContainer(leg.machine, leg.container).pipe(
-        Effect.map((serving) => serving ? ["done", leg.reason] as const : ["unknown", `${leg.server} started it, but it isn't serving.`] as const),
+        Effect.map((started) => STARTED[started](leg)),
       );
     const [step, reason] = yield* sent.pipe(
       Effect.catch((error) => Effect.succeed(rpcErrorCode(error) === "unavailable"

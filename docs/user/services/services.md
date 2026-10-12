@@ -79,3 +79,7 @@ ployz exec web npm run migrate     # or one command
 ```
 
 A restart doesn't pick up staged changes. Deploy for that.
+
+Restart and start wait for each container's healthcheck to pass, the same way a deploy does,
+before they return. A container that fails its healthcheck, or doesn't pass it before its
+deadline, is reported, and the command exits 3.

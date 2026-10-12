@@ -29,5 +29,6 @@ export const dataSources = {
   "modules/machines/namespace-cleanup.queries.ts": { kind: "remote", freshness: "keyed by the Namespaces the Servers report, so a new one is checked afresh; an Environment deleted elsewhere shows within a minute" },
   "components/agent-sidebar/approvals.queries.ts": { kind: "remote", freshness: "approvals waiting on a human, and each one a chat names, polled every 2s while pending: any CLI, tab or device can ask or answer, and no change stream carries them" },
   "modules/uptime/uptime.queries.ts": { kind: "remote", freshness: "each Environment's checks with their open incidents, streamed by the canvas loader; one Service's summary and its response time for the shown range, streamed by the drawer on the Monitoring tab and prefetched on hover of the tab or a range. Never awaited, so a slow read never holds the page. Stale after 30s and polled every minute because the checker writes without a Cloud write to invalidate on" },
+  "modules/marketing/marketing-site.queries.ts": { kind: "remote", freshness: "never stale: MARKETING_ORIGIN is fixed for the life of the server" },
   "modules/config-store/store-pr-grants.queries.ts": { kind: "remote", freshness: "installation permissions cached a minute: an owner approves them in GitHub, not here" },
 } satisfies Record<string, { kind: DataSourceKind; freshness: string }>;

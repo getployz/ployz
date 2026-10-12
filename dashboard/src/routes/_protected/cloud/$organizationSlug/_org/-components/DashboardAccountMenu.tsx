@@ -48,7 +48,7 @@ const themes = [
 ] as const;
 
 /**
- * The account menu: switching organization, Theme, Home (the public page) and Log out. The organization's
+ * The account menu: switching organization (Ployz support sees the Organizations that allow it apart), Theme, Home (the public page) and Log out. The organization's
  * pages are places. As a `row` (the wide rail) its trigger names you and the organization beside the
  * avatar; otherwise it's the avatar alone.
  */
@@ -67,6 +67,14 @@ export default function DashboardAccountMenu({
   const { userTheme, setTheme } = useTheme();
   const section = useDashboardSection();
   const organizations = useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.organizations ?? [];
+
+  const own = organizations.filter((candidate) => candidate.access === "member");
+  const supported = organizations.filter((candidate) => candidate.access === "support");
+
+  function switchTo(slug: string) {
+    // The open agent thread belongs to this Organization, so it stays behind.
+    void navigate({ ...getDashboardDestination({ kind: "all", organizationSlug: slug }, section), search: { chat: undefined } });
+  }
 
   async function handleSignOut() {
     const result = await signOut();
@@ -132,16 +140,28 @@ export default function DashboardAccountMenu({
                   Switch organization
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
-                  <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={(slug: string) => {
-                    // The open agent thread belongs to this Organization, so it stays behind.
-                    void navigate({ ...getDashboardDestination({ kind: "all", organizationSlug: slug }, section), search: { chat: undefined } });
-                  }}>
-                    {organizations.map((candidate) => (
+                  <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
+                    {own.map((candidate) => (
                       <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
                         {candidate.name}
                       </DropdownMenuRadioItem>
                     ))}
                   </DropdownMenuRadioGroup>
+                  {supported.length > 0 ? (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuGroup>
+                        <DropdownMenuLabel>Support</DropdownMenuLabel>
+                        <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
+                          {supported.map((candidate) => (
+                            <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
+                              {candidate.name}
+                            </DropdownMenuRadioItem>
+                          ))}
+                        </DropdownMenuRadioGroup>
+                      </DropdownMenuGroup>
+                    </>
+                  ) : null}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
             </DropdownMenuGroup>

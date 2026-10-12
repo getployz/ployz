@@ -8,7 +8,7 @@ import {
   type DataLossList,
 } from "#/modules/runtime/data-loss-confirm";
 import { type PloyzSdkError, rpcErrorCode, rpcErrorMessage } from "#/modules/runtime/ployz.server";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type {
   EnqueueMachineRemoveInput,
@@ -227,10 +227,7 @@ export const cancelMachineRemoveAttemptActivity = Effect.fn(
 
 export const loadMachineDataLoss = Effect.fn("MachineRemoval.loadDataLoss")(
   function* (actor: Actor, input: LoadMachineDataLossInput) {
-    const organization = yield* requireInfrastructureOrganization(
-      actor,
-      input.organizationSlug,
-    );
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(organization.id);
     if (session.status !== "connected") {
@@ -260,10 +257,7 @@ export const loadMachineDataLoss = Effect.fn("MachineRemoval.loadDataLoss")(
 
 export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
   function* (actor: Actor, input: EnqueueMachineRemoveInput) {
-    const organization = yield* requireInfrastructureOrganization(
-      actor,
-      input.organizationSlug,
-    );
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
     return yield* startMachineRemove({
       organizationId: organization.id,
       requestedByUserId: actor.userId,
@@ -290,10 +284,7 @@ export const startMachineRemove = Effect.fn("MachineRemoval.start")(
 
 export const getMachineRemoveAttempt = Effect.fn("MachineRemoval.getAttempt")(
   function* (actor: Actor, input: GetMachineRemoveAttemptInput) {
-    const organization = yield* requireInfrastructureOrganization(
-      actor,
-      input.organizationSlug,
-    );
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
     const attempt = yield*
       loadAuthorizedMachineRemoveAttempt({
         attemptId: input.attemptId,

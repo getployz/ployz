@@ -3,9 +3,8 @@ import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
-import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
-import { NotFound } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { eq } from "drizzle-orm";
 import { session } from "#/modules/identity/tables";
@@ -54,10 +53,9 @@ type OrganizationRemoval = { organization: string; removed: boolean; servers: { 
 const removal = (value: OrganizationRemoval): StoreResult<OrganizationRemoval> => ({ ok: true, value });
 const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ ok: false, refusal });
 
-/** The dashboard's Delete organization: the same removal, by a member of the Organization named by `organizationSlug`. */
+/** The dashboard's Delete organization: the same removal, by whoever may operate the Organization named by `organizationSlug`. */
 export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember")(function* (actor: Actor, organizationSlug: string) {
-  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
-  if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
   return yield* removeOrganization({ userId: actor.userId, organization }, organizationSlug);
 });
 

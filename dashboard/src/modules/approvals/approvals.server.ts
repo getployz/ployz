@@ -15,7 +15,7 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { Caller } from "#/modules/identity/actor";
+import type { Actor, Caller } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
@@ -297,10 +297,11 @@ type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: Stor
 
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
- * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row.
+ * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. A member or support
+ * may decide; the row records who.
  */
 export const decideApproval = <R = never>(
-  caller: Caller,
+  caller: Actor & { readonly organization: { readonly id: string } },
   id: string,
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,

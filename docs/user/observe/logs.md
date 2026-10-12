@@ -70,5 +70,9 @@ no service arguments, and `--follow` still use live container discovery.
   collection was down.
 - **A server that doesn't answer is named** in a banner above the log, and the other servers'
   lines still show.
+- **A server on an older Ployz shows no logs.** The page says **Upgrade web-1 to see its logs**
+  and links to that server's page. Several such servers link to **Servers** instead. If other
+  servers have lines, they still show, with a note naming the server to upgrade. Upgrade it from
+  its page, then refresh the logs page.
 - **When your servers are offline**, the page says **Your servers are offline** and keeps the
   last lines they sent.

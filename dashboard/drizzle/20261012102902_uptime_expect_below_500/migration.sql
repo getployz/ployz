@@ -1,0 +1,1 @@
+ALTER TABLE "uptime_check" DROP CONSTRAINT "uptime_check_expect_check", ADD CONSTRAINT "uptime_check_expect_check" CHECK ("expect" in ('below_400', 'below_500'));

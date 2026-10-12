@@ -103,6 +103,7 @@ pub(crate) fn environment(
                     )?),
                     Target::Setting(_)
                     | Target::Source
+                    | Target::Domains
                     | Target::Exported(_)
                     | Target::Description(_)
                     | Target::Mount(_)
@@ -123,16 +124,10 @@ pub(crate) fn environment(
             if !setting.applies(&service.config) {
                 continue;
             }
-            // Unset, a Private DNS name is the Service's own.
-            let default = if matches!(setting, ServiceSetting::PrivateDns) {
-                json!(service.slug)
-            } else {
-                setting.default()
-            };
             row(
                 Target::Setting(setting),
                 setting.value(&service.config, &policy),
-                default,
+                setting.default(Some(&name)),
                 setting.apply(),
             )?;
         }

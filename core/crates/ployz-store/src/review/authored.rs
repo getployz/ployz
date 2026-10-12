@@ -199,7 +199,11 @@ impl Plan {
         let target = target?;
         let key = match target {
             Target::Variable(key) | Target::Exported(key) | Target::Description(key) => key,
-            Target::Setting(_) | Target::Source | Target::Mount(_) | Target::ConfigMount(_) => {
+            Target::Setting(_)
+            | Target::Source
+            | Target::Domains
+            | Target::Mount(_)
+            | Target::ConfigMount(_) => {
                 return None;
             }
         };
@@ -1426,6 +1430,7 @@ impl Plan {
                 before: left,
                 after: right,
                 can_restore: SettingPath::parse(&path).is_ok(),
+                hostnames: None,
                 row: at.map(|at| RowId::of(&lineage, at)),
             });
             rows.push(Row {
@@ -1760,6 +1765,9 @@ pub(super) fn prepare_discard(
             draft.reverse_into(&mut working, &chosen)?;
         }
     } else if let Some(path) = path {
+        if let (Some(Target::Domains), Some(service)) = (path.target(), path.service()) {
+            return Err(crate::settings::domains_are_read_only(path, service));
+        }
         let node = resolve_node(path, environment, &baseline)?;
         if target == DiscardTarget::Head
             && (path.target().is_some() || path.node_field().is_some())
@@ -1941,10 +1949,12 @@ fn selector_path(
             Target::Variable(_)
             | Target::Exported(_)
             | Target::Description(_)
+            | Target::Domains
             | Target::Mount(_)
             | Target::ConfigMount(_) => unreachable!("setting covers a setting or source"),
         },
         Some(Target::Source) => format!("{name}.source"),
+        Some(Target::Domains) => format!("{name}.domains"),
         Some(Target::Variable(key)) => format!("{name}.env.{key}"),
         Some(Target::Exported(key)) => format!("{name}.env.{key}.exported"),
         Some(Target::Description(key)) => format!("{name}.env.{key}.description"),
@@ -2081,6 +2091,7 @@ fn lifecycle_rows(
                 before: Value::Null,
                 after: crate::config_item::shown_file(json!(value), names),
                 can_restore: false,
+                hostnames: None,
                 row: Some(RowId::of(lineage, At::File(file.clone()))),
             })
             .collect(),
@@ -2093,6 +2104,7 @@ fn lifecycle_rows(
                 before: Value::Null,
                 after: json!(volume.storage),
                 can_restore: false,
+                hostnames: None,
                 row: Some(RowId::of(lineage, At::Storage)),
             }]
         }

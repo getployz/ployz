@@ -2,7 +2,8 @@ import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db
 import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { liveStream } from "#/lib/live.stream";
-import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, LIVE_LOG_LIMIT, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogRow, type MissingServer } from "./container-log.collection";
+import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, LIVE_LOG_LIMIT, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogRow, type MissingReason, type MissingServer } from "./container-log.collection";
+import { getRuntimeCollections } from "./runtime.collection";
 
 export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
@@ -14,7 +15,7 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
  */
 type LogStreamState = {
   opened: boolean; offline: boolean; refused: boolean;
-  missing: { live: Record<string, { machineName: string; failed: Readonly<Record<string, string>> }>; history: readonly MissingServer[] };
+  missing: { live: Record<string, { machineName: string; failed: Readonly<Record<string, MissingReason>> }>; history: readonly MissingServer[] };
   historyPending: boolean; historyError: boolean;
 };
 
@@ -86,6 +87,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           const { [containerId]: __, ...failed } = server.failed;
           publish({ ...snapshot, missing: { ...snapshot.missing, live: Object.keys(failed).length ? { ...live, [machineId]: { ...server, failed } } : live } });
         };
+        const machines = getRuntimeCollections(selection.organizationSlug, scope).machines;
         controller = new AbortController();
         const stop = liveStream(`/api/runtime/logs?${query}`, {
           onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
@@ -114,10 +116,10 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
               } else if (decoded.value.type === "source_gone") {
                 recovered(decoded.value.machineId, decoded.value.containerId);
               } else {
-                const { machineId, containerId, message } = decoded.value;
-                const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
-                const { [containerId]: _, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
-                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: message } } } } });
+                const { type: _, machineId, containerId, ...reason } = decoded.value;
+                const machineName = machines.get(machineId)?.name ?? [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
+                const { [containerId]: __, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
+                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: reason } } } } });
               }
             },
           },

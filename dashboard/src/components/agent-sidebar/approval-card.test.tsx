@@ -2,14 +2,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { DiffView } from "@ployz/sdk";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import * as functions from "#/modules/approvals/approvals.functions";
 import { ApprovalCard } from "./approval-card";
 import type { ApprovalView } from "./approvals.queries";
 
-const fetchMock = vi.fn();
-beforeEach(() => { vi.stubGlobal("fetch", fetchMock); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); fetchMock.mockReset(); });
+const decide = vi.spyOn(functions, "decideApprovalServerFn");
+afterEach(() => { cleanup(); decide.mockReset(); });
 
 // A Deploy that drops the pg-data Volume and also scales web.
 const approval = asTestDouble<ApprovalView>()({
@@ -41,8 +41,8 @@ function show(seed: ApprovalView, onSettled = vi.fn()) {
   return { onSettled, card: () => screen.getByLabelText("Deploy production needs approval") };
 }
 
-const answered = (status: string, reason: string | null = null) =>
-  Response.json({ approval: { status, reason, decided_at: "2026-10-08T12:01:00.000Z" } });
+const answered = (status: ApprovalView["status"], reason: string | null = null) =>
+  ({ ok: true as const, approval: { ...approval, status, reason, decided_at: "2026-10-08T12:01:00.000Z" } }) as never;
 
 it("leads with what the plan destroys and folds the rest to a count", () => {
   const card = show(approval).card();
@@ -54,27 +54,27 @@ it("leads with what the plan destroys and folds the rest to a count", () => {
 });
 
 it("approves exactly the digest shown, then settles", async () => {
-  fetchMock.mockResolvedValue(answered("approved"));
+  decide.mockResolvedValue(answered("approved"));
   const { card, onSettled } = show(approval);
   fireEvent.keyDown(card(), { key: "Enter", metaKey: true });
   await waitFor(() => expect(onSettled).toHaveBeenCalled());
-  expect(fetchMock).toHaveBeenCalledWith("/api/cli/approvals/a1", expect.objectContaining({ method: "POST", body: JSON.stringify({ approve: { digest: "sha256:plan" } }) }));
+  expect(decide).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "a1", decision: { approve: { digest: "sha256:plan" } } } });
   expect(screen.getByText(/Approved/)).toBeTruthy();
 });
 
 it("denies with the reason typed, for the agent to read", async () => {
-  fetchMock.mockResolvedValue(answered("denied", "keep the data"));
+  decide.mockResolvedValue(answered("denied", "keep the data"));
   const { onSettled } = show(approval);
   fireEvent.click(screen.getByRole("button", { name: "Deny with a reason…" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: " keep the data " } });
   fireEvent.click(screen.getByRole("button", { name: /^Deny/ }));
   await waitFor(() => expect(onSettled).toHaveBeenCalled());
-  expect(fetchMock).toHaveBeenCalledWith("/api/cli/approvals/a1", expect.objectContaining({ body: JSON.stringify({ reject: { reason: "keep the data" } }) }));
+  expect(decide).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "a1", decision: { reject: { reason: "keep the data" } } } });
   expect(screen.getByText("Denied: keep the data")).toBeTruthy();
 });
 
 it("shows Cloud's refusal and keeps the card when the answer doesn't land", async () => {
-  fetchMock.mockResolvedValue(Response.json({ error: { message: "The plan changed since this was asked; run the command again to review it." } }, { status: 409 }));
+  decide.mockResolvedValue({ ok: false, message: "The plan changed since this was asked; run the command again to review it." } as never);
   const { card, onSettled } = show(approval);
   fireEvent.keyDown(card(), { key: "Escape" });
   expect((await screen.findByRole("alert")).textContent).toBe("The plan changed since this was asked; run the command again to review it.");
