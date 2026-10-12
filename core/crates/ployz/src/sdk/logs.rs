@@ -6,6 +6,7 @@ use ployz_core::{
     op,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -361,53 +362,13 @@ pub(crate) async fn failed_tail(
 ) -> LogText {
     let target = MachineTarget::from(&machine);
     let read = async {
-        let env = client
-            .invoke::<op::InspectContainer>(
-                InspectContainerRequest {
-                    container_id: container,
-                },
-                &target,
-                Some(TAIL_READ),
-            )
-            .await
-            .ok()
-            .and_then(|details| details.environment);
-        secrets.add_machine_env(env.as_ref());
-        let mut newest = Vec::new();
-        let mut cursor = None;
-        loop {
-            let request = op::LogHistory::into_request(LogHistoryRequest {
-                container_id: Some(container),
-                direction: LogDirection::Backward,
-                limit: TAIL_FETCH,
-                cursor: cursor.take(),
-                ..LogHistoryRequest::default()
-            })
-            .encode()
-            .ok()?;
-            let mut stream = client.log_history_stream(&target, request).await.ok()?;
-            while let Some(payload) = stream.message().await.ok()? {
-                match HistoryRow::decode(&payload).ok()? {
-                    HistoryRow::Line { text, .. } => newest.push(text),
-                    HistoryRow::End { next } => cursor = next,
-                    HistoryRow::Error(_) => return None,
-                    HistoryRow::Container(_)
-                    | HistoryRow::Gap { .. }
-                    | HistoryRow::Exit { .. }
-                    | HistoryRow::Heartbeat => {}
-                }
-            }
-            if cursor.is_none() || newest.len() >= usize::from(TAIL_FETCH) {
-                break;
-            }
-        }
-        newest.truncate(usize::from(TAIL_FETCH));
-        let frames: Vec<String> = newest
-            .iter()
-            .rev()
-            .map(|text| format!("{}\n", String::from_utf8_lossy(text)))
-            .collect();
-        Some(frames)
+        secrets.add_machine_env(container_env(client, &target, container).await.as_ref());
+        let selector = LogHistoryRequest {
+            container_id: Some(container),
+            ..LogHistoryRequest::default()
+        };
+        let newest = newest_lines(client, &target, selector, TAIL_FETCH).await?;
+        Some(frames(newest.into_iter().map(|(_, text)| text)))
     };
     match tokio::time::timeout(TAIL_READ, read).await {
         Ok(Some(frames)) => LogExcerpt::scrub(
@@ -419,6 +380,111 @@ pub(crate) async fn failed_tail(
             why: Withheld::Unanswered,
         },
     }
+}
+
+/// How long reading one Machine's lines for an agent may take, env included.
+const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
+
+/// The newest lines `selector` picks from `machine`'s Log Store, one text per Container
+/// that wrote them, newest Container first. Each is scrubbed of its Container's env as
+/// the Machine reports it. `None` when the Machine did not answer in time.
+pub(crate) async fn service_tail(
+    client: &Client,
+    machine: MachineId,
+    selector: LogHistoryRequest,
+    cap: LineCap,
+) -> Option<Vec<LogText>> {
+    let target = MachineTarget::from(&machine);
+    let read = async {
+        let newest = newest_lines(client, &target, selector, LineCap::MAX).await?;
+        let mut by_container: Vec<(ContainerId, Vec<Vec<u8>>)> = Vec::new();
+        for (container, text) in newest {
+            match by_container.iter_mut().find(|(id, _)| *id == container) {
+                Some((_, lines)) => lines.push(text),
+                None => by_container.push((container, vec![text])),
+            }
+        }
+        let mut texts = Vec::with_capacity(by_container.len());
+        for (container, lines) in by_container {
+            // No Store here, so every value in the Container's env counts as secret,
+            // the plain ones included.
+            let mut secrets = SecretSet::from_store([], []);
+            secrets.add_machine_env(container_env(client, &target, container).await.as_ref());
+            texts.push(LogExcerpt::scrub(frames(lines.into_iter()), &secrets, cap));
+        }
+        Some(texts)
+    };
+    tokio::time::timeout(SERVICE_TAIL_READ, read)
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn container_env(
+    client: &Client,
+    target: &MachineTarget,
+    container: ContainerId,
+) -> Option<BTreeMap<String, String>> {
+    client
+        .invoke::<op::InspectContainer>(
+            InspectContainerRequest {
+                container_id: container,
+            },
+            target,
+            Some(TAIL_READ),
+        )
+        .await
+        .ok()
+        .and_then(|details| details.environment)
+}
+
+/// The newest `fetch` lines `selector` picks, newest first. `None` when the Log Store
+/// could not be read.
+async fn newest_lines(
+    client: &Client,
+    target: &MachineTarget,
+    selector: LogHistoryRequest,
+    fetch: u16,
+) -> Option<Vec<(ContainerId, Vec<u8>)>> {
+    let mut newest = Vec::new();
+    let mut cursor = None;
+    loop {
+        let request = op::LogHistory::into_request(LogHistoryRequest {
+            direction: LogDirection::Backward,
+            limit: fetch,
+            cursor: cursor.take(),
+            ..selector.clone()
+        })
+        .encode()
+        .ok()?;
+        let mut stream = client.log_history_stream(target, request).await.ok()?;
+        while let Some(payload) = stream.message().await.ok()? {
+            match HistoryRow::decode(&payload).ok()? {
+                HistoryRow::Line {
+                    container_id, text, ..
+                } => newest.push((container_id, text)),
+                HistoryRow::End { next } => cursor = next,
+                HistoryRow::Error(_) => return None,
+                HistoryRow::Container(_)
+                | HistoryRow::Gap { .. }
+                | HistoryRow::Exit { .. }
+                | HistoryRow::Heartbeat => {}
+            }
+        }
+        if cursor.is_none() || newest.len() >= usize::from(fetch) {
+            break;
+        }
+    }
+    newest.truncate(usize::from(fetch));
+    Some(newest)
+}
+
+/// Newest-first lines as frames in the order they were written.
+fn frames(newest: impl DoubleEndedIterator<Item = Vec<u8>>) -> Vec<String> {
+    newest
+        .rev()
+        .map(|text| format!("{}\n", String::from_utf8_lossy(&text)))
+        .collect()
 }
 
 #[cfg(test)]

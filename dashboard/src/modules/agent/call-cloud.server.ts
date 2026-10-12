@@ -134,7 +134,10 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
         Effect.map((operations) => answer<OperationsAnswer>({ operations })),
       );
     case "logs":
-      return refusal("unavailable", "The sidebar can't read logs yet. Open the Service's logs instead.");
+      if (caller.support !== null && !caller.support.logs) {
+        return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
+      }
+      return yield* runtimeAsk(organizationId, query);
   }
 });
 
