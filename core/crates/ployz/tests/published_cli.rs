@@ -434,3 +434,28 @@ fn a_device_signed_in_to_one_cloud_never_reads_commands_from_the_cloud_url_names
         "the manifest and the run both come from the signed-in Cloud"
     );
 }
+
+#[test]
+fn a_flag_a_compiled_command_lacks_costs_no_refresh_and_one_a_published_command_lacks_does() {
+    let cloud = Fixture::new("one");
+    let entry = entry_rendering("record");
+    let args = argv(&entry);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    cloud.ployz(&args);
+    let manifests = || {
+        cloud
+            .routes()
+            .iter()
+            .filter(|route| *route == "GET /api/cli/manifest")
+            .count()
+    };
+    assert_eq!(manifests(), 1, "the first run fetched the manifest");
+
+    let typo = cloud.ployz(&["server", "ls", "--no-such-flag"]);
+    assert!(!typo.status.success());
+    assert_eq!(manifests(), 1, "a compiled command's typo stays local");
+
+    let newer = cloud.ployz(&[args.as_slice(), &["--no-such-flag"]].concat());
+    assert!(!newer.status.success());
+    assert_eq!(manifests(), 2, "Cloud may have added the flag since");
+}

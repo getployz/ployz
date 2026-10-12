@@ -51,7 +51,7 @@ pub fn run() -> Result<(), Error> {
         Err(error) => {
             // A word the tree lacks may be a command Cloud published since the
             // cache was written, or one never cached: one refresh, then parse again.
-            let Some(published) = published_after_miss(&error) else {
+            let Some(published) = published_after_miss(&error, &command, &args) else {
                 return Err(usage_failure(error));
             };
             command = crate::published::attach(crate::cli::compiled(), &published);
@@ -83,19 +83,43 @@ fn follow_cloud_revision() {
     let _ = setup.refresh_now();
 }
 
-fn published_after_miss(error: &clap::Error) -> Option<crate::published::Published> {
+/// A word no command has may be one Cloud published since; a flag a published command
+/// lacks may be one Cloud added since. A flag a compiled command lacks is a typo, and
+/// costs no round trip.
+fn published_after_miss(
+    error: &clap::Error,
+    tree: &Command,
+    args: &[std::ffi::OsString],
+) -> Option<crate::published::Published> {
     use clap::error::ErrorKind;
-    if !matches!(
-        error.kind(),
-        ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument
-    ) {
-        return None;
-    }
     let setup = crate::published::Setup::from_env();
     if !setup.configured {
         return None;
     }
-    setup.refresh_now().ok()
+    let stale = error.kind() == ErrorKind::InvalidSubcommand
+        || error.kind() == ErrorKind::UnknownArgument
+            && setup
+                .cached()
+                .is_some_and(|published| published.find(&reached(tree, args)).is_some());
+    stale.then(|| setup.refresh_now().ok()).flatten()
+}
+
+/// The subcommand path `args` reach in `tree`, `server ls`: the command that rejected
+/// whatever followed.
+fn reached(tree: &Command, args: &[std::ffi::OsString]) -> String {
+    let mut command = tree;
+    let mut path = Vec::new();
+    for word in args
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .filter_map(|arg| arg.to_str())
+    {
+        if let Some(child) = command.find_subcommand(word) {
+            path.push(child.get_name());
+            command = child;
+        }
+    }
+    path.join(" ")
 }
 
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
