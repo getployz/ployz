@@ -15,9 +15,9 @@ const ASK_AGAIN_MS = 5_000;
  * The Volume's offsite copy, with Add and Upload now. An upload is long work on the writer, so the hook asks again with
  * the same source until the status leaves running, the way Refresh now watches its round.
  */
-export function useVolumeOffsite(organizationSlug: string, environment: EnvironmentRef, volumeId: string) {
+export function useVolumeOffsite(organizationSlug: string, environment: EnvironmentRef, volumeId: string, served: boolean) {
   const queryClient = useQueryClient();
-  const read = useVolumeOffsiteRead(organizationSlug, environment, volumeId);
+  const read = useVolumeOffsiteRead(organizationSlug, environment, volumeId, served);
   const [sending, setSending] = useState(false);
   const [watching, setWatching] = useState<string | null>(null);
   const [field, setField] = useState<string | null>(null);
@@ -74,3 +74,5 @@ export function useVolumeOffsite(organizationSlug: string, environment: Environm
 
   return { read, add, upload, field, clearField: () => setField(null), pending: sending || watching !== null, uploading: watching !== null };
 }
+
+export type VolumeOffsiteData = ReturnType<typeof useVolumeOffsite>;

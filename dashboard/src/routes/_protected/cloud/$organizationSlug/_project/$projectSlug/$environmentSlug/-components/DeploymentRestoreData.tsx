@@ -80,7 +80,7 @@ export function RestoreDataRow({ deploymentId, data }: { deploymentId: string; d
           : <Button variant="outline" size="xs" disabled={data.disabled} onClick={() => setOpen(true)}>Restore</Button>}
       </>}
     </ItemActions>
-    <RestoreDialog volume={volume.name} services={mountedServices(volume)} live={data.live} snapshot={open ? snapshot : null} label={label} now={now}
+    <RestoreDialog volume={volume.name} services={mountedServices(volume)} live={data.live} point={open ? snapshot : null} label={label} now={now}
       onOpenChange={setOpen}
       onRestore={(chosen) => {
         if (restoreTo !== null) data.stage(...stagedSnapshot(restoreTo, chosen, epoch, save));

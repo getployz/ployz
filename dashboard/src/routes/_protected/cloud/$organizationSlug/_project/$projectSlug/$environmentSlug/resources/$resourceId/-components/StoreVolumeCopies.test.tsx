@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import type { Snapshot } from "#/modules/volume-copies/volume-copies";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
+import { offsiteCopyOf } from "#/modules/volume-copies/volume-offsite";
+import type { VolumeOffsiteData } from "#/modules/volume-copies/volume-offsite.hooks";
 import { snapshotClock } from "#/modules/volume-copies/volume-snapshots";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
@@ -31,6 +33,7 @@ const server = (name: string, storage: CopyServer["storage"] = "pool"): CopyServ
 
 function panel(members: Member[], placement: PlacementRow | null, options: {
   open?: string; upgrade?: string[]; servers?: CopyServer[]; lastDone?: VolumeRunView; refreshing?: boolean; deploying?: boolean; snapshots?: Snapshot[];
+  offsite?: Partial<VolumeOffsiteData>;
 } = {}) {
   const stage = vi.fn();
   const refresh = vi.fn();
@@ -38,15 +41,21 @@ function panel(members: Member[], placement: PlacementRow | null, options: {
   const restore = vi.fn();
   const onOpen = vi.fn();
   const snapshots = { list: options.snapshots ? { epoch: 7, snapshots: options.snapshots } : null, pending: false, take: vi.fn(), keep: vi.fn(), remove: vi.fn() };
+  const offsite: VolumeOffsiteData = {
+    read: null, add: vi.fn(() => Promise.resolve(true)), upload: vi.fn(() => Promise.resolve(true)), field: null, clearField: vi.fn(),
+    pending: false, uploading: false, ...options.offsite,
+  };
+  const stored = offsite.read?.served ? offsite.read.copy : null;
   const copies = copiesFromPlacement({
     volume, members, row: placement, active: null, lastSync: null, lastDone: options.lastDone ?? null, snapshots: options.snapshots ?? null,
+    offsite: stored === null ? null : offsiteCopyOf(stored, null),
   });
   render(<VolumeCopiesPanel volume={volume} members={members} rows={placement ? [placement] : []} running={null} copies={copies}
     servers={options.servers ?? members.map((entry) => server(entry.machine.name))} accepting={members.map((entry) => entry.machine.id)}
     upgrade={options.upgrade ?? []} unknown={[]} seeds disabled={false} deploying={options.deploying ?? false} stage={stage} restore={restore}
     deleteCopy={deleteCopy} refresh={refresh} refreshing={options.refreshing ?? false}
-    snapshots={snapshots} schedule={{ policy: null, pending: false, save: vi.fn(() => Promise.resolve(true)) }} snapshotClock={snapshotClock("UTC")} open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
-  return { stage, deleteCopy, restore, onOpen, refresh, snapshots };
+    snapshots={snapshots} schedule={{ policy: null, pending: false, save: vi.fn(() => Promise.resolve(true)) }} snapshotClock={snapshotClock("UTC")} offsite={offsite} open={options.open ? id(options.open) : null} onOpen={onOpen} now={NOW} />);
+  return { stage, deleteCopy, restore, onOpen, refresh, snapshots, offsite };
 }
 const group = (label: string) => within(screen.getByRole("list", { name: label }));
 const rows = (label: string) => group(label).queryAllByRole("listitem").map((item) => item.textContent);
@@ -201,6 +210,14 @@ describe("mirror detail", () => {
 
 const snap = (id: string, iso: string, extra: Partial<Snapshot> = {}): Snapshot =>
   ({ id, at: new Date(iso), kind: "manual", note: null, kept: false, bytes: 20e6, losesBytes: 0, ...extra });
+const BUCKET = {
+  id: "5f1c2b8e-0000-4000-8000-000000000001", endpoint: "https://s3.eu-central-1.amazonaws.com", region: "eu-central-1", bucket: "acme-offsite",
+  prefix: "ployz", accessKey: "AKIAEXAMPLE", secretSet: true,
+} as const;
+const OFFSITE_READ = {
+  served: true, buckets: [BUCKET], source: "g1",
+  copy: { bucket: BUCKET, keep: 7, uploadedAt: new Date("2026-10-12T09:05:00Z"), backups: [{ id: "off-1", at: new Date("2026-10-12T09:00:00Z"), bytes: 2e9, note: "daily" }] },
+} as const;
 const SNAPS = [snap("s2", "2026-10-12T10:00:00Z", { losesBytes: 1.2e9 }), snap("s1", "2026-10-11T09:30:00Z", { kind: "daily", kept: true })];
 
 describe("Snapshots", () => {
@@ -265,6 +282,60 @@ describe("Snapshots", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Snapshots/ }));
     fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }));
     expect(snapshots.take).toHaveBeenCalledOnce();
+  });
+  it("adds an offsite copy into a New bucket and shows the writer's refusal in the field", async () => {
+    const { offsite } = panel([member("web-1", "writer")], row([]), {
+      offsite: { read: { served: true, buckets: [], copy: null, source: "g1" }, field: "Access denied for AKIAEXAMPLE" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add copy" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("This runs now, not on deploy.")).toBeTruthy();
+    expect(within(dialog).getByRole("radio", { name: /^New bucket/ }).getAttribute("aria-checked")).toBe("true");
+    expect(within(dialog).getByText("Access denied for AKIAEXAMPLE")).toBeTruthy();
+    expect(within(dialog).getByText("Daily · 7 kept")).toBeTruthy();
+    const add = within(dialog).getByRole("button", { name: "Add copy" });
+    expect(add.hasAttribute("disabled")).toBe(true);
+    const type = (label: string | RegExp, value: string) => fireEvent.change(within(dialog).getByLabelText(label, { selector: "input" }), { target: { value } });
+    type("Endpoint", "s3.eu-central-1.amazonaws.com");
+    type("Bucket", "acme-offsite");
+    type("Access key", "AKIAEXAMPLE");
+    type(/^Secret key/, "hunter2");
+    expect(offsite.clearField).toHaveBeenCalled();
+    fireEvent.click(add);
+    expect(offsite.add).toHaveBeenCalledWith({
+      kind: "new", endpoint: "s3.eu-central-1.amazonaws.com", bucket: "acme-offsite", accessKey: "AKIAEXAMPLE", secretKey: "hunter2",
+    });
+  });
+
+  it("offers a stored bucket by name and region", async () => {
+    const { offsite } = panel([member("web-1", "writer")], row([]), { offsite: { read: { served: true, buckets: [BUCKET], copy: null, source: "g1" } } });
+    fireEvent.click(screen.getByRole("button", { name: "Add copy" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("radio", { name: /^acme-offsite/ }).textContent).toBe("acme-offsiteeu-central-1");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add copy" }));
+    expect(offsite.add).toHaveBeenCalledWith({ kind: "existing", id: BUCKET.id });
+  });
+
+  it("restores a backup through the restore dialog with its download size", async () => {
+    const { stage } = panel([member("web-1", "writer")], row([]), { snapshots: SNAPS, offsite: { read: OFFSITE_READ } });
+    expect(rows("Elsewhere")).toEqual([expect.stringMatching(/^acme-offsiteOffsite · Daily · 7 kept/)]);
+    fireEvent.click(screen.getByRole("button", { name: "Offsite on acme-offsite" }));
+    expect(screen.getByText("acme-offsite · eu-central-1")).toBeTruthy();
+    expect(rows("Backups")).toEqual(["09:00daily2.0 GBRestore"]);
+    fireEvent.click(group("Backups").getByRole("button", { name: "Restore" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Downloads 2.0 GB")).toBeTruthy();
+    expect(within(dialog).getByText("Offsite · 09:00 swaps in")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
+    expect(stage).toHaveBeenCalledWith(expect.objectContaining({
+      primary: id("web-1"),
+      restore: expect.objectContaining({ from: "off-1", expect: 7, offsite: { bucket: BUCKET.id, bytes: 2e9 } }),
+    }), []);
+  });
+
+  it("keeps offsite out of Add copy where the writer doesn't serve it", () => {
+    panel([member("web-1", "writer")], row([]), { offsite: { read: { served: false } } });
+    expect(screen.queryByRole("button", { name: "Add copy" })).toBeNull();
   });
 });
 

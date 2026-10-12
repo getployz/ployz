@@ -5,7 +5,7 @@ import {
 } from "#/modules/volume-placement/volume-placement";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { copyName, type Member, type VolumeRunView } from "#/modules/volume-run/volume-run";
-import type { MirrorCopy, OldCopy, Snapshot, StagedCopy, VolumeCopies } from "./volume-copies";
+import type { MirrorCopy, OffsiteCopy, OldCopy, Snapshot, StagedCopy, VolumeCopies } from "./volume-copies";
 
 /**
  * Today's reads in copies words: the Placement form, the Volume's active run and its last mirror refresh. The one place
@@ -22,6 +22,8 @@ export function copiesFromPlacement(input: {
   readonly lastDone: VolumeRunView | null;
   /** The writer's snapshots, newest first; null where its Server can't list them. */
   readonly snapshots?: readonly Snapshot[] | null;
+  /** Null where the writer can't serve offsite, or the Volume has none. */
+  readonly offsite?: OffsiteCopy | null;
 }): VolumeCopies | null {
   const { volume, members, row, active } = input;
   const form = placementForm(volume, members, row);
@@ -78,6 +80,7 @@ export function copiesFromPlacement(input: {
     elsewhere: [
       ...form.mirrors.map((item) => mirror(item, stagedOf(item.change))),
       ...promoted ? [mirror(form.primary, "primary")] : [],
+      ...input.offsite ? [input.offsite] : [],
       ...form.detached.map(old),
     ],
   };

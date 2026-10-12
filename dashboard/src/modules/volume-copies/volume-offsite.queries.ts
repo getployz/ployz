@@ -3,14 +3,16 @@ import type { EnvironmentRef } from "@ployz/sdk";
 import { volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
 import { listOffsiteCopiesServerFn, readVolumeOffsiteServerFn } from "./volume-offsite.functions";
 
-export const volumeOffsiteQueryOptions = (organizationSlug: string, environment: EnvironmentRef, volumeId: string) => queryOptions({
+export const volumeOffsiteQueryOptions = (organizationSlug: string, environment: EnvironmentRef, volumeId: string, served: boolean) => queryOptions({
   queryKey: [...volumeRunKeys.all, organizationSlug, volumeId, "offsite"] as const,
   queryFn: () => readVolumeOffsiteServerFn({ data: { organizationSlug, environment, volumeId } }),
+  enabled: served,
   staleTime: 60_000,
 });
 
-export function useVolumeOffsiteRead(organizationSlug: string, environment: EnvironmentRef, volumeId: string) {
-  return useQuery(volumeOffsiteQueryOptions(organizationSlug, environment, volumeId)).data ?? null;
+/** Asks only where the writer serves offsite, since each read lists the bucket from the writer. */
+export function useVolumeOffsiteRead(organizationSlug: string, environment: EnvironmentRef, volumeId: string, served: boolean) {
+  return useQuery(volumeOffsiteQueryOptions(organizationSlug, environment, volumeId, served)).data ?? null;
 }
 
 export const offsiteCopiesQueryOptions = (organizationSlug: string, environment: EnvironmentRef) => queryOptions({

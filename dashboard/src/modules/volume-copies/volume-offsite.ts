@@ -1,6 +1,7 @@
 import type { OffsiteBackup } from "@ployz/sdk";
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { digest } from "./snapshot-schedule";
+import type { OffsiteCopy } from "./volume-copies";
 
 /** A project's bucket as the browser sees it: the secret key never leaves the server, only that it is set. */
 export type OffsiteBucketView = {
@@ -69,3 +70,11 @@ export const endpointUrl = (endpoint: string) => {
 export const regionOf = (endpoint: string) => /(?:^|[/.])s3[.-]([a-z0-9-]+)\.amazonaws\.com/.exec(endpoint)?.[1] ?? "us-east-1";
 
 export const scheduleWords = (keep: number) => `Daily · ${keep} kept`;
+
+/** A stored offsite copy in copies words; its id is the bucket's, stable within the Volume. */
+export const offsiteCopyOf = (
+  copy: { readonly bucket: Pick<OffsiteBucketView, "id" | "bucket" | "region">; readonly keep: number; readonly uploadedAt: Date | null },
+  busy: string | null,
+): OffsiteCopy => ({
+  kind: "offsite", id: copy.bucket.id, bucket: copy.bucket.bucket, region: copy.bucket.region, keep: copy.keep, uploadedAt: copy.uploadedAt, staged: null, busy,
+});
