@@ -23,6 +23,15 @@ function compare(a, b) {
   const time = BigInt(a.timestamp_nanos) - BigInt(b.timestamp_nanos);
   return time < 0n ? -1 : time > 0n ? 1 : a.id.localeCompare(b.id);
 }
+/** A refusal's code and, when it names one, the capability the Server lacks. */
+function failure(error) {
+  const capability = error.details?.capability;
+  return {
+    message: error.message,
+    ...(typeof error.code === "string" && { code: error.code }),
+    ...(typeof capability === "string" && { capability }),
+  };
+}
 function input(container, tail, follow) {
   return { machine_id: container.machine_id, container_id: container.container_id, tail, follow, since_unix_seconds: null };
 }
@@ -100,7 +109,7 @@ async function* logs(transport, options = {}) {
           }
           if (event.error) {
             const [machineId, containerId] = event.key.split("/");
-            yield { type: "source_error", machineId, containerId, message: event.error.message };
+            yield { type: "source_error", machineId, containerId, ...failure(event.error) };
           }
         } else {
           const row = event.value;
@@ -198,7 +207,7 @@ async function history(transport, options) {
   for (const read of reads) {
     const machineName = names.get(read.machineId) ?? read.machineId;
     if (read.error) {
-      page.failures.push({ machineId: read.machineId, machineName, message: read.error.message });
+      page.failures.push({ machineId: read.machineId, machineName, ...failure(read.error) });
       next[read.machineId] = states[read.machineId];
       continue;
     }

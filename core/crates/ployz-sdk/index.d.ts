@@ -55,10 +55,12 @@ import type {
   RemoveVolumesRequest,
   RequestedServiceSpec,
   RpcError as RpcErrorPayload,
+  RpcErrorCode,
   RuntimeWatchView,
   ContainerLogRecord,
 } from "./generated/payloads";
 export * from "./generated/payloads";
+export type { CapabilityName } from "./generated/capabilities";
 import type {
   CommitRequest,
   CopyObservation,
@@ -144,7 +146,11 @@ export type LogFilter = {
 /** What a line says about itself; a line that says nothing is `info`, stderr included. */
 export type LogLevel = "error" | "warn" | "info" | "debug";
 export type LogRecord = ContainerLogRecord & { id: string; level: LogLevel };
-export type LogSourceError = { type: "source_error"; machineId: string; containerId: string; message: string };
+/** `code` and `capability` come from the refusal; `capability` names what the Server lacks. */
+export type LogSourceError = {
+  type: "source_error"; machineId: string; containerId: string; message: string;
+  code?: RpcErrorCode; capability?: string;
+};
 /** A container whose source failed has left the Runtime Watch; nothing more will come from it. */
 export type LogSourceGone = { type: "source_gone"; machineId: string; containerId: string };
 export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError | LogSourceGone;
@@ -160,7 +166,7 @@ export type LogExit = {
   timestampNanos: string; exitCode: number | null; oomKilled: boolean;
 };
 /** A Server whose Log Store didn't answer, and why. */
-export type LogMachineFailure = { machineId: string; machineName: string; message: string };
+export type LogMachineFailure = { machineId: string; machineName: string; message: string; code?: RpcErrorCode; capability?: string };
 /** Without `cursor`, the first page starts at each Server's newest row, or before `before` (Unix nanoseconds). */
 export type LogHistoryOptions = WatchOptions & { filter: LogFilter; cursor?: string; before?: string; limit?: number };
 /** Newest first across every Server; `cursor` is null once none has anything older. */
