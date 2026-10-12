@@ -1,13 +1,13 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use ployz_core::{
-    ConfiguredHealthcheck, ContainerKind, HealthcheckCommand, HealthcheckSpec, Namespace,
-    ServiceName,
+    ConfiguredHealthcheck, ContainerId, ContainerKind, HealthcheckCommand, HealthcheckSpec,
+    Namespace, ServiceName,
 };
 use ployz_store::{
     EnvironmentId,
     tools::{
-        LineCap, LogText, LogsQuery, ServerRef,
+        LineCap, LogText, LogsQuery, ServerRef, Withheld,
         cloud::{ContainerState, LogsAnswer},
     },
 };
@@ -273,5 +273,63 @@ async fn a_server_whose_log_store_fails_is_unanswered_with_its_reason() {
     assert_eq!(
         answer.notes,
         ["two did not answer: log store is rebuilding"]
+    );
+}
+
+// Catches a logs ask where a Container its Machine can no longer inspect, such as the one
+// a redeploy removed, withholds the lines of every other Container on that Server, or
+// shows its own lines unscrubbed.
+#[tokio::test]
+async fn a_removed_containers_lines_are_left_out_and_the_rest_still_shown() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    service
+        .uninspectable
+        .insert(ContainerId::parse("d".repeat(64)).unwrap());
+
+    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 8".to_owned(),
+                "line 10".to_owned(),
+                "token [secret TOKEN]".to_owned(),
+            ]
+        )]
+    );
+}
+
+// Catches a logs ask that shows lines when no Container's env could be read to scrub them.
+#[tokio::test]
+async fn a_server_whose_containers_cannot_be_inspected_withholds_its_lines() {
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    service
+        .uninspectable
+        .extend(["c", "d"].map(|id| ContainerId::parse(id.repeat(64)).unwrap()));
+
+    let [answer] = ask_logs(service, vec![logs_query(None, &[("PLAIN", "from-docker")])])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        answer
+            .servers
+            .iter()
+            .map(|log| (log.server.to_string(), log.text.clone()))
+            .collect::<Vec<_>>(),
+        [(
+            "one".to_owned(),
+            LogText::Withheld {
+                why: Withheld::NoSecretContext
+            }
+        )]
     );
 }

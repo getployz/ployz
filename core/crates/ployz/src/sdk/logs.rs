@@ -388,8 +388,10 @@ const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
 
 /// The newest `cap` lines `selector` picks from `machine`'s Log Store, across every
 /// Container that wrote them, scrubbed of each one's env as the Machine reports it. Env
-/// values stay readable only where `plain` holds the same value under the same name. The
-/// error says why the Machine did not answer in time.
+/// values stay readable only where `plain` holds the same value under the same name. A
+/// Container whose env cannot be read, as after a redeploy removed it, has its lines left
+/// out; they are withheld only when no Container's env can be read. The error says why
+/// the Machine did not answer in time.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
@@ -413,10 +415,19 @@ pub(crate) async fn service_tail(
         )
         .await;
         let mut secrets = SecretSet::from_store([], plain.clone());
-        for env in &envs {
-            secrets.add_machine_env(env.as_ref());
+        let mut readable = Vec::new();
+        for (container, env) in containers.iter().zip(&envs) {
+            if env.is_some() {
+                secrets.add_machine_env(env.as_ref());
+                readable.push(*container);
+            }
         }
-        let frames = frames(newest.into_iter().map(|(_, text)| text));
+        let frames = frames(
+            newest
+                .into_iter()
+                .filter(|(container, _)| readable.contains(container))
+                .map(|(_, text)| text),
+        );
         Ok(LogExcerpt::scrub(frames, &secrets, cap))
     };
     tokio::time::timeout(SERVICE_TAIL_READ, read)

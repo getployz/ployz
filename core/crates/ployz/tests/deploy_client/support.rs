@@ -67,6 +67,8 @@ pub(super) struct DeployService {
     pub(super) history_requests: Arc<Mutex<Vec<ployz_core::LogHistoryRequest>>>,
     /// Machines whose Log Store answers with an error row, and its message.
     pub(super) history_failures: BTreeMap<MachineId, String>,
+    /// Containers the Machine can no longer inspect, as when one has been removed.
+    pub(super) uninspectable: BTreeSet<ContainerId>,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -104,6 +106,7 @@ impl DeployService {
             removed: Arc::new(Mutex::new(BTreeSet::new())),
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: BTreeMap::new(),
+            uninspectable: BTreeSet::new(),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -139,6 +142,7 @@ impl DeployService {
             removed: Arc::new(Mutex::new(BTreeSet::new())),
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: BTreeMap::new(),
+            uninspectable: BTreeSet::new(),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -625,6 +629,9 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected inspect_container"));
         };
+        if self.uninspectable.contains(&inspect.container_id) {
+            return Err(Status::not_found("no such container"));
+        }
         let spec = spec("web")
             .to_resolved(
                 ServiceId::random(),
