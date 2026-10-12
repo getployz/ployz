@@ -112,6 +112,34 @@ describe("deploying a Volume placement", () => {
     expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
   });
 
+  describe("once a cancelled Deploy gave its claim to the next one mid-step", () => {
+    const handOver: MemberInspector = () => Effect.promise(async () => {
+      status = "cancelled";
+      await run(releasePlacementClaims(organizationId, "dep-1"));
+      status = "queued";
+      await run(stampPlacements(organizationId, "env-1", "dep-2"));
+      return members;
+    });
+
+    it("starts no run for the old Deploy", async () => {
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      await stageMove("web-2", ["web-2"]);
+      expect(await run(advancePlacement(organizationId, "dep-1", null, handOver, answered))).toEqual({ kind: "stopped" });
+      expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
+      expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: "dep-2" });
+    });
+
+    it("leaves the next Deploy's staged row alone", async () => {
+      // Already in place, so the old Deploy would settle the row instead of starting a run.
+      members = [member("web-2", "writer"), member("web-1", "mirror")];
+      const staged = { primary: web("web-2"), mirrors: [web("web-1")], deletes: [] };
+      await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-1")] }));
+      await run(stampPlacements(organizationId, "env-1", "dep-1"));
+      expect(await run(advancePlacement(organizationId, "dep-1", null, handOver, answered))).toEqual({ kind: "done" });
+      expect(await placement()).toMatchObject({ staged, deploymentId: "dep-2" });
+    });
+  });
+
   it("waits for a run it didn't start, then plans again", async () => {
     members = [member("web-1", "writer"), member("web-2", "mirror")];
     const other = await harness.pool.query(`

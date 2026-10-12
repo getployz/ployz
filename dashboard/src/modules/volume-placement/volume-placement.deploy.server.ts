@@ -62,6 +62,20 @@ const settle = Effect.fn("VolumePlacement.settle")(function* (volumeId: string, 
 });
 
 /**
+ * Settles Volume `volumeId` only while Deploy `deploymentId` still claims it, and says whether it did. A cancelled Deploy
+ * gives its claims back while a step may still be running; the next Deploy may already hold the row.
+ */
+const settleClaimed = Effect.fn("VolumePlacement.settleClaimed")(function* (
+  volumeId: string, deploymentId: string, values: Partial<typeof volumePlacement.$inferInsert>,
+) {
+  const { drizzle } = yield* Database;
+  const updated = yield* drizzle.update(volumePlacement).set({ ...values, updatedAt: new Date() })
+    .where(and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId)))
+    .returning({ volumeId: volumePlacement.volumeId });
+  return updated.length > 0;
+});
+
+/**
  * One step of Deploy `deploymentId`'s storage, before its Services: settle the run it waited on, then start the next run
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
  * Volumes stay staged. A run that fails fails the Deploy, its Volumes still staged.
@@ -82,6 +96,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
       yield* release(organizationId, deploymentId);
       return { kind: "failed", message: `${run.volume_name}: ${run.message ?? run.state}` } satisfies PlacementAdvance;
     }
+    // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
     if (waited.mirrors !== null) yield* settle(waited.volumeId, { mirrors: [...waited.mirrors] });
   }
   const { drizzle } = yield* Database;
@@ -101,7 +116,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     if (volume === undefined) {
       // A restore's Volume can be still on its way into the Store; only staging or discarding the restore drops its row.
-      yield* settle(row.volumeId, row.staged?.seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
+      yield* settleClaimed(row.volumeId, deploymentId, row.staged?.seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
       continue;
     }
     // A restore's run belongs to its source, the Volume it copies from.
@@ -112,9 +127,11 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const members = yield* inspect(organizationId, environment, row.volumeId);
     const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
     if (step === null) {
-      yield* settle(row.volumeId, { staged: null, deploymentId: null });
+      yield* settleClaimed(row.volumeId, deploymentId, { staged: null, deploymentId: null });
       continue;
     }
+    // Touching the row without changing it confirms the claim right before the run starts.
+    if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
     const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run });
     if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, mirrors: step.mirrors } } satisfies PlacementAdvance;
     yield* release(organizationId, deploymentId);
