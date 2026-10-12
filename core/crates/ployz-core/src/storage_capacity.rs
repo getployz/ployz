@@ -128,9 +128,7 @@ pub enum StorageCapacityError {
         /// Observed usable capacity of the fixed Pool.
         capacity_bytes: u64,
     },
-    #[error(
-        "Storage capacity is unknown: {message}. Refresh storage observations before deploying."
-    )]
+    #[error("Storage capacity is unknown: {message}")]
     /// Capacity cannot be established from the available evidence.
     StorageCapacityUnknown {
         /// The missing or invalid evidence.
@@ -313,14 +311,12 @@ impl StorageCapacity {
                 if pool_size_bytes == 0
                     || self.unmanaged_used_bytes > pool_size_bytes
                     || backing_length_bytes < pool_size_bytes
-                    || backing_allocated_bytes < backing_length_bytes
                 {
-                    return Err(unknown(
-                        "Machine Pool backing is not fully allocated or has inconsistent size",
-                    ));
+                    return Err(unknown("Machine Pool size observations are inconsistent"));
                 }
+                // A TRIM punches holes in the backing file; admission allocates them again.
                 let target = if minimum <= pool_size_bytes {
-                    backing_allocated_bytes
+                    backing_length_bytes
                 } else {
                     storage_growth_target(backing_length_bytes, pool_size_bytes, minimum)?
                 };
@@ -448,6 +444,41 @@ mod tests {
         ));
         capacity.unmanaged_used_bytes = 0;
         assert_eq!(capacity.budget(&volumes).unwrap().required_growth_bytes, 0);
+    }
+
+    #[test]
+    fn trimmed_backing_counts_its_holes_as_growth() {
+        let volumes = BTreeMap::from([(
+            DockerVolumeName::parse("data").unwrap(),
+            ProvisionedVolumeMaximumBytes::new(std::num::NonZeroU64::new(STORAGE_GIB).unwrap()),
+        )]);
+        let mut capacity = StorageCapacity {
+            backing: StorageBacking::RootBacked {
+                pool_size_bytes: 12 * STORAGE_GIB,
+                backing_length_bytes: 13 * STORAGE_GIB,
+                backing_allocated_bytes: STORAGE_GIB,
+                host_total_bytes: 100 * STORAGE_GIB,
+                host_available_bytes: 60 * STORAGE_GIB,
+            },
+            unmanaged_used_bytes: 0,
+            volumes: BTreeMap::new(),
+            copies: BTreeMap::new(),
+        };
+        assert_eq!(
+            capacity.budget(&volumes).unwrap().required_growth_bytes,
+            12 * STORAGE_GIB
+        );
+        if let StorageBacking::RootBacked {
+            host_available_bytes,
+            ..
+        } = &mut capacity.backing
+        {
+            *host_available_bytes = 30 * STORAGE_GIB;
+        }
+        assert!(matches!(
+            capacity.budget(&volumes),
+            Err(StorageCapacityError::InsufficientStorage { .. })
+        ));
     }
 
     #[test]

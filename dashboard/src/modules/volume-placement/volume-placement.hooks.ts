@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { EnvironmentRef, MachineId } from "@ployz/sdk";
+import type { ConfigWritten, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -55,7 +55,8 @@ export type StagedPlacements = {
   readonly count: number;
   readonly discard: (volumeId: string) => void;
   readonly undo: (volumeId: string, path: string) => void;
-  readonly discardAll: () => void;
+  /** Discards every staged row after `discardStore`, which takes the Store's half, including each staged restore's Volume. */
+  readonly discardAll: (discardStore: () => Promise<ConfigWritten | undefined>) => void;
 };
 
 /**
@@ -68,7 +69,8 @@ export function useStagedPlacements(
   const rows = (useVolumePlacements(organizationSlug).data ?? [])
     .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
   const members = useQueries({ queries: rows.map((row) => volumeMembersQueryOptions(organizationSlug, environment, row.volumeId)) });
-  const { settle } = useSettle("Could not discard the Volume changes", organizationSlug, environment);
+  const failure = "Could not discard the Volume changes";
+  const { settle } = useSettle(failure, organizationSlug, environment);
   const staged = rows.flatMap((row, index) => {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     const answered = members[index]?.data;
@@ -92,7 +94,10 @@ export function useStagedPlacements(
         organizationSlug, volumeId, environment, staged: undoPlacement(entry.volume, entry.members, entry.row, change), mirrors: [...mirrors],
       } })]);
     },
-    discardAll: () => settle(groups.map((group) => discardOf(group.nodeId))),
+    // Every staged row, not just the groups shown: a restore whose Volume the Store discard takes may not have answered yet.
+    discardAll: (discardStore) => {
+      discardStore().then(() => settle(rows.map((row) => discardOf(row.volumeId))), () => undefined);
+    },
   };
 }
 

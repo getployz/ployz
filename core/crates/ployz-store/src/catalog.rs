@@ -188,6 +188,7 @@ fn target(target: &Target, named: Option<&ServiceName>) -> Value {
         Target::Setting(one) => setting(*one, named),
         Target::Domains => json!({
             "title": "Domains",
+            "type": "array",
             "description": "The Service's generated and custom domains. Read here; domain add, domain set and domain rm change them.",
             "readOnly": true,
             "x-ployz-apply": "staged",

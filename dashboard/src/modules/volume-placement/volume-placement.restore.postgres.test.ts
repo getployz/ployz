@@ -1,13 +1,17 @@
 import { it } from "@effect/vitest";
 import type { ConfigStore, CreateVolume, Mount } from "@ployz/sdk";
+import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { volumePlacement } from "#/modules/volume-placement/tables";
 import { lossTime, type PlacementRow } from "#/modules/volume-placement/volume-placement";
+import { advancePlacement } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { discardPlacement, listPlacements, stageRestore, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
+import { Database } from "#/server/database.server";
 import { acmeWeb, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d001";
@@ -68,9 +72,6 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
     { name, mounts: [{ service: "web", path: "/data" }], change: "create" },
   ]);
 
-  // The Store refuses a second Volume by the same name: nothing is written, and no row records it.
-  const again = yield* restore();
-  expect(again).toMatchObject({ ok: false, refusal: { code: expect.any(String) } });
   members = [member("web-2", "mirror")];
   expect(yield* restore()).toMatchObject({ ok: false, refusal: { message: "data has no primary answering to restore from." } });
   expect((yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).map((row) => row.volumeId)).toEqual([id]);
@@ -78,6 +79,83 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
   expect(yield* discardPlacement(ORGANIZATION, null, id, shop).pipe(Effect.provide(services))).toEqual({ ok: true, placement: null });
   expect(yield* volumes()).toEqual([{ name: "data", mounts: [{ service: "web", path: "/data" }], change: null }]);
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("discards a restore's row once the Store has discarded its Volume", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+    .pipe(Effect.provide(services));
+  if (!staged.ok) throw new Error(staged.refusal.message);
+  yield* Effect.promise(() => store.write(ORGANIZATION, { command: "discard", environment: shop, path: null, version: null, target: "review" }));
+
+  expect(yield* discardPlacement(ORGANIZATION, null, staged.placement.volumeId, shop).pipe(Effect.provide(services))).toEqual({ ok: true, placement: null });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+/** A restore staged and then left behind: its Volume discarded from the Store, its row kept without a committed marker. */
+const orphanedRestore = Effect.fn(function* () {
+  const { services, store } = yield* deployedShop();
+  const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+    .pipe(Effect.provide(services));
+  if (!staged.ok) throw new Error(staged.refusal.message);
+  // A row staged before the marker existed, or whose marker write failed, then orphaned by a parallel Discard all.
+  yield* Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(volumePlacement).set({ staged: sql`${volumePlacement.staged} #- '{seed,committed}'` });
+  }).pipe(Effect.provide(services));
+  yield* Effect.promise(() => store.write(ORGANIZATION, { command: "discard", environment: shop, path: null, version: null, target: "review" }));
+  return { services, store, volumeId: staged.placement.volumeId };
+});
+
+const stampedDeploy = (services: Effect.Success<ReturnType<typeof storeTestCloud>>, store: ConfigStore, deployment: string) => Effect.gen(function* () {
+  const admitted = yield* Effect.promise(() => admitDeploy(store, deployment));
+  if (admitted.written !== "deployment") throw new Error("expected a Deployment");
+  yield* stampPlacements(ORGANIZATION, admitted.environment_id, admitted.id).pipe(Effect.provide(services));
+});
+
+it.live("discards an orphaned restore's row once no request is staging it", () => Effect.gen(function* () {
+  const { services, volumeId } = yield* orphanedRestore();
+  expect(yield* discardPlacement(ORGANIZATION, null, volumeId, shop).pipe(Effect.provide(services))).toEqual({ ok: true, placement: null });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("drops an orphaned restore's row when a Deploy advances, so its source no longer waits", () => Effect.gen(function* () {
+  const { services, store } = yield* orphanedRestore();
+  const deployment = "00000000-0000-4000-8000-00000000d009";
+  yield* stampedDeploy(services, store, deployment);
+  expect(yield* advancePlacement(ORGANIZATION, deployment, null, () => Effect.succeed([member("web-1", "writer")]), () => Effect.succeed([]))
+    .pipe(Effect.provide(services))).toEqual({ kind: "done" });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("drops a left-behind restore's row before asking the Servers, so a Server that can't take part doesn't fail the Deploy", () => Effect.gen(function* () {
+  const { services, store } = yield* orphanedRestore();
+  const deployment = "00000000-0000-4000-8000-00000000d00a";
+  yield* stampedDeploy(services, store, deployment);
+  expect(yield* advancePlacement(ORGANIZATION, deployment, null, () => Effect.succeed([member("web-1", "writer")]), () => Effect.succeed(["web-9"]))
+    .pipe(Effect.provide(services))).toEqual({ kind: "done" });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("names a restore within 63 characters, and past a Volume that already has its name", () => Effect.gen(function* () {
+  const long = "d".repeat(63);
+  const time = lossTime(new Date(at * 1000)).replace(":", "");
+  const { services, store } = yield* deployedShop({ name: long });
+  const restore = () => stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+    .pipe(Effect.provide(services));
+  const nameOf = (id: string) => Effect.promise(async () =>
+    (await store.read(ORGANIZATION, { query: "volumes", environment: shop })).volumes.find((volume) => volume.id === id)?.name);
+
+  const first = yield* restore();
+  if (!first.ok) throw new Error(first.refusal.message);
+  expect(yield* nameOf(first.placement.volumeId)).toBe(`${"d".repeat(58)}-${time}`);
+
+  // An earlier restore holds that name: the same point restores again under a fresh one.
+  const second = yield* restore();
+  if (!second.ok) throw new Error(second.refusal.message);
+  const name = yield* nameOf(second.placement.volumeId);
+  expect(name).toMatch(/^d{58}-[a-z0-9]{4}$/u);
+  expect(name).not.toBe(`${"d".repeat(58)}-${time}`);
 }));
 
 it.live("writes the restore's row before its Store write, so a Deploy admitted right after stamps it", () => Effect.gen(function* () {
@@ -126,6 +204,28 @@ it.live("refuses to discard a restore whose Store write hasn't committed, howeve
     .toMatchObject([{ volumeId: staged.placement.volumeId, staged: { seed: { sourceVolumeId: SOURCE } } }]);
 }));
 
+it.live("keeps a restore whose Store write hasn't committed when a Deploy advances past it", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  const deployment = "00000000-0000-4000-8000-00000000d00b";
+  let advanced: Effect.Success<ReturnType<typeof advancePlacement>> | null = null;
+  let during: PlacementRow[] = [];
+  const write: ConfigStore["write"] = async (organizationId, command, trusted, principal) => {
+    if (command.command === "batch" && command.commands.some((step) => step.command === "create_volume")) {
+      await Effect.runPromise(stampedDeploy(services, store, deployment));
+      advanced = await Effect.runPromise(advancePlacement(ORGANIZATION, deployment, null, () => Effect.succeed([member("web-1", "writer")]), () => Effect.succeed([]))
+        .pipe(Effect.provide(services)));
+      during = await Effect.runPromise(listPlacements(ORGANIZATION).pipe(Effect.provide(services)));
+    }
+    return store.write(organizationId, command, trusted, principal);
+  };
+  const proxy = asTestDouble<ConfigStore>()({ read: (...args: Parameters<ConfigStore["read"]>) => store.read(...args), write });
+
+  yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+    .pipe(Effect.provideService(CloudStore, { open: Effect.succeed(proxy) }), Effect.provide(services));
+  expect(advanced).toEqual({ kind: "done" });
+  expect(during).toMatchObject([{ deploymentId: null, staged: { seed: { sourceVolumeId: SOURCE } } }]);
+}));
+
 it.live("restores onto the source's storage, locked, with the source's shared writes", () => Effect.gen(function* () {
   const managed = { kind: "provisioned", maximumBytes: 5_000_000_000 } as const;
   const mounts: Mount[] = [{ service: "web", path: "/data" }, { service: "worker", path: "/data" }];
@@ -142,3 +242,41 @@ it.live("restores onto the source's storage, locked, with the source's shared wr
   expect(resized).toMatchObject({ details: { storage_locked: true } });
 }));
 
+it.live("drops a discarded restore's row once a Deploy admitted between the Store discard and the row discard advances", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+    .pipe(Effect.provide(services));
+  if (!staged.ok) throw new Error(staged.refusal.message);
+  yield* Effect.promise(() => store.write(ORGANIZATION, { command: "discard", environment: shop, path: null, version: null, target: "review" }));
+  const deployment = "00000000-0000-4000-8000-00000000d008";
+  const admitted = yield* Effect.promise(() => admitDeploy(store, deployment));
+  if (admitted.written !== "deployment") throw new Error("expected a Deployment");
+  yield* stampPlacements(ORGANIZATION, admitted.environment_id, admitted.id).pipe(Effect.provide(services));
+  expect(yield* discardPlacement(ORGANIZATION, null, staged.placement.volumeId, shop).pipe(Effect.provide(services)))
+    .toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+
+  expect(yield* advancePlacement(ORGANIZATION, deployment, null, () => Effect.succeed([member("web-1", "writer")]), () => Effect.succeed([]))
+    .pipe(Effect.provide(services))).toEqual({ kind: "done" });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("stages a restore when its committed marker can't be written", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  const refuseUpdates = sql.raw(`
+    create function refuse_placement_update() returns trigger language plpgsql as $$ begin raise exception 'placement updates refused'; end $$;
+    create trigger refuse_placement_update before update on volume_placement for each row execute function refuse_placement_update();
+  `);
+  const write: ConfigStore["write"] = async (organizationId, command, trusted, principal) => {
+    const written = await store.write(organizationId, command, trusted, principal);
+    if (command.command === "batch") {
+      await Effect.runPromise(Effect.gen(function* () { yield* (yield* Database).drizzle.execute(refuseUpdates); }).pipe(Effect.provide(services)));
+    }
+    return written;
+  };
+  const proxy = asTestDouble<ConfigStore>()({ read: (...args: Parameters<ConfigStore["read"]>) => store.read(...args), write });
+
+  const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
+    .pipe(Effect.provideService(CloudStore, { open: Effect.succeed(proxy) }), Effect.provide(services));
+  expect(staged).toMatchObject({ ok: true, placement: { staged: { seed: { sourceVolumeId: SOURCE } } } });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toHaveLength(1);
+}));

@@ -56,7 +56,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   }
 
   function discard(path: string | null, target: DiscardTarget = "head") {
-    writer.commit({ command: "discard", environment, path, version, target });
+    return writer.commit({ command: "discard", environment, path, version, target }).isPersisted.promise;
   }
 
   /** Marks `row` Never sync here and discards `path`, all or none: what arrived goes, and nothing follows into it again. */
