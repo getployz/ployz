@@ -381,3 +381,27 @@ it("keeps an oversized dirty file's error visible after selecting another file",
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(true);
   expect(test.write).not.toHaveBeenCalled();
 });
+
+it("shows a hidden file as hidden, and keeps its permissions until new text replaces it", async () => {
+  const test = await openDrawer({ ...initial, contents: {} });
+  const editor = screen.getByRole("textbox", { name: "config.yml contents" });
+  expect(editor.parentElement?.querySelector(".cm-placeholder")?.textContent).toBe("Hidden");
+  const executable = async () => {
+    fireEvent.click(screen.getByRole("button", { name: "config.yml options" }));
+    expect(await screen.findByText(/^Hidden · Permissions/)).toBeTruthy();
+    return screen.getByRole("menuitemcheckbox", { name: "Executable" });
+  };
+  expect((await executable()).getAttribute("aria-disabled")).toBe("true");
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  test.edit("replaced: true");
+  fireEvent.click(screen.getByRole("button", { name: "config.yml options" }));
+  const enabled = await screen.findByRole("menuitemcheckbox", { name: "Executable" });
+  expect(enabled.getAttribute("aria-disabled")).toBeNull();
+  fireEvent.click(enabled);
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+    organizationSlug: "acme", command: { command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "replaced: true", mode: "0555" },
+    ] },
+  } })));
+});

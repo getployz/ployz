@@ -6,7 +6,7 @@ import { HighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { Compartment, EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import {
-  Decoration, type DecorationSet, EditorView, hoverTooltip, keymap, lineNumbers, tooltips, ViewPlugin, type ViewUpdate,
+  Decoration, type DecorationSet, EditorView, hoverTooltip, keymap, lineNumbers, placeholder, tooltips, ViewPlugin, type ViewUpdate,
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import { useEffect, useRef } from "react";
@@ -23,6 +23,8 @@ export type ConfigFileEditorProps = {
   values: ReadonlyMap<string, ReferenceValue>;
   services: readonly string[];
   ariaLabel: string;
+  /** Shown while the file is empty. */
+  placeholder?: string;
 };
 
 type ReferenceContext = Pick<ConfigFileEditorProps, "targets" | "values" | "services">;
@@ -164,7 +166,7 @@ function language(fileName: string): Extension | Promise<Extension> {
   }
 }
 
-export default function ConfigFileEditor({ fileName, value, onChange, onSave, targets, values, services, ariaLabel }: ConfigFileEditorProps) {
+export default function ConfigFileEditor({ fileName, value, onChange, onSave, targets, values, services, ariaLabel, placeholder: empty }: ConfigFileEditorProps) {
   const parent = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const callbacks = useRef({ onChange, onSave });
@@ -177,6 +179,7 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
   const props = (): Extension => [
     referenceContext.of({ targets, values, services }),
     EditorView.contentAttributes.of({ "aria-label": ariaLabel }),
+    empty === undefined ? [] : placeholder(empty),
   ];
 
   const state = (doc: string, current?: EditorState) => EditorState.create({
@@ -252,7 +255,7 @@ export default function ConfigFileEditor({ fileName, value, onChange, onSave, ta
 
   useEffect(() => {
     view.current?.dispatch({ effects: propsSlot.reconfigure(props()) });
-  }, [targets, values, services, ariaLabel]);
+  }, [targets, values, services, ariaLabel, empty]);
 
   return <div ref={parent} className="ph-no-capture h-full min-h-0 overflow-hidden" />;
 }

@@ -98,9 +98,14 @@ export function detachedConfigMounts(diff: DiffView, configId: string) {
 /** A file's unsaved text and, when the user flipped Executable, its mode. */
 export type FileDraft = { content: string; mode?: string };
 
-/** What one Save writes: each drafted file whose text or mode differs from the Store's, or that is new. */
+/** A stored file whose contents the viewer may not read: Ployz support, while its Organization keeps Config files hidden. */
+export const hiddenFile = (config: Pick<ConfigItemView, "files" | "contents">, file: string) =>
+  config.files.some((one) => one.name === file) && !Object.hasOwn(config.contents, file);
+
+/** What one Save writes: each drafted file whose text or mode differs from the Store's, or that is new. A hidden file is written only once it has new text, so a mode change alone never empties it. */
 export function configEdits(config: Pick<ConfigItemView, "files" | "contents">, drafts: ReadonlyMap<string, FileDraft>) {
   return [...drafts].flatMap(([file, draft]) => {
+    if (hiddenFile(config, file) && draft.content === "") return [];
     const stored = config.files.find((one) => one.name === file);
     const changed = stored === undefined || config.contents[file] !== draft.content
       || (draft.mode !== undefined && draft.mode !== stored.mode);

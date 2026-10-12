@@ -20,7 +20,7 @@ import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
 import { previewSegments } from "#/modules/config-store/config-references";
 import {
-  configBytesText, configEdits, configFileSizeError, configReferenceValues, EXECUTABLE_MODE, fileAccess, READ_ONLY_MODE,
+  configBytesText, configEdits, configFileSizeError, configReferenceValues, EXECUTABLE_MODE, fileAccess, hiddenFile, READ_ONLY_MODE,
   saveConfigCommand, utf8Bytes, type FileDraft,
 } from "#/modules/config-store/store-configs";
 import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
@@ -104,6 +104,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const [selected, setSelected] = useState<string | null>(fileNames[0] ?? null);
   const current = selected !== null && fileNames.includes(selected) ? selected : fileNames[0] ?? null;
   const textOf = (file: string) => drafts.get(file)?.content ?? item.contents[file] ?? "";
+  const hidden = (file: string) => hiddenFile(item, file) && textOf(file) === "";
   const edits = configEdits(item, drafts);
   // A failed rollback read can leave the optimistic contents cached.
   edits.push(...[...drafts]
@@ -167,7 +168,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <SettingsSection id="files" title="Files">
           <ConfigFiles fileNames={fileNames} current={current} onSelect={setSelected} item={item} drafts={drafts} dirty={dirty}
-            textOf={textOf} targets={targets} serviceNames={serviceNames} values={values} readOnly={removing}
+            textOf={textOf} hidden={hidden} targets={targets} serviceNames={serviceNames} values={values} readOnly={removing}
             onDraft={draft} onSave={save} onRemove={removeFile}
             onAdd={(file) => { draft(file, { content: "" }); setSelected(file); }}
             footer={removing ? null : (
@@ -205,10 +206,10 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   );
 }
 
-function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, targets, serviceNames, values, readOnly,
+function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, hidden, targets, serviceNames, values, readOnly,
   onDraft, onSave, onRemove, onAdd, footer }: {
   fileNames: readonly string[]; current: string | null; onSelect: (file: string) => void; item: ConfigItemView;
-  drafts: ReadonlyMap<string, FileDraft>; dirty: ReadonlySet<string>; textOf: (file: string) => string;
+  drafts: ReadonlyMap<string, FileDraft>; dirty: ReadonlySet<string>; textOf: (file: string) => string; hidden: (file: string) => boolean;
   targets: readonly ReferenceTarget[]; serviceNames: readonly string[]; values: ReturnType<typeof configReferenceValues>;
   readOnly: boolean; onDraft: (file: string, change: Partial<FileDraft>) => void; onSave: () => void; onRemove: (file: string) => void;
   onAdd: (file: string) => void; footer: React.ReactNode;
@@ -251,9 +252,9 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start">
                       <DropdownMenuGroup>
-                        <DropdownMenuLabel>{configBytesText(utf8Bytes(textOf(file)))} · Permissions {access.kind === "fixed" ? access.label : mode}</DropdownMenuLabel>
+                        <DropdownMenuLabel>{hidden(file) ? "Hidden" : configBytesText(utf8Bytes(textOf(file)))} · Permissions {access.kind === "fixed" ? access.label : mode}</DropdownMenuLabel>
                         {access.kind === "toggle" ? (
-                          <DropdownMenuCheckboxItem checked={access.executable}
+                          <DropdownMenuCheckboxItem checked={access.executable} disabled={hidden(file)}
                             onCheckedChange={(executable) => onDraft(file, { mode: executable ? EXECUTABLE_MODE : READ_ONLY_MODE })}>
                             Executable
                           </DropdownMenuCheckboxItem>
@@ -301,13 +302,14 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
       {current === null ? (
         <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>
       ) : view === "preview" ? (
-        <ConfigPreview text={textOf(current)} values={values} />
+        hidden(current) ? <Empty variant="placeholder"><EmptyDescription>Hidden</EmptyDescription></Empty>
+          : <ConfigPreview text={textOf(current)} values={values} />
       ) : ConfigFileEditor === null ? (
         <Skeleton className="h-80 w-full" />
       ) : (
         <div className="max-h-[32rem] overflow-auto rounded-md border">
           <ConfigFileEditor key={current} fileName={current} value={textOf(current)} targets={targets} values={values} services={serviceNames}
-            ariaLabel={`${current} contents`} onSave={onSave}
+            ariaLabel={`${current} contents`} placeholder={hidden(current) ? "Hidden" : undefined} onSave={onSave}
             onChange={(content) => { if (!readOnly) onDraft(current, { content }); }} />
         </div>
       )}

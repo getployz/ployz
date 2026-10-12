@@ -93,6 +93,17 @@ describe("Saving drafts", () => {
       .toEqual([{ file: "config.yml", content: "a: 1", mode: "0555" }]);
     expect(configEdits(stored, new Map([["config.yml", { content: "a: 1", mode: "0444" }]]))).toEqual([]);
   });
+
+  it("never empties a hidden file: a mode change alone writes nothing, new text replaces it", () => {
+    const hidden = { ...stored, contents: {} };
+    expect(configEdits(hidden, new Map([["config.yml", { content: "", mode: "0555" }]]))).toEqual([]);
+    expect(configEdits(hidden, new Map([["config.yml", { content: "b: 2", mode: "0555" }]])))
+      .toEqual([{ file: "config.yml", content: "b: 2", mode: "0555" }]);
+  });
+
+  it("still writes a readable file left empty on purpose", () => {
+    expect(configEdits(stored, new Map([["config.yml", { content: "" }]]))).toEqual([{ file: "config.yml", content: "" }]);
+  });
 });
 
 describe("Preview values", () => {
