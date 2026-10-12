@@ -172,6 +172,6 @@ builder; no configurable concurrency or cache replication is introduced.
 Controls follow [Docker's container builder resource and cache support](https://docs.docker.com/build/builders/drivers/docker-container/)
 and [BuildKit 0.26.2 GC policy](https://github.com/moby/buildkit/blob/v0.26.2/cmd/buildkitd/config/gcpolicy.go).
 
-Run the fast local gate with `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features`.
+GitHub CI is the gate. Locally, run `cargo fmt --all -- --check` and `cargo clippy` and tests for the crates you changed (`-p <crate>`); run the workspace-wide commands only to reproduce a CI failure.
 
 `site/` serves the ployz.sh installer CDN. Dashboard links the workspace SDK.
