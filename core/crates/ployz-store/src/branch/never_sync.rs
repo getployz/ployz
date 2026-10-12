@@ -37,16 +37,20 @@ pub(crate) fn never_sync(
     request: &NeverSync,
 ) -> Result<NeverSynced, RpcError> {
     let environment = scope::lock(tx, who, &request.environment)?;
+    let sides = sides(tx, &environment)?;
+    let sides: Vec<_> = sides.iter().collect();
     let candidates = match request.off {
         true => never_synced(tx, &environment)?,
         false => {
-            let working = &environment.working;
             // A setting at its default has no cell, yet is a row a mark can name.
-            let mut rows: BTreeSet<RowId> = Cells::of(working, "").rows().cloned().collect();
-            rows.extend(working.services.iter().flat_map(|service| {
-                Setting::ALL.map(|setting| RowId::of(&service.lineage_id, At::Setting(setting)))
-            }));
-            named_in(&[working], &rows)
+            let mut rows = BTreeSet::new();
+            for side in &sides {
+                rows.extend(Cells::of(side, "").rows().cloned());
+                rows.extend(side.services.iter().flat_map(|service| {
+                    Setting::ALL.map(|setting| RowId::of(&service.lineage_id, At::Setting(setting)))
+                }));
+            }
+            rows.iter().filter_map(|row| named(&sides, row)).collect()
         }
     };
     for row in &resolve_all(&request.rows, &candidates)? {
@@ -64,7 +68,7 @@ pub(crate) fn never_sync(
             )?;
             continue;
         }
-        if named(&[&environment.working], row).is_none() {
+        if named(&sides, row).is_none() {
             return Err(error::invalid(
                 format!("{} has nothing at {row}", environment.summary.name),
                 json!({ "row": row }),
@@ -83,18 +87,33 @@ pub(crate) fn never_sync(
     })
 }
 
-/// The rows `environment` marks Never sync; a mark on a node it no longer has is
-/// left out.
+/// The rows `environment` marks Never sync; a mark on a node neither it nor what it
+/// last shared with its Parent has is left out.
 pub(crate) fn never_synced(
     tx: &mut dyn Tx,
     environment: &Environment,
 ) -> Result<Vec<NamedRow>, RpcError> {
-    let mut marked = named_in(
-        &[&environment.working],
-        &marked(tx, &environment.summary.id)?,
-    );
+    let sides = sides(tx, environment)?;
+    let sides: Vec<_> = sides.iter().collect();
+    let mut marked: Vec<_> = marked(tx, &environment.summary.id)?
+        .iter()
+        .filter_map(|row| named(&sides, row))
+        .collect();
     marked.sort_by_key(NamedRow::to_string);
     Ok(marked)
+}
+
+/// Where `environment`'s rows are: its Working State, and for a Branch what it last
+/// shared with its Parent, so a row it removed can be marked too and stays put.
+fn sides(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+) -> Result<Vec<SavedEnvironmentIntent>, RpcError> {
+    let mut sides = vec![environment.working.clone()];
+    if let Some(branch) = row(tx, &environment.summary.id)? {
+        sides.push(base_of(tx, (&environment.summary.id, &branch.parent))?);
+    }
+    Ok(sides)
 }
 
 /// The rows `environment` marks Never sync.

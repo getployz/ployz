@@ -26,9 +26,10 @@ const admitted = { ok: true, value: { written: "deployment", id: "d" } } as neve
 const admittedIds: string[] = [];
 
 function Deploy() {
-  const { deploy, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
+  const { deploy, publish, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
+    <button type="button" onClick={() => publish("  Save this draft  ")}>Save now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     <button type="button" onClick={() => neverSync("api.env.CACHE_TTL", "a:variables.CACHE_TTL" as RowId)}>Never sync CACHE_TTL</button>
     {dialog}
@@ -75,11 +76,11 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
 
 it("discards a Setting by its Store path, through the Environment's queue", async () => {
   const test = setup();
-  test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded" } } as never);
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded", environment: { revision: 4 } } } as never);
 
   act(() => { fireEvent.click(screen.getByText("Discard replicas")); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
-  expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: "2:1:0" }]);
+  expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: "2:1:0", target: "head" }]);
 });
 
 it("marks an arrived change's row Never sync here and discards it in one Batch, so it goes and nothing follows into it again", async () => {
@@ -105,16 +106,6 @@ it("fails closed when the Servers can't be checked: nothing to accept, and the S
   expect(admittedIds).toEqual([]);
 });
 
-it("shows the Store's reason a Deploy waits, naming each secret without a value", async () => {
-  const test = setup();
-  const message = "production has secrets without a value: set api.env.KEY, web.env.API_KEY before deploying";
-  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message, details: { secrets: ["api.env.KEY", "web.env.API_KEY"] } } });
-
-  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
-  await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
-  expect(admittedIds).toEqual([]);
-});
-
 it("admits one Deployment for a double click", async () => {
   const test = setup();
   let admit: (value: typeof admitted) => void = () => {};
@@ -127,4 +118,13 @@ it("admits one Deployment for a double click", async () => {
   admit(admitted);
   await waitFor(() => expect(admittedIds).toHaveLength(1));
   expect(test.write).toHaveBeenCalledTimes(1);
+});
+
+it("saves the optional message without admitting a deployment", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "published" } } as never);
+  fireEvent.click(screen.getByText("Save now"));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(test.admits()).toEqual([{ command: "publish", environment: ref, version: "2:1:0", accept_volume_loss: [], message: "Save this draft" }]);
+  expect(admittedIds).toEqual([]);
 });

@@ -3,8 +3,8 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
+use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::config::canonicalize_environment_intent;
-use ployz_core::config::{SavedEnvironmentIntent, SavedVariableValue};
 use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,7 +12,6 @@ use ts_rs::TS;
 
 use crate::deployment::{self, DeploymentSummary, UploadedSource};
 use crate::domain;
-use crate::error;
 use crate::id::{DeploymentId, Hostname, VolumeName};
 use crate::registry;
 use crate::review;
@@ -162,8 +161,9 @@ pub(crate) fn admit(
 }
 
 /// The gate every Deploy passes, the user's or the Store's own: a Server to run
-/// it, a value for every secret, the Cluster Domain its generated domains expand
-/// under, and no hostname another Namespace publishes.
+/// it, the Cluster Domain its generated domains expand under, and no hostname
+/// another Namespace publishes. A secret without a value never blocks it: the
+/// Deployment leaves it out and warns.
 pub(crate) fn gate(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -172,44 +172,8 @@ pub(crate) fn gate(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     trusted.runnable()?;
-    needs_secret_values(environment, intent)?;
     needs_cluster_domain(environment, intent, cluster_domain)?;
     domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
-}
-
-/// Refuse to deploy a secret without a value, naming each: one that arrived by Sync
-/// waits for `environment`'s own.
-fn needs_secret_values(
-    environment: &scope::Environment,
-    intent: &SavedEnvironmentIntent,
-) -> Result<(), RpcError> {
-    let mut missing: Vec<String> = intent
-        .services
-        .iter()
-        .flat_map(|service| {
-            service
-                .variables
-                .iter()
-                .filter(|variable| variable.value == SavedVariableValue::SecretWithoutValue)
-                .map(|variable| format!("{}.env.{}", service.slug, variable.key))
-        })
-        .collect();
-    missing.sort();
-    let Some(first) = missing.first() else {
-        return Ok(());
-    };
-    let summary = &environment.summary;
-    Err(error::conflict(
-        format!(
-            "{} has secrets without a value: set {} before deploying",
-            summary.name,
-            missing.join(", ")
-        ),
-        json!({
-            "secrets": missing,
-            "next": format!("ployz set {first} --secret --project {} --env {}", summary.project, summary.name),
-        }),
-    ))
 }
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain
@@ -252,6 +216,8 @@ fn deploy(
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
+    // A manual Deploy ends the draft's proposals: what they brought is its own now.
+    crate::branch::end_included(tx, id, None)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
     gate(
@@ -279,6 +245,7 @@ fn deploy(
         id,
         environment.working.clone(),
         review.saved.as_ref(),
+        admit.message.as_deref(),
     )?;
     let mut frozen = deployment::freeze(
         id,
@@ -295,12 +262,27 @@ fn deploy(
         uploader: who.principal.clone(),
         ..upload
     });
-    deployment::admit(
+    let summary = deployment::admit(
         tx,
         who,
         (&admit.id, &admit.services, upload, admit.message.clone()),
         id,
         saved,
         &frozen,
-    )
+    )?;
+    // What merges landed and this Deploy ships no longer waits for a push.
+    let shipped = saved_intent
+        .services
+        .iter()
+        .filter(|service| {
+            admit.services.is_empty()
+                || admit
+                    .services
+                    .iter()
+                    .any(|name| name.as_str() == service.slug)
+        })
+        .map(|service| service.id.as_str())
+        .collect();
+    crate::automation::shipped_landed(tx, id, &shipped)?;
+    Ok(summary)
 }

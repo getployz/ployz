@@ -1,5 +1,5 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
+  ChangeKind, DiscardTarget, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, RowId,
   ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
@@ -27,6 +27,7 @@ export type ChangeRow = {
   newValue: string;
   configFile?: { before: typeof reviewFile.Type | null; after: typeof reviewFile.Type | null };
   canDiscard: boolean;
+  discardTarget?: DiscardTarget;
   /** A placement change's second line, in words, where a Setting shows its before and after. */
   detail?: string;
   /** What the change loses, which Details shows in red. */
@@ -49,6 +50,7 @@ export type ChangeGroup = {
   changeCount: number;
   restarts: NodeChange["restarts"];
   canDiscard: boolean;
+  discardTarget?: DiscardTarget;
   serviceSourceType?: ServiceListing["source"];
 };
 
@@ -78,7 +80,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     discardPath: node.type === "volume" ? `volumes.${node.name}` : node.type === "config" ? `configs.@${node.id}` : node.name,
     row: node.row,
     lifecycle: node.lifecycle,
-    changeCount: Math.max(node.settings.length, 1),
+    changeCount: node.settings.length + (node.lifecycle === "update" ? 0 : 1),
     restarts: node.restarts,
     canDiscard: true,
     serviceSourceType: services.find((service) => service.id === node.id)?.source,
@@ -112,17 +114,53 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
   }));
 }
 
-/** The diff values a cell words: text, a sealed value (the Store never sends its plaintext), a route. */
+/** Runtime changes and draft reversals in one review, with each row's Discard baseline. */
+export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
+  const groups = changeGroups(diff, services).map((group) => ({ ...group, rows: [...group.rows] }));
+  const drafts = changeGroups({ ...diff, changes: diff.draft_changes ?? [] }, services);
+  for (const draft of drafts) {
+    draft.discardTarget = "saved";
+    draft.rows = draft.rows.map((row) => ({ ...row, discardTarget: "saved" }));
+    const runtime = groups.find((group) => group.nodeType === draft.nodeType && group.nodeId === draft.nodeId);
+    if (!runtime) {
+      groups.push(draft);
+      continue;
+    }
+    if (runtime.lifecycle !== "update") continue;
+    runtime.rows.push(...draft.rows.filter((row) => !runtime.rows.some((other) => sameReviewRow(other, row))));
+    if (draft.lifecycle !== "update") {
+      runtime.lifecycle = draft.lifecycle;
+      runtime.discardTarget = "saved";
+    }
+    runtime.changeCount = runtime.rows.length + (runtime.lifecycle === "update" ? 0 : 1);
+  }
+  return groups;
+}
+
+function sameReviewRow(left: ChangeRow, right: ChangeRow): boolean {
+  if (!left.row || !right.row) return left.path === right.path;
+  if (left.row !== right.row) return false;
+  if (left.variable) {
+    const field = (row: ChangeRow) => row.path.endsWith(".exported") ? "exported"
+      : row.path.endsWith(".description") ? "description" : "value";
+    return field(left) === field(right);
+  }
+  if (left.row.endsWith(":routes")) return left.path.slice(left.path.indexOf(".")) === right.path.slice(right.path.indexOf("."));
+  return true;
+}
+
+/** The diff values a cell words: text, a sealed value (the Store never sends its plaintext) or one still unset, a route. */
 const decodeShown = Schema.decodeUnknownOption(Schema.Union([
-  Schema.String, Schema.Struct({ secret: Schema.Literal(true) }), Schema.Struct({ hostname: Schema.String }),
+  Schema.String, Schema.Struct({ secret: Schema.Boolean }), Schema.Struct({ hostname: Schema.String }),
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
   // A Volume's storage.
   Schema.Struct({ kind: Schema.Literal("provisioned"), maximumBytes: Schema.Number }), Schema.Struct({ kind: Schema.Literal("docker") }),
 ]));
 
 /**
- * A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, a healthcheck by its
- * path or command and timeout, generated domains by name and port, a Volume's storage by its limit; else its JSON.
+ * A diff value as a cell shows it: text as is, a sealed one as Sealed or needing a value, a route by its hostname, a
+ * healthcheck by its path or command and timeout, generated domains by name and port, a Volume's storage by its limit;
+ * else its JSON.
  */
 export function shownValue(value: JsonValue): string {
   if (value === null) return "";
@@ -133,7 +171,7 @@ export function shownValue(value: JsonValue): string {
     onSome: (shown) => {
       if (Schema.is(Schema.String)(shown)) return shown;
       if ("hostname" in shown) return shown.hostname;
-      if ("secret" in shown) return "Sealed";
+      if ("secret" in shown) return shown.secret ? "Sealed" : "Not set";
       if ("kind" in shown) return volumeStorageText(shown);
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },
@@ -251,6 +289,13 @@ export function focusedService(deployment: DeploymentView, picked: string | unde
  */
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
+
+/** What a Deployment shipped despite, in words: "TOKEN not set", or where a Config file left one empty. */
+export function deploymentWarningText(warning: DeploymentWarning) {
+  if ("service" in warning) return `${warning.variable} not set in ${warning.service}`;
+  if ("secret" in warning) return `${warning.secret} not set in ${warning.config}/${warning.file}`;
+  return `${warning.variable} may break ${warning.config}/${warning.file}`;
+}
 
 /** Why a Deployment ended: its reason and deepest cause, or what a forgotten removal left. */
 export function outcomeReason(outcome: Outcome | null) {

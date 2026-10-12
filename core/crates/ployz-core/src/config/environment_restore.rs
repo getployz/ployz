@@ -37,6 +37,24 @@ pub fn restore_environment_node(
     node_id: &str,
     path: Option<&str>,
 ) -> Result<SavedEnvironmentIntent, ConfigError> {
+    restore_environment_node_into(&mut current, baseline, node_type, node_id, path)?;
+    Ok(canonicalize_environment_intent(parse_environment_intent(
+        json!(current),
+    )?))
+}
+
+/// Restore one owner's settings without validating intermediate Environment relationships.
+/// The caller validates the complete document after all related transformations.
+///
+/// # Errors
+/// Returns ConfigError when the selected setting or authored owner is unavailable.
+pub fn restore_environment_node_into(
+    current: &mut SavedEnvironmentIntent,
+    baseline: Option<&SavedEnvironmentIntent>,
+    node_type: EnvironmentNodeType,
+    node_id: &str,
+    path: Option<&str>,
+) -> Result<(), ConfigError> {
     if let Some(path) = path {
         if node_type != EnvironmentNodeType::Service {
             return Err(ConfigError::at(
@@ -134,7 +152,5 @@ pub fn restore_environment_node(
             }
         }
     }
-    Ok(canonicalize_environment_intent(parse_environment_intent(
-        json!(current),
-    )?))
+    Ok(())
 }
