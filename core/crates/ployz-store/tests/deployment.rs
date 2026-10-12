@@ -3155,6 +3155,7 @@ fn removing_a_volume_no_service_mounts_asks_nothing_while_its_deployment_runs() 
                 storage: ployz_core::config::VolumeKind::Docker {},
                 shared_writes: false,
                 mounts: Vec::new(),
+                storage_locked: false,
             },
         )
         .unwrap();
