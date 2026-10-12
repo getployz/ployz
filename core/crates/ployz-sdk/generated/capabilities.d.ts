@@ -66,6 +66,8 @@ export type CapabilityName =
   | "ployz.volume.round.prune.v1"
   | "ployz.volume.round.warm.v1"
   | "ployz.volume.seed.v1"
+  | "ployz.volume.snapshot.list.v1"
+  | "ployz.volume.snapshot.v1"
   | "ployz.volume.start-handed-container.v1"
   | "ployz.volume.thaw.v1"
   | "ployz.volume.withdraw.v1"

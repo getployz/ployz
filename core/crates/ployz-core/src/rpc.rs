@@ -1,7 +1,8 @@
 use crate::{
     CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
-    InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SeedVolumeRequest, ServiceVolumeRequest,
-    SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
+    InspectVolumeCopyRequest, ListVolumeSnapshotsRequest, MirrorRequest, ReceiveView,
+    SeedVolumeRequest, ServiceVolumeRequest, SetVolumeSnapshotRequest, SourceContainerRequest,
+    StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView, VolumeSnapshots,
     WarmRequest,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
@@ -1070,6 +1071,7 @@ define_responses! {
     VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
+    VolumeSnapshots(VolumeSnapshots) => "volume_snapshots";
     SwitchReply(crate::SwitchReply) => "switch_reply";
     ReceiveView(crate::ReceiveView) => "receive_view";
     MachineImages(MachineImages) => "machine_images";

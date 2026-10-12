@@ -629,6 +629,24 @@ impl MachineRpc for MachineService {
         .await
     }
 
+    async fn set_volume_snapshot(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "SetVolumeSnapshot lands with its handler",
+        ))
+    }
+
+    async fn list_volume_snapshots(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "ListVolumeSnapshots lands with its handler",
+        ))
+    }
+
     async fn withdraw(
         &self,
         request: Request<OpaquePayload>,

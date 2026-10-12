@@ -75,6 +75,8 @@ macro_rules! rpc_catalog {
                 ClearFinal: (clear_final, "ClearFinal", MirrorRequest, "clear_final", SwitchReply, CLEAR_FINAL_CAPABILITY, "ployz.volume.clear-final.v1", Container),
                 Restore: (restore, "Restore", ServiceVolumeRequest, "restore", SwitchReply, RESTORE_VOLUME_CAPABILITY, "ployz.volume.restore.v1", Container),
                 SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", SwitchReply, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
+                SetVolumeSnapshot: (set_volume_snapshot, "SetVolumeSnapshot", SetVolumeSnapshotRequest, "set_volume_snapshot", VolumeSnapshots, SET_VOLUME_SNAPSHOT_CAPABILITY, "ployz.volume.snapshot.v1", Container),
+                ListVolumeSnapshots: (list_volume_snapshots, "ListVolumeSnapshots", ListVolumeSnapshotsRequest, "list_volume_snapshots", VolumeSnapshots, LIST_VOLUME_SNAPSHOTS_CAPABILITY, "ployz.volume.snapshot.list.v1", Container),
                 DeclareMirror: (declare_mirror, "DeclareMirror", DeclareMirrorRequest, "declare_mirror", SwitchReply, DECLARE_MIRROR_CAPABILITY, "ployz.volume.mirror.declare.v1", Container),
                 BeginRound: (begin_round, "BeginRound", MirrorRequest, "begin_round", SwitchReply, BEGIN_ROUND_CAPABILITY, "ployz.volume.round.begin.v1", Container),
                 CommitSnapshots: (commit_snapshots, "CommitSnapshots", CommitRequest, "commit_snapshots", SwitchReply, COMMIT_SNAPSHOTS_CAPABILITY, "ployz.volume.round.commit.v1", Container),
