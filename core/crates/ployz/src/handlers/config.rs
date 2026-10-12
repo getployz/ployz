@@ -593,9 +593,9 @@ mod tests {
             got(&settings, &domains, true),
             [
                 "web.replicas = 3 (default 1)",
-                "web.restartPolicy = always (default)",
+                "web.restartPolicy = \"always\" (default)",
                 "web.domains = shop.acme.ployz.app (port 3000)",
-                "volumes.data.name = data",
+                "volumes.data.name = \"data\"",
                 "worker.replicas = 1 (default)",
                 "worker.domains = -",
                 "api.domains = api.acme.ployz.app",

@@ -748,15 +748,13 @@ pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
     }
 }
 
-/// A value on one line: text unquoted, nothing as `-`.
+/// A value on one line as JSON writes it, text quoted, so `""` and `"-"` never read as
+/// unset, which alone shows as `-`.
 pub(crate) fn plain(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.escape_debug().to_string(),
-        serde_json::Value::Null => "-".to_owned(),
-        serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::Array(_)
-        | serde_json::Value::Object(_) => value.to_string(),
+    if value.is_null() {
+        "-".to_owned()
+    } else {
+        value.to_string()
     }
 }
 

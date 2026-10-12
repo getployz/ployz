@@ -816,7 +816,7 @@ fn an_agent_creates_and_edits_an_image_service() {
         assert_eq!(human.lines().count(), 1);
         assert!(!human.contains('\u{1b}'));
         assert!(!human.contains('\t'));
-        assert!(human.contains("alpha\\nweb.env.SPOOF = true\\t\\u{1b}[31mcafé"));
+        assert!(human.contains(r#""alpha\nweb.env.SPOOF = true\t\u001b[31mcafé""#));
 
         // Unsetting the image disconnects the source: the Service is empty again.
         ok(store, &["unset", "web.image"]);
