@@ -149,9 +149,16 @@ export const uptimeShow = defineCommand({
 });
 
 /**
- * Asks for a probe the way Check now does, then waits while the read still shows it in flight: until the checker judges
- * the round, or until the read stops showing the request because the slowest round is over.
+ * Repeats `read` each second while it shows the probe in flight, for at most 9 s, and answers with the last read. The
+ * CLI gives up on a request after 15 s, so a round the checker is slow to judge answers as not yet answered instead.
  */
+export const whileChecking = <E, R>(read: Effect.Effect<ServiceUptime | null, E, R>) =>
+  read.pipe(Effect.repeat({
+    schedule: Schedule.spaced("1 second").pipe(Schedule.upTo({ duration: "9 seconds" })),
+    while: (current) => current?.probe?.answered === false,
+  }));
+
+/** Asks for a probe the way Check now does, then waits for the checker to judge the round by `whileChecking`. */
 export const uptimeCheck = defineCommand({
   name: "uptime_check",
   path: ["uptime", "check"],
@@ -168,11 +175,7 @@ export const uptimeCheck = defineCommand({
     const service = yield* found(caller, input);
     const scope = { organizationSlug: caller.organization.slug, environmentId: service.environmentId, serviceId: service.serviceId };
     yield* requestUptimeProbe(caller, scope);
-    const read = readServiceUptime(caller, { ...scope, ...DEFAULT_RANGE });
-    const uptime = yield* read.pipe(Effect.repeat({
-      schedule: Schedule.spaced("1 second"),
-      while: (current) => current?.probe?.answered === false,
-    }));
+    const uptime = yield* whileChecking(readServiceUptime(caller, { ...scope, ...DEFAULT_RANGE }));
     if (uptime === null) return notChecked(service.name);
     const answered = uptime.probe?.answered ?? false;
     const requestedAt = uptime.probe?.requestedAt ?? null;

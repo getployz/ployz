@@ -42,7 +42,7 @@ ployz uptime show web --project shop --environment staging --from 6h
 The range is the last hour when you leave them out.
 
 `ployz uptime check` does what **Check now** does, waits for the check to answer, and prints
-what each region got back. It changes no setting. If the check hasn't answered within the wait, it says
+what each region got back. It changes no setting. If the check hasn't answered within about 10 seconds, it says
 so, and `ployz uptime show` shows the result once it lands.
 
 ```sh
