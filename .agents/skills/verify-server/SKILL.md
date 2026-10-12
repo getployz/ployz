@@ -49,7 +49,7 @@ scripts/verify-cluster exec "$run" machine-1 -- zpool status
 scripts/verify-cluster exec "$run" machine-2 -- journalctl -u ployz --no-pager -n 100
 ```
 
-Managed Volumes work on every run. Enrollment says `--storage none` only because `--no-install` requires it; the image already ran the real installer with `--storage zfs`. As on a real Server, the daemon creates the file-backed `ployz` Machine Pool under `/var/lib/ployz-machine-pool` when the first managed Volume deploys. Do not create a pool yourself. Each Machine's 24 GiB root disk bounds the Pool.
+Managed Volumes work on every run. Enrollment says `--storage none` only because `--no-install` requires it; the image already ran the real installer with `--storage zfs`. As on a real Server, the daemon creates the file-backed `ployz` Machine Pool under `/var/lib/ployz-machine-pool` when the first managed Volume deploys. Do not create a pool yourself. Each Machine's 24 GiB root disk bounds the Pool. Pass `--memory` and `--disk` to `up` with Incus sizes, such as `--memory 4GiB --disk 40GiB`, when a check needs a larger Volume or workload. The defaults are 2 GiB of RAM and a 24 GiB disk. The manifest records both under `provider_state`, so `update` and `power on` keep them. Larger VMs take more of the shared host, so size them only for the check that needs it.
 
 Use `cli` for product actions; it isolates ambient Ployz credentials and runs in the manifest's sibling `workspace/`. Use `exec` for diagnostics or faults inside a selected Machine. Arguments are passed directly; use `-- bash -ec '...'` when a shell is needed. Both commands capture stdout, stderr and exit status and return the underlying command's status. Read the current CLI's `--help` for the feature's actual interface.
 

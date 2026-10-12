@@ -374,7 +374,8 @@ def up(args):
     (private / "bin").mkdir(parents=True, mode=0o700)
     (directory / "workspace").mkdir()
     run = dict(manifest=str(directory / "cluster.json"), root=str(CORE),
-               id=directory.name.rsplit("-", 1)[1], provider=args.provider, provider_state={}, state="starting", daemon={"source": args.daemon},
+               id=directory.name.rsplit("-", 1)[1], provider=args.provider,
+               provider_state={resource: size for resource, size in [("memory", args.memory), ("disk", args.disk)] if size}, state="starting", daemon={"source": args.daemon},
                timings={}, machines=[dict(name=f"machine-{index}") for index in range(1, args.machines + 1)])
     save(run)
     commands = Commands(run)
@@ -488,6 +489,8 @@ def main():
     launch.add_argument("--provider", choices=["incus"], default="incus")
     launch.add_argument("--machines", type=int, choices=range(1, 9), default=1)
     launch.add_argument("--daemon", default="checkout", help="checkout (default), stable, beta or an exact release version")
+    launch.add_argument("--memory", help="RAM per Machine VM as an Incus size; 2GiB by default")
+    launch.add_argument("--disk", help="Root disk per Machine VM, which bounds its Machine Pool; 24GiB by default")
     pairing = launch.add_mutually_exclusive_group()
     pairing.add_argument("--cloud", action="store_true",
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
