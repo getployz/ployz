@@ -110,7 +110,8 @@ class ClusterModel:
             self.fault[machine] = value
             return 0, ""
         if "fault:" in script:
-            return 0, "fault: killing the plugin after the record, before the effect\n" if self.fired else ""
+            plugin_journal = "-u ployz-volume-plugin.service" in script
+            return 0, "fault: killing the plugin after the record, before the effect\n" if self.fired and plugin_journal else ""
         if script.startswith("for d in"):
             lines = []
             two_writers = self.mutation == "two-writers"

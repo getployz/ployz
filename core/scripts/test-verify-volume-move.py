@@ -418,7 +418,7 @@ class VolumeMove:
 
     def fired(self, since):
         for machine in self.machines:
-            lines = self.sh(machine, f"journalctl -u ployz.service --since @{int(since) - 2} --no-pager -o cat "
+            lines = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{int(since) - 2} --no-pager -o cat "
                                      "| grep -F 'fault:' || true", check=False).stdout.strip()
             if lines:
                 return f"{machine}: {lines.splitlines()[0][:300]}"
@@ -516,7 +516,7 @@ class VolumeMove:
 
     def evidence(self, name, since):
         for machine in self.machines:
-            journal = self.sh(machine, f"journalctl -u ployz.service --since @{int(since) - 2} --no-pager -o short-iso",
+            journal = self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{int(since) - 2} --no-pager -o short-iso",
                               check=False, timeout=120).stdout
             (self.out / f"{name}-{machine}.journal").write_text(journal)
             listing = self.sh(machine, f"zfs list -t all -H -o name,used,refer,readonly -r {self.pool}",
