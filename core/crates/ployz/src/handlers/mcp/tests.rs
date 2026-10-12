@@ -1690,11 +1690,13 @@ mod published {
     const FIXTURE: &str = include_str!("../../../tests/fixtures/published-manifest.json");
 
     /// A Ployz Cloud that publishes `manifest` and answers every run with `run`. While
-    /// `down`, every request fails as a Cloud that cannot answer does.
+    /// `down`, every request fails as a Cloud that cannot answer does. Each manifest
+    /// takes `slow` to send.
     struct Publisher {
         manifest: Value,
         run: (&'static str, Value),
         down: bool,
+        slow: Duration,
     }
 
     fn publisher() -> Arc<Mutex<Publisher>> {
@@ -1702,6 +1704,7 @@ mod published {
             manifest: serde_json::from_str(FIXTURE).unwrap(),
             run: ("200 OK", json!({ "output": {} })),
             down: false,
+            slow: Duration::ZERO,
         }))
     }
 
@@ -1713,7 +1716,7 @@ mod published {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
                 let seen = incoming(&stream);
-                let (status, reply, revision) = {
+                let (status, reply, revision, slow) = {
                     let state = state.lock().unwrap();
                     let revision = state.manifest["revision"].as_str().unwrap().to_owned();
                     let (status, reply) = if state.down {
@@ -1729,8 +1732,12 @@ mod published {
                                 .to_string(),
                         )
                     };
-                    (status, reply, revision)
+                    let slow = (seen.path == "/api/cli/manifest").then_some(state.slow);
+                    (status, reply, revision, slow)
                 };
+                if let Some(slow) = slow {
+                    std::thread::sleep(slow);
+                }
                 let _ = saw.send(seen);
                 write!(
                     stream,
@@ -1983,6 +1990,68 @@ mod published {
             assert_eq!(done["id"], id, "{done}");
         }
         assert_eq!(manifest_reads(&fake), 2);
+    }
+
+    #[tokio::test]
+    async fn calls_that_see_a_new_revision_together_reread_it_once() {
+        let publisher = publisher();
+        let fake = fake_publisher(publisher.clone());
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing().into_iter().next().unwrap();
+        {
+            let mut state = publisher.lock().unwrap();
+            state.manifest["revision"] = json!("together");
+            state.slow = Duration::from_millis(300);
+        }
+        for id in [2, 3] {
+            client
+                .send(&request(
+                    id,
+                    "tools/call",
+                    json!({ "name": name(&entry), "arguments": arguments(&entry) }),
+                ))
+                .await;
+        }
+        let mut frames = Vec::new();
+        while frames
+            .iter()
+            .filter(|frame: &&Value| frame["id"].is_u64())
+            .count()
+            < 2
+        {
+            frames.push(client.reply().await);
+        }
+        let notices = frames
+            .iter()
+            .filter(|frame| frame["method"] == "notifications/tools/list_changed")
+            .count();
+        assert_eq!(notices, 1, "{frames:?}");
+        assert_eq!(manifest_reads(&fake), 2);
+    }
+
+    #[tokio::test]
+    async fn the_host_is_told_the_tool_list_can_change() {
+        let fake = fake_publisher(publisher());
+        let home = tempfile::tempdir().unwrap();
+        let mut client = Client::connect(on_published(&fake, home.path()).await);
+        client
+            .send(&request(
+                1,
+                "initialize",
+                json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": { "name": "test", "version": "0" },
+                }),
+            ))
+            .await;
+        let ready = client.reply().await;
+        assert_eq!(
+            ready["result"]["capabilities"]["tools"]["listChanged"], true,
+            "{ready}"
+        );
     }
 
     #[tokio::test]

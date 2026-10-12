@@ -197,16 +197,14 @@ impl Setup {
     ///
     /// # Errors
     ///
-    /// Returns what [`Setup::refresh`] does, or a credential that cannot be used.
+    /// Returns what [`Setup::refresh`] does. A credential that cannot be used counts as
+    /// none.
     pub(crate) fn refresh_now(&self) -> Result<Published, PublishError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(PublishError::Runtime)?;
-        runtime.block_on(async {
-            let credential = self.credential().await?;
-            self.refresh(credential.as_ref()).await
-        })
+        runtime.block_on(self.refresh(async { self.credential().await.ok().flatten() }))
     }
 
     /// The setup the process environment names, as `cli::command()` reads it before
@@ -281,7 +279,9 @@ impl Setup {
 
     /// Fetch the manifest, within [`REFRESH_BUDGET`], and keep it. Unsigned first,
     /// then with `credential` when Cloud asks for one and `credential` is for this
-    /// Cloud. A cached revision is sent so an unchanged manifest costs no body.
+    /// Cloud. `credential` is resolved only then, inside the budget, since resolving one
+    /// can mean asking Cloud about a pending sign-in. A cached revision is sent so an
+    /// unchanged manifest costs no body.
     ///
     /// # Errors
     ///
@@ -291,7 +291,7 @@ impl Setup {
     /// otherwise.
     pub(crate) async fn refresh(
         &self,
-        credential: Option<&Credential>,
+        credential: impl Future<Output = Option<Credential>>,
     ) -> Result<Published, PublishError> {
         tokio::time::timeout(REFRESH_BUDGET, self.fetch(credential))
             .await
@@ -303,7 +303,10 @@ impl Setup {
             })
     }
 
-    async fn fetch(&self, credential: Option<&Credential>) -> Result<Published, PublishError> {
+    async fn fetch(
+        &self,
+        credential: impl Future<Output = Option<Credential>>,
+    ) -> Result<Published, PublishError> {
         let cached = self.cached();
         let url = format!("{}/api/cli/manifest", self.cloud);
         let client = cloud_login::http()?;
@@ -323,10 +326,11 @@ impl Setup {
         if matches!(
             response.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-        ) && let Some(credential) =
-            credential.filter(|credential| credential.cloud() == self.cloud)
+        ) && let Some(credential) = credential
+            .await
+            .filter(|credential| credential.cloud() == self.cloud)
         {
-            response = send(Some(credential))
+            response = send(Some(&credential))
                 .await
                 .map_err(|error| cloud_login::unreachable(&self.cloud, error))?;
         }
@@ -644,14 +648,15 @@ mod tests {
         });
         std::fs::write(home.path().join("cloud.json"), stored.to_string()).unwrap();
         let store = CredentialStore::beside(&home.path().join("config.yaml"));
-        let device = cloud_account::credential(&store, None, None).await.unwrap();
+        let device = || async { cloud_account::credential(&store, None, None).await.ok() };
         let (url, seen) = refusing_cloud();
         let elsewhere = setup(tempfile::tempdir().unwrap().path(), &url);
 
-        assert!(elsewhere.refresh(Some(&device)).await.is_err());
+        assert!(elsewhere.refresh(device()).await.is_err());
         let requests: Vec<String> = seen.try_iter().collect();
         assert_eq!(requests.len(), 1, "no signed retry: {requests:?}");
         assert!(!requests[0].contains("authorization:"), "{}", requests[0]);
+        let device = device().await.unwrap();
         assert!(matches!(
             elsewhere.acts_with(&device),
             Err(PublishError::OtherCloud { .. })

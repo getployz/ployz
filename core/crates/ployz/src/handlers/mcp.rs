@@ -2,7 +2,7 @@
 //! answering its reads and its one write from the Config Store and Ployz Cloud.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -344,8 +344,11 @@ struct Server {
     setup: Option<Setup>,
     /// The published commands as last read, replaced when a reply names a newer revision.
     published: Mutex<Option<Published>>,
-    /// A revision whose reread failed, so later calls that name it don't try again.
-    unread: Mutex<Option<String>>,
+    /// Revisions whose reread failed, so later calls that name one don't try again.
+    unread: Mutex<BTreeSet<String>>,
+    /// Held while the published commands are reread, so calls that see a new revision
+    /// together read it once.
+    rereading: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -373,7 +376,8 @@ impl Server {
             waiting: Waiting::default(),
             setup: None,
             published: Mutex::new(None),
-            unread: Mutex::new(None),
+            unread: Mutex::new(BTreeSet::new()),
+            rereading: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -387,11 +391,13 @@ impl Server {
     }
 
     async fn refreshed(&self, setup: &Setup) -> Option<Published> {
-        let credential = match self.backend().await {
-            Ok(Backend::Cloud(credential)) => Some(credential),
-            Ok(Backend::Local(..)) | Err(_) => None,
+        let credential = async {
+            match self.backend().await {
+                Ok(Backend::Cloud(credential)) => Some(credential),
+                Ok(Backend::Local(..)) | Err(_) => None,
+            }
         };
-        setup.refresh(credential.as_ref()).await.ok()
+        setup.refresh(credential).await.ok()
     }
 
     fn held(&self) -> std::sync::MutexGuard<'_, Option<Published>> {
@@ -430,23 +436,26 @@ impl Server {
         let (Some(revision), Some(setup)) = (revision, &self.setup) else {
             return;
         };
-        if self
-            .held()
-            .as_ref()
-            .is_some_and(|published| published.revision == revision)
-        {
-            return;
-        }
         let unread = || {
             self.unread
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
         };
-        if unread().as_ref() == Some(&revision) {
+        let settled = || {
+            self.held()
+                .as_ref()
+                .is_some_and(|published| published.revision == revision)
+                || unread().contains(&revision)
+        };
+        if settled() {
+            return;
+        }
+        let _rereading = self.rereading.lock().await;
+        if settled() {
             return;
         }
         let Some(refreshed) = self.refreshed(setup).await else {
-            *unread() = Some(revision);
+            unread().insert(revision);
             return;
         };
         *self.held() = Some(refreshed);
@@ -634,13 +643,18 @@ fn object(schema: Value) -> JsonObject {
 
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("ployz", env!("CARGO_PKG_VERSION")))
-            .with_instructions(format!(
-                "{INSTRUCTIONS} A call still running after {} is stopped; its error names the \
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
+        )
+        .with_server_info(Implementation::new("ployz", env!("CARGO_PKG_VERSION")))
+        .with_instructions(format!(
+            "{INSTRUCTIONS} A call still running after {} is stopped; its error names the \
                  tool that shows what it left running.",
-                span(self.deadline)
-            ))
+            span(self.deadline)
+        ))
     }
 
     async fn list_tools(
