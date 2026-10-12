@@ -310,7 +310,7 @@ impl MachineOperations for Client {
         self.invoke::<op::RemoveContainer>(
             RemoveContainerRequest {
                 container_id: *container_id,
-                remove_volumes: true,
+                remove_volumes: false,
                 force: false,
             },
             &MachineTarget::from(machine_id),

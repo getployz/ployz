@@ -203,6 +203,8 @@ export type PreparationInput = {
   deployment: {
     namespace: string;
     selected?: import("./generated/payloads").ServiceAttempt[];
+    /** Services this targeted Deploy retires, each also in `selected`. */
+    removals?: import("./generated/payloads").ServiceName[];
     /** Service ID by lineage, from the frozen variable producers; references through it order the deploy. */
     lineages?: Record<string, string>;
     snapshots: readonly { serviceId?: string; config: import("./generated/payloads").ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[];

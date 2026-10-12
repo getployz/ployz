@@ -9,6 +9,8 @@ mod history;
 mod lifecycle;
 mod lowering;
 pub(crate) mod query;
+#[cfg(test)]
+mod retire_tests;
 mod rows;
 pub(crate) use history::*;
 pub(crate) use lifecycle::*;
@@ -28,7 +30,7 @@ use ployz_core::config::{
 use ployz_core::{
     ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId,
     ExecutionError, FailedOperation, Namespace, RpcError, ServiceAttempt, ServiceName,
-    VolumeRemoval, VolumeRemovalOutcome,
+    ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -367,6 +369,10 @@ pub(crate) enum TargetNode {
         name: ServiceName,
         /// The runtime Service it lowers to, which its Node Outcome is confirmed by.
         runtime: ServiceName,
+        /// For a Service a targeted Deployment retires: every runtime Service it
+        /// tears down, `runtime` among them.
+        #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
+        removals: ServiceRemovals,
     },
     Volume {
         id: VolumeId,
@@ -388,7 +394,37 @@ impl TargetNode {
             name: ServiceName::parse(service.slug.as_str())
                 .map_err(|_| error::corrupt("Service name"))?,
             runtime: service.config.private_dns.clone(),
+            removals: ServiceRemovals::default(),
         })
+    }
+
+    fn retire(retire: &Retire) -> Result<Self, RpcError> {
+        let runtime = retire.runtimes.iter().next().ok_or_else(|| {
+            error::invalid(
+                format!("Service {} has nothing to remove", retire.name),
+                json!({ "service": retire.id }),
+            )
+        })?;
+        Ok(Self::Service {
+            id: retire.id.clone(),
+            name: retire.name.clone(),
+            runtime: runtime.clone(),
+            removals: retire.runtimes.clone(),
+        })
+    }
+
+    /// Whether it is a Service a targeted Deployment tears down.
+    pub(crate) fn retires(&self) -> bool {
+        matches!(self, Self::Service { removals, .. } if !removals.is_empty())
+    }
+
+    /// The runtime Services whose Node Outcome settles it.
+    pub(crate) fn runtimes(&self) -> Vec<&ServiceName> {
+        match self {
+            Self::Service { removals, .. } if !removals.is_empty() => removals.iter().collect(),
+            Self::Service { runtime, .. } => vec![runtime],
+            Self::Volume { .. } | Self::Config { .. } => Vec::new(),
+        }
     }
 
     fn volume(
@@ -520,6 +556,37 @@ pub(crate) struct Stored {
     run: Run,
     /// Until when, in Unix seconds, its runner holds it without recording anything.
     lease: i64,
+}
+
+impl Stored {
+    /// What it lowers: the Saved Services it ships, then the runtime Services it
+    /// tears down. Neither is a full Deploy.
+    pub(crate) fn lowering(&self) -> (Vec<ServiceName>, ServiceRemovals) {
+        let mut shipped = Vec::new();
+        let mut removals = ServiceRemovals::default();
+        for node in &self.nodes {
+            if let TargetNode::Service {
+                name,
+                removals: gone,
+                ..
+            } = node
+            {
+                if gone.is_empty() {
+                    shipped.push(name);
+                } else {
+                    removals.extend(gone.iter().cloned());
+                }
+            }
+        }
+        let services = self
+            .summary
+            .services
+            .iter()
+            .filter(|service| shipped.contains(service))
+            .cloned()
+            .collect();
+        (services, removals)
+    }
 }
 
 const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \

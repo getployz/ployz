@@ -303,6 +303,7 @@ fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<P
 }
 
 fn bind(intent: &DeployIntent) -> Result<BoundIntent, PlanError> {
+    check_removals(intent)?;
     let specs = order_included(intent, &intent.applied_names())?;
     let target: Vec<_> = intent
         .target
@@ -350,17 +351,27 @@ fn assemble_plan(
     let services = snapshot.services_in(&intent.namespace);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
-    let retiring = if prune_refusal.is_none() {
-        would_remove.as_slice()
+    let mut retiring = if prune_refusal.is_none() {
+        would_remove.clone()
     } else {
-        &[]
+        Vec::new()
     };
-    let mut warnings = observation::warnings(&intent.namespace, &requested, retiring, snapshot);
+    // Absence is evidence only in a complete snapshot, so a partial one retires nothing.
+    if snapshot.is_observer_complete() {
+        for service in &services {
+            if intent.options.removals.contains(&service.identity.name)
+                && !retiring.contains(&service.identity)
+            {
+                retiring.push(service.identity.clone());
+            }
+        }
+    }
+    let mut warnings = observation::warnings(&intent.namespace, &requested, &retiring, snapshot);
     warnings.extend(hostname_policy_for(
         &intent.namespace,
         &requested,
         snapshot,
-        retiring,
+        &retiring,
     )?);
     warnings.extend(storage_eligibility_warnings(
         &requested,
@@ -432,9 +443,7 @@ fn assemble_plan(
     let volumes = volume_plan.finish(&mut service_operations)?;
     let mut operations = service_operations;
     let preserved_volumes = preserved_owned_volumes(&intent.namespace, &target, snapshot);
-    if prune_refusal.is_none() {
-        operations.extend(removal_operations(&services, retiring));
-    }
+    operations.extend(removal_operations(&services, &retiring));
     Ok(Planned {
         operations,
         volumes,
@@ -497,6 +506,37 @@ fn obsolete_services(
         .filter(|service| !declared.contains(&service.identity.name))
         .map(|service| service.identity.clone())
         .collect()
+}
+
+/// Refuse retirement a targeted Deploy can't carry out exactly: of a Service it
+/// also deploys, of one it doesn't select, or in a reserved Namespace.
+fn check_removals(intent: &DeployIntent) -> Result<(), PlanError> {
+    if intent.options.removals.is_empty() {
+        return Ok(());
+    }
+    if intent.namespace.is_reserved() {
+        return Err(PlanError::RemovalInReservedNamespace {
+            namespace: intent.namespace.clone(),
+        });
+    }
+    for service in intent.options.removals.iter() {
+        if intent.target.iter().any(|spec| spec.name == *service) {
+            return Err(PlanError::RemovalInTarget {
+                service: service.clone(),
+            });
+        }
+        if !intent
+            .options
+            .selected
+            .iter()
+            .any(|attempt| attempt.name == *service)
+        {
+            return Err(PlanError::RemovalNotSelected {
+                service: service.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn removal_operations(

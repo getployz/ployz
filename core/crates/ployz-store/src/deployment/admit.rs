@@ -251,10 +251,9 @@ fn deploy(
         id,
         &saved_intent,
         &review.head.applied,
-        &admit.services,
+        deployment::Scope::of(&admit.services, &losses),
         namespace,
         cluster_domain,
-        &losses,
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     // Only Cloud's authentication names an uploader, never the caller.

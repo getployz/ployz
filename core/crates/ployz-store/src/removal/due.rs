@@ -390,10 +390,9 @@ fn admit_member(
         id,
         &empty,
         &review.head.applied,
-        &[],
+        deployment::Scope::All { losses: &losses },
         namespace,
         None,
-        &losses,
     )?;
     let admitted = deployment::admit(
         tx,
@@ -631,10 +630,9 @@ pub(crate) fn shut_down(
         id,
         &empty,
         &review.head.applied,
-        &[],
+        deployment::Scope::All { losses: &losses },
         namespace,
         None,
-        &losses,
     )?;
     let admitted = deployment::admit(
         tx,

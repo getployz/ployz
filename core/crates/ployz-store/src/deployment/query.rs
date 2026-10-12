@@ -169,10 +169,9 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
         &environment.summary.id,
         &target,
         &review.head.applied,
-        &query.services,
+        deployment::Scope::of(&query.services, &removed),
         namespace.clone(),
         None,
-        &removed,
     )?;
     let changes = review
         .view
