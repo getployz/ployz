@@ -92,7 +92,9 @@ impl From<SlotId> for String {
     }
 }
 
-/// Name of a run's snapshot without the `@`: `w-<run>-<round>` taken warm, `f-<run>` taken final.
+/// Name of a copy's snapshot without the `@`: `w-<run>-<round>` taken warm, `f-<run>` taken
+/// final, or `dep-<unix seconds>` taken when the Machine departed, the restore point of a
+/// copy no run ever snapshotted.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 pub struct SnapshotName(String);
@@ -104,9 +106,9 @@ impl SnapshotName {
     }
 }
 
-/// A snapshot name that is not `w-<run>-<round>` or `f-<run>`.
+/// A snapshot name that is not `w-<run>-<round>`, `f-<run>` or `dep-<unix seconds>`.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid run snapshot name {0:?}; expected w-<run>-<round> or f-<run>")]
+#[error("invalid snapshot name {0:?}; expected w-<run>-<round>, f-<run> or dep-<unix seconds>")]
 pub struct SnapshotNameParseError(pub String);
 
 impl FromStr for SnapshotName {
@@ -119,6 +121,7 @@ impl FromStr for SnapshotName {
                 .split_once('-')
                 .is_some_and(|(run, index)| is_number(run) && is_number(index)),
             Some(("f", run)) => is_number(run),
+            Some(("dep", seconds)) => is_number(seconds),
             _ => false,
         };
         valid.then(|| Self(value.to_owned())).ok_or_else(invalid)
@@ -574,6 +577,16 @@ mod tests {
         let js = through_javascript(serde_json::from_str(&json).unwrap());
         let back: SnapshotGuid = serde_json::from_value(js).unwrap();
         assert_eq!(back, guid);
+    }
+
+    #[test]
+    fn snapshot_names_are_run_snapshots_or_a_departure_restore_point() {
+        for valid in ["w-3-1", "f-3", "dep-1690000000"] {
+            assert_eq!(valid.parse::<SnapshotName>().unwrap().as_str(), valid);
+        }
+        for invalid in ["w-3", "f-", "dep-", "dep-x", "d-1", "manual"] {
+            assert!(invalid.parse::<SnapshotName>().is_err(), "{invalid}");
+        }
     }
 
     #[test]

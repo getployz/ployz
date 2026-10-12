@@ -76,6 +76,11 @@ describe("observedEpoch", () => {
     expect(observedEpoch([member("a", "writer", { epoch: 2 }), later])).toBe(7);
     expect(observedEpoch([member("a", "empty"), member("b", "unanswered")])).toBe(0);
   });
+
+  it("reads no epoch from a departure snapshot's timestamp", () => {
+    const departed = { ...member("b", "mirror"), view: { copy: { ...COPIES.mirror, newest: { name: "dep-1690000000", guid: "12", created_unix_seconds: 0 } } } };
+    expect(observedEpoch([member("a", "writer", { epoch: 2 }), departed])).toBe(2);
+  });
 });
 
 describe("plan_from_copies_table", () => {
@@ -221,6 +226,12 @@ describe("plan_from_copies_table", () => {
       ok: false,
       refusal: { code: "no_copy", message: "data-fsn-2 holds no snapshot to restore" },
     });
+  });
+
+  it("restores a departed copy from its departure snapshot", () => {
+    const newest = { name: "dep-1690000000", guid: "12", created_unix_seconds: 0 };
+    const departed = { ...member("fsn-2", "mirror"), view: { copy: { ...COPIES.mirror, newest } } };
+    expect(planFromCopies(restore("fsn-2"), [departed])).toMatchObject({ ok: true, phase: { kind: "restore", lostAfter: newest } });
   });
 
   it("ends with the lacking Server's sentence before any Server that did not answer", () => {

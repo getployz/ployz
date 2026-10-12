@@ -52,6 +52,39 @@ async fn departure_demotes_each_root_to_a_slot() {
 }
 
 #[tokio::test]
+async fn a_departed_root_without_run_snapshots_restores_from_its_departure_snapshot() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(response, json!({"Ok": ["data"]}));
+
+    let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+    assert_eq!(copy.pointer("/Ok/kind"), Some(&json!("slot")), "{copy}");
+    let newest = copy.pointer("/Ok/newest").cloned().unwrap_or_default();
+    assert!(
+        newest["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("dep-")),
+        "{copy}"
+    );
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Writer",
+        json!({"name": "data", "at": newest["guid"], "epoch": 1}),
+    )
+    .await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("root")), "{reply}");
+    assert_eq!(
+        reply.pointer("/Ok/readonly"),
+        Some(&json!(false)),
+        "{reply}"
+    );
+    assert_eq!(reply.pointer("/Ok/newest"), Some(&newest), "{reply}");
+    server.abort();
+}
+
+#[tokio::test]
 async fn departure_without_a_pool_demotes_nothing() {
     let test = TestDir::new();
     let (socket, server) = start(&test, "", &[]);
