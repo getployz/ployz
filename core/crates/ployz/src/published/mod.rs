@@ -123,6 +123,8 @@ pub(crate) enum PublishError {
         "the published commands came from Ployz Cloud at {published}, but ployz acts in {acting}"
     )]
     OtherCloud { published: String, acting: String },
+    #[error("Ployz Cloud at {cloud} did not list its commands within {budget:?}")]
+    Slow { cloud: String, budget: Duration },
 }
 
 impl PublishError {
@@ -138,6 +140,7 @@ impl PublishError {
             Self::Gone { .. } => RpcErrorCode::NotFound,
             Self::NeedsTerminal { .. } => RpcErrorCode::ConfirmationRequired,
             Self::OtherCloud { .. } => RpcErrorCode::Conflict,
+            Self::Slow { .. } => RpcErrorCode::Unavailable,
         }
     }
 }
@@ -153,7 +156,7 @@ pub(crate) struct Setup {
     dir: PathBuf,
 }
 
-/// How long a refresh may hold a command up.
+/// How long a refresh may hold a command up, every request in it together.
 pub(crate) const REFRESH_BUDGET: Duration = Duration::from_secs(2);
 
 pub(crate) const UNKNOWN_COMMAND: &str = "unknown_command";
@@ -283,17 +286,29 @@ impl Setup {
     /// # Errors
     ///
     /// Returns [`PublishError::Unsupported`] for a Cloud without the route,
-    /// [`PublishError::Unavailable`] when Cloud refuses the feature, and the transport
-    /// or cache failure otherwise.
+    /// [`PublishError::Unavailable`] when Cloud refuses the feature,
+    /// [`PublishError::Slow`] past the budget, and the transport or cache failure
+    /// otherwise.
     pub(crate) async fn refresh(
         &self,
         credential: Option<&Credential>,
     ) -> Result<Published, PublishError> {
+        tokio::time::timeout(REFRESH_BUDGET, self.fetch(credential))
+            .await
+            .unwrap_or_else(|_| {
+                Err(PublishError::Slow {
+                    cloud: self.cloud.clone(),
+                    budget: REFRESH_BUDGET,
+                })
+            })
+    }
+
+    async fn fetch(&self, credential: Option<&Credential>) -> Result<Published, PublishError> {
         let cached = self.cached();
         let url = format!("{}/api/cli/manifest", self.cloud);
         let client = cloud_login::http()?;
         let send = |credential: Option<&Credential>| {
-            let mut request = client.get(&url).timeout(REFRESH_BUDGET);
+            let mut request = client.get(&url);
             if let Some(credential) = credential {
                 request = request.bearer_auth(credential.bearer());
             }
