@@ -14,6 +14,7 @@ import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organi
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
 import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
 import { projectsQuery } from "#/modules/config-store/store-view.queries";
+import { AskBeforeDestructive } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ask-before-destructive";
 import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
 const settingsSectionSchema = Schema.Literals(["general", "builds"]);
@@ -44,6 +45,7 @@ function RouteComponent() {
         <div className="flex flex-col gap-6">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />
+          <AskBeforeDestructive organizationSlug={organizationSlug} />
           <StoreOrganizationDanger organizationSlug={organizationSlug} />
         </div>
       )}

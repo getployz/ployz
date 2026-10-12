@@ -5,6 +5,7 @@ export const changeCursorSchema = Schema.String.check(Schema.isPattern(/^\d{1,20
 
 export const collectionNames = [
   "environment_canvas_node_position", "organization_enrollment", "organization_cluster_domain", "organization_server_upgrades",
+  "organization_settings",
 ] as const;
 
 export const collectionReadInput = Schema.Struct({
@@ -25,7 +26,7 @@ export type StoreViewName = (typeof storeViewNames)[number];
  * What a change stream event names: an Org Store collection, `organization` for the organization state read,
  * `server_upgrade` for the Servers' latest Upgrade attempts, or a Config Store table family.
  */
-export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "server_upgrade", "server_drain", ...storeViewNames]);
+export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "server_upgrade", "server_drain", "volume_run", "volume_placement", ...storeViewNames]);
 export type ChangeName = typeof changeNameSchema.Type;
 
 /** A collection read. `full` replaces every row; otherwise drop `deleted`, then upsert `rows`. `cursor` is the next `since`. */

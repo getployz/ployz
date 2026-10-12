@@ -582,6 +582,7 @@ pub(crate) mod tests {
                         path: "/data".into(),
                     }],
                     shared_writes: false,
+                    storage_locked: false,
                 },
             )
             .unwrap();

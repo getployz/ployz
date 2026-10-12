@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
@@ -23,6 +23,7 @@ import { PostHog } from "#/modules/analytics/posthog.server";
 import { NotFound } from "#/server/public-error";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { CommittedViews, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
@@ -96,10 +97,13 @@ function statusFor(code: string) {
     case "conflict":
     case "ambiguous":
     case "confirmation_required":
+    case "approval_required":
+    case "channel_mismatch":
       return 409;
     case "unauthenticated":
       return 401;
     case "forbidden":
+    case "approval_denied":
       return 403;
     case "unsupported":
       return 501;
@@ -177,6 +181,10 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
   }
+  // A Deploy takes the Volume placements staged in its Environment before its worker can look for them.
+  if (command.command === "admit" && written.written === "deployment" && written.status !== "applied") {
+    yield* stampPlacements(organizationId, written.environment_id, written.id);
+  }
   // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
   if (command.command === "admit" || command.command === "start") {
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
@@ -194,7 +202,8 @@ export type StoreSource = { readonly source: "dashboard" } | { readonly source: 
 
 /**
  * One Store read or write by user `userId` (null: Cloud itself) as `organizationId`: the answer, or the Store's refusal verbatim. It first
- * gathers the trusted evidence the call needs (`gatherTrusted`). Anything else (the Store failing to open, a broken
+ * gathers the trusted evidence the call needs (`gatherTrusted`); `approval` is what a human approved, which only a CLI
+ * write in an Organization that asks before destructive actions carries. Anything else (the Store failing to open, a broken
  * binding) is a defect.
  */
 export const callStore = <C extends StoreCall>(
@@ -202,11 +211,12 @@ export const callStore = <C extends StoreCall>(
   userId: string | null,
   call: C,
   source: StoreSource = { source: "dashboard" },
+  approval: Approval = "not_required",
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
-    const trusted = yield* gatherTrusted(organizationId, call, read);
+    const trusted = { ...yield* gatherTrusted(organizationId, call, read), approval };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
     const principal = yield* principalFor(userId).pipe(Effect.orDie);
     const written = yield* storeTry(() => store.write(organizationId, call.command, trusted, principal));

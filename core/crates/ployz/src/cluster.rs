@@ -750,12 +750,15 @@ impl Client {
     ///
     /// Refused before membership mutation when this is the last Machine and any
     /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
+    /// Also refused while the Machine answers with a copy of any Volume, which only its
+    /// reset demotes, or answers without its storage; a Machine that does not answer goes.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
     /// it is the last Machine and a Management Client holds a key or its holders
-    /// can't be read, or when shared-row removal fails.
+    /// can't be read, when it answers holding a Volume copy or its storage can't be read,
+    /// or when shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
@@ -766,6 +769,14 @@ impl Client {
         if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
             return Err(cloud_holds_last(selected));
         }
+        let held = self.held_copies(observation).await?;
+        if !held.is_empty() {
+            return Err(copies_left_behind(
+                &observation.machine.name,
+                held.iter()
+                    .map(|name| Namespace::declared_volume_name(name).unwrap_or(name.as_str())),
+            ));
+        }
         self.call::<op::RemoveMachine>(
             RemoveMachineRequest {
                 machine_id: selected,
@@ -775,6 +786,38 @@ impl Client {
         .await
         .map_err(RpcError::from)?;
         Ok(())
+    }
+
+    /// The Docker Volumes `machine` answers holding a copy of, as writer or any other
+    /// role: a removal without a reset would leave each behind. Empty when it doesn't answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when `machine` is asked and its storage can't be read.
+    pub(crate) async fn held_copies(
+        &self,
+        machine: &MachineObservation,
+    ) -> Result<BTreeSet<DockerVolumeName>, RpcError> {
+        let inspected = self.inspect_storage(std::slice::from_ref(machine)).await;
+        if let Some(failure) = inspected.failures.into_iter().next() {
+            return Err(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: format!(
+                    "Cannot read the Volume copies Server {} holds. No changes made.",
+                    machine.machine.name
+                ),
+                details: Value::Null,
+                cause: std::iter::once(failure.error.message)
+                    .chain(failure.error.cause)
+                    .collect(),
+            });
+        }
+        Ok(inspected
+            .successes
+            .iter()
+            .flat_map(|success| success.value.roles())
+            .map(|(name, _)| name.clone())
+            .collect())
     }
 
     /// List images on each target Machine with independent bounded retries.
@@ -1118,6 +1161,24 @@ pub enum Remover {
     Operator,
 }
 
+/// Removing `machine` without a reset leaves its copies of `volumes` behind: only its
+/// reset demotes them.
+pub(crate) fn copies_left_behind<'a>(
+    machine: &MachineName,
+    volumes: impl IntoIterator<Item = &'a str>,
+) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "Server {machine} answers and holds copies of Volumes {}; removing it without a reset \
+             leaves them behind. No changes made. Drop --no-reset so the reset demotes them.",
+            volumes.into_iter().collect::<Vec<_>>().join(", ")
+        ),
+        details: Value::Null,
+        cause: Vec::new(),
+    }
+}
+
 /// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
 /// with a Cluster that no longer exists.
 fn cloud_holds_last(machine: MachineId) -> RpcError {
@@ -1349,13 +1410,14 @@ async fn data_loss_on_machine(
     observation: &MachineObservation,
 ) -> Result<ObservedDataLoss, RpcError> {
     let selected = observation.machine.id;
+    let name = &observation.machine.name;
     if !observation.invites_rpc() {
-        return Err(machine_did_not_respond(selected));
+        return Err(server_did_not_respond(name));
     }
     let volumes = list_volumes_on_machine(client.clone(), selected)
         .await
         .map_err(|failure| RpcError {
-            message: format!("Machine {selected}: {}", crate::ui::row(&failure.error)),
+            message: format!("Server {name}: {}", crate::ui::row(&failure.error)),
             ..failure.error
         })?;
     Ok(ObservedDataLoss {
@@ -1375,10 +1437,10 @@ async fn data_loss_on_machine(
     })
 }
 
-fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
+fn server_did_not_respond(name: &MachineName) -> RpcError {
     RpcError {
         code: RpcErrorCode::Unavailable,
-        message: format!("Machine {machine_id} did not respond"),
+        message: format!("Server {name} did not respond"),
         details: Value::Null,
         cause: Vec::new(),
     }

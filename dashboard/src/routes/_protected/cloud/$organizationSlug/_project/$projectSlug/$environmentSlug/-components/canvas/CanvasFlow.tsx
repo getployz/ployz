@@ -28,7 +28,9 @@ import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useConditionalSyncsInto, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
-import { reviewGroups } from "#/modules/config-store/store-deployments";
+import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-deployments";
+import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
+import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
@@ -217,7 +219,11 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
   const waiting = useConditionalSyncsInto(params.organizationSlug, params.projectSlug, diff.environment.name);
   const { noServers } = use(RuntimeLensContext);
-  const groups = reviewGroups(diff, store.services.map(({ service }) => service));
+  const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
+  const storage = useStorageSteps(params.organizationSlug);
+  const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
+  const groups = mergeRestoreGroups(storeGroups, placements.groups);
+  const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath, group.discardTarget);
   const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
@@ -226,16 +232,21 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
       <BottomBar
         groups={groups}
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
-        runtimeChanges={diff.total_count}
+        runtimeChanges={diff.total_count + placements.count}
         canPublish={hasSomethingToSave}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
         onPublish={actions.publish}
-        onDiscardAll={() => actions.discard(null, "review")}
-        onDiscardNode={(group) => actions.discard(group.discardPath, group.discardTarget)}
-        onDiscardRow={(group, path) => actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
+        onDiscardAll={() => {
+          placements.discardAll();
+          if (storeGroups.length > 0 || diff.total_count > 0) actions.discard(null, "review");
+        }}
+        onDiscardNode={discardNode}
+        onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path)
+          : actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
         active={inFlight}
-        notes={storeHintNotes(diff, groups, actions.neverSync)}
+        storage={storage}
+        notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
         proposals={{
           included: diff.included,
           onRemoveIncluded: ({ proposal }) => void writer.commit({ command: "remove_proposal", environment: ref, proposal, version: diff.version }),

@@ -9,6 +9,7 @@ import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
 import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
 import { Skeleton } from "#/components/ui/skeleton";
+import { Spinner } from "#/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "#/components/ui/tooltip";
 import { cn } from "#/lib/utils";
 import { admission } from "#/modules/config-store/store-deployments";
@@ -36,7 +37,7 @@ import {
 } from "#/modules/uptime/uptime";
 import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modules/uptime/uptime-range";
 import type { RegionNames, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
-import { type UptimeScope, usePrefetchServiceUptime, useServiceUptime } from "#/modules/uptime/uptime.queries";
+import { type UptimeScope, usePrefetchServiceUptime, useRequestUptimeProbe, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
 import { useTimeZone } from "#/utils/time-zone";
 import { atFormat, MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
@@ -55,7 +56,7 @@ type MonitoringProps = {
 
 /**
  * A Service's Monitoring tab: one layout in every state. The status line says what the check sees; the strip and charts
- * stay put and fill in as results arrive. Checks follow each Deploy, so it only reads.
+ * stay put and fill in as results arrive. Checks follow each Deploy and run after it; Check now runs one on demand.
  */
 export function MonitoringTab(props: MonitoringProps) {
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
@@ -154,6 +155,8 @@ const PREVIEW_METRICS = import.meta.env.DEV;
 function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPath, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
   const range = useDeferredValue(chosen);
   const { data: uptime, dataUpdatedAt } = useServiceUptime(scope, service.id, range);
+  const checkNow = useRequestUptimeProbe(scope, service.id);
+  const checking = checkNow.isPending || (uptime?.probe ? !uptime.probe.answered : false);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deployments = useStoreDeployments(organizationSlug, store).data.pages.flatMap((page) => page.deployments);
   const [zoom, setZoom] = useState<Zoom | null>(null);
@@ -237,6 +240,12 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
         <div className="flex items-center gap-2">
           {state === "no_domain" ? addDomain : null}
           {wrongPath ? fixPath : null}
+          {uptime ? (
+            <Button variant="outline" size="sm" disabled={checking} onClick={() => checkNow.mutate()}>
+              {checking ? <Spinner data-icon="inline-start" /> : null}
+              {checking ? "Checking" : "Check now"}
+            </Button>
+          ) : null}
           {zoom ? (
             <Button variant="secondary" size="sm" onClick={() => setZoom(null)}>
               {at.format(Date.parse(zoom.incident.openedAt))} · {causeText(zoom.incident)}

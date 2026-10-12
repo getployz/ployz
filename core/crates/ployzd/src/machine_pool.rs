@@ -2,6 +2,9 @@
 
 use std::num::NonZeroU64;
 
+/// The file a root-backed Machine Pool lives in, on the host root filesystem.
+pub const BACKING_FILE: &str = "/var/lib/ployz-machine-pool";
+
 /// A writable imported Machine Pool with usable health.
 #[derive(Debug, Eq, PartialEq)]
 pub struct MachinePool {
