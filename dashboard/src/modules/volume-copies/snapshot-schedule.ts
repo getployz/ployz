@@ -31,8 +31,8 @@ const DEPLOYS: readonly Snapshot["kind"][] = ["before_deploy", "after_deploy"];
 
 /**
  * The automatic snapshots `policy` drops, oldest last in `snapshots` (newest first): scheduled ones past `keep`,
- * deploy ones past `keepDeploys`, then the oldest automatic ones until the rest fit under the cap. Kept and manual
- * snapshots always stay.
+ * Before and After deploy ones together past `keepDeploys`, then the oldest automatic ones until the rest fit under
+ * the cap. Kept and manual snapshots always stay.
  */
 export function pruneIds(snapshots: readonly Pick<Snapshot, "id" | "kind" | "kept" | "bytes">[], policy: SnapshotPolicy): readonly string[] {
   const auto = (kinds: readonly Snapshot["kind"][]) => snapshots.filter((snapshot) => !snapshot.kept && kinds.includes(snapshot.kind));

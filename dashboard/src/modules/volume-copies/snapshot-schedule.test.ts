@@ -65,7 +65,7 @@ describe("pruneIds", () => {
     expect(pruneIds(list, policy({ every: "off", keep: 1 }))).toEqual([]);
   });
 
-  it("drops deploy snapshots past keepDeploys", () => {
+  it("drops deploy snapshots past keepDeploys, counting Before and After together", () => {
     const list = [snap("a2", "after_deploy"), snap("b2", "before_deploy"), snap("a1", "after_deploy", { kept: true }), snap("b1", "before_deploy")];
     expect(pruneIds(list, policy({ keepDeploys: 1 }))).toEqual(["b2", "b1"]);
   });

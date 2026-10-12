@@ -119,9 +119,10 @@ Saving runs at once, not on deploy.
 
 - **Before** and **After** take a snapshot of the volume at each deploy in its environment.
   **Before** runs before the deploy's pre-deploy command and volume changes. **After** runs once
-  the deploy succeeds. **Keep** says how many of each to keep.
-- **Every** takes one each hour, or each day at 00:00 UTC. **Keep** says how many to keep.
-  **Off** stops them and keeps the ones you have.
+  the deploy succeeds. **Keep** says how many deploy snapshots to keep. Before and After
+  snapshots count together, so with both on, 10 keeps the last 5 deploys.
+- **Every** takes one each hour, or each day at 00:00 UTC. **Keep** sets how far back they go,
+  such as 1 day of hourly snapshots. **Off** stops them and keeps the ones you have.
 - **Up to** caps the space snapshots use, from 1 to 20 GB. Past it, the oldest automatic
   snapshots go first.
 
