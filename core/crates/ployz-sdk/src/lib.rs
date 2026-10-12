@@ -880,7 +880,7 @@ fn to_json(value: &impl serde::Serialize) -> Result<serde_json::Value> {
 /// napi hands every JavaScript number above `u32::MAX` over as a float, even a whole one:
 /// `5_000_000_000` arrives as `5000000000.0`, which `u64` fields such as byte counts refuse.
 /// Give whole floats their integer form back before any payload is parsed.
-fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
+pub(crate) fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     match value {

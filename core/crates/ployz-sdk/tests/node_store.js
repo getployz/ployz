@@ -58,6 +58,25 @@ async function expectInvalid(what, fn) {
   if ((await store.branchHead("acme", 1, "main")) !== null) {
     throw new Error("an unseen branch has no head");
   }
+
+  // A tool's reads cross JavaScript and back the way Cloud answers them; a Volume's
+  // 5 GB bound is past u32, so napi hands it back as a float.
+  await store.write("acme", {
+    command: "create_project",
+    id: "00000000-0000-4000-8000-000000000001",
+    name: "shop",
+    default_environment: "00000000-0000-4000-8000-000000000002",
+  });
+  await store.write("acme", { command: "create_volume", id: "00000000-0000-4000-8000-000000000005", name: "pgdata" });
+  let turn = sdk.agentStart("environment_show", {}, { project: "shop", environment: null, store: "cloud" }, "call-1");
+  while (turn.step.step !== "done") {
+    const answers = [];
+    for (const { ask } of turn.step.asks) answers.push({ value: await store.read("acme", ask) });
+    turn = sdk.agentResume(turn.state, answers);
+  }
+  if (!turn.step.result.ok || turn.step.result.value.volumes[0] !== "pgdata") {
+    throw new Error(`environment_show reads a Volume back: ${JSON.stringify(turn.step.result)}`);
+  }
 })().catch((error) => {
   console.error(error);
   process.exit(1);
