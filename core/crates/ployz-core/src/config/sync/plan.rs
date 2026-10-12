@@ -44,6 +44,9 @@ pub enum Way {
     /// A person's Sync: removals and the receiver's secrets stay, and a new secret
     /// arrives needing its value.
     Sync,
+    /// A pull request's merge: a Sync whose removals move too and whose rows land
+    /// even where the receiver changed them since.
+    Merge,
     /// A Parent's deploy reaching its Branch.
     Follow,
     /// Everything as it is: a new Branch, an Own Copy, an Environment's own changes.
@@ -63,6 +66,11 @@ pub struct Policy {
     /// The sender's own changes when it is not syncing into its own Parent; the other
     /// rows it only inherited and they start unticked. None when every row is its own.
     pub own: Option<BTreeSet<RowId>>,
+    /// Rows another proposal included in `into`: shown, never moved.
+    pub held: BTreeSet<RowId>,
+    /// The source cells this proposal last included: the base at these rows, in place
+    /// of what the pair last shared.
+    pub accepted: BTreeMap<RowId, Cell>,
 }
 
 /// Why a row never moves.
@@ -85,6 +93,8 @@ pub enum Why {
     Data,
     /// Either side marked it Never sync.
     NeverSynced,
+    /// Another proposal included it into `into`.
+    Included,
 }
 
 /// Whether a row moves, and how.
@@ -178,12 +188,16 @@ impl Policy {
             into_marks: BTreeSet::new(),
             live: BTreeSet::new(),
             own: None,
+            held: BTreeSet::new(),
+            accepted: BTreeMap::new(),
         }
     }
 
     fn marked(&self, row: &RowId) -> bool {
         match self.way {
-            Way::Sync => self.from_marks.contains(row) || self.into_marks.contains(row),
+            Way::Sync | Way::Merge => {
+                self.from_marks.contains(row) || self.into_marks.contains(row)
+            }
             Way::Follow => self.into_marks.contains(row),
             Way::Copy => false,
         }
@@ -194,6 +208,7 @@ impl Policy {
     /// | Way    | `from` Absent | secret, `into` has one                      | secret, `into` lacks it | Never sync marks |
     /// |--------|---------------|---------------------------------------------|-------------------------|------------------|
     /// | Sync   | no row        | no row                                      | `NeedsValue`            | both sides'      |
+    /// | Merge  | moves         | no row                                      | `NeedsValue`            | both sides'      |
     /// | Follow | moves         | if `into` = base or `SecretWithoutValue`    | carries                 | receiver's only  |
     /// | Copy   | moves         | carries                                     | carries                 | ignored          |
     ///
@@ -208,6 +223,12 @@ impl Policy {
 
     /// [`Self::verdict`] for a setting no Environment owns.
     fn moved(&self, row: &RowId, base: &Cell, from: &Cell, into: &Cell) -> Option<Verdict> {
+        let own = self.own.as_ref().is_none_or(|own| own.contains(row));
+        // Before the equal-value elision: a row another proposal holds never moves, and
+        // is disclosed, even when both bring the same value, only as the sender's own.
+        if self.held.contains(row) {
+            return (own && from != base).then_some(Verdict::Differs(Why::Included));
+        }
         if from == into || from == base {
             return None;
         }
@@ -216,20 +237,23 @@ impl Policy {
         let held = secret && *into != Cell::Absent;
         let arrives = match self.way {
             Way::Sync if *from == Cell::Absent || held => return None,
-            Way::Sync if secret => Arrives::NeedsValue,
+            Way::Merge if *from == Cell::Absent => Arrives::AsIs,
+            Way::Merge if held => return None,
+            Way::Sync | Way::Merge if secret => Arrives::NeedsValue,
             Way::Follow if held && *into == Cell::SecretWithoutValue => {
                 conflict = false;
                 Arrives::AsIs
             }
             Way::Follow if held && conflict => return None,
-            Way::Sync | Way::Follow | Way::Copy => Arrives::AsIs,
+            Way::Sync | Way::Merge | Way::Follow | Way::Copy => Arrives::AsIs,
         };
         Some(if self.marked(row) {
             Verdict::Differs(Why::NeverSynced)
         } else {
+            let overwrites_own = conflict && self.way == Way::Sync;
             Verdict::Moves {
                 conflict,
-                ticked: self.own.as_ref().is_none_or(|own| own.contains(row)),
+                ticked: own && !overwrites_own,
                 arrives,
             }
         })
@@ -290,9 +314,11 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
     };
     let cells_at = |row: &RowId| {
         [
-            base_cells
-                .as_ref()
-                .map_or(&Cell::Absent, |cells| cells.at(row)),
+            policy.accepted.get(row).unwrap_or_else(|| {
+                base_cells
+                    .as_ref()
+                    .map_or(&Cell::Absent, |cells| cells.at(row))
+            }),
             from_cells.at(row),
             into_cells.at(row),
         ]
@@ -351,7 +377,7 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     let cell = cell.clone();
                     let judge = match policy.way {
                         Way::Copy => Policy::moved,
-                        Way::Sync | Way::Follow => Policy::verdict,
+                        Way::Sync | Way::Merge | Way::Follow => Policy::verdict,
                     };
                     if let Some(verdict) =
                         judge(policy, &child, &Cell::Absent, &cell, &Cell::Absent)
@@ -442,17 +468,18 @@ impl Plan {
         landable
     }
 
-    /// Land `picks` in `into`: [`put`] once per pick, a new node first. A `NeedsValue`
-    /// pick takes its secret from `values`, or lands without one and is `waiting`;
-    /// `values` for any other row are ignored.
+    /// Land `picks` in `into`: [`put`] once per pick, a new node first. A pick with a
+    /// cell in `values` lands that cell in place of the sender's; a `NeedsValue` pick
+    /// without one lands without its secret and is `waiting`. `values` for rows not
+    /// picked are ignored.
     ///
     /// # Errors
     /// Returns ConfigError for an unknown pick, a pick of a row that differs or whose new
-    /// node isn't picked, a name clash, or a `next` that isn't valid.
+    /// node isn't picked, a value for a node, a name clash, or a `next` that isn't valid.
     pub fn apply(
         &self,
         picks: &BTreeSet<RowId>,
-        values: &BTreeMap<RowId, SealedSecret>,
+        values: &BTreeMap<RowId, SealedCell>,
     ) -> Result<Applied, ConfigError> {
         let refuse = |message| ConfigError::at("picks", message);
         let mut landing = Vec::new();
@@ -483,15 +510,16 @@ impl Plan {
         let mut landed = Vec::new();
         for (row, arrives) in landing {
             let id = &row.id;
-            let value = match arrives {
-                Arrives::AsIs => sealed_cell(&self.from, &from_cells, id),
-                Arrives::NeedsValue => match values.get(id) {
-                    Some(secret) => SealedCell::Secret(secret.clone()),
-                    None => {
-                        waiting.push(id.clone());
-                        SealedCell::Cell(Cell::SecretWithoutValue)
-                    }
-                },
+            let value = match (values.get(id), arrives) {
+                (Some(_), _) if id.at == At::Node => {
+                    return Err(refuse("A new node takes no value"));
+                }
+                (Some(value), _) => value.clone(),
+                (None, Arrives::AsIs) => sealed_cell(&self.from, &from_cells, id),
+                (None, Arrives::NeedsValue) => {
+                    waiting.push(id.clone());
+                    SealedCell::Cell(Cell::SecretWithoutValue)
+                }
             };
             let mut was = sealed_cell(&self.into, &into_cells, id);
             // Undo puts the receiver's git branch back with its source; a Sync never moves one.
@@ -719,6 +747,61 @@ fn uses(env: &Intent, lineage: &str) -> bool {
                 .flat_map(SavedConfigFile::referenced_lineages),
         )
         .any(|used| used == lineage)
+}
+
+/// The rows of other nodes in `env` that use `lineage`: a variable or config file that
+/// references it, a Volume mount or a Config mount of it.
+#[must_use]
+pub fn dependents(env: &Intent, lineage: &str) -> Vec<RowId> {
+    let mut rows = Vec::new();
+    for service in env.services.iter().filter(|s| s.lineage_id != lineage) {
+        let at = |at| RowId::of(&service.lineage_id, at);
+        for variable in &service.variables {
+            if variable
+                .value
+                .referenced_lineages()
+                .into_iter()
+                .any(|used| used == lineage)
+            {
+                rows.push(at(At::Variable(variable.key.clone())));
+            }
+        }
+        for attachment in &service.volume_attachments {
+            if env.volumes.iter().any(|v| {
+                v.resource_id == attachment.volume_resource_id && v.resource_lineage_id == lineage
+            }) {
+                rows.push(at(At::Mount(lineage.to_owned())));
+            }
+        }
+        for attachment in &service.config_attachments {
+            if env.configs.iter().any(|c| {
+                c.resource_id == attachment.config_resource_id && c.resource_lineage_id == lineage
+            }) {
+                rows.push(at(At::ConfigMount(lineage.to_owned())));
+            }
+        }
+    }
+    for config in env
+        .configs
+        .iter()
+        .filter(|c| c.resource_lineage_id != lineage)
+    {
+        for (name, file) in &config.files {
+            if file
+                .referenced_lineages()
+                .into_iter()
+                .any(|used| used == lineage)
+            {
+                rows.push(RowId::of(
+                    &config.resource_lineage_id,
+                    At::File(name.clone()),
+                ));
+            }
+        }
+    }
+    rows.sort();
+    rows.dedup();
+    rows
 }
 
 /// A base that predates a row's node (or the Volume it mounts) starts it from `into`'s.

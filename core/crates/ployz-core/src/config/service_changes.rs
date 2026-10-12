@@ -158,7 +158,10 @@ pub fn restore_service_setting(
         }
         return parse_service_config(json!(current));
     }
-    if path != "source" && path != "healthcheck" && !FIELDS.iter().any(|(field, _)| *field == path)
+    if path != "source"
+        && path != "healthcheck"
+        && path != "template"
+        && !FIELDS.iter().any(|(field, _)| *field == path)
     {
         return Err(ConfigError::at(
             "path",
@@ -343,7 +346,8 @@ fn redacted_env(value: &Value) -> Value {
     if value.is_null() {
         Value::Null
     } else if value["kind"] == "secret" {
-        json!({"kind": "secret"})
+        // Only a secret without a value has no fingerprint.
+        json!({"kind": "secret", "valued": value["fingerprint"] != ""})
     } else if value["parts"].is_array() {
         json!({"kind": "literal", "value": value["value"]})
     } else {

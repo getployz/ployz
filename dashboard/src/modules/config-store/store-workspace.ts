@@ -22,11 +22,12 @@ export function storeEnvironmentTree(environments: readonly EnvironmentListing[]
 export const removing = (environment: EnvironmentListing) =>
   environment.removal !== null && environment.removal.in_flight;
 
-/** What an Environment has, in a few words, wherever the tree is listed: "default", "deleting". */
+/** What an Environment has, in a few words, wherever the tree is listed: "default", "merged", "deleting". */
 export function storeEnvironmentNotes(environment: EnvironmentListing) {
   const removal = environment.removal;
   return [
     environment.default && "default",
+    environment.merged && "merged",
     removal && (removing(environment) ? "deleting" : removal.status === "applied" ? "off your servers" : `deletion ${removal.status}`),
   ].filter((note): note is string => typeof note === "string");
 }

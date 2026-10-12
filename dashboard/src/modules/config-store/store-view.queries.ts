@@ -11,7 +11,6 @@ import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
 import type { CommittedViews, StoreResult, StoreViewOf } from "./store.contract";
 import { renameReferences } from "#/modules/variables/variable-template";
-import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 
 /**
  * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
@@ -20,6 +19,8 @@ import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 const refreshedBy = {
   environment: ["store_environment"],
   diff: ["store_environment", "store_deployment"],
+  history: ["store_environment"],
+  history_preview: ["store_environment", "store_deployment"],
   plan: ["store_environment", "store_deployment"],
   // A Service's lifecycle comes from the review, which compares against what's deployed.
   service: ["store_environment", "store_deployment"],
@@ -47,9 +48,8 @@ const refreshedBy = {
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
-  // A Sync compares two Environments over what they last shared; from a PR Environment into a Destination it is a
-  // Conditional Sync, which reads the pull request.
-  sync: ["store_environment", "store_deployment", "store_pull_request"],
+  // A Sync compares two Environments over what they last shared.
+  sync: ["store_environment", "store_deployment"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
   projects: ["store_project", "store_environment"],
@@ -59,6 +59,8 @@ const refreshedBy = {
   pr_plans: ["store_project", "store_environment"],
   // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
   pull_request: ["store_environment", "store_deployment", "store_pull_request"],
+  // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.
+  on_merge: ["store_environment", "store_pull_request"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
@@ -74,13 +76,18 @@ export const storeViewPrefix = (organizationSlug: string) => ["store-view", orga
 
 /**
  * One bounded Store view: an Environment's Settings, its diff or plan, one page of its Deployments, one Deployment.
- * A refusal (`not_found`, `ambiguous`) is the view's answer, not a failed read. The Organization change stream
- * refetches it when a table behind it changes; only a settling domains view polls.
+ * A refusal (`not_found`, `ambiguous`) is the view's answer, not a failed read; a busy Store (`unavailable`) is a
+ * failed read. The Organization change stream refetches it when a table behind it changes; only a settling domains
+ * view polls.
  */
 export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
-  const queryFn = async ({ signal }: { signal: AbortSignal }) =>
+  const queryFn = async ({ signal }: { signal: AbortSignal }) => {
     // SAFETY: the Store answers each query kind with the view of the same name.
-    await readStoreViewServerFn({ data: { organizationSlug, query }, signal }) as StoreResult<StoreViewOf<Q>>;
+    const result = await readStoreViewServerFn({ data: { organizationSlug, query }, signal }) as StoreResult<StoreViewOf<Q>>;
+    // A busy Store is a failed read, retried; the view keeps its last answer.
+    if (!result.ok && result.refusal.code === "unavailable") throw new Error(result.refusal.message);
+    return result;
+  };
   return queryOptions({
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, query] as const,
     staleTime: Infinity,
@@ -95,17 +102,32 @@ export function queryOf(query: Query): ConfigQuery | null {
   return prefix === "store-view" ? config as ConfigQuery : null;
 }
 
-/** The change stream named a Store table family: refetch every view of the Organization it backs. */
-export function refetchStoreViews(organizationSlug: string, scope: CollectionScope, name: StoreViewName) {
-  void scope.queryClient.invalidateQueries({
+/** Views with one more read queued behind the read in flight. */
+const rereads = new WeakSet<Query>();
+
+/**
+ * The change stream named Store table families: refetch every view of the Organization they back. A read in flight
+ * finishes, and one more read follows it, since it may predate the change. Restarting it instead never finishes
+ * while changes come faster than it reads, and the Store still does each abandoned read.
+ */
+export function refetchStoreViews(organizationSlug: string, scope: CollectionScope, names: readonly StoreViewName[]) {
+  const filters = {
     queryKey: storeViewPrefix(organizationSlug),
-    predicate: (query) => {
+    predicate: (query: Query) => {
       const config = queryOf(query);
-      if (config === null) return false;
-      const families: readonly StoreViewName[] = refreshedBy[config.query];
-      return families.includes(name);
+      return config !== null && refreshedBy[config.query].some((name) => names.includes(name));
     },
-  });
+  };
+  for (const query of scope.queryClient.getQueryCache().findAll({ ...filters, fetchStatus: "fetching" })) {
+    const reading = query.promise;
+    if (reading === undefined || rereads.has(query)) continue;
+    rereads.add(query);
+    void reading.catch(() => undefined).finally(() => {
+      rereads.delete(query);
+      void scope.queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true }, { cancelRefetch: false });
+    });
+  }
+  void scope.queryClient.invalidateQueries(filters, { cancelRefetch: false });
 }
 
 /** Names an Environment the same way however a ref spells it; the Store resolves omitted names to defaults. */
@@ -378,25 +400,6 @@ export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizat
 /** Reads one Store view; see `useStoreViews`. */
 export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
   return useStoreViews(organizationSlug, [query] as const)[0];
-}
-
-/**
- * Changes open pull requests synced into `environment` for their merge (standing Conditional Syncs), by pull request:
- * the bottom bar's "goes live when #N merges". Chrome, so nothing waits on it; the Project's plans name the open ones.
- */
-// ponytail: one pull request view per open PR of the Project; a Store view of Conditional Syncs into an Environment when PRs pile up.
-export function useConditionalSyncsInto(organizationSlug: string, project: string, environment: string) {
-  const scope = useCollectionScope();
-  const plans = useCachedStoreView(organizationSlug, prPlansQuery(project));
-  const open = plans?.ok ? plans.value.plans.flatMap((plan) => plan.open.map((pr) => ({ repository_id: plan.repository_id, number: pr.number }))) : [];
-  const views = useQueries({ queries: open.map((pr) => storeViewOptions(organizationSlug, scope, pullRequestQuery(pr))) });
-  return views.flatMap(({ data }) => {
-    if (!data?.ok || !data.value.pull_request) return [];
-    const { number } = data.value.pull_request;
-    return data.value.environments.flatMap((pr) => pr.destinations.flatMap((destination) =>
-      destination.name === environment && destination.conditional_sync?.standing
-        ? [{ number, changes: destination.conditional_sync.changes, environment: pr.environment.name }] : []));
-  });
 }
 
 /**

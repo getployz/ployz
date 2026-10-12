@@ -18,7 +18,7 @@ export function VariableRowValue({
   editing,
   editValue,
   isSealed,
-  needsValue,
+  notSet,
   plainValue,
   unresolvedReferences = [],
   revealed,
@@ -32,7 +32,7 @@ export function VariableRowValue({
   editValue: string;
   isSealed: boolean;
   /** A secret still without a value: it says so, and its edit sets one. */
-  needsValue: boolean;
+  notSet: boolean;
   plainValue: string;
   unresolvedReferences?: readonly string[];
   revealed: boolean;
@@ -71,8 +71,8 @@ export function VariableRowValue({
 
   return (
     <div className="flex min-w-0 flex-1 items-center gap-1.5">
-      {needsValue ? (
-        <span className="min-w-0 flex-1 truncate text-xs text-warning">needs a value</span>
+      {notSet ? (
+        <span className="min-w-0 flex-1 truncate text-xs text-warning">Not set</span>
       ) : (
         <span className="ph-no-capture min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
           {isSealed || !revealed ? MASK : plainValue}

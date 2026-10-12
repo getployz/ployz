@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RowId } from "@ployz/sdk";
+import type { Included, RowId } from "@ployz/sdk";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { placementChanges, placementGroup } from "#/modules/volume-placement/volume-placement";
@@ -106,7 +106,7 @@ describe("Details", () => {
     const effects = screen.getAllByText("Deploying sentry restarts web and worker.");
     expect(effects).toHaveLength(1);
     expect(effects[0]?.closest("section")?.getAttribute("aria-label")).toBe("Your changes");
-    expect(screen.getByText("2 changes in fix-api, not yet published.")).toBeTruthy();
+    expect(screen.getByText("2 changes in fix-api, not yet saved.")).toBeTruthy();
     expect(lineOf("app.conf").getAllByText("unchanged")).toHaveLength(2);
     expect(lineOf("app.conf").getByText("Mode 0555").className).toContain("text-changed-deep");
   });
@@ -137,13 +137,13 @@ describe("Details", () => {
   it("reads a new node as one line, and Discard in its menu puts it back", async () => {
     const test = review({ groups: [nginx] });
 
-    expect(screen.getByText("1 change in fix-api, not yet published.")).toBeTruthy();
+    expect(screen.getByText("1 change in fix-api, not yet saved.")).toBeTruthy();
     expect(screen.getByText("nginx · will be added").className).toContain("text-success");
     // One Environment's own changes alone need no heading.
     expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
     fireEvent.click((await menuOf("nginx")).getByRole("menuitem", { name: "Discard" }));
     expect(test.onDiscardNode).toHaveBeenCalledWith(nginx);
-    expect(test.onClose).toHaveBeenCalledOnce();
+    expect(test.onClose).not.toHaveBeenCalled();
   });
 
   it("groups what arrived apart from the Environment's own changes, said once in words", () => {
@@ -179,7 +179,7 @@ describe("Details", () => {
     expect(lineOf("FEATURE_SEARCH").getByText("on").className).toContain("text-success");
   });
 
-  it("offers Never sync beside Discard in the menu of a change that arrived, and closes as the last change goes", async () => {
+  it("offers Never sync beside Discard in the menu of a change that arrived, and keeps the review open until the Store answers", async () => {
     const neverSync = vi.fn();
     const arrived = row("api.env.CACHE_TTL");
     const test = review({
@@ -194,16 +194,58 @@ describe("Details", () => {
     expect(items.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Discard", "Never sync"]);
     fireEvent.click(items.getByRole("menuitem", { name: "Never sync" }));
     expect(neverSync).toHaveBeenCalledOnce();
-    expect(test.onClose).toHaveBeenCalledOnce();
+    expect(test.onClose).not.toHaveBeenCalled();
   });
 
-  it("puts a change's note on a second line, and keeps Discard all and Publish in the footer", () => {
+  it("puts a change's note on a second line, and keeps Discard all and Save in the footer", () => {
     const test = review({ groups: [api([row("api.env.LOG_LEVEL")])], noteFor: () => "production has since set info" });
 
     expect(lineOf("LOG_LEVEL").getByText("production has since set info")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
-    fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(test.onDiscardAll).toHaveBeenCalledOnce();
     expect(test.onPublish).toHaveBeenCalledOnce();
+  });
+});
+
+it("offers a Save message when the draft reverses Saved with no runtime changes", () => {
+  review({ groups: [api([row("api.replicas")])], totalChanges: 1, canDeploy: false, canPublish: true });
+  expect(screen.getByRole("textbox", { name: "Change message" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+  expect(screen.queryByRole("button", { name: "Deploy changes" })).toBeNull();
+});
+
+describe("Included", () => {
+  const staging: Included = {
+    proposal: "p-staging", source: { kind: "environment", id: "e-staging", name: "staging", live: true },
+    revision: 4, newer: true, changes: 2, sync: "s-1",
+  };
+  const pr: Included = {
+    proposal: "p-pr", source: { kind: "pull_request", repository_id: 1, number: 142, name: "pr-142", environment: "e-pr" },
+    revision: 2, newer: true, changes: 1, sync: "s-2",
+  };
+
+  it("lists each included source with Remove, and Include newer changes once an Environment changed since", async () => {
+    const onRemoveIncluded = vi.fn();
+    const onIncludeNewer = vi.fn();
+    review({ groups: [], totalChanges: 0, canPublish: true, included: [staging], onRemoveIncluded, onIncludeNewer });
+
+    const list = within(screen.getByRole("region", { name: "Included" }));
+    expect(list.getByText("staging · 2 changes")).toBeTruthy();
+    expect(list.getByText("staging changed since")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click((await menuOf("staging")).getByRole("menuitem", { name: "Include newer changes" }));
+    expect(onIncludeNewer).toHaveBeenCalledWith(staging);
+    fireEvent.click((await menuOf("staging")).getByRole("menuitem", { name: "Remove" }));
+    expect(onRemoveIncluded).toHaveBeenCalledWith(staging);
+  });
+
+  it("offers no Include newer changes once a pull request's preview is gone", async () => {
+    review({ groups: [], totalChanges: 0, canPublish: true, included: [{ ...pr, source: { ...pr.source, environment: null } as Included["source"] }],
+      onRemoveIncluded: vi.fn(), onIncludeNewer: vi.fn() });
+
+    const items = await menuOf("pr-142");
+    expect(items.getByRole("menuitem", { name: "Remove" })).toBeTruthy();
+    expect(items.queryByRole("menuitem", { name: "Include newer changes" })).toBeNull();
   });
 });

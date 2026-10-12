@@ -1,10 +1,11 @@
 import { Suspense, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentSummary, DeploymentView, NodeOutcome } from "@ployz/sdk";
-import { DatabaseIcon, GitBranchPlusIcon, MoreVerticalIcon } from "lucide-react";
+import { DatabaseIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon } from "lucide-react";
 import { toast } from "sonner";
 import { ContainerLogs } from "#/components/container-logs";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
+import { Badge } from "#/components/ui/badge";
 import { LogEmpty } from "#/components/log-scroll";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -17,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, focusedService, missingDeployLogs, outcomeReason,
+  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, focusedService, missingDeployLogs, outcomeReason,
   nodeLight, nodeOutcomeLabel, nodeStatusLabels, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -118,6 +119,15 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
           </div>
         ) : null}
         {storage ? <p role="status" className="text-sm">{storage}</p> : null}
+
+        {/* What it shipped despite: a secret left out, or a Config file reference left empty. */}
+        {deployment.warnings?.length ? (
+          <ul aria-label="Warnings" className="flex flex-wrap gap-1.5">
+            {deployment.warnings.map((warning) => (
+              <li key={deploymentWarningText(warning)}><Badge variant="warning"><LockIcon />{deploymentWarningText(warning)}</Badge></li>
+            ))}
+          </ul>
+        ) : null}
 
         {!focused ? <>
           {volumes.length ? <NodeRow>{volumeMarks}</NodeRow> : null}

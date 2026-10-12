@@ -76,6 +76,13 @@ pub(crate) enum PolicySetting {
 }
 
 impl PolicySetting {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::AutoDeploy,
+        Self::WaitForCi,
+        Self::WatchPaths,
+        Self::PreferredBuilder,
+    ];
+
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::AutoDeploy => "autoDeploy",

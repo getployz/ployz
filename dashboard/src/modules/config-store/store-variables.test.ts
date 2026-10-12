@@ -2,7 +2,12 @@ import { expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { EnvironmentRef, EnvironmentView, RowId } from "@ployz/sdk";
 import { serviceSettingRows } from "./store-services";
-import { serviceVariables, storeVariableWriter, variableReferrers } from "./store-variables";
+import {
+  notSetVariables,
+  serviceVariables,
+  storeVariableWriter,
+  variableReferrers,
+} from "./store-variables";
 import { withPendingChanges } from "./store-view.queries";
 
 const view: EnvironmentView = {
@@ -45,15 +50,23 @@ it("shows pending variable writes at once, and a new secret only as sealed", () 
   expect(shown.settings.find((row) => row.path === "web.registryCredential")?.value).toEqual({ secret: true });
 });
 
-it("says which secret needs a value, and keeping it keeps it so", () => {
+it("says which secret is Not set, and keeping it keeps it so", () => {
   const valueless = { ...view, settings: [{ path: "web.env.TOKEN", value: { secret: false }, default: null, apply: "staged" as const }] };
   const needs = (shown: EnvironmentView) => serviceVariables(serviceSettingRows(shown, "web"), "web-id")
-    .map(({ key, value }) => ({ key, needsValue: value.type === "sealed" && value.needsValue }));
-  expect(needs(valueless)).toEqual([{ key: "TOKEN", needsValue: true }]);
+    .map(({ key, value }) => ({ key, notSet: value.type === "sealed" && value.notSet }));
+  expect(needs(valueless)).toEqual([{ key: "TOKEN", notSet: true }]);
   expect(needs(withPendingChanges(valueless, [{ op: "set", path: "web.env.TOKEN", value: { secret: true } }])))
-    .toEqual([{ key: "TOKEN", needsValue: true }]);
+    .toEqual([{ key: "TOKEN", notSet: true }]);
   expect(needs(withPendingChanges(valueless, [{ op: "set", path: "web.env.TOKEN", value: { secret: "s3cret" } }])))
-    .toEqual([{ key: "TOKEN", needsValue: false }]);
+    .toEqual([{ key: "TOKEN", notSet: false }]);
+});
+
+it("names the secrets a deploy skips, until a change to them is staged", () => {
+  const valueless = { ...view, settings: [...view.settings, { path: "web.env.TOKEN", value: { secret: false }, default: null, apply: "staged" as const }] };
+  expect(notSetVariables(serviceSettingRows(valueless, "web"), new Map())).toEqual(["TOKEN"]);
+  expect(notSetVariables(serviceSettingRows(valueless, "web"), new Map([["env.TOKEN", {}]]))).toEqual([]);
+  // Exporting it sets no value: the deploy still skips it.
+  expect(notSetVariables(serviceSettingRows(valueless, "web"), new Map([["env.TOKEN.exported", true]]))).toEqual(["TOKEN"]);
 });
 
 it("marks the variables their Environment never syncs, by their rows", () => {

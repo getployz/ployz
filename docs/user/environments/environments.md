@@ -62,13 +62,14 @@ Try a change in staging first, like a new variable that turns on a feature:
 ![A branch's canvas, with the Sync button at the top right](../images/branch-canvas.png)
 
 Production doesn't change. The Sync button at the top right of staging's canvas now reads
-**Sync to production · 1**.
+**Sync · 1**: one change a sync into production would carry.
 
 ## Sync the change to production
 
 Syncing stages staging's changes in production, like a draft. It never deploys them.
 
-1. On staging's canvas, click **Sync to production**.
+1. On staging's canvas, click **Sync**. The dialog reads "Make production match staging". To sync
+   into another environment of the project, pick it in the title.
 2. Check each change, production's value against staging's. Untick one to leave it out; it's
    offered again next time.
 3. Click **Sync 1 change**. A toast offers **Undo**; production's canvas opens with the change
@@ -78,11 +79,52 @@ Syncing stages staging's changes in production, like a draft. It never deploys t
 Sync never moves data or deletes anything in production. Replicas, CPU and memory limits, domains
 and the Git branch stay as each environment has them. A change marked **Changed in production**
 replaces production's value when you sync it. A secret's value never syncs: one staging added
-arrives in production marked **Secret**, without a value, and production's deploy asks you to set
-it first. To set it as you sync, type production's value in the secret's row of the dialog.
+arrives in production **Not set**, in its variables, in **Changes**, and as `TOKEN not set` on the
+service's card. Production still deploys: the deploy skips that variable, and any variable that
+references it, and warns. To set it as you sync, type production's value in the secret's row of
+the dialog.
 
 To keep a setting out of every sync, like a variable each environment sets its own way, click
 **Never sync** beside it in the dialog, or in the variable's ⋮ menu.
+The exclusion takes effect immediately. If it also discards an arrived change, the
+reversal stays in the draft until you Save it.
+
+### Take a sync back out
+
+Until you save or deploy them, the changes a sync staged stay grouped under where they came
+from. In production's bottom bar, click **Details**: **Included** lists `staging · 1 change`.
+
+- **Remove:** in the row's ⋮ menu, click **Remove**. Production gets back what it had before
+  staging was included. A change you made in production since stays.
+- **Include newer changes:** when staging changed again, the row says so. Its ⋮ menu offers
+  **Include newer changes**, which opens the Sync dialog for just what's new. A pull request's
+  preview works the same way while it's open.
+- **Undo:** the toast's **Undo** removes staging, as long as you haven't synced staging again
+  since. After that, Undo is refused: Remove it in Details instead.
+
+`ployz env sync` groups what it stages the same way, but its `--json` output leaves out what was
+included: check **Details** in Ployz Cloud.
+
+Remove is refused, and says why, when taking staging out would lose your work:
+
+- A service staging brought was edited in production since. Discard that service, or keep staging.
+- A service staging brought got its own registry credential or deployment setting (such as
+  auto-deploy) in production since. Those take effect at once, outside the draft. Discard that
+  service, or keep staging.
+- Staging turned on a registry credential for a service in production, replacing the one
+  production kept for it. Removing staging wouldn't bring production's back. Set that service's
+  credential again, or keep staging.
+- Another included environment changed a service staging brought. Remove that one first, or keep
+  staging.
+- Another service in production uses one staging brought. Change that service first, or Remove
+  what brought it.
+
+A change another included environment brought shows **Included with** that environment in the
+Sync dialog, and you can't tick it, even where production also changed it: Remove that one first
+to sync over it.
+
+Clicking **Save** or **Deploy** ends what was included: the changes are production's own, and
+**Included** is empty again. **Save** ends them even when no change is left to save.
 
 ## Other choices
 
@@ -137,8 +179,9 @@ to take it.
 
 ### Sync to another environment
 
-The Sync button's ▾ menu also syncs into any other environment of the project, like a branch next
-to staging. What staging only got from production is left out unless you tick it.
+Click **Sync**, then pick the environment in the dialog's title, "Make [production ▾] match
+staging". Any other environment of the project works, like a branch next to staging. Sync works on
+the default environment too, into any other place. What staging only got from production is left out unless you tick it.
 
 ### Change the default environment
 
