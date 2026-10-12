@@ -939,7 +939,7 @@ describe("volume runs", () => {
       expect(output.error).toBeDefined();
       expect(verbs).toEqual([]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: true });
-      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <server> again" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <another server> again" }]);
     });
 
     it("an idle writer is already where Release leaves it", async () => {

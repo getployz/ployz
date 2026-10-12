@@ -168,9 +168,10 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
     if (failure !== null) throw new NonRetriableError(`${slot} could not receive ${target.name}: ${failure}`);
-    const settled = copy?.kind === "slot" && (copy.pull === null || copy.newest?.guid === target.guid);
-    if (!settled) await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
-    copy = await mustSet(steps, `${prefix}-pull-${poll}`, B, expectOf(copy), want, still);
+    // A landed pull still verifying keeps `pull` set, so only an idle copy skips the wait.
+    const idle = copy?.kind === "slot" && copy.pull === null;
+    if (!idle) await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
+    copy = await mustSet(steps, `${prefix}-repull-${poll}`, B, expectOf(copy), want, still);
   }
   throw new NonRetriableError(`${slot} is still receiving ${target.name} after ${MAX_POLLS} checks`);
 }
@@ -300,7 +301,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     if (from.kind === "cut" || from.kind === "writer") {
       const root = from.kind === "cut" ? from.root : from.writer;
       if (from.kind === "cut" && (root.view.copy?.newest ?? null) === null) {
-        throw new NonRetriableError(`${run.volumeName} on ${root.machine.name} stopped before its first snapshot; volume move ${run.volumeName} --to <server> again`);
+        throw new NonRetriableError(`${run.volumeName} on ${root.machine.name} stopped before its first snapshot; volume move ${run.volumeName} --to <another server> again`);
       }
       const holder = await kept("03-holder", [root.machine]);
       await resume("04-resume", root, holder?.containerId ?? null);
