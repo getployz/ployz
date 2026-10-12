@@ -8,9 +8,9 @@ and deployments, or ask it to change something and deploy. Before a deploy remov
 anything, it stops and asks you.
 
 The agent works in the project and environment you're looking at, unless you name another. It
-can add and change services, [configs](../services/configs.md), volumes and domains, review
-what's staged, publish and deploy. It can also read your GitHub repositories and work on your
-servers. It doesn't create projects or environments, and it can't read a service's logs yet.
+can create a project, add and change services, [configs](../services/configs.md), volumes and
+domains, review what's staged, publish and deploy. It can also read your GitHub repositories and
+work on your servers. It doesn't create environments, and it can't read a service's logs yet.
 
 ## What it can do on your servers
 

@@ -374,6 +374,136 @@
     ]
   },
   {
+    "tool": "project_create",
+    "input": {
+      "name": "docs",
+      "request_key": "project-docs-0001"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": "cloud"
+    },
+    "call_key": "call-project_create",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "create_project",
+              "id": "70dca99a-2881-8fc3-9566-a7897c8ac904",
+              "name": "docs",
+              "default_environment": "6e2e3b80-a645-83df-b5cb-757726a1b52e"
+            }
+          }
+        },
+        "answers": [
+          {
+            "value": {
+              "environment": {
+                "id": "6e2e3b80-a645-83df-b5cb-757726a1b52e",
+                "name": "production",
+                "project": "docs",
+                "revision": 1
+              },
+              "project": {
+                "id": "70dca99a-2881-8fc3-9566-a7897c8ac904",
+                "name": "docs"
+              },
+              "written": "project"
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "at": "docs/production",
+              "environment": "production",
+              "next": {
+                "input": {
+                  "project": "docs"
+                },
+                "tool": "environment_show"
+              },
+              "project": "docs"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "project_create",
+    "input": {
+      "name": "docs",
+      "request_key": "project-docs-0001"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": "local"
+    },
+    "call_key": "call-project_create",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "create_project",
+              "id": "70dca99a-2881-8fc3-9566-a7897c8ac904",
+              "name": "docs",
+              "default_environment": "6e2e3b80-a645-83df-b5cb-757726a1b52e"
+            }
+          }
+        },
+        "answers": [
+          {
+            "value": {
+              "environment": {
+                "id": "6e2e3b80-a645-83df-b5cb-757726a1b52e",
+                "name": "production",
+                "project": "docs",
+                "revision": 1
+              },
+              "project": {
+                "id": "70dca99a-2881-8fc3-9566-a7897c8ac904",
+                "name": "docs"
+              },
+              "written": "project"
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "at": "docs/production",
+              "environment": "production",
+              "next": {
+                "input": {
+                  "project": "docs"
+                },
+                "tool": "environment_show"
+              },
+              "project": "docs"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "service_inspect",
     "input": {
       "service": "web"

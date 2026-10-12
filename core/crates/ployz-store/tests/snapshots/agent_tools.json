@@ -27,6 +27,37 @@
       "read_only": true
     },
     {
+      "description": "Create a Project with its Default Environment, production. Then add Services to it with service_add, naming the Project. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "The new Project's name, unique in the Organization.",
+            "examples": [
+              "docs"
+            ],
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "request_key": {
+            "description": "Any id you choose. Repeat the same call with the same key after a lost reply and you get the same Project back, not a second one.",
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "project_create",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "Everything about one Service: Settings with values and defaults, variables, mounts, Configs, domains with status, and what is Staged. Use it before changing a Service. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {

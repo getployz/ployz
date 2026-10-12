@@ -126,6 +126,26 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
       hears: { ok: true, value: { repository: "acme/docs", ref: "main", entries: [{ path: "README.md", kind: "file" }, { path: "src", kind: "directory" }] } },
     }],
   },
+  {
+    name: "project_create makes a Project the next read shows",
+    seed: false,
+    steps: [
+      { tool: "project_create", input: { name: "docs" }, hears: { ok: true, value: { at: "docs/production", project: "docs" } } },
+      { tool: "environment_show", input: { project: "docs" }, hears: { ok: true, value: { at: "docs/production" } } },
+    ],
+  },
+  {
+    name: "a retried project_create replays the first Project",
+    seed: false,
+    steps: [
+      { tool: "project_create", input: { name: "docs" }, callKey: "create", hears: { ok: true } },
+      { tool: "project_create", input: { name: "docs" }, callKey: "create", hears: { ok: true, value: { project: "docs" } } },
+    ],
+  },
+  {
+    name: "project_create refuses a name another Project has",
+    steps: [{ tool: "project_create", input: { name: "shop" }, hears: refused("conflict") }],
+  },
 ];
 
 const tools = Effect.fn(function* (seed: boolean) {
