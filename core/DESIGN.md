@@ -200,8 +200,10 @@ Container. That request is the point of no return, and Cloud enforces it, not a
 Machine. One Inngest step reads the full spec from the source's stopped
 Container and hands it to the target's `Writer{start}`, and Cloud removes the
 source Container once the target starts. If the source dies between the cut and
-that step, the target becomes Writer without starting, and the Service stays
-down until the next Deploy. The source's Mirror is the reverse mirror. Moving
+that step, its spec cannot be read. The target stays a Mirror at G and the run
+stops. Once the source answers, running the Move again finishes it. If the
+source is gone for good, `server rm` it and then `volume restore --from` the
+target. The source's Mirror is the reverse mirror. Moving
 back is another Move, with that Mirror as its base.
 
 **Why.** Pretending a multi-Machine operation is atomic requires either lying in

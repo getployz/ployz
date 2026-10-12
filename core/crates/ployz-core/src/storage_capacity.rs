@@ -46,11 +46,11 @@ pub enum StorageBacking {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CopyRole {
-    /// The root that takes writes: idle marker, closed record, writable.
+    /// A writable root.
     Writer,
     /// A mirror slot Docker never sees.
     Slot,
-    /// A root a run holds: non-idle marker, open record or read-only.
+    /// A read-only root a run holds.
     Switching,
 }
 

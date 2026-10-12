@@ -26,7 +26,7 @@ enum Departure<'datasets> {
 }
 
 impl VolumeStorage {
-    /// Demotes every root to a slot and idles every slot marker. Answers the names demoted, for the daemon to forget in Docker.
+    /// Demotes every root to a slot. Answers the names demoted, for the daemon to forget in Docker.
     async fn demote_all(&self, now_unix_seconds: i64) -> super::Result<Vec<String>> {
         let _guard = self.admit_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
