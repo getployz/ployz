@@ -3172,12 +3172,30 @@ fn a_targeted_deploy_over_a_full_retry_over_a_teardown_keeps_it() {
     let full = deploy_by_hand(&store, &who, &[]);
     cancel(&store, &who, &full);
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
-    retry(&store, &who, &full).unwrap();
+    let [queued] = pushed.admitted.as_slice() else {
+        panic!("one Deployment: {pushed:?}")
+    };
+    let retried = retry(&store, &who, &full).unwrap();
     let worker = deploy_by_hand(&store, &who, &["worker"]);
 
+    for superseded in [&queued.deployment.id, &retried] {
+        assert_eq!(
+            status(&store, &who, superseded),
+            ployz_store::DeploymentStatus::Superseded
+        );
+    }
     let [_, removals, _] = told(&store, &who, &worker);
     assert_eq!(removals, vec!["db".to_owned()]);
+    run(&store, &worker, &["worker", "db"]);
+    assert_eq!(
+        status(&store, &who, &worker),
+        ployz_store::DeploymentStatus::Applied
+    );
+    assert!(
+        !applied(&store, &who).contains(&"db".to_owned()),
+        "{:?}",
+        applied(&store, &who)
+    );
 }
 
 /// Run Deployment `id` of `service` to a failure on Server `a…`.
@@ -3412,39 +3430,61 @@ fn a_retry_after_undo_never_tears_down_what_saved_holds_again() {
     assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
 }
 
+/// Production runs `db` with Config `dbconf` that only it mounts, and pull request
+/// #5, which removes both, merged.
+fn shop_merging_db_with_its_config() -> (ConfigStore, Actor) {
+    let (store, who) = shop_copying(
+        |store, who| {
+            production_nodes(store, who);
+            config(store, who, 26, "dbconf", &["db"]);
+            save(store, who, "production");
+        },
+        Some(vec![
+            node("db"),
+            node("volumes.data"),
+            node("configs.sentry"),
+            node("configs.dbconf"),
+        ]),
+    );
+    let full = deploy_by_hand(&store, &who, &[]);
+    run(&store, &full, &["web", "worker", "db"]);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: at("pr-5"),
+                config: ployz_core::ConfigName::parse("dbconf").unwrap(),
+            },
+        )
+        .unwrap();
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    (store, who)
+}
+
+/// Each node of Deployment `id` by name, with its outcome.
+fn outcomes(
+    store: &ConfigStore,
+    who: &Actor,
+    id: &ployz_store::DeploymentId,
+) -> Vec<(String, ployz_store::NodeStatus)> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.outcome))
+        .collect()
+}
+
 #[test]
 fn a_removed_config_reads_removed_only_once_the_service_that_mounted_it_is_gone() {
     for (touched, complete, outcome) in [
         (&["web"][..], false, ployz_store::NodeStatus::NotAttempted),
         (&["web", "db"][..], true, ployz_store::NodeStatus::Removed),
     ] {
-        let (store, who) = shop_copying(
-            |store, who| {
-                production_nodes(store, who);
-                config(store, who, 26, "dbconf", &["db"]);
-                save(store, who, "production");
-            },
-            Some(vec![
-                node("db"),
-                node("volumes.data"),
-                node("configs.sentry"),
-                node("configs.dbconf"),
-            ]),
-        );
-        let full = deploy_by_hand(&store, &who, &[]);
-        run(&store, &full, &["web", "worker", "db"]);
-        watching(&store, &who);
-        remove_db(&store, &who);
-        store
-            .write(
-                &who,
-                &ployz_store::DeleteConfig {
-                    environment: at("pr-5"),
-                    config: ployz_core::ConfigName::parse("dbconf").unwrap(),
-                },
-            )
-            .unwrap();
-        merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+        let (store, who) = shop_merging_db_with_its_config();
         let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
         let [admitted] = pushed.admitted.as_slice() else {
             panic!("one Deployment: {pushed:?}")
@@ -3452,20 +3492,69 @@ fn a_removed_config_reads_removed_only_once_the_service_that_mounted_it_is_gone(
         let id = &admitted.deployment.id;
         run_seeing(&store, id, touched, complete);
 
-        let outcomes: Vec<(String, ployz_store::NodeStatus)> = store
-            .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
-            .unwrap()
-            .nodes
+        let ended = outcomes(&store, &who, id);
+        assert!(ended.contains(&("db".to_owned(), outcome)), "{ended:?}");
+        assert!(ended.contains(&("dbconf".to_owned(), outcome)), "{ended:?}");
+    }
+}
+
+#[test]
+fn a_deploy_that_takes_over_a_teardown_takes_the_config_it_removes_too() {
+    type Successor = fn(&ConfigStore, &Actor) -> ployz_store::DeploymentId;
+    let cases: [(&str, Successor); 3] = [
+        ("worker over the teardown", |store, who| {
+            system(store, who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+            deploy_by_hand(store, who, &["worker"])
+        }),
+        (
+            "worker over a full Deploy over the teardown",
+            |store, who| {
+                system(store, who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+                deploy_by_hand(store, who, &[]);
+                deploy_by_hand(store, who, &["worker"])
+            },
+        ),
+        ("a worker Retry over the teardown", |store, who| {
+            let worker = deploy_by_hand(store, who, &["worker"]);
+            cancel(store, who, &worker);
+            system(store, who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+            retry(store, who, &worker).unwrap()
+        }),
+    ];
+    for (case, successor) in cases {
+        let (store, who) = shop_merging_db_with_its_config();
+        let id = successor(&store, &who);
+        let names: Vec<String> = outcomes(&store, &who, &id)
             .into_iter()
-            .map(|node| (node.node.name().to_owned(), node.outcome))
+            .map(|(name, _)| name)
+            .collect();
+        assert!(names.contains(&"dbconf".to_owned()), "{case}: {names:?}");
+
+        run(&store, &id, &["worker", "db"]);
+        let ended = outcomes(&store, &who, &id);
+        for removed in ["db", "dbconf"] {
+            assert!(
+                ended.contains(&(removed.to_owned(), ployz_store::NodeStatus::Removed)),
+                "{case}: {ended:?}"
+            );
+        }
+        assert!(!applied(&store, &who).contains(&"db".to_owned()), "{case}");
+        let changes: Vec<String> = store
+            .read(
+                &who,
+                &ployz_store::PlanQuery {
+                    environment: at("production"),
+                    services: Vec::new(),
+                },
+            )
+            .unwrap()
+            .changes
+            .into_iter()
+            .map(|change| change.name)
             .collect();
         assert!(
-            outcomes.contains(&("db".to_owned(), outcome)),
-            "{outcomes:?}"
-        );
-        assert!(
-            outcomes.contains(&("dbconf".to_owned(), outcome)),
-            "{outcomes:?}"
+            !changes.contains(&"dbconf".to_owned()),
+            "{case}: {changes:?}"
         );
     }
 }
