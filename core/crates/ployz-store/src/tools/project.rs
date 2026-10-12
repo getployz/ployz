@@ -5,8 +5,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::machine::{Cx, Stop, Tool, at};
-use super::refusal::{Call, Refusal};
-use super::step::{AttemptId, RequestKey};
+use super::refusal::Call;
+use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
 use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName};
 
@@ -30,19 +30,15 @@ impl Tool for ProjectCreate {
     const READ_ONLY: bool = false;
 
     fn example() -> Value {
-        json!({ "name": "docs", "request_key": "project-docs-0001" })
+        json!({ "name": "docs", "request_key": "q8Lz3fWn2KcT" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let key = cx.request_key(self.request_key);
         // The Store replays a create by each of its IDs, so the two must differ.
-        let id = ProjectId::parse(AttemptId::derive(Self::NAME, &key).to_string());
-        let environment = EnvironmentId::parse(
-            AttemptId::derive(&format!("{}-environment", Self::NAME), &key).to_string(),
-        );
-        let (Ok(id), Ok(default_environment)) = (id, environment) else {
-            return Err(Refusal::internal("An ID did not mint").into());
-        };
+        let id: ProjectId = cx.mint_as(Self::NAME, &key)?;
+        let default_environment: EnvironmentId =
+            cx.mint_as(&format!("{}-environment", Self::NAME), &key)?;
         let created = cx.write(&CreateProject {
             id,
             name: self.name,

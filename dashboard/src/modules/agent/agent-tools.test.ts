@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { CATALOG, GATED, finish, untilWrite } from "./agent-tools";
 
-const place = { project: "shop", environment: "production", store: "cloud" } as const;
+const place = { project: "shop", environment: "production", store: { at: "cloud", organization: "org" } } as const;
 const empty = { view: "services", services: [] };
 
 describe("agent tools", () => {
