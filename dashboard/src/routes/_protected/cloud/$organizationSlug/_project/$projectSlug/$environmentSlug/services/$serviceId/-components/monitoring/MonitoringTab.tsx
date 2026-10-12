@@ -83,7 +83,7 @@ function MonitoringError({ reset }: ErrorComponentProps) {
 
 function StatusLine({ tone, children }: { tone: "ok" | "bad" | "quiet"; children: ReactNode }) {
   return (
-    <h2 className="flex min-w-0 items-center gap-2 text-base font-medium">
+    <h2 className="flex min-w-0 grow basis-40 items-center gap-2 text-base font-medium">
       <span aria-hidden className={cn("inline-block size-2 shrink-0 rounded-full",
         tone === "ok" ? "bg-success" : tone === "bad" ? "bg-destructive" : "bg-muted-foreground")} />
       {children}
@@ -223,7 +223,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
   const requests = average(metrics.map((row) => row.ok + row.errors));
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <StatusLine tone={STATUS_TONES[state]}>
           <span className="shrink-0">{STATUS_WORDS[state]}</span>
           <span className="flex min-w-0 items-center gap-1 whitespace-nowrap font-normal text-muted-foreground tabular-nums">
