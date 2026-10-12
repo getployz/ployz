@@ -434,6 +434,16 @@ describe("placementLoss", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
     expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true });
   });
+
+  it("says a restore from a restore point drops the source's writes after it", () => {
+    const seeded: PlacementRow = {
+      ...row([], { primary: "web-1" }),
+      staged: { primary: id("web-1"), mirrors: [], deletes: [], seed: {
+        sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
+      } },
+    };
+    expect(lossOf([], seeded)).toEqual({ items: [{ kind: "volume", name: "data", detail: "changes after 10:36" }], losesWrites: true });
+  });
 });
 
 describe("restore into a new Volume", () => {

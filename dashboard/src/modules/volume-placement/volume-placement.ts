@@ -457,11 +457,15 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
   }
 }
 
-/** What a Deploy of staged changes takes from the Servers, for its typed confirm: copies it deletes, and whether a restore drops writes. */
+/**
+ * What a Deploy of staged changes takes from the Servers, for its typed confirm: copies it deletes, and whether a restore
+ * drops writes. A restore from a restore point counts the source's writes after it, since the app stops seeing them.
+ */
 export type PlacementLoss = { readonly items: readonly DeletionItem[]; readonly losesWrites: boolean };
 
 export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
   const copy = (volume: PlacementVolume, server: MachineRef): DeletionItem => ({ kind: "volume", name: volume.name, detail: server.name });
+  const restores = (change: PlacementChange) => (change.kind === "move" && change.how === "restore") || change.kind === "seed";
   return {
     items: changes.flatMap((change) => {
       const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
@@ -474,10 +478,10 @@ export function placementLoss(changes: readonly PlacementChange[]): PlacementLos
         case "delete_copy":
           return [copy(change.volume, change.server)];
         case "seed":
-          return [];
+          return [{ kind: "volume", name: change.source.name, detail: `changes after ${lossTime(new Date(change.point.at * 1000))}` }];
       }
     }),
-    losesWrites: changes.some((change) => change.kind === "move" && change.how === "restore"),
+    losesWrites: changes.some(restores),
   };
 }
 
