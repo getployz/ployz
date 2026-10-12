@@ -19,10 +19,10 @@ import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/clo
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as AuthGithubRouteImport } from './routes/auth/github'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
-import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
 import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
@@ -112,6 +112,11 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
   path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthGithubRoute = AuthGithubRouteImport.update({
+  id: '/auth/github',
+  path: '/auth/github',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -126,11 +131,6 @@ const ProtectedCloudOrganizationSlugRouteRoute =
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAuthGithubRoute = ApiAuthGithubRouteImport.update({
-  id: '/api/auth/github',
-  path: '/api/auth/github',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCliSplatRoute = ApiCliSplatRouteImport.update({
@@ -404,9 +404,9 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
+  '/auth/github': typeof AuthGithubRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
-  '/api/auth/github': typeof ApiAuthGithubRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
@@ -454,9 +454,9 @@ export interface FileRoutesByTo {
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
+  '/auth/github': typeof AuthGithubRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
-  '/api/auth/github': typeof ApiAuthGithubRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
@@ -506,9 +506,9 @@ export interface FileRoutesById {
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
+  '/auth/github': typeof AuthGithubRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
-  '/api/auth/github': typeof ApiAuthGithubRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
@@ -562,9 +562,9 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/auth'
     | '/api/health'
+    | '/auth/github'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
-    | '/api/auth/github'
     | '/api/cli/$'
     | '/api/config/$'
     | '/api/enroll/$token'
@@ -612,9 +612,9 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/auth'
     | '/api/health'
+    | '/auth/github'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
-    | '/api/auth/github'
     | '/api/cli/$'
     | '/api/config/$'
     | '/api/enroll/$token'
@@ -663,9 +663,9 @@ export interface FileRouteTypes {
     | '/_protected/dashboard'
     | '/_public/auth'
     | '/api/health'
+    | '/auth/github'
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
-    | '/api/auth/github'
     | '/api/cli/$'
     | '/api/config/$'
     | '/api/enroll/$token'
@@ -717,8 +717,8 @@ export interface RootRouteChildren {
   DeviceRoute: typeof DeviceRoute
   HomeRoute: typeof HomeRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  AuthGithubRoute: typeof AuthGithubRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
-  ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiConfigSplatRoute: typeof ApiConfigSplatRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
@@ -808,6 +808,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/github': {
+      id: '/auth/github'
+      path: '/auth/github'
+      fullPath: '/auth/github'
+      preLoaderRoute: typeof AuthGithubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_protected/cloud/': {
       id: '/_protected/cloud/'
       path: '/'
@@ -827,13 +834,6 @@ declare module '@tanstack/react-router' {
       path: '/api/auth/$'
       fullPath: '/api/auth/$'
       preLoaderRoute: typeof ApiAuthSplatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/auth/github': {
-      id: '/api/auth/github'
-      path: '/api/auth/github'
-      fullPath: '/api/auth/github'
-      preLoaderRoute: typeof ApiAuthGithubRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/cli/$': {
@@ -1322,8 +1322,8 @@ const rootRouteChildren: RootRouteChildren = {
   DeviceRoute: DeviceRoute,
   HomeRoute: HomeRoute,
   ApiHealthRoute: ApiHealthRoute,
+  AuthGithubRoute: AuthGithubRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
-  ApiAuthGithubRoute: ApiAuthGithubRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiConfigSplatRoute: ApiConfigSplatRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
