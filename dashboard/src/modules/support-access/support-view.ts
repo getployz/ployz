@@ -1,6 +1,6 @@
 import type {
-  ConfigItemView, ConfigView, ConfigWritten, DeploymentView, DiffView, EnvironmentView, FollowHint, JsonValue, MergeRow, NodeChange,
-  OnMerge, OnMergeInto, PullRequestView, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
+  ConfigItemView, ConfigView, ConfigWritten, DeploymentSummary, DeploymentView, DiffView, EnvironmentView, FollowHint, JsonValue, MergeRow,
+  NodeChange, OnMerge, OnMergeInto, Outcome, PullRequestView, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
 } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
@@ -9,7 +9,7 @@ import type { SupportShows } from "./support-access";
 /** What a Store cell holds, as far as support's view of it goes. */
 type Holds = "variable" | "file" | "other";
 
-const VARIABLE_PATH = /(^|\.)env\.[^.]+$/;
+const VARIABLE_PATH = /(^|\.)(env|variables)\.[^.]+$/;
 const FILE_PATH = /^configs\.@[^.]+\.files\./;
 
 /** A row's `<lineage>:<at>` names what it holds; rows without one (renames, mounts, flags) fall back to the path. */
@@ -34,6 +34,9 @@ const hideFile = (value: JsonValue): JsonValue => {
   const { content: _content, ...rest } = value;
   return rest;
 };
+
+/** A failed health check keeps its exit code; what the check printed is the Container's own output, shown only with its logs. */
+export const withoutCheckOutput = (cause: string): string => cause.replace(/(last check exited -?\d+): .*$/s, "$1");
 
 /** Support's view of each Store answer, under one Organization's `shows`. Members never pass through here. */
 function redactions(shows: SupportShows) {
@@ -63,7 +66,11 @@ function redactions(shows: SupportShows) {
     return { ...row, production: cell(row.production, kind), lands: cell(row.lands, kind), preview: cell(row.preview, kind) };
   };
   const destination = (into: OnMergeInto): OnMergeInto => ({ ...into, rows: into.rows.map(merge) });
-  const server = (row: ServerRow): ServerRow => row.state === "failed" && !shows.logs ? { ...row, log: null } : row;
+  const server = (row: ServerRow): ServerRow =>
+    row.state === "failed" && !shows.logs ? { ...row, log: null, cause: row.cause.map(withoutCheckOutput) } : row;
+  const outcome = (shown: Outcome | null): Outcome | null =>
+    shown && "cause" in shown && !shows.logs ? { ...shown, cause: shown.cause.map(withoutCheckOutput) } : shown;
+  const summary = <T extends DeploymentSummary>(view: T): T => ({ ...view, outcome: outcome(view.outcome) });
   return {
     environment: <T extends EnvironmentView>(view: T): T =>
       ({ ...view, settings: view.settings.map(setting), values: view.values ? values(view.values) : view.values }),
@@ -83,53 +90,68 @@ function redactions(shows: SupportShows) {
       check: view.check && !shows.variables ? { ...view.check, summary: "" } : view.check,
     }),
     config: <T extends ConfigItemView>(view: T): T => shows.configs ? view : { ...view, contents: {} },
+    summary,
     deployment: <T extends DeploymentView>(view: T): T =>
-      ({ ...view, nodes: view.nodes.map((outcome) => ({ ...outcome, rows: outcome.rows.map(server) })) }),
+      ({ ...summary(view), nodes: view.nodes.map((node) => ({ ...node, rows: node.rows.map(server) })) }),
   };
 }
 
-/** `view` as support may read it. Every view is named, so a new one can't reach support unclassified. */
-export function viewForSupport(view: ConfigView, shows: SupportShows): ConfigView {
+type ViewKind = ConfigView["view"];
+type ViewOf<K extends ViewKind> = Extract<ConfigView, { view: K }>;
+
+type ViewRedactions = { [K in ViewKind]: (view: ViewOf<K>) => ViewOf<K> };
+
+/** Every view by name, so a new one can't reach support unclassified. A redactor never reads `view`, so an untagged view goes through it too. */
+function viewRedactions(shows: SupportShows): ViewRedactions {
   const redact = redactions(shows);
-  switch (view.view) {
-    case "environment": return redact.environment(view);
-    case "diff": return redact.diff(view);
-    case "history": return { ...view, revisions: view.revisions.map(redact.changes) };
-    case "history_preview":
-    case "plan": return redact.changes(view);
-    case "deployment":
-    case "numbered_deployment": return redact.deployment(view);
-    case "service": return redact.service(view);
-    case "config": return redact.config(view);
-    case "sync": return redact.sync(view);
-    case "pull_request": return redact.pullRequest(view);
-    case "on_merge": return redact.onMerge(view);
-    case "deployments":
-    case "build_log":
-    case "services":
-    case "namespace":
-    case "namespaces":
-    case "domains":
-    case "domain":
-    case "volumes":
-    case "volume":
-    case "removals":
-    case "configs":
-    case "branch":
-    case "branch_plan":
-    case "build_order":
-    case "environments":
-    case "projects":
-    case "due":
-    case "pr_plans":
-      return view;
-  }
+  const same = <T>(view: T): T => view;
+  return {
+    environment: redact.environment,
+    diff: redact.diff,
+    history: (view) => ({ ...view, revisions: view.revisions.map(redact.changes) }),
+    history_preview: redact.changes,
+    plan: redact.changes,
+    deployments: (view) => ({ ...view, deployments: view.deployments.map(redact.summary) }),
+    deployment: redact.deployment,
+    numbered_deployment: redact.deployment,
+    service: redact.service,
+    config: redact.config,
+    sync: redact.sync,
+    pull_request: redact.pullRequest,
+    on_merge: redact.onMerge,
+    build_log: same,
+    services: same,
+    namespace: same,
+    namespaces: same,
+    domains: same,
+    domain: same,
+    volumes: same,
+    volume: same,
+    removals: same,
+    configs: same,
+    branch: same,
+    branch_plan: same,
+    build_order: same,
+    environments: same,
+    projects: same,
+    due: same,
+    pr_plans: same,
+  };
+}
+
+const redactView = <K extends ViewKind>(views: ViewRedactions, kind: K, view: ViewOf<K>): ViewOf<K> => views[kind](view);
+
+/** `view` as support may read it. */
+export function viewForSupport<V extends ConfigView>(view: V, shows: SupportShows): V {
+  // SAFETY: each redactor answers the shape it was given.
+  return redactView<ViewKind>(viewRedactions(shows), view.view, view) as V;
 }
 
 /** What a write wrote, as support may read it. Most writes answer with names and paths only. */
 export function writtenForSupport(written: ConfigWritten, shows: SupportShows): ConfigWritten {
   switch (written.written) {
     case "on_merge": return redactions(shows).onMerge(written);
+    case "deployment": return redactions(shows).summary(written);
     case "batch": return { ...written, results: written.results.map((result) => writtenForSupport(result, shows)) };
     case "project":
     case "project_renamed":
@@ -147,7 +169,6 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
     case "published":
     case "discarded":
     case "history_staged":
-    case "deployment":
     case "domain_added":
     case "domain":
     case "automated":
@@ -167,22 +188,29 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
   }
 }
 
-/** The review a refusal carries (asking for approval, or a stale publish), as support may read it. */
+/** The Store embeds these views in a refusal's details without their `view` tag. */
+const UNTAGGED_REFUSAL_VIEWS = new Map<string, ViewKind>([["diff", "diff"], ["history_preview", "history_preview"]]);
+
+const isViewKind = (kind: JsonValue | undefined, views: ViewRedactions): kind is ViewKind => typeof kind === "string" && Object.hasOwn(views, kind);
+
+/** A refusal as support may read it: each view its details carry (a stale publish's diff, a restore's preview) goes through that view's redactor. */
 export function refusalForSupport(refusal: StoreRefusal, shows: SupportShows): StoreRefusal {
   const { details } = refusal;
-  if (!isObject(details) || !isObject(details["diff"] ?? null)) return refusal;
-  // SAFETY: a refusal's `diff` is the Store's DiffView of the Environment it refused.
-  const diff = redactions(shows).diff(details["diff"] as DiffView);
-  // SAFETY: a DiffView is plain JSON, as the Store sent it.
-  return { ...refusal, details: { ...details, diff: diff as JsonValue } };
+  if (!isObject(details)) return refusal;
+  const views = viewRedactions(shows);
+  const shown = Object.fromEntries(Object.entries(details).map(([key, value]) => {
+    if (!isObject(value)) return [key, value];
+    const kind = isViewKind(value["view"], views) ? value["view"] : UNTAGGED_REFUSAL_VIEWS.get(key);
+    if (kind === undefined) return [key, value];
+    // SAFETY: the value is the Store's view of that kind, tagged or under the key the Store embeds it as; views are plain JSON.
+    return [key, redactView<ViewKind>(views, kind, value as ConfigView)];
+  }));
+  return { ...refusal, details: shown };
 }
 
 /** An approval as support may read it: the review it asks about, under the same rules. */
 export const approvalForSupport = <T extends { review: ApprovalReview }>(approval: T, shows: SupportShows): T =>
   "diff" in approval.review ? { ...approval, review: { ...approval.review, diff: redactions(shows).diff(approval.review.diff) } } : approval;
-
-export const diffForSupport = (view: DiffView, shows: SupportShows): DiffView => redactions(shows).diff(view);
-export const environmentForSupport = (view: EnvironmentView, shows: SupportShows): EnvironmentView => redactions(shows).environment(view);
 
 /** One Store call's answer, as support may read it. */
 export function answerForSupport<C extends StoreCall>(call: C, result: StoreResult<StoreAnswer<C>>, shows: SupportShows): StoreResult<StoreAnswer<C>> {

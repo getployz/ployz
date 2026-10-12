@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import type { Approval, ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
@@ -10,7 +10,7 @@ import { user } from "#/modules/identity/tables";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
 import { requireAccess } from "#/modules/organization/access.server";
-import { answerForSupport, diffForSupport, environmentForSupport } from "#/modules/support-access/support-view";
+import { answerForSupport, viewForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createConfigDeploymentAdmittedEvent,
@@ -281,11 +281,10 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
     services: readStore(organization.id, { query: "services", environment }).pipe(Effect.option),
     environment: readStore(organization.id, { query: "environment", environment, path: null, all: true }).pipe(Effect.option),
   }, { concurrency: 3 });
+  const shown = <V extends ConfigView>(view: V): V => access.kind === "support" ? viewForSupport(view, access.shows) : view;
   const committed: CommittedViews = {};
-  if (Option.isSome(views.diff)) committed.diff = access.kind === "support" ? diffForSupport(views.diff.value, access.shows) : views.diff.value;
-  if (Option.isSome(views.services)) committed.services = views.services.value;
-  if (Option.isSome(views.environment)) {
-    committed.environment = access.kind === "support" ? environmentForSupport(views.environment.value, access.shows) : views.environment.value;
-  }
+  if (Option.isSome(views.diff)) committed.diff = shown(views.diff.value);
+  if (Option.isSome(views.services)) committed.services = shown(views.services.value);
+  if (Option.isSome(views.environment)) committed.environment = shown(views.environment.value);
   return { ...result, views: committed } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));

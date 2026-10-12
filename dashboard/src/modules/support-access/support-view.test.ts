@@ -1,8 +1,9 @@
-import type { ConfigView } from "@ployz/sdk";
+import type { ConfigView, ConfigWritten, JsonValue } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { SupportShows } from "./support-access";
-import { holds, refusalForSupport, viewForSupport } from "./support-view";
+import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { holds, refusalForSupport, viewForSupport, withoutCheckOutput, writtenForSupport } from "./support-view";
 
 const NONE: SupportShows = { variables: false, configs: false, logs: false };
 const ALL: SupportShows = { variables: true, configs: true, logs: true };
@@ -17,6 +18,7 @@ describe("what a Store cell holds", () => {
     expect(holds(`${API}:node`)).toBe("other");
     expect(holds(null, "api.env.LOG_LEVEL")).toBe("variable");
     expect(holds(null, "api.env.LOG_LEVEL.exported")).toBe("other");
+    expect(holds(null, "api.variables.LOG_LEVEL")).toBe("variable");
     expect(holds(null, "configs.@8aa5.files.config.yml")).toBe("file");
     expect(holds(null, "api.replicas")).toBe("other");
   });
@@ -92,5 +94,95 @@ describe("a refusal for support", () => {
     });
     const conflict = { code: "conflict", message: "Working State moved from revision 1 to 9", details: { revision: 9 } };
     expect(refusalForSupport(conflict, NONE)).toEqual(conflict);
+  });
+});
+
+describe("a health check's output", () => {
+  it("keeps the exit code and drops what the check printed", () => {
+    expect(withoutCheckOutput("timed out; last check exited 127: sh: pg_isready: not found")).toBe("timed out; last check exited 127");
+    expect(withoutCheckOutput("container db failed health monitoring: running (health: unhealthy); last check exited -1: a: b"))
+      .toBe("container db failed health monitoring: running (health: unhealthy); last check exited -1");
+    expect(withoutCheckOutput("timed out; last check exited 1")).toBe("timed out; last check exited 1");
+    expect(withoutCheckOutput("timed out; last check: HTTP 503")).toBe("timed out; last check: HTTP 503");
+  });
+});
+
+describe("everything support reads, with every switch off", () => {
+  const VARIABLE = "VARIABLE-MARKER";
+  const FILE = "FILE-MARKER";
+  const CHECK = "CHECK-MARKER";
+  const LOG = "LOG-MARKER";
+  const MARKERS = [VARIABLE, FILE, CHECK, LOG];
+
+  const variable = { after: VARIABLE, before: `${VARIABLE}-before`, canRestore: true, kind: "change", path: "api.env.LOG_LEVEL", row: `${API}:variables.LOG_LEVEL` };
+  const unrowed = { after: VARIABLE, before: null, canRestore: true, kind: "add", path: "api.variables.LOG_LEVEL", row: null };
+  const file = { after: { content: FILE, mode: "0444" }, before: null, canRestore: true, kind: "add", path: "configs.@8aa5.files.config.yml", row: "8aa5:files.config.yml" };
+  const changes = [{ name: "api", settings: [variable, unrowed, file] }];
+  const diff = { changes, draft_changes: changes, follow_hints: [{ row: `${API}:variables.LOG_LEVEL`, value: VARIABLE }], version: "v9" };
+  const historyPreview = { revision: 1, action: "restore", version: "v9", changes, total_count: 3, overwritten: ["api.env.LOG_LEVEL"] };
+  const merge = { row: `${API}:variables.LOG_LEVEL`, production: VARIABLE, lands: VARIABLE, preview: VARIABLE };
+  const destinations = [{ rows: [merge, { row: "8aa5:files.config.yml", production: { content: FILE }, lands: { content: FILE }, preview: null }] }];
+  const cause = [`timed out; last check exited 1: ${CHECK}`, `container db failed health monitoring: running; last check exited 127: ${CHECK}`];
+  const outcome = { type: "executed", summary: { deployed: 1 }, reason: "A Service failed", cause };
+  const summary = { number: 3, outcome };
+  const failed = { machine_id: "m1", server: "one", started_at: 1, finished_at: 2, state: "failed", reason: "The Container failed its health check", cause, step: null, log: LOG };
+  const deployment = { ...summary, nodes: [{ type: "service", id: API, name: "api", outcome: "failed", rows: [failed] }] };
+
+  const views: ReadonlyArray<ConfigView> = [
+    view({
+      view: "environment",
+      settings: [{ path: "api.env.LOG_LEVEL", row: `${API}:variables.LOG_LEVEL`, value: VARIABLE, default: VARIABLE }, { path: file.path, row: file.row, value: { content: FILE }, default: null }],
+      values: { env: { LOG_LEVEL: VARIABLE, SHARED: { exported: true, value: VARIABLE } } },
+    }),
+    view({ view: "diff", ...diff }),
+    view({ view: "history", revisions: [{ revision: 1, changes }] }),
+    view({ view: "history_preview", ...historyPreview }),
+    view({ view: "plan", changes }),
+    view({ view: "deployments", deployments: [summary, { number: 2, outcome: { type: "not_executed", reason: "Refused", cause, needs_upload: [] } }] }),
+    view({ view: "deployment", ...deployment }),
+    view({ view: "numbered_deployment", ...deployment }),
+    view({ view: "service", values: { env: { LOG_LEVEL: VARIABLE } }, changes: [variable, unrowed] }),
+    view({ view: "config", files: ["config.yml"], contents: { "config.yml": FILE } }),
+    view({ view: "sync", rows: [{ row: `${API}:variables.LOG_LEVEL`, from: VARIABLE, into: VARIABLE }, { row: file.row, from: { content: FILE }, into: null }] }),
+    view({ view: "pull_request", environments: [{ destinations }], check: { summary: `LOG_LEVEL=${VARIABLE}` } }),
+    view({ view: "on_merge", destinations }),
+  ];
+  const refusals: ReadonlyArray<StoreRefusal> = [
+    { code: "approval_required", message: "Approve it.", details: { approval: "d1", diff: { view: "diff", ...diff } } },
+    { code: "conflict", message: "The Environment changed after this History review. Review it again", details: { diff } },
+    { code: "confirmation_required", message: "This History action overwrites draft changes", details: { history_preview: historyPreview } },
+  ];
+  const written: ReadonlyArray<ConfigWritten> = [
+    asTestDouble<ConfigWritten>()({ written: "deployment", ...summary }),
+    asTestDouble<ConfigWritten>()({ written: "on_merge", destinations }),
+    asTestDouble<ConfigWritten>()({ written: "batch", results: [{ written: "deployment", ...summary }] }),
+  ];
+  const leaked = (shown: ConfigView | ConfigWritten | StoreRefusal) => MARKERS.filter((marker) => JSON.stringify(shown).includes(marker));
+
+  it.each(views.map((shown) => [shown.view, shown] as const))("the %s view shows none of them", (_, shown) => {
+    expect(leaked(viewForSupport(shown, NONE))).toEqual([]);
+    expect(viewForSupport(shown, ALL)).toEqual(shown);
+  });
+
+  it.each(refusals.map((refusal) => [refusal.code, refusal] as const))("a %s refusal shows none of them", (_, refusal) => {
+    expect(leaked(refusalForSupport(refusal, NONE))).toEqual([]);
+    expect(refusalForSupport(refusal, ALL)).toEqual(refusal);
+  });
+
+  it.each(written.map((shown) => [shown.written, shown] as const))("a written %s shows none of them", (_, shown) => {
+    expect(leaked(writtenForSupport(shown, NONE))).toEqual([]);
+    expect(writtenForSupport(shown, ALL)).toEqual(shown);
+  });
+
+  it("still says why a Deployment failed", () => {
+    const shown = JSON.stringify(viewForSupport(views.find((one) => one.view === "deployment") ?? view({}), NONE));
+    expect(shown).toContain("timed out; last check exited 1\"");
+    expect(shown).toContain("last check exited 127\"");
+    expect(shown).toContain("The Container failed its health check");
+  });
+
+  it("every marker is in what it starts from", () => {
+    const all: ReadonlyArray<JsonValue | object> = [...views, ...refusals, ...written];
+    expect(MARKERS.filter((marker) => !JSON.stringify(all).includes(marker))).toEqual([]);
   });
 });
