@@ -24,9 +24,9 @@ export function holds(row: string | null | undefined, path = ""): Holds {
 const isObject = (value: JsonValue): value is { [key: string]: JsonValue } =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A variable's value as a sealed one reads: unset stays unset. */
+/** A variable's value as a sealed one reads: unset stays unset, and `.exported`, a flag on the same row, stays. */
 const hideValue = (value: JsonValue): JsonValue =>
-  value === null || (isObject(value) && "secret" in value) ? value : { secret: true };
+  value === null || value === true || value === false || (isObject(value) && "secret" in value) ? value : { secret: true };
 
 /** A Config file's cell without its text: its mode and owner stay. */
 const hideFile = (value: JsonValue): JsonValue => {

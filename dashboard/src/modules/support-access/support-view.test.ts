@@ -48,6 +48,15 @@ describe("a Service's view for support", () => {
   it("shows it whole once variables are on", () => {
     expect(viewForSupport(service, ALL)).toEqual(service);
   });
+
+  it("keeps whether a variable is exported, which shares the variable's row", () => {
+    const exported = view({
+      view: "service",
+      values: {},
+      changes: [{ after: true, before: false, canRestore: true, kind: "change", path: "api.env.SHARED.exported", row: `${API}:variables.SHARED` }],
+    });
+    expect(viewForSupport(exported, NONE)).toEqual(exported);
+  });
 });
 
 describe("a Sync's rows for support", () => {
