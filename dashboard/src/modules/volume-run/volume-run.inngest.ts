@@ -292,13 +292,16 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     await mustSet(steps, id, member.machine, expectOf(copy), {
       kind: "writer",
       at: at.guid,
-      epoch: copy.epoch,
+      epoch,
       start: containerId === null ? null : { kind: "kept", container_id: containerId },
     }, `${member.machine.name} is still starting ${run.volumeName}'s Service`);
   };
   try {
     if (from.kind === "cut" || from.kind === "writer") {
       const root = from.kind === "cut" ? from.root : from.writer;
+      if (from.kind === "cut" && (root.view.copy?.newest ?? null) === null) {
+        throw new NonRetriableError(`${run.volumeName} on ${root.machine.name} stopped before its first snapshot; volume move ${run.volumeName} --to <server> again`);
+      }
       const holder = await kept("03-holder", [root.machine]);
       await resume("04-resume", root, holder?.containerId ?? null);
       if (from.kind === "writer") {

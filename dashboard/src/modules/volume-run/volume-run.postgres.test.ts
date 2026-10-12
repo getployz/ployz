@@ -910,6 +910,31 @@ describe("volume runs", () => {
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
 
+    it("Release raises the epoch past the cut it ends", async () => {
+      named("fsn-1").copy = writerCopy(base, 0, true);
+      for (const container of containers) container.running = false;
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toEqual({ runId: run.id, released: "fsn-1" });
+      expect(sent.at(-1)).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "writer", epoch: 1 } });
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1 });
+    });
+
+    it("a cut root with no snapshot fails Release with the move to run again", async () => {
+      named("fsn-1").copy = writerCopy(null, 0, true);
+      for (const container of containers) container.running = false;
+      const run = await requested({ kind: "release", args: {} });
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(verbs).toEqual([]);
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: true });
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 stopped before its first snapshot; volume move data --to <server> again" }]);
+    });
+
     it("an idle writer is already where Release leaves it", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const run = await requested({ kind: "release", args: {} });
