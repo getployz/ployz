@@ -3094,6 +3094,25 @@ fn a_full_deploy_that_cant_see_every_server_leaves_the_teardown_to_the_push() {
 }
 
 #[test]
+fn a_full_deploy_over_a_queued_teardown_that_cant_see_every_server_is_not_applied() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+    let full = deploy_by_hand(&store, &who, &[]);
+    run_seeing(&store, &full, &["web", "worker"], false);
+
+    assert_ne!(
+        status(&store, &who, &full),
+        ployz_store::DeploymentStatus::Applied
+    );
+    retry(&store, &who, &full).unwrap();
+}
+
+#[test]
 fn a_full_deploy_that_tore_the_service_down_leaves_the_push_nothing() {
     let (store, who) = shop_with_nodes();
     running(&store, &who);

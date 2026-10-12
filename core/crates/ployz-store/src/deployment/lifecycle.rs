@@ -786,14 +786,16 @@ pub(crate) fn record(
             );
             let nodes = keep_advanced(&stored.run.nodes, nodes);
             // A Deploy that left a Volume's data behind, or may have left a Service
-            // it retires running, didn't finish: a retry removes it.
+            // it retires or removes running, didn't finish: a retry removes it.
             let unfinished = |(id, status): (&String, &NodeStatus)| {
                 *status == NodeStatus::Failed
                     || (*status == NodeStatus::NotAttempted
-                        && stored
-                            .nodes
-                            .iter()
-                            .any(|node| node.id() == id && node.retires()))
+                        && stored.nodes.iter().any(|node| {
+                            node.id() == id
+                                && (node.retires()
+                                    || matches!(node, TargetNode::Service { .. })
+                                        && !saved.services.iter().any(|kept| kept.id == *id))
+                        }))
             };
             let status = if success && !nodes.iter().any(unfinished) {
                 DeploymentStatus::Applied
