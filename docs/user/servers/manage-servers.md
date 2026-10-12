@@ -196,8 +196,8 @@ $ ployz logs api
 ```
 
 With `--follow`, the command stops at the first server that can't stream its logs and exits with
-code 1. `ployz exec` into a container on such a server also exits with code 1 and names the
-server:
+code 1. With `--json --follow`, it ends the output as a partial result and exits with code 3
+instead. `ployz exec` into a container on such a server exits with code 1 and names the server:
 
 ```text
 Server web-2 needs a newer Ployz. It cannot serve ployz.container.exec.v1.
