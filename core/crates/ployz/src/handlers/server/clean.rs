@@ -84,6 +84,15 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
     }
     let store = store::store(root)?;
     let context = matches.get_one::<String>("context").map(String::as_str);
+    // Ownership comes from the signed-in Organization, so the Servers read must be
+    // that Organization's: another Cluster's owned Namespaces would read as stray.
+    if matches!(store.backend(), store::Backend::Cloud(..))
+        && (context.is_some() || matches.get_one::<String>("connect").is_some())
+    {
+        return Err(Error::usage(
+            "server clean reads your Organization's Servers; drop --context and --connect",
+        ));
+    }
     let owned = store.read(&NamespacesQuery {})?.namespaces;
     let runtime = runtime()?;
     let mut client = runtime.block_on(super::connect(matches, context))?;

@@ -192,6 +192,7 @@ fn through_cloud(
         let mut client = super::connect(matches, None).await?;
         selected_machines(&mut client, selectors).await
     })?;
+    let unattempted = |from: usize| servers.get(from..).unwrap_or_default();
     let mut attempts = Vec::new();
     let mut skipped = Vec::new();
     for (index, (machine, selector)) in servers.iter().zip(selectors).enumerate() {
@@ -217,32 +218,51 @@ fn through_cloud(
                         args.extend(selectors.iter().map(String::as_str));
                         Hint::Retry(super::super::rerun(matches, &args))
                     });
-                return Err(match along {
+                let error = match along {
                     Some(hint) => Error::from(refused).hint(hint),
                     None => refused.into(),
-                });
+                };
+                return cut_short(attempts, unattempted(index), &skipped, name, error);
             }
             Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Unavailable => {
                 skipped.push(skip(machine, selector, refused.message));
                 continue;
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return cut_short(attempts, unattempted(index), &skipped, name, error.into());
+            }
         };
         crate::ui::stream(format_args!("Upgrading Server {name}."));
-        let settled = runtime
-            .block_on(cloud_account::follow_run::<Settled<CloudUpgrade>>(
-                credential,
-                &format!("server-upgrades/{run}"),
-                &format!("Upgrading Server {name}"),
-                None,
-            ))?
-            .expect("a run followed without a deadline settles or fails");
-        let upgrade = match settled {
+        let followed = runtime.block_on(cloud_account::follow_run::<Settled<CloudUpgrade>>(
+            credential,
+            &format!("server-upgrades/{run}"),
+            &format!("Upgrading Server {name}"),
+            None,
+        ));
+        let settled = match followed {
+            Ok(settled) => settled.expect("a run followed without a deadline settles or fails"),
+            Err(error) => {
+                return cut_short(
+                    attempts,
+                    unattempted(index + 1),
+                    &skipped,
+                    name,
+                    error.into(),
+                );
+            }
+        };
+        let finished = match settled {
             Settled::Ended { code, message } if code == "busy" => {
                 skipped.push(skip(machine, selector, message));
                 continue;
             }
-            settled @ (Settled::Finished(_) | Settled::Ended { .. }) => settled.finished()?,
+            settled @ (Settled::Finished(_) | Settled::Ended { .. }) => settled.finished(),
+        };
+        let upgrade = match finished {
+            Ok(upgrade) => upgrade,
+            Err(error) => {
+                return cut_short(attempts, unattempted(index + 1), &skipped, name, error);
+            }
         };
         let stopped = stopped(name, &upgrade);
         attempts.push(json!({
@@ -253,19 +273,9 @@ fn through_cloud(
             "target_version": upgrade.target_version,
             "message": upgrade.message,
         }));
-        let Some(stopped) = stopped else {
-            continue;
-        };
-        let unattempted = servers.get(index + 1..).unwrap_or_default();
-        if let Some(warning) = unattempted_warning(names(unattempted), name) {
-            crate::ui::warn(warning);
+        if let Some(stopped) = stopped {
+            return cut_short(attempts, unattempted(index + 1), &skipped, name, stopped);
         }
-        let result = json!({
-            "attempts": attempts,
-            "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
-            "skipped": skipped_json(&skipped),
-        });
-        return crate::ui::emit_committed(result, Err(stopped));
     }
     let result =
         json!({ "attempts": attempts, "unattempted": [], "skipped": skipped_json(&skipped) });
@@ -283,6 +293,29 @@ fn through_cloud(
     let skipped = Error::coded(RpcErrorCode::Unavailable, message)
         .hint(Hint::Retry(super::super::rerun(matches, &args)));
     crate::ui::emit_committed(result, Err(skipped))
+}
+
+/// End the run on `error`, which Server `after` raised. Upgrades already attempted are
+/// committed, so they print with the error rather than vanish behind it.
+fn cut_short(
+    attempts: Vec<serde_json::Value>,
+    unattempted: &[Machine],
+    skipped: &[Skipped<'_>],
+    after: &str,
+    error: Error,
+) -> Result<(), Error> {
+    if attempts.is_empty() {
+        return Err(error);
+    }
+    if let Some(warning) = unattempted_warning(names(unattempted), after) {
+        crate::ui::warn(warning);
+    }
+    let result = json!({
+        "attempts": attempts,
+        "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
+        "skipped": skipped_json(skipped),
+    });
+    crate::ui::emit_committed(result, Err(error))
 }
 
 /// A Server that took no Upgrade, the selector that chose it, and why.
@@ -938,6 +971,35 @@ mod tests {
             Some("Did not upgrade Server d: Server c stopped the run.")
         );
         assert_eq!(unattempted_warning(names(&[]), "d"), None);
+    }
+
+    #[test]
+    fn a_failed_cloud_run_still_reports_the_upgrades_before_it() {
+        let machines = [machine('a', 1), machine('b', 2), machine('c', 3)];
+        let attempts =
+            vec![serde_json::json!({ "server": machines[0].id, "outcome": "succeeded" })];
+        let error = Error::coded(RpcErrorCode::Unavailable, "Could not reach Cloud.");
+        crate::ui::init(true, crate::ui::Color::Never);
+        let (result, captured) =
+            crate::ui::captured(|| cut_short(attempts, &machines[2..], &[], "b", error));
+        crate::ui::init(false, crate::ui::Color::Never);
+        assert_eq!(
+            result.unwrap_err().json().pointer("/message").unwrap(),
+            "Could not reach Cloud."
+        );
+        let captured = captured.unwrap();
+        assert_eq!(
+            captured.pointer("/attempts/0/server").unwrap(),
+            machines[0].id.as_str()
+        );
+        assert_eq!(
+            captured.pointer("/unattempted").unwrap(),
+            &serde_json::json!([machines[2].id])
+        );
+        assert_eq!(
+            captured.pointer("/follow_up_error/message").unwrap(),
+            "Could not reach Cloud."
+        );
     }
 
     fn machine(id: char, subnet: u8) -> Machine {

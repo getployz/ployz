@@ -244,6 +244,32 @@ describe("drain-server", () => {
     expect((await harness.pool.query(`select approval_id from server_drain_attempt`)).rows).toEqual([{ approval_id: asked.asking.approvalId }]);
   });
 
+  it("plans again when its turn comes and refuses a destroy its gate never saw, without asking the Engine", async () => {
+    await request();
+    frame = frameOf("global");
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{
+      state: "failed",
+      end_code: "refused",
+      refusal_message: "The drain now destroys something nobody approved. Drain the server again to review it.",
+      started_at: null,
+    }]);
+  });
+
+  it("runs a queued Drain whose approval covers what it destroys when its turn comes", async () => {
+    frame = frameOf("global");
+    const asked = await request();
+    if (!("asking" in asked)) return expect.fail(`the Drain ran without asking: ${JSON.stringify(asked)}`);
+    await harness.pool.query(`update operation_approvals set status = 'approved', decided_at = now() where id = $1`, [asked.asking.approvalId]);
+    await runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId, requestId, approvalId: asked.asking.approvalId }));
+    await drain();
+
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+  });
+
   it("answers a CLI retry carrying the approval a Drain consumed with that Drain, not a second one", async () => {
     const approvalId = "00000000-0000-4000-8000-0000000000b1";
     const cli = (attemptId: string) => runEffect(requestCliServerDrain({ organizationId, userId }, {
