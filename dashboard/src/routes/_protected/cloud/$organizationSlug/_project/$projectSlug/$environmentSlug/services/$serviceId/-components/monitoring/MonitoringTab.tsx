@@ -223,10 +223,10 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
   const requests = average(metrics.map((row) => row.ok + row.errors));
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-3">
         <StatusLine tone={STATUS_TONES[state]}>
           <span className="shrink-0">{STATUS_WORDS[state]}</span>
-          <span className="flex min-w-0 items-center gap-1 font-normal text-muted-foreground tabular-nums">
+          <span className="flex min-w-0 items-center gap-1 whitespace-nowrap font-normal text-muted-foreground tabular-nums">
             {state === "no_domain" ? <span>· Needs a public domain</span> : null}
             {state === "up" && share !== null ? <span>· {share}</span> : null}
             {open ? (
@@ -240,7 +240,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
             {uptime && !open ? <span className="truncate font-mono">· {checkedUrl(uptime.check.url)}</span> : null}
           </span>
         </StatusLine>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {state === "no_domain" ? addDomain : null}
           {uptime ? (
             <Button variant="outline" size="sm" disabled={checking} onClick={() => checkNow.mutate()}>
