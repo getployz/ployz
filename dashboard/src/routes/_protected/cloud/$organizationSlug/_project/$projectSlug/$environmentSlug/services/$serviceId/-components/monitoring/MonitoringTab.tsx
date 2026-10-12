@@ -227,7 +227,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
         <StatusLine tone={STATUS_TONES[state]}>
           <span className="shrink-0">{STATUS_WORDS[state]}</span>
           <span className="flex min-w-0 items-center gap-1 whitespace-nowrap font-normal text-muted-foreground tabular-nums">
-            {state === "no_domain" ? <span>· Needs a public domain</span> : null}
+            {state === "no_domain" ? <span className="truncate">· Needs a public domain</span> : null}
             {state === "up" && share !== null ? <span>· {share}</span> : null}
             {open ? (
               <Button variant="link" size="sm" className="min-w-0 shrink text-muted-foreground"
