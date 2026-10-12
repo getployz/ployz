@@ -1,10 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, EnvironmentRef, MachineId } from "@ployz/sdk";
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { lossTime, observePlacement, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
@@ -92,7 +93,8 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
 
 /**
  * Stage a new Volume restored from one restore point of `volumeId`: in one Store write, the source's mounts move to a
- * new Volume named `<source>-HHMM`, and the row says the next Deploy copies the point onto the source's primary.
+ * new Volume named `<source>-HHMM` (shortened to fit, suffixed when taken), and the row says the next Deploy copies the
+ * point onto the source's primary.
  */
 export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* (
   organizationId: string,
@@ -110,7 +112,8 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   const namespace = parseDockerVolumeName(source.dockerVolume)?.namespace;
   if (listed === undefined || namespace === undefined) return yield* Effect.die(`${source.volumeName} vanished from its Environment`);
   const id = randomUUID();
-  const name = `${listed.name}-${lossTime(new Date(input.at * 1000)).replace(":", "")}`;
+  const time = lossTime(new Date(input.at * 1000)).replace(":", "");
+  const name = uniqueName(`${listed.name.slice(0, MAX_NAME - time.length - 1)}-${time}`, volumes.map((volume) => volume.name));
   const commands: BatchCommand[] = [
     ...listed.mounts.map((mount): BatchCommand => ({ command: "edit", environment: input.environment, expect: null, changes: [mountChange(mount.service, listed.name, null)] })),
     {
@@ -141,7 +144,11 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     yield* drizzle.delete(volumePlacement).where(eq(volumePlacement.volumeId, id));
     return { ok: false, refusal: written.refusal } satisfies PlacementWrite;
   }
-  return { ok: true, placement: view(row) } satisfies PlacementWrite;
+  const [committed] = yield* drizzle.update(volumePlacement)
+    .set({ staged: sql`jsonb_set(${volumePlacement.staged}, '{seed,committed}', 'true')`, updatedAt: new Date() })
+    .where(and(eq(volumePlacement.volumeId, id), isNotNull(sql`${volumePlacement.staged}->'seed'`)))
+    .returning();
+  return { ok: true, placement: view(committed ?? row) } satisfies PlacementWrite;
 });
 
 /**
@@ -163,8 +170,8 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
     if (read.environment.id !== current.environmentId) return { ok: false, refusal: ELSEWHERE } satisfies PlacementDiscard;
     const restored = read.volumes.find((volume) => volume.id === volumeId);
     const source = read.volumes.find((volume) => volume.id === seed.sourceVolumeId);
-    // Its Store write may still commit, and needs the row when it does. No page offers a row without its Volume.
-    if (restored === undefined) return { ok: false, refusal: STAGING } satisfies PlacementDiscard;
+    // Its Store write may still commit, and needs the row when it does. Once committed, a missing Volume was discarded.
+    if (restored === undefined && seed.committed !== true) return { ok: false, refusal: STAGING } satisfies PlacementDiscard;
     const commands: BatchCommand[] = restored?.change !== "create" ? [] : [
       { command: "discard", environment, path: `volumes.${restored.name}`, version: null },
       ...restored.mounts

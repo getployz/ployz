@@ -239,8 +239,9 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         admitting={actions.admitting}
         onPublish={actions.publish}
         onDiscardAll={() => {
-          placements.discardAll();
-          if (storeGroups.length > 0 || diff.total_count > 0) actions.discard(null, "review");
+          // The Store goes first, at the version the user sees: a staged restore's own discard writes the Store too.
+          const store = storeGroups.length > 0 || diff.total_count > 0 ? actions.discard(null, "review") : Promise.resolve();
+          store.then(() => placements.discardAll(), () => undefined);
         }}
         onDiscardNode={discardNode}
         onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path)
