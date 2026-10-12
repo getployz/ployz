@@ -148,6 +148,14 @@ describe("volume placement", () => {
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
   });
 
+  it("says a Deploy is moving the Volume before it says a copy the Deploy takes is not old", async () => {
+    await stage("web-3", ["web-2"]);
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
+      .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+  });
+
   it("requests a run once the Deploy that stamped the Volume has ended, as staging does, and not while it runs", async () => {
     await stage("web-1", ["web-2"]);
     await run(stampPlacements(organizationId, "env-1", "dep-1"));

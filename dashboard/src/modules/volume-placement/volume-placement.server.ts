@@ -243,13 +243,13 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string },
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
-  const members = yield* inspect(organizationId, input.environment, input.volumeId);
   const row = yield* readRow(organizationId, input.volumeId);
+  const busy = yield* claimed(organizationId, row);
+  if (busy !== null) return { ok: false, refusal: { message: busy.message } } as const;
+  const members = yield* inspect(organizationId, input.environment, input.volumeId);
   if (!oldCopies(observePlacement(members), row === undefined ? null : view(row)).some((copy) => copy.server.name === input.server)) {
     return { ok: false, refusal: { message: "Not an old copy" } } as const;
   }
-  const busy = yield* claimed(organizationId, row);
-  if (busy !== null) return { ok: false, refusal: { message: busy.message } } as const;
   const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null } } as const;
   const planned = yield* planVolumeRun(organizationId, run);
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
