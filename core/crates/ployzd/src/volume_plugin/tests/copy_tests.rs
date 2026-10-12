@@ -854,11 +854,13 @@ async fn a_pull_whose_token_the_writer_lost_after_a_first_receive_broke_lands_in
         "{copy}"
     );
     assert_eq!(
-        source.requests()[3..],
-        [
-            "/volume-send/data?target=w-1-1&token=token-1",
-            "/volume-send/data?target=w-1-1",
-        ]
+        source.requests().get(3..),
+        Some(
+            &[
+                "/volume-send/data?target=w-1-1&token=token-1".to_owned(),
+                "/volume-send/data?target=w-1-1".to_owned(),
+            ][..]
+        )
     );
     server.abort();
 }

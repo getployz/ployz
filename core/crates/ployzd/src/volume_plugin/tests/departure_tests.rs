@@ -62,8 +62,9 @@ async fn a_departed_root_without_run_snapshots_restores_from_its_departure_snaps
     assert_eq!(copy.pointer("/Ok/kind"), Some(&json!("slot")), "{copy}");
     let newest = copy.pointer("/Ok/newest").cloned().unwrap_or_default();
     assert!(
-        newest["name"]
-            .as_str()
+        newest
+            .get("name")
+            .and_then(Value::as_str)
             .is_some_and(|name| name.starts_with("dep-")),
         "{copy}"
     );
@@ -71,7 +72,7 @@ async fn a_departed_root_without_run_snapshots_restores_from_its_departure_snaps
     let reply = post(
         &socket,
         "/Volume.Copy.Writer",
-        json!({"name": "data", "at": newest["guid"], "epoch": 1}),
+        json!({"name": "data", "at": newest.get("guid"), "epoch": 1}),
     )
     .await;
     assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("root")), "{reply}");

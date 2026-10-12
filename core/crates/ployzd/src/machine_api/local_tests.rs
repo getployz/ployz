@@ -1149,7 +1149,7 @@ mod set_volume_copy {
 
         assert_eq!(
             serde_json::to_value(&raised).unwrap(),
-            json!({"copy": writer_root(2, Some(snapshot("f-1", 7)))["Ok"]})
+            json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
         assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
@@ -1174,7 +1174,7 @@ mod set_volume_copy {
 
         assert_eq!(
             serde_json::to_value(&raised).unwrap(),
-            json!({"copy": writer_root(2, Some(snapshot("f-1", 7)))["Ok"]})
+            json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
         let creates = fake
@@ -1424,7 +1424,7 @@ mod set_volume_copy {
         let raised = reply(&set_copy(&service, raise.clone()).await);
         assert_eq!(
             serde_json::to_value(&raised).unwrap(),
-            json!({"copy": writer_root(2, Some(snapshot("f-1", 7)))["Ok"]})
+            json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
         assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
         assert_eq!(reply(&set_copy(&service, raise).await), raised);
