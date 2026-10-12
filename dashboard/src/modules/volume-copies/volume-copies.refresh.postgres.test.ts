@@ -1,4 +1,4 @@
-import type { ConfigStore, MachineId } from "@ployz/sdk";
+import type { ConfigStore, CopyObservation, MachineId } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +24,9 @@ vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 describe("Refresh now", () => {
   let harness: PostgresTestHarness;
   let blockers: string[];
+  // Runs at each Volume read, so a test can act between Refresh's mirror check and its request.
   let between: (() => Promise<void>) | null;
+  let copies: CopyObservation["copies"];
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
     Effect.provideService(InngestClient, inngest),
@@ -34,9 +36,7 @@ describe("Refresh now", () => {
         read: async (_: string, query: { query: string }) => {
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
           if (query.query === "deployment") return { status: "queued", in_flight: true, environment: { id: "env-1", project: "shop", name: "production" } };
-          const hook = between;
-          between = null;
-          await hook?.();
+          await between?.();
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
             volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }],
@@ -45,7 +45,8 @@ describe("Refresh now", () => {
       })),
     }),
   ));
-  const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers)));
+  const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
+  const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(copies)));
   const runs = async () => (await harness.pool.query(`select kind, state from volume_run order by created_at`)).rows;
   const endRun = (id: string, state: string, finishedAt = "now()") =>
     harness.pool.query(`update volume_run set state = $2, finished_at = ${finishedAt} where id = $1`, [id, state]);
@@ -55,6 +56,7 @@ describe("Refresh now", () => {
   beforeEach(async () => {
     blockers = [];
     between = null;
+    copies = [copy("web-1", "writer"), copy("web-2", "slot")];
     await harness.pool.query(`
       truncate table organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
@@ -93,10 +95,23 @@ describe("Refresh now", () => {
     expect(await runs()).toEqual([]);
   });
 
+  it("refreshes a mirror the CLI made, with no placement row, as the 15-minute rounds do", async () => {
+    await harness.pool.query(`delete from volume_placement`);
+    expect(await refresh()).toMatchObject({ ok: true, run: { kind: "sync" } });
+    expect(await runs()).toEqual([{ kind: "sync", state: "requested" }]);
+  });
+
+  it("refuses when the Servers can't say where the Volume's copies are", async () => {
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail("down"))))
+      .toMatchObject({ ok: false, refusal: { code: "unanswered" } });
+    expect(await runs()).toEqual([]);
+  });
+
   it("refuses a Volume with no mirror", async () => {
     await harness.pool.query(`update volume_placement set mirrors = '[]'`);
     expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "No mirror", details: null } });
     await harness.pool.query(`delete from volume_placement`);
+    copies = [copy("web-1", "writer")];
     expect(await refresh()).toEqual({ ok: false, refusal: { code: "conflict", message: "No mirror", details: null } });
     expect(await runs()).toEqual([]);
   });
