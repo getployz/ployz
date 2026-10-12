@@ -7,6 +7,7 @@ import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import AgentPanel, { Turn } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
+import { FAILURES } from "#/modules/agent/provider-error";
 
 afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
 
@@ -139,6 +140,25 @@ it("retries a failed reply once the wait the model's provider asked for has pass
   expect(posts).toHaveLength(2);
   expect(posts[1]).toContain("list services");
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("offers a new chat instead of a retry when the chat grew too long for the model", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => Promise.resolve(init?.method === "POST"
+    ? events({ type: "RUN_STARTED", runId: "r1" }, { type: "RUN_ERROR", runId: "r1", message: FAILURES.chat_too_long, code: "chat_too_long" })
+    : Response.json({ messages: [] }))));
+  const onNewChat = vi.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" environment={null} scope={scope} page={page} threadId="thread-acme"
+    onNewChat={onNewChat} onClose={() => {}} /></QueryClientProvider>);
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: "one more thing" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+
+  expect((await screen.findByRole("alert")).textContent).toBe(FAILURES.chat_too_long);
+  expect(screen.queryByRole("button", { name: /^Retry/ })).toBeNull();
+  fireEvent.click(screen.getByText("New chat", { selector: "button" }));
+  expect(onNewChat).toHaveBeenCalledOnce();
 });
 
 it("keeps a reply's thinking folded under Thinking until the member opens it", () => {
