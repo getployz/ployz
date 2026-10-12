@@ -5,7 +5,9 @@ use std::{fmt, str::FromStr, time::Duration};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError, RpcErrorCode};
+use crate::{
+    CopyRole, DockerVolumeName, MachineName, ManagementAddress, RpcError, RpcErrorCode, WriterEpoch,
+};
 
 /// How long a Machine waits on one call to its volume plugin, such as the call that
 /// mounts a handed-over Volume and starts its Container.
@@ -380,6 +382,9 @@ pub enum VolumeCopy {
         writer: WriterMarker,
         readonly: bool,
         newest: Option<Snapshot>,
+        /// The run of writes this root belongs to; 0 until `SetVolumeCopy` numbers it.
+        #[serde(default)]
+        epoch: WriterEpoch,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -389,7 +394,19 @@ pub enum VolumeCopy {
         newest: Option<Snapshot>,
         #[serde(default)]
         resume_token: Option<String>,
+        /// The `SetVolumeCopy` pull in flight, from its start until its prune is done.
+        #[serde(default)]
+        pull: Option<Pull>,
     },
+}
+
+/// A `SetVolumeCopy` pull into a slot: which snapshot it fetches and, once the receive
+/// has stopped without landing it, why.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Pull {
+    pub target: SnapshotName,
+    #[serde(default)]
+    pub failure: Option<String>,
 }
 
 /// Live answer to `InspectVolumeCopy`: what this Machine holds and what it last admitted.
@@ -762,6 +779,7 @@ mod tests {
                 writer,
                 readonly,
                 newest: None,
+                epoch: WriterEpoch::default(),
             })
         };
         let slot = Some(VolumeCopy::Slot {
@@ -769,6 +787,7 @@ mod tests {
             readonly: true,
             newest: None,
             resume_token: None,
+            pull: None,
         });
         let known = |role| {
             vec![KnownCopy {

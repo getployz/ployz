@@ -74,6 +74,7 @@ macro_rules! rpc_catalog {
                 StartHandedContainer: (start_handed_container, "StartHandedContainer", ServiceVolumeRequest, "start_handed_container", SwitchReply, START_HANDED_CONTAINER_CAPABILITY, "ployz.volume.start-handed-container.v1", Container),
                 Restore: (restore, "Restore", ServiceVolumeRequest, "restore", SwitchReply, RESTORE_VOLUME_CAPABILITY, "ployz.volume.restore.v1", Container),
                 SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", SwitchReply, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
+                SetVolumeCopy: (set_volume_copy, "SetVolumeCopy", SetVolumeCopyRequest, "set_volume_copy", SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container),
                 DeclareMirror: (declare_mirror, "DeclareMirror", DeclareMirrorRequest, "declare_mirror", SwitchReply, DECLARE_MIRROR_CAPABILITY, "ployz.volume.mirror.declare.v1", Container),
                 BeginRound: (begin_round, "BeginRound", MirrorRequest, "begin_round", SwitchReply, BEGIN_ROUND_CAPABILITY, "ployz.volume.round.begin.v1", Container),
                 CommitSnapshots: (commit_snapshots, "CommitSnapshots", CommitRequest, "commit_snapshots", SwitchReply, COMMIT_SNAPSHOTS_CAPABILITY, "ployz.volume.round.commit.v1", Container),

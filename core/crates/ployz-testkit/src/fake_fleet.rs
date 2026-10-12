@@ -34,7 +34,8 @@ use ployz_core::{
     ProvisionedCopy, ProvisionedVolumeMaximumBytes, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
     RuntimeWatchFrame, ServiceId, ServiceName, StorageBacking, StorageCapacity, VolumeCopy,
-    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterMarker, encode_runtime_watch_frame,
+    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, WriterMarker,
+    encode_runtime_watch_frame,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -803,11 +804,13 @@ impl Fleet {
                             readonly: true,
                             newest: None,
                             resume_token: None,
+                            pull: None,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             writer: WriterMarker::Idle,
                             readonly: false,
                             newest: None,
+                            epoch: WriterEpoch::default(),
                         },
                     });
                 unary(VolumeCopyView { copy, lease: None }.into())

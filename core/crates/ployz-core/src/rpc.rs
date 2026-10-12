@@ -1,6 +1,7 @@
 use crate::{
     CommitRequest, DeclareMirrorRequest, HandOverRequest, InspectReceiveRequest,
     InspectVolumeCopyRequest, MirrorRequest, ReceiveView, SeedVolumeRequest, ServiceVolumeRequest,
+    SetVolumeCopyReply, SetVolumeCopyRequest,
     SourceContainerRequest, StartReceiveRequest, StorageCapacity, SwitchReply, VolumeCopyView,
     WarmRequest,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
@@ -1049,6 +1050,7 @@ macro_rules! define_responses {
 
 define_responses! {
     ContractDescription(ContractDescription) => "contract_description";
+    SetVolumeCopyReply(SetVolumeCopyReply) => "set_volume_copy_reply";
     MachineDetails(MachineDetails) => "machine_details";
     MachineToken(MachineToken) => "machine_token";
     Initialized(Initialized) => "initialized";
