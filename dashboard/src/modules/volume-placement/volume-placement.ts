@@ -186,8 +186,9 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // A move to a mirror is unfinished while that mirror is still listed: once the target writes it holds the root,
   // yet the next Deploy must finish the same move, not take the mirror away.
   const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
-  // With no primary answering, the silent Server presumed to hold the Volume (as targetPlacement does) is no move.
-  const holder = observed.primary ?? observed.unanswered[0] ?? null;
+  // With no primary answering, a silent Server presumed to hold the Volume is no move: the staged one when it is silent,
+  // since a failed move returns there, else the first, as targetPlacement presumes.
+  const holder = observed.primary ?? observed.unanswered.find((server) => server.id === staged.primary) ?? observed.unanswered[0] ?? null;
   const moving = holder?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
   const gone = (id: MachineId) => copyOn(id) === undefined && members.some((member) => member.machine.id === id && member.answered);

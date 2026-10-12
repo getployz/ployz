@@ -260,12 +260,14 @@ describe("dropChange", () => {
     expect(changes(members, { ...row(["web-2"]), staged: dropped }).map(changeKey)).toEqual([{ kind: "add_mirror", server: id("web-3") }]);
   });
 
-  it("returns a failed move to the Server it moved from when two Servers are silent", () => {
+  it("drops a failed move back to the silent Server it left when two Servers are silent, and plans no move from it", () => {
     const placement = row(["web-2", "web-4"], { primary: "web-2", mirrors: ["web-4"] });
     const planned = changes([member("web-1", "writer"), member("web-2", "mirror"), member("web-4", "mirror")], placement).find((one) => one.kind === "move");
     if (planned === undefined) throw new Error("no move");
     const silent = [member("web-4", "unanswered"), member("web-1", "unanswered"), member("web-2", "mirror")];
-    expect(dropChange(volume, silent, placement, changeKey(planned))?.primary).toBe(id("web-1"));
+    const corrected = { primary: id("web-1"), mirrors: [id("web-4"), id("web-2")], deletes: [] };
+    expect(changes(silent, { ...placement, staged: corrected })).toEqual([]);
+    expect(dropChange(volume, silent, placement, changeKey(planned))).toBeNull();
   });
 
   it("drops the row when the primary isn't answering, so nothing moves to a Server that may be gone", () => {
