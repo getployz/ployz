@@ -1,7 +1,8 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { Schema } from "effect";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigItemView, ConfigListing, ConfigsView, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentView, NodeChange, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
+  EnvironmentView, MergeRow, NodeChange, OnMerge, PrPlansView, ProjectsView, RowId, ServiceListing, ServicesView, SyncView,
   VolumeListing, VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
@@ -161,27 +162,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "publish":
-      await views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true }));
+      await views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true, draft_changes: [], draft_count: 0 }));
       return;
-    case "discard": {
-      // Its rows leave the review at once; what the Store restores (values, nodes, the count) comes with its answer.
-      const { path } = command;
-      const [node, ...setting] = path?.split(".") ?? [];
-      const type = node === "volumes" ? "volume" : node === "configs" ? "config" : null;
-      const named = type !== null && setting.length === 1 ? setting[0] : null;
-      const whole = (change: NodeChange) => path === null
-        || (named !== null ? change.type === type && (type === "config" ? named === `@${change.id}` || change.name === named : change.name === named) : setting.length === 0 && change.name === node);
-      await views<DiffView>("diff", command.environment, (view) => {
-        const changes = view.changes.flatMap((change) => {
-          if (whole(change)) return [];
-          const rows = change.settings.filter((row) => row.path !== path && (type === "config" || !row.path.startsWith(`${path}.`)));
-          return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
-        });
-        // An empty review counts nothing.
-        return changes.length === 0 ? { ...view, changes, total_count: 0 } : { ...view, changes };
-      });
+    case "discard":
+    case "stage_history":
       return;
-    }
     case "never_sync": {
       // At once: a mark changes what Sync offers, not Working State.
       const rows = new Set(command.rows);
@@ -190,6 +175,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         // SAFETY: the dashboard names a row only by the RowId a read gave.
         return { ...view, never_synced: command.off ? kept : [...kept, ...command.rows as RowId[]] };
       });
+      // Excluded, a row stays in the PR Environment at its merge; Included, it rides again, as it is there.
+      await views<OnMerge>("on_merge", command.environment, (view) => ({ ...view, destinations: view.destinations.map((into) => ({
+        ...into, rows: into.rows.map((row): MergeRow => !rows.has(row.row) || row.ride === "production_keeps" ? row
+          : command.off ? { ...row, ride: "rides", lands: landsAsIs(row) } : { ...row, ride: "excluded", lands: row.preview }),
+      })) }));
       // A Sync from or into it offers a newly marked row no more; an unmarked row loses this Environment's mark, and
       // with no mark left, waits for the Store to offer it again.
       // ponytail: a Parent's mark doesn't keep a row from its own direct Branch; that Sync shows it marked until the Store answers.
@@ -214,6 +204,18 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           ],
         };
       });
+      return;
+    }
+    case "set_merge_value": {
+      // An Edit lands its value at the merge, a secret's sealed; taken back, the row lands as the PR Environment has it.
+      const { value } = command;
+      const into = command.into?.environment ?? null;
+      await views<OnMerge>("on_merge", command.environment, (view) => ({ ...view, destinations: view.destinations.map((destination) =>
+        into !== null && destination.name !== into ? destination : { ...destination, rows: destination.rows.map((row): MergeRow => {
+          if (row.row !== command.row) return row;
+          if (value === undefined || value === null) return { ...row, ride: "rides", lands: landsAsIs(row) };
+          return { ...row, ride: "edited", lands: secret(row.preview) || secret(row.production) ? { secret: true } : value };
+        }) }) }));
       return;
     }
     case "keep_branch":
@@ -291,4 +293,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     default:
       return;
   }
+}
+
+const secret = Schema.is(Schema.Struct({ secret: Schema.Boolean }));
+
+/** What a row lands as the PR Environment has it: a secret travels only by name, so one production lacks lands Not set. */
+function landsAsIs(row: MergeRow): MergeRow["lands"] {
+  return secret(row.preview) && !secret(row.production) ? { secret: false } : row.preview;
 }

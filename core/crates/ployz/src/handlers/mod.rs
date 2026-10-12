@@ -23,6 +23,7 @@ pub(crate) mod github;
 pub(crate) mod link;
 pub(crate) mod login;
 pub(crate) mod mcp;
+pub(crate) mod metrics;
 pub(crate) mod operator;
 pub(crate) mod project;
 pub(crate) mod review;
@@ -396,6 +397,7 @@ pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
         ("deployment", rest) => deploy::deployment_handler(rest),
         ("diff", "") => Some(cloud(Never, review::diff)),
         ("discard", "") => Some(cloud(Never, review::discard)),
+        ("history", "" | "restore" | "undo") => Some(cloud(Never, review::history)),
         ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
         ("exec", "") => Some(cloud(Always, operator::exec)),
@@ -407,6 +409,7 @@ pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
         ("logout", "") => Some(local(Never, login::logout)),
         ("mcp", "") => Some(local(Never, mcp::serve)),
         ("logs", "") => Some(cloud(Never, operator::logs)),
+        ("metrics", "") => Some(cloud(Never, metrics::metrics)),
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
         ("ps", "") => Some(cloud(Never, service::processes)),

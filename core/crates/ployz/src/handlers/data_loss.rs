@@ -22,10 +22,35 @@ pub(super) fn volume_label<'a>(labels: &'a VolumeLabels, loss: &'a DataLoss) -> 
     labels.get(loss.name()).map_or(loss.name(), String::as_str)
 }
 
-/// Accept removing Server `server` and the Volumes it takes. `--confirm` with
-/// every lost Volume named by `--accept-volume-loss` accepts outright; without
-/// `--confirm` a terminal shows the loss and asks for the name, which accepts
-/// them all. Anywhere else, `refusal` gets the full retry.
+/// The Server a removal takes and the word typed to confirm it.
+#[derive(Clone, Copy)]
+pub(super) struct Typed<'a> {
+    server: &'a str,
+    word: &'a str,
+}
+
+impl<'a> Typed<'a> {
+    /// Confirmed by the Server's own name.
+    pub(super) fn name(server: &'a str) -> Self {
+        Self {
+            server,
+            word: server,
+        }
+    }
+
+    /// Confirmed by `dead`: a Server that does not answer, removed without a reset.
+    pub(super) fn dead(server: &'a str) -> Self {
+        Self {
+            server,
+            word: "dead",
+        }
+    }
+}
+
+/// Accept removing `typed`'s Server and the Volumes it takes. `--confirm` with its
+/// word and every lost Volume named by `--accept-volume-loss` accepts outright;
+/// without `--confirm` a terminal shows the loss and asks for the word, which
+/// accepts them all. Anywhere else, `refusal` gets the full retry.
 #[expect(
     clippy::too_many_arguments,
     reason = "a managed removal runs through Cloud while its retry keeps the client's connection"
@@ -35,16 +60,18 @@ pub(super) fn confirm_removal(
     client: &Client,
     removed_through: &ConnectionSource,
     observed: &ObservedDataLoss,
-    server: &str,
+    typed: Typed<'_>,
     volume_effect: VolumeEffect,
     labels: &VolumeLabels,
     refusal: impl FnOnce(String) -> Error,
 ) -> Result<(DataLossConfirmation, Vec<String>), Error> {
+    let Typed { server, word } = typed;
     let leaf = leaf_matches(root);
     let request = Request {
         observed,
         labels,
         server,
+        word,
         named: &string_values(leaf, "accept-volume-loss"),
         typed: leaf.get_one::<String>("confirm").map(String::as_str),
         retry: &retry_args(root, client.connection_source()),
@@ -60,7 +87,7 @@ pub(super) fn confirm_removal(
                 volume_effect,
             ));
         }
-        ui::confirm_name(server, || refusal(retry), "Cancelled. Nothing was removed.")?;
+        ui::confirm_name(word, || refusal(retry), "Cancelled. Nothing was removed.")?;
     }
     Ok((request.accept()?, request.accepting()))
 }
@@ -137,6 +164,8 @@ struct Request<'a> {
     observed: &'a ObservedDataLoss,
     labels: &'a VolumeLabels,
     server: &'a str,
+    /// What `--confirm` must say: the Server's name, or `dead`.
+    word: &'a str,
     named: &'a [String],
     typed: Option<&'a str>,
     retry: &'a [String],
@@ -155,7 +184,7 @@ impl Request<'_> {
     /// The command that accepts everything observed now.
     fn accepting(&self) -> Vec<String> {
         let mut command = self.retry.to_vec();
-        command.extend(["--confirm".into(), self.server.to_owned()]);
+        command.extend(["--confirm".into(), self.word.to_owned()]);
         for name in self.names() {
             command.extend(["--accept-volume-loss".into(), name.to_owned()]);
         }
@@ -166,7 +195,7 @@ impl Request<'_> {
         shell_words::join(self.accepting())
     }
 
-    /// Whether the flags accept on their own; `false` means the name must be
+    /// Whether the flags accept on their own; `false` means the word must be
     /// typed. Flags that contradict what is observed refuse.
     fn check(&self) -> Result<bool, Error> {
         let names = self.names();
@@ -184,14 +213,23 @@ impl Request<'_> {
             )));
         }
         if let Some(typed) = self.typed
-            && typed != self.server
+            && typed != self.word
         {
-            return Err(Error::usage(format!(
-                "--confirm {} does not match Server {}. No changes made.",
-                typed.escape_debug(),
-                self.server
-            ))
-            .hint(Hint::Retry(self.retry())));
+            let message = if self.word == self.server {
+                format!(
+                    "--confirm {} does not match Server {}. No changes made.",
+                    typed.escape_debug(),
+                    self.server
+                )
+            } else {
+                format!(
+                    "--confirm {} is not {}: Server {} does not answer. No changes made.",
+                    typed.escape_debug(),
+                    self.word,
+                    self.server
+                )
+            };
+            return Err(Error::usage(message).hint(Hint::Retry(self.retry())));
         }
         let missing = names.difference(&supplied).copied().collect::<Vec<_>>();
         if !missing.is_empty() && (self.typed.is_some() || !supplied.is_empty()) {
@@ -236,6 +274,7 @@ mod tests {
             observed,
             labels,
             server: "worker",
+            word: "worker",
             named,
             typed,
             retry: &[],

@@ -177,6 +177,12 @@ pub(crate) fn edit(
                     setting.apply(),
                 )
             }
+            (Some(Target::Description(_)), _) => {
+                return Err(error::invalid(
+                    "Variable descriptions are template metadata; use Discard to restore a description",
+                    json!({ "path": path }),
+                ));
+            }
             (Some(Target::Source), _) => {
                 return Err(error::invalid(
                     format!("{path}: set image or repository instead"),

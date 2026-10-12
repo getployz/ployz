@@ -4,7 +4,8 @@
 //! doesn't run) and uses the rest live; `sync` stages one Environment's changes in
 //! another, `copy` turns a Live Node into its own copy, and `keep` keeps it after
 //! syncing into its Parent.
-//! `never-sync` marks settings an Environment keeps as its own.
+//! `never-sync` marks settings an Environment keeps as its own; `on-merge` lists
+//! what a PR Environment's merge lands.
 
 mod branch;
 mod pr;
@@ -134,16 +135,10 @@ pub(crate) fn command() -> Command {
                          picked. A Branch follows its Parent on its own: what the Parent \
                          deploys is staged in it, but where the Branch changed a setting \
                          too, or discarded the Parent's change, the Parent's value is a \
-                         hint `ployz diff` lists; --take PARENT stages it. With --at-merge, \
-                         from a PR Environment into one of its Destinations, it is a \
-                         Conditional Sync: the changes go live there with the pull request's \
-                         merge. A secret the receiver lacks arrives without its value unless \
-                         --value gives it one. --undo SYNC undoes a Sync while what it staged \
-                         is undeployed and unchanged, or withdraws its Conditional Sync. A \
-                         merged pull request's value its Conditional Sync left beside the \
-                         Destination's own edit is a hint too; --take ID stages it, even \
-                         once its PR Environment is gone. Example: ployz env sync --to \
-                         --env fix-api --skip api.env.DEBUG --close",
+                         hint `ployz diff` lists; --take PARENT stages it. A secret the receiver \
+                         lacks arrives Not set unless --value gives it one. --undo SYNC undoes \
+                         a Sync while what it staged is undeployed and unchanged. Example: ployz env \
+                         sync --to --env fix-api --skip api.env.DEBUG --close",
                     ),
             )
             .arg(
@@ -152,7 +147,7 @@ pub(crate) fn command() -> Command {
                     .num_args(0..=1)
                     .required_unless_present_any(["from", "take", "undo"])
                     .conflicts_with("from")
-                    .help("Sync into ENV; with no value, the Branch's Parent, or a PR Environment's only Destination"),
+                    .help("Sync into ENV; with no value, the Branch's Parent"),
             )
             .arg(
                 value("from", None)
@@ -185,21 +180,16 @@ pub(crate) fn command() -> Command {
                     .conflicts_with("plan"),
             )
             .arg(
-                switch("at-merge", None)
-                    .help("Go live in --to with the pull request's merge; the default from a PR Environment into a Destination")
-                    .conflicts_with("close"),
-            )
-            .arg(
                 value("undo", None)
                     .value_name("SYNC")
-                    .help("Undo the Sync a sync printed, or withdraw its Conditional Sync")
-                    .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close", "at-merge"]),
+                    .help("Undo the Sync a sync printed")
+                    .conflicts_with_all(["from", "only", "skip", "value", "plan", "version", "close"]),
             )
             .arg(
                 value("take", None)
-                    .value_name("ID")
-                    .help("Stage the hints `ployz diff` lists from ID (the Parent, or a Conditional Sync) in --env; --only picks them")
-                    .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo", "at-merge"]),
+                    .value_name("PARENT")
+                    .help("Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them")
+                    .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo"]),
             ),
         )
         .subcommand(
@@ -239,6 +229,17 @@ pub(crate) fn command() -> Command {
             )
             .arg(switch("off", None).help("Sync them again")),
         )
+        .subcommand(store::scoped(
+            Command::new("on-merge")
+                .about("Show what a PR Environment's pull request lands when it merges")
+                .long_about(
+                    "Show each change the PR Environment made and whether its pull \
+                     request's merge lands it in each Environment that deploys the target \
+                     branch, over whatever that Environment changed since. Exclude a row \
+                     with `ployz env never-sync`; --off includes it again. A secret the \
+                     Environment lacks lands Not set, and its Deployments skip it.",
+                ),
+        ))
         .subcommand(deploy::following(
             base(
                 "shutdown",
@@ -319,6 +320,7 @@ pub(super) fn handler(path: &str) -> Option<Runnable> {
         "never-sync" => cloud(Never, never_sync),
         "shutdown" => cloud(Always, pr::shutdown),
         "pr" => cloud(Depends, pr::pr),
+        "on-merge" => cloud(Never, pr::on_merge),
         _ => return None,
     })
 }

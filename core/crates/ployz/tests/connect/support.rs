@@ -79,6 +79,7 @@ struct WatchHub {
 }
 
 type ContainerListOutcomes = BTreeMap<MachineId, VecDeque<Result<ContainerList, Status>>>;
+type MetricReplies = BTreeMap<MachineId, Result<ployz_core::metrics::MetricHistoryReply, Status>>;
 
 impl WatchHub {
     fn new() -> Self {
@@ -159,6 +160,9 @@ pub(super) struct DiscoveryService {
     pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
     pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
     pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
+    pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
+    pub(super) metric_requests:
+        Arc<Mutex<Vec<(MachineId, ployz_core::metrics::MetricHistoryRequest)>>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     pub(super) watch_accepts_gzip: Arc<AtomicBool>,
     watch: Arc<WatchHub>,
@@ -217,6 +221,8 @@ impl DiscoveryService {
             history_requests: Arc::new(Mutex::new(Vec::new())),
             history_failures: Arc::new(Mutex::new(BTreeMap::new())),
             history_blocked: None,
+            metric_replies: Arc::default(),
+            metric_requests: Arc::default(),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch_accepts_gzip: Arc::new(AtomicBool::new(false)),
             watch: Arc::new(WatchHub::new()),
@@ -671,6 +677,32 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
+    async fn metric_history(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let machine_id = request
+            .metadata()
+            .get("machine")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| MachineId::parse(value).ok())
+            .ok_or_else(|| Status::invalid_argument("expected a Machine Target"))?;
+        let RpcRequestBody::MetricHistory(asked) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected metric_history"));
+        };
+        self.metric_requests
+            .lock()
+            .unwrap()
+            .push((machine_id, asked));
+        let reply = match self.metric_replies.lock().unwrap().get(&machine_id) {
+            Some(reply) => reply.clone()?,
+            None => return Err(Status::unimplemented("no metrics for this Machine")),
+        };
+        Ok(Response::new(RpcResponse::from(reply).encode().unwrap()))
+    }
+
     async fn list_containers(
         &self,
         request: Request<OpaquePayload>,
@@ -1053,6 +1085,14 @@ impl MachineRpc for DiscoveryService {
             "Volume switch verbs are not used by this fixture",
         ))
     }
+    async fn seed_volume(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
     async fn declare_mirror(
         &self,
         _request: Request<OpaquePayload>,
@@ -1126,6 +1166,15 @@ impl MachineRpc for DiscoveryService {
         ))
     }
     async fn forget_lease(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented(
+            "Volume switch verbs are not used by this fixture",
+        ))
+    }
+
+    async fn demote_volume(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -1539,6 +1588,19 @@ pub(super) fn created_volume(machine_id: MachineId, create: CreateVolumeRequest)
 
 fn created_container_id() -> ContainerId {
     ContainerId::parse("1".repeat(64)).unwrap()
+}
+
+/// A Machine's storage holding no Volume copies.
+pub(super) fn empty_storage() -> ployz_core::StorageCapacity {
+    ployz_core::StorageCapacity {
+        backing: ployz_core::StorageBacking::Unallocated {
+            host_total_bytes: 100 * ployz_core::STORAGE_GIB,
+            host_available_bytes: 90 * ployz_core::STORAGE_GIB,
+        },
+        unmanaged_used_bytes: 0,
+        volumes: BTreeMap::new(),
+        copies: BTreeMap::new(),
+    }
 }
 
 pub(super) fn machine(hex: char, name: &str) -> MachineObservation {

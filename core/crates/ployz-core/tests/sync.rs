@@ -9,8 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     Applied, Arrives, Cell, Cells, ConfigError, EncryptedSecretValue, Hostnames, NodeRef, Plan,
-    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedSecret, Sides, Verdict, Way, Why,
-    name_of, parse_environment_intent, plan, put, put_back, redact_environment_intent, unapply,
+    PlannedRow, Policy, RowId, SavedEnvironmentIntent, SealedCell, SealedSecret, Sides, Verdict,
+    Way, Why, dependents, name_of, parse_environment_intent, plan, put, put_back,
+    redact_environment_intent, unapply,
 };
 use serde_json::{Value, json};
 
@@ -197,6 +198,8 @@ struct Opts {
     into_marks: Vec<String>,
     live: Vec<&'static str>,
     own: Option<Vec<String>>,
+    held: Vec<String>,
+    accepted: Vec<(String, Cell)>,
     /// Defaults to a Branch (`-pr-7`) syncing into its Parent.
     hostnames: Option<(&'static str, &'static str)>,
 }
@@ -220,6 +223,12 @@ fn compare_with(base: Option<&Value>, from: &Value, into: &Value, way: Way, opts
             into_marks: ids(&opts.into_marks),
             live: opts.live.iter().map(|l| (*l).to_owned()).collect(),
             own: opts.own.as_deref().map(ids),
+            held: ids(&opts.held),
+            accepted: opts
+                .accepted
+                .iter()
+                .map(|(row, cell)| (row.parse().unwrap(), cell.clone()))
+                .collect(),
         },
     )
 }
@@ -473,6 +482,10 @@ fn the_policy_table_per_way() {
         verdicts(&own, Way::Sync),
         [start, "variables.NEW NeedsValue conflict=false"]
     );
+    // Merge: a Sync whose removals move too.
+    let merged = [start, "variables.NEW NeedsValue conflict=false", plain];
+    assert_eq!(verdicts(&parent(), Way::Merge), merged);
+    assert_eq!(verdicts(&own, Way::Merge), merged);
     // Follow: removals and secrets carry, except over a secret the receiver set itself.
     assert_eq!(verdicts(&parent(), Way::Follow), [start, new, plain, token]);
     assert_eq!(verdicts(&own, Way::Follow), [start, new, plain]);
@@ -505,6 +518,8 @@ fn marks_follow_the_way() {
     // A Sync honors both sides' marks; Follow only the receiver's; Copy none.
     assert!(marked(Way::Sync, &[&start], &[]));
     assert!(marked(Way::Sync, &[], &[&start]));
+    assert!(marked(Way::Merge, &[&start], &[]));
+    assert!(marked(Way::Merge, &[], &[&start]));
     assert!(!marked(Way::Follow, &[&start], &[]));
     assert!(marked(Way::Follow, &[], &[&start]));
     assert!(!marked(Way::Copy, &[&start], &[&start]));
@@ -677,11 +692,10 @@ fn a_needs_value_pick_lands_the_sealed_value_it_is_given() {
         format!("{API}:startCommand").parse().unwrap(),
     );
     let picks = BTreeSet::from([new_secret.clone(), start.clone()]);
-    // A value for a row that arrives as it is is ignored.
-    let values = BTreeMap::from([
-        (new_secret.clone(), sealed("given-cipher", "fp-given")),
-        (start.clone(), sealed("ignored", "fp-ignored")),
-    ]);
+    let values = BTreeMap::from([(
+        new_secret.clone(),
+        SealedCell::Secret(sealed("given-cipher", "fp-given")),
+    )]);
     let applied = plan.apply(&picks, &values).unwrap();
     assert!(applied.waiting.is_empty());
     let mut next = json_of(&applied.next);
@@ -700,6 +714,95 @@ fn a_needs_value_pick_lands_the_sealed_value_it_is_given() {
         },
         "what landed is redacted"
     );
+}
+
+#[test]
+fn a_merge_lands_over_the_receivers_change_and_takes_a_value_in_place_of_the_senders() {
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("from-start");
+    svc(&mut from, API)["config"]["preDeployCommand"] = json!("from-migrate");
+    svc(&mut from, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| v["key"] != "PLAIN");
+    svc(&mut from, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .push(variable(
+            0xc000_0000,
+            1,
+            "NEW_SECRET",
+            secret("branch-cipher"),
+            "fp-new",
+        ));
+    let mut into = parent();
+    svc(&mut into, API)["config"]["startCommand"] = json!("into-start");
+    let plan = compare(Some(&parent()), &from, &into, Way::Merge);
+    let (start, migrate, plain, new_secret): (RowId, RowId, RowId, RowId) = (
+        format!("{API}:startCommand").parse().unwrap(),
+        format!("{API}:preDeployCommand").parse().unwrap(),
+        format!("{API}:variables.PLAIN").parse().unwrap(),
+        format!("{API}:variables.NEW_SECRET").parse().unwrap(),
+    );
+    // The receiver changed startCommand too: a conflict, still ticked.
+    assert!(matches!(
+        row(&plan, &start.to_string()).verdict,
+        Verdict::Moves {
+            conflict: true,
+            ticked: true,
+            ..
+        }
+    ));
+    let picks = BTreeSet::from([
+        start.clone(),
+        migrate.clone(),
+        plain.clone(),
+        new_secret.clone(),
+    ]);
+    let values = BTreeMap::from([
+        (
+            migrate.clone(),
+            SealedCell::Cell(val(json!("edited-migrate"))),
+        ),
+        (
+            new_secret.clone(),
+            SealedCell::Secret(sealed("given-cipher", "fp-given")),
+        ),
+    ]);
+    let applied = plan.apply(&picks, &values).unwrap();
+    assert!(applied.waiting.is_empty());
+    let mut next = json_of(&applied.next);
+    assert_eq!(svc(&mut next, API)["config"]["startCommand"], "from-start");
+    assert_eq!(
+        svc(&mut next, API)["config"]["preDeployCommand"],
+        "edited-migrate"
+    );
+    assert!(
+        svc(&mut next, API)["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["key"] != "PLAIN"),
+        "the removal lands"
+    );
+    assert_eq!(
+        var(&mut next, API, "NEW_SECRET")["value"]["encryptedValue"]["ciphertext"],
+        "given-cipher"
+    );
+
+    // A new node takes no value.
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("from-start");
+    from["services"].as_array_mut().unwrap().push(jobs());
+    let plan = compare(Some(&parent()), &from, &parent(), Way::Merge);
+    let node: RowId = format!("{JOBS}:node").parse().unwrap();
+    let error = plan
+        .apply(
+            &BTreeSet::from([node.clone()]),
+            &BTreeMap::from([(node, SealedCell::Cell(Cell::Absent))]),
+        )
+        .unwrap_err();
+    assert_eq!(error.message, "A new node takes no value");
 }
 
 #[test]
@@ -1707,4 +1810,198 @@ fn a_cell_reads_as_the_plan_reads_it() {
     let secret = into.at(&format!("{API}:variables.TOKEN").parse().unwrap());
     assert!(secret.is_secret(), "{secret:?}");
     assert!(!Cell::Absent.is_secret());
+}
+
+fn ticked(plan: &Plan, id: &str) -> bool {
+    match row(plan, id).verdict {
+        Verdict::Moves { ticked, .. } => ticked,
+        Verdict::Differs(why) => panic!("{id} differs: {why:?}"),
+    }
+}
+
+/// A proposal compares against the source cells it last included, not the pair base.
+#[test]
+fn accepted_cells_replace_the_pair_base() {
+    let start = format!("{API}:startCommand");
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("one");
+    let mut into = parent();
+    svc(&mut into, API)["config"]["startCommand"] = json!("one");
+    // The pair base never saw `one`: on its own, `from` = `into` and nothing moves.
+    let plain = compare(Some(&parent()), &from, &into, Way::Sync);
+    assert!(plain.rows().iter().all(|r| r.id.to_string() != start));
+    // Accepted at `one`, the source change to `two` is offered against it.
+    svc(&mut from, API)["config"]["startCommand"] = json!("two");
+    let opts = Opts {
+        accepted: vec![(start.clone(), val(json!("one")))],
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &from, &into, Way::Sync, opts);
+    let moved = row(&plan, &start);
+    assert_eq!(
+        (&moved.base, &moved.from, &moved.into),
+        (&val(json!("one")), &val(json!("two")), &val(json!("one")))
+    );
+    assert_eq!(
+        moved.verdict,
+        Verdict::Moves {
+            conflict: false,
+            ticked: true,
+            arrives: Arrives::AsIs
+        }
+    );
+    // What the pair base holds stays the prior: accepted is a base override only.
+    let applied = land(&plan, std::slice::from_ref(&start)).unwrap();
+    assert_eq!(applied.landed[0].prior, val(json!("one")));
+}
+
+/// A row another proposal holds is disclosed as included, even when both bring the
+/// same value, and only when it is the sender's own change.
+#[test]
+fn held_row_differs_as_included_even_when_equal() {
+    let start = format!("{API}:startCommand");
+    let pre = format!("{API}:preDeployCommand");
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("one");
+    svc(&mut from, API)["config"]["preDeployCommand"] = json!("two");
+    let mut into = parent();
+    svc(&mut into, API)["config"]["startCommand"] = json!("one");
+    svc(&mut into, API)["config"]["preDeployCommand"] = json!("other");
+    let opts = Opts {
+        held: vec![start.clone(), pre.clone()],
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &from, &into, Way::Sync, opts);
+    assert_eq!(row(&plan, &start).verdict, Verdict::Differs(Why::Included));
+    assert_eq!(row(&plan, &pre).verdict, Verdict::Differs(Why::Included));
+    // Not the sender's own: an inherited row is not disclosed.
+    let opts = Opts {
+        held: vec![start.clone()],
+        own: Some(Vec::new()),
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &from, &into, Way::Sync, opts);
+    assert!(plan.rows().iter().all(|r| r.id.to_string() != start));
+    // A row the sender left at the base is not disclosed either.
+    let opts = Opts {
+        held: vec![start.clone()],
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &parent(), &into, Way::Sync, opts);
+    assert!(plan.rows().iter().all(|r| r.id.to_string() != start));
+}
+
+/// A held row that is not the sender's own never moves, even when it differs from
+/// both the base and the receiver.
+#[test]
+fn inherited_held_row_never_moves() {
+    let start = format!("{API}:startCommand");
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("two");
+    let opts = Opts {
+        held: vec![start.clone()],
+        own: Some(Vec::new()),
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &from, &parent(), Way::Sync, opts);
+    assert!(plan.rows().iter().all(|r| r.id.to_string() != start));
+}
+
+#[test]
+fn pick_of_included_row_is_refused() {
+    let start = format!("{API}:startCommand");
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("two");
+    let opts = Opts {
+        held: vec![start.clone()],
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &from, &parent(), Way::Sync, opts);
+    let error = land(&plan, &[start]).unwrap_err();
+    assert_eq!(
+        (error.path.as_str(), error.message.as_str()),
+        ("picks", "Change is meant to differ")
+    );
+}
+
+/// A Sync never overwrites the receiver's own change by default; a Follow still does.
+#[test]
+fn sync_conflicts_start_unticked_follow_unchanged() {
+    let start = format!("{API}:startCommand");
+    let pre = format!("{API}:preDeployCommand");
+    let mut from = branch();
+    svc(&mut from, API)["config"]["startCommand"] = json!("from-start");
+    svc(&mut from, API)["config"]["preDeployCommand"] = json!("from-pre");
+    let mut into = parent();
+    svc(&mut into, API)["config"]["startCommand"] = json!("into-start");
+    let sync = compare(Some(&parent()), &from, &into, Way::Sync);
+    assert!(!ticked(&sync, &start));
+    assert!(ticked(&sync, &pre));
+    // Unticked, a conflict can still be picked.
+    let next = next_of(&sync, std::slice::from_ref(&start));
+    assert_eq!(
+        find(&next["services"], "lineageId", API)["config"]["startCommand"],
+        "from-start"
+    );
+    let follow = compare(Some(&parent()), &from, &into, Way::Follow);
+    assert!(ticked(&follow, &start));
+    assert!(ticked(&follow, &pre));
+}
+
+#[test]
+fn dependents_lists_mounts_and_config_mounts() {
+    let config = "a0000000-0000-4000-8000-000000000007";
+    let mut env = parent();
+    env["configs"] = json!([{
+        "resourceId": id(0xb000_0000, 60), "resourceLineageId": config, "name": "app",
+        "files": {"app.conf": {"content": [
+            {"kind": "text", "value": "upstream="},
+            {"kind": "ref", "owner": {"scope": "service", "lineageId": WORKER}, "key": "URL"}],
+            "mode": "0444", "uid": 0, "gid": 0}}}]);
+    svc(&mut env, WEB)["configAttachments"] =
+        json!([{"configResourceId": id(0xb000_0000, 60), "mountDir": "/etc/app"}]);
+    let env = intent(&env);
+    let show = |lineage| {
+        dependents(&env, lineage)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(show(DATA), [format!("{API}:mounts.{DATA}")]);
+    assert_eq!(show(config), [format!("{WEB}:configs.{config}")]);
+    let mut worker = vec![
+        format!("{API}:variables.WORKER_URL"),
+        format!("{config}:files.app.conf"),
+    ];
+    worker.sort();
+    assert_eq!(show(WORKER), worker);
+    // A node's own rows are not its dependents; nothing uses cache.
+    assert!(show(API).is_empty());
+    assert!(show(CACHE).is_empty());
+}
+
+/// Remove of a proposal that introduced a node inverts it whole, so a child the
+/// destination added since is a refusal, never a silent loss.
+#[test]
+fn unapply_refuses_introduced_node_with_unowned_child() {
+    let mut from = parent();
+    from["services"].as_array_mut().unwrap().push(jobs());
+    let opts = Opts {
+        accepted: vec![(format!("{JOBS}:node"), Cell::Absent)],
+        ..Opts::default()
+    };
+    let plan = compare_with(Some(&parent()), &from, &parent(), Way::Sync, opts);
+    let applied = land(&plan, &[format!("{JOBS}:node")]).unwrap();
+    assert_eq!(
+        json_of(&unapply(&applied.next, "", &applied.landed).unwrap()),
+        json_of(&intent(&parent()))
+    );
+    let mut next = json_of(&applied.next);
+    svc(&mut next, JOBS)["variables"] =
+        json!([variable(0xd000_0000, 1, "LOCAL", literal("x"), "fp-local")]);
+    let refused = unapply(&intent(&next), "", &applied.landed).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        format!("{JOBS}:variables.LOCAL changed since it landed")
+    );
 }

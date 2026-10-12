@@ -285,6 +285,7 @@ fn unset_keeps_the_stored_secret_and_discard_returns_to_the_introduction() {
             &who(),
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse(PATH).unwrap()),
                 version: None,
             },

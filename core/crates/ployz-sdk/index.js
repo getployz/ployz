@@ -55,6 +55,7 @@ class Client {
       watch: (options = {}) => iterateWatch(() => inner.watch(), options && options.signal),
       logs: (options = {}) => runtimeLogs.logs(logTransport, options),
       logHistory: (options) => runtimeLogs.history(logTransport, options),
+      metricHistory: (input) => withRpcError(inner.metricHistory(input)),
     };
   }
 
@@ -342,6 +343,7 @@ async function connect(options) {
 async function openConfigStore(url, sealingSecret) {
   const store = await withRpcError(native.openConfigStore(url, sealingSecret));
   return {
+    converted: () => store.converted(),
     read: (organization, query, trusted) => withRpcError(store.read(organization, query, trusted)),
     write: (organization, command, trusted, principal) =>
       withRpcError(store.write(organization, command, trusted, principal)),
@@ -357,8 +359,8 @@ async function openConfigStore(url, sealingSecret) {
     unclaimed: (before) => withRpcError(store.unclaimed(before)),
     branchHead: (organization, repositoryId, branch) =>
       withRpcError(store.branchHead(organization, repositoryId, branch)),
-    pendingSyncs: (organization, repositoryId, branch) =>
-      withRpcError(store.pendingSyncs(organization, repositoryId, branch)),
+    awaitingMerge: (organization, repositoryId, branch) =>
+      withRpcError(store.awaitingMerge(organization, repositoryId, branch)),
     githubStart: (build, connections) => withRpcError(store.githubStart(build, connections)),
     githubDispatched: (build, run) => withRpcError(store.githubDispatched(build, run)),
     githubBuild: (build) => withRpcError(store.githubBuild(build)),

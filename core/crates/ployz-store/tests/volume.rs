@@ -62,6 +62,7 @@ fn shop() -> (ConfigStore, Actor) {
             &who,
             &CreateVolume {
                 shared_writes: false,
+                storage_locked: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(VOLUME).unwrap(),
                 environment: EnvironmentRef::default(),
@@ -313,6 +314,53 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
 }
 
 #[test]
+fn a_volume_created_with_its_storage_locked_refuses_other_storage_before_any_deploy() {
+    let (store, who) = shop();
+    let managed = VolumeKind::Provisioned {
+        maximum_bytes: 5_000_000_000.try_into().unwrap(),
+    };
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                shared_writes: false,
+                storage_locked: true,
+                storage: managed,
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("restored").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    let named = |name: &str| {
+        listed(&store, &who)
+            .into_iter()
+            .find(|listing| listing.volume.name.as_str() == name)
+            .unwrap()
+    };
+    assert!(named("restored").storage_locked);
+    let larger = VolumeKind::Provisioned {
+        maximum_bytes: 10_000_000_000.try_into().unwrap(),
+    };
+    for storage in [VolumeKind::Docker {}, larger] {
+        let refused = store
+            .write(
+                &who,
+                &SetVolumeStorage {
+                    environment: EnvironmentRef::default(),
+                    volume: VolumeName::parse("restored").unwrap(),
+                    storage,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused.details["storage_locked"], true);
+    }
+    assert_eq!(named("restored").volume.storage, managed);
+    assert!(!named("data").storage_locked);
+}
+
+#[test]
 fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     let (store, who) = shop();
     let get = |at: &str| {
@@ -380,6 +428,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
         &who,
         &CreateVolume {
             shared_writes: false,
+            storage_locked: false,
             storage: ployz_core::config::VolumeKind::Docker {},
             id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
             environment: EnvironmentRef::default(),
@@ -448,6 +497,7 @@ fn a_deployed_volume_removal_discards_alone() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse("volumes.data").unwrap()),
                 version: None,
             },
@@ -712,6 +762,7 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
             &Publish {
                 environment: EnvironmentRef::default(),
                 version: version.map(Into::into),
+                message: None,
                 accept_volume_loss: accept
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
@@ -835,6 +886,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
             &Publish {
                 environment: EnvironmentRef::default(),
                 version: version.map(Into::into),
+                message: None,
                 accept_volume_loss: accept
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
@@ -909,6 +961,7 @@ fn a_deployed_volume_rename_discards_by_its_row() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(path(&row.path)),
                 version: None,
             },
@@ -929,6 +982,7 @@ fn a_new_unmounted_volume_is_not_deployed_by_a_deploy_that_succeeded() {
             &who,
             &CreateVolume {
                 shared_writes: false,
+                storage_locked: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -1165,6 +1219,7 @@ fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     // A new Volume mounted into two Services at once has the same second writer.
     let both = |shared_writes| CreateVolume {
         shared_writes,
+        storage_locked: false,
         storage: VolumeKind::Docker {},
         id: VolumeId::parse("00000000-0000-4000-8000-000000000008").unwrap(),
         environment: EnvironmentRef::default(),
@@ -1220,6 +1275,7 @@ fn discarding_one_setting_cannot_bring_back_a_second_writer() {
     set_shared_writes(&store, &who, false).unwrap();
     let discard = |path: Option<&str>| Discard {
         environment: EnvironmentRef::default(),
+        target: ployz_store::DiscardTarget::Head,
         path: path.map(|path| SettingPath::parse(path).unwrap()),
         version: None,
     };

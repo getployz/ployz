@@ -74,6 +74,7 @@ macro_rules! rpc_catalog {
                 StartHandedContainer: (start_handed_container, "StartHandedContainer", ServiceVolumeRequest, "start_handed_container", SwitchReply, START_HANDED_CONTAINER_CAPABILITY, "ployz.volume.start-handed-container.v1", Container),
                 ClearFinal: (clear_final, "ClearFinal", MirrorRequest, "clear_final", SwitchReply, CLEAR_FINAL_CAPABILITY, "ployz.volume.clear-final.v1", Container),
                 Restore: (restore, "Restore", ServiceVolumeRequest, "restore", SwitchReply, RESTORE_VOLUME_CAPABILITY, "ployz.volume.restore.v1", Container),
+                SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", SwitchReply, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
                 DeclareMirror: (declare_mirror, "DeclareMirror", DeclareMirrorRequest, "declare_mirror", SwitchReply, DECLARE_MIRROR_CAPABILITY, "ployz.volume.mirror.declare.v1", Container),
                 BeginRound: (begin_round, "BeginRound", MirrorRequest, "begin_round", SwitchReply, BEGIN_ROUND_CAPABILITY, "ployz.volume.round.begin.v1", Container),
                 CommitSnapshots: (commit_snapshots, "CommitSnapshots", CommitRequest, "commit_snapshots", SwitchReply, COMMIT_SNAPSHOTS_CAPABILITY, "ployz.volume.round.commit.v1", Container),
@@ -84,6 +85,7 @@ macro_rules! rpc_catalog {
                 DestroyMirror: (destroy_mirror, "DestroyMirror", MirrorRequest, "destroy_mirror", SwitchReply, DESTROY_MIRROR_CAPABILITY, "ployz.volume.mirror.destroy.v1", Container),
                 ForgetSnapshots: (forget_snapshots, "ForgetSnapshots", MirrorRequest, "forget_snapshots", SwitchReply, FORGET_SNAPSHOTS_CAPABILITY, "ployz.volume.mirror.forget.v1", Container),
                 ForgetLease: (forget_lease, "ForgetLease", MirrorRequest, "forget_lease", SwitchReply, FORGET_LEASE_CAPABILITY, "ployz.volume.lease.forget.v1", Container),
+                DemoteVolume: (demote_volume, "DemoteVolume", MirrorRequest, "demote_volume", SwitchReply, DEMOTE_VOLUME_CAPABILITY, "ployz.volume.demote.v1", Container),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
                 RemoveImages: (remove_images, "RemoveImages", RemoveImagesRequest, "remove_images", ImagesRemoved, REMOVE_IMAGES_CAPABILITY, "ployz.image.remove.v1", Container),
                 EnsureImageIngest: (ensure_image_ingest, "EnsureImageIngest", EnsureImageIngestRequest, "ensure_image_ingest", ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container),
@@ -92,6 +94,7 @@ macro_rules! rpc_catalog {
                 EndBuildGrant: (end_build_grant, "EndBuildGrant", EndBuildGrantRequest, "end_build_grant", BuildGrantEnded, END_BUILD_GRANT_CAPABILITY, "ployz.build.grant.end.v1", Container),
                 GetIngressProxyConfig: (get_ingress_proxy_config, "GetIngressProxyConfig", GetIngressProxyConfigRequest, "get_ingress_proxy_config", IngressProxyConfig, GET_INGRESS_PROXY_CONFIG_CAPABILITY, "ployz.ingress.config.v1", Ingress),
                 PublishCertificateMaterial: (publish_certificate_material, "PublishCertificateMaterial", PublishCertificateMaterialRequest, "publish_certificate_material", CertificateMaterialPublished, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, "ployz.certificates.publish.v1", Cluster),
+                MetricHistory: (metric_history, "MetricHistory", MetricHistoryRequest, "metric_history", MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container),
                 Reset: (reset, "Reset", ResetRequest, "reset", ResetAccepted, RESET_MACHINE_CAPABILITY, "ployz.machine.reset.v1", Always),
             }
             server_streaming {
