@@ -36,6 +36,7 @@ import {
   startRun,
   Superseded,
 } from "#/modules/agent/persistence.server";
+import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
 import { latestPageContext, PageContext, readPageContext, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
@@ -309,6 +310,23 @@ const stepLimit = ({ stores }: Persistence) => {
   return { middleware, noted };
 };
 
+/**
+ * The stream with each provider failure retold in the sidebar's words, coded by what it means for the member. The
+ * provider's own message, JSON body and request id go to Cloud's log, not to the member.
+ */
+async function* plainFailures(run: Run, stream: AsyncIterable<StreamChunk>): AsyncGenerator<StreamChunk> {
+  for await (const chunk of stream) {
+    const failure = chunk.type === EventType.RUN_ERROR ? providerFailure(chunk) : undefined;
+    if (chunk.type !== EventType.RUN_ERROR || failure === undefined) {
+      yield chunk;
+      continue;
+    }
+    await run(Effect.logError("Claude failed an agent turn.", { failure, code: chunk.code, message: chunk.message }));
+    const { rawEvent: _rawEvent, error: _error, ...rest } = chunk;
+    yield { ...rest, message: FAILURES[failure], code: failure };
+  }
+}
+
 const CLAUDE = "claude-sonnet-5-5";
 type AgentModel = { adapter: AnyTextAdapter; modelOptions?: AnthropicChatModelProviderOptionsByName[typeof CLAUDE] };
 const scripted = (script: ConstructorParameters<typeof ScriptedAdapter>[0]): AgentModel => ({ adapter: new ScriptedAdapter(script) });
@@ -490,7 +508,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
     const options: typeof base & { resume?: ChatRequest["resume"]; abortController?: AbortController } = base;
     if (request.abortController !== undefined) options.abortController = request.abortController;
     if (resume !== undefined) options.resume = resume;
-    return limit.noted(chat(options));
+    return plainFailures(run, limit.noted(chat(options)));
   };
   if (resume === undefined) return startOnce(run, persistence, scope, request, turn);
   return resumeOnce(run, persistence, scope, { ...request, resume }, turn);
