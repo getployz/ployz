@@ -11,7 +11,7 @@ use crate::error;
 // Not core's `validated_string_newtype!`: that one derives `TS` and returns a
 // `ValueError` that quotes the rejected value, and the Store never echoes input.
 macro_rules! store_string {
-    ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr) => {
+    ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr $(, normalize = $normalize:expr)?) => {
         $(#[$doc])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
         #[serde(try_from = "String", into = "String")]
@@ -25,6 +25,7 @@ macro_rules! store_string {
             /// Returns `invalid_argument` naming what was expected, never the value.
             pub fn parse(value: impl Into<String>) -> Result<Self, RpcError> {
                 let value = value.into();
+                $(let value = $normalize(value);)?
                 if $valid(value.as_str()) {
                     Ok(Self(value))
                 } else {
@@ -172,9 +173,15 @@ store_string!(
 );
 
 store_string!(
-    /// A public hostname, like `app.example.com`: lowercase, at least two labels.
-    Hostname, "a hostname like app.example.com", is_hostname
+    /// A public hostname, like `app.example.com`: at least two labels, stored
+    /// lowercase and trimmed whatever case the member typed.
+    Hostname, "a hostname like app.example.com", is_hostname, normalize = normalize_hostname
 );
+
+/// DNS ignores case, so `Acme.COM ` names the same host as `acme.com`.
+fn normalize_hostname(value: String) -> String {
+    value.trim().to_ascii_lowercase()
+}
 
 /// A full lowercase Git commit.
 fn is_commit(value: &str) -> bool {
@@ -444,5 +451,19 @@ mod config_ref_tests {
         );
         assert!(ConfigRef::parse("@sentry").is_err());
         assert!(ConfigName::parse(format!("@{uuid}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod hostname_tests {
+    use super::Hostname;
+
+    #[test]
+    fn a_hostname_in_any_case_is_stored_lowercase() {
+        assert_eq!(Hostname::parse(" Acme.COM ").unwrap().as_str(), "acme.com");
+        let sent: Hostname = serde_json::from_value(serde_json::json!("App.Example.com")).unwrap();
+        assert_eq!(sent.as_str(), "app.example.com");
+        assert!(Hostname::parse("acme..com").is_err());
+        assert!(Hostname::parse("ACME").is_err());
     }
 }

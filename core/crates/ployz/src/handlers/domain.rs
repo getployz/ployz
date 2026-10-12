@@ -91,7 +91,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("host")
         .map(|host| {
             // A rejected hostname is never echoed.
-            Hostname::parse(host.trim().to_ascii_lowercase())
+            Hostname::parse(host.as_str())
                 .map_err(|_| Error::usage("Expected a hostname like app.example.com"))
         })
         .transpose()?;

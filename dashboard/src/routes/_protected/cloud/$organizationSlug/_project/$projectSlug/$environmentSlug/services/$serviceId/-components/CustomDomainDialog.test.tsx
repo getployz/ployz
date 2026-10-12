@@ -39,6 +39,28 @@ describe("CustomDomainDialog", () => {
     );
   });
 
+  it("saves a hostname typed in any case as the lowercase name", async () => {
+    const onSubmit = vi.fn();
+    render(
+      <CustomDomainDialog
+        defaultTargetPort={3000}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+    fireEvent.change(screen.getByLabelText("Domain"), {
+      target: { value: " Acme.COM " },
+    });
+    const save = screen.getByRole("button", { name: "Save route" });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ hostname: "acme.com" })
+      )
+    );
+  });
+
   it("enables saving a corrected port without requiring blur", async () => {
     const onSubmit = vi.fn();
     render(

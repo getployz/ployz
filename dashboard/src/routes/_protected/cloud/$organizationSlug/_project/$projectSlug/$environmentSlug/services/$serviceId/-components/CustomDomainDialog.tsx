@@ -43,7 +43,8 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
-          hostname,
+          // The Store keeps hostnames lowercase; the staged row should match it.
+          hostname: hostname.toLowerCase(),
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({
