@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { LogEvent } from "@ployz/sdk";
-import { backfillThenFollow, containerLogResponse } from "./container-log-events.server";
+import { backfillThenFollow, containerLogResponse, whileLogsShown } from "./container-log-events.server";
 
 it("answers live only after the whole tail, holding what the follow read meanwhile", async () => {
   const record = (message: string): LogEvent => ({ type: "source_error", machineId: "m", containerId: "c", message });
@@ -138,4 +138,32 @@ it("releases the runtime when the request aborts while the viewer isn't reading"
   request.abort();
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(closed).toBe(1);
+});
+
+it("closes support's stream with hidden once the Organization hides its logs, even while lines keep coming", async () => {
+  const record = (message: string): LogEvent => ({ type: "source_error", machineId: "m", containerId: "c", message });
+  let released = false;
+  async function* flood(): AsyncIterable<LogEvent> {
+    try {
+      for (let line = 0; ; line++) {
+        yield record(`line ${line}`);
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    } finally { released = true; }
+  }
+  const answers = [true, false];
+  const seen: string[] = [];
+  for await (const event of whileLogsShown(flood(), async () => answers.shift() ?? false, 10)) seen.push(event.type);
+  expect(seen.at(-1)).toBe("hidden");
+  expect(seen.filter(type => type === "hidden")).toHaveLength(1);
+  expect(seen.length).toBeGreaterThan(2);
+  // The upstream is released once the read in flight settles.
+  await vi.waitFor(() => expect(released).toBe(true));
+});
+
+it("ends support's stream without hidden when what it may see can't be read, so the reconnect asks again", async () => {
+  async function* quiet(): AsyncIterable<LogEvent> { await new Promise(() => {}); }
+  const seen: string[] = [];
+  for await (const event of whileLogsShown(quiet(), () => Promise.reject(new Error("database down")), 5)) seen.push(event.type);
+  expect(seen).toEqual([]);
 });

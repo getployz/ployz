@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Exit, Schema, Scope } from "effect";
 import type { ConfigQuery, LogFilter } from "@ployz/sdk";
-import { authorizeRequest } from "#/modules/organization/access.server";
+import { authorizeRequest, requireAccessById } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "./organization-runtime.server";
 import { backfillThenFollow } from "./container-log-events.server";
 import { Forbidden, NotFound, Validation } from "#/server/public-error";
@@ -71,5 +71,9 @@ export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function
   const tail = yield* session.connected.logs({ ...options, follow: false }).pipe(Effect.onError(() => close));
   const follow = yield* session.connected.logs({ ...options, follow: true }).pipe(Effect.onError(() => close));
   const events = backfillThenFollow(tail, follow);
-  return { type: "stream" as const, events, close };
+  // Support's access is read again while it streams, so hiding container logs stops lines already flowing.
+  const logsShown = access.kind === "support"
+    ? requireAccessById({ userId: access.userId }, organizationId, "operate").pipe(Effect.map(now => now.kind !== "support" || now.shows.logs))
+    : undefined;
+  return { type: "stream" as const, events, close, logsShown };
 });

@@ -10,7 +10,10 @@ const TAIL_BUDGET_MS = 3_000;
 // Past this the follow is left unread until `live`: its transport holds the rest, so nothing is lost or piled up here.
 const HELD_MAX = 1_000;
 
-type ContainerLogStreamEvent = LogEvent | { type: "live" };
+type ContainerLogStreamEvent = LogEvent | { type: "live" } | { type: "hidden" };
+
+/** How often an open stream rereads what the Organization shows Ployz support. */
+const RECHECK_MS = 5_000;
 
 /**
  * `live` follows the tail, so a viewer that sees it with no records knows the log is empty.
@@ -67,6 +70,42 @@ export async function* backfillThenFollow(tail: AsyncIterable<LogEvent>, follow:
   }
 }
 
+/**
+ * Support's stream, closed once the Organization hides its container logs: what it shows is read again every
+ * RECHECK_MS while lines flow. A failed read ends the stream, and the browser's reconnect authorizes afresh.
+ */
+export async function* whileLogsShown(events: AsyncIterable<ContainerLogStreamEvent>, shown: () => Promise<boolean>, recheckMs = RECHECK_MS): AsyncIterable<ContainerLogStreamEvent> {
+  const reader = events[Symbol.asyncIterator]();
+  let next = reader.next();
+  // A read parked across a recheck that ends the stream still throws when `return` releases it.
+  next.catch(() => {});
+  let checked = Date.now();
+  try {
+    for (;;) {
+      // Checked before each line, not only when the timer wins: a steady flow of lines would always beat it.
+      if (Date.now() >= checked + recheckMs) {
+        const still = await shown().catch(() => undefined);
+        if (still === undefined) return;
+        if (!still) {
+          yield { type: "hidden" };
+          return;
+        }
+        checked = Date.now();
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const due = new Promise<"due">(resolve => { timer = setTimeout(resolve, checked + recheckMs - Date.now(), "due"); });
+      const won = await Promise.race([next, due]).finally(() => clearTimeout(timer));
+      if (won === "due") continue;
+      if (won.done) return;
+      yield won.value;
+      next = reader.next();
+      next.catch(() => {});
+    }
+  } finally {
+    void reader.return?.()?.catch(() => {});
+  }
+}
+
 /** Pull-driven delivery preserves every log record rather than coalescing watch snapshots. */
 export function containerLogResponse(request: Request, events: AsyncIterable<ContainerLogStreamEvent>, close: () => Promise<void>) {
   return eventStreamResponse(request.signal, () => containerLogEvents(events), { heartbeatMs: 15_000, retryMs: RETRY_MS, onClose: close });
@@ -86,6 +125,7 @@ async function* containerLogEvents(events: AsyncIterable<ContainerLogStreamEvent
   try {
     for await (const event of events) {
       if (event.type === "live") yield sseEvent({ event: "live", data: {} });
+      else if (event.type === "hidden") yield sseEvent({ event: "hidden", data: {} });
       else yield sseEvent({ event: "log", data: event.type === "record" ? { type: "record", record: projectContainerLog(event.record) } : event });
     }
   } catch {

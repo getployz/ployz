@@ -2,7 +2,7 @@ import { projectContainerLog, projectLogExit, projectLogGap } from "#/modules/ru
 import { createFileRoute } from "@tanstack/react-router";
 import { Option, Schema } from "effect";
 import { logHistorySchema, logSearchSchema, openContainerLogs } from "#/modules/runtime/container-logs.server";
-import { containerLogResponse, hiddenLogResponse, offlineLogResponse } from "#/modules/runtime/container-log-events.server";
+import { containerLogResponse, hiddenLogResponse, offlineLogResponse, whileLogsShown } from "#/modules/runtime/container-log-events.server";
 import { runAppEffect } from "#/server/run.server";
 import { publicErrorResponse, Validation } from "#/server/public-error";
 
@@ -15,7 +15,11 @@ export const Route = createFileRoute("/api/runtime/logs")({
         const result = await runAppEffect(openContainerLogs(request, search.value), { signal: request.signal });
         if (result.type === "offline") return offlineLogResponse(request);
         if (result.type === "hidden") return hiddenLogResponse(request);
-        if (result.type === "stream") return containerLogResponse(request, result.events, () => runAppEffect(result.close));
+        if (result.type === "stream") {
+          const { logsShown } = result;
+          const events = logsShown ? whileLogsShown(result.events, () => runAppEffect(logsShown, { signal: request.signal })) : result.events;
+          return containerLogResponse(request, events, () => runAppEffect(result.close));
+        }
         throw new Error("A followed log read answered with a page.");
       } catch (cause) { return publicErrorResponse(cause); }
     },
