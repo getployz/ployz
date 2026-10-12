@@ -11,7 +11,8 @@ export type NewServiceSource =
   | { type: "image"; image: string }
   | { type: "git"; repository: string; branch: string | null };
 
-const MAX_NAME = 63;
+/** The longest Store name: a DNS label. */
+export const MAX_NAME = 63;
 
 function sourceName(source: NewServiceSource) {
   if (source.type === "git") return source.repository.split("/").at(-1) ?? "";
