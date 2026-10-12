@@ -72,7 +72,7 @@ describe("storePrCheckRun", () => {
     const line = "- `web · A`: 1 → 2";
     const huge: OnMergeCheck = { ...lands, summary: Array.from({ length: 5000 }, () => line).join("\n") };
     const summary = storePrCheckRun([{ slug: "acme", view: view(huge) }], "https://ployz.test/")?.summary ?? "";
-    expect(summary.length).toBeLessThanOrEqual(CHECK_SUMMARY_LIMIT);
+    expect(new TextEncoder().encode(summary).length).toBeLessThanOrEqual(CHECK_SUMMARY_LIMIT);
     const lines = summary.split("\n");
     const kept = lines.indexOf(lines.find((each) => each !== line) ?? "");
     expect(lines.slice(kept)).toEqual([`…and ${5000 - kept} more lines`, "", "[View in Ployz](https://ployz.test/cloud/acme/shop/pr-146?panel=on-merge)"]);

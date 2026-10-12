@@ -82,22 +82,26 @@ export function storePrCheckRun(views: readonly { slug: string; view: PullReques
   };
 }
 
-/** The most a check run's summary may hold: GitHub refuses a longer one. */
+/** The most a check run's summary may hold, in UTF-8 bytes: GitHub refuses a longer one. */
 export const CHECK_SUMMARY_LIMIT = 65_535;
+
+const utf8 = new TextEncoder();
+const bytes = (text: string) => utf8.encode(text).length;
 
 /** `body` then `link`, within GitHub's limit: whole lines of `body` while they fit, then how many more there are. */
 function fitSummary(body: string, link: string) {
-  if (body.length + link.length <= CHECK_SUMMARY_LIMIT) return body + link;
+  if (bytes(body) + bytes(link) <= CHECK_SUMMARY_LIMIT) return body + link;
   // Room for the "…and N more lines" note.
-  const room = CHECK_SUMMARY_LIMIT - link.length - 32;
+  const room = CHECK_SUMMARY_LIMIT - bytes(link) - 32;
   const lines = body.split("\n");
   const kept: string[] = [];
   let length = 0;
   for (const line of lines) {
-    if (length + line.length + 1 > room) break;
+    if (length + bytes(line) + 1 > room) break;
     kept.push(line);
-    length += line.length + 1;
+    length += bytes(line) + 1;
   }
-  const head = kept.length ? kept.join("\n") : body.slice(0, room);
+  // A single line too long to keep whole: as many characters as fit.
+  const head = kept.length ? kept.join("\n") : body.slice(0, Math.floor(room / 4));
   return `${head}\n…and ${lines.length - kept.length} more lines${link}`;
 }
