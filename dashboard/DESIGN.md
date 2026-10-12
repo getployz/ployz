@@ -393,7 +393,7 @@ A capability name decides and the Release Channel explains. `daemon-compat.ts` i
 
 Placement is the one place a version decides. Releases before the capability list don't say what they serve, so `daemon-release.ts` reads such a Server's version against 0.2.5, the first release that moves volumes. A version it can't read keeps Placement closed with "Ployz can't tell whether web-2 can move volumes." and claims no Upgrade. That constant is the only release number in Cloud code.
 
-The Logs page shows each Server's refusal and links to that Server's page. Beside other Servers' lines it reads "web-2 needs an upgrade to show its logs." With no lines at all it reads "Upgrade web-2 to see its logs", or "Upgrade 2 servers to see their logs" with a link to Servers. Logs offer no Upgrade and don't watch for one. The reader upgrades from the Server page and reloads Logs.
+Beside other Servers' lines, the Logs page reads "web-2 needs an upgrade to show its logs." with a link to web-2, or "2 servers need an upgrade to show their logs." with a link to Servers. With no lines at all it reads "Upgrade web-2 to see its logs" with a link to web-2, or "Upgrade 2 servers to see their logs" with a link to Servers. Logs offer no Upgrade and don't watch for one. The reader upgrades from the Server page and reloads Logs.
 
 A Volume Run's lack message comes from the Server's upgrade state, through the same `isBehind`, `isCurrent` and `releaseLine` as `serverUpgradeLine`, so the Servers page and the message agree. Behind the channel release it reads "Volume move needs a newer Ployz on web-2. 0.2.5 is out." Current on the channel it reads "Volume move is not in Ployz 0.2.4 on web-2 yet."
 
