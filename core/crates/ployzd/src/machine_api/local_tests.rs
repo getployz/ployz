@@ -1064,8 +1064,31 @@ mod set_volume_copy {
     /// A running Container that mounts the Volume, as Docker lists it for the cut,
     /// beside any holder already there.
     async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
+        let created = stopped_container(service).await;
+        let id = created.to_string();
+        for container in fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|container| container["Id"] == id.as_str())
+        {
+            container["State"] = json!({"Status":"running", "Running":true});
+        }
+        fake.volume_users
+            .lock()
+            .unwrap()
+            .entry(VOLUME.into())
+            .or_default()
+            .push(json!({"Id": id}));
+        created
+    }
+
+    async fn stopped_container(service: &MachineService) -> ContainerId {
         use ployz_core::CreateContainerRequest;
-        let created = service
+        service
             .create_container(Request::new(
                 op::CreateContainer::into_request(CreateContainerRequest {
                     deployment_id: None,
@@ -1084,26 +1107,87 @@ mod set_volume_copy {
             .decode_response()
             .unwrap()
             .decode::<op::CreateContainer>()
-            .unwrap();
-        let id = created.container_id.to_string();
-        for container in fake
-            .named_containers
-            .as_ref()
             .unwrap()
+            .container_id
+    }
+
+    fn running(fake: &FakeDocker) -> usize {
+        holder_status(fake)
+            .iter()
+            .filter(|status| **status == json!("running"))
+            .count()
+    }
+
+    /// A root at epoch 1 that the Writer route raises to epoch 2.
+    fn raising_plugin() -> FakePlugin {
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(1, Some(snapshot("f-1", 7))));
+        plugin.reply(WRITER_ROUTE, writer_root(2, Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        plugin.on(WRITER_ROUTE, move || {
+            replies.lock().unwrap().insert(
+                INSPECT_ROUTE.into(),
+                writer_root(2, Some(snapshot("f-1", 7))),
+            );
+        });
+        plugin
+    }
+
+    #[tokio::test]
+    async fn a_raise_whose_kept_start_another_holder_superseded_starts_nothing() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-kept-held").await;
+        let plugin = raising_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let kept = stopped_container(&service).await;
+        running_holder(&service, &fake).await;
+        let raise = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+            "want":{"kind":"writer", "at":"7", "epoch":2,
+                "start":{"kind":"kept", "container_id":kept.to_string()}}});
+
+        let raised = reply(&set_copy(&service, raise).await);
+
+        assert_eq!(
+            serde_json::to_value(&raised).unwrap(),
+            json!({"copy": writer_root(2, Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_raise_whose_create_start_another_holder_superseded_creates_nothing() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-copy-create-held").await;
+        let plugin = raising_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+        let raise = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":1},
+            "want":{"kind":"writer", "at":"7", "epoch":2, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec(),
+                "creation_key":"move-1"}}});
+
+        let raised = reply(&set_copy(&service, raise).await);
+
+        assert_eq!(
+            serde_json::to_value(&raised).unwrap(),
+            json!({"copy": writer_root(2, Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        let creates = fake
+            .requests
             .lock()
             .unwrap()
-            .values_mut()
-            .filter(|container| container["Id"] == id.as_str())
-        {
-            container["State"] = json!({"Status":"running", "Running":true});
-        }
-        fake.volume_users
-            .lock()
-            .unwrap()
-            .entry(VOLUME.into())
-            .or_default()
-            .push(json!({"Id": id}));
-        created.container_id
+            .iter()
+            .filter(|(_, path)| path.ends_with("/containers/create"))
+            .count();
+        assert_eq!(creates, 1, "the raise created the superseded Container");
+        assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     fn holder_status(fake: &FakeDocker) -> Vec<Value> {

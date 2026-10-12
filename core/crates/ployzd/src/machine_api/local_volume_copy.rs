@@ -93,7 +93,10 @@ impl MachineService {
                     }
                     copy => copy,
                 };
-                if let Some(start) = start {
+                // Another holder already runs: starting this one too would run two.
+                if let Some(start) = start
+                    && !start_running
+                {
                     self.run_start(&start).await?;
                 }
                 Ok(copy)
