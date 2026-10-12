@@ -11,10 +11,18 @@ import { requestUnclaimedRun } from "#/modules/volume-placement/volume-placement
 import { volumeRun } from "#/modules/volume-run/tables";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { ACTIVE_VOLUME_RUN_STATES } from "#/modules/volume-run/volume-run";
-import { type CopyObserver, listVolumeRuns, observeOrganizationCopies, resolveVolume, volumeRunView } from "#/modules/volume-run/volume-run.server";
+import {
+  type CopyObserver, inspectVolumeCopies, listVolumeRuns, observeOrganizationCopies, resolveVolume, volumeRunView,
+} from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 const busy = (message: string): StoreRefusal => ({ code: "conflict", message, details: null });
+
+const silent = (names: readonly string[]): StoreRefusal => ({
+  code: "unanswered",
+  message: names.length === 1 ? `${names[0]} isn't answering` : `${names.join(", ")} aren't answering`,
+  details: null,
+});
 
 /**
  * Refresh now: one mirror round for the Volume, the same sync the 15-minute cron requests for the same Volumes. A run
@@ -26,16 +34,24 @@ export const refreshMirror = Effect.fn("VolumeCopies.refreshMirror")(function* (
   volumeId: string,
   read: BlockerReader = readPlacementBlockers,
   observe: CopyObserver = observeOrganizationCopies,
+  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
   const refusal = yield* placementRefusal(caller.organizationId, read);
   if (refusal !== null) return { ok: false, refusal } as const;
   const { dockerVolume } = yield* resolveVolume(caller.organizationId, environment, volumeId);
+  const named = (fallback: StoreRefusal) => Effect.map(
+    inspect(caller.organizationId, environment, volumeId).pipe(Effect.orElseSucceed(() => [])),
+    (members) => {
+      const names = members.flatMap((member) => !member.answered && member.lack === undefined ? [member.machine.name] : []);
+      return { ok: false, refusal: names.length === 0 ? fallback : silent(names) } as const;
+    },
+  );
   const copies = yield* observe(caller.organizationId).pipe(Effect.option);
-  if (Option.isNone(copies)) return { ok: false, refusal: UNANSWERED } as const;
+  if (Option.isNone(copies)) return yield* named(UNANSWERED);
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ mirrors: volumePlacement.mirrors }).from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, caller.organizationId), eq(volumePlacement.volumeId, volumeId)));
-  if (!refreshesMirror(row, copies.value.filter((copy) => copy.name === dockerVolume))) return { ok: false, refusal: busy("No mirror") } as const;
+  if (!refreshesMirror(row, copies.value.filter((copy) => copy.name === dockerVolume))) return yield* named(busy("No mirror"));
   const requested = yield* requestUnclaimedRun(caller, { volumeId, environment, kind: "sync", args: { full: false } });
   if (requested.ok) return requested;
   const runs = yield* listVolumeRuns(caller.organizationId, volumeId);

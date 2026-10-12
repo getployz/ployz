@@ -8,7 +8,9 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { lastMirrorRefresh, refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 import { stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import type { Member } from "#/modules/volume-run/volume-run";
 import { requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import type { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -27,6 +29,7 @@ describe("Refresh now", () => {
   // Runs at each Volume read, so a test can act between Refresh's mirror check and its request.
   let between: (() => Promise<void>) | null;
   let copies: CopyObservation["copies"];
+  let members: Member[];
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
     Effect.provideService(InngestClient, inngest),
@@ -46,7 +49,7 @@ describe("Refresh now", () => {
     }),
   ));
   const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
-  const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(copies)));
+  const refresh = () => run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.succeed(copies), () => Effect.succeed(members)));
   const runs = async () => (await harness.pool.query(`select kind, state from volume_run order by created_at`)).rows;
   const endRun = (id: string, state: string, finishedAt = "now()") =>
     harness.pool.query(`update volume_run set state = $2, finished_at = ${finishedAt} where id = $1`, [id, state]);
@@ -57,6 +60,7 @@ describe("Refresh now", () => {
     blockers = [];
     between = null;
     copies = [copy("web-1", "writer"), copy("web-2", "slot")];
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
     await harness.pool.query(`
       truncate table organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
@@ -102,8 +106,17 @@ describe("Refresh now", () => {
   });
 
   it("refuses when the Servers can't say where the Volume's copies are", async () => {
-    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail("down"))))
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail("down"), () => Effect.fail(new Error("down")))))
       .toMatchObject({ ok: false, refusal: { code: "unanswered" } });
+    expect(await runs()).toEqual([]);
+  });
+
+  it("names the mirror's Server when it is silent", async () => {
+    copies = [copy("web-1", "writer")];
+    members = [member("web-1", "writer"), member("web-2", "unanswered")];
+    expect(await refresh()).toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
+    expect(await run(refreshMirror(caller, environment, volumeId, () => Effect.succeed(blockers), () => Effect.fail("down"), () => Effect.succeed(members))))
+      .toEqual({ ok: false, refusal: { code: "unanswered", message: "web-2 isn't answering", details: null } });
     expect(await runs()).toEqual([]);
   });
 
