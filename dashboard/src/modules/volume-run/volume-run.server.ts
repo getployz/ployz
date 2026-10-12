@@ -13,7 +13,7 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { requirementFor, requirements } from "#/modules/runtime/daemon-compat";
+import { type Requirement, requirementFor, requirements } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
 import { releaseLine, remedy, serverUpgradeLine, type ReleaseState } from "#/modules/server-upgrade/server-upgrade";
@@ -222,7 +222,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     const refusal = yield* seedLandingRefusal(organizationId, input.environment, input.volumeId, input.args.into.volumeId);
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
-  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume).pipe(Effect.option);
+  const members = yield* observeVolumeMembers(organizationId, volume.dockerVolume, input.kind).pipe(Effect.option);
   if (Option.isNone(members)) {
     return { ok: false, refusal: { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null } } satisfies VolumeRunPlan;
   }
@@ -543,7 +543,7 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
 }, Effect.scoped);
 
 /** Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer. */
-export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string) {
+export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, kind?: VolumeRunKind) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
@@ -558,15 +558,23 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
         view,
       })),
       Effect.timeout(OBSERVE_TIMEOUT),
-      Effect.catchTag("ServerLacks", (lack) => lackSentence(organizationId, lack.capability, { name: machine.name, daemonVersion: machine.runtime.daemon_version }).pipe(
+      Effect.catchTag("ServerLacks", (lack) => lackSentence(organizationId, lack.capability, { name: machine.name, daemonVersion: machine.runtime.daemon_version }, kind).pipe(
         Effect.map((lack): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false, lack })),
       )),
       Effect.orElseSucceed((): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false })),
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
 
-const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (organizationId: string, capability: string, server: { readonly name: string; readonly daemonVersion: string }) {
-  const feature = requirementFor(capability) ?? requirements.volumeMove;
+/** What a run of each kind is called when a Server can't run it. */
+const RUN_FEATURES = {
+  mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
+} satisfies Record<VolumeRunKind, string>;
+
+const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (
+  organizationId: string, capability: string, server: { readonly name: string; readonly daemonVersion: string }, kind: VolumeRunKind | undefined,
+) {
+  const required = requirementFor(capability) ?? requirements.volumeMove;
+  const feature: Requirement = kind === undefined ? required : { capability: required.capability, feature: RUN_FEATURES[kind] };
   const line = releaseLine(server.daemonVersion);
   const release: ReleaseState = line === null ? { state: "resolved", release: null } : yield* organizationReleaseChannel(organizationId).pipe(
     Effect.flatMap((channel) => channelRelease(channel, line)),
@@ -590,7 +598,7 @@ const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (organization
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume);
+  return yield* observeVolumeMembers(ctx.organizationId, ctx.dockerVolume, ctx.kind);
 });
 
 /** Above every lease this Volume's runs took and every record its participants hold, so a Cloud database reset can't reuse one. */

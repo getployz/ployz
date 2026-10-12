@@ -601,7 +601,22 @@ describe("volume runs", () => {
 
         expect(output.result).toMatchObject({ refused: { code: "server_lacks" } });
         expect(verbs).toEqual([]);
-        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume move needs a newer Ployz on fsn-2. 0.2.5 is out.", lease: null }]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume mirror needs a newer Ployz on fsn-2. 0.2.5 is out.", lease: null }]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("delete_mirror: a lacking Server's refusal names Mirror removal", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy("10"), lease: null, lacks: "0.2.4" };
+      vi.stubGlobal("fetch", async () => new Response("v0.2.5\n"));
+      try {
+        const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null } });
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Mirror removal needs a newer Ployz on fsn-2. 0.2.5 is out." }]);
       } finally {
         vi.unstubAllGlobals();
       }
