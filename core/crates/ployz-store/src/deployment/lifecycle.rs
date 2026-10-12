@@ -345,7 +345,11 @@ fn retried(
             TargetNode::Service {
                 id, name, removals, ..
             } if !removals.is_empty() => {
-                if latest.services.iter().any(|service| service.id == id.as_str()) {
+                if latest
+                    .services
+                    .iter()
+                    .any(|service| service.id == id.as_str())
+                {
                     continue;
                 }
                 let runtimes = ServiceRemovals::from_names(
