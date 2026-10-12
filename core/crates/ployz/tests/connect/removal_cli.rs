@@ -403,6 +403,7 @@ async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
     );
     let mut service = DiscoveryService::new(test_description());
     service.machines.push(machine('b', "two"));
+    service.storage_capacity = Some(empty_storage());
     let (output, service) = remove_cloud_server(
         service,
         "two",
