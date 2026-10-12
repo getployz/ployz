@@ -1,13 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { handleAgentRequest } from "#/routes/api/cli/agent/-agent.handler";
-import { publicErrorResponse } from "#/server/public-error";
-import { runAppEffect } from "#/server/run.server";
+import { serveCli } from "#/routes/api/cli/-handlers";
 
 export const Route = createFileRoute("/api/cli/agent/act")({
   server: {
     handlers: {
       POST: async ({ request }) =>
-        runAppEffect(handleAgentRequest(request, "act"), { signal: request.signal }).catch(publicErrorResponse),
+        serveCli(request, handleAgentRequest(request, "act")),
     },
   },
 });

@@ -67,6 +67,9 @@ export function manifest() {
 
 export const MANIFEST_REVISION = manifest().revision;
 
+/** On every `/api/cli` reply, so `ployz` sees its cached manifest is stale on whatever call it makes next. */
+export const MANIFEST_HEADER = "x-ployz-manifest";
+
 export function findCommand(name: string): Published | undefined {
   return COMMANDS.find((command) => command.name === name);
 }
