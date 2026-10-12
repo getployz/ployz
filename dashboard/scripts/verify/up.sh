@@ -93,6 +93,7 @@ INNGEST_SIGNING_KEY=signkey-verify-00
 $inngest
 PLOYZ_HOSTED_DNS_URL=$hosted_dns
 APP_ENCRYPTION_SECRET=$secret-encryption
+UPTIME_ENABLED=true
 VERIFY_SESSION_TOKEN=$(printf 'session:%s' "$wt" | sha256sum | cut -c1-32)
 EOF
 set -a; . "$run/env"; set +a
