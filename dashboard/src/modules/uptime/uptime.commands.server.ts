@@ -95,7 +95,7 @@ const shown = (name: string, uptime: ServiceUptime): typeof Shown.Type => ({
   checking: uptime.probe !== null && !uptime.probe.answered,
   uptime: uptimePercent(uptime.uptime),
   regions: Object.keys(uptime.regions).sort().map((code) => {
-    const latest = (uptime.checks ?? []).filter((result) => result.region === code).at(-1);
+    const latest = uptime.latest.find((result) => result.region === code);
     const error = uptime.points.filter((point) => point.region === code && point.lastError !== null).at(-1)?.lastError ?? null;
     return {
       region: regionName(uptime.regions, code),

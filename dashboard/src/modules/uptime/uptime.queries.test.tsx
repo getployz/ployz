@@ -33,7 +33,7 @@ it("reads the Service's probe as pending before Cloud answers, and puts it back 
   const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
   const uptime: ServiceUptime = {
     check: { id: "check", url: "https://web.example", intervalSeconds: 60 },
-    status: "up", uptime: 1, points: [], checks: [], incidents: [], regions: {}, probe: null,
+    status: "up", uptime: 1, points: [], checks: [], latest: [], incidents: [], regions: {}, probe: null,
   };
   const day = ["uptime", "env", "web", "-24h", "now"];
   const other = ["uptime", "env", "api", "-24h", "now"];

@@ -128,6 +128,8 @@ export type ServiceUptime = {
    * older than raw retention, which the strip draws as spans of time.
    */
   readonly checks: readonly UptimeCheckResult[] | null;
+  /** Each region's newest result of any kind in the check window within raw retention, at every range length. */
+  readonly latest: readonly UptimeCheckResult[];
   /** Open and closed incidents that overlap the check window, newest first. */
   readonly incidents: readonly UptimeIncidentEntry[];
   /** Every region the install lists and every region the points, checks and incidents name, with its display name or null. */

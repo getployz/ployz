@@ -220,7 +220,7 @@ it.live("answers approvals only through ployz, records who decided, and keeps th
     ]);
   }));
 
-it.live("shows a Service's 500s and open incident by name, so an agent diagnosing it hears what the check got back", () =>
+it.live("shows a Service's 500s and open incident by name over a short range or a long one, so an agent diagnosing it hears what the check got back", () =>
   Effect.gen(function* () {
     const { route } = yield* parity();
     const shown = yield* route("uptime_show", { service: "web" });
@@ -234,6 +234,11 @@ it.live("shows a Service's 500s and open incident by name, so an agent diagnosin
         regions: [{ region: "eu-west", latest: { kind: "routine", verdict: "fail", answer: "500" } }],
         incidents: [{ closed_at: null, cause: "500", observations: [{ region: "eu-west", verdict: "fail", answer: "500" }] }],
       } },
+    });
+    const week = yield* route("uptime_show", { service: "web", from: "7d" });
+    expect(week).toMatchObject({
+      status: 200,
+      body: { output: { regions: [{ region: "eu-west", latest: { kind: "routine", verdict: "fail", answer: "500" } }] } },
     });
     const missing = yield* route("uptime_show", { service: "api" });
     expect(missing).toMatchObject({ body: { error: { code: "not_found" } } });

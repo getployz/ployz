@@ -22,7 +22,7 @@ const failing = (status: number): IncidentObservation =>
   ({ region: "ams", kind: "confirm", verdict: "fail", status, failedPhase: null, error: null, remoteIp: null, at: openedAt });
 const uptime = (patch: Partial<ServiceUptime> = {}): ServiceUptime => ({
   check: { id: "chk", url: "https://api.acme.dev/health", intervalSeconds: 300 },
-  status: "up", uptime: 1, points: [], checks: null, incidents: [], regions: {}, probe: null, ...patch,
+  status: "up", uptime: 1, points: [], checks: null, latest: [], incidents: [], regions: {}, probe: null, ...patch,
 });
 /** An open incident whose first failure answered `status`, over a range the check passed `share` of. */
 const down = (status: number, share: number) => uptime({
