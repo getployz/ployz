@@ -490,3 +490,84 @@ fn kind(schema: &Value) -> Option<ArgKind> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+mod tests {
+    use super::*;
+
+    const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/published-manifest.json");
+
+    fn manifest() -> wire::Manifest {
+        serde_json::from_slice(FIXTURE).unwrap()
+    }
+
+    fn setup(home: &Path, cloud: &str) -> Setup {
+        Setup::beside(&home.join("config.yaml"), Some(cloud.to_owned()))
+    }
+
+    fn names(published: &Published) -> Vec<&str> {
+        published
+            .commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_kept_manifest_reads_back_with_every_entry_and_its_revision() {
+        let home = tempfile::tempdir().unwrap();
+        let setup = setup(home.path(), "https://cloud.test");
+        assert!(setup.cached().is_none(), "nothing before the first keep");
+        let manifest = manifest();
+        setup.keep(&manifest).unwrap();
+        let cached = setup.cached().expect("the kept manifest");
+        assert_eq!(cached.revision, manifest.revision);
+        assert_eq!(
+            names(&cached),
+            manifest
+                .commands
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_cache_file_written_for_another_cloud_never_answers() {
+        let home = tempfile::tempdir().unwrap();
+        let theirs = setup(home.path(), "https://theirs.test");
+        theirs.keep(&manifest()).unwrap();
+        let ours = setup(home.path(), "https://ours.test");
+        std::fs::copy(theirs.path(), ours.path()).unwrap();
+        assert!(
+            ours.cached().is_none(),
+            "a copied cache names the Cloud it came from"
+        );
+    }
+
+    #[test]
+    fn evict_drops_one_entry_and_keeps_the_rest() {
+        let home = tempfile::tempdir().unwrap();
+        let setup = setup(home.path(), "https://cloud.test");
+        let manifest = manifest();
+        setup.keep(&manifest).unwrap();
+        let gone = manifest.commands[0].name.clone();
+        setup.evict(&gone);
+        let cached = setup.cached().unwrap();
+        assert!(!names(&cached).contains(&gone.as_str()));
+        assert_eq!(cached.commands.len(), manifest.commands.len() - 1);
+        assert_eq!(
+            cached.revision, manifest.revision,
+            "eviction is not a refresh"
+        );
+    }
+
+    #[test]
+    fn evict_on_a_missing_cache_writes_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let setup = setup(home.path(), "https://cloud.test");
+        setup.evict("anything");
+        assert!(!setup.dir.exists());
+    }
+}
