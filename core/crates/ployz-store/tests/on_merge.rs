@@ -3183,6 +3183,47 @@ fn a_retry_takes_over_the_teardown_it_supersedes() {
     assert_eq!(removals, vec!["db".to_owned()]);
 }
 
+fn status(
+    store: &ConfigStore,
+    who: &Actor,
+    id: &ployz_store::DeploymentId,
+) -> ployz_store::DeploymentStatus {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap()
+        .deployment
+        .status
+}
+
+#[test]
+fn a_retry_from_before_the_merge_leaves_the_queued_teardown() {
+    for target in ["db", "worker"] {
+        let (store, who) = shop_with_nodes();
+        running(&store, &who);
+        watching(&store, &who);
+        let earlier = deploy_by_hand(&store, &who, &[target]);
+        cancel(&store, &who, &earlier);
+        remove_db(&store, &who);
+        merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+        let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+        let [queued] = pushed.admitted.as_slice() else {
+            panic!("one Deployment: {pushed:?}")
+        };
+
+        let refused = retry(&store, &who, &earlier).unwrap_err();
+        assert_eq!(
+            refused.code,
+            RpcErrorCode::Conflict,
+            "{target}: {refused:?}"
+        );
+        assert_eq!(
+            status(&store, &who, &queued.deployment.id),
+            ployz_store::DeploymentStatus::Queued,
+            "{target}"
+        );
+    }
+}
+
 #[test]
 fn a_retry_after_undo_never_tears_down_what_saved_holds_again() {
     let (store, who) = shop_with_lone_db();

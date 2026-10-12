@@ -327,18 +327,40 @@ pub(crate) fn retry(
 
 /// The targets and nodes a retry of `stored` ships: its own, but a targeted one
 /// tears down only what the latest Saved revision still lacks, as after an Undo, and
-/// takes over the teardown of the queued Deployment it supersedes.
+/// takes over the teardown of the queued Deployment it supersedes. A retry whose
+/// Saved revision still holds a Service that teardown retires is refused: it would
+/// run that Service again, or tear it down while deploying it, so the teardown stays.
 fn retried(
     tx: &mut dyn Tx,
     stored: &Stored,
 ) -> Result<(Vec<ServiceName>, Vec<TargetNode>), RpcError> {
     let environment = &stored.summary.environment_id;
+    let latest = crate::review::latest_saved(tx, environment)?.map(|latest| latest.intent);
+    let source = saved_at(tx, environment, stored.summary.saved)?;
+    let holds = |intent: &SavedEnvironmentIntent, id: &str| {
+        intent.services.iter().any(|service| service.id == id)
+    };
+    for row in &tx.query(
+        "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
+        &[environment.as_str().into()],
+    )? {
+        let queued: Vec<TargetNode> = row.json(0, "Deployment")?;
+        if queued.iter().filter(|node| node.retires()).any(|node| {
+            latest
+                .as_ref()
+                .is_some_and(|latest| !holds(latest, node.id()))
+                && holds(&source, node.id())
+        }) {
+            return Err(error::conflict(
+                "A teardown is queued: deploy instead",
+                json!({ "deployment": stored.summary.id }),
+            ));
+        }
+    }
     if stored.summary.services.is_empty() {
         return Ok((Vec::new(), stored.nodes.clone()));
     }
-    let latest = crate::review::latest_saved(tx, environment)?
-        .ok_or_else(|| error::corrupt("Saved State"))?
-        .intent;
+    let latest = latest.ok_or_else(|| error::corrupt("Saved State"))?;
     let mut nodes = Vec::new();
     for node in &stored.nodes {
         match node {
