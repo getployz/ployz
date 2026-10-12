@@ -250,3 +250,15 @@ it("reads a removed node as what the merge does to it, without its record", asyn
   fireEvent.click(list.getByRole("button", { name: "More for db" }));
   expect((await screen.findAllByRole("menuitem")).map((entry) => entry.textContent)).toEqual(["Exclude"]);
 });
+
+it("reads a Kept row of any kind as Kept, with nothing to do", async () => {
+  open({
+    list: onMerge([
+      ...rows,
+      row("mounts.data", { ride: "kept", production: "/data", preview: "/data", lands: "/data" }),
+    ]),
+  });
+  const list = await panel();
+  expect(item(list, "Kept").textContent).toBe("webMount of dataKept");
+  expect(list.queryByRole("button", { name: "More for Mount of data" })).toBeNull();
+});
