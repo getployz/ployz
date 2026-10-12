@@ -25,7 +25,7 @@ const loss = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", 
 const admitted = { ok: true, value: { written: "deployment", id: "d" } } as never;
 
 const admittedIds: string[] = [];
-const NO_LOSS: PlacementLoss = { items: [], losesWrites: false };
+const NO_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [] };
 
 function Deploy({ placementLoss }: { placementLoss: PlacementLoss }) {
   const { deploy, publish, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id), placementLoss);
@@ -77,8 +77,8 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   expect(test.admits()[1]).toMatchObject({ id: admittedIds[0] });
 });
 
-it("asks before a Deploy deletes a copy, before anything reaches the Store", async () => {
-  const test = setup({ items: [{ kind: "volume", name: "pg-data", detail: "web-2" }], losesWrites: false });
+it("asks before a Deploy deletes a copy, before anything reaches the Store, then admits accepting the Volume", async () => {
+  const test = setup({ items: [{ kind: "volume", name: "pg-data", detail: "web-2" }], losesWrites: false, accept: ["pg-data"] });
   test.write.mockResolvedValueOnce(admitted);
 
   act(() => { fireEvent.click(screen.getByText("Deploy now")); });
@@ -89,11 +89,11 @@ it("asks before a Deploy deletes a copy, before anything reaches the Store", asy
   fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
 
   await waitFor(() => expect(admittedIds).toHaveLength(1));
-  expect(test.admits()).toMatchObject([{ admit: "deploy", accept_volume_loss: [], version: "2:1:0", message: "Ship the api" }]);
+  expect(test.admits()).toMatchObject([{ admit: "deploy", accept_volume_loss: ["pg-data"], version: "2:1:0", message: "Ship the api" }]);
 });
 
 it("titles the ask Data loss when a restore drops writes", async () => {
-  setup({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true });
+  setup({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true, accept: ["pg-data"] });
   act(() => { fireEvent.click(screen.getByText("Deploy now")); });
   await screen.findByText("Data loss");
   expect(screen.queryByText("Deletes data")).toBeNull();

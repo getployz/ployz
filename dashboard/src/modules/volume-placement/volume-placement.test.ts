@@ -459,15 +459,16 @@ describe("changeSteps", () => {
 describe("placementLoss", () => {
   const lossOf = (members: Member[], placement: PlacementRow) => placementLoss(changes(members, placement));
 
-  it("names each copy a Deploy deletes, and asks nothing of a move that keeps every copy", () => {
+  it("names each copy a Deploy deletes and the Volume to accept, and asks nothing of a move that keeps every copy", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
-    expect(lossOf(members, row(["web-2"], { primary: "web-1" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-2" }], losesWrites: false });
-    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [], losesWrites: false });
+    expect(lossOf(members, row(["web-2"], { primary: "web-1" })))
+      .toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-2" }], losesWrites: false, accept: ["pg-data"] });
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [], losesWrites: false, accept: [] });
   });
 
   it("says a restore drops the unanswered primary's writes", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true });
+    expect(lossOf(members, row(["web-2"], { primary: "web-2" }))).toEqual({ items: [{ kind: "volume", name: "pg-data", detail: "web-1" }], losesWrites: true, accept: ["pg-data"] });
   });
 
   it("says a restore from a restore point drops the source's writes after it", () => {
@@ -477,7 +478,7 @@ describe("placementLoss", () => {
         sourceVolumeId: "src", sourceName: "data", dockerVolume: "ns_vol-v1", point: { guid: "11", name: "ployz-1", at: at.getTime() / 1000 },
       } },
     };
-    expect(lossOf([], seeded)).toEqual({ items: [{ kind: "volume", name: "data", detail: "changes after 10:36" }], losesWrites: true });
+    expect(lossOf([], seeded)).toEqual({ items: [{ kind: "volume", name: "data", detail: "changes after 10:36" }], losesWrites: true, accept: ["data"] });
   });
 });
 

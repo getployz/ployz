@@ -35,6 +35,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import { LeftNotForgotten, PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { organizationPairing } from "#/modules/runtime/tables";
+import { volumePlacement } from "#/modules/volume-placement/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { Database } from "#/server/database.server";
 import { fakeGithubApi } from "#/test/fake-github";
@@ -298,6 +299,36 @@ it.live(
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
         assert.strictEqual(sent.length, 3);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a Deploy meets the copies it takes before the Store sees it, on every path to the Store",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const organizationId = (yield* resolveCaller(new Headers({ cookie: alice }))).organization.id;
+        yield* enrollStoreServer(organizationId);
+        yield* request("write", alice, shop);
+        const VOLUME = "00000000-0000-4000-8000-000000000004";
+        yield* request("write", alice, { command: "create_volume", id: VOLUME, environment: here, name: "data", storage: { kind: "docker" }, mounts: [] });
+        const { drizzle } = yield* Database;
+        const web1 = "1".repeat(32) as MachineId;
+        const web2 = "2".repeat(32) as MachineId;
+        yield* drizzle.insert(volumePlacement).values({
+          volumeId: VOLUME, organizationId, environmentId: ENVIRONMENT, mirrors: [web2], staged: { primary: web1, mirrors: [], deletes: [] },
+        });
+        // No Server answers here, so the copy check fails closed; the Store never admits the Deploy.
+        const admitted = yield* request("write", alice, {
+          command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, accept_volume_loss: [],
+        });
+        assert.strictEqual(admitted.status, 503);
+        assert.strictEqual(admitted.json.error?.code, "unavailable");
+        assert.strictEqual((yield* request("read", alice, { query: "deployment", id: "00000000-0000-4000-8000-000000000101" })).status, 404);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
