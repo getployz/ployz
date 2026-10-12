@@ -880,7 +880,6 @@ fn removal_dependents(next: &Intent, removals: &[&PlannedRow]) -> BTreeMap<RowId
         .collect()
 }
 
-/// Whether `env` references a lineage it does not own, i.e. uses it live.
 /// What `service`'s cells leave out of its variables: each one's description and
 /// whether it is exported.
 fn labels(service: &SavedServiceIntent) -> BTreeMap<&str, (Option<&str>, bool)> {
@@ -891,6 +890,7 @@ fn labels(service: &SavedServiceIntent) -> BTreeMap<&str, (Option<&str>, bool)> 
         .collect()
 }
 
+/// Whether `env` references a lineage it does not own, i.e. uses it live.
 fn uses(env: &Intent, lineage: &str) -> bool {
     env.services
         .iter()
