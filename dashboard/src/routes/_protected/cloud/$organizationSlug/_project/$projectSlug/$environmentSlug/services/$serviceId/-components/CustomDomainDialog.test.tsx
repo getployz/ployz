@@ -61,6 +61,25 @@ describe("CustomDomainDialog", () => {
     );
   });
 
+  it("refuses a hostname that only lowercases to ASCII through Unicode", async () => {
+    render(
+      <CustomDomainDialog
+        defaultTargetPort={3000}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+    const save = screen.getByRole("button", { name: "Save route" });
+    fireEvent.change(screen.getByLabelText("Domain"), {
+      target: { value: "acme.com" },
+    });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+    fireEvent.change(screen.getByLabelText("Domain"), {
+      target: { value: "\u212Acme.com" },
+    });
+    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(true));
+  });
+
   it("enables saving a corrected port without requiring blur", async () => {
     const onSubmit = vi.fn();
     render(
