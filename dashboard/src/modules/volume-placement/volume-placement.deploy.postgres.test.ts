@@ -63,7 +63,7 @@ describe("deploying a Volume placement", () => {
   };
   const stageMove = async (to: string, mirrors: string[]) => {
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web(to), mirrors: [], deletes: [] }, mirrors: mirrors.map(web) }));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
   };
   const endRun = (id: string, state: string, message: string | null = null) =>
     harness.pool.query(`update volume_run set state = $2, message = $3, finished_at = now() where id = $1`, [id, state, message]);
@@ -103,7 +103,7 @@ describe("deploying a Volume placement", () => {
     if (started.kind !== "wait") throw new Error("expected a run");
     const unreached = { primary: web("web-1"), mirrors: [web("web-2")], deletes: [] };
     await run(stagePlacement(organizationId, { environment, volumeId: "vol2", staged: unreached, mirrors: [] }));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId, "vol2"], "dep-1"));
 
     await endRun(started.wait.runId, "failed", "web-2 did not answer");
     expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "failed", message: "data: web-2 did not answer" });
@@ -112,14 +112,14 @@ describe("deploying a Volume placement", () => {
     // Exactly what the user staged comes back, so editing a returned change sends the Store a placement it accepts.
     expect(rows.find((row) => row.volumeId === "vol2")).toEqual(expect.objectContaining({ staged: unreached, unreached: true, deploymentId: null }));
 
-    await run(stampPlacements(organizationId, "env-1", "dep-2"));
+    await run(stampPlacements(organizationId, ["vol2"], "dep-2"));
     expect((await run(listPlacements(organizationId))).find((row) => row.volumeId === "vol2")).toEqual(expect.objectContaining({ staged: unreached, unreached: false, deploymentId: "dep-2" }));
   });
 
   it("drops only the change that failed, returning the Volume's other changes", async () => {
     members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [web("web-3")] }, mirrors: [web("web-2")] }));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
     if (started.kind !== "wait") throw new Error("expected a run");
     expect((await harness.pool.query(`select kind from volume_run where id = $1`, [started.wait.runId])).rows).toEqual([{ kind: "delete_mirror" }]);
@@ -139,7 +139,7 @@ describe("deploying a Volume placement", () => {
       primary: web("web-1"), mirrors: [], deletes: [],
       seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
     } }));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId, "vol2"], "dep-1"));
     const seeding = await run(advancePlacement(organizationId, "dep-1", null, byVolume, answered));
     if (seeding.kind !== "wait") throw new Error("expected a run");
 
@@ -173,7 +173,7 @@ describe("deploying a Volume placement", () => {
       status = "cancelled";
       await run(releasePlacementClaims(organizationId, "dep-1"));
       status = "queued";
-      await run(stampPlacements(organizationId, "env-1", "dep-2"));
+      await run(stampPlacements(organizationId, [volumeId], "dep-2"));
       return members;
     });
 
@@ -190,7 +190,7 @@ describe("deploying a Volume placement", () => {
       members = [member("web-2", "writer"), member("web-1", "mirror")];
       const staged = { primary: web("web-2"), mirrors: [web("web-1")], deletes: [] };
       await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-1")] }));
-      await run(stampPlacements(organizationId, "env-1", "dep-1"));
+      await run(stampPlacements(organizationId, [volumeId], "dep-1"));
       expect(await run(advancePlacement(organizationId, "dep-1", null, handOver, answered))).toEqual({ kind: "done" });
       expect(await placement()).toMatchObject({ staged, deploymentId: "dep-2" });
     });
@@ -219,7 +219,7 @@ describe("deploying a Volume placement", () => {
       primary: web("web-1"), mirrors: [], deletes: [],
       seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
     } }));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId, "vol2"], "dep-1"));
 
     const seeding = await run(advancePlacement(organizationId, "dep-1", null, byVolume, answered));
     expect(seeding).toMatchObject({ kind: "wait", wait: { volumeId: "vol2", step: { mirrors: [] } } });
@@ -275,7 +275,7 @@ describe("deploying a Volume placement", () => {
       `insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ('vol3', $1, 'env-1', '[]', $2)`,
       [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed })],
     );
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId, "vol3"], "dep-1"));
 
     expect(await whileStoreWriting("vol3", () => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
     expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
@@ -290,7 +290,7 @@ describe("deploying a Volume placement", () => {
       `insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ('vol3', $1, 'env-1', '[]', $2)`,
       [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed })],
     );
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
 
     expect(await whileStoreWriting("vol3", () => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
     expect(await placement()).toMatchObject({ volumeId: "vol3", staged: { seed }, deploymentId: null });
@@ -302,7 +302,7 @@ describe("deploying a Volume placement", () => {
       primary: web("web-1"), mirrors: [], deletes: [],
       seed: { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol2", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } },
     } }));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, ["vol2"], "dep-1"));
     restoredStorage = { kind: "docker" };
 
     expect(await run(advancePlacement(organizationId, "dep-1", null, (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : members), answered))).toEqual({

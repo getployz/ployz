@@ -124,7 +124,8 @@ their recorded outcomes.
 ## Redeploy or cancel a deployment
 
 - **Redeploy**, on a failed, cancelled or unknown deployment, ships the same commit and settings
-  again. To ship a fix, change it and deploy instead.
+  again. Your staged changes, volume changes included, wait for your next deploy. To ship a fix,
+  change it and deploy instead.
 - **Cancel**, on a running deployment, stops it at its next step. What it already changed stays
   until your next deploy.
 - On a queued deployment, **Deploy now** starts it if nothing is running ahead of it, and **⋮ →

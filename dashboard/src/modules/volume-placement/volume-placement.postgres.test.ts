@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigCommand, ConfigStore, MachineId } from "@ployz/sdk";
+import type { ConfigCommand, ConfigCommitted, ConfigStore, MachineId } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -10,7 +10,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
-  deleteOldCopy, discardPlacement, listPlacements, placementAdmission, requestUnclaimedRun, stagePlacement, stampPlacements,
+  deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, stagePlacement, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -29,6 +29,13 @@ const organizationId = "00000000-0000-4000-8000-000000000f01";
 const volumeId = "vol1";
 const environment = { project: "shop", environment: "production" };
 const web = (name: string) => name.padEnd(32, "0") as MachineId;
+
+/** Polls until `ready`, or until `settled` ends first. */
+const waitFor = async (ready: () => Promise<boolean>, settled: Promise<unknown>) => {
+  let done = false;
+  void settled.finally(() => { done = true; });
+  while (!done && !(await ready())) await new Promise((resolve) => setTimeout(resolve, 10));
+};
 
 describe("volume placement", () => {
   let harness: PostgresTestHarness;
@@ -90,7 +97,7 @@ describe("volume placement", () => {
 
   it("hands the staged placement to the Deploy, and refuses Discard and new edits while it runs", async () => {
     await stage("web-2");
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     expect((await run(listPlacements(organizationId)))[0]?.deploymentId).toBe("dep-1");
     expect(await run(discardPlacement(organizationId, null, volumeId, environment))).toMatchObject({ ok: false, refusal: { code: "conflict" } });
     expect(await stage("web-3")).toMatchObject({ ok: false });
@@ -99,7 +106,7 @@ describe("volume placement", () => {
 
   it("discards once the Deploy has ended", async () => {
     await stage("web-2");
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     inFlight = false;
     expect(await run(discardPlacement(organizationId, null, volumeId, environment))).toMatchObject({ ok: true, placement: { staged: null, deploymentId: null } });
   });
@@ -107,22 +114,22 @@ describe("volume placement", () => {
   it("stamps only Volumes with something staged in that Environment", async () => {
     await stage("web-2");
     await run(discardPlacement(organizationId, null, volumeId, environment));
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     expect((await run(listPlacements(organizationId)))[0]?.deploymentId).toBeNull();
   });
 
   it("keeps a Deploy's claim on a placement it stamped while an edit was being checked", async () => {
     await stage("web-2");
-    between = { query: "volumes", run: () => run(stampPlacements(organizationId, "env-1", "dep-1")) };
+    between = { query: "volumes", run: () => run(stampPlacements(organizationId, [volumeId], "dep-1")) };
     expect(await stage("web-3")).toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
   });
 
   it("keeps a Deploy's claim on a placement it stamped while a Discard was being checked", async () => {
     await stage("web-2");
-    await run(stampPlacements(organizationId, "env-1", "dep-0"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-0"));
     inFlight = false;
-    between = { query: "deployment", run: () => run(stampPlacements(organizationId, "env-1", "dep-1")) };
+    between = { query: "deployment", run: () => run(stampPlacements(organizationId, [volumeId], "dep-1")) };
     expect(await run(discardPlacement(organizationId, null, volumeId, environment)))
       .toMatchObject({ ok: false, refusal: { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
@@ -130,7 +137,7 @@ describe("volume placement", () => {
 
   it("refuses edits and Discard when the Store can't say whether the Deploy still runs", async () => {
     await stage("web-2");
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     unreadable = true;
     const unchecked = { ok: false, refusal: { code: "unavailable" } };
     expect(await stage("web-3")).toMatchObject(unchecked);
@@ -161,7 +168,7 @@ describe("volume placement", () => {
 
   it("refuses deleting an old copy while a Deploy holds the Volume", async () => {
     await stage("web-1", ["web-2"]);
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
     expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
@@ -169,7 +176,7 @@ describe("volume placement", () => {
 
   it("says a Deploy is moving the Volume before it says a copy the Deploy takes is not old", async () => {
     await stage("web-3", ["web-2"]);
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
     expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
@@ -177,7 +184,7 @@ describe("volume placement", () => {
 
   it("requests a run once the Deploy that stamped the Volume has ended, as staging does, and not while it runs", async () => {
     await stage("web-1", ["web-2"]);
-    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const sync = () => run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
     expect(await sync()).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     inFlight = false;
@@ -187,7 +194,7 @@ describe("volume placement", () => {
 
   it("refuses a run when a Deploy stamps the Volume between the caller's check and the insert", async () => {
     await stage("web-1", ["web-2"]);
-    between = { query: "volumes", run: () => run(stampPlacements(organizationId, "env-1", "dep-1")) };
+    between = { query: "volumes", run: () => run(stampPlacements(organizationId, [volumeId], "dep-1")) };
     const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
     expect(requested).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
@@ -195,13 +202,24 @@ describe("volume placement", () => {
 
   describe("admitting a Deploy", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    let writes: ConfigCommand[];
+    // Runs while the Store writes: an edit staged after the check, before the stamp.
+    let during: (() => Promise<void>) | null;
+    beforeEach(() => { writes = []; during = null; });
+    const admitted = asTestDouble<ConfigCommitted>()({ written: "deployment", id: "dep-1", environment_id: "env-1", status: "admitted", checks: [] });
+    const write = (command: ConfigCommand) => Effect.promise(async () => {
+      writes.push(command);
+      await during?.();
+      return admitted;
+    });
     const admit = (accept: string[], version: string | null = "v1"): ConfigCommand =>
       ({ command: "admit", admit: "deploy", id: "dep-1", environment, services: [], version, accept_volume_loss: accept });
     const admission = (command: ConfigCommand, inspect: () => Effect.Effect<Member[], Error> = () => Effect.succeed(members)) =>
-      run(placementAdmission(organizationId, command, inspect).pipe(
-        Effect.map((admitted) => ({ ok: true as const, command: admitted })),
+      run(writeAdmitted(organizationId, command, write, inspect).pipe(
+        Effect.map(() => ({ ok: true as const, command: writes.at(-1) })),
         Effect.catchTag("StoreRefused", (error) => Effect.succeed({ ok: false as const, refusal: error.refusal })),
       ));
+    const holder = async () => (await run(listPlacements(organizationId)))[0]?.deploymentId;
 
     it("refuses a Deploy that deletes a copy until it accepts the Volume by name, as the Store refuses deleting one", async () => {
       await stage("web-1");
@@ -211,7 +229,10 @@ describe("volume placement", () => {
         details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-2") }], loss: "data" }], accept: ["data"], version: "v1" },
       } });
       expect(await admission(admit(["other"], null))).toMatchObject({ ok: false, refusal: { details: { accept: ["other", "data"], version: "diff-7" } } });
+      expect(writes).toEqual([]);
+      expect(await holder()).toBeNull();
       expect(await admission(admit(["data", "other"]))).toEqual({ ok: true, command: admit(["other"]) });
+      expect(await holder()).toBe("dep-1");
     });
 
     it("leaves the name with the Store when the Deploy deletes the Volume there too", async () => {
@@ -223,6 +244,7 @@ describe("volume placement", () => {
     it("refuses while a Server holding a copy doesn't answer", async () => {
       await stage("web-1");
       expect(await admission(admit(["data"]), () => Effect.fail(new Error("down")))).toMatchObject({ ok: false, refusal: { code: "unavailable" } });
+      expect(writes).toEqual([]);
     });
 
     it("passes a Deploy that keeps every copy, and any other command, through untouched", async () => {
@@ -230,6 +252,47 @@ describe("volume placement", () => {
       expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
       const publish: ConfigCommand = { command: "publish", environment, version: null, accept_volume_loss: [] };
       expect(await admission(publish, () => Effect.die("never inspected"))).toEqual({ ok: true, command: publish });
+    });
+
+    it.each<[string, ConfigCommand]>([
+      ["a Redeploy", { command: "admit", admit: "retry", id: "dep-1", deployment: "dep-0" }],
+      ["a shut down", { command: "admit", admit: "shut_down", id: "dep-1", environment, version: null, accept_volume_loss: [] }],
+    ])("leaves staged copies to the next Deploy on %s, which ships nothing staged", async (_, command) => {
+      await stage("web-1");
+      expect(await admission(command, () => Effect.die("never inspected"))).toEqual({ ok: true, command });
+      expect(await holder()).toBeNull();
+    });
+
+    it("refuses while a restore's Store write may still land in the Deploy, and leaves a gone one staged", async () => {
+      const seed = { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid: "11", name: "ployz-1", at: 1 } };
+      await harness.pool.query(
+        "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ('vol3', $1, 'env-1', '[]', $2)",
+        [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed })],
+      );
+      const staging = await harness.pool.connect();
+      try {
+        await staging.query("select pg_advisory_lock(hashtext('volume-restore:vol3'))");
+        expect(await admission(admit([]))).toMatchObject({ ok: false, refusal: { message: "This restore is still being staged. Try again in a minute." } });
+      } finally {
+        await staging.query("select pg_advisory_unlock_all()");
+        staging.release();
+      }
+      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+      expect((await harness.pool.query("select deployment_id from volume_placement where volume_id = 'vol3'")).rows).toEqual([{ deployment_id: null }]);
+    });
+
+    it("refuses an edit staged between the check and the stamp, and stamps what it checked", async () => {
+      await stage("web-1", ["web-2"]);
+      let edit: Promise<unknown> | undefined;
+      during = async () => {
+        edit = stage("web-1");
+        await waitFor(async () => (await harness.pool.query(
+          "select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock'",
+        )).rows[0].waiting > 0, edit);
+      };
+      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+      expect(await edit).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+      expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { mirrors: [web("web-2")] }, deploymentId: "dep-1" }]);
     });
   });
 });
