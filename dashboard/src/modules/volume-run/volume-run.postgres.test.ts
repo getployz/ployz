@@ -262,7 +262,7 @@ describe("volume runs", () => {
       ...["04-r0", "04-r1", "04-r2", "07-final"].flatMap((prefix) =>
         Array.from({ length: 6 }, (_, poll) => ({ id: `${prefix}-3-wait-${poll}`, handler: () => undefined }))),
       ...Array.from({ length: 6 }, (_, check) => ({ id: `10-promote-wait-${check}`, handler: () => undefined })),
-      ...["06-freeze", "11-start", "13-thaw"].flatMap((id) =>
+      ...["04-swap", "06-freeze", "11-start", "13-thaw"].flatMap((id) =>
         Array.from({ length: 6 }, (_, check) => ({ id: `${id}-wait-${check}`, handler: () => undefined }))),
     ],
   }).execute();
@@ -1144,6 +1144,18 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data is restored, but web-fsn-1 on fsn-1 isn't healthy" }]);
     });
 
+    it("a writer busy with the Volume is asked again until it swaps, and the run finishes", async () => {
+      failNext.set("set_volume_snapshot@fsn-1", busy);
+      const run = await requested(restoring(null));
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeUndefined();
+      expect(verbs).toEqual([
+        "stop_container@fsn-1(web-fsn-1)", "set_volume_snapshot@fsn-1", "set_volume_snapshot@fsn-1", "start_container@fsn-1(web-fsn-1)",
+      ]);
+      expect(await rows()).toMatchObject([{ kind: "restore_snapshot", state: "done" }]);
+    });
   });
 
   describe("requireOwner and SwitchError", () => {
