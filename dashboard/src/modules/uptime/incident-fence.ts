@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { UptimeExpect } from "./tables";
 
 /**
  * A config edit or disable, in one statement: bump the revision and close the open incident with a non-recovery
@@ -8,12 +9,13 @@ export const editUptimeCheckStatement = (input: {
   readonly id: string;
   readonly organizationId: string;
   readonly url: string;
+  readonly expect: UptimeExpect;
   readonly intervalSeconds: number;
   readonly timeoutMs: number;
   readonly enabled: boolean;
 }) => sql`
   WITH edited AS (
-    UPDATE uptime_check SET url = ${input.url}, interval_seconds = ${input.intervalSeconds}, timeout_ms = ${input.timeoutMs}, enabled = ${input.enabled},
+    UPDATE uptime_check SET url = ${input.url}, expect = ${input.expect}, interval_seconds = ${input.intervalSeconds}, timeout_ms = ${input.timeoutMs}, enabled = ${input.enabled},
            revision = revision + 1, updated_at = now()
     WHERE id = ${input.id} AND organization_id = ${input.organizationId}
     RETURNING id, enabled),

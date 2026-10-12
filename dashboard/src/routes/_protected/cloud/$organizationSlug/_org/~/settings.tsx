@@ -1,4 +1,5 @@
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Effect, Option, Schema } from "effect";
@@ -14,6 +15,8 @@ import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organi
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
 import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
 import { projectsQuery } from "#/modules/config-store/store-view.queries";
+import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
+import { SupportAccessSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/support-access-section";
 import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
 const settingsSectionSchema = Schema.Literals(["general", "builds"]);
@@ -36,6 +39,8 @@ export const Route = createFileRoute(
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { section = "general" } = Route.useSearch();
+  // Only a Cloud with Ployz support offers to let it in.
+  const supportAvailable = useQuery(organizationStateQueryOptions(organizationSlug)).data?.supportAvailable === true;
 
   return (
     <DashboardPage width="content">
@@ -44,6 +49,7 @@ function RouteComponent() {
         <div className="flex flex-col gap-6">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />
+          {supportAvailable ? <SupportAccessSection organizationSlug={organizationSlug} /> : null}
           <StoreOrganizationDanger organizationSlug={organizationSlug} />
         </div>
       )}

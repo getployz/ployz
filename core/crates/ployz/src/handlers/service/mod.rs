@@ -2,17 +2,18 @@ use std::collections::{HashMap, HashSet};
 
 use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use futures_util::future::join_all;
 
 use crate::cli::{base, positional, value};
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, HealthObservation,
-    LiveServices, MachineFailure, MachineId, MachineName, QualifiedService, RpcError,
-    ServiceObservation, ServiceSelector, select_service,
+    ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, HealthFailure,
+    HealthObservation, LiveServices, MachineFailure, MachineId, MachineName, QualifiedService,
+    RpcError, RpcErrorCode, ServiceObservation, ServiceSelector, select_service,
 };
 use serde::Serialize;
 
 use crate::{
-    cluster::ContainerObservationCondition,
+    cluster::{ContainerObservationCondition, HealthWaitError},
     ui::{Cell, Gaps, Table, Tone},
 };
 use ployz_core::EnvironmentValues;
@@ -399,7 +400,7 @@ async fn apply_service_action(
                 container_id: success.value,
             });
             if service_container_ids.contains(&success.value) {
-                changed.push(success.value);
+                changed.push((success.machine_id, success.value));
             }
         }
         for failure in outcomes.failures {
@@ -421,6 +422,45 @@ async fn apply_service_action(
     }
     let cancellation = cancellation_on_ctrl_c();
     let _parent = cancellation.clone().drop_guard();
+    if action == ContainerAction::Start {
+        // A start waits for each healthcheck the way a Deploy does, so a slow boot
+        // is not cut off by the Serving wait below.
+        let waits = join_all(changed.iter().map(|(machine_id, container_id)| async {
+            client
+                .wait_until_ready(machine_id, container_id, &cancellation)
+                .await
+        }))
+        .await;
+        let mut ready = Vec::with_capacity(changed.len());
+        for ((machine_id, container_id), wait) in changed.into_iter().zip(waits) {
+            let error = match wait {
+                Ok(()) => {
+                    ready.push((machine_id, container_id));
+                    continue;
+                }
+                Err(HealthWaitError::Inspect(error)) => error,
+                Err(HealthWaitError::Health(failure)) => unhealthy(&failure),
+            };
+            crate::ui::warn_cause(
+                format_args!(
+                    "{container_id} on {} did not become healthy",
+                    server(names, &machine_id)
+                ),
+                &error,
+            );
+            container_failures.push(ContainerFailure {
+                machine_id,
+                container_id,
+                error,
+            });
+            partial = true;
+        }
+        changed = ready;
+    }
+    let changed = changed
+        .into_iter()
+        .map(|(_, container_id)| container_id)
+        .collect::<Vec<_>>();
     // The action already committed: an unconfirmed wait is part of the result.
     let wait_error = client
         .wait_for_container_observations(
@@ -448,6 +488,15 @@ async fn apply_service_action(
         wait_error,
         partial,
     })
+}
+
+fn unhealthy(failure: &HealthFailure) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: format!("The Container's healthcheck did not pass: {failure}."),
+        details: serde_json::to_value(failure).unwrap_or_default(),
+        cause: Vec::new(),
+    }
 }
 
 fn change_selectors(

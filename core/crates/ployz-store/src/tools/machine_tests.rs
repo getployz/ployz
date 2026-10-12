@@ -1,10 +1,14 @@
+use std::sync::LazyLock;
+
 use super::*;
 
-const PLACE: Place = Place {
+static PLACE: LazyLock<Place> = LazyLock::new(|| Place {
     project: None,
     environment: None,
-    store: StoreAt::Cloud,
-};
+    store: StoreAt::Cloud {
+        organization: OrganizationId::parse("org").unwrap(),
+    },
+});
 
 fn cx<'run>(rounds: &'run [Round], tool: &str) -> Cx<'run> {
     Cx {

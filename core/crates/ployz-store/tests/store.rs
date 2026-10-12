@@ -556,7 +556,8 @@ fn wrong_paths_and_values_name_the_fix() {
             "watchPaths",
             "preferredBuilder",
             "env",
-            "mounts"
+            "mounts",
+            "domains"
         ])
     );
     let error = SettingPath::parse("web.evn.DATABASE_URL").unwrap_err();

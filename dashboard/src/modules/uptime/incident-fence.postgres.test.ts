@@ -50,7 +50,7 @@ async function observedClose(incidentId: string, revision: number) {
 
 function edit(checkId: string, enabled = true) {
   return harness.db.execute(editUptimeCheckStatement({
-    id: checkId, organizationId, url: "https://example.com/health", intervalSeconds: 300, timeoutMs: 10000, enabled,
+    id: checkId, organizationId, url: "https://example.com/health", expect: "below_400", intervalSeconds: 300, timeoutMs: 10000, enabled,
   }));
 }
 

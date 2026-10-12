@@ -56,7 +56,11 @@ export type Member =
       readonly pool: boolean;
       readonly view: VolumeCopyView;
     }
-  | { readonly machine: { readonly id: MachineId; readonly name: MachineName }; readonly answered: false };
+  | {
+      readonly machine: { readonly id: MachineId; readonly name: MachineName };
+      readonly answered: false;
+      readonly lack?: string;
+    };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 
 export function managementAddress(publicKey: readonly number[]): string {

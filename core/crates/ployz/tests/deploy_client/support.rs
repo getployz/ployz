@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use ployz::{
@@ -18,12 +19,12 @@ use ployz_core::{
     ContainerId, ContainerKind, ContainerList, ContainerObservationMap, ContainerPath,
     ContainerRuntimeObservation, ContractDescription, CreateVolumeReport, DockerVolume,
     DockerVolumeId, DockerVolumeName, ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
-    HealthObservation, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
-    MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
-    MachineRpc, MachineRpcServer, MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
-    ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    HealthObservation, HealthcheckSpec, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
+    MachineObservation, MachineRpc, MachineRpcServer, MembershipObservation, Namespace,
+    OpaquePayload, PROTOCOL_MAJOR, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
+    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -59,6 +60,9 @@ pub(super) struct DeployService {
     advertise_observations: bool,
     exec_exit: Option<i32>,
     runtime: ContainerRuntimeObservation,
+    /// When a Starting Container turns healthy and starts serving.
+    healthy_at: Option<tokio::time::Instant>,
+    effective_healthcheck: Option<HealthcheckSpec>,
     removed: Arc<Mutex<BTreeSet<ContainerId>>>,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
@@ -92,6 +96,8 @@ impl DeployService {
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
             },
+            healthy_at: None,
+            effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
             start_error: None,
             listing_failures: Vec::new(),
@@ -123,6 +129,8 @@ impl DeployService {
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,
             },
+            healthy_at: None,
+            effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
             start_error: None,
             listing_failures: Vec::new(),
@@ -178,6 +186,34 @@ impl DeployService {
             health: HealthObservation::Starting,
         };
         self
+    }
+
+    /// Containers report Starting until `after` passes.
+    pub(super) fn turn_healthy_after(mut self, after: Duration) -> Self {
+        self.runtime = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Starting,
+        };
+        self.healthy_at = Some(tokio::time::Instant::now() + after);
+        self
+    }
+
+    /// Containers report `healthcheck` as the one Docker runs for them.
+    pub(super) fn with_effective_healthcheck(mut self, healthcheck: HealthcheckSpec) -> Self {
+        self.effective_healthcheck = Some(healthcheck);
+        self
+    }
+
+    fn current_runtime(&self) -> ContainerRuntimeObservation {
+        if self
+            .healthy_at
+            .is_some_and(|at| tokio::time::Instant::now() >= at)
+        {
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            }
+        } else {
+            self.runtime.clone()
+        }
     }
 
     pub(super) fn crash_containers(mut self) -> Self {
@@ -610,8 +646,8 @@ impl MachineRpc for DeployService {
                         .unwrap_or_else(MachineId::random),
                     namespace: Namespace::parse("app").unwrap(),
                     kind: ContainerKind::ServiceContainer,
-                    runtime: self.runtime.clone(),
-                    effective_healthcheck: None,
+                    runtime: self.current_runtime(),
+                    effective_healthcheck: self.effective_healthcheck.clone(),
                     resolved_spec: spec,
                     address: None,
                     labels: BTreeMap::new(),

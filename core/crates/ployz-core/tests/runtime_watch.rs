@@ -228,6 +228,7 @@ fn expected_frame() -> RuntimeWatchFrame {
                     kernel_version: "6.1.0".into(),
                     memory_total_bytes: None,
                     running_builds: 0,
+                    capabilities: BTreeSet::new(),
                 },
                 build_concurrency: None,
                 },

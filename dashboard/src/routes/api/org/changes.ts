@@ -2,8 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import { collectionsOf } from "#/collections/change-sources";
 import { currentChangeCursor, readChangeWindow } from "#/modules/organization/change-log.server";
+import { authorizeRequest } from "#/modules/organization/access.server";
 import { organizationSlugSchema } from "#/modules/organization/tables";
-import { authorizeRuntimeOrganization } from "#/modules/runtime/authorize-runtime-organization.server";
 import { handleOrgChangesRequest } from "#/routes/api/org/-changes.handler";
 import { publicErrorResponse, Validation } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
@@ -20,7 +20,9 @@ export const Route = createFileRoute("/api/org/changes")({
         if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "A valid organization slug is required" }));
         return handleOrgChangesRequest(request, search.value.organizationSlug, {
           authorize: (organizationSlug) =>
-            runAppEffect(authorizeRuntimeOrganization({ headers: request.headers, organizationSlug }), { signal: request.signal }),
+            runAppEffect(authorizeRequest(request.headers, organizationSlug, "operate").pipe(
+              Effect.map((access) => ({ organizationId: access.organization.id })),
+            ), { signal: request.signal }),
           currentCursor: () => runAppEffect(currentChangeCursor(), { signal: request.signal }),
           readChanges: (input) =>
             runAppEffect(readChangeWindow(input).pipe(

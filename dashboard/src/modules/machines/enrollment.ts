@@ -58,6 +58,7 @@ const ENROLL_REGISTER_RUNTIME: MachineRuntime = {
   os_pretty_name: "",
   kernel_version: "",
   running_builds: 0,
+  capabilities: [],
 };
 
 function wireGuardPublicKeyFromDisplay(display: string): number[] | null {

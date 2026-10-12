@@ -330,7 +330,7 @@ impl Tool for DeployInput {
     const READ_ONLY: bool = false;
 
     fn example() -> Value {
-        json!({ "services": ["web"], "message": "Raise web's log level", "request_key": "deploy-web-0001" })
+        json!({ "services": ["web"], "message": "Raise web's log level", "request_key": "h4Rv9sNb6YeD" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {

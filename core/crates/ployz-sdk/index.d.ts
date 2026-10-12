@@ -55,10 +55,12 @@ import type {
   RemoveVolumesRequest,
   RequestedServiceSpec,
   RpcError as RpcErrorPayload,
+  RpcErrorCode,
   RuntimeWatchView,
   ContainerLogRecord,
 } from "./generated/payloads";
 export * from "./generated/payloads";
+export type { CapabilityName } from "./generated/capabilities";
 import type {
   CommitRequest,
   CopyObservation,
@@ -144,7 +146,11 @@ export type LogFilter = {
 /** What a line says about itself; a line that says nothing is `info`, stderr included. */
 export type LogLevel = "error" | "warn" | "info" | "debug";
 export type LogRecord = ContainerLogRecord & { id: string; level: LogLevel };
-export type LogSourceError = { type: "source_error"; machineId: string; containerId: string; message: string };
+/** `capability` names what the Server lacks. */
+export type LogSourceError = {
+  type: "source_error"; machineId: string; containerId: string; message: string;
+  code?: RpcErrorCode; capability?: string;
+};
 /** A container whose source failed has left the Runtime Watch; nothing more will come from it. */
 export type LogSourceGone = { type: "source_gone"; machineId: string; containerId: string };
 export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError | LogSourceGone;
@@ -160,7 +166,7 @@ export type LogExit = {
   timestampNanos: string; exitCode: number | null; oomKilled: boolean;
 };
 /** A Server whose Log Store didn't answer, and why. */
-export type LogMachineFailure = { machineId: string; machineName: string; message: string };
+export type LogMachineFailure = { machineId: string; machineName: string; message: string; code?: RpcErrorCode; capability?: string };
 /** Without `cursor`, the first page starts at each Server's newest row, or before `before` (Unix nanoseconds). */
 export type LogHistoryOptions = WatchOptions & { filter: LogFilter; cursor?: string; before?: string; limit?: number };
 /** Newest first across every Server; `cursor` is null once none has anything older. */
@@ -359,8 +365,12 @@ export declare class Client {
   }>;
   /** Stop one Container. A rejection with `unavailable` means the stop may have happened. */
   stopContainer(machine: string, container: string): Promise<void>;
-  /** Start one Container. True once it serves; false when it started but wasn't seen serving in time. */
-  startContainer(machine: string, container: string): Promise<boolean>;
+  /**
+   * Start one Container and wait for it the way a Deploy does: `serving` once it serves,
+   * `unconfirmed` when it started but wasn't seen serving in time, `unhealthy` when it
+   * failed its healthcheck or didn't pass it before its deadline.
+   */
+  startContainer(machine: string, container: string): Promise<"serving" | "unconfirmed" | "unhealthy">;
   /** Container `container` on `machine` as its daemon holds it, its spec's environment values included. */
   inspectContainer(machine: MachineTarget, container: string): Promise<{ container: ContainerObservation }>;
   /**

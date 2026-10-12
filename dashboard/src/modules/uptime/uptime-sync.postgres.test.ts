@@ -96,7 +96,15 @@ const setup = Effect.fn(function* () {
   /** `program` inside one open transaction, as a sync that has not committed yet. */
   const inTransaction = <A, E>(program: Effect.Effect<A, E, Database>) =>
     Effect.gen(function* () { return yield* (yield* Database).transaction(program); }).pipe(Effect.provide(services));
-  return { query, apply, sync, syncProbing, checks, deliver, runBackfill, inTransaction };
+  /** The control plane's own open at revision 1, with its literals in place of the Rust checker's parameters. */
+  const openIncident = Effect.fn(function* (checkId: string) {
+    const evidence = `'${JSON.stringify({ observations: [] })}'`;
+    const opened = randomUUID();
+    const literals = [`'${checkId}'`, "1", `'${opened}'`, "now()", evidence, evidence];
+    yield* query(sql.raw(controlPlaneStatements.open.replace(/\$(\d)/g, (_, n: string) => literals[Number(n) - 1] ?? "")));
+    return opened;
+  });
+  return { query, apply, sync, syncProbing, checks, deliver, runBackfill, inTransaction, openIncident };
 });
 
 const none: Healthcheck = { type: "none" };
@@ -142,21 +150,51 @@ it.live("an unchanged URL writes nothing", () => Effect.gen(function* () {
   expect(before).toEqual([expect.objectContaining({ revision: 1 })]);
 }));
 
+it.live("a check on an HTTP healthcheck path passes below 400, and one on / passes below 500", () => Effect.gen(function* () {
+  const { apply, sync, checks } = yield* setup();
+  yield* apply({ prefixes: ["web-shop"], healthcheck: none });
+  yield* sync;
+  expect(yield* checks).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/`, expect: "below_500" })]);
+  yield* apply({ prefixes: ["web-shop"], healthcheck: http("/healthz") });
+  yield* sync;
+  expect(yield* checks).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/healthz`, expect: "below_400" })]);
+}));
+
 it.live("a URL change bumps the revision and closes the open incident as check_changed with no alert", () => Effect.gen(function* () {
-  const { apply, sync, checks, query } = yield* setup();
+  const { apply, sync, checks, query, openIncident } = yield* setup();
   yield* apply({ prefixes: ["web-shop"], healthcheck: none });
   yield* sync;
   const [created] = yield* checks;
   if (created === undefined) throw new Error("no check");
-  const evidence = `'${JSON.stringify({ observations: [] })}'`;
-  const opened = randomUUID();
-  // The control plane's own open, at revision 1, with its literals in place of the Rust checker's parameters.
-  const literals = [`'${created.id}'`, "1", `'${opened}'`, "now()", evidence, evidence];
-  yield* query(sql.raw(controlPlaneStatements.open.replace(/\$(\d)/g, (_, n: string) => literals[Number(n) - 1] ?? "")));
+  const opened = yield* openIncident(created.id);
 
   yield* apply({ prefixes: ["web-shop"], healthcheck: http("/up") });
   yield* sync;
-  expect(yield* checks).toEqual([expect.objectContaining({ id: created.id, url: `https://web-shop.${CLUSTER_DOMAIN}/up`, revision: 2 })]);
+  expect(yield* checks).toEqual([expect.objectContaining({
+    id: created.id, url: `https://web-shop.${CLUSTER_DOMAIN}/up`, expect: "below_400", revision: 2,
+  })]);
+  expect(yield* query(sql`select id, closed_by from uptime_incident`)).toEqual([{ id: opened, closed_by: { kind: "check_changed" } }]);
+  expect(yield* query(sql`select incident_id, kind from uptime_alert`)).toEqual([{ incident_id: opened, kind: "opened" }]);
+
+  yield* apply({ prefixes: ["web-shop"], healthcheck: none });
+  yield* sync;
+  expect(yield* checks).toEqual([expect.objectContaining({ url: `https://web-shop.${CLUSTER_DOMAIN}/`, expect: "below_500", revision: 3 })]);
+}));
+
+// Checks created before below_500 existed hold the old default at /; this is how they converge.
+it.live("a pass-rule change alone bumps the revision and closes the open incident as check_changed", () => Effect.gen(function* () {
+  const { apply, sync, checks, query, openIncident } = yield* setup();
+  yield* apply({ prefixes: ["web-shop"], healthcheck: none });
+  yield* sync;
+  const [created] = yield* checks;
+  if (created === undefined) throw new Error("no check");
+  yield* query(sql`update uptime_check set expect = 'below_400' where id = ${created.id}`);
+  const opened = yield* openIncident(created.id);
+
+  yield* sync;
+  expect(yield* checks).toEqual([expect.objectContaining({
+    id: created.id, url: `https://web-shop.${CLUSTER_DOMAIN}/`, expect: "below_500", revision: 2,
+  })]);
   expect(yield* query(sql`select id, closed_by from uptime_incident`)).toEqual([{ id: opened, closed_by: { kind: "check_changed" } }]);
   expect(yield* query(sql`select incident_id, kind from uptime_alert`)).toEqual([{ incident_id: opened, kind: "opened" }]);
 }));

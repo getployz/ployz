@@ -6,7 +6,7 @@ import { XIcon } from "lucide-react";
 import type { ServiceListing } from "@ployz/sdk";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { Button } from "#/components/ui/button";
-import { Card } from "#/components/ui/card";
+import { Card, CardContent } from "#/components/ui/card";
 import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
@@ -39,6 +39,7 @@ import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modu
 import type { RegionNames, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
 import { type UptimeScope, usePrefetchServiceUptime, useRequestUptimeProbe, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
+import { HealthcheckField, type HealthcheckSetting } from "../HealthcheckField";
 import { useTimeZone } from "#/utils/time-zone";
 import { atFormat, MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
 import { RangePicker } from "./RangePicker";
@@ -50,8 +51,8 @@ type MonitoringProps = {
   range: UptimeRange;
   onRange: (range: UptimeRange) => void;
   addDomain: ReactNode;
-  /** Opens the healthcheck setting, for a check that never passed with a 4xx. */
-  fixPath: ReactNode;
+  /** Edited in place while the check's path answers with a 4xx. */
+  healthcheck: HealthcheckSetting;
 };
 
 /**
@@ -152,7 +153,7 @@ const PREVIEW_METRICS = import.meta.env.DEV;
  * Status, history, then every metric on one time axis, all over one range. Incidents shade each chart; a click tells the
  * story. A new range keeps the old one, dimmed, until its read lands.
  */
-function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPath, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
+function Monitoring({ organizationSlug, service, range: chosen, addDomain, healthcheck, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
   const range = useDeferredValue(chosen);
   const { data: uptime, dataUpdatedAt } = useServiceUptime(scope, service.id, range);
   const checkNow = useRequestUptimeProbe(scope, service.id);
@@ -224,14 +225,16 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <StatusLine tone={STATUS_TONES[state]}>
-          {STATUS_WORDS[state]}
+          <span className="shrink-0">{STATUS_WORDS[state]}</span>
           <span className="flex min-w-0 items-center gap-1 font-normal text-muted-foreground tabular-nums">
             {state === "no_domain" ? <span>· Needs a public domain</span> : null}
             {state === "up" && share !== null ? <span>· {share}</span> : null}
             {open ? (
-              <Button variant="link" size="sm" className="text-muted-foreground"
+              <Button variant="link" size="sm" className="min-w-0 shrink text-muted-foreground"
                 onClick={(event) => setPicked({ incident: open, x: event.clientX, y: event.clientY })}>
-                · {formatSpan(now - Date.parse(open.openedAt))} · {causeText(open)}
+                · {formatSpan(now - Date.parse(open.openedAt))} ·
+                {uptime ? <span className="truncate font-mono">{checkedUrl(uptime.check.url)}</span> : null}
+                → {causeText(open)}
               </Button>
             ) : null}
             {uptime && !open ? <span className="truncate font-mono">· {checkedUrl(uptime.check.url)}</span> : null}
@@ -239,7 +242,6 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
         </StatusLine>
         <div className="flex items-center gap-2">
           {state === "no_domain" ? addDomain : null}
-          {wrongPath ? fixPath : null}
           {uptime ? (
             <Button variant="outline" size="sm" disabled={checking} onClick={() => checkNow.mutate()}>
               {checking ? <Spinner data-icon="inline-start" /> : null}
@@ -254,6 +256,14 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
           ) : toggle}
         </div>
       </div>
+      {wrongPath && uptime ? (
+        <Card size="sm">
+          <CardContent>
+            <HealthcheckField {...healthcheck} label="Healthcheck path" timeout={false}
+              description={<>Your app answers <span className="font-mono">{new URL(uptime.check.url).pathname}</span> with {causeText(wrongPath)}.</>} />
+          </CardContent>
+        </Card>
+      ) : null}
       <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
         from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
       <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}>
@@ -291,8 +301,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, fixPa
         {picked ? (
           <PopoverContent side="bottom" align="start"
             anchor={{ getBoundingClientRect: () => DOMRect.fromRect({ x: picked.x, y: picked.y, width: 0, height: 0 }) }}>
-            <Evidence incident={picked.incident} regions={uptime?.regions ?? {}} now={now} at={at} onZoom={zoom?.incident.id === picked.incident.id ? null : () => zoomTo(picked.incident)}
-              fixPath={picked.incident.id === wrongPath?.id ? fixPath : null} />
+            <Evidence incident={picked.incident} regions={uptime?.regions ?? {}} now={now} at={at} onZoom={zoom?.incident.id === picked.incident.id ? null : () => zoomTo(picked.incident)} />
           </PopoverContent>
         ) : null}
       </Popover>
@@ -423,13 +432,12 @@ function HistoryStrip({ bars, regions, at, from, to, zoomed, onZoom }: {
 }
 
 /** What opened an incident: when, how long, and what each region got back. */
-function Evidence({ incident, regions, now, at, onZoom, fixPath }: {
+function Evidence({ incident, regions, now, at, onZoom }: {
   incident: UptimeIncidentEntry;
   regions: RegionNames;
   now: number;
   at: Intl.DateTimeFormat;
   onZoom: (() => void) | null;
-  fixPath: ReactNode;
 }) {
   const span = incidentSpan(incident, now);
   return (
@@ -454,12 +462,7 @@ function Evidence({ incident, regions, now, at, onZoom, fixPath }: {
           })}
         </dd>
       </dl>
-      {onZoom || fixPath ? (
-        <div className="flex gap-2">
-          {fixPath}
-          {onZoom ? <Button variant="outline" size="sm" onClick={onZoom}>Zoom in</Button> : null}
-        </div>
-      ) : null}
+      {onZoom ? <Button variant="outline" size="sm" className="self-start" onClick={onZoom}>Zoom in</Button> : null}
     </>
   );
 }

@@ -1,7 +1,11 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use ployz_core::{ContainerKind, Namespace, ServiceName};
+use ployz_core::{
+    ConfiguredHealthcheck, ContainerKind, HealthcheckCommand, HealthcheckSpec, Namespace,
+    ServiceName,
+};
 use ployz_store::tools::cloud::ContainerState;
+use tokio::time::Instant;
 
 use super::{ServiceCopy, Started, copies_of, start_one};
 use crate::global_fixtures::{container_id, machine, running_on};
@@ -63,4 +67,39 @@ async fn a_start_the_machine_never_sees_serve_is_unconfirmed() {
         .with_observation_barrier()
         .with_dropped_observations();
     assert_eq!(started(service).await, Started::Unconfirmed);
+}
+
+// Real Machines are on the network, so these wait in real time with short healthchecks.
+// The shared wait's own tests cover deadlines past the Serving wait in paused time.
+#[tokio::test]
+async fn a_start_returns_only_once_its_healthcheck_passes() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_observation_barrier()
+        .turn_healthy_after(Duration::from_millis(1_500));
+    let begun = Instant::now();
+    assert_eq!(started(service).await, Started::Serving);
+    assert!(begun.elapsed() >= Duration::from_millis(1_500));
+}
+
+#[tokio::test]
+async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline() {
+    let service = support::DeployService::new(support::machine('a', "one"))
+        .with_observation_barrier()
+        .hold_health()
+        .with_effective_healthcheck(HealthcheckSpec::Configured(ConfiguredHealthcheck {
+            test: HealthcheckCommand::parse(["CMD", "true"]).unwrap(),
+            interval_millis: None,
+            timeout_millis: None,
+            start_period_millis: None,
+            start_interval_millis: None,
+            retries: None,
+            deadline_millis: Some(1_000),
+        }));
+    let begun = Instant::now();
+    assert_eq!(started(service).await, Started::Unhealthy);
+    let waited = begun.elapsed();
+    assert!(
+        (Duration::from_secs(1)..Duration::from_secs(5)).contains(&waited),
+        "{waited:?}"
+    );
 }

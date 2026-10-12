@@ -350,6 +350,7 @@ fn reopening_a_participating_machine_refreshes_runtime_metadata() {
         kernel_version: "stale".into(),
         memory_total_bytes: None,
         running_builds: 0,
+        capabilities: Default::default(),
     })
     .unwrap();
     fs::write(&path, serde_json::to_vec_pretty(&stale).unwrap()).unwrap();

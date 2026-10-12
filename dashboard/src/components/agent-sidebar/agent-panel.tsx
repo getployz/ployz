@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Fragment, useEffect, useMemo, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { EventType, type StreamChunk } from "@tanstack/ai/client";
 import { fetchServerSentEvents, useChat, type UIMessage } from "@tanstack/ai-react";
@@ -22,6 +22,7 @@ import {
 import { Spinner } from "#/components/ui/spinner";
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { isPageContext, type PageContext } from "#/modules/agent/page-context";
+import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
 import { toolOutcome, ToolRow } from "./tool-row";
@@ -70,10 +71,12 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
   // useChat hands new forwardedProps to its client on every change of identity.
   const forwardedProps = useMemo(() => ({ page }), [page]);
   const [retryAt, setRetryAt] = useState<number | null>(null);
+  const [tooLong, setTooLong] = useState(false);
   const onChunk = (chunk: StreamChunk) => {
     if (chunk.type !== EventType.RUN_ERROR) return;
     const wait = chunk.metadata?.tanstack?.retryAfterMs;
     setRetryAt(wait === undefined ? null : Date.now() + wait);
+    setTooLong(chunk.code === ("chat_too_long" satisfies Failure));
   };
   const chat = useChat({ connection, threadId, persistence: true, interrupts: [approvalInterrupt], live: true, forwardedProps, onChunk });
   const bound = chat.interrupts.flatMap((interrupt) =>
@@ -138,10 +141,14 @@ function Conversation({ organizationSlug, scope, page, threadId, onNewChat }: {
                     <Button size="sm" variant="outline" onClick={onNewChat}>New chat</Button>
                   </div>
                 ) : (
-                  <Failed message={chat.error.message} retryAt={retryAt} onRetry={() => {
-                    setRetryAt(null);
-                    void chat.reload();
-                  }} />
+                  <Failed message={chat.error.message}>
+                    {tooLong
+                      ? <Button size="sm" variant="outline" className="self-start" onClick={onNewChat}>New chat</Button>
+                      : <RetryButton retryAt={retryAt} onRetry={() => {
+                        setRetryAt(null);
+                        void chat.reload();
+                      }} />}
+                  </Failed>
                 )}
               </MessageScrollerItem>
             )}
@@ -166,17 +173,22 @@ function useSecondsUntil(at: number | null) {
   return Math.max(0, left);
 }
 
-/** A reply that failed. Retry waits as long as a rate-limited model asked. */
-function Failed({ message, retryAt, onRetry }: { message: string; retryAt: number | null; onRetry: () => void }) {
-  const wait = useSecondsUntil(retryAt);
+/** A reply that failed, and what the member can do about it. */
+function Failed({ message, children }: { message: string; children: ReactNode }) {
   return (
     <Message>
       <MessageContent>
         <Bubble variant="destructive"><BubbleContent role="alert">{message}</BubbleContent></Bubble>
-        <Button size="sm" variant="outline" className="self-start" disabled={wait > 0} onClick={onRetry}>{wait > 0 ? `Retry in ${wait}s` : "Retry"}</Button>
+        {children}
       </MessageContent>
     </Message>
   );
+}
+
+/** Retry waits as long as a rate-limited model asked. */
+function RetryButton({ retryAt, onRetry }: { retryAt: number | null; onRetry: () => void }) {
+  const wait = useSecondsUntil(retryAt);
+  return <Button size="sm" variant="outline" className="self-start" disabled={wait > 0} onClick={onRetry}>{wait > 0 ? `Retry in ${wait}s` : "Retry"}</Button>;
 }
 
 /** Replies stream in, so remend closes the bold or code span still being written. A wide table scrolls on its own. */

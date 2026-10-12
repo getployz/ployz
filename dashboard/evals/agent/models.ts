@@ -15,7 +15,7 @@ const Pinned = Schema.Struct({
 
 /**
  * The models `models.json` pins, each with its provider: the simulated member's, and the agents' under test. `target` is
- * the release target and `portable` the cheap model of another vendor; the release gate holds both to its floors.
+ * the release target and `portable` the cheap model of another vendor; `blockers` holds both to their floors.
  */
 export const MODELS = Schema.decodeUnknownSync(Pinned)(pinned);
 

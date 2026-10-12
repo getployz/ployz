@@ -7,18 +7,20 @@ pub(crate) mod edit;
 mod path;
 pub(crate) mod query;
 
-pub(crate) use path::{ConfigField, NodeField, Target, config_name, name_a_setting};
+pub(crate) use path::{
+    ConfigField, NodeField, Target, config_name, domains_are_read_only, name_a_setting,
+};
 pub use path::{NodeName, SettingPath};
 
 mod size;
 
-use ployz_core::RpcError;
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
     MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceHealthcheck, ServiceImageCredentials,
     ServiceSource, default_max_retries, default_replicas, parse_service_setting,
 };
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -241,15 +243,17 @@ impl ServiceSetting {
         }
     }
 
-    /// The value `unset` restores; `null` when the Setting has none.
-    pub(crate) fn default(self) -> Value {
+    /// The value `unset` restores for `service`; `null` when the Setting has none. A
+    /// Private DNS name defaults to the Service's current name, so it has none until
+    /// a Service is named.
+    pub(crate) fn default(self, service: Option<&ServiceName>) -> Value {
         match self {
+            Self::PrivateDns => service.map_or(Value::Null, |name| json!(name)),
             Self::CpuLimit
             | Self::Healthcheck
             | Self::Image
             | Self::MemLimit
             | Self::PreDeployCommand
-            | Self::PrivateDns
             | Self::RegistryCredential
             | Self::StartCommand
             | Self::Template => Value::Null,
@@ -594,7 +598,7 @@ impl ServiceSetting {
                 config.healthcheck = ServiceHealthcheck::None;
                 Ok(())
             }
-            _ => self.store(config, self.default()),
+            _ => self.store(config, self.default(None)),
         }
     }
 
@@ -666,7 +670,7 @@ impl ServiceSetting {
                 let names = Self::ALL
                     .map(Self::name)
                     .into_iter()
-                    .chain(["env", "mounts"]);
+                    .chain(["env", "mounts", "domains"]);
                 let first = name.split('.').next().unwrap_or(name);
                 let closest = error::did_you_mean(first, names.clone());
                 let mut details = serde_json::Map::new();

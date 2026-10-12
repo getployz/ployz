@@ -32,6 +32,7 @@ import { Context, Data, Effect, Layer, Option, Schema, type Scope } from "effect
 import type { JsonValue } from "#/db/tables";
 import { describeFailureCause } from "#/lib/error-message";
 import { projectJsonValue } from "#/lib/json";
+import { requirementFor, ServerLacks } from "#/modules/runtime/daemon-compat";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
@@ -57,7 +58,8 @@ export class PloyzProviderError extends Data.TaggedError(
 
 export type PloyzSdkError =
   | PloyzProviderError
-  | MissingDataLossIdentities;
+  | MissingDataLossIdentities
+  | ServerLacks;
 
 export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
@@ -111,7 +113,8 @@ export interface PloyzSession {
   readonly agentAsk: (query: CloudQuery) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
-  readonly startContainer: (machine: string, container: string) => Effect.Effect<boolean, PloyzSdkError>;
+  /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
+  readonly startContainer: (machine: string, container: string) => Effect.Effect<"serving" | "unconfirmed" | "unhealthy", PloyzSdkError>;
   readonly copyContainerImage: (
     source: MachineTarget,
     container: string,
@@ -171,10 +174,23 @@ function missingDataLossFromSdkError(cause: unknown) {
   return new MissingDataLossIdentities(decoded.value.details.missing);
 }
 
-function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
+/** A refusal naming a capability: the daemon behind `target` does not serve it. Cloud addresses Machines by id. */
+const LackedCapabilityError = Schema.Struct({
+  code: Schema.Literal("unsupported"),
+  details: Schema.Struct({ capability: Schema.String, target: Schema.String }),
+});
+
+function serverLacksFromSdkError(cause: unknown) {
+  const decoded = Schema.decodeUnknownOption(LackedCapabilityError)(cause);
+  return Option.isSome(decoded) ? new ServerLacks({ machineId: decoded.value.details.target, capability: decoded.value.details.capability }) : null;
+}
+
+export function asSdkFailure(operation: string, cause: unknown): PloyzSdkError {
   const missingDataLoss = missingDataLossFromSdkError(cause);
   if (missingDataLoss !== null) return missingDataLoss;
-  if (cause instanceof MissingDataLossIdentities) return cause;
+  const lack = serverLacksFromSdkError(cause);
+  if (lack !== null) return lack;
+  if (cause instanceof MissingDataLossIdentities || cause instanceof ServerLacks) return cause;
   if (cause instanceof PloyzProviderError) return cause;
   return new PloyzProviderError({ operation, cause });
 }
@@ -191,7 +207,13 @@ export function rpcErrorMessage(error: PloyzSdkError) {
   return Option.isSome(rpc) ? rpc.value.message : undefined;
 }
 
-export function sdkFailureMessage(error: PloyzSdkError) {
+/** A failure as one sentence; a Server the call reached is named from `servers` when its daemon lacks the step. */
+export function sdkFailureMessage(error: PloyzSdkError, servers: readonly { readonly id: string; readonly name: string }[] = []) {
+  if (error instanceof ServerLacks) {
+    const requirement = requirementFor(error.capability);
+    const server = servers.find((candidate) => candidate.id === error.machineId)?.name ?? "one of your Servers";
+    return requirement === null ? `This step needs a newer Ployz on ${server}.` : `${requirement.feature} ${requirement.plural ? "need" : "needs"} a newer Ployz on ${server}.`;
+  }
   const cause = "cause" in error ? error.cause : error;
   const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String, message: Schema.String }))(cause);
   return Option.isSome(rpc) ? `${rpc.value.code}: ${rpc.value.message}` : describeFailureCause(cause);

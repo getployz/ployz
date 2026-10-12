@@ -11,6 +11,7 @@ mod environment;
 mod github;
 pub mod logs;
 mod machine;
+mod project;
 mod refusal;
 mod release;
 mod removal;
@@ -38,6 +39,7 @@ use machine::{Entry, entry};
 /// Every tool, in catalog order.
 pub(crate) const TOOLS: &[Entry] = &[
     entry::<environment::EnvironmentShow>(),
+    entry::<project::ProjectCreate>(),
     entry::<service::ServiceInspect>(),
     entry::<service::ServiceAdd>(),
     entry::<service::ServiceUpdate>(),

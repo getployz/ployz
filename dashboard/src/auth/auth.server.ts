@@ -9,10 +9,14 @@ export const handleAuthRequestEffect = Effect.fn("Auth.handleRequest")(
   (request: Request) => Effect.flatMap(Auth, (auth) => auth.handler(request)),
 );
 
+export const getAuthSessionEffect = Effect.fn("Auth.getSessionForRequest")(
+  (headers: Headers) => Effect.flatMap(Auth, (auth) => auth.getSession(headers)),
+);
+
 export function getAuthSession(
   headers: Headers = getRequestHeaders(),
 ): Promise<AuthSession | null> {
-  return runAppEffect(Effect.flatMap(Auth, (auth) => auth.getSession(headers)));
+  return runAppEffect(getAuthSessionEffect(headers));
 }
 
 export const signInGithubEffect = Effect.fn("Auth.signInGithub")(

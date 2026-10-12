@@ -64,6 +64,10 @@ fn a_cli_line_becomes_its_tool_call() {
         ))
     );
     assert_eq!(
+        next_of("ployz project new NAME"),
+        Some(Call::new("project_create", json!({})))
+    );
+    assert_eq!(
         next_of("ployz diff --env staging"),
         Some(Call::new("review", json!({ "environment": "staging" })))
     );

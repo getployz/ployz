@@ -75,8 +75,11 @@ export function runtimeLine(
   }
 }
 
-/** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */
-export type NodeIssues = { count: number; tone: "bad" | "warn" };
+/**
+ * A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. `uptime` when one is an
+ * open uptime incident, so the ⚠ opens Monitoring.
+ */
+export type NodeIssues = { count: number; tone: "bad" | "warn"; uptime: boolean };
 
 /**
  * What on a node the user can fix: a Service that's down or struggling, a failing healthcheck, domains that need them,
@@ -86,9 +89,9 @@ export type NodeIssues = { count: number; tone: "bad" | "warn" };
 export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status" | "hostname">[], unreachable: string | null = null): NodeIssues | null {
   const attention = domains.filter((domain) => domain.status === "needs_attention");
   const uptime = !status.down && unreachable !== null;
-  const count = (status.down || status.tone === "warn" ? 1 : 0) + (status.checkFailing ? 1 : 0)
-    + attention.length + (uptime && !attention.some((domain) => domain.hostname === unreachable) ? 1 : 0);
-  return count === 0 ? null : { count, tone: status.down || uptime ? "bad" : "warn" };
+  const own = uptime && !attention.some((domain) => domain.hostname === unreachable);
+  const count = (status.down || status.tone === "warn" ? 1 : 0) + (status.checkFailing ? 1 : 0) + attention.length + (own ? 1 : 0);
+  return count === 0 ? null : { count, tone: status.down || uptime ? "bad" : "warn", uptime: own };
 }
 
 /** The public domain a Service's card shows, of its domains: the first custom one, else the generated one; `live` once it's set up. */

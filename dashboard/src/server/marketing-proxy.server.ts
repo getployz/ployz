@@ -76,6 +76,8 @@ export const fetchMarketing = Effect.fn("Marketing.fetch")(function* (
   );
 });
 
+export const hasMarketingSite = Effect.map(AppConfig, (config) => config.marketingOrigin !== undefined);
+
 /** Proxy to the marketing site when MARKETING_ORIGIN is set; undefined means let the app answer. */
 export function proxyMarketing(request: Request): Promise<Response | undefined> {
   return runAppEffect(

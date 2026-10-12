@@ -8,9 +8,9 @@ and deployments, or ask it to change something and deploy. Before a deploy remov
 anything, it stops and asks you.
 
 The agent works in the project and environment you're looking at, unless you name another. It
-can add and change services, [configs](../services/configs.md), volumes and domains, review
-what's staged, publish and deploy. It can also read your GitHub repositories and work on your
-servers. It doesn't create projects or environments, and it can't read a service's logs yet.
+can create a project, add and change services, [configs](../services/configs.md), volumes and
+domains, review what's staged, publish and deploy. It can also read your GitHub repositories and
+work on your servers. It doesn't create environments, and it can't read a service's logs yet.
 
 ## What it can do on your servers
 
@@ -47,7 +47,8 @@ When it starts a run on a server or volume, like a restart or a mirror, the card
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
 went to see where it got to.
 A restart goes one server at a time and starts each container again, even when stopping it
-failed. A container counts as back once it serves traffic. If a server's containers don't come
+failed. A container counts as back once it passes its healthcheck, like a deploy waits for, and
+serves traffic. If a server's containers don't come
 back, the restart stops there and leaves the other servers alone. Stopping or restarting a
 service also stops its pre-deploy hook containers, and no restart or start runs them again.
 
