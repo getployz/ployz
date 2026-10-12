@@ -468,6 +468,26 @@ impl VolumeStorage {
                 .await);
         }
         let parent = slot_parent(&scope.pool, name);
+        let target = request.target.to_string();
+        let pulling = match scope.slot() {
+            Some(_) => self
+                .property(&parent, PULL_PROPERTY)
+                .await
+                .map_err(internal)?,
+            None => None,
+        };
+        if self.receives.running(name) {
+            if pulling.as_deref() == Some(target.as_str()) {
+                return self.copy_now(&scope).await;
+            }
+            return Err(self
+                .refuse_found(
+                    &scope,
+                    CopyRefusal::Busy,
+                    format!("Volume {name} is still receiving another pull"),
+                )
+                .await);
+        }
         let bound = match scope.slot() {
             Some(slot) => slot.refquota,
             None => {
@@ -498,14 +518,7 @@ impl VolumeStorage {
                 "slot {parent} carries no bound"
             ))));
         }
-        let target = request.target.to_string();
-        if self
-            .property(&parent, PULL_PROPERTY)
-            .await
-            .map_err(internal)?
-            .as_deref()
-            != Some(target.as_str())
-        {
+        if pulling.as_deref() != Some(target.as_str()) {
             self.z(&["set", &format!("{PULL_PROPERTY}={target}"), &parent])
                 .await?;
         }
@@ -519,9 +532,6 @@ impl VolumeStorage {
                 .next(),
             None => None,
         };
-        if self.receives.running(name) {
-            return self.copy_now(&scope).await;
-        }
         if newest
             .as_ref()
             .is_some_and(|newest| newest.name == request.target)

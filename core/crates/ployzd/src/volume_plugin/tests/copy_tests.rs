@@ -658,6 +658,39 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
 }
 
 #[tokio::test]
+async fn a_pull_for_another_target_while_a_receive_runs_refuses_busy_and_keeps_the_label() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-1 77\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/stall-read"), "").unwrap();
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-1")),
+        "{reply}"
+    );
+    let before = commands(&test);
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(reason(&reply), "busy", "{reply}");
+    assert_eq!(
+        property(&test, SLOT, "ployz:pull").as_deref(),
+        Some("w-1-1")
+    );
+    assert!(effects(&commands(&test)[before.len()..]).is_empty());
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-1")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-1")),
+        "{reply}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_refuses_a_writer_that_has_no_copy_to_send() {
     let source = Source::start(None, "").await;
     let test = TestDir::new();
@@ -1151,7 +1184,11 @@ async fn a_pull_resent_after_it_landed_finishes_it_whatever_the_expect_says() {
     );
     landed(&b.socket, "w-1-2").await;
     let finished = set_mirror(&b, &expect, "w-1-2").await;
-    assert_eq!(finished.pointer("/Ok/pull"), Some(&Value::Null), "{finished}");
+    assert_eq!(
+        finished.pointer("/Ok/pull"),
+        Some(&Value::Null),
+        "{finished}"
+    );
     assert_eq!(finished.pointer("/Ok/newest/name"), Some(&json!("w-1-2")));
     assert_eq!(snapshot_names(&b.test, SLOT_FS), ["w-1-2"]);
     assert!(property(&b.test, SLOT, "ployz:pull").is_none());
