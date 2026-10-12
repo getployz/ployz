@@ -161,7 +161,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   return { kind: "done" } satisfies PlacementAdvance;
 });
 
-/** Servers with storage whose records list no capabilities: placement stays closed, but no Upgrade is claimed. */
+/** Servers with storage whose records say neither their capabilities nor a readable version: placement stays closed, but no Upgrade is claimed. */
 export class SupportUnknown extends Data.TaggedError("SupportUnknown")<{ readonly servers: readonly string[] }> {}
 
 /**
@@ -178,7 +178,7 @@ const lackingOrUnknown = (servers: readonly StorageServer[]): Effect.Effect<read
 
 export const readPlacementBlockers: BlockerReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
   Effect.flatMap((frame): Effect.Effect<readonly string[], SupportUnknown | string> => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : lackingOrUnknown(frame.machines.map((entry) => ({
-    name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities ?? [],
+    name: entry.machine.name, storage: entry.storage?.state ?? null, daemonVersion: entry.machine.runtime.daemon_version, capabilities: entry.machine.runtime.capabilities ?? [],
   })))),
 );
 

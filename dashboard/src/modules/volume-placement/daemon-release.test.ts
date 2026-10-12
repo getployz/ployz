@@ -4,22 +4,28 @@ import {
   placementBlockers, placementLacking, placementServers, placementUnknown, placementUnknownMessage, placementUpgradeMessage, restoreOpen, runsPlacement,
 } from "./daemon-release";
 
-type Daemon = "serves" | "lacks" | "unknown";
+type Daemon = "serves" | "lacks" | "0.2.3" | "0.2.4" | "unknown";
 
-const capabilitiesOf = (daemon: Daemon) =>
-  daemon === "serves" ? ["ployz.logs.tail.v1", requirements.volumeMove.capability] : daemon === "lacks" ? ["ployz.logs.tail.v1"] : [];
+const daemonOf = (daemon: Daemon) =>
+  daemon === "serves" ? { daemonVersion: "0.2.5", capabilities: ["ployz.logs.tail.v1", requirements.volumeMove.capability] }
+  : daemon === "lacks" ? { daemonVersion: "0.2.5", capabilities: ["ployz.logs.tail.v1"] }
+  : daemon === "unknown" ? { daemonVersion: "dev", capabilities: [] }
+  : { daemonVersion: daemon, capabilities: [] };
 
 const server = (id: string, daemon: Daemon, more: { acceptsServices?: boolean; storage?: "stateless" | "ready" | "pool" | null } = {}) =>
-  ({ id, name: id, capabilities: capabilitiesOf(daemon), acceptsServices: more.acceptsServices ?? true, storage: more.storage ?? "pool" });
+  ({ id, name: id, ...daemonOf(daemon), acceptsServices: more.acceptsServices ?? true, storage: more.storage ?? "pool" });
 
 describe("runsPlacement", () => {
   it("needs a daemon that serves the volume move capability", () => {
-    expect(runsPlacement({ capabilities: capabilitiesOf("lacks") })).toBe(false);
-    expect(runsPlacement({ capabilities: capabilitiesOf("serves") })).toBe(true);
+    expect(runsPlacement(daemonOf("lacks"))).toBe(false);
+    expect(runsPlacement(daemonOf("serves"))).toBe(true);
   });
 
-  it("hides the verbs from a Server that lists no capabilities", () => {
-    expect(runsPlacement({ capabilities: [] })).toBe(false);
+  it("reads a daemon too old to list capabilities by its version", () => {
+    expect(runsPlacement(daemonOf("0.2.3"))).toBe(false);
+    expect(runsPlacement(daemonOf("0.2.4"))).toBe(false);
+    expect(runsPlacement({ daemonVersion: "0.2.5", capabilities: [] })).toBe(true);
+    expect(runsPlacement(daemonOf("unknown"))).toBe(false);
   });
 });
 
@@ -39,6 +45,12 @@ describe("placementBlockers", () => {
     expect(placementLacking(servers)).toEqual(["db-old"]);
     expect(placementUnknown(servers)).toEqual(["ready"]);
     expect(placementUnknownMessage(["ready"])).toBe("Ployz can't tell whether ready can move volumes.");
+  });
+
+  it("claims a lack, so an Upgrade, for released 0.2.3 and 0.2.4 daemons that list no capabilities", () => {
+    const servers = [server("db-3", "0.2.3"), server("db-4", "0.2.4", { storage: null }), server("new", "serves")];
+    expect(placementLacking(servers)).toEqual(["db-3", "db-4"]);
+    expect(placementUnknown(servers)).toEqual([]);
   });
 
   it("says which Servers to upgrade", () => {
