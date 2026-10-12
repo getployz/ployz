@@ -3,7 +3,7 @@ import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema, SchemaIssue } from "effect";
 import { asRecord } from "#/lib/json";
 import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { type StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { NotFound } from "#/server/public-error";
 import type { Database } from "#/server/database.server";
@@ -20,7 +20,9 @@ export type CommandCall = { readonly approvalId: string | null; readonly key: st
 /** Input fields decode with no services: a published command parses its input before it touches anything. */
 type Fields = { readonly [x: PropertyKey]: Schema.Struct.Fields[PropertyKey] & { readonly DecodingServices: never } };
 type InputOf<F extends Fields> = Schema.Struct<F>["Type"];
-type Effectful<A, E, R> = Effect.Effect<A, E | NotFound, R>;
+/** Failures every command answers as a refusal instead of an error. */
+type Refusable = NotFound | StoreRefused;
+type Effectful<A, E, R> = Effect.Effect<A, E | Refusable, R>;
 
 type Gate<F extends Fields, E, R> =
   | "never"
@@ -55,7 +57,7 @@ export type Command<N extends string = string, O extends Schema.Top = Schema.Top
   readonly positional: readonly string[];
   readonly input: Schema.Struct<Fields>;
   readonly output: O;
-  readonly invoke: (caller: Caller, raw: JsonValue, call: CommandCall) => Effect.Effect<Ran<O["Type"]>, Exclude<E, NotFound>, R | Database>;
+  readonly invoke: (caller: Caller, raw: JsonValue, call: CommandCall) => Effect.Effect<Ran<O["Type"]>, Exclude<E, Refusable>, R | Database>;
 };
 
 export const refused = (code: string, message: string, details: JsonValue = null) =>
@@ -75,8 +77,8 @@ export function defineCommand<const N extends string, F extends Fields, O extend
   const { run, input, kind } = def;
   const gate = def.kind === "write" ? def.gate : "never";
   const decode = Schema.decodeUnknownEffect(input);
-  // SAFETY: the catchIf below removes every NotFound; TypeScript cannot subtract it from a generic `E`.
-  const invoke = (caller: Caller, raw: JsonValue, call: CommandCall): Effect.Effect<Ran<O["Type"]>, Exclude<E, NotFound>, R | Database> => Effect.gen(function* () {
+  // SAFETY: the catchIfs below remove every NotFound and StoreRefused; TypeScript cannot subtract them from a generic `E`.
+  const invoke = (caller: Caller, raw: JsonValue, call: CommandCall): Effect.Effect<Ran<O["Type"]>, Exclude<E, Refusable>, R | Database> => Effect.gen(function* () {
     const fields = asRecord(raw);
     if (fields === null) return invalidInput([{ message: "Expected the input as an object" }]);
     const unknown = Object.keys(fields).filter((key) => !Object.hasOwn(input.fields, key));
@@ -90,8 +92,9 @@ export function defineCommand<const N extends string, F extends Fields, O extend
     return yield* run(caller, decoded.success);
   }).pipe(
     Effect.catchIf((failure) => failure instanceof NotFound, (missing) => Effect.succeed(refused("not_found", missing.message))),
+    Effect.catchIf((failure) => failure instanceof StoreRefused, (store) => Effect.succeed({ ok: false, refusal: store.refusal } as const)),
     Effect.withSpan("Commands.invoke", { attributes: { command: def.name } }),
-  ) as Effect.Effect<Ran<O["Type"]>, Exclude<E, NotFound>, R | Database>;
+  ) as Effect.Effect<Ran<O["Type"]>, Exclude<E, Refusable>, R | Database>;
   const { run: _run, ...shown } = def;
   return { ...shown, kind, gate: gate === "never" ? "never" : "ask", invoke };
 }

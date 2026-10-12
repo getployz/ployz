@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "7cb4b56d7399",
+  "revision": "bd4caabb04b8",
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -433,6 +433,389 @@
         "additionalProperties": false
       },
       "render": "message"
+    },
+    {
+      "name": "uptime_show",
+      "path": [
+        "uptime",
+        "show"
+      ],
+      "about": "Show a Service's uptime: whether visitors reach it, what each region's check got back, and its incidents",
+      "examples": [
+        "ployz uptime show web",
+        "ployz uptime show web --project shop --environment staging --from 6h"
+      ],
+      "kind": "read",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "service"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The Service, by name"
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Its Project, by name. The default Project when left out"
+          },
+          "environment": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Its Environment, by name. The Project's default Environment when left out"
+          },
+          "from": {
+            "type": "string",
+            "description": "Where the range starts: an offset back from now such as 15m, 6h or 7d, or a UTC instant. 1h when left out"
+          },
+          "to": {
+            "type": "string",
+            "description": "Where the range ends: now, an offset back from now, or a UTC instant. now when left out"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "up",
+              "unreachable"
+            ]
+          },
+          "checking": {
+            "type": "boolean"
+          },
+          "uptime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "regions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "region": {
+                  "type": "string"
+                },
+                "latest": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "region": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "routine",
+                            "confirm",
+                            "recheck",
+                            "triggered"
+                          ]
+                        },
+                        "verdict": {
+                          "type": "string",
+                          "enum": [
+                            "pass",
+                            "fail",
+                            "inconclusive"
+                          ]
+                        },
+                        "answer": {
+                          "type": "string"
+                        },
+                        "ms": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string",
+                              "enum": [
+                                "Infinity",
+                                "-Infinity",
+                                "NaN"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "region",
+                        "at",
+                        "kind",
+                        "verdict",
+                        "answer",
+                        "ms"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "last_error": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "at": {
+                          "type": "string"
+                        },
+                        "error": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "at",
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "region",
+                "latest",
+                "last_error"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "incidents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "opened_at": {
+                  "type": "string"
+                },
+                "closed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cause": {
+                  "type": "string"
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "region": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "verdict": {
+                        "type": "string",
+                        "enum": [
+                          "pass",
+                          "fail",
+                          "inconclusive"
+                        ]
+                      },
+                      "answer": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "region",
+                      "at",
+                      "verdict",
+                      "answer"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "opened_at",
+                "closed_at",
+                "cause",
+                "observations"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "service",
+          "url",
+          "status",
+          "checking",
+          "uptime",
+          "regions",
+          "incidents"
+        ],
+        "additionalProperties": false
+      },
+      "render": "record"
+    },
+    {
+      "name": "uptime_check",
+      "path": [
+        "uptime",
+        "check"
+      ],
+      "about": "Check a Service's public address now, from every region, and show what each got back. Changes no setting",
+      "examples": [
+        "ployz uptime check web",
+        "ployz uptime check web --project shop --environment staging"
+      ],
+      "kind": "read",
+      "gate": "never",
+      "agents": true,
+      "typed": null,
+      "positional": [
+        "service"
+      ],
+      "input": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The Service, by name"
+          },
+          "project": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Its Project, by name. The default Project when left out"
+          },
+          "environment": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Its Environment, by name. The Project's default Environment when left out"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "up",
+              "unreachable"
+            ]
+          },
+          "answered": {
+            "type": "boolean"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "region": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "routine",
+                    "confirm",
+                    "recheck",
+                    "triggered"
+                  ]
+                },
+                "verdict": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "inconclusive"
+                  ]
+                },
+                "answer": {
+                  "type": "string"
+                },
+                "ms": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        "Infinity",
+                        "-Infinity",
+                        "NaN"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "region",
+                "at",
+                "kind",
+                "verdict",
+                "answer",
+                "ms"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "service",
+          "url",
+          "status",
+          "answered",
+          "results"
+        ],
+        "additionalProperties": false
+      },
+      "render": "record"
     }
   ]
 }
