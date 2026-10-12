@@ -236,7 +236,7 @@ describe("deploying a Volume placement", () => {
       members = [member("web-1", "writer"), member("web-2", "mirror")];
       const staged = { primary: web("web-1"), mirrors: [web("web-2")], deletes: [], restore };
       await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-2")] }));
-      await run(stampPlacements(organizationId, "env-1", "dep-1"));
+      await run(stampPlacements(organizationId, [volumeId], "dep-1"));
       const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
       if (started.kind !== "wait") throw new Error("expected a run");
       return started.wait;
@@ -268,7 +268,7 @@ describe("deploying a Volume placement", () => {
       members = [member("web-1", "writer"), member("web-2", "mirror")];
       const staged = { primary: web("web-1"), mirrors: [web("web-2"), web("web-3")], deletes: [], restore };
       await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-2")] }));
-      await run(stampPlacements(organizationId, "env-1", "dep-1"));
+      await run(stampPlacements(organizationId, [volumeId], "dep-1"));
       const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
       if (started.kind !== "wait") throw new Error("expected a run");
       expect(await restoreRuns()).toHaveLength(1);
