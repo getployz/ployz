@@ -334,10 +334,7 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
         CliNext::Fix(FixRow::Open(DashboardPage::Servers)),
     ),
     ("set", CliNext::Fix(FixRow::Open(DashboardPage::Variables))),
-    (
-        "project new",
-        CliNext::Fix(FixRow::Open(DashboardPage::Projects)),
-    ),
+    ("project new", CliNext::Tool("project_create", Some("name"))),
     (
         "env new",
         CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
@@ -415,7 +412,7 @@ fn cli_next(line: &str) -> Next {
             if tool == "environment_pr" {
                 input.insert("enabled".into(), true.into());
             }
-            if matches!(tool, "github_ls" | "github_connect") {
+            if matches!(tool, "github_ls" | "github_connect" | "project_create") {
                 input.remove("project");
                 input.remove("environment");
             }

@@ -109,6 +109,26 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     name: "a GitHub read the sidebar can't reach yet is refused unavailable",
     steps: [{ tool: "github_ls", input: { repository: "acme/web" }, hears: refused("unavailable") }],
   },
+  {
+    name: "project_create makes a Project the next read shows",
+    seed: false,
+    steps: [
+      { tool: "project_create", input: { name: "docs" }, hears: { ok: true, value: { at: "docs/production", project: "docs" } } },
+      { tool: "environment_show", input: { project: "docs" }, hears: { ok: true, value: { at: "docs/production" } } },
+    ],
+  },
+  {
+    name: "a retried project_create replays the first Project",
+    seed: false,
+    steps: [
+      { tool: "project_create", input: { name: "docs" }, callKey: "create", hears: { ok: true } },
+      { tool: "project_create", input: { name: "docs" }, callKey: "create", hears: { ok: true, value: { project: "docs" } } },
+    ],
+  },
+  {
+    name: "project_create refuses a name another Project has",
+    steps: [{ tool: "project_create", input: { name: "shop" }, hears: refused("conflict") }],
+  },
 ];
 
 const tools = Effect.fn(function* (seed: boolean) {

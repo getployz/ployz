@@ -187,6 +187,7 @@ fn the_catalog_has_the_agreed_tools() {
         names,
         [
             "environment_show",
+            "project_create",
             "service_inspect",
             "service_add",
             "service_update",
@@ -460,6 +461,35 @@ fn discard_drops_a_staged_service() {
     assert_eq!(discarded["discarded"], "service web");
     let review = call(&store, "review", json!({}), "review-1").ok();
     assert_eq!(review["lines"], json!([]), "{review}");
+}
+
+#[test]
+fn project_create_makes_a_project_once_per_key() {
+    let store = shop();
+    let input = json!({ "name": "docs", "request_key": "project-docs-0001" });
+    let created = call(&store, "project_create", input.clone(), "create-1").ok();
+    assert_eq!(created["at"], "docs/production");
+    assert_eq!(created["next"]["tool"], "environment_show");
+    let again = call(&store, "project_create", input, "create-2").ok();
+    assert_eq!(again, created, "the same key replays the same Project");
+    let shown = call(
+        &store,
+        "environment_show",
+        json!({ "project": "docs" }),
+        "show-1",
+    )
+    .ok();
+    assert_eq!(shown["at"], "docs/production", "{shown}");
+
+    let refusal = call(
+        &store,
+        "project_create",
+        json!({ "name": "docs", "request_key": "project-docs-0002" }),
+        "create-3",
+    )
+    .refused();
+    assert_eq!(refusal.code, RpcErrorCode::Conflict);
+    assert_eq!(refusal.writes, Writes::None);
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
