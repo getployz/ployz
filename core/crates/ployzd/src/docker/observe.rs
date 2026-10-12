@@ -393,6 +393,11 @@ fn local_volume_changes(
     }
 }
 
+fn stranded_ingress(observations: &[ContainerObservation]) -> Option<ContainerId> {
+    let _ = observations;
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -402,8 +407,81 @@ mod tests {
 
     use super::{
         local_container_changes, local_volume_changes, observe_copies, redacted_container,
+        stranded_ingress,
     };
     use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot};
+
+    fn container(
+        id: char,
+        namespace: &str,
+        name: &str,
+        created_at: i64,
+        runtime: serde_json::Value,
+    ) -> ContainerObservation {
+        serde_json::from_value(json!({
+            "container_id": id.to_string().repeat(64),
+            "display_name": format!("{name}-{id}"),
+            "created_at_unix_nanos": created_at,
+            "machine_id": "b".repeat(32),
+            "namespace": namespace,
+            "kind": "service_container",
+            "runtime": runtime,
+            "resolved_spec": {
+                "service_id": "c".repeat(32),
+                "name": name,
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": { "image": "caddy:2", "pull_policy": "missing" }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn ingress(id: char, created_at: i64, runtime: serde_json::Value) -> ContainerObservation {
+        container(id, "ployz-system", "ingress", created_at, runtime)
+    }
+
+    fn id(id: char) -> ContainerId {
+        ContainerId::parse(id.to_string().repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn ingress_that_never_started_is_started_again() {
+        let created = json!({ "state": "created" });
+        assert_eq!(stranded_ingress(&[ingress('a', 1, created)]), Some(id('a')));
+    }
+
+    #[test]
+    fn newest_unstarted_ingress_is_started_when_none_runs() {
+        assert_eq!(
+            stranded_ingress(&[
+                ingress('a', 1, json!({ "state": "exited", "code": 0 })),
+                ingress('d', 2, json!({ "state": "created" })),
+            ]),
+            Some(id('d'))
+        );
+    }
+
+    #[test]
+    fn ingress_is_left_alone_while_one_runs_stops_or_belongs_to_an_app() {
+        let created = json!({ "state": "created" });
+        let running = json!({ "state": "running", "health": "healthy" });
+        assert_eq!(
+            stranded_ingress(&[ingress('a', 1, running), ingress('d', 2, created.clone())]),
+            None
+        );
+        assert_eq!(
+            stranded_ingress(&[
+                ingress('a', 2, json!({ "state": "exited", "code": 0 })),
+                ingress('d', 1, created.clone()),
+            ]),
+            None
+        );
+        assert_eq!(
+            stranded_ingress(&[container('a', "app", "ingress", 1, created.clone())]),
+            None
+        );
+        assert_eq!(stranded_ingress(&[]), None);
+    }
 
     #[test]
     fn publication_redacts_service_and_hook_environment_values() {
