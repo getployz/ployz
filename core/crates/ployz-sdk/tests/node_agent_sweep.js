@@ -64,15 +64,16 @@ function refusalOf(error) {
   return { code: error.code, message: error.message, details: error.details ?? null };
 }
 
-const seen = { past: 0, unsafe: [] };
-function walk(value, where) {
+// `out` counts numbers past u32 the addon returned, `in` those JavaScript sent it.
+const seen = { past: { in: 0, out: 0 }, unsafe: [] };
+function walk(value, where, side) {
   if (typeof value === "number") {
     if (Number.isInteger(value) && !Number.isSafeInteger(value)) seen.unsafe.push(where);
-    if (value > U32_MAX) seen.past += 1;
+    if (value > U32_MAX) seen.past[side] += 1;
   } else if (Array.isArray(value)) {
-    value.forEach((item, i) => walk(item, `${where}[${i}]`));
+    value.forEach((item, i) => walk(item, `${where}[${i}]`, side));
   } else if (value !== null && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) walk(item, `${where}.${key}`);
+    for (const [key, item] of Object.entries(value)) walk(item, `${where}.${key}`, side);
   }
 }
 
@@ -114,14 +115,14 @@ const TRUSTED = {
 async function call(store, tool, input, key) {
   let turn = sdk.agentStart(tool, input, { project: "shop", environment: null, store: { at: "cloud", organization: ORG } }, key);
   for (;;) {
-    walk(turn, `${tool}.turn`);
+    walk(turn, `${tool}.turn`, "out");
     const { step, state } = turn;
     if (step.step === "done") return step.result;
     const answers =
       step.step === "write"
         ? [await answerWrite(store, step.write)]
         : await Promise.all((step.step === "read" ? step.asks : step.then).map((ask) => answerAsk(store, ask)));
-    walk(answers, `${tool}.answers`);
+    walk(answers, `${tool}.answers`, "in");
     turn = sdk.agentResume(state, answers);
   }
 }
@@ -206,10 +207,11 @@ const INTERNAL = /unknown shape|came back short|did not encode/;
     report.push(`${pass ? "ok  " : "FAIL"} ${tool} ${refusal === null ? "answered" : `refused ${got}: ${refusal.message}`}`);
   }
   console.log(report.join("\n"));
-  console.log(`${catalog.length} tools, ${FIXTURES.length} calls, ${failed.length} failed, ${seen.past} numbers past u32 crossed`);
+  console.log(`${catalog.length} tools, ${FIXTURES.length} calls, ${failed.length} failed, ${seen.past.in} numbers past u32 sent in, ${seen.past.out} returned`);
   if (failed.length > 0) throw new Error(`tools did not answer as expected:\n${failed.join("\n")}`);
   if (seen.unsafe.length > 0) throw new Error(`integers past 2^53 crossed JavaScript: ${seen.unsafe.join(", ")}`);
-  if (seen.past === 0) throw new Error("no number past u32 crossed JavaScript");
+  if (seen.past.in === 0) throw new Error("no number past u32 went into the addon");
+  if (seen.past.out === 0) throw new Error("no number past u32 came back from the addon");
 })().catch((error) => {
   console.error(error);
   process.exit(1);
