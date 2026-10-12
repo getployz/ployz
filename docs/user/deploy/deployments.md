@@ -185,6 +185,20 @@ names the volume and how much was written since. **Restore** stages that snapsho
 deploy, as in [Snapshots](../services/volumes.md#snapshots). Use it to undo what a migration did. Once
 that deploy restores it, the row says **Restored** with that deploy's number.
 
+When the server that wrote a volume is gone for good, restore it from an
+[offsite](../services/volumes.md#offsite) backup. Open the volume, click its offsite copy, and
+click **Restore** on a backup. Deploy. The deploy runs these steps in order.
+
+1. **Download** fetches the backup from the bucket to the server that writes the volume.
+2. **Save current** keeps the data there as a **Before restore** snapshot.
+3. **Stop** stops the services that mount the volume.
+4. **Swap** puts the backup in place.
+5. **Start** starts the services again.
+6. A mirror starts over from the restored data.
+
+The download runs while the services keep serving. If it fails, the restore fails before anything
+stops, and the services keep their data.
+
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a
 [branch](../environments/environments.md) first.

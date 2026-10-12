@@ -21,7 +21,6 @@ export const offsiteCopiesQueryOptions = (organizationSlug: string, environment:
   staleTime: 60_000,
 });
 
-/** The Environment's offsite copies, for the canvas cards. */
 export function useOffsiteCopies(organizationSlug: string, environment: EnvironmentRef) {
   return useQuery(offsiteCopiesQueryOptions(organizationSlug, environment)).data ?? [];
 }

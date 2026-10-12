@@ -48,7 +48,6 @@ export const offsiteBucket = pgTable(
   ],
 );
 
-/** A Volume's offsite copy; a Volume without a row has none. */
 export const volumeOffsite = pgTable(
   "volume_offsite",
   {

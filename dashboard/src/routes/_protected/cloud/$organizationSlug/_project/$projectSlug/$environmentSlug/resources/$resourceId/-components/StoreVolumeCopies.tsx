@@ -347,7 +347,6 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, offered, add
   volume: CopiesVolume;
   live: MachineId | null;
   servers: readonly CopyServer[];
-  /** The kinds this Volume can have; those it already has read Added. */
   offered: readonly AddableCopy[];
   addable: readonly AddableCopy[];
   mirrorOn: readonly MachineId[];

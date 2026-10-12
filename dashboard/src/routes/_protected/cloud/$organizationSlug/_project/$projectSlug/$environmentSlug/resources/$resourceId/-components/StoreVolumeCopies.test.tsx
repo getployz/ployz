@@ -214,10 +214,10 @@ const BUCKET = {
   id: "5f1c2b8e-0000-4000-8000-000000000001", endpoint: "https://s3.eu-central-1.amazonaws.com", region: "eu-central-1", bucket: "acme-offsite",
   prefix: "ployz", accessKey: "AKIAEXAMPLE", secretSet: true,
 } as const;
-const OFFSITE_READ = {
+const OFFSITE_READ: VolumeOffsiteData["read"] = {
   served: true, buckets: [BUCKET], source: "g1",
   copy: { bucket: BUCKET, keep: 7, uploadedAt: new Date("2026-10-12T09:05:00Z"), backups: [{ id: "off-1", at: new Date("2026-10-12T09:00:00Z"), bytes: 2e9, note: "daily" }] },
-} as const;
+};
 const SNAPS = [snap("s2", "2026-10-12T10:00:00Z", { losesBytes: 1.2e9 }), snap("s1", "2026-10-11T09:30:00Z", { kind: "daily", kept: true })];
 
 describe("Snapshots", () => {

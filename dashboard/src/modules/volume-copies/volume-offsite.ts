@@ -14,7 +14,6 @@ export type OffsiteBucketView = {
   readonly secretSet: true;
 };
 
-/** A bucket typed into Add copy, before Cloud checks and stores it. */
 export type NewBucket = {
   readonly endpoint: string;
   readonly bucket: string;

@@ -19,6 +19,7 @@ const Choice = Schema.Union([
     secretKey: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
   }),
 ]);
+export const AddOffsiteInput = Schema.Struct({ ...VolumeInput.fields, choice: Choice });
 
 export const readVolumeOffsiteServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
@@ -29,7 +30,7 @@ export const readVolumeOffsiteServerFn = createServerFn({ method: "GET" })
 
 export const addVolumeOffsiteServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Struct({ ...VolumeInput.fields, choice: Choice })))
+  .validator(strictValidator(AddOffsiteInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
     Effect.flatMap(({ organization }) => addVolumeOffsite(organization.id, data.environment, data.volumeId, data.choice)),
   )));

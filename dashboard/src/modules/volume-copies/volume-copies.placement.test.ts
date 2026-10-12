@@ -3,7 +3,8 @@ import type { MachineId } from "@ployz/sdk";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
 import { COPIES, member, run } from "#/modules/volume-run/volume-run.test-fixture";
 import { copiesFromPlacement } from "./volume-copies.placement";
-import { cardLine, safetyLine, traySpeech } from "./volume-copies";
+import { addableCopies, cardLine, safetyLine, traySpeech } from "./volume-copies";
+import { offsiteCopyOf } from "./volume-offsite";
 
 const volume = { id: "v1", name: "pg-data" };
 const id = (server: string) => server.padEnd(32, "0") as MachineId;
@@ -106,5 +107,14 @@ describe("copiesFromPlacement", () => {
 
   it("has no snapshots until the Servers serve them", () => {
     expect(copies(row(["web-2"])).live.snapshots).toBeNull();
+  });
+  it("lists the offsite copy after the mirrors and counts it as a copy elsewhere", () => {
+    const offsite = offsiteCopyOf({ bucket: { id: "bk", bucket: "acme-offsite", region: "eu-central-1" }, keep: 7, uploadedAt: null }, null);
+    const model = copiesFromPlacement({
+      volume, members: [member("web-1", "writer"), member("web-2", "mirror")], row: row(["web-2"]), active: null, lastSync: null, lastDone: null, offsite,
+    });
+    if (model === null) throw new Error("no primary");
+    expect(model.elsewhere.map((copy) => copy.kind)).toEqual(["mirror", "offsite"]);
+    expect(addableCopies(model, ["mirror", "offsite"])).toEqual([]);
   });
 });
