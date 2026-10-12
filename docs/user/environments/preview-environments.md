@@ -76,7 +76,15 @@ A setting production changed after the preview started reads `production 45 → 
 value wins when it merges. A secret the preview added that production has no value for reads
 **Not set in production**. Set it in production, or with **Edit**, before you merge; otherwise
 production's deploy skips it, and any variable that references it, and warns. Removed variables
-and settings ride too; a removed service doesn't. Replicas, CPU and memory limits, and custom domains never do.
+and settings ride too. Replicas, CPU and memory limits, and custom domains never do.
+
+A service or config the preview removed reads **Removes db**. If production changed it since the
+preview started, the row adds **Changed there**; the merge removes it anyway. If something in
+production still uses it, like a variable that references `db`, the row reads **In use** with what
+uses it, and the merge leaves it in production while the rest lands. A removed volume reads
+**Kept**: the merge never removes a volume or its data. Remove it in production yourself when
+you're sure. Only what the preview copied can be removed this way; a service the preview never
+had stays in production untouched.
 
 Ployz posts a **Ployz · ready to merge** check on the pull request that mirrors the list, like
 `3 config changes · TOKEN not set`. It's green, or neutral when a secret is Not set or production
@@ -92,6 +100,11 @@ The merge deploys every service it changed: one whose own settings changed, one 
 changed config, and one that reads a changed variable. It does so even for a service with
 auto-deploy off or one that doesn't build from the branch, which redeploys with the code it last
 built. An edit you staged in production but didn't save stays staged.
+
+A removal deploys too: the service's containers stop and go away, and its volumes stay on the
+Machine with their data. The merge opens no approval, because it never deletes volume data.
+**Undo** in production's **History** brings the service or config back whole, settings and
+secrets included, and the next deploy starts it on the same volumes.
 
 If the merge couldn't land in production, or landed but couldn't deploy, the check says so, like
 **Didn't land in production** or **Saved in production, not deployed**, with the reason. A preview
