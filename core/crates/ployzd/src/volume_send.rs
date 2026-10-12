@@ -18,7 +18,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use ployz_core::{DATASET_ROOT, SendSource, SendStream};
+use ployz_core::{DATASET_ROOT, MIRROR_ROOT, SendSource, SendStream};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
@@ -110,18 +110,24 @@ async fn stream_args(programs: &Programs, stream: &SendStream) -> Result<Vec<Str
         .ok_or_else(|| {
             Refusal::Unknown("no Machine Pool is imported on this Machine".to_owned())
         })?;
-    let root = format!("{}/{DATASET_ROOT}/{}", pool.name(), stream.name);
-    let roots = lines(
+    let filesystems = lines(
         &programs.zfs,
         &["list", "-H", "-o", "name", "-t", "filesystem"],
     )
     .await?;
-    if !roots.contains(&root) {
+    // A stopped writer parks its root in the slot until the target promotes,
+    // and the target still pulls the final increment from there.
+    let Some(root) = [
+        format!("{}/{DATASET_ROOT}/{}", pool.name(), stream.name),
+        format!("{}/{MIRROR_ROOT}/{}/fs", pool.name(), stream.name),
+    ]
+    .into_iter()
+    .find(|dataset| filesystems.contains(dataset)) else {
         return Err(Refusal::Unknown(format!(
             "Volume {} has no writer on this Machine",
             stream.name
         )));
-    }
+    };
     let snapshots = lines(
         &programs.zfs,
         &[
@@ -236,9 +242,14 @@ mod tests {
             &zfs,
             r#"#!/bin/sh
 case "$*" in
-  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\n' ;;
+  'list -H -o name -t filesystem') printf 'old\nold/ployz\nold/ployz/data\ntank\ntank/ployz\ntank/ployz/data\ntank/ployz-mirror/other\ntank/ployz-mirror/slotted\ntank/ployz-mirror/slotted/fs\n' ;;
   'list -H -o name,guid -t snapshot -d 1 tank/ployz/data') printf 'tank/ployz/data@w-1-1\t11\ntank/ployz/data@w-1-2\t12\n' ;;
+  'list -H -o name,guid -t snapshot -d 1 tank/ployz-mirror/slotted/fs') printf 'tank/ployz-mirror/slotted/fs@w-1-1\t21\ntank/ployz-mirror/slotted/fs@w-1-2\t22\n' ;;
   'send tank/ployz/data@w-1-2') printf 'full stream' ;;
+  'send tank/ployz-mirror/slotted/fs@w-1-2') printf 'full slot stream' ;;
+  'send -i tank/ployz-mirror/slotted/fs@w-1-1 tank/ployz-mirror/slotted/fs@w-1-2') printf 'incremental slot stream' ;;
+  'send -nvP -t slot-token') printf 'resume token contents:\n\ttoname = tank/ployz-mirror/slotted/fs@w-1-2\n' ;;
+  'send -t slot-token') printf 'resumed slot stream' ;;
   'send -i tank/ployz/data@w-1-1 tank/ployz/data@w-1-2') printf 'incremental stream' ;;
   'send -nvP -t token-1') printf 'resume token contents:\n\ttoname = tank/ployz/data@w-1-2\n' >&2 ;;
   'send -nvP -t token-other') printf 'resume token contents:\n\ttoname = tank/ployz/sibling@w-1-2\n' ;;
@@ -283,6 +294,43 @@ esac
             get(&base, "/volume-send/data?target=w-1-2&token=token-1").await,
             (StatusCode::OK, "resumed stream".to_owned())
         );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn streams_from_the_slot_of_a_stopped_writer() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start(&dir, POOLS).await;
+        assert_eq!(
+            get(&base, "/volume-send/slotted?target=w-1-2").await,
+            (StatusCode::OK, "full slot stream".to_owned())
+        );
+        assert_eq!(
+            get(&base, "/volume-send/slotted?target=w-1-2&base=21").await,
+            (StatusCode::OK, "incremental slot stream".to_owned())
+        );
+        assert_eq!(
+            get(&base, "/volume-send/slotted?target=w-1-2&token=slot-token").await,
+            (StatusCode::OK, "resumed slot stream".to_owned())
+        );
+        for (path, reason) in [
+            (
+                "/volume-send/slotted?target=w-1-2&base=11",
+                "not on tank/ployz-mirror/slotted/fs",
+            ),
+            (
+                "/volume-send/slotted?target=w-1-2&token=token-1",
+                "does not match",
+            ),
+            (
+                "/volume-send/data?target=w-1-2&token=slot-token",
+                "does not match",
+            ),
+        ] {
+            let (status, body) = get(&base, path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+            assert!(body.contains(reason), "{path}: {body}");
+        }
         shutdown.cancel();
     }
 

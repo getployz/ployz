@@ -438,6 +438,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_refuses_a_name_whose_writer_is_held_in_its_slot() {
+        let test = TestDir::new();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("mirror"), "").unwrap();
+        fs::write(test.0.join("mirror-fs"), "").unwrap();
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+        let socket = test.0.join("plugin.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+        let response = post(
+            &socket,
+            "/VolumeDriver.Create",
+            json!({"Name":"data","Opts":{"size":"1g"}}),
+        )
+        .await;
+        let error = response.get("Err").and_then(Value::as_str).unwrap();
+        assert!(error.contains("slot tank/ployz-mirror/data"), "{error}");
+        let log = fs::read_to_string(test.0.join("commands")).unwrap_or_default();
+        assert!(!log.contains("zfs create"), "{log}");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn docker_can_get_and_list_provisioned_volume_usage() {
         let test = TestDir::new();
         fs::write(test.0.join("root"), "").unwrap();

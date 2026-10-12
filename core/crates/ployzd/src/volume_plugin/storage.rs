@@ -233,6 +233,13 @@ impl VolumeStorage {
             return Ok(());
         }
 
+        let slot = super::lease::slot_parent(pool, name);
+        if datasets.iter().any(|dataset| dataset.name == slot) {
+            return Err(VolumeError::from(format!(
+                "Volume {name} is held in slot {slot}; promote or restore it before creating it again"
+            )));
+        }
+
         if matches!(origin, CapacityAdmission::Required) {
             self.ensure_commitment(pool, &datasets, requested).await?;
         }
