@@ -22,7 +22,7 @@ export default defineConfig({
         test: {
           ...sharedTestConfig,
           name: "unit",
-          include: ["src/**/*.test.{ts,tsx}", "evals/**/*.test.ts"],
+          include: ["src/**/*.test.{ts,tsx}"],
           exclude: ["**/*.postgres.test.ts", "**/*.static.test.ts"],
           maxWorkers: 4,
           isolate: false,
@@ -42,8 +42,8 @@ export default defineConfig({
         test: {
           ...sharedTestConfig,
           name: "eval",
-          // The agent eval on the Store: graders and replay always, live trials only through `pnpm eval:live`.
-          include: ["evals/**/*.eval.ts"],
+          // The agent eval, run only by hand (`pnpm eval`): never in `pnpm test` or CI. Live trials need `pnpm eval:live`.
+          include: ["evals/**/*.eval.ts", "evals/**/*.test.ts"],
           globalSetup: ["./src/test/postgres.global-setup.ts"],
           maxWorkers: 4,
           testTimeout: 60_000,
