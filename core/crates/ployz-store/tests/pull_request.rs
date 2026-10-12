@@ -1201,6 +1201,55 @@ fn a_recreated_preview_is_listed_as_its_proposals_source() {
     assert_eq!(source(), (Some(preview), true));
 }
 
+/// Production's edit to a service a pull request's proposal introduced stops Remove,
+/// whether or not the pull request reopened and an Include rebound the proposal to its
+/// new preview.
+#[test]
+fn remove_keeps_an_edit_to_an_introduced_service_across_a_recreated_preview() {
+    for recreate in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let url = backend::fresh_url(&dir);
+        let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+        plan(&store, &who, on());
+        pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+        image_service(&store, &who, "pr-5", 20, "cache");
+        let proposal = include_pr(&store, &who, 1).unwrap();
+        set(&store, &who, "production", "cache.image", json!("cache:2"));
+        if recreate {
+            pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
+            pull(&store, &who, facts(true, "2026-09-29T12:00:00Z"));
+            set(&store, &who, "pr-5", "web.env.X", json!("1"));
+            assert_eq!(include_pr(&store, &who, 2), Ok(proposal.clone()));
+        }
+
+        let refused = store
+            .write(
+                &who,
+                &ployz_store::RemoveProposal {
+                    environment: at("production"),
+                    proposal,
+                    version: None,
+                },
+            )
+            .expect_err(&format!("recreate: {recreate}"));
+        assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+        assert!(refused.message.contains("cache"), "{refused:?}");
+        let image = store
+            .read(
+                &who,
+                &ployz_store::ServiceQuery {
+                    environment: at("production"),
+                    service: ServiceName::parse("cache").unwrap(),
+                },
+            )
+            .unwrap()
+            .values
+            .get("image")
+            .cloned();
+        assert_eq!(image, Some(json!("cache:2")), "recreate: {recreate}");
+    }
+}
+
 /// Reopened while its deployed preview is still closing, the new preview is listed.
 #[test]
 fn a_preview_reopened_while_the_old_one_closes_is_listed() {
