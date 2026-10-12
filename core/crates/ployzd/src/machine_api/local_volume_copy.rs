@@ -99,11 +99,15 @@ impl MachineService {
                     copy => copy,
                 };
                 // Another holder already runs: starting this one too would run two. Read
-                // again here, since a holder can exit while the Writer route runs.
-                if let Some(start) = start
-                    && self.start_state(&start, &name).await? != StartState::Running
-                {
-                    self.run_start(&start).await?;
+                // again here, since a holder can exit or go while the Writer route runs.
+                if let Some(start) = start {
+                    match self.start_state(&start, &name).await? {
+                        StartState::Running => {}
+                        StartState::Gone => {
+                            return Err(refused(CopyRefusal::NoTransition, copy, &name));
+                        }
+                        StartState::Stopped => self.run_start(&start).await?,
+                    }
                 }
                 Ok(copy)
             }
