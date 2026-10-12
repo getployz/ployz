@@ -2186,18 +2186,21 @@ fn a_removal_conflicts_on_any_change_the_receiver_made_to_the_node() {
         .iter()
         .map(|change| (CACHE, change))
         .chain(config_changes.iter().map(|change| (CONFIG, change)));
-    let routed = || {
+    let routed = |routes: u32| {
         let mut env = production();
-        svc(&mut env, CACHE)["config"]["routes"] = json!([
-            {"id": id(0xb000_0000, 90), "hostname": "cache.example.com", "targetPort": 8080}
-        ]);
+        svc(&mut env, CACHE)["config"]["routes"] = (0..routes)
+            .map(|at| {
+                json!({"id": id(0xb000_0000, 90 + at), "hostname": "cache.example.com",
+                       "targetPort": 8080})
+            })
+            .collect();
         env
     };
-    let route_changes: [fn(&mut Value); 1] =
-        [|env| svc(env, CACHE)["config"]["routes"][0]["targetPort"] = json!(9090)];
+    let route_change: fn(&mut Value) =
+        |env| svc(env, CACHE)["config"]["routes"][0]["targetPort"] = json!(9090);
     let cases = cases
         .map(|(lineage, change)| (lineage, production(), change))
-        .chain(route_changes.iter().map(|change| (CACHE, routed(), change)));
+        .chain([1, 2].map(|routes| (CACHE, routed(routes), &route_change)));
     for (lineage, base, change) in cases {
         let mut into = base.clone();
         change(&mut into);
