@@ -2,7 +2,7 @@ use std::future::Future;
 
 use bollard::{
     errors::Error as DockerError,
-    models::{ContainerCreateBody, Mount, MountType},
+    models::{ContainerCreateBody, ContainerInspectResponse, Mount, MountType},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
@@ -606,9 +606,46 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
     }
 }
 
+fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
+    let _ = inspected;
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn inspected(network_mode: &str, networks: serde_json::Value) -> ContainerInspectResponse {
+        serde_json::from_value(serde_json::json!({
+            "HostConfig": { "NetworkMode": network_mode },
+            "NetworkSettings": { "Networks": networks },
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_container_whose_failed_start_dropped_its_network_gets_it_back() {
+        assert!(lost_ployz_network(&inspected(
+            "ployz",
+            serde_json::json!({})
+        )));
+        assert!(lost_ployz_network(&inspected(
+            "ployz",
+            serde_json::json!({ "bridge": {} })
+        )));
+    }
+
+    #[test]
+    fn an_attached_or_differently_networked_container_is_left_alone() {
+        assert!(!lost_ployz_network(&inspected(
+            "ployz",
+            serde_json::json!({ "ployz": {} })
+        )));
+        assert!(!lost_ployz_network(&inspected(
+            "host",
+            serde_json::json!({})
+        )));
+    }
 
     #[test]
     fn name_conflicts_retry_with_a_fresh_four_character_suffix() {
