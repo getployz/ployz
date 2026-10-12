@@ -124,7 +124,7 @@ type PlanDetails = {
 
 const PLANS: readonly PlanDetails[] = [
   {
-    name: "Starter",
+    name: "Free",
     price: "$0",
     per: "/ month",
     pitch: "The whole platform, on servers you own.",
@@ -133,7 +133,7 @@ const PLANS: readonly PlanDetails[] = [
       "Dashboard and git push deploys",
       "Preview environments",
       "One-click databases",
-      "Custom domains, and a *.ployz.app address",
+      "Custom domains, and a free *.ployz.app address",
       "Live logs and server metrics",
       "24 hours of logs and metrics",
     ],
@@ -144,7 +144,7 @@ const PLANS: readonly PlanDetails[] = [
     per: "/ month",
     pitch: "For the app that pays your rent.",
     features: [
-      "Everything in Starter",
+      "Everything in Free",
       "7 days of logs and metrics",
       "Uptime checks from outside your servers",
       "Alerts by email and Slack",
