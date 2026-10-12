@@ -87,8 +87,8 @@ const snap = (guid: string, name = `ployz-${guid}`): Snapshot => ({ name, guid, 
 const base = snap("10");
 const writerCopy = (newest: Snapshot | null = base, epoch = 0, readonly = false): VolumeCopy =>
   ({ kind: "root", writer: { phase: "idle" }, readonly, newest, epoch });
-const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null): VolumeCopy =>
-  ({ kind: "slot", mirror: { phase: "idle" }, readonly: true, newest, resume_token: null, pull });
+const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null, slot = "1"): VolumeCopy =>
+  ({ kind: "slot", slot, mirror: { phase: "idle" }, readonly: true, newest, resume_token: null, pull });
 const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
 const first = <T>(items: readonly T[]): T => {
   const item = items[0];
@@ -115,6 +115,8 @@ describe("volume runs", () => {
   let containers: FakeContainer[];
   let snapshots: Map<string, Snapshot>;
   let guids: number;
+  /** Slot ids a fake Machine gave out: every slot it creates gets a fresh one, as a fresh ZFS dataset gets a fresh guid. */
+  let slotIds: number;
   let verbs: string[];
   let failNext: Map<string, Fault>;
   let beforeSet: Map<string, () => void>;
@@ -137,6 +139,11 @@ describe("volume runs", () => {
     const made = snap(String(100 + guids), name);
     snapshots.set(name, made);
     return made;
+  };
+
+  const newSlot = () => {
+    slotIds += 1;
+    return String(1000 + slotIds);
   };
 
   const startOn = (fake: FakeMachine, want: Extract<WantedCopy, { kind: "writer" }>) => {
@@ -174,7 +181,7 @@ describe("volume runs", () => {
       case "writer":
         return copy?.kind === "root" && copy.epoch === expect.epoch;
       case "mirror":
-        return copy?.kind === "slot" && copy.newest?.guid === expect.newest;
+        return copy?.kind === "slot" && copy.newest?.guid === expect.newest && copy.slot === expect.slot;
     }
   };
 
@@ -187,7 +194,7 @@ describe("volume runs", () => {
       switch (want.kind) {
         case "mirror":
           for (const container of containers) if (container.machine === fake.name) container.running = false;
-          fake.copy = slotCopy(newSnap(want.target));
+          fake.copy = slotCopy(newSnap(want.target), null, newSlot());
           return null;
         case "snapshot":
           if ((fake.writes ?? 0) > 0) {
@@ -198,9 +205,9 @@ describe("volume runs", () => {
         case "forget":
           return null;
         case "writer":
-          if (copy.epoch !== want.epoch) return "no_transition";
+          if (copy.epoch > want.epoch) return "no_transition";
           if (copy.newest?.guid !== want.at) return "behind";
-          fake.copy = { ...copy, readonly: false };
+          fake.copy = { ...copy, readonly: false, epoch: want.epoch };
           startOn(fake, want);
           return null;
       }
@@ -208,7 +215,7 @@ describe("volume runs", () => {
     switch (want.kind) {
       case "mirror":
         if (want.from === null) return "no_transition";
-        fake.copy = slotCopy(copy?.newest ?? null, { target: want.target, failure: null });
+        fake.copy = slotCopy(copy?.newest ?? null, { target: want.target, failure: null }, copy?.kind === "slot" ? copy.slot : newSlot());
         return null;
       case "forget":
         fake.copy = null;
@@ -367,6 +374,7 @@ describe("volume runs", () => {
     sent = [];
     held = new Map();
     guids = 0;
+    slotIds = 0;
     snapshots = new Map([[base.name, base]]);
     containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true }];
     storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 } }];
@@ -588,7 +596,7 @@ describe("volume runs", () => {
         "snapshot@fsn-1(w-1-1)", "pull@fsn-2(w-1-1)",
         "snapshot@fsn-1(w-1-2)", "pull@fsn-2(w-1-2)",
       ]);
-      expect(sent[3]?.expect).toEqual({ kind: "mirror", newest: snapshots.get("w-1-0")?.guid });
+      expect(sent[3]?.expect).toEqual({ kind: "mirror", newest: snapshots.get("w-1-0")?.guid, slot: "1001" });
       expect(await rows()).toMatchObject([{ state: "done" }]);
     });
 
@@ -630,7 +638,7 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(ployz-10)", "snapshot@fsn-1(w-1-1)"]);
-      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: "10" });
+      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: "10", slot: "1" });
       expect(sent[1]?.expect).toEqual({ kind: "writer", epoch: 0 });
     });
 
@@ -732,7 +740,8 @@ describe("volume runs", () => {
 
       expect(output.error).toBeDefined();
       expect(verbs.slice(-2)).toEqual(["cut@fsn-1(f-1)", "writer@fsn-1(kept)"]);
-      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 0 });
+      expect(sent.at(-1)).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "writer", epoch: 1 } });
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1 });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data on fsn-1 was written after its final snapshot" }]);
     });
@@ -926,7 +935,7 @@ describe("volume runs", () => {
       const move = await requested({ kind: "move", args: { to: "fsn-2" } });
       await running(move.id);
 
-      const late = await runEffect(setVolumeCopy({ ...context(move.id), kind: "move", args: { to: "fsn-2" } }, "run-1", { id: idOf("fsn-2"), name: "fsn-2" }, { kind: "mirror", newest: at.guid }, {
+      const late = await runEffect(setVolumeCopy({ ...context(move.id), kind: "move", args: { to: "fsn-2" } }, "run-1", { id: idOf("fsn-2"), name: "fsn-2" }, { kind: "mirror", newest: at.guid, slot: "1" }, {
         kind: "writer",
         at: at.guid,
         epoch: 1,
@@ -1032,15 +1041,30 @@ describe("volume runs", () => {
       expect(writable()).toEqual(["fsn-1"]);
     });
 
-    // Measured defect, left unpatched by the brief: the late pull rebuilds B as a slot at G, so run 1's late start
-    // matches its mirror{G} expect and B writes at epoch 1 beside A at epoch 2.
-    it.fails("two ended runs whose requests land late, B's pull then B's start, land two writable roots", async () => {
+    it("two ended runs whose requests land late, B's pull then B's start, leave one writable root", async () => {
       await endTwoRuns();
 
       land("pull@fsn-2");
       land("writer@fsn-2");
 
+      expect(named("fsn-2").copy).toMatchObject({ kind: "slot", newest: snapshots.get("f-1") });
       expect(writable()).toEqual(["fsn-1"]);
+    });
+
+    it("a cut from an ended run that lands after the undo before the cut refuses, and A keeps writing and running", async () => {
+      failNext.set("cut@fsn-1", "held");
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await execute(move.id, "run-1");
+      failNext.set("cut@fsn-1", "written");
+      await execute(move.id, "run-1");
+      expect(await rows()).toMatchObject([{ state: "failed", epoch: "1" }]);
+
+      const refused = held.get("cut@fsn-1");
+      held.delete("cut@fsn-1");
+
+      expect(refused?.()).toBe("mismatch");
+      expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1 });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
   });
 

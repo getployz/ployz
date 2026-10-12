@@ -64,7 +64,7 @@ describe("expectOf", () => {
   it("expects a root at its epoch, a slot at its newest, and an empty slot as none", () => {
     expect(expectOf(null)).toEqual({ kind: "none" });
     expect(expectOf({ ...COPIES.writer, epoch: 4 })).toEqual({ kind: "writer", epoch: 4 });
-    expect(expectOf(COPIES.mirror)).toEqual({ kind: "mirror", newest: "11" });
+    expect(expectOf(COPIES.mirror)).toEqual({ kind: "mirror", newest: "11", slot: "1" });
     expect(expectOf({ ...COPIES.mirror, newest: null })).toEqual({ kind: "none" });
   });
 });

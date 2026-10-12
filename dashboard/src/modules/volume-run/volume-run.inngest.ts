@@ -145,6 +145,12 @@ async function mustSet(steps: RunSteps, id: string, machine: MachineRef, expect:
 const isWriterAt = (copy: VolumeCopy | null, at: Snapshot) =>
   copy?.kind === "root" && !copy.readonly && copy.newest?.guid === at.guid;
 
+/** A slot holding a snapshot: what an undo after the cut expects of A, the slot keeping the stopped Container. */
+type SlotAt = Extract<VolumeCopy, { kind: "slot" }> & { readonly newest: Snapshot };
+
+const slotAt = (copy: VolumeCopy | null): SlotAt | null =>
+  copy?.kind === "slot" && copy.newest !== null ? { ...copy, newest: copy.newest } : null;
+
 const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
   copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid;
 
@@ -307,15 +313,15 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     }
     const source = await kept("03-holder", from.slots.map((slot) => slot.machine));
     const owner = source === null ? undefined : from.slots.find((slot) => slot.machine.id === source.machine.id);
-    const at = owner?.view.copy?.newest ?? null;
-    if (source === null || owner === undefined || at === null) {
+    const cut = slotAt(owner?.view.copy ?? null);
+    if (source === null || owner === undefined || cut === null) {
       return fail(steps, "03-no-source", `${run.volumeName} has no writer and no stopped Service on its copies; volume restore ${run.volumeName} --from <server>`);
     }
     const found = await steps.step.run("03-spec", () => steps.runEffect(findHolder(run, steps.runId, owner.machine)));
     // SAFETY: step output is the JSON of a Holder, and a Holder holds only JSON values.
     const holder = found.ok ? found.holder as Holder : null;
     const others = from.slots.filter((slot) => slot !== owner);
-    const done = await undoAfterCut(steps, { A: owner.machine, holder, containerId: source.containerId, at, epoch, others });
+    const done = await undoAfterCut(steps, { A: owner.machine, holder, containerId: source.containerId, source: cut, epoch, others });
     await finish(steps, "06-finish");
     return { runId: run.id, released: done === "undone" ? owner.machine.name : null };
   } catch (error) {
@@ -334,13 +340,14 @@ async function undoAfterCut(
     readonly A: MachineRef;
     readonly holder: Holder | null;
     readonly containerId: ContainerId;
-    readonly at: Snapshot;
+    readonly source: SlotAt;
     readonly epoch: number;
     readonly others: readonly { readonly machine: MachineRef }[];
   },
 ): Promise<"undone" | "forward"> {
   const { step, runEffect, run, runId } = steps;
-  const { A, at } = ctx;
+  const { A, source } = ctx;
+  const at = source.newest;
   const forward = async (B: MachineRef, copy: VolumeCopy | null) => {
     await startOnB(steps, ["13-running", "13-start"], { A, B, holder: ctx.holder, copy, at, epoch: ctx.epoch });
     await step.run("13-remove", () => runEffect(removeContainer(run, runId, A, ctx.containerId)));
@@ -355,13 +362,13 @@ async function undoAfterCut(
     if (isWriterAt(now, at)) return forward(machine, now);
     if (now?.kind === "root") throw otherRoot(machine, now);
     if (now?.kind !== "slot" || now.newest?.guid !== at.guid) continue;
-    const forgot = await setCopy(steps, `13-forget-${machine.name}`, machine, { kind: "mirror", newest: at.guid }, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
+    const forgot = await setCopy(steps, `13-forget-${machine.name}`, machine, expectOf(now), { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
     if (forgot.ok) continue;
     if (isWriterAt(forgot.copy, at)) return forward(machine, forgot.copy);
     if (forgot.copy?.kind === "root") throw otherRoot(machine, forgot.copy);
     throw new NonRetriableError(forgot.message);
   }
-  await mustSet(steps, "14-undo", A, { kind: "mirror", newest: at.guid }, {
+  await mustSet(steps, "14-undo", A, expectOf(source), {
     kind: "writer",
     at: at.guid,
     epoch: ctx.epoch,
@@ -424,13 +431,13 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     }
   }
 
-  const at = source?.newest ?? null;
-  if (at === null) return fail(steps, "06-failed", `${copyName(name, A.name)} holds no final snapshot`);
+  const cut = slotAt(source);
+  if (cut === null) return fail(steps, "06-failed", `${copyName(name, A.name)} holds no final snapshot`);
   if (phase.start !== "start") {
     try {
-      copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: at });
+      copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest });
     } catch (error) {
-      return undoMove(steps, { A, B, holder, at, epoch, message: (error instanceof Error ? error.message : String(error)) });
+      return undoMove(steps, { A, B, holder, source: cut, epoch, message: (error instanceof Error ? error.message : String(error)) });
     }
   }
   return finishOnTarget(steps, { ...phase, target: { ...phase.target, view: { ...phase.target.view, copy } } }, holder, epoch, forwardOnly);
@@ -480,19 +487,23 @@ async function startOnB(
   if (!started.ok) throw new NonRetriableError(started.message);
 }
 
-/** Before the cut A is still the writer, so its kept Container starts again; a cut that landed meanwhile undoes as after the cut. */
+/**
+ * Before the cut A is still the writer, so its kept Container starts again; a cut that landed meanwhile undoes as after
+ * the cut. A takes the run's epoch, so a cut this run sent that lands late expects the old one and refuses.
+ */
 async function undoBeforeCut(steps: RunSteps, ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly holder: Holder; readonly epoch: number; readonly message: string }) {
   const { step, runEffect, run, runId } = steps;
   const { A, holder } = ctx;
   try {
     const now = await step.run("12-inspect", () => runEffect(inspectCopy(run, runId, A)));
+    const cut = slotAt(now);
+    if (cut !== null) return undoMove(steps, { ...ctx, source: cut });
     const at = now?.newest ?? null;
-    if (now?.kind === "slot" && at !== null) return undoMove(steps, { ...ctx, at });
     if (now?.kind !== "root" || at === null) throw new NonRetriableError(`${copyName(run.volumeName, A.name)} is gone`);
-    await mustSet(steps, "13-undo", A, { kind: "writer", epoch: now.epoch }, {
+    await mustSet(steps, "13-undo", A, expectOf(now), {
       kind: "writer",
       at: at.guid,
-      epoch: now.epoch,
+      epoch: ctx.epoch,
       start: { kind: "kept", container_id: holder.containerId },
     }, `${A.name} is still starting ${holder.redactedSpec.name}`);
   } catch (error) {
@@ -504,11 +515,11 @@ async function undoBeforeCut(steps: RunSteps, ctx: { readonly A: MachineRef; rea
 
 async function undoMove(
   steps: RunSteps,
-  ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly holder: Holder; readonly at: Snapshot; readonly epoch: number; readonly message: string },
+  ctx: { readonly A: MachineRef; readonly B: MachineRef; readonly holder: Holder; readonly source: SlotAt; readonly epoch: number; readonly message: string },
 ) {
   const { run } = steps;
   try {
-    const done = await undoAfterCut(steps, { A: ctx.A, holder: ctx.holder, containerId: ctx.holder.containerId, at: ctx.at, epoch: ctx.epoch, others: [{ machine: ctx.B }] });
+    const done = await undoAfterCut(steps, { A: ctx.A, holder: ctx.holder, containerId: ctx.holder.containerId, source: ctx.source, epoch: ctx.epoch, others: [{ machine: ctx.B }] });
     if (done === "forward") {
       await finish(steps, "15-finish");
       return { runId: run.id, moved: ctx.B.name };

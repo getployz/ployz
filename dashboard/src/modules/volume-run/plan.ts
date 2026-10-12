@@ -61,11 +61,14 @@ export const epochOf = (member: AnsweredMember) => (member.view.copy?.kind === "
 
 export const newestGuid = (copy: VolumeCopy | null): SnapshotGuid | null => copy?.newest?.guid ?? null;
 
-/** What a SetVolumeCopy expects of a copy the run saw: a slot that holds no snapshot yet counts as none. */
+/**
+ * What a SetVolumeCopy expects of a copy the run saw: a slot that holds no snapshot yet counts as none. A slot is named
+ * by its id too, since a slot pulled again after a Forget holds the same snapshot guids.
+ */
 export function expectOf(copy: VolumeCopy | null): ExpectedCopy {
   if (copy === null) return { kind: "none" };
   if (copy.kind === "root") return { kind: "writer", epoch: copy.epoch };
-  return copy.newest === null ? { kind: "none" } : { kind: "mirror", newest: copy.newest.guid };
+  return copy.newest === null ? { kind: "none" } : { kind: "mirror", newest: copy.newest.guid, slot: copy.slot };
 }
 
 const SNAPSHOT_EPOCH = /^[wf]-(\d+)/;
