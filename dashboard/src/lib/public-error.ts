@@ -13,7 +13,6 @@ export const PublicError = Schema.Union([
     ]),
     message: Schema.String,
   }),
-  /** The Server `machineId` lacks `capability`, a name from its daemon's refusal. */
   Schema.TaggedStruct("PublicError", {
     code: Schema.Literal("SERVER_LACKS"),
     message: Schema.String,

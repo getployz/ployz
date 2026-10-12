@@ -49,7 +49,6 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     const reasons = Object.values(failed);
     return { machineId, machineName, ...reasons.find(reason => reason.capability !== undefined) ?? reasons.at(-1) ?? { message: "" } };
   });
-  // One line per Server that lacks a capability, the live tail's first since its feature is the page's own.
   const lacking = new Map<string, ServerLacks>();
   for (const lack of lacks([...live, ...missing.history]).lacks) if (!lacking.has(lack.machineId)) lacking.set(lack.machineId, lack);
   const names = new Map([...missing.history, ...live].map(server => [server.machineId, server.machineName]));

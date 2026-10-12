@@ -308,7 +308,6 @@ it("reopens the log stream once a lacking Server's daemon changes, as after Upgr
     if (!opened) throw new Error("Viewer did not open its log stream");
     await harness.refuse(opened.source);
     expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
-    // Another Server changing leaves the stream alone.
     await act(async () => { harness.machines.update("other", draft => { draft.daemonVersion = "0.2.4"; }); });
     expect(harness.sources).toHaveLength(1);
     await act(async () => { harness.machines.update("old", draft => { draft.daemonVersion = "0.2.4"; }); });

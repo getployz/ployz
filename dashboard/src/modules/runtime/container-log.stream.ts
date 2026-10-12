@@ -91,8 +91,6 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           controller = new AbortController();
           const stop = liveStream(`/api/runtime/logs?${query}`, {
             onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
-            // Any loss says so, so a first connection that fails never sits on the loading skeleton; only a refused one
-            // also ends its history reads.
             onLost: (why) => {
               if (why === "refused") {
                 controller.abort();
@@ -127,11 +125,10 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           return () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
         };
         let close = open();
-        // The SDK never reopens a source it marked failed, so a Server that lacked a capability gets a fresh stream once its
-        // daemon changes, as after Upgrade.
         const lacking = (machineId: string) =>
           Object.values(snapshot.missing.live[machineId]?.failed ?? {}).some(reason => reason.capability !== undefined)
           || snapshot.missing.history.some(server => server.machineId === machineId && server.capability !== undefined);
+        // @ployz/sdk never reopens a source it marked failed, so a lacking Server's new daemon needs a fresh stream.
         const upgrades = getRuntimeCollections(selection.organizationSlug, scope).machines.subscribeChanges((changes) => {
           const upgraded = new Set(changes.flatMap(change => change.type === "update" && change.previousValue !== undefined
             && change.value.daemonVersion !== change.previousValue.daemonVersion && lacking(change.value.id) ? [change.value.id] : []));

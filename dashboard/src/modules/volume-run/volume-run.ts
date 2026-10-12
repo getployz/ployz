@@ -59,7 +59,6 @@ export type Member =
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };
       readonly answered: false;
-      /** The Server answered that its daemon cannot serve the verb, as the sentence the run ends with. */
       readonly lack?: string;
     };
 export type AnsweredMember = Extract<Member, { answered: true }>;

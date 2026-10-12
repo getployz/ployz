@@ -557,7 +557,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
         pool: storage?.state === "pool" || view.copy !== null,
         view,
       })),
-      // A daemon too old for the verb answered, so the run ends saying what would fix it rather than that it went quiet.
       Effect.catchTag("ServerLacks", () => lackSentence(organizationId, { name: machine.name, daemonVersion: machine.runtime.daemon_version }).pipe(
         Effect.map((lack): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false, lack })),
       )),
@@ -566,7 +565,6 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
 
-/** What the Release Channel says about a Server whose daemon cannot serve a Volume move. */
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (organizationId: string, server: { readonly name: string; readonly daemonVersion: string }) {
   const line = releaseLine(server.daemonVersion);
   const channel = yield* organizationReleaseChannel(organizationId);

@@ -201,22 +201,16 @@ export function serverUpgradeLine(input: {
   return status === "offline" && input.automatic ? { kind: "when-back", release } : null;
 }
 
-/** A Release Channel read: still loading, unreadable, or its release (null when the channel names none). */
 export type ReleaseState =
   | { readonly state: "pending" }
   | { readonly state: "failed" }
   | { readonly state: "resolved"; readonly release: string | null };
 
-/** What to tell a viewer whose Server lacks a feature: the Server's own Upgrade line while one is under way. */
 export type Remedy =
   | { readonly kind: "behind"; readonly sentence: string; readonly canUpgrade: boolean }
   | { readonly kind: "lack"; readonly sentence: string }
   | Exclude<ServerUpgradeLine, { readonly kind: "behind" } | null>;
 
-/**
- * The sentence for a Server that refused `feature`, null when Cloud names no feature for the capability. The Release
- * Channel explains it; Cloud's own version never enters, since a main build reports an older one than its Servers run.
- */
 export function remedy(input: {
   readonly feature: Requirement | null;
   readonly server: { readonly name: string; readonly daemonVersion: string };

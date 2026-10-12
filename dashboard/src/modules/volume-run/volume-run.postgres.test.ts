@@ -44,7 +44,6 @@ type FakeMachine = {
   pool: boolean;
   stateless?: boolean;
   silent?: boolean;
-  /** Its daemon runs this release and refuses the volume verbs as too old for them. */
   lacks?: string;
   copy: VolumeCopy | null;
   lease: LeaseRecord | null;

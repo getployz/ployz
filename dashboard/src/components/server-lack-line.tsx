@@ -9,12 +9,10 @@ import { releaseLine, remedy, rolloutRunning, serverUpgradeLine, type Remedy } f
 import { useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
 
-/** One Server that cannot serve a feature, and what would fix it. `name` stands in until its runtime record arrives. */
 export function ServerLackLine({ organizationSlug, lack, name }: { organizationSlug: string; lack: ServerLacks; name: string }) {
   const { data: machines = [] } = useLiveQuery(getRuntimeCollections(organizationSlug, useCollectionScope()).machines);
   const machine = machines.find((row) => row.id === lack.machineId);
   const feature = requirementFor(lack.capability);
-  // Until the Server's upgrades are read, the line claims only that it needs a newer Ployz.
   const unread = <LackLine server={machine?.name ?? name} remedy={remedy({
     feature, server: { name: machine?.name ?? name, daemonVersion: machine?.daemonVersion ?? "" }, release: { state: "pending" }, line: null,
   })} onUpgrade={() => {}} />;

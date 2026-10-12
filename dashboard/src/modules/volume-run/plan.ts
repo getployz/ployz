@@ -154,7 +154,6 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const mirrors = withRole("mirror");
   const stale = withRole("stale");
   const silent = members.filter((member): member is Exclude<Member, AnsweredMember> => !member.answered);
-  // A Server too old to answer says so, which tells the viewer more than one that did not answer at all.
   const unanswered = silent.find((member) => member.lack !== undefined) ?? silent[0];
   const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack === undefined
     ? refuse("unanswered", `${member.machine.name} did not answer; ${name}'s copies are unknown`)
