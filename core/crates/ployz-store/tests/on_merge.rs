@@ -2752,6 +2752,17 @@ fn runner() -> ployz_store::RunnerId {
 
 /// Run Deployment `id` to its end, touching `services`.
 fn run(store: &ConfigStore, id: &ployz_store::DeploymentId, services: &[&str]) {
+    run_seeing(store, id, services, true);
+}
+
+/// Run Deployment `id` to its end, touching `services`, with a snapshot of every
+/// Server when `complete`.
+fn run_seeing(
+    store: &ConfigStore,
+    id: &ployz_store::DeploymentId,
+    services: &[&str],
+    complete: bool,
+) {
     let claimed = store.claim(id, &runner()).unwrap();
     let operation = |index: usize| {
         json!({"type": "remove_container", "machine_id": "a".repeat(32),
@@ -2763,7 +2774,8 @@ fn run(store: &ConfigStore, id: &ployz_store::DeploymentId, services: &[&str]) {
             "index": index, "machine_id": "a".repeat(32), "service_name": name,
             "operation": operation(index), "status": {"type": "pending"}
         })).collect::<Vec<_>>(),
-        "warnings": [], "would_remove": [], "preserved_volumes": []
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "prune_refusal": (!complete).then_some("incomplete_snapshot")
     }))
     .unwrap();
     store
@@ -3047,4 +3059,35 @@ fn a_manual_deploy_of_other_services_leaves_the_teardown_to_the_push() {
         teardown(&store, &who, &pushed),
         [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
     );
+}
+
+#[test]
+fn a_full_deploy_that_cant_see_every_server_leaves_the_teardown_to_the_push() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let full = deploy_by_hand(&store, &who, &[]);
+    run_seeing(&store, &full, &["web", "worker"], false);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+}
+
+#[test]
+fn a_full_deploy_that_tore_the_service_down_leaves_the_push_nothing() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let full = deploy_by_hand(&store, &who, &[]);
+    run(&store, &full, &["web", "worker", "db"]);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
 }
