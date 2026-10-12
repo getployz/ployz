@@ -21,7 +21,7 @@ PORT=3001 INNGEST_DEV=1 pnpm start:worker
 ```
 
 Configure `.env` before running migrations or starting the app. `pnpm dev` builds
-the SDK and starts the app through Portless. `pnpm pr:check` runs the local CI gate.
+the SDK and starts the app through Portless. `pnpm pr:check` runs CI's checks, for reproducing a CI failure locally.
 
 Compose uses the stable project name `ployz-cloud` so moving the checkout keeps
 the same database volume. If an existing local stack uses another project name,
