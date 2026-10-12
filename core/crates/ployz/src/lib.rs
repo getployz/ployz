@@ -27,6 +27,7 @@ pub mod ingress;
 pub mod namespace;
 pub mod operator;
 mod provisioning;
+mod published;
 pub mod sdk;
 pub mod service;
 mod setup_report;

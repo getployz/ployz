@@ -395,6 +395,9 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if let Some(error) = error.downcast_ref::<RpcError>() {
         return error.code.clone();
     }
+    if let Some(error) = error.downcast_ref::<crate::published::PublishError>() {
+        return error.code();
+    }
     if let Some(error) = error.downcast_ref::<MachineSelectorError>() {
         return machine_selector_code(error);
     }
@@ -945,7 +948,7 @@ impl From<LoginError> for Failure {
     }
 }
 
-fn login_code(error: &LoginError) -> RpcErrorCode {
+pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
     match error {
         LoginError::Unreachable { .. } => RpcErrorCode::Unavailable,
         LoginError::Unsupported(_) => RpcErrorCode::Unsupported,

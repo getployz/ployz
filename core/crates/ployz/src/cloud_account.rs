@@ -30,7 +30,7 @@ impl Credential {
         }
     }
 
-    fn bearer(&self) -> &str {
+    pub(crate) fn bearer(&self) -> &str {
         match self {
             Self::Device(signed_in) => signed_in.token().expose(),
             Self::Token { token, .. } => token.expose(),
@@ -502,6 +502,7 @@ async fn store_answer<T: DeserializeOwned>(
         PublicError { code: String, message: String },
     }
     let status = response.status();
+    notice_revision(response.headers());
     let bytes = response
         .bytes()
         .await
@@ -780,6 +781,7 @@ pub(crate) async fn call<T: DeserializeOwned>(
     let url = format!("{}/api/cli/{path}", credential.cloud());
     let response = send(credential, method, &url, body).await?;
     let status = response.status();
+    notice_revision(response.headers());
     let body = response
         .bytes()
         .await
@@ -788,6 +790,32 @@ pub(crate) async fn call<T: DeserializeOwned>(
         return Err(LoginError::Unsupported(credential.cloud().to_owned()));
     }
     answer(credential, status, &body)
+}
+
+/// The manifest revision Cloud names on every `/api/cli` reply, from the latest one.
+static REVISION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) const REVISION_HEADER: &str = "x-ployz-manifest";
+
+/// Keep the revision a reply names, so a command can refresh the published
+/// commands after it prints when Cloud moved on.
+pub(crate) fn notice_revision(headers: &reqwest::header::HeaderMap) {
+    if let Some(revision) = headers
+        .get(REVISION_HEADER)
+        .and_then(|value| value.to_str().ok())
+    {
+        *REVISION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(revision.to_owned());
+    }
+}
+
+/// The revision the latest `/api/cli` reply named, if one did.
+pub(crate) fn revision_seen() -> Option<String> {
+    REVISION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// Cloud's refusal of a call, as it sent it.
