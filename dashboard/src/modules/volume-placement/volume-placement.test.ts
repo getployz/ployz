@@ -243,6 +243,14 @@ describe("dropChange", () => {
     expect(changes(members, { ...row(["web-2"]), staged: dropped }).map(changeKey)).toEqual([{ kind: "add_mirror", server: id("web-3") }]);
   });
 
+  it("returns a failed move to the Server it moved from when two Servers are silent", () => {
+    const placement = row(["web-2", "web-4"], { primary: "web-2", mirrors: ["web-4"] });
+    const planned = changes([member("web-1", "writer"), member("web-2", "mirror"), member("web-4", "mirror")], placement).find((one) => one.kind === "move");
+    if (planned === undefined) throw new Error("no move");
+    const silent = [member("web-4", "unanswered"), member("web-1", "unanswered"), member("web-2", "mirror")];
+    expect(dropChange(volume, silent, placement, changeKey(planned))?.primary).toBe(id("web-1"));
+  });
+
   it("drops the row when the primary isn't answering, so nothing moves to a Server that may be gone", () => {
     const members = [member("web-1", "unanswered"), member("web-2", "mirror")];
     expect(drop(members, row(["web-2"], { primary: "web-2" }), "move")).toBeNull();
@@ -254,7 +262,7 @@ describe("nextPlacementStep", () => {
 
   it("drops the promoted mirror once the move ends, and leaves the old primary detached", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
-    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [], change: { kind: "move", server: id("web-2") } });
+    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [], change: { kind: "move", server: id("web-2"), from: id("web-1") } });
   });
 
   it("keeps the mirrors while a change still has runs after this one", () => {

@@ -264,11 +264,16 @@ export function placementSteps(changes: readonly PlacementChange[]): VolumeRunIn
   return [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order).flatMap(runsOf);
 }
 
-/** Names a change across a Deploy's wait, so a failure finds the same change among the ones read afresh. */
-export type ChangeKey = { readonly kind: PlacementChange["kind"]; readonly server: MachineId };
+/**
+ * Names a change across a Deploy's wait, so a failure finds the same change among the ones read afresh. A move keeps the
+ * Server it left: once that Server stops answering, it is still the one holding the Volume.
+ */
+export type ChangeKey = { readonly kind: PlacementChange["kind"]; readonly server: MachineId; readonly from?: MachineId };
 
-export const changeKey = (change: PlacementChange): ChangeKey =>
-  ({ kind: change.kind, server: change.kind === "move" || change.kind === "seed" ? change.to.id : change.server.id });
+export const changeKey = (change: PlacementChange): ChangeKey => {
+  if (change.kind === "move") return change.from === null ? { kind: "move", server: change.to.id } : { kind: "move", server: change.to.id, from: change.from.id };
+  return { kind: change.kind, server: change.kind === "seed" ? change.to.id : change.server.id };
+};
 
 const sameChange = (a: ChangeKey, b: ChangeKey) => a.kind === b.kind && a.server === b.server;
 
@@ -449,7 +454,7 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
  * What stays staged once a Deploy's run for the change `key` names failed: the change goes, and the rest waits for the
  * next Deploy. A change the Servers no longer show landed despite the failure, so everything stays. A move the Servers
  * handed over already stays too, since only finishing it brings the Volume back. One whose primary isn't answering goes
- * back to the silent Server presumed to hold the Volume, or drops the row when there is none.
+ * back to the Server the move left, else the silent Server presumed to hold the Volume, or drops the row when there is none.
  */
 export function dropChange(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, key: ChangeKey): Placement | null {
   const change = placementChanges(volume, members, row).find((one) => sameChange(changeKey(one), key));
@@ -457,7 +462,8 @@ export function dropChange(volume: PlacementVolume, members: readonly Member[], 
   if (change.kind === "move") {
     const observed = observePlacement(members);
     if (observed.primary?.id === row.staged?.primary) return row.staged;
-    const from = observed.primary ?? observed.unanswered[0] ?? null;
+    const left = observed.unanswered.find((server) => server.id === key.from);
+    const from = observed.primary ?? left ?? observed.unanswered[0] ?? null;
     if (from === null || from.id === change.to.id) return null;
     return undoPlacement(volume, members, row, { ...change, from });
   }
