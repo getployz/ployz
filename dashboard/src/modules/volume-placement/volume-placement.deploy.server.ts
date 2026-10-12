@@ -8,7 +8,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
-import { stagePlacement } from "#/modules/volume-placement/volume-placement.server";
+import { restoreSettled, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import {
   appliedMirrors, drainPlacement, nextPlacementStep, observePlacement, placementChanges, type PlacementRow,
 } from "#/modules/volume-placement/volume-placement";
@@ -100,16 +100,26 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     if (waited.mirrors !== null) yield* settle(waited.volumeId, { mirrors: [...waited.mirrors] });
   }
   const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select().from(volumePlacement)
+  const stamped = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
+  const settled = new Set<string>();
+  for (const row of stamped) if (row.staged?.seed !== undefined && (yield* restoreSettled(row.volumeId))) settled.add(row.volumeId);
+  const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
+  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  const listed = (row: { readonly volumeId: string }) => volumes.some((volume) => volume.id === row.volumeId);
+  // A settled restore whose Volume is gone was discarded from the Store: nothing is left to restore into. It goes first,
+  // so a Server that can't take part fails no Deploy over it.
+  const rows: typeof stamped = [];
+  for (const row of stamped) {
+    if (listed(row) || !settled.has(row.volumeId)) rows.push(row);
+    else yield* drizzle.delete(volumePlacement).where(and(eq(volumePlacement.volumeId, row.volumeId), eq(volumePlacement.deploymentId, deploymentId)));
+  }
   // A Server that joined on an older daemon since these were staged, or one that isn't answering, can't take part in a run.
   const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId, read);
   if (refusal !== null) {
     yield* release(organizationId, deploymentId);
     return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
   }
-  const environment: EnvironmentRef = { project: deployment.environment.project, environment: deployment.environment.name };
-  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
   const ordered = [...rows].sort((a, b) => Number(b.staged?.seed !== undefined) - Number(a.staged?.seed !== undefined));
   // Sources of restores whose Volume isn't in the Store yet: a move on one waits, so the restore point stays.
@@ -118,12 +128,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     if (volume === undefined) {
       const seed = row.staged?.seed;
-      // A committed restore's Store write landed, so its missing Volume was discarded: nothing is left to restore into.
-      if (seed?.committed === true) {
-        yield* drizzle.delete(volumePlacement).where(and(eq(volumePlacement.volumeId, row.volumeId), eq(volumePlacement.deploymentId, deploymentId)));
-        continue;
-      }
-      // An unmarked restore's Volume can be still on its way into the Store; only staging or discarding it drops its row.
+      // A restore still being staged: its Volume can be on its way into the Store; only staging or discarding it drops its row.
       if (seed !== undefined) waiting.add(seed.sourceVolumeId);
       yield* settleClaimed(row.volumeId, deploymentId, seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
       continue;

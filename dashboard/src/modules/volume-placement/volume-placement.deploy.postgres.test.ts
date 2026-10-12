@@ -49,6 +49,18 @@ describe("deploying a Volume placement", () => {
     }),
   ));
   const placement = async () => (await run(listPlacements(organizationId)))[0];
+  // A restore request still writing to the Store holds this lock until its write commits or fails.
+  const whileStoreWriting = async <A>(id: string, body: () => Promise<A>) => {
+    const stager = await harness.pool.connect();
+    try {
+      await stager.query("begin");
+      await stager.query("select pg_advisory_xact_lock(hashtext($1))", [`volume-restore:${id}`]);
+      return await body();
+    } finally {
+      await stager.query("rollback");
+      stager.release();
+    }
+  };
   const stageMove = async (to: string, mirrors: string[]) => {
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web(to), mirrors: [], deletes: [] }, mirrors: mirrors.map(web) }));
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
@@ -211,7 +223,7 @@ describe("deploying a Volume placement", () => {
     expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
   });
 
-  it("leaves the source staged while its restore waits for its Volume in the Store", async () => {
+  it("leaves the source staged while its restore's Store write is in flight", async () => {
     members = [member("web-1", "writer"), member("web-2", "mirror")];
     const seed = { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } };
     await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
@@ -221,14 +233,14 @@ describe("deploying a Volume placement", () => {
     );
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
 
-    expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, answered))).toEqual({ kind: "done" });
+    expect(await whileStoreWriting("vol3", () => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
     expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
     const rows = await run(listPlacements(organizationId));
     expect(rows.find((row) => row.volumeId === volumeId)).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
     expect(rows.find((row) => row.volumeId === "vol3")).toMatchObject({ staged: { seed }, deploymentId: null });
   });
 
-  it("keeps a restore staged when its Volume isn't in the Store yet", async () => {
+  it("keeps a restore staged while its Store write is still in flight", async () => {
     const seed = { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } };
     await harness.pool.query(
       `insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ('vol3', $1, 'env-1', '[]', $2)`,
@@ -236,7 +248,7 @@ describe("deploying a Volume placement", () => {
     );
     await run(stampPlacements(organizationId, "env-1", "dep-1"));
 
-    expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, answered))).toEqual({ kind: "done" });
+    expect(await whileStoreWriting("vol3", () => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
     expect(await placement()).toMatchObject({ volumeId: "vol3", staged: { seed }, deploymentId: null });
   });
 
