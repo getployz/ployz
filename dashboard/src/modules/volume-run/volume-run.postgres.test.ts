@@ -994,6 +994,56 @@ describe("volume runs", () => {
     });
   });
 
+  describe("late requests", () => {
+    const writable = () => machines.filter((fake) => fake.copy?.kind === "root" && !fake.copy.readonly).map((fake) => fake.name);
+    const land = (key: string) => {
+      const request = held.get(key);
+      if (request === undefined) throw new Error(`nothing held for ${key}`);
+      held.delete(key);
+      request();
+      inspect(named("fsn-2"));
+    };
+
+    const endTwoRuns = async () => {
+      failNext.set("writer@fsn-2", "held");
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      await execute(move.id, "run-1");
+      const G = snapshots.get("f-1");
+      expect(sent.at(-1)).toMatchObject({ expect: { kind: "mirror", newest: G?.guid }, want: { kind: "writer", at: G?.guid } });
+      await runEffect(closeVolumeRun("run-1", "cancellation"));
+
+      const release = await requested({ kind: "release", args: {} });
+      await execute(release.id, "run-2");
+      expect(verbs.slice(-2)).toEqual(["forget@fsn-2", "writer@fsn-1(kept)"]);
+
+      failNext.set("pull@fsn-2", "held");
+      const mirror = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+      await execute(mirror.id, "run-3");
+      expect(sent.at(-1)).toMatchObject({ expect: { kind: "none" }, want: { kind: "mirror", target: "f-1" } });
+      await runEffect(closeVolumeRun("run-3", "cancellation"));
+    };
+
+    it("two ended runs whose requests land late, B's start then B's pull, leave one writable root", async () => {
+      await endTwoRuns();
+
+      land("writer@fsn-2");
+      land("pull@fsn-2");
+
+      expect(writable()).toEqual(["fsn-1"]);
+    });
+
+    // Measured defect, left unpatched by the brief: the late pull rebuilds B as a slot at G, so run 1's late start
+    // matches its mirror{G} expect and B writes at epoch 1 beside A at epoch 2.
+    it.fails("two ended runs whose requests land late, B's pull then B's start, land two writable roots", async () => {
+      await endTwoRuns();
+
+      land("pull@fsn-2");
+      land("writer@fsn-2");
+
+      expect(writable()).toEqual(["fsn-1"]);
+    });
+  });
+
   describe("restore and demote", () => {
     it("restore makes the only copy the writer and says which writes are lost", async () => {
       machines = [
