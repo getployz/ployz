@@ -12,7 +12,8 @@ use clap::{ArgMatches, Command};
 use futures_util::future::join_all;
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
-    self, Act, Action, Ask, Gate, INSTRUCTIONS, Place, State, Step, StoreAt, ToolResult, Write,
+    self, Act, Action, Ask, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
+    ToolResult, Write,
 };
 use ployz_store::{Actor, ConfigStore, OrganizationId};
 use reqwest::Method;
@@ -515,10 +516,10 @@ impl Server {
             ))
             .into());
         }
-        let key = (self.keys)(&self.session, &context.id, tool);
+        let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
         let (ran, revision) = tokio::select! {
             biased;
-            ran = published::run_on(&credential, tool, Value::Object(input), approval.as_deref(), &key) => ran,
+            ran = published::run_on(&credential, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
             () = context.ct.cancelled() => {
                 return Err(McpError::internal_error("the call was cancelled", None));
             }

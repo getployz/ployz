@@ -127,18 +127,19 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
         if header.trim().is_empty() {
             break;
         }
-        let header = header.to_ascii_lowercase();
-        if let Some(value) = header.strip_prefix("content-length:") {
-            length = value.trim().parse().unwrap();
-        }
-        if let Some(value) = header.strip_prefix("authorization: bearer ") {
-            value.trim().clone_into(&mut bearer);
-        }
-        if let Some(value) = header.strip_prefix("x-ployz-approval:") {
-            approval = Some(value.trim().to_owned());
-        }
-        if let Some(value) = header.strip_prefix("x-ployz-request-key:") {
-            key = Some(value.trim().to_owned());
+        let Some((name, value)) = header.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        match name.to_ascii_lowercase().as_str() {
+            "content-length" => length = value.parse().unwrap(),
+            "authorization" => value
+                .strip_prefix("Bearer ")
+                .unwrap_or(value)
+                .clone_into(&mut bearer),
+            "x-ployz-approval" => approval = Some(value.to_owned()),
+            "x-ployz-request-key" => key = Some(value.to_owned()),
+            _ => {}
         }
     }
     let mut body = vec![0; length];
@@ -1867,8 +1868,13 @@ mod published {
         publisher.lock().unwrap().run = ("200 OK", json!({ "output": { "answer": 42 } }));
         let fake = fake_publisher(publisher);
         let home = tempfile::tempdir().unwrap();
-        let mut client =
-            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let server = Server {
+            keys: call_key,
+            ..on_published(&fake, home.path()).await
+        };
+        let key =
+            RequestKey::effective(None, &call_key(&server.session, &RequestId::Number(2), ""));
+        let mut client = Client::initialized(server, json!({})).await;
         let entry = agent_facing().into_iter().next().unwrap();
         let arguments = arguments(&entry);
         let done = client.call(2, name(&entry), arguments.clone()).await;
@@ -1885,10 +1891,8 @@ mod published {
             .expect("one run");
         assert_eq!(run.path, format!("/api/cli/run/{}", name(&entry)));
         assert_eq!(run.body, json!({ "input": arguments }));
-        assert_eq!(
-            run.key.as_deref(),
-            Some(format!("call-{}", name(&entry)).as_str())
-        );
+        assert_eq!(run.key.as_deref(), Some(key.as_str()));
+        assert!(RequestKey::parse(key.as_str()).is_ok());
         assert_eq!(run.bearer, "ployz_acme");
         assert_eq!(run.approval, None);
     }
