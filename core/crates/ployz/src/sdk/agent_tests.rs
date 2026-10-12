@@ -4,10 +4,13 @@ use ployz_core::{
     ConfiguredHealthcheck, ContainerKind, HealthcheckCommand, HealthcheckSpec, Namespace,
     ServiceName,
 };
-use ployz_store::tools::cloud::ContainerState;
+use ployz_store::{
+    EnvironmentId,
+    tools::{LineCap, LogText, LogsQuery, ServerRef, cloud::ContainerState},
+};
 use tokio::time::Instant;
 
-use super::{ServiceCopy, Started, copies_of, start_one};
+use super::{ServiceCopy, Started, copies_of, logs, start_one};
 use crate::global_fixtures::{container_id, machine, running_on};
 use crate::sdk::test_support as support;
 
@@ -102,4 +105,91 @@ async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline(
         (Duration::from_secs(1)..Duration::from_secs(5)).contains(&waited),
         "{waited:?}"
     );
+}
+
+fn logs_query(server: Option<ServerRef>) -> LogsQuery {
+    LogsQuery {
+        environment: EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
+        service: ServiceName::parse("web").unwrap(),
+        deployment: None,
+        server,
+        lines: LineCap::new(3).unwrap(),
+        since: Some(Duration::from_secs(600)),
+    }
+}
+
+// Catches a logs ask that leaks a Container's env value, ignores `lines`, `since` or the
+// Service, or reads Servers the ask didn't name.
+#[tokio::test]
+async fn a_logs_ask_returns_each_servers_scrubbed_tail_of_the_service() {
+    let one = support::machine('a', "one");
+    let two = support::machine('b', "two");
+    let service = support::DeployService::new(one.clone()).with_machines(vec![one.clone(), two]);
+    let requests = Arc::clone(&service.history_requests);
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![crate::context::Connection::tcp(address)],
+        Arc::new(crate::connect::SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+
+    let every = logs(&session, logs_query(None)).await.unwrap();
+    let only = logs(
+        &session,
+        logs_query(Some(ServerRef {
+            machine: one.machine.id,
+            name: one.machine.name.clone(),
+        })),
+    )
+    .await
+    .unwrap();
+    session.close().await;
+    server.abort();
+
+    let tails = |answer: &ployz_store::tools::cloud::LogsAnswer| {
+        answer
+            .servers
+            .iter()
+            .map(|log| {
+                let LogText::Shown(excerpt) = &log.text else {
+                    panic!("{:?} withheld its tail: {:?}", log.server, log.text);
+                };
+                (log.server.to_string(), excerpt.lines().to_vec())
+            })
+            .collect::<Vec<_>>()
+    };
+    let tail = vec![
+        "line 10".to_owned(),
+        "line 11".to_owned(),
+        "token [secret TOKEN]".to_owned(),
+    ];
+    assert_eq!(
+        tails(&every),
+        [
+            ("one".to_owned(), tail.clone()),
+            ("two".to_owned(), tail.clone())
+        ]
+    );
+    assert!(every.seen.unanswered.is_empty());
+    assert_eq!(tails(&only), [("one".to_owned(), tail)]);
+
+    let requests = requests.lock().unwrap();
+    assert!(!requests.is_empty());
+    for request in requests.iter() {
+        assert_eq!(request.namespace.as_deref(), Some("app"));
+        assert_eq!(request.service.as_deref(), Some("web"));
+        assert_eq!(request.container_id, None);
+        let since = request.since_nanos.expect("since reaches the Log Store");
+        let ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            - u128::try_from(since).unwrap();
+        assert!(
+            (Duration::from_secs(600).as_nanos()..Duration::from_secs(660).as_nanos())
+                .contains(&ago)
+        );
+    }
 }
