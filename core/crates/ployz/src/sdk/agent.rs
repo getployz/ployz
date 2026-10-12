@@ -13,7 +13,7 @@ use ployz_core::{
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
     ContainerReport, ContainerState, ContainersAnswer, Disk, Health, LogsAnswer, MetricEvent,
-    MetricRow, MetricsAnswer, ServerLog, ServerReport, ServerState, ServersAnswer,
+    MetricsAnswer, ServerLog, ServerReport, ServerState, ServersAnswer,
 };
 use ployz_store::tools::{
     CloudQuery, Freshness, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerName,
@@ -334,15 +334,7 @@ fn summarize(
     MetricsAnswer {
         since,
         until: Timestamp(until_nanos / NANOS_PER_SECOND),
-        metrics: crate::cli::metrics::rows(history, until_nanos)
-            .into_iter()
-            .map(|[metric, now, avg, peak]| MetricRow {
-                metric: metric.unwrap_or_default(),
-                now: now.filter(|now| now != crate::cli::metrics::NOT_MEASURED),
-                avg,
-                peak,
-            })
-            .collect(),
+        metrics: crate::cli::metrics::rows(history, until_nanos),
         oom_kills: count(|kind| matches!(kind, MarkerKind::Oom)),
         exits: count(|kind| matches!(kind, MarkerKind::Exit { .. })),
         restarts: count(|kind| matches!(kind, MarkerKind::Restart)),

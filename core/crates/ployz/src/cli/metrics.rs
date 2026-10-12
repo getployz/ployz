@@ -8,12 +8,12 @@ use ployz_core::metrics::{
     DiskBreakdown, HostPoint, MarkerKind, MetricGapReason, MetricMarker, MetricPoints, ServicePoint,
 };
 
+use ployz_store::tools::cloud::MetricRow;
+
 use crate::{sdk::MetricHistory, ui::Table};
 
 /// A newest bucket older than this many steps is history, not the current value.
 const FRESH_STEPS: i64 = 3;
-
-pub(crate) const NOT_MEASURED: &str = "not measured";
 
 /// What the human output says about one history.
 #[derive(Debug)]
@@ -65,8 +65,23 @@ pub(crate) fn report(history: &MetricHistory, subject: &str, window: Window<'_>)
             notes,
         };
     }
-    for row in rows {
-        table.row(row.map(|cell| cell.unwrap_or_default()));
+    for MetricRow {
+        metric,
+        now,
+        avg,
+        peak,
+    } in rows
+    {
+        let now = match avg {
+            None => "not measured".into(),
+            Some(_) => now.unwrap_or_default(),
+        };
+        table.row([
+            metric,
+            now,
+            avg.unwrap_or_default(),
+            peak.unwrap_or_default(),
+        ]);
     }
     let markers = history
         .machines
@@ -95,10 +110,9 @@ pub(crate) fn report(history: &MetricHistory, subject: &str, window: Window<'_>)
     }
 }
 
-/// METRIC, NOW, AVG and PEAK for each metric in `history`, read at `until_nanos`;
-/// empty when no Server reported a reading. A metric with no reading has only
-/// its label and `not measured` in NOW, so a table shows why the row is blank.
-pub(crate) fn rows(history: &MetricHistory, until_nanos: i64) -> Vec<[Option<String>; 4]> {
+/// Each metric in `history` read at `until_nanos`; empty when no Server
+/// reported a reading.
+pub(crate) fn rows(history: &MetricHistory, until_nanos: i64) -> Vec<MetricRow> {
     let fresh_since = history.step_nanos.map_or(i64::MAX, |step| {
         until_nanos.saturating_sub(FRESH_STEPS * step)
     });
@@ -164,15 +178,15 @@ impl<P: Bucket> Metric<P> {
         self
     }
 
-    fn row(&self, points: &[P], fresh_since: i64) -> [Option<String>; 4] {
+    fn row(&self, points: &[P], fresh_since: i64) -> MetricRow {
         let mut values = points.iter().filter_map(|point| (self.value)(point));
         let Some(first) = values.next() else {
-            return [
-                Some(self.label.clone()),
-                Some(NOT_MEASURED.into()),
-                None,
-                None,
-            ];
+            return MetricRow {
+                metric: self.label.clone(),
+                now: None,
+                avg: None,
+                peak: None,
+            };
         };
         let (mut sum, mut count, mut peak) = (first, 1_u32, first);
         for value in values {
@@ -190,12 +204,12 @@ impl<P: Bucket> Metric<P> {
                     None => value,
                 })
             });
-        [
-            Some(self.label.clone()),
+        MetricRow {
+            metric: self.label.clone(),
             now,
-            Some(self.unit.show(sum / f64::from(count))),
-            Some(self.unit.show(peak)),
-        ]
+            avg: Some(self.unit.show(sum / f64::from(count))),
+            peak: Some(self.unit.show(peak)),
+        }
     }
 }
 
