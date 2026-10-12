@@ -68,15 +68,18 @@ import type {
   HandOverRequest,
   InspectReceiveRequest,
   InspectVolumeCopyRequest,
+  ListVolumeSnapshotsRequest,
   MirrorRequest,
   ReceiveView,
   SeedVolumeRequest,
   ServiceVolumeRequest,
+  SetVolumeSnapshotRequest,
   SnapshotGuid,
   SourceContainerRequest,
   SwitchReply,
   Switch,
   VolumeCopyView,
+  VolumeSnapshots,
   WarmRequest,
 } from "./generated/payloads";
 
@@ -114,11 +117,16 @@ export type VolumeSwitchRequest =
   | { command: "start_handed_container"; payload: ServiceVolumeRequest }
   | { command: "clear_final"; payload: MirrorRequest }
   | { command: "restore"; payload: ServiceVolumeRequest }
-  | { command: "seed_volume"; payload: SeedVolumeRequest };
+  | { command: "seed_volume"; payload: SeedVolumeRequest }
+  | { command: "set_volume_snapshot"; payload: SetVolumeSnapshotRequest }
+  | { command: "list_volume_snapshots"; payload: ListVolumeSnapshotsRequest };
 
 /** The reply payload of one Volume run verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
-  C extends "inspect_volume_copy" ? VolumeCopyView : C extends "inspect_receive" ? ReceiveView : SwitchReply;
+  C extends "inspect_volume_copy" ? VolumeCopyView
+  : C extends "inspect_receive" ? ReceiveView
+  : C extends "set_volume_snapshot" | "list_volume_snapshots" ? VolumeSnapshots
+  : SwitchReply;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (

@@ -148,7 +148,9 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
         | Body::StartHandedContainer(_)
         | Body::ClearFinal(_)
         | Body::SeedVolume(_)
-        | Body::Restore(_) => body
+        | Body::Restore(_)
+        | Body::SetVolumeSnapshot(_)
+        | Body::ListVolumeSnapshots(_) => body
             .unary_path()
             .ok_or_else(|| invalid_argument(format!("{} is not a unary RPC", body.command()))),
         _ => Err(invalid_argument(format!(
@@ -676,7 +678,7 @@ impl Session {
     /// otherwise, its `details` a `SwitchError` when the fence refused.
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "the switch verbs answer with three reply kinds; any other kind is a Machine fault"
+        reason = "the switch verbs answer with four reply kinds; any other kind is a Machine fault"
     )]
     pub async fn volume_switch(&self, machine: &str, request: Value) -> Result<Value, RpcError> {
         let target =
@@ -698,6 +700,7 @@ impl Session {
             RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
             RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
             RpcResponseBody::ReceiveView(view) => serde_json::to_value(view),
+            RpcResponseBody::VolumeSnapshots(snapshots) => serde_json::to_value(snapshots),
             RpcResponseBody::Error(error) => return Err(error),
             other => {
                 return Err(RpcError {
