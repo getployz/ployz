@@ -70,7 +70,8 @@ export function LackLine({ server, remedy, onUpgrade }: { server: string; remedy
         : remedy.kind === "when-back" ? <>{server} upgrades to <span className="font-mono">{remedy.release}</span> when it’s back</>
         : <><span className="font-mono">{remedy.target}</span> didn’t install on {server}, and we’re on it.</>}
     </span>
-    {remedy.kind === "behind" && remedy.canUpgrade ? <Button variant="outline" size="sm" onClick={onUpgrade}>Upgrade</Button>
+    {remedy.kind === "behind" ? remedy.canUpgrade ? <Button variant="outline" size="sm" onClick={onUpgrade}>Upgrade</Button>
+      : <span className="text-muted-foreground">Waits for the running upgrade</span>
       : remedy.kind === "failed" && remedy.canRetry ? <Button variant="outline" size="sm" onClick={onUpgrade}>Try again</Button>
       : null}
   </div>;

@@ -5,7 +5,7 @@ import { LackLine } from "./server-lack-line";
 
 afterEach(cleanup);
 
-it("offers Upgrade only when the Server is behind the channel's release and may upgrade", () => {
+it("offers Upgrade only when the Server is behind the channel's release and may upgrade, and says when another upgrade holds it", () => {
   const upgrade = vi.fn();
   render(<LackLine server="web-2" onUpgrade={upgrade} remedy={{ kind: "behind", sentence: "Logs need a newer Ployz on web-2. 0.2.4 is out.", canUpgrade: true }} />);
   expect(screen.getByRole("status").textContent).toBe("Logs need a newer Ployz on web-2. 0.2.4 is out.Upgrade");
@@ -14,6 +14,7 @@ it("offers Upgrade only when the Server is behind the channel's release and may 
   cleanup();
   render(<LackLine server="web-2" onUpgrade={upgrade} remedy={{ kind: "behind", sentence: "Logs need a newer Ployz on web-2. 0.2.4 is out.", canUpgrade: false }} />);
   expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.getByRole("status").textContent).toBe("Logs need a newer Ployz on web-2. 0.2.4 is out.Waits for the running upgrade");
 });
 
 it("says the feature is missing from the Server's release with no button", () => {
