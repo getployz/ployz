@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { createFileRoute, type ErrorComponentProps } from "@tanstack/react-router";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { requireStoreEnvironment, streamRemote } from "#/collections/route-data";
+import { requireStoreEnvironment, streamUptime } from "#/collections/route-data";
 import { environmentUptimeQueryOptions } from "#/modules/uptime/uptime.queries";
 import {
   EnvironmentCanvasScene,
@@ -14,7 +14,7 @@ export const Route = createFileRoute(
   // Open uptime incidents add to the canvas ⚠ counts. A failed read leaves them as they were.
   loader: async ({ params, context }) => {
     const environment = await requireStoreEnvironment(context, params);
-    streamRemote(context, environmentUptimeQueryOptions({ organizationSlug: params.organizationSlug, environmentId: environment.id }));
+    await streamUptime(context, params.organizationSlug, environmentUptimeQueryOptions({ organizationSlug: params.organizationSlug, environmentId: environment.id }));
   },
   errorComponent: CanvasError,
   component: CanvasLayout,
