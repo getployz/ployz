@@ -225,11 +225,11 @@ A built-in shortcut that creates an ordinary image Service, its Volume, and its 
 _Avoid_: Database (as a resource kind), template, add-on
 
 **Approval**:
-A human's yes or no to one destructive Publish, Deploy, Server removal, Drain or Namespace clean from the CLI, recorded by Cloud while the Organization's "Ask before destructive actions" setting is on (the default). It names the Store's digest of exactly what the plan destroys; once the Environment's Working State moves on, a pending Approval is superseded and the command asks again. A retry naming an Approval gets its recorded answer even after the setting is turned off; the setting decides only whether a command naming none asks. Dashboard writes and Settings edits never ask. It stops a cooperative agent, not a hostile one: whoever holds the credential can approve.
+A human's yes or no to one destructive Publish, Deploy, Server removal, Drain or Namespace clean from the CLI or the Agent sidebar, recorded by Cloud. It names the Store's digest of exactly what the plan destroys; once the Environment's Working State moves on, a pending Approval is superseded and the command asks again. A retry naming an Approval gets its recorded answer. Nothing turns the asking off: every destructive plan from the CLI or an agent asks, while the dashboard's own buttons and Settings edits never do. From the CLI, `ployz org approval ls|show` reads them and `approve|deny` answers them; `approve` needs a terminal and the Organization's typed name. It stops a cooperative agent, not a hostile one: whoever holds the credential can approve.
 _Avoid_: Confirmation, permission, approval memory
 
 **Agent sidebar**:
-The dashboard's chat with an agent that acts in the Organization through the same commands `ployz mcp` offers, as the signed-in member. Its threads are kept per member and Organization. A Publish or Deploy it starts is a CLI-like write: it asks for an Approval under the same setting, while the dashboard's own buttons never ask.
+The dashboard's chat with an agent that acts in the Organization through the same commands `ployz mcp` offers, as the signed-in member: the compiled agent tools plus Cloud's published commands marked for agents. Its threads are kept per member and Organization. A Publish or Deploy it starts is a CLI-like write: it always asks for an Approval when the plan destroys something, while the dashboard's own buttons never ask.
 _Avoid_: Assistant, copilot, AI panel
 
 **Approval card**:

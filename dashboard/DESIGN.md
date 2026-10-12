@@ -298,6 +298,7 @@ The agent sidebar is a chat with Ployz Cloud that runs the same commands as `plo
 - The card is drawn from Cloud's Approval, read fresh each time it shows, so a reload, a second browser or a `ployz` CLI waiting on the same Approval all see one card, and a superseded Approval says the plan changed.
 - After Approve, or when nothing needed approving, the card becomes a **Run card** that follows the Deployment in the Deployments place's words and statuses and opens its Deployment Page. A run on Servers or Volumes shows as a Run card with the run's name and the state Cloud admitted it in.
 - While an Approval waits, the collapsed strip carries a badge.
+- Its commands are the compiled agent tools plus the Cloud-published commands marked `agents: true`, read from the one registry Cloud also serves to `ployz`. A command marked `agents: false` never reaches an agent, in the sidebar or in `ployz mcp`.
 
 **The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
 
