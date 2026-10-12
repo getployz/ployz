@@ -151,12 +151,17 @@ export const uptimeShow = defineCommand({
 /**
  * Repeats `read` each second while it shows the probe in flight, for at most 9 s, and answers with the last read. The
  * CLI gives up on a request after 15 s, so a round the checker is slow to judge answers as not yet answered instead.
+ * The checker can mark a round answered up to a second before it flushes the round's results, so an answered read is
+ * read once more after 1.5 s.
  */
 export const whileChecking = <E, R>(read: Effect.Effect<ServiceUptime | null, E, R>) =>
-  read.pipe(Effect.repeat({
-    schedule: Schedule.spaced("1 second").pipe(Schedule.upTo({ duration: "9 seconds" })),
-    while: (current) => current?.probe?.answered === false,
-  }));
+  read.pipe(
+    Effect.repeat({
+      schedule: Schedule.spaced("1 second").pipe(Schedule.upTo({ duration: "9 seconds" })),
+      while: (current) => current?.probe?.answered === false,
+    }),
+    Effect.flatMap((last) => last?.probe?.answered ? read.pipe(Effect.delay("1500 millis")) : Effect.succeed(last)),
+  );
 
 /** Asks for a probe the way Check now does, then waits for the checker to judge the round by `whileChecking`. */
 export const uptimeCheck = defineCommand({

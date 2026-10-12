@@ -20,8 +20,8 @@ const wait = (answersOn: number) => Effect.runPromise(Effect.gen(function* () {
   return { reads, answered: last?.probe?.answered };
 }).pipe(Effect.provide(TestClock.layer())));
 
-it("stops waiting once the checker answers", async () => {
-  expect(await wait(3)).toEqual({ reads: 3, answered: true });
+it("stops waiting once the checker answers, after one more read for the round's results", async () => {
+  expect(await wait(3)).toEqual({ reads: 4, answered: true });
 });
 
 it("gives up on a round the checker never answers within 10 s, so the CLI's 15 s request still gets an answer", async () => {
