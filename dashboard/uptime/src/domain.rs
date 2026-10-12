@@ -323,12 +323,15 @@ pub struct BadTarget {
     why: &'static str,
 }
 
-/// The pass rule. One today, and the verdict is computed in the control plane, so a new rule never
-/// redeploys agents.
+/// The pass rule. The verdict is computed in the control plane, so a new rule never redeploys
+/// agents.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Expect {
-    /// Any HTTP response below 400 passes, 3xx included.
+    /// Any HTTP response below 400 passes, 3xx included. For a check on a healthcheck path.
     Below400,
+    /// Any HTTP response below 500 passes. For a check on `/` with no healthcheck path, where a
+    /// 4xx still proves the server answers.
+    Below500,
 }
 
 impl Expect {
@@ -337,16 +340,21 @@ impl Expect {
     pub fn parse(name: &str) -> Result<Expect, BadExpect> {
         match name {
             "below_400" => Ok(Expect::Below400),
+            "below_500" => Ok(Expect::Below500),
             _ => Err(BadExpect(name.to_owned())),
         }
     }
 
     #[must_use]
     pub fn judge(self, outcome: &Outcome) -> Verdict {
-        match (self, outcome) {
-            (Expect::Below400, Outcome::Http { status }) if *status < 400 => Verdict::Pass,
-            (Expect::Below400, Outcome::Http { .. } | Outcome::Unreachable { .. }) => Verdict::Fail,
-            (Expect::Below400, Outcome::NotProbed(_)) => Verdict::Inconclusive,
+        let below = match self {
+            Expect::Below400 => 400,
+            Expect::Below500 => 500,
+        };
+        match outcome {
+            Outcome::Http { status } if *status < below => Verdict::Pass,
+            Outcome::Http { .. } | Outcome::Unreachable { .. } => Verdict::Fail,
+            Outcome::NotProbed(_) => Verdict::Inconclusive,
         }
     }
 }

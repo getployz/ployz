@@ -63,8 +63,9 @@ export function causeText(incident: UptimeIncidentEntry): string {
 }
 
 /**
- * The open incident of a check that never passed in its range, when its first failure is a 4xx: the server answers, but not at the
- * healthcheck path. Null otherwise. A closed incident or any counted pass means the path worked once.
+ * The open incident of a check that never passed in its range, when its first failure is a 4xx. Only a check with a
+ * healthcheck path fails on a 4xx, so the app answers that path with it. Null otherwise. A closed incident or any counted
+ * pass means the path worked once.
  */
 export function wrongPathIncident(uptime: ServiceUptime): UptimeIncidentEntry | null {
   const open = openIncident(uptime.incidents);

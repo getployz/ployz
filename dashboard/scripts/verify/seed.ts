@@ -87,6 +87,7 @@ const seed = Effect.gen(function* () {
     { op: "set", path: "api.env.LOG_LEVEL", value: "warn" },
     { op: "set", path: "api.env.DATABASE_URL", value: "postgres://postgres@postgres:5432/shop" },
     { op: "set", path: "postgres.env.POSTGRES_PASSWORD", value: "postgres" },
+    { op: "set", path: "redis.healthcheck", value: { path: "/health", timeoutSeconds: 30 } },
     { op: "set", path: "api.env.SECRET_KEY", value: { secret: "verify-secret-key" } },
     { op: "set", path: "api.env.SECRET_KEY.exported", value: true },
   ]);

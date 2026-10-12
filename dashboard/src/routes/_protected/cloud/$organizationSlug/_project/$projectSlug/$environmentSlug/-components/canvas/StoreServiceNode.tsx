@@ -1,4 +1,4 @@
-import { use } from "react";
+import { type MouseEvent, use } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { LockIcon } from "lucide-react";
@@ -62,6 +62,13 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
     </span>
   );
 
+  // An open uptime incident: the ⚠ opens Monitoring, where the evidence and the fix are.
+  const openMonitoring = issues?.uptime ? (event: MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id }, search: { tab: "monitoring" } });
+  } : undefined;
+
   return (
     <ServiceContextMenu serviceId={service.id} onDelete={remove}>
       <Link
@@ -81,7 +88,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
               {title}
               <div className="justify-self-end">{chipBadge}</div>
               <div className="min-w-0">{subtitle}</div>
-              <StatusLine status={status} issues={issues} className="justify-self-end" />
+              <StatusLine status={status} issues={issues} onIssues={openMonitoring} className="justify-self-end" />
             </CardContent>
           ) : <>
             <CardHeader>
@@ -91,7 +98,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
                 {chipBadge}
               </div>
             </CardHeader>
-            <CardContent className="flex items-center justify-between gap-2"><StatusLine status={status} issues={issues} />{notSetChip}</CardContent>
+            <CardContent className="flex items-center justify-between gap-2"><StatusLine status={status} issues={issues} onIssues={openMonitoring} />{notSetChip}</CardContent>
           </>}
         </Card>
       </Link>

@@ -89,21 +89,32 @@ fn target_parse_accepts_what_crud_allows_and_refuses_the_rest() {
     }
 }
 
+fn unreachable() -> Outcome {
+    Outcome::Unreachable {
+        phase: Phase::Connect,
+        error: HttpCheckError::ConnectionRefused,
+        detail: Detail::new("refused"),
+    }
+}
+
+#[test]
+fn expect_parses_the_stored_names_and_refuses_others() {
+    assert_eq!(Expect::parse("below_400").unwrap(), Expect::Below400);
+    assert_eq!(Expect::parse("below_500").unwrap(), Expect::Below500);
+    for name in ["", "below_300", "BELOW_500", "below_500 "] {
+        assert!(Expect::parse(name).is_err(), "{name:?} parsed");
+    }
+}
+
 #[test]
 fn expect_below_400_judges_every_outcome_kind() {
-    let cases: [(Outcome, Verdict); 6] = [
+    let cases: [(Outcome, Verdict); 7] = [
         (Outcome::Http { status: 200 }, Verdict::Pass),
         (Outcome::Http { status: 399 }, Verdict::Pass),
         (Outcome::Http { status: 400 }, Verdict::Fail),
+        (Outcome::Http { status: 404 }, Verdict::Fail),
         (Outcome::Http { status: 503 }, Verdict::Fail),
-        (
-            Outcome::Unreachable {
-                phase: Phase::Connect,
-                error: HttpCheckError::ConnectionRefused,
-                detail: Detail::new("refused"),
-            },
-            Verdict::Fail,
-        ),
+        (unreachable(), Verdict::Fail),
         (
             Outcome::NotProbed(NotProbed::Saturated),
             Verdict::Inconclusive,
@@ -111,5 +122,25 @@ fn expect_below_400_judges_every_outcome_kind() {
     ];
     for (outcome, want) in cases {
         assert_eq!(Expect::Below400.judge(&outcome), want, "{outcome:?}");
+    }
+}
+
+/// A 4xx from `/` proves the server answers; only a 5xx or no answer fails.
+#[test]
+fn expect_below_500_passes_any_answer_short_of_a_server_error() {
+    let cases: [(Outcome, Verdict); 7] = [
+        (Outcome::Http { status: 200 }, Verdict::Pass),
+        (Outcome::Http { status: 404 }, Verdict::Pass),
+        (Outcome::Http { status: 499 }, Verdict::Pass),
+        (Outcome::Http { status: 500 }, Verdict::Fail),
+        (Outcome::Http { status: 503 }, Verdict::Fail),
+        (unreachable(), Verdict::Fail),
+        (
+            Outcome::NotProbed(NotProbed::PrivateAddress),
+            Verdict::Inconclusive,
+        ),
+    ];
+    for (outcome, want) in cases {
+        assert_eq!(Expect::Below500.judge(&outcome), want, "{outcome:?}");
     }
 }
