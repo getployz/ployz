@@ -43,6 +43,7 @@ const notOrganizationOwned = {
   agent_interrupts: "A sidebar turn's pending question, read only by its own conversation; no view reads it, so it needs no change log.",
   operation_request: "The attempt a request key admitted, read only to answer a replayed request; no view reads it, so it needs no change log.",
   operation_outbox: "Events waiting for Inngest, keyed by event id; it belongs to no Organization and no view reads it.",
+  service_act: "A Service restart, start or stop's run record, read only by its own run and the operations an agent asks about; no view reads it, so it needs no change log.",
   volume_run: "A volume command's run record, read only by its own run, the sweep and `volume runs`; no view reads it, so it needs no change log.",
   uptime_alert: "The uptime alert outbox, read only by the alert sender; no view reads it, so it needs no change log.",
   uptime_region: "Display names for the probe regions, shared by every Organization and written only by the uptime checker.",
