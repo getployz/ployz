@@ -315,7 +315,8 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual((before["fault_on"], before["fault"], before["trigger"], before["recover"]),
                          ("writer", "kill-daemon:SetVolumeCopy.WriterToMirror", "fault", "release"))
         after = undo["undo-after-cut"]
-        self.assertEqual((after["fault_on"], after["trigger"], after["nth"]), ("other", "fault-after-stop", 2))
+        self.assertEqual((after["fault_on"], after["fault"], after["trigger"]),
+                         ("other", "delay-rpc:SetVolumeCopy.MirrorToWriter:90", "fault-after-stop"))
 
     def test_cases_keep_the_clean_move_both_undos_and_one_kill_per_cell(self):
         self.assertEqual([row["name"] for row in volume_move.CASES],
@@ -326,13 +327,11 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual(len(volume_move.soak_cases()), 3 + 4 * 5)
 
     def test_every_fault_names_a_point_the_daemon_defines(self):
-        points = {f"kill-daemon:SetVolumeCopy.{cell.replace('>', 'To')}" for cell in volume_move.CELLS}
+        point = "SetVolumeCopy\\.(" + "|".join(cell.replace(">", "To") for cell in volume_move.CELLS) + ")"
         for row in volume_move.CASES + volume_move.soak_cases():
             with self.subTest(row["name"]):
-                fault = row["fault"]
-                if fault is None or fault in points:
-                    continue
-                self.assertRegex(fault, r"^delay-rpc:SetVolumeCopy:\d+$")
+                if row["fault"] is not None:
+                    self.assertRegex(row["fault"], rf"^(kill-daemon:{point}|delay-rpc:{point}:\d+)$")
 
     def test_nth_after_counts_only_lines_after_the_stop(self):
         lines = volume_move.stamped("100.5 m-2 ployzd[1]: fault: round\n200.0 m-2 ployzd[1]: fault: final\n"

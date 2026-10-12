@@ -58,7 +58,7 @@ CELLS = ["Writer>Mirror", "Writer>Snapshot", "Writer>Forget", "Mirror>Writer", "
 # `mirror` is whether the other Machine must hold a mirror before the case starts.
 # `trigger` says when `action` runs: once a fault line appears in a journal, once `zfs receive` runs on
 # `machine`, once the writer's db Container stops (the cut), or on the `nth` fault line `machine` logs after
-# that stop. `delay-rpc` matches the whole SetVolumeCopy verb, so the stop and the count pick out the cell.
+# that stop. A `delay-rpc` names one cell, so it never slows the pull polls of another step past Cloud's timeout.
 KILLS = [
     # A restart check, not a mid-effect resume: the kill lands after the take, so the resend finds the snapshot and only prunes.
     dict(name="kill-snapshot", cell="Writer>Snapshot", step="1-rounds", op="move", machine="writer",
@@ -87,7 +87,7 @@ CASES = [
          fault_on="writer", fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault", action="cancel",
          recover="release"),
     dict(name="undo-after-cut", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
-         fault_on="other", fault="delay-rpc:SetVolumeCopy:90", trigger="fault-after-stop", nth=2,
+         fault_on="other", fault="delay-rpc:SetVolumeCopy.MirrorToWriter:90", trigger="fault-after-stop",
          action="cancel", recover="release"),
     *KILLS,
 ]
@@ -95,8 +95,8 @@ CASES = [
 SOAK_STEPS = [
     ("1-rounds", "other", None, "receiving", 1),
     ("3-cut", "writer", None, "stopped", 1),
-    ("4-final", "other", "delay-rpc:SetVolumeCopy:20", "fault-after-stop", 1),
-    ("5-writer", "other", "delay-rpc:SetVolumeCopy:20", "fault-after-stop", 2),
+    ("4-final", "other", "delay-rpc:SetVolumeCopy.MirrorToMirror:6", "fault-after-stop", 1),
+    ("5-writer", "other", "delay-rpc:SetVolumeCopy.MirrorToWriter:20", "fault-after-stop", 1),
 ]
 SOAK_ACTIONS = [("runner-kill", None), ("kill-ployz", "writer"), ("kill-ployz", "other"),
                 ("kill-docker", "writer"), ("kill-docker", "other")]

@@ -80,6 +80,7 @@ impl MachineService {
             }
             CopyPlan::Transition(transition) => transition,
         };
+        crate::faults::apply(fault_point(transition)).await;
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
                 let copy = match copy {
@@ -265,6 +266,20 @@ impl MachineService {
         };
         self.local.start_container(container_id).await?;
         Ok(())
+    }
+}
+
+/// A delay names one cell, so a run can slow the promote without slowing every pull poll.
+fn fault_point(transition: CopyTransition) -> &'static str {
+    match transition {
+        CopyTransition::WriterToWriter => "SetVolumeCopy.WriterToWriter",
+        CopyTransition::WriterToMirror => "SetVolumeCopy.WriterToMirror",
+        CopyTransition::WriterToSnapshot => "SetVolumeCopy.WriterToSnapshot",
+        CopyTransition::WriterToForget => "SetVolumeCopy.WriterToForget",
+        CopyTransition::MirrorToWriter => "SetVolumeCopy.MirrorToWriter",
+        CopyTransition::MirrorToMirror => "SetVolumeCopy.MirrorToMirror",
+        CopyTransition::MirrorToForget => "SetVolumeCopy.MirrorToForget",
+        CopyTransition::NoneToMirror => "SetVolumeCopy.NoneToMirror",
     }
 }
 
