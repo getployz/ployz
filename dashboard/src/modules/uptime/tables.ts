@@ -22,6 +22,9 @@ import { FAILURE_CLASSES, type FailureClass } from "./uptime-status";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
+/** The pass rule: an HTTP status below 400, or below 500 for a check on `/` where a 4xx still proves the server answers. */
+export type UptimeExpect = "below_400" | "below_500";
+
 export const uptimeCheck = pgTable(
   "uptime_check",
   {
@@ -33,7 +36,7 @@ export const uptimeCheck = pgTable(
     url: text("url").notNull(),
     intervalSeconds: integer("interval_seconds").default(300).notNull(),
     timeoutMs: integer("timeout_ms").default(10000).notNull(),
-    expect: text("expect").default("below_400").notNull().$type<"below_400">(),
+    expect: text("expect").default("below_400").notNull().$type<UptimeExpect>(),
     enabled: boolean("enabled").default(true).notNull(),
     // The config fence: incident open and close apply only at the revision the detector judged.
     revision: integer("revision").default(1).notNull(),
@@ -60,7 +63,7 @@ export const uptimeCheck = pgTable(
     check("uptime_check_interval_check", sql`${table.intervalSeconds} between 30 and 3600`),
     check("uptime_check_timeout_check",
       sql`${table.timeoutMs} between 1000 and 30000 and ${table.timeoutMs} < ${table.intervalSeconds} * 1000`),
-    check("uptime_check_expect_check", sql`${table.expect} in ('below_400')`),
+    check("uptime_check_expect_check", sql`${table.expect} in ('below_400', 'below_500')`),
     check("uptime_check_revision_check", sql`${table.revision} >= 1`),
     check("uptime_check_source_check", sql`${table.source} in ('service')`),
   ],

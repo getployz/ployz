@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Database } from "#/server/database.server";
 import { editUptimeCheckStatement } from "./incident-fence";
-import { uptimeCheck } from "./tables";
+import { type UptimeExpect, uptimeCheck } from "./tables";
 
 /** What a check needs of a Service as config_applied stores it: the Store's SavedServiceIntent JSON. */
 const AppliedService = Schema.fromJsonString(Schema.Struct({
@@ -19,8 +19,11 @@ const AppliedService = Schema.fromJsonString(Schema.Struct({
 }));
 const decodeAppliedService = Schema.decodeUnknownEffect(AppliedService);
 
-/** The check a Service gets: its generated domain, else its first custom one, at its HTTP healthcheck path or `/`. */
-type WantedCheck = { readonly serviceId: string; readonly name: string; readonly url: string };
+/**
+ * The check a Service gets: its generated domain, else its first custom one, at its HTTP healthcheck path held to
+ * below 400, or at `/` held to below 500, since many apps answer `/` with a 404.
+ */
+type WantedCheck = { readonly serviceId: string; readonly name: string; readonly url: string; readonly expect: UptimeExpect };
 
 /**
  * The check `node` wants, or null when it has no public domain. A generated hostname is expanded with the Cluster
@@ -32,27 +35,30 @@ const wantedCheck = Effect.fn("Uptime.wantedCheck")(function* (row: { serviceId:
   const [custom] = service.config.routes;
   const hostname = generated !== undefined && row.clusterDomain !== null ? `${generated.prefix}.${row.clusterDomain}` : custom?.hostname;
   if (hostname === undefined) return null;
-  const path = service.config.healthcheck.type === "http" ? service.config.healthcheck.path : "/";
-  return { serviceId: row.serviceId, name: service.slug, url: `https://${hostname}${path}` } satisfies WantedCheck;
+  const { healthcheck } = service.config;
+  const { path, expect }: { path: string; expect: UptimeExpect } = healthcheck.type === "http"
+    ? { path: healthcheck.path, expect: "below_400" }
+    : { path: "/", expect: "below_500" };
+  return { serviceId: row.serviceId, name: service.slug, url: `https://${hostname}${path}`, expect } satisfies WantedCheck;
 });
 
 /**
- * A URL change to a Service's check: a config edit, so it bumps the revision and closes an open incident as
- * check_changed, writing no alert. The table's interval, timeout and enabled stay as they are.
+ * A URL or pass-rule change to a Service's check: a config edit, so it bumps the revision and closes an open incident
+ * as check_changed, writing no alert. The table's interval, timeout and enabled stay as they are.
  */
-const updateUptimeCheck = Effect.fn("Uptime.updateCheck")(function* (check: typeof uptimeCheck.$inferSelect, url: string) {
+const updateUptimeCheck = Effect.fn("Uptime.updateCheck")(function* (check: typeof uptimeCheck.$inferSelect, want: WantedCheck) {
   const { drizzle } = yield* Database;
   yield* drizzle.execute(editUptimeCheckStatement({
-    id: check.id, organizationId: check.organizationId, url,
+    id: check.id, organizationId: check.organizationId, url: want.url, expect: want.expect,
     intervalSeconds: check.intervalSeconds, timeoutMs: check.timeoutMs, enabled: check.enabled,
   }));
 });
 
 /**
  * Make `environmentId`'s uptime checks match its Applied State: one per Service with a public domain. Creates the
- * missing, updates a changed URL, deletes a check whose Service or domain is gone, and leaves the rest. Running it
- * again changes nothing. Syncs of one Environment run one at a time. With `probed`, the Deployment that just applied,
- * the checks of every Service it applied are probed now.
+ * missing, updates a changed URL or pass rule, deletes a check whose Service or domain is gone, and leaves the rest.
+ * Running it again changes nothing. Syncs of one Environment run one at a time. With `probed`, the Deployment that
+ * just applied, the checks of every Service it applied are probed now.
  */
 export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organizationId: string, environmentId: string, probed?: string) {
   const database = yield* Database;
@@ -77,11 +83,11 @@ export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organization
       const want = wanted.get(check.serviceId);
       wanted.delete(check.serviceId);
       if (want === undefined) yield* drizzle.delete(uptimeCheck).where(eq(uptimeCheck.id, check.id));
-      else if (want.url !== check.url) yield* updateUptimeCheck(check, want.url);
+      else if (want.url !== check.url || want.expect !== check.expect) yield* updateUptimeCheck(check, want);
     }
     if (wanted.size > 0) {
       yield* drizzle.insert(uptimeCheck)
-        .values([...wanted.values()].map(({ serviceId, name, url }) => ({ organizationId, environmentId, serviceId, name, url })));
+        .values([...wanted.values()].map(({ serviceId, name, url, expect }) => ({ organizationId, environmentId, serviceId, name, url, expect })));
     }
     if (probed !== undefined) {
       // The clock after the lock: now() is the transaction's start, which a long lock wait leaves already stale.

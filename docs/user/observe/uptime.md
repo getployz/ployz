@@ -30,7 +30,9 @@ the result is in, and the status line moves with it.
 
 - **What gets checked.** The service's generated domain, or its first custom domain when it has
   none, at its [health check](../deploy/deployments.md#deploy-without-downtime) path, or `/`
-  without one. A service with no public address shows **Not checked** and **Add domain**.
+  without one. At the path, any answer below 400 counts as up. At `/`, any answer below 500
+  counts, so a 404 still shows the service is up. A service with no public address shows
+  **Not checked** and **Add domain**.
 - **A 4xx points at the path.** If the check has never passed and gets a 4xx, **Fix path** opens
   the health check setting.
 - **A failed deployment isn't checked at once.** The regular check still runs, against what
