@@ -1015,7 +1015,7 @@ fn a_failed_deployments_next_calls_read_its_own_window_as_given() {
     let mut cloud = |cloud: Cloud| match cloud {
         Cloud::Ask(CloudQuery::Logs(query)) => {
             logs.push(query);
-            Ok(json!({ "servers": [], "seen": servers(&[])["seen"] }))
+            Ok(json!({ "servers": [], "seen": servers(&[])["seen"], "notes": [] }))
         }
         Cloud::Ask(CloudQuery::Metrics(query)) => {
             metrics.push(query);
