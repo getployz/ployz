@@ -10,7 +10,7 @@ import {
   placementLacking, placementUnknown, placementUnknownMessage, placementUpgradeMessage, type StorageServer,
 } from "#/modules/volume-placement/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
-import { restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
+import { discardPlacement, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
 import {
   appliedMirrors, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
 } from "#/modules/volume-placement/volume-placement";
@@ -27,7 +27,13 @@ export type PlacementAdvance =
   | { readonly kind: "wait"; readonly wait: PlacementWait }
   | { readonly kind: "done" }
   | { readonly kind: "stopped" }
-  | { readonly kind: "failed"; readonly message: string };
+  | { readonly kind: "failed"; readonly message: string; readonly restore?: FailedRestore };
+
+/**
+ * A restore whose copy failed. Its row keeps the Deploy's claim: the Store stages its Volume again only once it records
+ * the Deploy failed, and Discard then takes back both halves.
+ */
+export type FailedRestore = { readonly volumeId: string; readonly environment: EnvironmentRef };
 
 export type MemberInspector = typeof inspectVolumeCopies;
 
@@ -54,8 +60,12 @@ const fail = Effect.fn("VolumePlacement.fail")(function* (
   yield* drizzle.update(volumePlacement).set({ staged: remaining, updatedAt: new Date() })
     .where(and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId)));
   yield* release(organizationId, deploymentId, true);
-  return { kind: "failed", message } satisfies PlacementAdvance;
+  const failed: PlacementAdvance = { kind: "failed", message };
+  return failed;
 });
+
+const restoreFailed = (volumeId: string, environment: EnvironmentRef, message: string): PlacementAdvance =>
+  ({ kind: "failed", message, restore: { volumeId, environment } });
 
 const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")(function* (
   organizationId: string, deploymentId: string, environment: EnvironmentRef, volumes: readonly PlacementVolume[], volumeId: string,
@@ -83,6 +93,15 @@ export const releasePlacementClaims = Effect.fn("VolumePlacement.releaseClaims")
   if (!deployment.inFlight) yield* release(organizationId, deploymentId, deployment.failed);
 });
 
+/** Discards `restore` once its Deploy has failed. Refused, it stays staged for Discard or the next Deploy. */
+export const discardFailedRestore = Effect.fn("VolumePlacement.discardFailedRestore")(function* (organizationId: string, restore: FailedRestore) {
+  const refusal = yield* discardPlacement(organizationId, null, restore.volumeId, restore.environment).pipe(
+    Effect.map((discarded) => discarded.ok ? null : discarded.refusal.message),
+    Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refused.message)),
+  );
+  if (refusal !== null) yield* Effect.logWarning(`A failed restore stays staged: ${refusal}`);
+});
+
 const settle = Effect.fn("VolumePlacement.settle")(function* (volumeId: string, values: Partial<typeof volumePlacement.$inferInsert>) {
   const { drizzle } = yield* Database;
   yield* drizzle.update(volumePlacement).set({ ...values, updatedAt: new Date() }).where(eq(volumePlacement.volumeId, volumeId));
@@ -106,7 +125,7 @@ const settleClaimed = Effect.fn("VolumePlacement.settleClaimed")(function* (
  * One step of Deploy `deploymentId`'s storage, before its Services: settle the run it waited on, then start the next run
  * the first stamped Volume needs. A Deploy that is no longer queued (cancelled, superseded) stops between runs, and its
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
- * Volume and the others, stay staged.
+ * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure.
  */
 export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   organizationId: string, deploymentId: string, waited: PlacementWait | null, inspect: MemberInspector = inspectVolumeCopies,
@@ -123,8 +142,10 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const run = yield* getVolumeRun(organizationId, waited.runId);
     if (isActive(run.state)) return { kind: "wait", wait: waited } satisfies PlacementAdvance;
     if (waited.step !== null && run.state !== "done") {
+      const message = `${run.volume_name}: ${run.message ?? run.state}`;
+      if (waited.step.change.kind === "seed") return restoreFailed(waited.volumeId, environment, message);
       const remaining = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
-      return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, `${run.volume_name}: ${run.message ?? run.state}`);
+      return yield* fail(organizationId, deploymentId, waited.volumeId, remaining, message);
     }
     // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
     if (waited.step !== null) yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
@@ -181,6 +202,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
     const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run });
     if (requested.ok) return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step } } satisfies PlacementAdvance;
+    if (step.change.kind === "seed") return restoreFailed(row.volumeId, environment, `${volume.name}: ${requested.refusal.message}`);
     const remaining = dropChange(volume, members, placement, step.change);
     return yield* fail(organizationId, deploymentId, row.volumeId, remaining, `${volume.name}: ${requested.refusal.message}`);
   }

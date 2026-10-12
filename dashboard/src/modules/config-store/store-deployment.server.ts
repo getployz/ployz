@@ -7,7 +7,7 @@ import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
-import { releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
@@ -127,15 +127,19 @@ const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
   return { failed: deploymentId };
 });
 
-/** Run `runId` could not move the Deployment's Volumes: the Store records it failed with `failure`, before it claims it. */
+/**
+ * Run `runId` could not move the Deployment's Volumes: the Store records it failed with `failure`, before it claims it.
+ * A `restore` whose copy failed is then discarded.
+ */
 export const failStoreDeploymentStorage = Effect.fn("StoreDeployment.failStorage")(function* (
-  organizationId: string, environmentId: string, deploymentId: string, runId: string, failure: string,
+  organizationId: string, environmentId: string, deploymentId: string, runId: string, failure: string, restore?: FailedRestore,
 ) {
   const store = yield* cloudStore;
   const failed = yield* failUnclaimed(store, organizationId, deploymentId, runId, failure, failure).pipe(
     Effect.ensuring(released(store, organizationId, deploymentId)),
   );
   yield* recheck(store, organizationId, environmentId);
+  if (restore !== undefined) yield* discardFailedRestore(organizationId, restore);
   yield* releasePlacementClaims(organizationId, deploymentId);
   yield* forgetStoreDeploymentRun(runId);
   return failed;

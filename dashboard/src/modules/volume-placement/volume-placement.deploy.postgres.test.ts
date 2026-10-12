@@ -131,7 +131,7 @@ describe("deploying a Volume placement", () => {
     }));
   });
 
-  it("drops a restore whose copy failed, so Deploy again does not run it on the restored data", async () => {
+  it("keeps a restore whose copy failed claimed, for the Store failure to take back", async () => {
     const source = [member("web-1", "writer"), member("web-2", "mirror")];
     const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : source);
     await stageMove("web-2", ["web-2"]);
@@ -144,10 +144,10 @@ describe("deploying a Volume placement", () => {
     if (seeding.kind !== "wait") throw new Error("expected a run");
 
     await endRun(seeding.wait.runId, "failed", "no space left");
-    expect(await run(advancePlacement(organizationId, "dep-1", seeding.wait, byVolume, answered))).toEqual({ kind: "failed", message: "data: no space left" });
-    const rows = await run(listPlacements(organizationId));
-    expect(rows.find((row) => row.volumeId === "vol2")).toMatchObject({ staged: null, deploymentId: null });
-    expect(rows.find((row) => row.volumeId === volumeId)).toMatchObject({ staged: { primary: web("web-2") }, unreached: true, deploymentId: null });
+    expect(await run(advancePlacement(organizationId, "dep-1", seeding.wait, byVolume, answered)))
+      .toEqual({ kind: "failed", message: "data: no space left", restore: { volumeId: "vol2", environment } });
+    expect((await run(listPlacements(organizationId))).map(({ volumeId: id, deploymentId }) => ({ id, deploymentId })))
+      .toEqual(expect.arrayContaining([{ id: volumeId, deploymentId: "dep-1" }, { id: "vol2", deploymentId: "dep-1" }]));
   });
 
   it("stops between runs once the Deploy is cancelled, leaving the Volume staged", async () => {
@@ -308,6 +308,7 @@ describe("deploying a Volume placement", () => {
     expect(await run(advancePlacement(organizationId, "dep-1", null, (_, _environment, id) => Effect.succeed(id === "vol2" ? [] : members), answered))).toEqual({
       kind: "failed",
       message: "data-1430: data-1430's storage no longer matches data's, so the restore can't land on it. Discard the restore and restore again.",
+      restore: { volumeId: "vol2", environment },
     });
     expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
   });
