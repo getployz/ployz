@@ -216,4 +216,4 @@ except BaseException:
     verify("doctor", manifest, check=False)
     raise
 finally:
-    verify("down", manifest)
+    verify("down", manifest, check=False)
