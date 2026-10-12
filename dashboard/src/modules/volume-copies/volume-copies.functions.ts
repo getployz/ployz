@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { lastMirrorRefresh, refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -10,13 +10,13 @@ const Environment = Schema.Struct({ project: Schema.NullOr(Schema.String), envir
 export const refreshMirrorServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ ...VolumeRef.fields, environment: Environment })))
-  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => refreshMirror({ userId: context.actor.userId, organizationId: organization.id }, data.environment, data.volumeId)),
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+    Effect.flatMap(({ organization }) => refreshMirror({ userId: context.actor.userId, organizationId: organization.id }, data.environment, data.volumeId)),
   )));
 
 export const lastMirrorRefreshServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(VolumeRef))
-  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => lastMirrorRefresh(organization.id, data.volumeId)),
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+    Effect.flatMap(({ organization }) => lastMirrorRefresh(organization.id, data.volumeId)),
   )));
