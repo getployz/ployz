@@ -186,11 +186,13 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // A move to a mirror is unfinished while that mirror is still listed: once the target writes it holds the root,
   // yet the next Deploy must finish the same move, not take the mirror away.
   const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
-  const moving = observed.primary?.id !== staged.primary || handing;
+  // With no primary answering, the silent Server presumed to hold the Volume (as targetPlacement does) is no move.
+  const holder = observed.primary ?? observed.unanswered[0] ?? null;
+  const moving = holder?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
   const gone = (id: MachineId) => copyOn(id) === undefined && members.some((member) => member.machine.id === id && member.answered);
   for (const id of applied) {
-    if (!staged.mirrors.includes(id) && !(moving && id === staged.primary) && !gone(id)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
+    if (!staged.mirrors.includes(id) && id !== staged.primary && !gone(id)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
   }
   if (moving) {
     const target = copyOn(staged.primary);
@@ -445,16 +447,18 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
 /**
  * What stays staged once a Deploy's run for the change `key` names failed: the change goes, and the rest waits for the
  * next Deploy. A change the Servers no longer show landed despite the failure, so everything stays. A move the Servers
- * handed over already stays too, since only finishing it brings the Volume back; one whose primary isn't answering has
- * nowhere to go back to, and a restore's Volume gets no data, so both drop the row.
+ * handed over already stays too, since only finishing it brings the Volume back. One whose primary isn't answering goes
+ * back to the silent Server presumed to hold the Volume, or drops the row when there is none.
  */
 export function dropChange(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, key: ChangeKey): Placement | null {
   const change = placementChanges(volume, members, row).find((one) => sameChange(changeKey(one), key));
   if (change === undefined) return row.staged;
   if (change.kind === "move") {
-    const primary = observePlacement(members).primary;
-    if (primary === null) return null;
-    if (primary.id === row.staged?.primary) return row.staged;
+    const observed = observePlacement(members);
+    if (observed.primary?.id === row.staged?.primary) return row.staged;
+    const from = observed.primary ?? observed.unanswered[0] ?? null;
+    if (from === null || from.id === change.to.id) return null;
+    return undoPlacement(volume, members, row, { ...change, from });
   }
   return undoPlacement(volume, members, row, change);
 }
