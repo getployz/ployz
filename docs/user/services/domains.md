@@ -59,6 +59,9 @@ Custom domains are free.
 3. Create the DNS records below at your DNS provider.
 4. Click **Deploy**.
 
+Domains ignore case. Ployz saves `Acme.COM` as `acme.com`, so you see it in lowercase
+everywhere.
+
 A service can have any number of custom domains next to its generated domains, each with its
 own port.
 
