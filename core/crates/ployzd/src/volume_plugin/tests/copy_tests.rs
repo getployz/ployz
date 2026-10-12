@@ -332,6 +332,57 @@ async fn the_writer_route_promotes_a_pulled_slot() {
 }
 
 #[tokio::test]
+async fn the_writer_route_promotes_a_pulled_slot_on_a_pool_without_the_managed_parent() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["mirror", "mirror-fs"]);
+    set_snapshots(&test, SLOT_FS, &[("f-1", 13)]);
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Writer",
+        json!({"name": "data", "at": "13", "epoch": 2}),
+    )
+    .await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("root")), "{reply}");
+    let effects = effects(&commands(&test));
+    let created = effects
+        .iter()
+        .position(|line| {
+            line == "zfs create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz"
+        })
+        .unwrap_or_else(|| panic!("{effects:?}"));
+    let renamed = effects
+        .iter()
+        .position(|line| line == "zfs rename tank/ployz-mirror/data/fs tank/ployz/data")
+        .unwrap_or_else(|| panic!("{effects:?}"));
+    assert!(created < renamed, "{effects:?}");
+    assert!(test.0.join("root").exists());
+    server.abort();
+}
+
+#[tokio::test]
+async fn the_writer_route_aborts_a_partial_receive_before_promoting_the_slot() {
+    let test = TestDir::new();
+    let (socket, server) = slot(&test, &[("f-1", 13)]);
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Writer",
+        json!({"name": "data", "at": "13", "epoch": 2}),
+    )
+    .await;
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("root")), "{reply}");
+    assert_eq!(reply.pointer("/Ok/newest/name"), Some(&json!("f-1")));
+    assert_eq!(
+        effects(&commands(&test)).first().map(String::as_str),
+        Some("zfs receive -A tank/ployz-mirror/data/fs")
+    );
+    assert!(property(&test, ROOT, "receive_resume_token").is_none());
+    server.abort();
+}
+
+#[tokio::test]
 async fn the_writer_route_restores_a_cut_root_without_hiding_it_from_docker() {
     let test = TestDir::new();
     let (socket, server) = slot(&test, &[("f-1", 13)]);

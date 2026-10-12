@@ -284,6 +284,7 @@ case "$*" in
     ;;
   'rename tank/ployz-mirror/data/fs tank/ployz/data')
     require tank/ployz-mirror/data/fs
+    exists tank/ployz || {{ echo "cannot rename to 'tank/ployz/data': parent does not exist" >&2; exit 1; }}
     rm -rf '{props}/tank/ployz/data'
     mkdir -p '{props}/tank/ployz/data'
     for f in '{props}'/tank/ployz-mirror/data/fs/*; do

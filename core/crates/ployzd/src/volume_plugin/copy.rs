@@ -20,8 +20,8 @@ use super::{
     inspect::internal,
     mirror,
     storage::{
-        CUT_PROPERTY, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY, RESUME_TOKEN_PROPERTY,
-        slot_fs, slot_parent,
+        CUT_PROPERTY, DATASET_ROOT, EPOCH_PROPERTY, PROMOTE_PROPERTY, PULL_PROPERTY,
+        RESUME_TOKEN_PROPERTY, slot_fs, slot_parent,
     },
     transfer::ReceiveFailure,
 };
@@ -396,6 +396,11 @@ impl VolumeStorage {
         if !cut {
             self.z(&["set", &format!("{PROMOTE_PROPERTY}=on"), &fs_name])
                 .await?;
+        }
+        // A Machine that only ever mirrored has no managed parent for the root yet.
+        let parent = format!("{}/{DATASET_ROOT}", scope.pool.name());
+        if !scope.datasets.iter().any(|dataset| dataset.name == parent) {
+            self.create_root(&parent).await.map_err(internal)?;
         }
         self.z(&["rename", &fs_name, &root_name]).await?;
         self.z(&["destroy", &slot_parent(&scope.pool, name)])
