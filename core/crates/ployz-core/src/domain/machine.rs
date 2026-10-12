@@ -135,6 +135,10 @@ pub struct MachineRuntime {
     pub memory_total_bytes: Option<u64>,
     /// Builds this Machine's daemon is running now; live, never persisted.
     pub running_builds: u32,
+    /// Every capability name the daemon binary serves. Empty from a daemon
+    /// that predates the field, which claims nothing.
+    #[ts(as = "Option<BTreeSet<String>>", optional)]
+    pub capabilities: BTreeSet<String>,
 }
 
 /// How many Builds one Machine runs at once.
@@ -894,5 +898,32 @@ mod placement_tests {
             };
             assert_eq!(machine_matches_placement(&first, &placement), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod machine_runtime_capabilities_tests {
+    use serde_json::json;
+
+    use super::MachineRuntime;
+
+    #[test]
+    fn runtime_without_capabilities_decodes_to_an_empty_set() {
+        let runtime: MachineRuntime =
+            serde_json::from_value(json!({ "daemon_version": "0.2.4" })).unwrap();
+        assert!(runtime.capabilities.is_empty());
+    }
+
+    #[test]
+    fn runtime_with_capabilities_decodes_the_set() {
+        let runtime: MachineRuntime = serde_json::from_value(json!({
+            "daemon_version": "0.2.5",
+            "capabilities": ["ployz.logs.tail.v1", "ployz.build.v1", "ployz.logs.tail.v1"],
+        }))
+        .unwrap();
+        assert_eq!(
+            runtime.capabilities.into_iter().collect::<Vec<_>>(),
+            ["ployz.build.v1", "ployz.logs.tail.v1"]
+        );
     }
 }

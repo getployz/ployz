@@ -179,3 +179,29 @@ pub fn typescript_declarations() -> String {
     }
     out
 }
+
+/// `generated/capabilities.d.ts`: the `CapabilityName` union and the array's type.
+#[must_use]
+pub fn capabilities_declarations() -> String {
+    let names = ployz_core::served_capabilities();
+    let mut out = String::from(HEADER);
+    out.push_str("export type CapabilityName =\n");
+    for name in &names {
+        out.push_str(&format!("  | \"{name}\"\n"));
+    }
+    out.push_str(";\n\nexport declare const capabilities: readonly CapabilityName[];\n");
+    out
+}
+
+/// `generated/capabilities.js`: every capability name the daemon binary serves.
+#[must_use]
+pub fn capabilities_module() -> String {
+    let names = ployz_core::served_capabilities();
+    let mut out = String::from(HEADER);
+    out.push_str("\"use strict\";\n\nexports.capabilities = Object.freeze([\n");
+    for name in &names {
+        out.push_str(&format!("  \"{name}\",\n"));
+    }
+    out.push_str("]);\n");
+    out
+}

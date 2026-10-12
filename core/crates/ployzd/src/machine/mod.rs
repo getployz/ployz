@@ -529,6 +529,7 @@ pub fn local_runtime() -> MachineRuntime {
             .map(|(total, _)| total),
         // Publication overlays the live count; the record never holds one.
         running_builds: 0,
+        capabilities: ployz_core::served_capabilities(),
     }
 }
 
@@ -623,6 +624,18 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn local_runtime_capabilities_match_a_contract_with_every_group() {
+        use ployz_core::CapabilityAdvertisement::{Always, Cluster, Container, Ingress};
+
+        let contract: std::collections::BTreeSet<String> = [Always, Container, Ingress, Cluster]
+            .into_iter()
+            .flat_map(ployz_core::CapabilityAdvertisement::capabilities)
+            .map(|name| name.as_str().to_owned())
+            .collect();
+        assert_eq!(local_runtime().capabilities, contract);
+    }
 
     #[tokio::test]
     async fn current_zpool_evidence_distinguishes_states_and_is_not_persisted() {
