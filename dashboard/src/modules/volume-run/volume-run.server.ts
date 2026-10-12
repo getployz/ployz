@@ -13,8 +13,11 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { requirements } from "#/modules/runtime/daemon-compat";
 import { observeVolumeCopies, type PloyzSdkError, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import { type Planned, planFromCopies, type Refusal, type RefusalCode } from "#/modules/volume-run/plan";
+import { releaseLine, remedy, serverUpgradeLine, type ReleaseState } from "#/modules/server-upgrade/server-upgrade";
+import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
   ACTIVE_VOLUME_RUN_STATES,
@@ -547,22 +550,43 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   return yield* Effect.forEach(managed, ({ machine, storage }) =>
     session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
+      Effect.map((view): Member => ({
+        machine: { id: machine.id, name: machine.name },
+        address: managementAddress(machine.public_key),
+        answered: true,
+        pool: storage?.state === "pool" || view.copy !== null,
+        view,
+      })),
+      // A daemon too old for the verb answered, so the run ends saying what would fix it rather than that it went quiet.
+      Effect.catchTag("ServerLacks", () => lackSentence(organizationId, { name: machine.name, daemonVersion: machine.runtime.daemon_version }).pipe(
+        Effect.map((lack): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false, lack })),
+      )),
       Effect.timeout(OBSERVE_TIMEOUT),
-      Effect.option,
-      Effect.map((view): Member => {
-        const ref = { id: machine.id, name: machine.name };
-        return Option.isSome(view)
-          ? {
-              machine: ref,
-              address: managementAddress(machine.public_key),
-              answered: true,
-              pool: storage?.state === "pool" || view.value.copy !== null,
-              view: view.value,
-            }
-          : { machine: ref, answered: false };
-      }),
+      Effect.orElseSucceed((): Member => ({ machine: { id: machine.id, name: machine.name }, answered: false })),
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
+
+/** What the Release Channel says about a Server whose daemon cannot serve a Volume move. */
+const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (organizationId: string, server: { readonly name: string; readonly daemonVersion: string }) {
+  const line = releaseLine(server.daemonVersion);
+  const channel = yield* organizationReleaseChannel(organizationId);
+  const release: ReleaseState = line === null ? { state: "resolved", release: null } : yield* channelRelease(channel, line).pipe(
+    Effect.map((release): ReleaseState => ({ state: "resolved", release })),
+    Effect.orElseSucceed((): ReleaseState => ({ state: "failed" })),
+  );
+  const upgrade = serverUpgradeLine({
+    version: server.daemonVersion,
+    status: "online",
+    release: release.state === "resolved" ? release.release : null,
+    latest: null,
+    pendingFrom: undefined,
+    now: Date.now(),
+    automatic: false,
+    rolloutRunning: false,
+  });
+  const said = remedy({ feature: requirements.volumeMove, server, release, line: upgrade });
+  return "sentence" in said ? said.sentence : `${requirements.volumeMove.feature} needs a newer Ployz on ${server.name}.`;
+});
 
 export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
   yield* requireOwner(ctx.id, inngestRunId);

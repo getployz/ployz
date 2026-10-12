@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { PLACEMENT_RELEASE, placementBlockers, placementServers } from "#/modules/volume-placement/daemon-release";
+import { placementBlockers, placementServers } from "#/modules/volume-placement/daemon-release";
 import {
   appliedMirrors, editPlacement, failover, lossTime, observePlacement, type Placement, type PlacementEdit,
   placementChanges, type PlacementItem, placementForm, type PlacementRow, placementTargets, type PlacementVolume, targetPlacement,
@@ -101,7 +101,7 @@ export function VolumePlacementPanel({ volume, members, row, running, accepting,
         <Button variant="outline" size="sm" disabled={locked} onClick={() => edit({ kind: "move", to: offer.mirror.id })}>Use mirror</Button>
       </AlertAction> : null}
     </Alert> : null}
-    {blocked ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to Ployz {PLACEMENT_RELEASE}</p> : null}
+    {blocked ? <p className="text-sm text-muted-foreground">Upgrade {upgrade.join(", ")} to a newer Ployz</p> : null}
     {running || deploying ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
       <Spinner role="presentation" aria-hidden="true" />
       <span>{running ? [runWords(running), running.message].filter(Boolean).join(" · ") : "Deploying"}</span>

@@ -10,6 +10,8 @@ import { Input } from "#/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "#/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import { lacks, type ServerLacks } from "#/modules/runtime/daemon-compat";
+import { ServerLackLine } from "./server-lack-line";
 import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
@@ -43,7 +45,16 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const matches = (row: ContainerLogRow) => row.kind === "gap" ? !search && !levels.length
     : (!levels.length || levels.includes(row.level)) && row.message.toLowerCase().includes(search.toLowerCase());
   const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && matches(row)).sort(compareLogRows);
-  const missingServers = [...missing.history, ...Object.entries(missing.live).filter(([id]) => !missing.history.some(server => server.machineId === id)).map(([machineId, { machineName, failed }]) => ({ machineId, machineName, message: Object.values(failed).at(-1) ?? "" }))];
+  const live = Object.entries(missing.live).map(([machineId, { machineName, failed }]) => {
+    const reasons = Object.values(failed);
+    return { machineId, machineName, ...reasons.find(reason => reason.capability !== undefined) ?? reasons.at(-1) ?? { message: "" } };
+  });
+  // One line per Server that lacks a capability, the live tail's first since its feature is the page's own.
+  const lacking = new Map<string, ServerLacks>();
+  for (const lack of lacks([...live, ...missing.history]).lacks) if (!lacking.has(lack.machineId)) lacking.set(lack.machineId, lack);
+  const names = new Map([...missing.history, ...live].map(server => [server.machineId, server.machineName]));
+  const missingServers = [...missing.history, ...live.filter(server => !missing.history.some(known => known.machineId === server.machineId))]
+    .filter(server => !lacking.has(server.machineId));
   const touchY = useRef(0);
   const dragging = useRef(false);
   function loadAtTop(delta = 0) {
@@ -80,6 +91,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     </div>
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
+    {[...lacking.values()].map(lack => <ServerLackLine key={lack.machineId} organizationSlug={selection.organizationSlug} lack={lack} name={names.get(lack.machineId) ?? lack.machineId} />)}
     {missingServers.length ? <Alert role="alert">
       <AlertTitle>{missingServers.length === 1 ? "A server’s logs are missing" : `${missingServers.length} servers’ logs are missing`}</AlertTitle>
       <AlertDescription><ul>{missingServers.map(server => <li key={server.machineId}><span className="font-medium">{server.machineName}</span>: {server.message}</li>)}</ul></AlertDescription>

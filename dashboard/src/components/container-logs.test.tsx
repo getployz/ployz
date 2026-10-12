@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
+import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { ContainerLogs } from "./container-logs";
 
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };
@@ -239,5 +240,82 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     cleanup();
     await stream.collection.cleanup();
     await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+  }
+});
+
+const runtimeMachine = (id: string, daemonVersion: string): RuntimeMachineRecord => ({
+  id, name: id, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
+  buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion, capabilities: [], membership: "active",
+  observedContainerCount: 0, observedAt: "2026-10-12T00:00:00Z",
+});
+
+async function lackHarness(environmentSlug: string, failures: readonly object[]) {
+  const sources: { source: EventTarget; closed: boolean }[] = [];
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); sources.push({ source: this, closed: false }); }
+    close() { const entry = sources.find(entry => entry.source === this); if (entry) entry.closed = true; }
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.stubGlobal("fetch", async () => Response.json({ rows: [], failures, cursor: null }));
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const selection = { organizationSlug: "acme", environmentSlug };
+  const scope = { queryClient: client, sessionId: "session", userId: "user" };
+  const stream = getContainerLogStream(selection, scope);
+  render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+    <ContainerLogs selection={selection} />
+  </RouterContextProvider></DbProvider></QueryClientProvider>);
+  const lack = { type: "source_error", machineId: "old", containerId: "c", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" };
+  return {
+    sources,
+    machines: getRuntimeCollections("acme", scope).machines,
+    refuse: async (source: EventTarget) => {
+      await act(async () => source.dispatchEvent(new Event("live")));
+      await act(async () => source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify(lack) })));
+    },
+    teardown: async () => {
+      cleanup();
+      await stream.collection.cleanup();
+      await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
+    },
+  };
+}
+
+it("gives a Server that lacks the logs capability its own line and leaves every other failure in the alert", async () => {
+  const harness = await lackHarness("mixed", [{ machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." }]);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened.source);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("fsn-1: Its log service isn’t running."));
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
+    expect(screen.getByRole("alert").textContent).not.toContain("old");
+    expect(screen.getByText("A server’s logs are missing")).toBeTruthy();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("reopens the log stream once a lacking Server's daemon changes, as after Upgrade", async () => {
+  const harness = await lackHarness("upgraded", []);
+  try {
+    await act(async () => { harness.machines.insert([runtimeMachine("old", "0.2.3"), runtimeMachine("other", "0.2.3")]); });
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened.source);
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
+    // Another Server changing leaves the stream alone.
+    await act(async () => { harness.machines.update("other", draft => { draft.daemonVersion = "0.2.4"; }); });
+    expect(harness.sources).toHaveLength(1);
+    await act(async () => { harness.machines.update("old", draft => { draft.daemonVersion = "0.2.4"; }); });
+    expect(harness.sources).toHaveLength(2);
+    expect(opened.closed).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
+  } finally {
+    await harness.teardown();
   }
 });

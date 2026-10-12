@@ -56,7 +56,12 @@ export type Member =
       readonly pool: boolean;
       readonly view: VolumeCopyView;
     }
-  | { readonly machine: { readonly id: MachineId; readonly name: MachineName }; readonly answered: false };
+  | {
+      readonly machine: { readonly id: MachineId; readonly name: MachineName };
+      readonly answered: false;
+      /** The Server answered that its daemon cannot serve the verb, as the sentence the run ends with. */
+      readonly lack?: string;
+    };
 export type AnsweredMember = Extract<Member, { answered: true }>;
 
 export function managementAddress(publicKey: readonly number[]): string {

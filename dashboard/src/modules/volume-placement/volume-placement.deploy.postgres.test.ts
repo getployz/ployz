@@ -306,7 +306,7 @@ describe("deploying a Volume placement", () => {
 
     it("refuses while one runs an older daemon, and stages nothing", async () => {
       expect(await stage(() => Effect.succeed(["db-old"]))).toEqual({ ok: false, refusal: {
-        code: "upgrade_required", message: "Every Server with storage must run Ployz 0.2.5 or later. Upgrade db-old first.", details: { servers: ["db-old"] },
+        code: "upgrade_required", message: "Every Server with storage needs a newer Ployz. Upgrade db-old first.", details: { servers: ["db-old"] },
       } });
       expect(await run(listPlacements(organizationId))).toEqual([]);
     });

@@ -1,58 +1,62 @@
 import { describe, expect, it } from "vitest";
+import { requirements } from "#/modules/runtime/daemon-compat";
 import { placementBlockers, placementServers, placementUpgradeMessage, restoreOpen, runsPlacement } from "./daemon-release";
 
-const server = (id: string, daemonVersion: string, more: { acceptsServices?: boolean; storage?: "stateless" | "ready" | "pool" | null } = {}) =>
-  ({ id, name: id, daemonVersion, acceptsServices: more.acceptsServices ?? true, storage: more.storage ?? "pool" });
+type Daemon = "serves" | "lacks" | "unknown";
+
+const capabilitiesOf = (daemon: Daemon) =>
+  daemon === "serves" ? ["ployz.logs.tail.v1", requirements.volumeMove.capability] : daemon === "lacks" ? ["ployz.logs.tail.v1"] : [];
+
+const server = (id: string, daemon: Daemon, more: { acceptsServices?: boolean; storage?: "stateless" | "ready" | "pool" | null } = {}) =>
+  ({ id, name: id, capabilities: capabilitiesOf(daemon), acceptsServices: more.acceptsServices ?? true, storage: more.storage ?? "pool" });
 
 describe("runsPlacement", () => {
-  it("needs a daemon from the release that ships the volume verbs", () => {
-    expect(runsPlacement("0.2.4")).toBe(false);
-    expect(runsPlacement("0.2.5-beta.1")).toBe(false);
-    expect(runsPlacement("0.2.5")).toBe(true);
-    expect(runsPlacement("0.3.0")).toBe(true);
+  it("needs a daemon that serves the volume move capability", () => {
+    expect(runsPlacement({ capabilities: capabilitiesOf("lacks") })).toBe(false);
+    expect(runsPlacement({ capabilities: capabilitiesOf("serves") })).toBe(true);
   });
 
-  it("hides the verbs from a Server whose version is unknown", () => {
-    expect(runsPlacement("")).toBe(false);
+  it("hides the verbs from a Server that lists no capabilities", () => {
+    expect(runsPlacement({ capabilities: [] })).toBe(false);
   });
 });
 
 describe("placementBlockers", () => {
-  it("names every Server with storage on an older daemon, counting unreported storage as storage", () => {
+  it("names every Server with storage that lacks the verbs, counting unreported storage as storage", () => {
     expect(placementBlockers([
-      server("db-old", "0.2.4"),
-      server("unknown", "0.2.4", { storage: null }),
-      server("ready", "", { storage: "ready" }),
-      server("edge", "0.2.4", { storage: "stateless" }),
-      server("new", "0.2.5"),
+      server("db-old", "lacks"),
+      server("unknown", "lacks", { storage: null }),
+      server("ready", "unknown", { storage: "ready" }),
+      server("edge", "lacks", { storage: "stateless" }),
+      server("new", "serves"),
     ])).toEqual(["db-old", "unknown", "ready"]);
   });
 
   it("says which Servers to upgrade", () => {
-    expect(placementUpgradeMessage(["db-old", "db-2"])).toBe("Every Server with storage must run Ployz 0.2.5 or later. Upgrade db-old, db-2 first.");
+    expect(placementUpgradeMessage(["db-old", "db-2"])).toBe("Every Server with storage needs a newer Ployz. Upgrade db-old, db-2 first.");
   });
 });
 
 describe("placementServers", () => {
   it("names only Servers that accept Services and run the verbs", () => {
     const servers = placementServers([
-      server("new", "0.2.5"),
-      server("cordoned", "0.2.5", { acceptsServices: false }),
-      server("edge", "0.2.4", { storage: "stateless" }),
+      server("new", "serves"),
+      server("cordoned", "serves", { acceptsServices: false }),
+      server("edge", "lacks", { storage: "stateless" }),
     ]);
     expect([...servers]).toEqual(["new"]);
   });
 
-  it("names none while one Server with storage runs an older daemon", () => {
-    expect([...placementServers([server("new", "0.2.5"), server("other", "0.3.0"), server("db-old", "0.2.4", { acceptsServices: false })])]).toEqual([]);
+  it("names none while one Server with storage lacks the verbs", () => {
+    expect([...placementServers([server("new", "serves"), server("other", "serves"), server("db-old", "lacks", { acceptsServices: false })])]).toEqual([]);
   });
 });
 
 describe("restoreOpen", () => {
   it("opens once the Primary's Server and every other Server with storage run the verbs", () => {
-    expect(restoreOpen([server("primary", "0.2.5"), server("edge", "0.2.4", { storage: "stateless" })], "primary")).toBe(true);
-    expect(restoreOpen([server("primary", "0.2.5"), server("db-old", "0.2.4")], "primary")).toBe(false);
-    expect(restoreOpen([server("primary", "0.2.4", { storage: "stateless" })], "primary")).toBe(false);
-    expect(restoreOpen([server("primary", "0.2.5")], null)).toBe(false);
+    expect(restoreOpen([server("primary", "serves"), server("edge", "lacks", { storage: "stateless" })], "primary")).toBe(true);
+    expect(restoreOpen([server("primary", "serves"), server("db-old", "lacks")], "primary")).toBe(false);
+    expect(restoreOpen([server("primary", "lacks", { storage: "stateless" })], "primary")).toBe(false);
+    expect(restoreOpen([server("primary", "serves")], null)).toBe(false);
   });
 });

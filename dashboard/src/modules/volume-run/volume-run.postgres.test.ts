@@ -7,7 +7,8 @@ import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import { requirements, ServerLacks } from "#/modules/runtime/daemon-compat";
+import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
@@ -43,6 +44,8 @@ type FakeMachine = {
   pool: boolean;
   stateless?: boolean;
   silent?: boolean;
+  /** Its daemon runs this release and refuses the volume verbs as too old for them. */
+  lacks?: string;
   copy: VolumeCopy | null;
   lease: LeaseRecord | null;
   warms?: string[];
@@ -174,7 +177,7 @@ describe("volume runs", () => {
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: () => Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index) },
+        machine: { id: idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "" } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
       containers: holders.map((name) => ({
@@ -194,10 +197,11 @@ describe("volume runs", () => {
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
     }),
-    volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend(() => {
+    volumeSwitch: (target: string, request: VolumeSwitchRequest) => Effect.suspend((): Effect.Effect<VolumeCopyView | ReceiveView | SwitchReply, PloyzSdkError> => {
       const fake = machine(target);
       sent.push(request);
       if (fake.silent === true) return Effect.never;
+      if (fake.lacks !== undefined) return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeMove.capability }));
       const payload = request.payload as { switch?: { pos: { seq: number; round: number; sub: number } } };
       const pos = payload.switch?.pos;
       if (request.command !== "inspect_volume_copy" && request.command !== "inspect_receive") {
@@ -586,6 +590,22 @@ describe("volume runs", () => {
       expect(output.result).toMatchObject({ refused: { code: "no_pool" } });
       expect(verbs).toEqual([]);
       expect(await rows()).toMatchObject([{ state: "failed", message: "fsn-2 has no managed volume storage yet", lease: null }]);
+    });
+
+    it("mirror: a Server whose daemon lacks the volume verbs ends the run saying how to fix it, before any lease", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: null, lease: null, lacks: "0.2.4" };
+      vi.stubGlobal("fetch", async () => new Response("v0.2.5\n"));
+      try {
+        const run = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+        const output = await execute(run.id);
+
+        expect(output.result).toMatchObject({ refused: { code: "server_lacks" } });
+        expect(verbs).toEqual([]);
+        expect(await rows()).toMatchObject([{ state: "failed", message: "Volume move needs a newer Ployz on fsn-2. 0.2.5 is out.", lease: null }]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it("sync: rounds onto the existing mirror, committing what it already holds first", async () => {

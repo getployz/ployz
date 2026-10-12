@@ -433,9 +433,9 @@ it("keeps each failed container's reason on a Server's missing note until every 
     send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "c", message: "c is unavailable" }));
     send(JSON.stringify({ type: "source_error", machineId: "m", containerId: "d", message: "d is unavailable" }));
     send(record("other"));
-    expect(stream.getSnapshot().missing.live["m"]?.failed).toEqual({ c: "c is unavailable", d: "d is unavailable" });
+    expect(stream.getSnapshot().missing.live["m"]?.failed).toEqual({ c: { message: "c is unavailable" }, d: { message: "d is unavailable" } });
     send(record("d"));
-    expect(stream.getSnapshot().missing.live["m"]?.failed).toEqual({ c: "c is unavailable" });
+    expect(stream.getSnapshot().missing.live["m"]?.failed).toEqual({ c: { message: "c is unavailable" } });
     send(JSON.stringify({ type: "source_gone", machineId: "m", containerId: "c" }));
     expect(stream.getSnapshot().missing.live).toEqual({});
   } finally {

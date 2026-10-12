@@ -129,7 +129,7 @@ describe("VolumePlacementPanel", () => {
 
   it("only shows the placement while a Server with storage runs an older daemon", () => {
     panel([member("web-1", "unanswered"), mirrorAsOf("web-2", new Date(2026, 9, 10, 10, 36)), member("web-3", "mirror")], row(["web-2"]), null, [], ["db-old"]);
-    expect(screen.getByText("Upgrade db-old to Ployz 0.2.5")).toBeTruthy();
+    expect(screen.getByText("Upgrade db-old to a newer Ployz")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Use mirror" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Remove mirror on/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Delete copy on/ })).toBeNull();

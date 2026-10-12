@@ -2,7 +2,8 @@ import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db
 import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { liveStream } from "#/lib/live.stream";
-import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, LIVE_LOG_LIMIT, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogRow, type MissingServer } from "./container-log.collection";
+import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, LIVE_LOG_LIMIT, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogRow, type MissingReason, type MissingServer } from "./container-log.collection";
+import { getRuntimeCollections } from "./runtime.collection";
 
 export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
@@ -14,7 +15,7 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
  */
 type LogStreamState = {
   opened: boolean; offline: boolean; refused: boolean;
-  missing: { live: Record<string, { machineName: string; failed: Readonly<Record<string, string>> }>; history: readonly MissingServer[] };
+  missing: { live: Record<string, { machineName: string; failed: Readonly<Record<string, MissingReason>> }>; history: readonly MissingServer[] };
   historyPending: boolean; historyError: boolean;
 };
 
@@ -86,44 +87,64 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           const { [containerId]: __, ...failed } = server.failed;
           publish({ ...snapshot, missing: { ...snapshot.missing, live: Object.keys(failed).length ? { ...live, [machineId]: { ...server, failed } } : live } });
         };
-        controller = new AbortController();
-        const stop = liveStream(`/api/runtime/logs?${query}`, {
-          onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
-          // Any loss says so, so a first connection that fails never sits on the loading skeleton; only a refused one
-          // also ends its history reads.
-          onLost: (why) => {
-            if (why === "refused") {
-              controller.abort();
-              publish({ ...snapshot, historyPending: false });
-            }
-            if (!snapshot.offline && !snapshot.refused) publish({ ...snapshot, refused: true });
-          },
-          on: {
-            live: () => {
-              publish({ ...snapshot, opened: true, offline: false, refused: false });
-              land();
-              if (cursor === undefined && collection.size < SHORT_TAIL) void loadOlder();
-            },
-            offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
-            log: (event) => {
-              const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
-              if (decoded._tag === "None") return;
-              if (decoded.value.type === "record") {
-                recovered(decoded.value.record.machineId, decoded.value.record.containerId);
-                pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
-              } else if (decoded.value.type === "source_gone") {
-                recovered(decoded.value.machineId, decoded.value.containerId);
-              } else {
-                const { machineId, containerId, message } = decoded.value;
-                const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
-                const { [containerId]: _, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
-                publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: message } } } } });
+        const open = () => {
+          controller = new AbortController();
+          const stop = liveStream(`/api/runtime/logs?${query}`, {
+            onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
+            // Any loss says so, so a first connection that fails never sits on the loading skeleton; only a refused one
+            // also ends its history reads.
+            onLost: (why) => {
+              if (why === "refused") {
+                controller.abort();
+                publish({ ...snapshot, historyPending: false });
               }
+              if (!snapshot.offline && !snapshot.refused) publish({ ...snapshot, refused: true });
             },
-          },
+            on: {
+              live: () => {
+                publish({ ...snapshot, opened: true, offline: false, refused: false });
+                land();
+                if (cursor === undefined && collection.size < SHORT_TAIL) void loadOlder();
+              },
+              offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
+              log: (event) => {
+                const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
+                if (decoded._tag === "None") return;
+                if (decoded.value.type === "record") {
+                  recovered(decoded.value.record.machineId, decoded.value.record.containerId);
+                  pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
+                } else if (decoded.value.type === "source_gone") {
+                  recovered(decoded.value.machineId, decoded.value.containerId);
+                } else {
+                  const { type: _, machineId, containerId, ...reason } = decoded.value;
+                  const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
+                  const { [containerId]: __, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
+                  publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: reason } } } } });
+                }
+              },
+            },
+          });
+          return () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
+        };
+        let close = open();
+        // The SDK never reopens a source it marked failed, so a Server that lacked a capability gets a fresh stream once its
+        // daemon changes, as after Upgrade.
+        const lacking = (machineId: string) =>
+          Object.values(snapshot.missing.live[machineId]?.failed ?? {}).some(reason => reason.capability !== undefined)
+          || snapshot.missing.history.some(server => server.machineId === machineId && server.capability !== undefined);
+        const upgrades = getRuntimeCollections(selection.organizationSlug, scope).machines.subscribeChanges((changes) => {
+          const upgraded = new Set(changes.flatMap(change => change.type === "update" && change.previousValue !== undefined
+            && change.value.daemonVersion !== change.previousValue.daemonVersion && lacking(change.value.id) ? [change.value.id] : []));
+          if (!upgraded.size) return;
+          close();
+          resetHistory();
+          const live = Object.fromEntries(Object.entries(snapshot.missing.live).filter(([machineId]) => !upgraded.has(machineId)));
+          const history = snapshot.missing.history.filter(server => !upgraded.has(server.machineId));
+          publish({ ...snapshot, missing: { live, history }, historyPending: false });
+          close = open();
         });
-        const close = () => { clearTimeout(flush); flush = undefined; pending = []; stop(); controller.abort(); };
         return () => {
+          upgrades.unsubscribe();
           pending = [];
           land = () => {};
           following = true;

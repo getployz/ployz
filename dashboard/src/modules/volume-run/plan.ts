@@ -5,6 +5,7 @@ export type Role = "writer" | "switching" | "handed" | "mirror" | "stale" | "emp
 
 export type RefusalCode =
   | "unanswered"
+  | "server_lacks"
   | "no_writer"
   | "two_writers"
   | "volume_switching"
@@ -152,7 +153,12 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const writer = withRole("writer")[0];
   const mirrors = withRole("mirror");
   const stale = withRole("stale");
-  const unanswered = members.find((member) => !member.answered);
+  const silent = members.filter((member): member is Exclude<Member, AnsweredMember> => !member.answered);
+  // A Server too old to answer says so, which tells the viewer more than one that did not answer at all.
+  const unanswered = silent.find((member) => member.lack !== undefined) ?? silent[0];
+  const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack === undefined
+    ? refuse("unanswered", `${member.machine.name} did not answer; ${name}'s copies are unknown`)
+    : refuse("server_lacks", member.lack);
   const midRun = () => refuse("volume_switching", `${name} is mid-run; wait or volume release ${name}`);
 
   if (input.kind === "delete_mirror") {
@@ -162,7 +168,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       if (slots.length === 0) return refuse("no_mirror", `${name} has no mirror`);
       return { ok: true, phase: { kind: "delete_mirror", destroy: slots, forget: null, forgetLease: answered.filter((member) => slots.includes(member) || member.view.lease !== null) } };
     }
-    if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
+    if (unanswered !== undefined) return unknown(unanswered);
     if (switching.length > 0 || writer?.view.lease?.cycle === "open") return midRun();
     const { slot, confirmed_name } = input.args;
     const destroy = slot === null ? slots : slots.filter((member) => member.machine.name === slot);
@@ -174,7 +180,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     return { ok: true, phase: { kind: "delete_mirror", destroy, forget: writer ?? null, forgetLease: destroy } };
   }
 
-  if (unanswered !== undefined) return refuse("unanswered", `${unanswered.machine.name} did not answer; ${name}'s copies are unknown`);
+  if (unanswered !== undefined) return unknown(unanswered);
   if (input.kind === "restore") return planRestore(name, input.args.from, answered);
   if (input.kind === "seed") {
     if (switching.length > 0) return midRun();

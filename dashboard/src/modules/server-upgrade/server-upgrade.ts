@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { machineIdStringSchema } from "#/modules/machines/enrollment";
 import type { ServerStatus } from "#/modules/machines/server-status";
+import type { Requirement } from "#/modules/runtime/daemon-compat";
 
 /** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */
 export const UPGRADE_OBSERVATION_LIMIT_MS = 20 * 60_000;
@@ -198,6 +199,40 @@ export function serverUpgradeLine(input: {
   if (release === null || !isBehind(version, release)) return null;
   if (status === "online") return { kind: "behind", release, canUpgrade: !input.rolloutRunning };
   return status === "offline" && input.automatic ? { kind: "when-back", release } : null;
+}
+
+/** A Release Channel read: still loading, unreadable, or its release (null when the channel names none). */
+export type ReleaseState =
+  | { readonly state: "pending" }
+  | { readonly state: "failed" }
+  | { readonly state: "resolved"; readonly release: string | null };
+
+/** What to tell a viewer whose Server lacks a feature: the Server's own Upgrade line while one is under way. */
+export type Remedy =
+  | { readonly kind: "behind"; readonly sentence: string; readonly canUpgrade: boolean }
+  | { readonly kind: "lack"; readonly sentence: string }
+  | Exclude<ServerUpgradeLine, { readonly kind: "behind" } | null>;
+
+/**
+ * The sentence for a Server that refused `feature`, null when Cloud names no feature for the capability. The Release
+ * Channel explains it; Cloud's own version never enters, since a main build reports an older one than its Servers run.
+ */
+export function remedy(input: {
+  readonly feature: Requirement | null;
+  readonly server: { readonly name: string; readonly daemonVersion: string };
+  readonly release: ReleaseState;
+  readonly line: ServerUpgradeLine;
+}): Remedy {
+  const { feature, server, release, line } = input;
+  if (line !== null && line.kind !== "behind") return line;
+  const needs = feature === null ? `${server.name} needs a newer Ployz.` : `${feature.feature} ${feature.plural ? "need" : "needs"} a newer Ployz on ${server.name}.`;
+  if (line !== null) return { kind: "behind", sentence: `${needs} ${line.release} is out.`, canUpgrade: line.canUpgrade };
+  const current = feature !== null && server.daemonVersion !== "" && release.state === "resolved"
+    && release.release !== null && isCurrent(server.daemonVersion, release.release);
+  return {
+    kind: "lack",
+    sentence: current ? `${feature.feature} ${feature.plural ? "are" : "is"} not in Ployz ${server.daemonVersion} on ${server.name} yet.` : needs,
+  };
 }
 
 /** The exact error for a failure; the stage reached otherwise. */

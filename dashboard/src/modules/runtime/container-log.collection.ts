@@ -28,17 +28,19 @@ export const containerLogGapSchema = Schema.Struct({
 export const containerLogRowSchema = Schema.Union([containerLogLineSchema, containerLogGapSchema]);
 export type ContainerLogLine = typeof containerLogLineSchema.Type;
 export type ContainerLogRow = typeof containerLogRowSchema.Type;
+/** Why a Server's logs are missing; `capability` names the verb an old daemon cannot serve. */
+const why = { message: Schema.String, code: Schema.optionalKey(Schema.String), capability: Schema.optionalKey(Schema.String) };
 export const logSourceErrorSchema = Schema.Struct({
-  type: Schema.Literal("source_error"), machineId: Schema.String,
-  containerId: Schema.String, message: Schema.String,
+  type: Schema.Literal("source_error"), machineId: Schema.String, containerId: Schema.String, ...why,
 });
 export const containerLogEventSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("record"), record: containerLogLineSchema }),
   logSourceErrorSchema,
   Schema.Struct({ type: Schema.Literal("source_gone"), machineId: Schema.String, containerId: Schema.String }),
 ]);
-export const missingServerSchema = Schema.Struct({ machineId: Schema.String, machineName: Schema.String, message: Schema.String });
+export const missingServerSchema = Schema.Struct({ machineId: Schema.String, machineName: Schema.String, ...why });
 export type MissingServer = typeof missingServerSchema.Type;
+export type MissingReason = Omit<MissingServer, "machineId" | "machineName">;
 export const containerLogPageSchema = Schema.Struct({
   rows: Schema.Array(containerLogRowSchema), failures: Schema.Array(missingServerSchema), cursor: Schema.NullOr(Schema.String),
 });
