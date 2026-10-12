@@ -932,11 +932,17 @@ mod tests {
         };
         assert_eq!(
             valued(&row("web.startCommand", json!("npm start"))),
-            "npm start (default -)"
+            "\"npm start\" (default -)"
         );
         assert_eq!(valued(&row("web.startCommand", json!(null))), "- (default)");
-        assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "3000");
-        assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "/data");
+        assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "\"3000\"");
+        assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "\"/data\"");
+    }
+
+    #[test]
+    fn empty_text_a_dash_and_unset_read_differently() {
+        let shown = [plain(&json!("")), plain(&json!("-")), plain(&json!(null))];
+        assert_eq!(shown, ["\"\"", "\"-\"", "-"]);
     }
 
     #[test]
