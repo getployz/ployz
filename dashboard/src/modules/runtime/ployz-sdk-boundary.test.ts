@@ -7,6 +7,7 @@ const VALUE_IMPORT_ALLOWLIST = new Set([
   "modules/runtime/ployz.server.ts",
   "models/runtime/ployz-sdk.server.test.ts",
   "modules/agent/agent-steps.test.ts",
+  "modules/agent/agent-tools.test.ts",
 ]);
 const BRANDED_CONSTRUCTORS = [
   "operationId",

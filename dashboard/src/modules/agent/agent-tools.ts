@@ -1,5 +1,10 @@
-import { type AgentTurn, type Answer, agentResume, agentTools, type Ask, type Step, type ToolResult, type Write } from "@ployz/sdk";
+import { createRequire } from "node:module";
+import type * as PloyzSdk from "@ployz/sdk";
+import type { AgentTurn, Answer, Ask, Step, ToolResult, Write } from "@ployz/sdk";
 import { Effect } from "effect";
+
+// SAFETY: the package exports this named CommonJS SDK surface at runtime.
+const { agentResume, agentTools } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "agentResume" | "agentTools">;
 
 /** The Store source the sidebar's calls are recorded under. */
 export const AGENT = { source: "agent" } as const;
