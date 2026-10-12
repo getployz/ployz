@@ -69,6 +69,16 @@ describe("snapshot-volume", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("reports a prune the writer refuses as skipped, not done", async () => {
+    const older = wire("hourly-old", 60);
+    const { writer, sent } = scriptedWriter([listed(7, [older])], [
+      () => listed(7, [wire(TAKE_ID, 0), older]),
+      () => refused("busy"),
+    ]);
+    expect(await runTick(writer)).toEqual({ status: "skipped", reason: "busy", message: "busy" });
+    expect(sent.map((entry) => entry.want.kind)).toEqual(["taken", "deleted"]);
+  });
+
   it("skips a Volume whose writer lacks the snapshot capabilities, sending nothing", async () => {
     const { writer, sent } = scriptedWriter([refused("unsupported")], []);
     expect(await runTick(writer)).toMatchObject({ status: "skipped", reason: "unsupported" });

@@ -24,9 +24,9 @@ const NO_EPOCH: Extract<SnapshotsResult, { ok: false }> = {
 const holds = (snapshots: VolumeSnapshots, id: string) => snapshots.snapshots.some((snapshot) => snapshot.id === id);
 
 /**
- * Takes `take` unless the writer already holds it, then deletes what `policy` prunes. Any refusal skips the pass and
- * logs it; a Mismatch alone reads the epoch again, once per pass, and retries. A delete the writer no longer has
- * counts as done.
+ * Takes `take` unless the writer already holds it, then deletes what `policy` prunes. Any refusal, of the take or of a
+ * delete, skips the pass and logs it; a Mismatch alone reads the epoch again, once per pass, and retries. A delete the
+ * writer no longer has counts as done.
  */
 export const snapshotAndPrune = Effect.fn("SnapshotSchedule.snapshotAndPrune")(function* <E, R>(
   writer: SnapshotWriter<E, R>,
@@ -62,8 +62,7 @@ export const snapshotAndPrune = Effect.fn("SnapshotSchedule.snapshotAndPrune")(f
       current = result.snapshots;
       deleted.push(id);
     } else if (result.reason !== "not_found") {
-      yield* Effect.logInfo("Snapshot prune stopped.", { reason: result.reason, message: result.refusal.message });
-      break;
+      return yield* skipped(result);
     }
   }
   return { status: "done", taken: take?.id ?? null, deleted } satisfies SnapshotPass;
