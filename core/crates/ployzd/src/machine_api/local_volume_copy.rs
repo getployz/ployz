@@ -97,7 +97,6 @@ impl MachineService {
                 Ok(copy)
             }
             (CopyTransition::WriterToMirror, WantedCopy::Mirror { target, drain, .. }) => {
-                let holders = self.containers()?.volume_holder_ids(&name).await?;
                 let plugin = self.local.plugin().clone();
                 let request = CutRequest {
                     name: name.clone(),
@@ -105,7 +104,7 @@ impl MachineService {
                 };
                 let cut = self
                     .local
-                    .cut_volume_copy(holders, drain, move || async move {
+                    .cut_volume_copy(name.clone(), drain, move || async move {
                         plugin
                             .call::<Copy>(CUT_ROUTE, &request)
                             .await

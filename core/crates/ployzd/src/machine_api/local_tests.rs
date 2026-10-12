@@ -1724,7 +1724,9 @@ mod set_volume_copy {
             "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0}})
     }
 
-    /// A running Container that mounts the Volume, as Docker lists it for the cut.
+    /// A running Container that mounts the Volume, as Docker lists it for the cut,
+    /// beside any holder already there.
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn running_holder(service: &MachineService, fake: &FakeDocker) -> ContainerId {
         use ployz_core::CreateContainerRequest;
         let created = service
@@ -1747,6 +1749,7 @@ mod set_volume_copy {
             .unwrap()
             .decode::<op::CreateContainer>()
             .unwrap();
+        let id = created.container_id.to_string();
         for container in fake
             .named_containers
             .as_ref()
@@ -1754,13 +1757,16 @@ mod set_volume_copy {
             .lock()
             .unwrap()
             .values_mut()
+            .filter(|container| container["Id"] == id.as_str())
         {
             container["State"] = json!({"Status":"running", "Running":true});
         }
-        fake.volume_users.lock().unwrap().insert(
-            VOLUME.into(),
-            vec![json!({"Id": created.container_id.to_string()})],
-        );
+        fake.volume_users
+            .lock()
+            .unwrap()
+            .entry(VOLUME.into())
+            .or_default()
+            .push(json!({"Id": id}));
         created.container_id
     }
 
@@ -1858,6 +1864,48 @@ mod set_volume_copy {
             plugin.routes_called(),
             vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
         );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    async fn a_holder_started_during_the_drain_refuses_busy_until_the_resend() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-late").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+        plugin.reply(CUT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let replies = plugin.replies.clone();
+        plugin.on(CUT_ROUTE, move || {
+            replies
+                .lock()
+                .unwrap()
+                .insert(INSPECT_ROUTE.into(), slot(Some(snapshot("f-1", 7))));
+        });
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        running_holder(&service, &fake).await;
+        let draining = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":300}});
+
+        let (refused, _) = tokio::join!(set_copy(&service, draining.clone()), async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            running_holder(&service, &fake).await
+        });
+        let error = refusal(&refused);
+        assert_eq!(error.details["reason"], json!("busy"), "{error:?}");
+        assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
+        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        let mut status = holder_status(&fake);
+        status.sort_by_key(ToString::to_string);
+        assert_eq!(status, vec![json!("exited"), json!("running")]);
+
+        let cut = reply(&set_copy(&service, draining).await);
+        assert_eq!(
+            serde_json::to_value(&cut).unwrap(),
+            json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
+        );
+        assert_eq!(holder_status(&fake), vec![json!("exited"), json!("exited")]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }

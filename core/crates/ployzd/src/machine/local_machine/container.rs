@@ -285,15 +285,15 @@ impl LocalMachine {
     }
 
     /// The cut's Container half: drain and stop every holder of the Volume, then run
-    /// `zfs` under the exclusive turn once no holder runs. A holder that still runs
-    /// under the turn, or that the stop left running, is `Busy` and the root stays a
-    /// writer.
+    /// `zfs` under the exclusive turn once no holder runs. The holders are listed again
+    /// under the turn, so one started during the drain is `Busy` too, as is one the
+    /// stop left running. A `Busy` cut leaves the root a writer.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
     pub(crate) async fn cut_volume_copy<Z, Fut>(
         &self,
-        holders: Vec<ContainerId>,
+        name: DockerVolumeName,
         drain: Drain,
         zfs: Z,
     ) -> Result<Result<(), CopyRefusal>, Error>
@@ -303,26 +303,41 @@ impl LocalMachine {
     {
         let local = self.clone();
         self.finish_installed(move |installation| async move {
+            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             let stop = StopOptions::default();
-            for holder in &holders {
+            for holder in containers.volume_holder_ids(&name).await? {
                 let observed = local
-                    .stop_behind_ingress(&installation, holder, drain, &stop)
+                    .stop_behind_ingress(&installation, &holder, drain, &stop)
                     .await?;
                 if is_running(&observed) {
                     return Ok(Err(CopyRefusal::Busy));
                 }
             }
             let _turn = local.owner.admission_lock().write_owned().await;
-            let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            let machine_id = local.record().id();
-            for holder in &holders {
-                if is_running(&containers.inspect_managed(holder, &machine_id).await?) {
-                    return Ok(Err(CopyRefusal::Busy));
-                }
+            if local.volume_holder_running(&name).await? {
+                return Ok(Err(CopyRefusal::Busy));
             }
             zfs().await.map(Ok)
         })
         .await
+    }
+
+    /// Whether Docker runs any Container that mounts the Volume `name`. A holder gone
+    /// between the list and its inspect does not run.
+    pub(crate) async fn volume_holder_running(
+        &self,
+        name: &DockerVolumeName,
+    ) -> Result<bool, Error> {
+        let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+        let machine_id = self.record().id();
+        for holder in containers.volume_holder_ids(name).await? {
+            match containers.inspect_managed(&holder, &machine_id).await {
+                Ok(observed) if is_running(&observed) => return Ok(true),
+                Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(false)
     }
 
     /// Create one local Docker Volume while holding Machine mutation admission.
