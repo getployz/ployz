@@ -327,6 +327,12 @@ describe("volume runs", () => {
       if (want.kind === "mirror") {
         receive(fake);
         fake.stopped = false;
+        const copy = fake.copy;
+        // The daemon answers a failed receive once, and the next resend retries it.
+        if (copy?.kind === "slot" && copy.pull?.target === want.target && copy.pull.failure !== null) {
+          fake.copy = { ...copy, pull: { ...copy.pull, failure: null } };
+          return Effect.succeed({ copy });
+        }
       }
       const refused = transition(fake, expected, want);
       return refused === null ? Effect.succeed({ copy: fake.copy }) : fail(refused);
@@ -789,6 +795,7 @@ describe("volume runs", () => {
 
       expect(output.error).toBeDefined();
       expect(verbs.slice(-4)).toEqual(["cut@fsn-1(f-1)", "pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "writer@fsn-1(kept)"]);
+      expect(verbs.filter((verb) => verb === "pull@fsn-2(f-1)")).toHaveLength(2);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1, newest: at("f-1") });
       expect(machines.filter((fake) => fake.copy?.kind === "root")).toHaveLength(1);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive f-1: disk full" }]);
