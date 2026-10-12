@@ -8,7 +8,8 @@ import { healthcheckOf } from "./healthcheck";
 import { sourceText } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
-const reviewFile = Schema.Struct({ content: Schema.String, mode: Schema.String, uid: Schema.Number, gid: Schema.Number });
+/** A Config file in a change. `content` is missing where the reader may not see it: Ployz support, unless the Organization shows it. */
+const reviewFile = Schema.Struct({ content: Schema.optional(Schema.String), mode: Schema.String, uid: Schema.Number, gid: Schema.Number });
 const decodeFile = Schema.decodeUnknownOption(reviewFile);
 
 /** One changed Setting in Details. */

@@ -4,7 +4,7 @@ import type { ConfigQuery, LogFilter } from "@ployz/sdk";
 import { authorizeRequest } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "./organization-runtime.server";
 import { backfillThenFollow } from "./container-log-events.server";
-import { NotFound, Validation } from "#/server/public-error";
+import { Forbidden, NotFound, Validation } from "#/server/public-error";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 
@@ -46,7 +46,11 @@ const HISTORY_PAGE = 500;
 
 /** The response owns this scope until its consumer disconnects. */
 export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch, history?: { cursor?: string }) {
-  const { organization: { id: organizationId } } = yield* authorizeRequest(request.headers, search.organizationSlug, "operate");
+  const access = yield* authorizeRequest(request.headers, search.organizationSlug, "operate");
+  if (access.kind === "support" && !access.shows.logs) {
+    return yield* new Forbidden({ message: "This Organization doesn't show its container logs to Ployz support." });
+  }
+  const organizationId = access.organization.id;
   const filter = yield* resolveLogFilter(organizationId, search);
   const scope = yield* Scope.make();
   const close = Scope.close(scope, Exit.void);

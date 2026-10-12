@@ -261,7 +261,8 @@ function ConfigFileValue({ before, after }: NonNullable<ChangeRow["configFile"]>
             ))}
           </p>
           <pre className={cn("max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-xs", color)}>
-            {file.content === "" ? <span className="text-muted-foreground">Empty file</span> : file.content}
+            {file.content === undefined ? <span className="text-muted-foreground">Hidden</span>
+              : file.content === "" ? <span className="text-muted-foreground">Empty file</span> : file.content}
           </pre>
         </div>
       ))}

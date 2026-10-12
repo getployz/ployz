@@ -33,6 +33,17 @@ off applies on support's next request. While support has your organization open,
 top says so. A [self-hosted Ployz Cloud](../self-hosting.md) has no Ployz support, so the setting
 doesn't appear.
 
+Support sees your projects, services and settings. Three switches under the setting decide what
+more it sees:
+
+- **Variables**: values of variables that aren't sealed. Off, they read as sealed.
+- **Config files**: what's in each config file. Off, support sees each file's name and mount but
+  not its contents.
+- **Container logs**: what your containers print. Build logs are always visible.
+
+All three start off, and turning support access off turns them off. Each applies on support's
+next request. Support can still change anything you can, including a value it can't read.
+
 ## Destructive actions ask first
 
 A coding agent working through the CLI can publish or deploy a change that removes a running

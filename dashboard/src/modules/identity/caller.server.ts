@@ -32,6 +32,7 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
     userId: session.user.id,
     organization: bound,
     credential: { kind: "session", id: session.session.id },
+    support: null,
   } satisfies Caller;
 });
 
@@ -40,11 +41,12 @@ export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (
   const auth = yield* Auth;
   const session = yield* auth.getSession(headers);
   if (session === null) return yield* new Unauthorized();
-  const { organization } = yield* requireAccess({ userId: session.user.id }, organizationSlug, "operate");
+  const access = yield* requireAccess({ userId: session.user.id }, organizationSlug, "operate");
   return {
     userId: session.user.id,
-    organization,
+    organization: access.organization,
     credential: { kind: "session", id: session.session.id },
+    support: access.kind === "support" ? access.shows : null,
   } satisfies Caller;
 });
 
@@ -75,6 +77,7 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string)
     userId: row.userId,
     organization: { id: row.organizationId, slug: row.slug },
     credential: { kind: "token", id: row.id },
+    support: null,
   } satisfies Caller;
 });
 
