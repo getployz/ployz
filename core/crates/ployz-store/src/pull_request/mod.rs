@@ -575,19 +575,24 @@ fn current(
     pr: PullRequestNumber,
     closing: bool,
 ) -> Result<Vec<(EnvironmentId, crate::id::ProjectId)>, RpcError> {
+    let open = if closing {
+        ""
+    } else {
+        "AND NOT EXISTS (SELECT 1 FROM config_removal_mark m \
+         WHERE m.environment_id = b.environment_id AND m.state = 'removing')"
+    };
     let rows = tx.query(
-        "SELECT p.environment_id, e.project_id FROM config_pr_environment p \
-         JOIN config_environment e ON e.id = p.environment_id \
-         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
-         WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND p.number = ?3 \
-         AND (?4 = 1 OR NOT EXISTS (SELECT 1 FROM config_removal_mark m \
-         WHERE m.environment_id = b.environment_id AND m.state = 'removing')) \
-         ORDER BY p.environment_id",
+        &format!(
+            "SELECT p.environment_id, e.project_id FROM config_pr_environment p \
+             JOIN config_environment e ON e.id = p.environment_id \
+             JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+             WHERE p.organization_id = ?1 AND p.repository_id = ?2 AND p.number = ?3 \
+             {open} ORDER BY p.environment_id"
+        ),
         &[
             who.organization.as_str().into(),
             repository_id.into(),
             pr.into(),
-            i64::from(closing).into(),
         ],
     )?;
     rows.iter()
