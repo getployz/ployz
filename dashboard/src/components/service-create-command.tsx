@@ -36,8 +36,8 @@ import {
   useCreateStoreService,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
 import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/database-presets";
-import { randomName, type NewServiceSource } from "#/modules/config-store/store-services";
-import { environmentsQuery, fetchStoreView } from "#/modules/config-store/store-view.queries";
+import { newProjectName, randomName, type NewServiceSource } from "#/modules/config-store/store-services";
+import { environmentsQuery, fetchStoreView, projectsQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
@@ -240,14 +240,20 @@ function useServiceCreateActions({
       canvasPosition: props.canvasPosition };
   }
 
-  /** A new Project, named like `brave-otter`, whose Default Environment takes the first Service. */
-  async function createProjectTarget(): Promise<CreationTarget> {
+  /**
+   * A new Project whose Default Environment takes the first Service: named after that Service's repository or image,
+   * else like `brave-otter`.
+   */
+  async function createProjectTarget(source?: NewServiceSource): Promise<CreationTarget> {
     const made = createdProjectRef.current ?? await (async (): Promise<CreationTarget> => {
       // SAFETY: Project and Environment ids are UUIDs the caller mints; the Store checks them.
       const id = crypto.randomUUID() as ProjectId;
       // SAFETY: as above.
       const environment = crypto.randomUUID() as EnvironmentId;
-      const written = await storeWriter.commit({ command: "create_project", id, name: randomName(), default_environment: environment })
+      const name = source?.type === "git" || source?.type === "image"
+        ? newProjectName(source, (await fetchStoreView(props.organizationSlug, collectionScope, projectsQuery())).projects)
+        : randomName();
+      const written = await storeWriter.commit({ command: "create_project", id, name, default_environment: environment })
         .isPersisted.promise;
       if (written.written !== "project") throw new Error("The Store didn't create the project.");
       return { projectSlug: written.project.name, environmentSlug: written.environment.name,
@@ -269,10 +275,14 @@ function useServiceCreateActions({
     });
   }
 
-  const createInTarget = (create: (placement: NewServicePlacement) => ReturnType<typeof createStoreService>) =>
+  /** Creates a Service here, or as the first in a new Project named after `source`. */
+  const createInTarget = (
+    source: NewServiceSource | undefined,
+    create: (placement: NewServicePlacement) => ReturnType<typeof createStoreService>,
+  ) =>
     whileCreating(async () => {
       const stillHere = markHere();
-      const target = props.mode === "service" ? await serviceModeTarget(props) : await createProjectTarget();
+      const target = props.mode === "service" ? await serviceModeTarget(props) : await createProjectTarget(source);
       const created = create({
         store: { project: target.projectSlug, environment: target.environmentSlug },
         environmentId: target.environmentId,
@@ -294,9 +304,9 @@ function useServiceCreateActions({
     });
 
   const createServiceFromSource = (source: NewServiceSource) =>
-    createInTarget((placement) => createStoreService(placement, source));
+    createInTarget(source, (placement) => createStoreService(placement, source));
   const createDatabase = (preset: DatabasePreset) =>
-    createInTarget((placement) => createStoreDatabase(placement, preset));
+    createInTarget(undefined, (placement) => createStoreDatabase(placement, preset));
 
   function selectCreateItem({ id, panel }: CreateMenuItem) {
     if (panel) {

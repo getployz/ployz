@@ -1,4 +1,4 @@
-import type { ConfigCommand, DiffView, DomainRow, EnvironmentRef, EnvironmentView, JsonValue, ServiceId, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
+import type { ConfigCommand, DiffView, DomainRow, EnvironmentRef, EnvironmentView, JsonValue, ProjectListing, ServiceId, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { asRecord } from "#/lib/json";
@@ -36,6 +36,14 @@ export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives
  */
 export function newServiceName(source: NewServiceSource, services: readonly ServiceListing[]) {
   return serviceName(sourceName(source), services);
+}
+
+/**
+ * A new Project's name: its first Service's, from that Service's repository or image, with a random suffix when a
+ * Project has it. The Store refuses a name taken meanwhile.
+ */
+export function newProjectName(source: NewServiceSource & { type: "git" | "image" }, projects: readonly ProjectListing[]) {
+  return uniqueName(sourceName(source), projects.map((project) => project.name));
 }
 
 /** `wanted` as a new Service's name: a random suffix when a Service here has it as a name or Private DNS. */

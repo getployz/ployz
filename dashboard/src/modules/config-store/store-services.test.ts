@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { DiffView, DomainRow, RowId, ServiceListing } from "@ployz/sdk";
+import type { DiffView, DomainRow, ProjectListing, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { scalarSetting, serviceSetting, settingChange, settingError } from "./catalog";
-import { domainChanged, newServiceName, serviceChangeCount, serviceChanges } from "./store-services";
+import { domainChanged, newProjectName, newServiceName, serviceChangeCount, serviceChanges } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
@@ -16,6 +16,17 @@ describe("newServiceName", () => {
     expect(newServiceName({ type: "image", image: `${"a".repeat(70)}:1` }, [listed("a".repeat(63))]))
       .toMatch(new RegExp(`^${"a".repeat(58)}-[a-z0-9]{4}$`, "u"));
     expect(newServiceName({ type: "empty" }, [])).toMatch(/^[a-z]+-[a-z]+$/u);
+  });
+});
+
+const project = (name: string): ProjectListing => ({ id: `${name}-id`, name, default_environment: "production", environments: ["production"] });
+
+describe("newProjectName", () => {
+  it("names a Project after its first Service's repository or image, with a random suffix past Project names taken", () => {
+    expect(newProjectName({ type: "git", repository: "getployz/Shop.Web", branch: "main" }, [project("api")])).toBe("shop-web");
+    expect(newProjectName({ type: "image", image: "ghcr.io/acme/web:1.2" }, [])).toBe("web");
+    expect(newProjectName({ type: "git", repository: "getployz/api", branch: null }, [project("api")]))
+      .toMatch(/^api-[a-z0-9]{4}$/u);
   });
 });
 
