@@ -2,11 +2,14 @@ import "@tanstack/react-start/server-only";
 import { trace } from "@opentelemetry/api";
 import { defineChatMiddleware } from "@tanstack/ai";
 import { otelMiddleware } from "@tanstack/ai/middlewares/otel";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { PostHogService } from "#/modules/analytics/posthog.server";
 import type { Caller } from "#/modules/identity/actor";
 
 type Properties = Record<string, string | number | boolean | null>;
+
+// A refused or cancelled call still finishes without throwing, so its outcome says it failed.
+const refused = Schema.is(Schema.Struct({ ok: Schema.Literal(false) }));
 
 /** A span for each turn, model call and tool call on Cloud's tracer, without prompt or reply text. */
 export const agentTracing = otelMiddleware({ tracer: trace.getTracer("ployz-agent") });
@@ -56,7 +59,7 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
         ? generation
         : { ...generation, $ai_tools_called: toolsCalled.join(","), $ai_tool_call_count: toolsCalled.length });
     },
-    onAfterToolCall: (ctx, { toolCallId, toolName, ok, duration }) =>
+    onAfterToolCall: (ctx, { toolCallId, toolName, ok, result, duration }) =>
       capture("$ai_span", {
         $ai_trace_id: ctx.runId,
         $ai_session_id: ctx.threadId,
@@ -64,7 +67,7 @@ export const aiObservability = (posthog: PostHogService, caller: Caller) => {
         $ai_parent_id: spanId ?? ctx.runId,
         $ai_span_name: toolName,
         $ai_latency: duration / 1000,
-        $ai_is_error: !ok,
+        $ai_is_error: !ok || refused(result),
       }),
     onFinish: (ctx, { duration }) =>
       capture("$ai_trace", { $ai_trace_id: ctx.runId, $ai_session_id: ctx.threadId, $ai_span_name: "sidebar_turn", $ai_latency: duration / 1000 }),

@@ -1279,7 +1279,7 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
           $ai_parent_id: captured[0]?.properties?.["$ai_span_id"],
           $ai_span_name: "environment_show",
           $ai_latency: expect.any(Number),
-          $ai_is_error: false,
+          $ai_is_error: true,
         },
       },
       { ...envelope, event: "$ai_generation", properties: { ...generation, $ai_span_id: expect.any(String) } },
@@ -1287,6 +1287,21 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
     ]);
     expect(captured[0]?.properties?.["$ai_span_id"]).not.toBe(captured[2]?.properties?.["$ai_span_id"]);
     expect(JSON.stringify(captured)).not.toMatch(/look|around|quiet|secretname/i);
+  }));
+
+it.live("a refused tool call shows in PostHog as an error", () =>
+  Effect.gen(function* () {
+    const { say } = yield* sidebar({ removeWeb: true });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    yield* say("list services and deploy").pipe(Effect.provideService(PostHog, sink));
+
+    expect(captured.filter(({ event }) => event === "$ai_span").map(({ properties }) => [properties?.["$ai_span_name"], properties?.["$ai_is_error"]]))
+      .toEqual(expect.arrayContaining([["environment_show", false], ["deploy", true]]));
   }));
 
 it.live("Claude thinks as it sees fit and sends a summary of its thinking back", () =>
