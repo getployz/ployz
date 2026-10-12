@@ -65,11 +65,9 @@ export function useRequestUptimeProbe(scope: UptimeScope, serviceId: string) {
 
 /** The hostname a Service's open incident is about, or null. Never suspends: a failed read leaves the card as it was. */
 export function useUnreachableHost(scope: UptimeScope, serviceId: string) {
-  return useQuery({
-    ...environmentUptimeQueryOptions(scope),
-    enabled: useUptimeEnabled(scope.organizationSlug),
-    select: (checks) => unreachableHost(checks, serviceId),
-  }).data ?? null;
+  const enabled = useUptimeEnabled(scope.organizationSlug);
+  const host = useQuery({ ...environmentUptimeQueryOptions(scope), enabled, select: (checks) => unreachableHost(checks, serviceId) }).data;
+  return enabled ? host ?? null : null;
 }
 
 export function useServiceUptime(scope: UptimeScope, serviceId: string, range: UptimeRange) {
