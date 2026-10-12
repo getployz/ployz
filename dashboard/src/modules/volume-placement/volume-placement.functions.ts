@@ -62,6 +62,6 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ ...VolumeInput.fields, server: Schema.NonEmptyString })))
-  .handler(({ context, data }) => runActor(context, requireInfrastructureOrganization(context.actor, data.organizationSlug).pipe(
-    Effect.flatMap((organization) => unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, context.actor.userId, data))),
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+    Effect.flatMap(({ organization }) => unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, context.actor.userId, data))),
   )));
