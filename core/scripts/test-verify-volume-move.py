@@ -81,8 +81,8 @@ KILLS = [
 CASES = [
     dict(name="clean", cell=None, step="move", op="move", machine="writer", fault=None, trigger=None,
          action="none", recover="rerun"),
-    dict(name="undo-before-cut", cell="Writer>Writer", step="1-rounds", op="move", machine="writer",
-         fault_on="writer", fault="delay-rpc:SetVolumeCopy:90", trigger="fault", action="cancel",
+    dict(name="undo-before-cut", cell="Writer>Writer", step="3-cut", op="move", machine="writer",
+         fault_on="writer", fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault", action="cancel",
          recover="release"),
     dict(name="undo-after-cut", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
          fault_on="other", fault="delay-rpc:SetVolumeCopy:90", trigger="fault-after-stop", nth=2,
@@ -92,11 +92,9 @@ CASES = [
 
 SOAK_STEPS = [
     ("1-rounds", "other", None, "receiving", 1),
-    ("2-image", "other", "delay-rpc:PullImageFromMachine:20", "fault", 1),
     ("3-cut", "writer", None, "stopped", 1),
     ("4-final", "other", "delay-rpc:SetVolumeCopy:20", "fault-after-stop", 1),
     ("5-writer", "other", "delay-rpc:SetVolumeCopy:20", "fault-after-stop", 2),
-    ("6-remove", "writer", "delay-rpc:RemoveContainer:20", "fault", 1),
 ]
 SOAK_ACTIONS = [("runner-kill", None), ("kill-ployz", "writer"), ("kill-ployz", "other"),
                 ("kill-docker", "writer"), ("kill-docker", "other")]

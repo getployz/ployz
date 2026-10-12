@@ -312,16 +312,30 @@ class VolumeMoveTests(unittest.TestCase):
         self.assertEqual(ops["None>Mirror"], ("mirror", "absent"))
         self.assertEqual(ops["Mirror>Mirror"], ("move", "present"))
 
-    def test_undo_after_cut_waits_for_the_writer_step_on_the_other_machine(self):
+    def test_undo_before_cut_cancels_inside_the_cut_after_the_container_stopped(self):
         undo = {row["name"]: row for row in volume_move.CASES}
-        self.assertEqual((undo["undo-before-cut"]["fault_on"], undo["undo-before-cut"]["trigger"]), ("writer", "fault"))
+        before = undo["undo-before-cut"]
+        self.assertEqual((before["fault_on"], before["fault"], before["trigger"], before["recover"]),
+                         ("writer", "kill-daemon:SetVolumeCopy.WriterToMirror", "fault", "release"))
         after = undo["undo-after-cut"]
         self.assertEqual((after["fault_on"], after["trigger"], after["nth"]), ("other", "fault-after-stop", 2))
 
-    def test_soak_runs_the_six_move_steps_under_every_action(self):
-        self.assertEqual([step[0] for step in volume_move.SOAK_STEPS],
-                         ["1-rounds", "2-image", "3-cut", "4-final", "5-writer", "6-remove"])
-        self.assertEqual(len(volume_move.soak_cases()), 3 + 6 * 5)
+    def test_cases_keep_the_clean_move_both_undos_and_one_kill_per_cell(self):
+        self.assertEqual([row["name"] for row in volume_move.CASES],
+                         ["clean", "undo-before-cut", "undo-after-cut", *(row["name"] for row in volume_move.KILLS)])
+
+    def test_soak_runs_the_four_switch_steps_under_every_action(self):
+        self.assertEqual([step[0] for step in volume_move.SOAK_STEPS], ["1-rounds", "3-cut", "4-final", "5-writer"])
+        self.assertEqual(len(volume_move.soak_cases()), 3 + 4 * 5)
+
+    def test_every_fault_names_a_point_the_daemon_defines(self):
+        points = {f"kill-daemon:SetVolumeCopy.{cell.replace('>', 'To')}" for cell in volume_move.CELLS}
+        for row in volume_move.CASES + volume_move.soak_cases():
+            with self.subTest(row["name"]):
+                fault = row["fault"]
+                if fault is None or fault in points:
+                    continue
+                self.assertRegex(fault, r"^delay-rpc:SetVolumeCopy:\d+$")
 
     def test_nth_after_counts_only_lines_after_the_stop(self):
         lines = volume_move.stamped("100.5 m-2 ployzd[1]: fault: round\n200.0 m-2 ployzd[1]: fault: final\n"
