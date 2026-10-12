@@ -860,6 +860,11 @@ fn an_agent_adds_lists_renames_and_removes_services() {
         );
         let inspected = ok(store, &["service", "inspect", "frontend"]);
         assert_eq!(inspected["private_dns"], json!("web"));
+        // The name stays, but unset would now restore the new one.
+        let private = &ok(store, &["get", "frontend.privateDns"])["settings"][0];
+        assert_eq!((&private["value"], &private["default"]), (&json!("web"), &json!("frontend")));
+        let explained = ok(store, &["explain", "frontend.privateDns"]);
+        assert_eq!(explained.pointer("/schema/default"), Some(&json!("frontend")));
         assert_eq!(inspected["values"]["image"], json!("nginx:1"));
         assert_eq!(inspected["lineage"], inspected["id"]);
 

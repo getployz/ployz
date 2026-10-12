@@ -234,10 +234,26 @@ mod tests {
             serde_json::to_string(&schema(None).unwrap()).unwrap()
         );
         let whole = schema(None).unwrap();
+        let mut named = schema(Some("web")).unwrap()["properties"].clone();
+        named["privateDns"]
+            .as_object_mut()
+            .unwrap()
+            .remove("default");
+        assert_eq!(named, whole["$defs"]["service"]["properties"]);
+    }
+
+    #[test]
+    fn a_private_dns_name_defaults_to_the_service_named_in_the_path() {
+        let whole = schema(None).unwrap();
         assert_eq!(
-            schema(Some("web")).unwrap()["properties"],
-            whole["$defs"]["service"]["properties"]
+            whole["$defs"]["service"]["properties"]["privateDns"].get("default"),
+            None
         );
+        let service = schema(Some("shop")).unwrap();
+        assert_eq!(service["properties"]["privateDns"]["default"], json!("shop"));
+        let one = explain("shop.privateDns").unwrap();
+        assert_eq!(one.schema["default"], json!("shop"));
+        assert_eq!(schema(Some("shop.privateDns")).unwrap()["default"], json!("shop"));
     }
 
     #[test]
