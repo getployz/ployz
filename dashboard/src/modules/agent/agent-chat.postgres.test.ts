@@ -1206,17 +1206,19 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
     yield* say("count them again", {}, model).pipe(Effect.provideService(PostHog, sink));
 
     expect(reported[1]?.promptTokensDetails?.cachedTokens).toBeGreaterThan(0);
-    expect(captured).toEqual(reported.map((usage, index) => {
+    expect(captured).toEqual(reported.flatMap((usage, index) => {
       const cacheRead = usage.promptTokensDetails?.cachedTokens ?? 0;
       const cacheWrite = usage.promptTokensDetails?.cacheWriteTokens ?? 0;
-      return {
+      const run = `run-${index + 1}`;
+      return [{
         userId: caller.userId,
         organizationId: ORGANIZATION,
         event: "$ai_generation",
         properties: {
-          $ai_trace_id: `run-${index + 1}`,
+          $ai_trace_id: run,
           $ai_session_id: THREAD,
           $ai_span_id: expect.any(String),
+          $ai_parent_id: run,
           $ai_provider: "fake",
           $ai_model: "fake-model",
           $ai_input_tokens: usage.promptTokens - cacheRead - cacheWrite,
@@ -1227,9 +1229,64 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
           $ai_latency: expect.any(Number),
           $ai_stream: true,
         },
-      };
+      }, {
+        userId: caller.userId,
+        organizationId: ORGANIZATION,
+        event: "$ai_trace",
+        properties: { $ai_trace_id: run, $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number) },
+      }];
     }));
     expect(JSON.stringify(captured)).not.toMatch(/count|services|two/i);
+  }));
+
+it.live("a turn's trace in PostHog nests each tool call under the model call that made it, and none of the words", () =>
+  Effect.gen(function* () {
+    const { caller, say } = yield* sidebar({ removeWeb: false });
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "environment_show", input: { environment: "secretname" } }] }, { text: "All quiet." }]);
+    yield* say("look around", {}, model).pipe(Effect.provideService(PostHog, sink));
+
+    const envelope = { userId: caller.userId, organizationId: ORGANIZATION };
+    const generation = {
+      $ai_trace_id: "run-1",
+      $ai_session_id: THREAD,
+      $ai_parent_id: "run-1",
+      $ai_provider: "fake",
+      $ai_model: "fake-model",
+      $ai_input_tokens: expect.any(Number),
+      $ai_output_tokens: expect.any(Number),
+      $ai_cache_read_input_tokens: 0,
+      $ai_cache_creation_input_tokens: 0,
+      $ai_cache_reporting_exclusive: true,
+      $ai_latency: expect.any(Number),
+      $ai_stream: true,
+    };
+    expect(captured).toEqual([
+      { ...envelope, event: "$ai_generation", properties: { ...generation, $ai_span_id: expect.any(String), $ai_tools_called: "environment_show", $ai_tool_call_count: 1 } },
+      {
+        ...envelope,
+        event: "$ai_span",
+        properties: {
+          $ai_trace_id: "run-1",
+          $ai_session_id: THREAD,
+          $ai_span_id: expect.any(String),
+          $ai_parent_id: captured[0]?.properties?.["$ai_span_id"],
+          $ai_span_name: "environment_show",
+          $ai_latency: expect.any(Number),
+          $ai_is_error: false,
+        },
+      },
+      { ...envelope, event: "$ai_generation", properties: { ...generation, $ai_span_id: expect.any(String) } },
+      { ...envelope, event: "$ai_trace", properties: { $ai_trace_id: "run-1", $ai_session_id: THREAD, $ai_span_name: "sidebar_turn", $ai_latency: expect.any(Number) } },
+    ]);
+    expect(captured[0]?.properties?.["$ai_span_id"]).not.toBe(captured[2]?.properties?.["$ai_span_id"]);
+    expect(JSON.stringify(captured)).not.toMatch(/look|around|quiet|secretname/i);
   }));
 
 it.live("Claude thinks as it sees fit and sends a summary of its thinking back", () =>
