@@ -170,8 +170,8 @@ the dropped change leaves behind depends on how far it got:
 - A move that failed after the handover is not undone: the volume belongs to the new server, and
   your service stays down until the move finishes there. The move stays in your changes, so
   deploy again to finish it. See [When a move stops](../services/move-a-volume.md#when-a-move-stops).
-- A restore that failed leaves the new volume with no data. Run the restore again, or delete the
-  volume.
+- A restore that failed is taken back. Your services mount the old volume again, and the new
+  volume goes away. Restore again once you fix the cause.
 
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a

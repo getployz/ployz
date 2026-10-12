@@ -4,10 +4,11 @@ import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { failStoreDeploymentUnrun } from "#/modules/config-store/store-deployment.server";
 import { CloudStore, cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { lossTime, type PlacementRow } from "#/modules/volume-placement/volume-placement";
-import { advancePlacement } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { advancePlacement, type MemberInspector } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { discardPlacement, listPlacements, stageRestore, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
@@ -140,6 +141,41 @@ it.live("drops a left-behind restore's row before asking the Servers, so a Serve
   yield* stampedDeploy(services, store, deployment);
   expect(yield* advancePlacement(ORGANIZATION, deployment, null, () => Effect.succeed([member("web-1", "writer")]), () => Effect.succeed(["web-9"]))
     .pipe(Effect.provide(services))).toEqual({ kind: "done" });
+  expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
+}));
+
+it.live("takes back a restore whose copy failed: the source keeps its mounts and the empty Volume is not staged", () => Effect.gen(function* () {
+  const { services, store } = yield* deployedShop();
+  yield* Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`update config_deployment set status = 'applied' where id = '00000000-0000-4000-8000-00000000d006'`);
+    for (const [kind, nodes, id] of [["service", "services", "id"], ["volume", "volumes", "resourceId"]] as const) {
+      yield* drizzle.execute(sql`
+        insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
+        select environment_id, node->>${id}, organization_id, '00000000-0000-4000-8000-00000000d006', ${kind}, node::text
+        from config_saved, lateral jsonb_array_elements(intent::jsonb->${nodes}) node`);
+    }
+  }).pipe(Effect.provide(services));
+  const deployment = "00000000-0000-4000-8000-00000000d00c";
+  const writer = () => Effect.succeed([member("web-1", "writer")]);
+  const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, writer).pipe(Effect.provide(services));
+  if (!staged.ok) throw new Error(staged.refusal.message);
+  yield* stampedDeploy(services, store, deployment);
+
+  const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id === SOURCE ? [member("web-1", "writer")] : []);
+  const seeding = yield* advancePlacement(ORGANIZATION, deployment, null, byVolume, () => Effect.succeed([])).pipe(Effect.provide(services));
+  if (seeding.kind !== "wait") throw new Error("expected a run");
+  yield* Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`update volume_run set state = 'failed', message = 'no space left', finished_at = now() where id = ${seeding.wait.runId}`);
+  }).pipe(Effect.provide(services));
+  const failed = yield* advancePlacement(ORGANIZATION, deployment, seeding.wait, byVolume, () => Effect.succeed([])).pipe(Effect.provide(services));
+  if (failed.kind !== "failed") throw new Error("expected the Deploy to fail");
+  const { environment } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deployment }));
+  yield* failStoreDeploymentUnrun(ORGANIZATION, environment.id, deployment, "storage-run", failed.message, failed.restore).pipe(Effect.provide(services));
+
+  expect((yield* Effect.promise(() => store.read(ORGANIZATION, { query: "volumes", environment: shop }))).volumes.map(({ name, mounts, change }) => ({ name, mounts, change })))
+    .toEqual([{ name: "data", mounts: [{ service: "web", path: "/data" }], change: null }]);
   expect(yield* listPlacements(ORGANIZATION).pipe(Effect.provide(services))).toEqual([]);
 }));
 
