@@ -34,7 +34,10 @@ const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belon
 const STAGING: StoreRefusal = { code: "conflict", message: "This restore is still being staged. Try again in a minute.", details: null };
 const UNANSWERED: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
 
-/** Held by a Deploy's admission and by a restore being staged in the Environment: neither sees the other half done. */
+/**
+ * Held shared by each Deploy's admission and exclusive by a restore being staged in the Environment: neither sees the other
+ * half done, and one admission stalled in its Store write never holds up another.
+ */
 const environmentLock = (environmentId: string) => sql`hashtext(${`volume-environment:${environmentId}`})`;
 
 /** Each lock holder keeps a pooled connection while its `body` takes more: one at a time can't drain the pool. */
@@ -65,7 +68,7 @@ const whileStaging = <A, E, R>(environmentId: string, body: Effect.Effect<A, E, 
 export const restoreSettled = Effect.fn("VolumePlacement.restoreSettled")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.execute<{ free: boolean }>(sql`
-    select case when pg_try_advisory_lock(${environmentLock(environmentId)}) then pg_advisory_unlock(${environmentLock(environmentId)}) else false end as free`, "objects");
+    select case when pg_try_advisory_lock_shared(${environmentLock(environmentId)}) then pg_advisory_unlock_shared(${environmentLock(environmentId)}) else false end as free`, "objects");
   return row?.free === true;
 });
 
@@ -266,7 +269,7 @@ export const writeAdmitted = <R>(
   let written: ConfigCommitted | undefined;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`select pg_advisory_xact_lock(${environmentLock(environment.id)})`);
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(environment.id)})`);
     const rows = yield* drizzle.select().from(volumePlacement)
       .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged)))
       .orderBy(volumePlacement.volumeId)
