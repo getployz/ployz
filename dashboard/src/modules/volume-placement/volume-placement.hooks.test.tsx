@@ -38,18 +38,37 @@ it("Discard all discards a staged restore the Servers haven't answered for yet, 
   expect(result.current.groups).toEqual([]);
 });
 
-it("Delete copy asks for the delete run at once and toasts its outcome", async () => {
-  const deleted = vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValueOnce({ ok: true } as never)
-    .mockResolvedValueOnce({ ok: false, refusal: { message: "data is busy." } } as never);
+const runView = (id: string, state: string, message: string | null = null) => ({ id, state, message }) as never;
+
+it("Delete copy toasts only once the delete run ends, with the Server's words when it fails", async () => {
+  vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValueOnce({ ok: true, run: { id: "run-1" } } as never)
+    .mockResolvedValueOnce({ ok: true, run: { id: "run-2" } } as never);
+  const read = vi.spyOn(runs, "getVolumeRunServerFn").mockResolvedValueOnce(runView("run-1", "running"))
+    .mockResolvedValueOnce(runView("run-1", "done")).mockResolvedValue(runView("run-2", "failed", "web-3 still mounts data."));
   const success = vi.spyOn(toast, "success").mockReturnValue("");
   const error = vi.spyOn(toast, "error").mockReturnValue("");
-  const queryClient = new QueryClient();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
 
   await result.current("web-3");
-  expect(deleted).toHaveBeenCalledWith({ data: { organizationSlug: "acme", volumeId: "v1", environment, server: "web-3" } });
-  expect(success).toHaveBeenCalledWith("Copy deleted");
+  await waitFor(() => expect(read).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "run-1" } }));
+  expect(success).not.toHaveBeenCalled();
+  await waitFor(() => expect(success).toHaveBeenCalledWith("Copy deleted"), { timeout: 5_000 });
+
+  await result.current("web-3");
+  await waitFor(() => expect(error).toHaveBeenCalledWith("web-3 still mounts data."));
+  expect(success).toHaveBeenCalledTimes(1);
+});
+
+it("Delete copy toasts a refusal without watching anything", async () => {
+  vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValue({ ok: false, refusal: { message: "data is busy." } } as never);
+  const read = vi.spyOn(runs, "getVolumeRunServerFn");
+  const error = vi.spyOn(toast, "error").mockReturnValue("");
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
+
   await result.current("web-3");
   expect(error).toHaveBeenCalledWith("data is busy.");
+  expect(read).not.toHaveBeenCalled();
 });

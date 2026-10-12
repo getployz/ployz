@@ -1,6 +1,8 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useEffect, useEffectEvent, useState } from "react";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { inspectVolumeCopiesServerFn, listActiveVolumeRunsServerFn } from "./volume-run.functions";
+import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "./volume-run";
+import { getVolumeRunServerFn, inspectVolumeCopiesServerFn, listActiveVolumeRunsServerFn } from "./volume-run.functions";
 
 /** A Volume's runs, and the copies they change; the change stream's `volume_run` invalidates this root. */
 export const volumeRunKeys = { all: ["volume-run"] as const };
@@ -29,4 +31,32 @@ export function useActiveVolumeRuns(organizationSlug: string) {
     queryFn: () => listActiveVolumeRunsServerFn({ data: { organizationSlug } }),
     staleTime: 60_000,
   });
+}
+
+const ended = (run: VolumeRunView | undefined) => run !== undefined && !ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state);
+
+/**
+ * Polls the run `watch` names until it ends, then hands it to `onEnd` once and refreshes every run read.
+ * `onEnd` gets null when the run can no longer be read.
+ */
+export function useWatchVolumeRun(organizationSlug: string, onEnd: (run: VolumeRunView | null) => void) {
+  const queryClient = useQueryClient();
+  const [id, setId] = useState<string | null>(null);
+  const { data: run, isError } = useQuery({
+    queryKey: [...volumeRunKeys.all, organizationSlug, "run", id] as const,
+    queryFn: () => getVolumeRunServerFn({ data: { organizationSlug, id: id ?? "" } }),
+    enabled: id !== null,
+    staleTime: 0,
+    retry: false,
+    refetchInterval: (query) => (ended(query.state.data) ? false : 3_000),
+  });
+  const end = useEffectEvent(onEnd);
+  useEffect(() => {
+    const last = run?.id === id && ended(run) ? run : null;
+    if (id === null || (last === null && !isError)) return;
+    setId(null);
+    void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
+    end(last);
+  }, [id, run, isError, queryClient]);
+  return { watch: setId, watching: id !== null };
 }
