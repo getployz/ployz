@@ -23,9 +23,11 @@ const onDeploy = vi.fn();
 const onDiscardAll = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
+let storage: (deploymentId: string) => string | null = () => null;
 
 beforeEach(() => {
   active = [];
+  storage = () => null;
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); });
@@ -42,7 +44,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0) {
       <BottomBarSlot.Provider value={slot}>
         <div ref={setSlot} />
         <BottomBar groups={groups} totalChanges={totalChanges} canPublish={false} onDeploy={onDeploy} onPublish={() => {}}
-          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={active} notes={{}} />
+          onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={active} storage={storage} notes={{}} />
         <Outlet />
       </BottomBarSlot.Provider>
     );
@@ -113,6 +115,15 @@ it("otherwise shows the running Deployment, and the queued one while the running
   await screen.findByText("Deployment Page");
   expect(router.state.location.href).toBe(`${canvasUrl}/deployments/${running}`);
   expect((await bar()).getByText("Queued · Deployment #2")).toBeTruthy();
+});
+
+it("words a Deploy's storage step while it moves a Volume before its Services", async () => {
+  active = [deployment(queued, "queued", 2)];
+  storage = (id) => id === queued ? "pg-data · Moving to web-2" : null;
+  open(canvasUrl);
+  const shown = await bar();
+  expect(shown.getByText("Queued · Deployment #2")).toBeTruthy();
+  expect(shown.getByText("pg-data · Moving to web-2")).toBeTruthy();
 });
 
 it("hides while nothing is staged or running, and while the only Deployment's page is open", async () => {

@@ -18,6 +18,7 @@ import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries
 import { drainDialogRows, drainLeftRows, removeHint } from "#/modules/machines/server-drain-view";
 import { useServerDrain } from "#/modules/machines/server-drain.hooks";
 import { latestServerDrainsQueryOptions } from "#/modules/machines/server-drain.queries";
+import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { DrainDialog } from "./-components/drain-dialog";
 import { RemoveServerHint, RemoveServerSection } from "./-components/remove-server-section";
@@ -43,6 +44,7 @@ export const Route = createFileRoute(
     context,
     latestServerUpgradesQueryOptions(params.organizationSlug),
     latestServerDrainsQueryOptions(params.organizationSlug),
+    volumePlacementsQueryOptions(params.organizationSlug),
   ),
   component: RouteComponent,
 });

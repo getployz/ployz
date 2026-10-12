@@ -1,0 +1,2 @@
+ALTER TABLE "volume_run" ADD COLUMN "service_spec" jsonb;--> statement-breakpoint
+ALTER TABLE "volume_run" DROP CONSTRAINT "volume_run_kind_check", ADD CONSTRAINT "volume_run_kind_check" CHECK ("kind" in ('mirror','sync','delete_mirror','move','release','restore'));

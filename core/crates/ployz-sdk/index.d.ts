@@ -34,6 +34,8 @@ import type {
   MachineUpdate,
   MachineUpdated,
   MachineUpgradeAttempt,
+  MetricHistory,
+  MetricHistoryInput,
   RequestMachineUpgradeRequest,
   InspectMachineUpgradeRequest,
   ObservedDataLoss,
@@ -65,6 +67,7 @@ import type {
   InspectVolumeCopyRequest,
   MirrorRequest,
   ReceiveView,
+  SeedVolumeRequest,
   ServiceVolumeRequest,
   SnapshotGuid,
   SourceContainerRequest,
@@ -97,6 +100,7 @@ export type VolumeSwitchRequest =
   | { command: "destroy_mirror"; payload: MirrorRequest }
   | { command: "forget_snapshots"; payload: MirrorRequest }
   | { command: "forget_lease"; payload: MirrorRequest }
+  | { command: "demote_volume"; payload: MirrorRequest }
   | { command: "withdraw"; payload: SourceContainerRequest }
   | { command: "freeze"; payload: SourceContainerRequest }
   | { command: "hand_over"; payload: HandOverRequest }
@@ -105,7 +109,9 @@ export type VolumeSwitchRequest =
   | { command: "accept_hand_off"; payload: HandOverRequest }
   | { command: "promote"; payload: ServiceVolumeRequest }
   | { command: "start_handed_container"; payload: ServiceVolumeRequest }
-  | { command: "clear_final"; payload: MirrorRequest };
+  | { command: "clear_final"; payload: MirrorRequest }
+  | { command: "restore"; payload: ServiceVolumeRequest }
+  | { command: "seed_volume"; payload: SeedVolumeRequest };
 
 /** The reply payload of one Volume run verb. */
 export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> =
@@ -306,6 +312,8 @@ export declare class Client {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options?: LogOptions): AsyncIterable<LogEvent>;
     logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
+    /** Sums a Service across the Machines that answered; names each Machine that did not. */
+    metricHistory(input: MetricHistoryInput): Promise<MetricHistory>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewNamespaceRemoval(

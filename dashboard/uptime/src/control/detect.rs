@@ -180,7 +180,7 @@ impl EvidenceItem {
 }
 
 /// Grace past the last probe's timeout before a round's results stop counting.
-const ROUND_GRACE: Duration = Duration::from_secs(15);
+pub(crate) const ROUND_GRACE: Duration = Duration::from_secs(15);
 /// Recheck every min(60s, interval) for this long after opening, then every interval.
 const FAST_RECHECK_FOR: Duration = Duration::from_secs(15 * 60);
 const RECHECK_REGIONS: usize = 3;

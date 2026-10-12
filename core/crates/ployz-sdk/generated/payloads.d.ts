@@ -956,7 +956,11 @@ mounts: Array<Mount>,
 /**
  * Let more than one container write it; off refuses a second writer.
  */
-shared_writes?: boolean, };
+shared_writes?: boolean,
+/**
+ * Fix its storage now, as a Deploy would. A restored Volume keeps the storage of the copy it lands on.
+ */
+storage_locked?: boolean, };
 
 export type Cycle = "open" | "closed";
 
@@ -1430,6 +1434,8 @@ saved: Revision | null,
 changed: boolean, };
 
 export type Disk = { used_bytes: number, total_bytes: number, };
+
+export type DiskBreakdown = { total: number, free: number, volumes?: number, mirror_slots?: number, observe_store?: number, other?: number, };
 
 export type DnsLookup = { hostname: Hostname, cname: string | null, addresses: Array<string>, };
 
@@ -1962,6 +1968,22 @@ export type HookFailure = { "type": "cancelled", stop_error: RpcError | null, } 
 
 export type HostBind = { "kind": "all" } | { "kind": "address", address: string, } | { "kind": "prefix", prefix: string, };
 
+export type HostMemory = { total: number, available: number, };
+
+export type HostPoint = {
+/**
+ * Bucket start.
+ */
+ts: number,
+/**
+ * Fraction of all CPUs busy, from 0 to 1.
+ */
+cpu_busy?: number, memory?: HostMemory,
+/**
+ * Per-second rates keyed by interface name.
+ */
+interfaces?: { [key in string]: InterfaceRate }, disk?: DiskBreakdown, };
+
 export type Hostname = string;
 
 export type HttpCheckError = "connection_refused" | "timed_out" | "other";
@@ -2032,6 +2054,8 @@ export type InspectReceiveRequest = { name: DockerVolumeName, round: number, };
 export type InspectVolumeCopyRequest = { name: DockerVolumeName, };
 
 export type Instead = { "kind": "reference", value: string, } | { "kind": "sealed" };
+
+export type InterfaceRate = { rx: number, tx: number, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -2369,6 +2393,48 @@ row: RowId, };
 export type MembershipEvidence = { "kind": "up" } | { "kind": "suspect" } | { "kind": "down" } | { "kind": "unrecognized", raw: string, };
 
 export type MembershipObservation = "unknown" | "up" | "suspect" | "down" | string;
+
+export type MetricGap = { from: number, to: number, reason: MetricGapReason, };
+
+export type MetricGapReason = "not_sampled" | "timeout";
+
+export type MetricHistory = {
+/**
+ * Absent when no Machine answered.
+ */
+step_nanos?: number, points: MetricPoints, machines: Array<MachineSuccess<MetricHistoryReply>>, unanswered: Array<MachineFailure<RpcError>>, };
+
+export type MetricHistoryInput = { subject: MetricSubject, since_nanos: string, until_nanos: string, step_nanos?: string, };
+
+export type MetricHistoryReply = { points: MetricPoints,
+/**
+ * Bucket width used. It can be wider than the request asked, to keep the
+ * reply at most 4,000 buckets, or to fit stored 5 minute rollups.
+ */
+step_nanos: number, gaps: Array<MetricGap>,
+/**
+ * OOM kills, exits and restarts inside the range, oldest first. A
+ * Service sees its own; a Machine sees every Service's.
+ */
+markers?: Array<MetricMarker>, };
+
+export type MetricMarker = { machine_id: MachineId, container_id: ContainerId, service_id: ServiceId,
+/**
+ * The Service's Namespace and name, which is how history selects it.
+ */
+service: QualifiedService, deployment_id?: string, replica: string,
+/**
+ * When Docker reported the event.
+ */
+ts: number, } & ({ "kind": "oom" } | { "kind": "exit",
+/**
+ * Absent when Docker did not say.
+ */
+exit_code?: number, } | { "kind": "restart" });
+
+export type MetricPoints = { "machine": Array<HostPoint> } | { "service": Array<ServicePoint> };
+
+export type MetricSubject = { "kind": "machine", machine_id: MachineId, } | { "kind": "service", service: QualifiedService, };
 
 export type MintBuildGrantRequest = {
 /**
@@ -3532,6 +3598,12 @@ export type ServiceName = string;
 
 export type ServiceObservation = { identity: QualifiedService, service_id: ServiceId, containers: Array<ServiceContainer>, hook_containers: Array<HookContainer>, };
 
+export type ServicePoint = {
+/**
+ * Bucket start.
+ */
+ts: number, cpu_usec?: number, mem_bytes?: number, mem_limit?: number, rx?: number, tx?: number, io_r?: number, io_w?: number, };
+
 export type ServiceQuery = {
 /**
  * The Environment it is in.
@@ -3899,7 +3971,7 @@ now: number, };
 
 export type Switch = { lease: Lease, pos: Pos, };
 
-export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "no_capacity" };
+export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "restore_point_gone" } | { "reason": "no_capacity" };
 
 export type SwitchReply = { decision: FenceDecision,
 /**

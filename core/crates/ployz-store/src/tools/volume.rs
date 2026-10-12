@@ -115,6 +115,7 @@ impl Tool for VolumeAdd {
             storage,
             mounts: mounts.clone(),
             shared_writes: false,
+            storage_locked: false,
         };
         let results = cx.batch(
             &scope,
