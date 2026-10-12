@@ -507,13 +507,18 @@ export function placementLosses(changes: readonly PlacementChange[]): PlacementL
 }
 
 /**
- * Each Volume that loses something, as a `confirmation_required` refusal names it: the Servers losing a copy, and
- * `writes` when it is a restore dropping writes, so a refused Deploy titles its confirm as the local check does.
+ * Each Volume that loses something, as a `confirmation_required` refusal names it: the Servers losing a copy, and for a
+ * restore dropping writes, `writes` and the restore point in seconds, so a refused Deploy words its confirm as the local
+ * check does.
  */
 export function lossByVolume(lost: readonly PlacementLost[]) {
-  return [...new Set(lost.map(({ volume }) => volume.name))].map((name) => {
+  type Deletes = { machine_id: MachineId }[];
+  type Lost = { name: string; deletes: Deletes; loss: "data" } | { name: string; deletes: Deletes; loss: "writes"; after: number };
+  return [...new Set(lost.map(({ volume }) => volume.name))].map((name): Lost => {
     const of = lost.filter(({ volume }) => volume.name === name);
-    return { name, deletes: of.map(({ server }) => ({ machine_id: server.id })), loss: of.some(({ after }) => after !== null) ? "writes" : "data" };
+    const after = of.find((entry) => entry.after !== null)?.after ?? null;
+    const deletes = of.flatMap(({ server, after: dropped }) => dropped === null ? [{ machine_id: server.id }] : []);
+    return after === null ? { name, deletes, loss: "data" } : { name, deletes, loss: "writes", after: after.getTime() / 1000 };
   });
 }
 
