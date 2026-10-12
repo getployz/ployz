@@ -747,7 +747,7 @@ fn admit(
             tx,
             who,
             (&environment, &saved),
-            &names,
+            (&names, &[]),
             (cluster_domain.as_ref(), &pins),
             trusted,
         )
@@ -889,14 +889,14 @@ fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
 }
 
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:
-/// `services` (none: every one), with generated domains under `cluster_domain` and
-/// each Git Service of `pins` pinned to its commit. A targeted Deploy removes
-/// nothing, and neither does one of an Environment with nothing applied.
+/// `services` and the teardown of `retire`, from [`deployment::retirements`]
+/// (neither: every Service), with generated domains under `cluster_domain` and
+/// each Git Service of `pins` pinned to its commit. It never removes a Volume.
 pub(crate) fn auto_admit(
     tx: &mut dyn Tx,
     who: &Actor,
     (environment, saved): (&scope::Environment, &review::Saved),
-    services: &[ServiceName],
+    (services, retire): (&[ServiceName], &[deployment::Retire]),
     (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, CommitSha>),
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
@@ -914,10 +914,13 @@ pub(crate) fn auto_admit(
         id,
         &saved.intent,
         &head.applied,
-        services,
+        if services.is_empty() && retire.is_empty() {
+            deployment::Scope::All { losses: &[] }
+        } else {
+            deployment::Scope::Narrow { services, retire }
+        },
         namespace,
         cluster_domain,
-        &[],
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved.intent, &frozen)?;
     let deployment = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
