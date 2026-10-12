@@ -76,7 +76,9 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       }
       case "organization_support_access": {
         const support = tables.organizationSupportAccess;
-        const rows: SupportAccessRow[] = yield* database.drizzle.select({ id: support.organizationId, allowed: support.allowed })
+        const rows: SupportAccessRow[] = yield* database.drizzle.select({
+          id: support.organizationId, allowed: support.allowed, variables: support.variables, configs: support.configs, logs: support.logs,
+        })
           .from(support).where(scoped(support));
         return rows;
       }

@@ -23,7 +23,7 @@ const staffAccess = () => run(requireAccess({ userId: staff }, SLUG, "operate").
   Effect.catchTag("NotFound", () => Effect.succeed("not_found")),
 ));
 
-const switchTo = (allowed: boolean) => run(setSupportAccess({ userId: owner }, { organizationSlug: SLUG, allowed }));
+const switchTo = (on: boolean) => run(setSupportAccess({ userId: owner }, { organizationSlug: SLUG, change: { setting: "allowed", on } }));
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
