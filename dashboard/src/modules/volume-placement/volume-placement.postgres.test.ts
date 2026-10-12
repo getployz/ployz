@@ -9,7 +9,7 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { deleteOldCopy, discardPlacement, listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import { deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
@@ -137,6 +137,22 @@ describe("volume placement", () => {
       expect(await deleting(server)).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
     }
     await expect(deleting("web-3")).rejects.toThrow("no Cluster");
+    expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
+  });
+
+  it("refuses deleting an old copy while a Deploy holds the Volume", async () => {
+    await stage("web-1", ["web-2"]);
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }, () => Effect.succeed(members))))
+      .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
+  });
+
+  it("refuses a run when a Deploy stamps the Volume between the caller's check and the insert", async () => {
+    await stage("web-1", ["web-2"]);
+    between = { query: "volumes", run: () => run(stampPlacements(organizationId, "env-1", "dep-1")) };
+    const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
+    expect(requested).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
   });
 });
