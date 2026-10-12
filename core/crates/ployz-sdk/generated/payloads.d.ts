@@ -2808,7 +2808,12 @@ placement_seed: number,
 /**
  * Service Names this command applies. Empty means full reconciliation.
  */
-selected: Array<ServiceAttempt>, };
+selected: Array<ServiceAttempt>,
+/**
+ * Services this targeted command retires. Each is also in `selected` and
+ * absent from the target.
+ */
+removals?: Array<ServiceName>, };
 
 export type PlanQuery = { environment: EnvironmentRef,
 /**

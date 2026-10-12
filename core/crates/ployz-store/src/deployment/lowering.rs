@@ -336,6 +336,7 @@ pub(super) fn lower(
         lineages: lineages.clone(),
         selected: Some(selected.clone()),
         configs: configs.clone(),
+        removals: Default::default(),
     };
     let with = |built_later: bool| {
         snapshots

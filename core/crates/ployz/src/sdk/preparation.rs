@@ -575,6 +575,44 @@ mod tests {
     }
 
     #[test]
+    fn capture_keeps_the_services_a_deployment_retires() {
+        let deployment = json!({
+            "namespace": "app",
+            "snapshots": [{"serviceId": "web", "config": {
+                "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
+                "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}}
+            }}],
+            "selected": [{"name": "web"}, {"name": "old"}],
+            "removals": ["old"],
+        });
+        let intent = frozen_intent(deployment.clone()).unwrap();
+        let old = ServiceName::parse("old").unwrap();
+        assert_eq!(
+            intent.options.removals,
+            ployz_core::ServiceRemovals::from_names([old.clone()])
+        );
+        let captured = capture(PreparationInput {
+            deployment,
+            sources: BTreeMap::new(),
+            source_commits: BTreeMap::new(),
+            uploads: BTreeMap::new(),
+            build_receipts: BTreeMap::new(),
+            build_index: 0,
+            preferred_machine: None,
+        })
+        .unwrap();
+        assert!(captured.intent.options.removals.contains(&old));
+        assert!(
+            captured
+                .intent
+                .options
+                .selected
+                .iter()
+                .any(|attempt| attempt.name == old)
+        );
+    }
+
+    #[test]
     fn expected_fingerprints_refuse_an_invalid_deployment_or_commit() {
         let web = ServiceName::parse("web").unwrap();
         let commit = |value: &str| BTreeMap::from([(web.clone(), value.to_owned())]);
