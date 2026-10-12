@@ -50,11 +50,11 @@ describe("deploying a Volume placement", () => {
   ));
   const placement = async () => (await run(listPlacements(organizationId)))[0];
   // A restore request still writing to the Store holds this lock until its write commits or fails.
-  const whileStoreWriting = async <A>(id: string, body: () => Promise<A>) => {
+  const whileStoreWriting = async <A>(body: () => Promise<A>) => {
     const stager = await harness.pool.connect();
     try {
       await stager.query("begin");
-      await stager.query("select pg_advisory_xact_lock(hashtext($1))", [`volume-restore:${id}`]);
+      await stager.query("select pg_advisory_xact_lock(hashtext($1))", ["volume-environment:env-1"]);
       return await body();
     } finally {
       await stager.query("rollback");
@@ -277,7 +277,7 @@ describe("deploying a Volume placement", () => {
     );
     await run(stampPlacements(organizationId, [volumeId, "vol3"], "dep-1"));
 
-    expect(await whileStoreWriting("vol3", () => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
+    expect(await whileStoreWriting(() => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
     expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
     const rows = await run(listPlacements(organizationId));
     expect(rows.find((row) => row.volumeId === volumeId)).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
@@ -292,7 +292,7 @@ describe("deploying a Volume placement", () => {
     );
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
 
-    expect(await whileStoreWriting("vol3", () => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
+    expect(await whileStoreWriting(() => run(advancePlacement(organizationId, "dep-1", null, inspect, answered)))).toEqual({ kind: "done" });
     expect(await placement()).toMatchObject({ volumeId: "vol3", staged: { seed }, deploymentId: null });
   });
 

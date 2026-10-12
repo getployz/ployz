@@ -152,7 +152,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   const stamped = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId), isNotNull(volumePlacement.staged)));
   const settled = new Set<string>();
-  for (const row of stamped) if (row.staged?.seed !== undefined && (yield* restoreSettled(row.volumeId))) settled.add(row.volumeId);
+  for (const row of stamped) if (row.staged?.seed !== undefined && (yield* restoreSettled(row.environmentId))) settled.add(row.volumeId);
   const listed = (row: { readonly volumeId: string }) => volumes.some((volume) => volume.id === row.volumeId);
   // A settled restore whose Volume is gone was discarded from the Store: nothing is left to restore into. It goes first,
   // so a Server that can't take part fails no Deploy over it.

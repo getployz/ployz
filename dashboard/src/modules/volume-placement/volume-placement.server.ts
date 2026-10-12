@@ -9,7 +9,7 @@ import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import {
-  lossByVolume, lossTime, oldCopies, observePlacement, placementChanges, placementLosses, type Placement, type PlacementLost, type PlacementRow, type Seed,
+  lossByVolume, lossTime, oldCopies, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
 import { dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
@@ -34,21 +34,22 @@ const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belon
 const STAGING: StoreRefusal = { code: "conflict", message: "This restore is still being staged. Try again in a minute.", details: null };
 const UNANSWERED: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
 
-const restoreLock = (volumeId: string) => sql`hashtext(${`volume-restore:${volumeId}`})`;
+/** Held by a Deploy's admission and by a restore being staged in the Environment: neither sees the other half done. */
+const environmentLock = (environmentId: string) => sql`hashtext(${`volume-environment:${environmentId}`})`;
 
 /** Each lock holder keeps a pooled connection while its `body` takes more: one at a time can't drain the pool. */
 const holders = Semaphore.makeUnsafe(1);
 
 /**
- * Runs `body` while restore `volumeId`'s lock is held, on a connection of its own so `body`'s queries stay outside its
- * transaction. `body` can't be interrupted: a Store write it stopped awaiting could still commit after the lock goes.
+ * Runs `body` while Environment `environmentId`'s lock is held, on a connection of its own so `body`'s queries stay outside
+ * its transaction. `body` can't be interrupted: a Store write it stopped awaiting could still commit after the lock goes.
  */
-const whileStaging = <A, E, R>(volumeId: string, body: Effect.Effect<A, E, R>) => holders.withPermits(1)(Effect.gen(function* () {
+const whileStaging = <A, E, R>(environmentId: string, body: Effect.Effect<A, E, R>) => holders.withPermits(1)(Effect.gen(function* () {
   const database = yield* Database;
   const locked = yield* Deferred.make<void>();
   const staged = yield* Deferred.make<void>();
   const holder = yield* database.transaction(Effect.gen(function* () {
-    yield* (yield* Database).drizzle.execute(sql`select pg_advisory_xact_lock(${restoreLock(volumeId)})`);
+    yield* (yield* Database).drizzle.execute(sql`select pg_advisory_xact_lock(${environmentLock(environmentId)})`);
     yield* Deferred.succeed(locked, undefined);
     yield* Deferred.await(staged);
   })).pipe(Effect.orDie, Effect.onError((cause) => Deferred.failCause(locked, cause)), Effect.forkChild);
@@ -57,12 +58,14 @@ const whileStaging = <A, E, R>(volumeId: string, body: Effect.Effect<A, E, R>) =
 }));
 
 /**
- * Whether no stageRestore still holds restore `volumeId`: its Store write has then landed or never will, so a missing
- * Volume means the restore is gone. Ask before reading the Store, or a write that lands in between reads as missing.
+ * Whether no stageRestore holds Environment `environmentId`: each restore's Store write has then landed or never will, so
+ * a missing Volume means its restore is gone. Ask before reading the Store, or a write that lands in between reads as
+ * missing. The lock is let go in the same statement, so a transaction asking keeps no restore waiting.
  */
-export const restoreSettled = Effect.fn("VolumePlacement.restoreSettled")(function* (volumeId: string) {
+export const restoreSettled = Effect.fn("VolumePlacement.restoreSettled")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<{ free: boolean }>(sql`select pg_try_advisory_xact_lock(${restoreLock(volumeId)}) as free`, "objects");
+  const [row] = yield* drizzle.execute<{ free: boolean }>(sql`
+    select case when pg_try_advisory_lock(${environmentLock(environmentId)}) then pg_advisory_unlock(${environmentLock(environmentId)}) else false end as free`, "objects");
   return row?.free === true;
 });
 
@@ -161,7 +164,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
     dockerVolume: dockerVolumeName(namespace, id),
     point: { guid: input.guid, name: input.name, at: input.at },
   };
-  return yield* whileStaging(id, Effect.gen(function* () {
+  return yield* whileStaging(environment.id, Effect.gen(function* () {
     // The row lands first: a Deploy admitted right after the batch commits must find it to stamp.
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(volumePlacement).values({
@@ -198,7 +201,7 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
   const { drizzle } = yield* Database;
   const seed = current.staged?.seed;
   if (seed !== undefined) {
-    const settled = yield* restoreSettled(volumeId);
+    const settled = yield* restoreSettled(current.environmentId);
     const read = yield* readStore(organizationId, { query: "volumes", environment });
     if (read.environment.id !== current.environmentId) return { ok: false, refusal: ELSEWHERE } satisfies PlacementDiscard;
     const restored = read.volumes.find((volume) => volume.id === volumeId);
@@ -231,10 +234,10 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
  * Writes `command` through `write`, where every path to the Store meets it: the dashboard, the CLI, MCP and the agent.
  * An admitted Deploy takes the placements staged in its Environment, and only one admit stamps: a Redeploy ships what
  * its Deployment froze, so they wait for the next Deploy. The Deploy is refused `confirmation_required`, as the Store
- * refuses one that deletes Volumes, unless it names each Volume whose copy or writes go, and `unavailable` while a
- * Server holding one doesn't answer. The rows stay locked from that check to the stamp, so an edit staged meanwhile
- * waits and then finds the Deploy holds its row. The names consumed here leave `accept_volume_loss`, since the Store
- * refuses a name it doesn't delete itself.
+ * refuses one that deletes Volumes, unless it names each Volume whose copy or writes go, and `unavailable` while the
+ * Servers can't be asked what they hold. The Environment's lock is held from that check to the stamp: a restore staged
+ * meanwhile waits for the next Deploy whole, and an edit staged meanwhile waits and then finds the Deploy holds its row.
+ * The names consumed here leave `accept_volume_loss`, since the Store refuses a name it doesn't delete itself.
  */
 export const writeAdmitted = <R>(
   organizationId: string,
@@ -244,34 +247,28 @@ export const writeAdmitted = <R>(
 ) => Effect.gen(function* () {
   if (command.command !== "admit" || command.admit !== "deploy") return yield* write(command);
   const database = yield* Database;
+  const { environment } = yield* readStore(organizationId, { query: "volumes", environment: command.environment });
   let written: ConfigCommitted | undefined;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(${environmentLock(environment.id)})`);
     const rows = yield* drizzle.select().from(volumePlacement)
-      .where(and(eq(volumePlacement.organizationId, organizationId), isNotNull(volumePlacement.staged)))
+      .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged)))
       .orderBy(volumePlacement.volumeId)
       .for("update");
-    const staging = new Set<string>();
-    for (const row of rows) {
-      if (row.staged?.seed !== undefined && !(yield* restoreSettled(row.volumeId))) staging.add(row.volumeId);
-    }
-    const { environment, volumes } = rows.length === 0
-      ? { environment: null, volumes: [] }
-      : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
-    const lost: PlacementLost[] = [];
-    const taken: string[] = [];
-    for (const row of rows) {
-      if (row.environmentId !== environment?.id) continue;
+    // Read under the lock: a restore staged before it has landed or never will, so a seeded Volume missing is gone.
+    const { volumes } = rows.length === 0 ? { volumes: [] } : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
+    const listed = rows.flatMap((row) => {
       const volume = volumes.find((entry) => entry.id === row.volumeId);
-      if (volume === undefined) {
-        if (staging.has(row.volumeId)) return yield* new StoreRefused(STAGING);
-        continue;
-      }
-      const members = yield* inspect(organizationId, command.environment, row.volumeId).pipe(Effect.option);
-      if (Option.isNone(members)) return yield* new StoreRefused(UNANSWERED);
-      lost.push(...placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value, view(row))));
-      taken.push(row.volumeId);
-    }
+      return volume === undefined ? [] : [{ row, volume }];
+    });
+    // Asked together, a silent Server costs the admission one timeout, not one per Volume.
+    const members = yield* Effect.forEach(listed, ({ row }) => inspect(organizationId, command.environment, row.volumeId), { concurrency: "unbounded" })
+      .pipe(Effect.option);
+    if (Option.isNone(members)) return yield* new StoreRefused(UNANSWERED);
+    const lost = listed.flatMap(({ row, volume }, index) =>
+      placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value[index] ?? [], view(row))));
+    const taken = listed.map(({ row }) => row.volumeId);
     const names = [...new Set(lost.map(({ volume }) => volume.name))];
     const accepted = command.accept_volume_loss ?? [];
     if (!names.every((name) => accepted.includes(name))) {

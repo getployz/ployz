@@ -10,12 +10,12 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
-  deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, stagePlacement, stampPlacements, writeAdmitted,
+  deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
-import type { Database } from "#/server/database.server";
+import { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
@@ -53,16 +53,24 @@ describe("volume placement", () => {
     Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("no Cluster") }),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
-        read: async (_: string, query: { query: string }) => {
+        read: async (_: string, query: { query: string; environment?: { environment: string | null } }) => {
           if (between?.query === query.query) {
             const { run: admit } = between;
             between = null;
             await admit();
           }
           if (query.query === "deployment" && unreadable) throw new RpcError({ code: "unavailable", message: "Store down", details: null });
-          if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
+          if (query.query === "namespaces") {
+            return { namespaces: ["production", "staging"].map((name) => ({ namespace: `shop-${name}`, project: "shop", environment: name })) };
+          }
           if (query.query === "deployment") return { in_flight: inFlight };
           if (query.query === "diff") return { version: "diff-7" };
+          if (query.environment?.environment === "staging") {
+            return {
+              environment: { id: "env-2", project: "shop", name: "staging", revision: 1 },
+              volumes: [{ id: "vol2", name: "cache", storage: { kind: "provisioned", maximumBytes: 1 }, change: null }],
+            };
+          }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
             volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 }, change: deleting ? "delete" : null }],
@@ -241,7 +249,7 @@ describe("volume placement", () => {
       expect(await admission(admit(["data"]))).toEqual({ ok: true, command: admit(["data"]) });
     });
 
-    it("refuses while a Server holding a copy doesn't answer", async () => {
+    it("refuses while the Servers can't be asked about a copy", async () => {
       await stage("web-1");
       expect(await admission(admit(["data"]), () => Effect.fail(new Error("down")))).toMatchObject({ ok: false, refusal: { code: "unavailable" } });
       expect(writes).toEqual([]);
@@ -263,22 +271,60 @@ describe("volume placement", () => {
       expect(await holder()).toBeNull();
     });
 
-    it("refuses while a restore's Store write may still land in the Deploy, and leaves a gone one staged", async () => {
+    it("waits while a restore is being staged in its Environment, then leaves a gone one staged", async () => {
       const seed = { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid: "11", name: "ployz-1", at: 1 } };
       await harness.pool.query(
         "insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ('vol3', $1, 'env-1', '[]', $2)",
         [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed })],
       );
       const staging = await harness.pool.connect();
+      let admitted: Promise<unknown> | undefined;
       try {
-        await staging.query("select pg_advisory_lock(hashtext('volume-restore:vol3'))");
-        expect(await admission(admit([]))).toMatchObject({ ok: false, refusal: { message: "This restore is still being staged. Try again in a minute." } });
+        await staging.query("select pg_advisory_lock(hashtext('volume-environment:env-1'))");
+        admitted = admission(admit([]));
+        await waitFor(async () => (await harness.pool.query(
+          "select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted",
+        )).rows[0].waiting > 0, admitted);
+        expect(writes).toEqual([]);
       } finally {
         await staging.query("select pg_advisory_unlock_all()");
         staging.release();
       }
-      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+      expect(await admitted).toEqual({ ok: true, command: admit([]) });
       expect((await harness.pool.query("select deployment_id from volume_placement where volume_id = 'vol3'")).rows).toEqual([{ deployment_id: null }]);
+    });
+
+    it("lets another Environment stage while a Deploy is admitted", async () => {
+      await stage("web-1");
+      const staging = { project: "shop", environment: "staging" };
+      const restage = (primary: string) =>
+        run(stagePlacement(organizationId, { environment: staging, volumeId: "vol2", staged: { primary: web(primary), mirrors: [], deletes: [] }, mirrors: [] }));
+      await restage("web-1");
+      let edit: Promise<unknown> | undefined;
+      let meanwhile: unknown;
+      during = async () => {
+        edit = restage("web-2");
+        await waitFor(async () => (await harness.pool.query(
+          "select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock'",
+        )).rows[0].waiting > 0, edit);
+        meanwhile = await Promise.race([edit, Promise.resolve("blocked")]);
+      };
+      expect(await admission(admit(["data"]))).toEqual({ ok: true, command: admit([]) });
+      await edit;
+      expect(meanwhile).toMatchObject({ ok: true, placement: { environmentId: "env-2", staged: { primary: web("web-2") }, deploymentId: null } });
+    });
+
+    it("leaves no restore check holding the Environment once it answers", async () => {
+      const held = await run(Effect.gen(function* () {
+        const database = yield* Database;
+        return yield* database.transaction(Effect.gen(function* () {
+          yield* restoreSettled("env-1");
+          return yield* Effect.promise(async () => (await harness.pool.query(
+            "select count(*)::int as held from pg_locks where locktype = 'advisory'",
+          )).rows[0].held);
+        }));
+      }));
+      expect(held).toBe(0);
     });
 
     it("refuses an edit staged between the check and the stamp, and stamps what it checked", async () => {
