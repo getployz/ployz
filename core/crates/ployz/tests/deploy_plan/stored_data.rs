@@ -59,6 +59,7 @@ fn deploy_operation_variants_do_not_destroy_stored_data() {
         DeployOperation::RemoveContainer {
             machine_id,
             container_id,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
         },
         DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id,
