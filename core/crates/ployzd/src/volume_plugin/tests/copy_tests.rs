@@ -889,7 +889,7 @@ async fn pair(a_markers: &[&str], b_markers: &[&str]) -> (Machine, Machine) {
 }
 
 /// One request of the move, addressed to one of the two Machines.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Side {
     A,
     B,
@@ -1045,7 +1045,12 @@ async fn an_undone_cut_restores_the_writer_and_refuses_to_cut_at_a_stale_target(
         .call("/Volume.Copy.Cut", json!({"name": "data", "target": "f-1"}))
         .await;
     let at = guid(&cut).to_owned();
-    let undo = json!({"name": "data", "at": at, "epoch": 0});
+    let forget = json!({"name": "data"});
+    assert_eq!(
+        b.call("/Volume.Copy.Destroy", forget.clone()).await,
+        json!({"Ok": null})
+    );
+    let undo = json!({"name": "data", "at": at, "epoch": 1});
     let restored = a.call("/Volume.Copy.Writer", undo.clone()).await;
     assert_eq!(
         restored.pointer("/Ok/kind"),
@@ -1053,7 +1058,7 @@ async fn an_undone_cut_restores_the_writer_and_refuses_to_cut_at_a_stale_target(
         "{restored}"
     );
     assert_eq!(restored.pointer("/Ok/readonly"), Some(&json!(false)));
-    assert_eq!(restored.pointer("/Ok/epoch"), Some(&json!(0)));
+    assert_eq!(restored.pointer("/Ok/epoch"), Some(&json!(1)));
     assert!(property(&a.test, ROOT, "ployz:promote").is_none());
     assert_eq!(
         a.call("/VolumeDriver.Get", json!({"Name": "data"})).await["Err"],
@@ -1068,8 +1073,8 @@ async fn an_undone_cut_restores_the_writer_and_refuses_to_cut_at_a_stale_target(
             "/Volume.Copy.Cut",
             json!({"name": "data", "target": "f-1"}),
         ),
+        (Side::B, "/Volume.Copy.Destroy", forget),
         (Side::A, "/Volume.Copy.Writer", undo),
-        (Side::B, "/Volume.Copy.Pull", pull("w-1-1")),
     ];
     for request in requests.iter().chain(requests.iter().rev()) {
         let reply = send(&a, &b, request).await;
@@ -1228,4 +1233,406 @@ async fn a_pull_resent_after_it_landed_finishes_it_whatever_the_expect_says() {
     let again = set_mirror(&b, &expect, "w-1-2").await;
     assert_eq!(again.pointer("/AtWant/pull"), Some(&Value::Null), "{again}");
     assert_eq!(again.pointer("/AtWant/newest/name"), Some(&json!("w-1-2")));
+}
+
+/// The Container half the daemon runs beside the plugin on one Machine: the Containers
+/// Docker has, by id or creation key, and the ones running.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Docker {
+    known: Vec<&'static str>,
+    running: Vec<&'static str>,
+}
+
+/// A Writer's start as Cloud sends it.
+#[derive(Clone, Copy, Debug)]
+enum Run {
+    Kept(&'static str),
+    Create(&'static str),
+}
+
+/// One `SetVolumeCopy` as Cloud sends it to one Machine.
+#[derive(Clone, Debug)]
+struct Set {
+    side: Side,
+    expect: ployz_core::ExpectedCopy,
+    want: ployz_core::WantedCopy,
+    run: Option<Run>,
+}
+
+/// What `set_copy_admitted` does for `set`: the start's state from Docker, the plan, then
+/// the plugin route and the Container half of the transition. A Writer start counts as
+/// running when any holder runs, and a Kept Container Docker lost refuses NoTransition.
+async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
+    use ployz_core::{CopyPlan, CopyTransition, WantedCopy};
+    let copy = parsed_copy(&machine.copy().await);
+    let (start_running, gone) = match set.run {
+        Some(Run::Kept(id)) => (!docker.running.is_empty(), !docker.known.contains(&id)),
+        Some(Run::Create(_)) => (!docker.running.is_empty(), false),
+        None => (false, false),
+    };
+    let transition = match ployz_core::plan(copy.as_ref(), start_running, &set.expect, &set.want) {
+        CopyPlan::AtWant => return json!({"Ok": copy}),
+        CopyPlan::Refuse(reason) => return json!({"Refused": format!("{reason:?}")}),
+        CopyPlan::Transition(_) if gone => return json!({"Refused": "NoTransition"}),
+        CopyPlan::Transition(transition) => transition,
+    };
+    match (transition, &set.want) {
+        (
+            CopyTransition::WriterToWriter | CopyTransition::MirrorToWriter,
+            WantedCopy::Writer { at, epoch, .. },
+        ) => {
+            let promote = match &copy {
+                Some(ployz_core::VolumeCopy::Root {
+                    readonly,
+                    epoch: held,
+                    ..
+                }) => *readonly || held != epoch,
+                _ => true,
+            };
+            let reply = if promote {
+                machine
+                    .call(
+                        "/Volume.Copy.Writer",
+                        json!({"name": "data", "at": at, "epoch": epoch}),
+                    )
+                    .await
+            } else {
+                json!({"Ok": copy})
+            };
+            if reply.get("Ok").is_some()
+                && let Some(Run::Kept(id) | Run::Create(id)) = set.run
+            {
+                if !docker.known.contains(&id) {
+                    docker.known.push(id);
+                }
+                if !docker.running.contains(&id) {
+                    docker.running.push(id);
+                }
+            }
+            reply
+        }
+        (CopyTransition::WriterToMirror, WantedCopy::Mirror { target, .. }) => {
+            docker.running.clear();
+            machine
+                .call(
+                    "/Volume.Copy.Cut",
+                    json!({"name": "data", "target": target}),
+                )
+                .await
+        }
+        (CopyTransition::WriterToSnapshot, WantedCopy::Snapshot { name }) => {
+            machine
+                .call(
+                    "/Volume.Copy.Snapshot",
+                    json!({"name": "data", "snapshot": name}),
+                )
+                .await
+        }
+        (CopyTransition::WriterToForget, WantedCopy::Forget) => {
+            machine
+                .call("/Volume.Copy.Forget", json!({"name": "data"}))
+                .await
+        }
+        (
+            CopyTransition::MirrorToMirror | CopyTransition::NoneToMirror,
+            WantedCopy::Mirror { target, .. },
+        ) => {
+            machine
+                .call("/Volume.Copy.Pull", pull(&target.to_string()))
+                .await
+        }
+        (CopyTransition::MirrorToForget, WantedCopy::Forget) => {
+            machine
+                .call("/Volume.Copy.Destroy", json!({"name": "data"}))
+                .await
+        }
+        (transition, want) => panic!("the planner paired {transition:?} with {want:?}"),
+    }
+}
+
+/// Cloud's side of one move: two Machines, the Containers on each, and every
+/// `SetVolumeCopy` sent so far, to replay late.
+struct Cloud {
+    a: Machine,
+    b: Machine,
+    docker: [Docker; 2],
+    sent: Vec<Set>,
+}
+
+impl Cloud {
+    async fn start() -> Self {
+        let (a, b) = pair(&["root", "volume", "mounted"], &["root"]).await;
+        let docker = [
+            Docker {
+                known: vec!["a1"],
+                running: vec!["a1"],
+            },
+            Docker::default(),
+        ];
+        Self {
+            a,
+            b,
+            docker,
+            sent: Vec::new(),
+        }
+    }
+
+    fn machine(&self, side: Side) -> &Machine {
+        match side {
+            Side::A => &self.a,
+            Side::B => &self.b,
+        }
+    }
+
+    async fn replay(&mut self, set: &Set) -> Value {
+        let [a, b] = &mut self.docker;
+        let (machine, docker) = match set.side {
+            Side::A => (&self.a, a),
+            Side::B => (&self.b, b),
+        };
+        set_copy(machine, docker, set).await
+    }
+
+    async fn send(&mut self, set: Set) -> Value {
+        let reply = self.replay(&set).await;
+        assert!(reply.get("Ok").is_some(), "{set:?}: {reply}");
+        self.sent.push(set);
+        reply
+    }
+
+    /// Resend one Mirror want, expect unchanged, until its pull landed and finished.
+    async fn mirror(&mut self, side: Side, expect: ployz_core::ExpectedCopy, target: &str) {
+        let set = Set {
+            side,
+            expect,
+            want: mirror_want(Some(target)),
+            run: None,
+        };
+        for _ in 0..300 {
+            let reply = self.replay(&set).await;
+            assert!(reply.get("Ok").is_some(), "{set:?}: {reply}");
+            if reply.pointer("/Ok/pull") == Some(&Value::Null)
+                && reply.pointer("/Ok/newest/name") == Some(&json!(target))
+            {
+                self.sent.push(set);
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the pull of {target} never finished");
+    }
+
+    fn running(&self, side: Side) -> &[&'static str] {
+        let [a, b] = &self.docker;
+        match side {
+            Side::A => &a.running,
+            Side::B => &b.running,
+        }
+    }
+
+    async fn copy(&self, side: Side) -> Value {
+        self.machine(side).copy().await
+    }
+
+    /// At most one writable root, at most one running holder, and a holder only on it.
+    async fn assert_one_writer(&self, after: &Set) {
+        let mut writers = 0;
+        let mut holders = 0;
+        let [a, b] = &self.docker;
+        for (side, docker) in [(Side::A, a), (Side::B, b)] {
+            let copy = self.copy(side).await;
+            let writable = copy.pointer("/Ok/kind") == Some(&json!("root"))
+                && copy.pointer("/Ok/readonly") == Some(&json!(false));
+            writers += usize::from(writable);
+            holders += docker.running.len();
+            assert!(
+                docker.running.is_empty() || writable,
+                "a holder runs on {side:?} without a writable root after {after:?}: {copy}"
+            );
+        }
+        assert!(writers <= 1, "{writers} writable roots after {after:?}");
+        assert!(holders <= 1, "{holders} running holders after {after:?}");
+    }
+
+    /// Every request sent so far, again, in order and then in reverse.
+    async fn replay_late(&mut self) {
+        let sent = self.sent.clone();
+        for set in sent.iter().chain(sent.iter().rev()) {
+            let reply = self.replay(set).await;
+            assert!(
+                reply.get("Ok").is_some() || reply.get("Refused").is_some(),
+                "{set:?}: {reply}"
+            );
+            self.assert_one_writer(set).await;
+        }
+    }
+}
+
+fn writer_expect(epoch: u32) -> ployz_core::ExpectedCopy {
+    ployz_core::ExpectedCopy::Writer {
+        epoch: ployz_core::WriterEpoch::new(epoch),
+    }
+}
+
+fn mirror_want(from: Option<&str>) -> ployz_core::WantedCopy {
+    ployz_core::WantedCopy::Mirror {
+        from: from.map(|_| ployz_core::ManagementAddress("::1".parse().unwrap())),
+        target: from.unwrap_or("f-1").parse().unwrap(),
+        drain: ployz_core::Drain::NONE,
+    }
+}
+
+fn snapshot_want(name: &str) -> ployz_core::WantedCopy {
+    ployz_core::WantedCopy::Snapshot {
+        name: name.parse().unwrap(),
+    }
+}
+
+fn writer_want(at: &str, epoch: u32) -> ployz_core::WantedCopy {
+    ployz_core::WantedCopy::Writer {
+        at: ployz_core::SnapshotGuid::new(at.parse().unwrap()),
+        epoch: ployz_core::WriterEpoch::new(epoch),
+        start: Some(ployz_core::Start::Kept {
+            container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
+        }),
+    }
+}
+
+/// Two rounds: A takes a run snapshot, B pulls it.
+async fn rounds(cloud: &mut Cloud) {
+    for (round, expect_b) in [("w-1-1", None), ("w-1-2", Some(()))] {
+        cloud
+            .send(Set {
+                side: Side::A,
+                expect: writer_expect(0),
+                want: snapshot_want(round),
+                run: None,
+            })
+            .await;
+        let expect = match expect_b {
+            None => ployz_core::ExpectedCopy::None,
+            Some(()) => mirror_expect(&cloud.copy(Side::B).await),
+        };
+        cloud.mirror(Side::B, expect, round).await;
+    }
+}
+
+/// The cut on A at f-1, then B's pull of it.
+async fn cut(cloud: &mut Cloud) {
+    cloud
+        .send(Set {
+            side: Side::A,
+            expect: writer_expect(0),
+            want: mirror_want(None),
+            run: None,
+        })
+        .await;
+    let expect = mirror_expect(&cloud.copy(Side::B).await);
+    cloud.mirror(Side::B, expect, "f-1").await;
+}
+
+#[tokio::test]
+async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_writer() {
+    // The move: rounds, the cut, B's pull, step 5 on B, step 6 on A.
+    let mut cloud = Cloud::start().await;
+    rounds(&mut cloud).await;
+    cut(&mut cloud).await;
+    let b = cloud.copy(Side::B).await;
+    cloud
+        .send(Set {
+            side: Side::B,
+            expect: mirror_expect(&b),
+            want: writer_want(guid(&b), 1),
+            run: Some(Run::Create("k1")),
+        })
+        .await;
+    let a = cloud.copy(Side::A).await;
+    cloud
+        .send(Set {
+            side: Side::A,
+            expect: mirror_expect(&a),
+            want: ployz_core::WantedCopy::Forget,
+            run: None,
+        })
+        .await;
+    assert_eq!(cloud.copy(Side::A).await, json!({"Ok": null}));
+    let end = (
+        state(&cloud.a.test),
+        state(&cloud.b.test),
+        cloud.docker.clone(),
+    );
+    assert_eq!(cloud.running(Side::B), ["k1"]);
+    cloud.replay_late().await;
+    assert_eq!(
+        (
+            state(&cloud.a.test),
+            state(&cloud.b.test),
+            cloud.docker.clone()
+        ),
+        end
+    );
+
+    // Undo before the cut: A raises its epoch over its own snapshot, B forgets its slot.
+    let mut cloud = Cloud::start().await;
+    rounds(&mut cloud).await;
+    let a = cloud.copy(Side::A).await;
+    let b = cloud.copy(Side::B).await;
+    cloud
+        .send(Set {
+            side: Side::A,
+            expect: writer_expect(0),
+            want: writer_want(guid(&a), 1),
+            run: Some(Run::Kept("a1")),
+        })
+        .await;
+    cloud
+        .send(Set {
+            side: Side::B,
+            expect: mirror_expect(&b),
+            want: ployz_core::WantedCopy::Forget,
+            run: None,
+        })
+        .await;
+    cloud.sent.push(Set {
+        side: Side::A,
+        expect: writer_expect(0),
+        want: mirror_want(None),
+        run: None,
+    });
+    cloud.replay_late().await;
+    assert_eq!(cloud.running(Side::A), ["a1"]);
+
+    // Undo after the cut: B forgets its slot first, then A takes the writer back at
+    // the cut's snapshot one epoch up. Step 5, planned before the undo, arrives late.
+    let mut cloud = Cloud::start().await;
+    rounds(&mut cloud).await;
+    cut(&mut cloud).await;
+    let a = cloud.copy(Side::A).await;
+    let b = cloud.copy(Side::B).await;
+    cloud
+        .send(Set {
+            side: Side::B,
+            expect: mirror_expect(&b),
+            want: ployz_core::WantedCopy::Forget,
+            run: None,
+        })
+        .await;
+    cloud
+        .send(Set {
+            side: Side::A,
+            expect: mirror_expect(&a),
+            want: writer_want(guid(&a), 1),
+            run: Some(Run::Kept("a1")),
+        })
+        .await;
+    assert_eq!(cloud.running(Side::A), ["a1"]);
+    cloud.sent.push(Set {
+        side: Side::B,
+        expect: mirror_expect(&b),
+        want: writer_want(guid(&b), 1),
+        run: Some(Run::Create("k1")),
+    });
+    cloud.replay_late().await;
+    assert_eq!(cloud.running(Side::A), ["a1"]);
+    assert!(cloud.running(Side::B).is_empty());
 }
