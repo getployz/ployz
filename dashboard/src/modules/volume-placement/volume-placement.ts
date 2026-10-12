@@ -570,10 +570,9 @@ export function placementLosses(changes: readonly PlacementChange[]): PlacementL
         return [copy(change.volume, change.server)];
       case "seed":
         return [{ volume: change.source, server: null, writes: true, after: new Date(change.point.at * 1000) }];
+      // Writes go on after staging, so a restore always loses them, whatever `losesBytes` read then.
       case "restore_snapshot":
-        return change.restore.losesBytes > 0
-          ? [{ volume: change.volume, server: null, writes: true, after: restoreAt(change.restore), detail: restoreLoss(change.restore) }]
-          : [];
+        return [{ volume: change.volume, server: null, writes: true, after: restoreAt(change.restore), detail: restoreLoss(change.restore) }];
     }
   });
 }
@@ -655,7 +654,7 @@ export function placementLoss(changes: readonly PlacementChange[]): PlacementLos
     accept: [...new Set(lost.map(({ volume }) => volume.name))],
     version: (version) => lossVersion(version, lost),
   };
-  return changes.some((change) => change.kind === "restore_snapshot" && change.restore.losesBytes > 0) ? { ...loss, savesFirst: true } : loss;
+  return changes.some((change) => change.kind === "restore_snapshot") ? { ...loss, savesFirst: true } : loss;
 }
 
 const restoreClock = snapshotClock();

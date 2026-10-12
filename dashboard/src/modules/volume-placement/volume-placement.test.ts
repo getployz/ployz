@@ -659,14 +659,16 @@ describe("snapshot restore", () => {
     expect(steps([member("web-1", "writer")], restoring([]))).toEqual([]);
   });
 
-  it("asks for the typed confirm only when writes are lost, and says they are saved first", () => {
+  it("asks for the typed confirm for every restore, since writes go on after staging, and says they are saved first", () => {
     const members = [member("web-1", "writer")];
     const lost = placementLoss(changes(members, restoring([])));
     expect(lost.losesWrites).toBe(true);
     expect(lost.savesFirst).toBe(true);
     expect(lost.items).toEqual([{ kind: "volume", name: "pg-data", detail: expect.stringMatching(/^back to .+ · 1\.2 GB · \d+ (hours|days) of writes$/) }]);
-    const { version: _, ...none } = placementLoss(changes(members, restoring([], 0)));
-    expect(none).toEqual({ items: [], losesWrites: false, accept: [] });
+    const { version: _, ...always } = placementLoss(changes(members, restoring([], 0)));
+    expect(always).toEqual({
+      items: [{ kind: "volume", name: "pg-data", detail: expect.stringMatching(/^back to /) }], losesWrites: true, accept: ["pg-data"], savesFirst: true,
+    });
   });
 
   it("reads Restore with the snapshot time in Details, and Undo drops only the restore", () => {
