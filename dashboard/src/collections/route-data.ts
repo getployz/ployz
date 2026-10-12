@@ -61,7 +61,7 @@ export async function prefetchOrgStore(context: RouteDataContext, organizationSl
  * `useSuspenseQuery`, whose boundary owns the error.
  */
 // ponytail: typed by key only; reads return different data, and a prefetch returns none.
-export async function prefetchRemote(context: RouteDataContext, ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
+export async function prefetchRemote(context: Pick<RouteDataContext, "queryClient">, ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
   const ready = Promise.all(reads.map((options) => context.queryClient.prefetchQuery(options)));
   if (environmentManager.isServer()) await ready;
 }
