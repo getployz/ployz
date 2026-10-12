@@ -261,7 +261,7 @@ pub enum SavedVariableValue {
         encrypted_value: Option<EncryptedSecretValue>,
     },
     /// A secret that arrived without its value: Sync never carries one up or across.
-    /// It has no fingerprint, and Deploy refuses until a value is set.
+    /// It has no fingerprint, and a Deployment leaves it out until a value is set.
     SecretWithoutValue,
 }
 

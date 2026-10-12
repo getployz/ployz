@@ -27,7 +27,7 @@ No Service named nosuch to deploy
 
 === deploy with a stale --expect-version  :: $ ployz deploy --expect-version 1:1:0.0
 The Environment changed after this review. Review the latest changes and try again
-next: ployz diff
+next: ployz deploy --expect-version 68:37:0.64
 
 === deployment show of an unknown id  :: $ ployz deployment show 00000000-0000-0000-0000-000000000000
 No Deployment 00000000-0000-0000-0000-000000000000
@@ -108,7 +108,7 @@ WARNING: Live Observation is observer-relative and not globally complete
 {"error":{"code":"not_found","details":{"services":["web","api","postgres","worker"]},"message":"No Service named nosuch to deploy"}}
 
 === deploy with a stale --expect-version --json :: $ ployz --json deploy --expect-version 1:1:0.0
-{"error":{"code":"conflict","details":{"diff":{"changes":[],"environment":{"id":"4b4e5354-8834-4aea-a807-e65f832680bc","name":"production","project":"shop","revision":68},"follow_hints":[],"hints":[],"incoming":[],"published":true,"saved":37,"total_count":0,"version":"68:37:0.64"},"next":"ployz diff"},"message":"The Environment changed after this review. Review the latest changes and try again"}}
+{"error":{"code":"conflict","details":{"diff":{"changes":[],"environment":{"id":"4b4e5354-8834-4aea-a807-e65f832680bc","name":"production","project":"shop","revision":68},"follow_hints":[],"hints":[],"incoming":[],"published":true,"saved":37,"total_count":0,"version":"68:37:0.64"},"next":"ployz deploy --expect-version 68:37:0.64"},"message":"The Environment changed after this review. Review the latest changes and try again"}}
 
 === deployment show of an unknown id --json :: $ ployz --json deployment show 00000000-0000-0000-0000-000000000000
 {"error":{"code":"not_found","details":{},"message":"No Deployment 00000000-0000-0000-0000-000000000000"}}

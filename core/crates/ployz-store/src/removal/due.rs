@@ -594,7 +594,11 @@ pub(crate) fn shut_down(
     let id = &environment.summary.id;
     let forget = deployment::forgettable(tx, id, trusted)?;
     let review = crate::review::review(tx, &environment)?;
-    crate::review::check(&review, admit.version.as_deref())?;
+    // A shut-down consumes no draft, so whether its pull requests merged doesn't
+    // matter: no version is needed, a stale one is still refused.
+    if let Some(version) = admit.version.as_deref() {
+        crate::review::check(&review, Some(version))?;
+    }
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = scope::empty(&environment.working.environment_slug);
     let losses = match forget {

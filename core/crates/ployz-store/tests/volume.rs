@@ -497,6 +497,7 @@ fn a_deployed_volume_removal_discards_alone() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(SettingPath::parse("volumes.data").unwrap()),
                 version: None,
             },
@@ -761,6 +762,7 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
             &Publish {
                 environment: EnvironmentRef::default(),
                 version: version.map(Into::into),
+                message: None,
                 accept_volume_loss: accept
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
@@ -885,6 +887,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
             &Publish {
                 environment: EnvironmentRef::default(),
                 version: version.map(Into::into),
+                message: None,
                 accept_volume_loss: accept
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
@@ -959,6 +962,7 @@ fn a_deployed_volume_rename_discards_by_its_row() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
                 path: Some(path(&row.path)),
                 version: None,
             },
@@ -1272,6 +1276,7 @@ fn discarding_one_setting_cannot_bring_back_a_second_writer() {
     set_shared_writes(&store, &who, false).unwrap();
     let discard = |path: Option<&str>| Discard {
         environment: EnvironmentRef::default(),
+        target: ployz_store::DiscardTarget::Head,
         path: path.map(|path| SettingPath::parse(path).unwrap()),
         version: None,
     };

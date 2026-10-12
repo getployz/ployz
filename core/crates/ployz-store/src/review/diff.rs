@@ -29,8 +29,8 @@ pub(crate) fn diff(
     let mut view = review.view;
     let rows = review::service_rows(&mut view.changes);
     crate::domain::name_generated(tx, &environment, &review.head, trusted, rows)?;
-    view.hints = crate::conditional_sync::hints(tx, &environment)?;
     view.incoming = crate::branch::incoming(tx, &environment)?;
     view.follow_hints = crate::branch::hints(tx, &environment)?;
+    view.included = crate::branch::included(tx, &environment.summary.id)?;
     Ok(view)
 }

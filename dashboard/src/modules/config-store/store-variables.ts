@@ -30,11 +30,21 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
     return [{
       id: key, serviceId, key, description: null,
       exported: rows.get(`${name}.exported`)?.value === true,
-      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, needsValue: isValueless(value) },
+      value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, notSet: isValueless(value) },
       changed: changes.has(name) || changes.has(`${name}.exported`),
       neverSynced: row.row !== undefined && neverSynced.has(row.row),
     }];
   }).sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * The keys of a Service's secrets without a value that no staged value change sets: deploys skip them until they
+ * are set. Staging only `.exported` sets nothing.
+ */
+export function notSetVariables(rows: ReadonlyMap<string, SettingRow>, changes: ReadonlyMap<string, unknown>) {
+  return serviceVariables(rows, "", changes)
+    .flatMap((variable) => variable.value.type === "sealed" && variable.value.notSet && !changes.has(`env.${variable.key}`)
+      ? [variable.key] : []);
 }
 
 /**

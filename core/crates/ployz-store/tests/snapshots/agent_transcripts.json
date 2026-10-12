@@ -1800,7 +1800,8 @@
                       "path": "/var/lib/postgresql/data"
                     }
                   ],
-                  "shared_writes": false
+                  "shared_writes": false,
+                  "storage_locked": false
                 }
               ],
               "expect": null
@@ -1889,7 +1890,8 @@
                       "path": "/var/lib/postgresql/data"
                     }
                   ],
-                  "shared_writes": false
+                  "shared_writes": false,
+                  "storage_locked": false
                 }
               ],
               "expect": null
@@ -2833,6 +2835,7 @@
                     "project": "shop",
                     "environment": null
                   },
+                  "target": "head",
                   "path": "web",
                   "version": null
                 }
@@ -2905,6 +2908,7 @@
                     "project": "shop",
                     "environment": null
                   },
+                  "target": "head",
                   "path": "web",
                   "version": null
                 }
@@ -2971,6 +2975,7 @@
                 "environment": "staging"
               },
               "version": null,
+              "message": null,
               "accept_volume_loss": []
             }
           }
@@ -3039,6 +3044,7 @@
                 "environment": "staging"
               },
               "version": null,
+              "message": null,
               "accept_volume_loss": []
             }
           }

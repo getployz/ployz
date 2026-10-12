@@ -6,7 +6,9 @@
 //! under the Environment's lock and refuse a version that no longer matches.
 
 pub(crate) mod approval;
+mod authored;
 pub(crate) mod diff;
+pub(crate) mod history;
 pub(crate) mod publish;
 
 use std::collections::BTreeSet;
@@ -47,10 +49,14 @@ pub struct DiffView {
     pub changes: Vec<NodeChange>,
     /// How many changes there are, counting each node and each Setting.
     pub total_count: usize,
-    /// Merged pull requests' values landed beside this Environment's own changes,
-    /// until its next Saved revision.
+    /// Working State compared with the latest Saved revision, without Introduction fallback.
     #[serde(default)]
-    pub hints: Vec<crate::PullRequestHint>,
+    #[ts(as = "Option<Vec<NodeChange>>", optional)]
+    pub draft_changes: Vec<NodeChange>,
+    /// Changes that an explicit Save records, independent of the deployment comparison.
+    #[serde(default)]
+    #[ts(as = "Option<usize>", optional)]
+    pub draft_count: usize,
     /// Staged changes that arrived from the Parent's deploy by Follow, still at the
     /// value they arrived with, until they deploy.
     #[serde(default)]
@@ -59,11 +65,49 @@ pub struct DiffView {
     /// changes, or that it discarded: take one to stage it.
     #[serde(default)]
     pub follow_hints: Vec<crate::FollowHint>,
+    /// The sources included in this draft: Remove one to put back what it still
+    /// brings. Save or Deploy ends them.
+    #[serde(default)]
+    pub included: Vec<crate::Included>,
     /// What deploying Working State destroys of Applied State and of what the Deployment
     /// in flight puts in place, sorted; empty when nothing.
     #[serde(default)]
     #[ts(as = "Option<Vec<DestructiveEffect>>", optional)]
     pub effects: BTreeSet<DestructiveEffect>,
+}
+
+impl DiffView {
+    /// One review list with runtime rows and otherwise hidden draft reversals.
+    #[must_use]
+    pub fn review_changes(&self) -> Vec<NodeChange> {
+        let mut changes = self.changes.clone();
+        for draft in &self.draft_changes {
+            let Some(current) = changes
+                .iter_mut()
+                .find(|current| current.node == draft.node)
+            else {
+                changes.push(draft.clone());
+                continue;
+            };
+            if current.lifecycle != ReviewLifecycleKind::Update {
+                continue;
+            }
+            for row in &draft.settings {
+                if !current
+                    .settings
+                    .iter()
+                    .any(|runtime| runtime.path == row.path)
+                {
+                    current.settings.push(row.clone());
+                }
+            }
+            if draft.lifecycle != ReviewLifecycleKind::Update {
+                current.lifecycle = draft.lifecycle;
+                current.comparison = Some(ReviewComparisonRole::Saved);
+            }
+        }
+        changes
+    }
 }
 
 /// What happens to one node, and its changed Settings.
@@ -137,13 +181,45 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     let saved = latest_saved(tx, id)?;
     let head = crate::deployment::head(tx, environment)?;
     let introductions = introductions(tx, environment)?;
+    let mut view = compare(environment, saved.as_ref(), &head, &introductions)?;
+    let deployed = approval::deployed(&head);
+    let cluster_domains = if crate::domain::has_generated(&deployed) {
+        crate::deployment::cluster_domains(tx, id, &head)?
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    view.effects = approval::destructive_effects(&deployed, &environment.working, &cluster_domains);
+    let baseline = saved.as_ref().map_or_else(
+        || crate::scope::empty(environment.summary.name.as_str()),
+        |saved| saved.intent.clone(),
+    );
+    let draft = saved_comparison(environment, &baseline)?;
+    view.draft_changes = draft.changes;
+    view.draft_count = draft.total_count;
+    Ok(Review { view, saved, head })
+}
+
+fn saved_comparison(
+    environment: &Environment,
+    baseline: &SavedEnvironmentIntent,
+) -> Result<authored::Summary, RpcError> {
+    authored::compare(baseline, &environment.working)
+}
+
+fn compare(
+    environment: &Environment,
+    saved: Option<&Saved>,
+    head: &Head,
+    introductions: &SavedEnvironmentIntent,
+) -> Result<DiffView, RpcError> {
+    let id = &environment.summary.id;
     let project = |token: &str, intent: &SavedEnvironmentIntent| projection(id, token, intent);
     let changes = project_environment_changes(ChangeSetInput {
         working: project("working", &environment.working),
         applied: project("applied", &head.applied),
         saved: saved.as_ref().map(|saved| project("saved", &saved.intent)),
         submitted: (head.intent != head.applied).then(|| project(&head.token, &head.intent)),
-        node_introductions: project("introductions", &introductions),
+        node_introductions: project("introductions", introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;
     let intents = [&environment.working, &head.intent];
@@ -200,9 +276,11 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             saved.intent == canonicalize_environment_intent(environment.working.clone())
         }),
         total_count: changes.total_count,
-        hints: Vec::new(),
+        draft_changes: Vec::new(),
+        draft_count: 0,
         incoming: Vec::new(),
         follow_hints: Vec::new(),
+        included: Vec::new(),
         effects: BTreeSet::new(),
         changes: changes
             .groups
@@ -294,14 +372,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect::<Result<_, RpcError>>()?,
     };
     renames(&mut view, &environment.working, &head.intent);
-    let deployed = approval::deployed(&head);
-    let cluster_domains = if crate::domain::has_generated(&deployed) {
-        crate::deployment::cluster_domains(tx, id, &head)?
-    } else {
-        std::collections::BTreeMap::new()
-    };
-    view.effects = approval::destructive_effects(&deployed, &environment.working, &cluster_domains);
-    Ok(Review { view, saved, head })
+    Ok(view)
 }
 
 /// Each Service's Setting changes among `changes`, with the Service's node ID.
@@ -486,7 +557,8 @@ fn restarts(
 
 /// Refuse unless `version` still names this review; the refusal carries the fresh
 /// one. A version a destructive review handed back names this review, then what it
-/// deletes (see `crate::removal::review`).
+/// deletes (see `crate::removal::review`). No version is refused only while the
+/// draft includes a pull request: whether it merged must have been reviewed.
 pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcError> {
     let current = review.view.version.as_str();
     let names_it = |version: &str| {
@@ -513,6 +585,7 @@ pub(crate) fn publish(
     environment: &EnvironmentId,
     intent: SavedEnvironmentIntent,
     latest: Option<&Saved>,
+    message: Option<&str>,
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
     crate::volume::check_storage(tx, environment, &intent)?;
@@ -523,8 +596,8 @@ pub(crate) fn publish(
     }
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     tx.execute(
-        "INSERT INTO config_saved (environment_id, revision, organization_id, intent) \
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         &[
             environment.as_str().into(),
             revision_param(revision)?.into(),
@@ -533,6 +606,9 @@ pub(crate) fn publish(
                 .expect("Saved State is JSON")
                 .as_str()
                 .into(),
+            message.map(str::trim).filter(|message| !message.is_empty()).into(),
+            who.principal.as_ref().map(crate::Principal::as_str).into(),
+            crate::deployment::now().into(),
         ],
     )?;
     Ok((revision, true))
