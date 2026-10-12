@@ -4102,7 +4102,7 @@ name: DockerVolumeName, };
 
 export type StorageChoice = "none" | "zfs";
 
-export type StoreAt = "cloud" | "local";
+export type StoreAt = { "at": "cloud", organization: OrganizationId, } | { "at": "local" };
 
 export type Subject = { "kind": "server", machine: MachineId, } | { "kind": "service", environment: EnvironmentId, service: ServiceName, } | { "kind": "volume", volume: VolumeId, } | { "kind": "leftover", namespace: Namespace, };
 

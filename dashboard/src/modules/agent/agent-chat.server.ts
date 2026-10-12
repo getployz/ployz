@@ -146,10 +146,11 @@ type AgentServices =
 const decodeArguments = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toolInput = (args: string) => projectJsonValue(Option.getOrElse(decodeArguments(args.trim() === "" ? "{}" : args), () => null)) ?? null;
 
-const placeIn = (messages: ReadonlyArray<ModelMessage>): Place => {
+const placeIn = (caller: Caller, messages: ReadonlyArray<ModelMessage>): Place => {
   const block = latestPageContext(messages);
   const at = block === undefined ? new Map<string, string>() : readPageContext(block);
-  return { project: at.get("project") ?? null, environment: at.get("environment") ?? null, store: "cloud" };
+  const store = { at: "cloud", organization: caller.organization.id } as const;
+  return { project: at.get("project") ?? null, environment: at.get("environment") ?? null, store };
 };
 
 type Here = { place: Place };
@@ -211,7 +212,7 @@ const approvalGate = (caller: Caller, run: Run, here: Here) => {
     },
     onInterruptBoundary: async (ctx) => {
       if (ctx.phase !== "beforeTools") return undefined;
-      here.place = placeIn(ctx.messages);
+      here.place = placeIn(caller, ctx.messages);
       const calls = pendingCalls(ctx.messages);
       const gated = calls.filter((call) => GATED.has(call.function.name));
       if (calls.length > 1) {
@@ -491,7 +492,7 @@ export const agentChat = Effect.fn("Agent.chat")(function* (caller: Caller, requ
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
   const turn = (stores: Persistence) => {
     const limit = stepLimit(stores);
-    const here: Here = { place: placeIn([]) };
+    const here: Here = { place: placeIn(caller, []) };
     const base = {
       adapter,
       modelOptions,

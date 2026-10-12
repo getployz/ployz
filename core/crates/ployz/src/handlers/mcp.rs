@@ -14,7 +14,7 @@ use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
     self, Act, Action, Ask, Gate, INSTRUCTIONS, Place, State, Step, StoreAt, ToolResult, Write,
 };
-use ployz_store::{Actor, ConfigStore};
+use ployz_store::{Actor, ConfigStore, OrganizationId};
 use reqwest::Method;
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
@@ -31,6 +31,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::OnceCell;
 use tokio::time::Instant;
 
 use super::{Error, leaf_matches, store};
@@ -54,19 +55,19 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     } else {
         None
     };
-    let (store, store_at) = match local {
-        Some(store::Backend::Local(store, who)) => (Store::Local(store, who), StoreAt::Local),
-        _ => (Store::Cloud, StoreAt::Cloud),
+    let store = match local {
+        Some(store::Backend::Local(store, who)) => Store::Local(store, who),
+        _ => Store::Cloud,
     };
     let linked = config.clone();
     // Like each CLI command, each call reads the link, so `ployz link` or
     // `ployz org use` takes effect on the next call.
-    let place: Locate = Box::new(move || {
+    let place: Locate = Box::new(move |store| {
         let at = super::link::scope_from_env(&linked)?.at();
         Ok(Place {
             project: at.project,
             environment: at.environment,
-            store: store_at,
+            store,
         })
     });
     let server = Server::new(
@@ -74,6 +75,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
             config,
             token: std::env::var(crate::cli::env::TOKEN).ok(),
             cloud: std::env::var(crate::cli::env::CLOUD_URL).ok(),
+            organization: OnceCell::new(),
         },
         store,
         place,
@@ -318,7 +320,7 @@ fn not_here() -> RpcError {
 }
 
 /// The Project and Environment a call acts on, read when the call starts.
-type Locate = Box<dyn Fn() -> Result<Place, Error> + Send + Sync>;
+type Locate = Box<dyn Fn(StoreAt) -> Result<Place, Error> + Send + Sync>;
 
 struct Server {
     account: Account,
@@ -337,6 +339,8 @@ struct Account {
     config: PathBuf,
     token: Option<String>,
     cloud: Option<String>,
+    /// The Organization `token` acts in, asked of Ployz Cloud once.
+    organization: OnceCell<OrganizationId>,
 }
 
 impl Server {
@@ -371,6 +375,31 @@ impl Server {
             .map(Backend::Cloud)
             .map_err(|error| Error::from(error).to_string()),
         }
+    }
+
+    /// Which Store a new call reaches. A device can switch Organizations
+    /// between calls; an Organization Token cannot.
+    async fn store_at(&self, backend: &Backend<'_>) -> Result<StoreAt, String> {
+        let credential = match backend {
+            Backend::Local(..) => return Ok(StoreAt::Local),
+            Backend::Cloud(credential) => credential,
+        };
+        let acting = || async {
+            let organization = cloud_account::acting_in(credential)
+                .await
+                .map_err(|error| Error::from(error).to_string())?;
+            OrganizationId::parse(organization.id).map_err(|error| error.message)
+        };
+        let organization = match credential {
+            Credential::Device(_) => acting().await?,
+            Credential::Token { .. } => self
+                .account
+                .organization
+                .get_or_try_init(acting)
+                .await?
+                .clone(),
+        };
+        Ok(StoreAt::Cloud { organization })
     }
 }
 
@@ -475,7 +504,11 @@ impl ServerHandler for Server {
                 (step, held.state, Some((held.asked, answer)), held.until)
             }
             None => {
-                let place = match (self.place)() {
+                let store = match self.store_at(&backend).await {
+                    Ok(store) => store,
+                    Err(text) => return Ok(refused(text).into()),
+                };
+                let place = match (self.place)(store) {
                     Ok(place) => place,
                     Err(error) => return Ok(refused(error.to_string()).into()),
                 };

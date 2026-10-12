@@ -155,7 +155,12 @@ fn every_transcript_replays_to_its_recorded_steps() {
             .iter()
             .flat_map(|def| {
                 [
-                    record(def.name, StoreAt::Cloud),
+                    record(
+                        def.name,
+                        StoreAt::Cloud {
+                            organization: OrganizationId::parse("org").unwrap(),
+                        },
+                    ),
                     record(def.name, StoreAt::Local),
                 ]
             })
