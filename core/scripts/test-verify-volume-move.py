@@ -60,6 +60,7 @@ CELLS = ["Writer>Mirror", "Writer>Snapshot", "Writer>Forget", "Mirror>Writer", "
 # `machine`, once the writer's db Container stops (the cut), or on the `nth` fault line `machine` logs after
 # that stop. `delay-rpc` matches the whole SetVolumeCopy verb, so the stop and the count pick out the cell.
 KILLS = [
+    # A restart check, not a mid-effect resume: the kill lands after the take, so the resend is at-want and skips the prune.
     dict(name="kill-snapshot", cell="Writer>Snapshot", step="1-rounds", op="move", machine="writer",
          fault="kill-daemon:SetVolumeCopy.WriterToSnapshot", trigger="fault", action="none", recover="rerun"),
     dict(name="kill-pull", cell="Mirror>Mirror", step="1-rounds", op="move", machine="other", mirror="present",
@@ -70,6 +71,7 @@ KILLS = [
          fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault", action="none", recover="rerun"),
     dict(name="kill-writer", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
          fault="kill-daemon:SetVolumeCopy.MirrorToWriter", trigger="fault", action="none", recover="rerun"),
+    # A restart check, not a mid-effect resume: the kill lands before the destroy, which has no midpoint.
     dict(name="kill-forget-mirror", cell="Mirror>Forget", step="mirror rm", op="mirror-rm", machine="other",
          mirror="present", fault="kill-daemon:SetVolumeCopy.MirrorToForget", trigger="fault", action="none",
          recover="rerun"),
