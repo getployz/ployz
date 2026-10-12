@@ -63,6 +63,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
               kernel_version: "6.1.0",
               memory_total_bytes: 16_000_000_000,
               running_builds: 1,
+              capabilities: [],
             },
           }),
           membership: "suspect",
