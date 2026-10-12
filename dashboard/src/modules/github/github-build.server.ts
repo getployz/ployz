@@ -9,7 +9,7 @@ import {
 import { githubIdSchema, githubRepositoryFullNameSchema } from "#/modules/github/github-ingestion.contracts";
 import { GithubApi, GithubObservationError } from "#/modules/github/github-observation.api";
 import type { Actor } from "#/modules/identity/actor";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
 
 const repositorySchema = Schema.Struct({
@@ -129,7 +129,7 @@ const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(fu
 
 export const listGithubBuildRepositories = Effect.fn("Github.listBuildRepositories")(
   function* (actor: Actor, input: { organizationSlug: string }) {
-    yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+    yield* requireAccess(actor, input.organizationSlug, "operate");
     const repositories = yield* listStoreGithubRepositories(actor, input.organizationSlug);
     return yield* Effect.forEach(repositories, (repository) =>
       checkGithubBuildWorkflow(repository.installationId, repository.repositoryId).pipe(

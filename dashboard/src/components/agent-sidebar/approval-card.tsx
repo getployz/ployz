@@ -51,7 +51,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
     if (sending) return;
     setSending(true);
     setRefused(null);
-    const answer = await decideApproval(approval.id, decision);
+    const answer = await decideApproval(organizationSlug, approval.id, decision);
     setSending(false);
     if (answer.ok) return landDecision(queryClient, organizationSlug, approval.id, answer.decided);
     setRefused(answer.message);

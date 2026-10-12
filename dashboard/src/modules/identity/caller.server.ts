@@ -4,10 +4,11 @@ import { Effect } from "effect";
 import { member, organizationToken } from "#/modules/identity/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { hashOrganizationTokenSecret, ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { Conflict, Forbidden, Unauthorized } from "#/server/public-error";
+import { Forbidden, Unauthorized } from "#/server/public-error";
 
 /**
  * The one place a `ployz` API request becomes a Caller. An Organization Token acts in its own Organization while
@@ -34,14 +35,17 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
   } satisfies Caller;
 });
 
-/** The signed-in member, acting in `organizationSlug` only while it is their active Organization. */
-export const memberCaller = Effect.fn("Identity.memberCaller")(function* (headers: Headers, organizationSlug: string) {
-  const caller = yield* resolveCaller(headers);
-  if (caller.credential.kind !== "session") return yield* new Forbidden({ message: "Only a signed-in member can do this." });
-  if (caller.organization.slug !== organizationSlug) {
-    return yield* new Conflict({ message: `Your active Organization is ${caller.organization.slug}; switch to ${organizationSlug} first.`, userFacing: true });
-  }
-  return caller;
+/** A dashboard request's signed-in user, acting in the Organization its URL names as a member or as support. */
+export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (headers: Headers, organizationSlug: string) {
+  const auth = yield* Auth;
+  const session = yield* auth.getSession(headers);
+  if (session === null) return yield* new Unauthorized();
+  const { organization } = yield* requireAccess({ userId: session.user.id }, organizationSlug, "operate");
+  return {
+    userId: session.user.id,
+    organization,
+    credential: { kind: "session", id: session.session.id },
+  } satisfies Caller;
 });
 
 const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string) {

@@ -18,7 +18,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
   loader: async ({ params, context }) => {
     const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchOrgStore(context, params.organizationSlug);
-    return { organizationId: organization.id, organizationName: organization.name };
+    return { organizationId: organization.id, organizationName: organization.name, access: organization.access };
   },
   component: RouteComponent,
 });
@@ -26,11 +26,12 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
 function RouteComponent() {
   const params = Route.useParams();
   const { queryClient, session } = Route.useRouteContext();
-  const { organizationId, organizationName } = Route.useLoaderData();
+  const { organizationId, organizationName, access } = Route.useLoaderData();
   useOrganizationChanges(params.organizationSlug);
   useEffect(() => {
-    setPostHogOrganization(organizationId, { name: organizationName, slug: params.organizationSlug });
-  }, [organizationId, organizationName, params.organizationSlug]);
+    // A support visit isn't the customer's usage.
+    if (access === "member") setPostHogOrganization(organizationId, { name: organizationName, slug: params.organizationSlug });
+  }, [access, organizationId, organizationName, params.organizationSlug]);
   useEffect(() => {
     void rememberSelectedOrganization(queryClient, params.organizationSlug, session.session.activeOrganizationSlug);
   }, [queryClient, params.organizationSlug, session.session.activeOrganizationSlug]);
@@ -47,12 +48,16 @@ function OrganizationLayout() {
   const { organizationSlug } = Route.useParams();
   const { projectSlug, environmentSlug } = useParams({ strict: false });
   const { chat } = Route.useSearch();
+  const { organizationName, access } = Route.useLoaderData();
   const navigate = useNavigate();
   const scope: DashboardScope = projectSlug && environmentSlug
     ? { kind: "environment", organizationSlug, projectSlug, environmentSlug }
     : { kind: "all", organizationSlug };
   return (
     <DashboardShell scope={scope} chat={chat}
+      banner={access === "support" ? (
+        <div className="shrink-0 border-b bg-muted px-4 py-1.5 text-sm text-muted-foreground">Viewing {organizationName} as Ployz support.</div>
+      ) : null}
       onChat={(thread) => void navigate({ to: ".", search: (prev) => ({ ...prev, chat: thread }), replace: true })}>
       <Outlet />
     </DashboardShell>

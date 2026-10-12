@@ -9,6 +9,7 @@ export * from "#/modules/cluster-domain/tables";
 export * from "#/modules/config-store/tables";
 export * from "#/modules/canvas/tables";
 export * from "#/modules/server-upgrade/tables";
+export * from "#/modules/support-access/tables";
 export * from "#/modules/volume-run/tables";
 export * from "#/modules/volume-placement/tables";
 export * from "#/modules/approvals/tables";

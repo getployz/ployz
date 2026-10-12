@@ -61,16 +61,17 @@ it.live("an Organization Token cannot drive the sidebar, even in its own Organiz
   inCloud(Effect.gen(function* () {
     const ada = yield* signUp("ada");
     const token = yield* createOrganizationToken(ada.caller, { name: "ci", expiresInDays: 1 });
-    expect(yield* chat(ada.caller.organization.slug, { authorization: `Bearer ${token.secret}` }, "thread-ci")).toBe(403);
+    expect(yield* chat(ada.caller.organization.slug, { authorization: `Bearer ${token.secret}` }, "thread-ci")).toBe(401);
   })));
 
-it.live("a member must switch to an Organization before its sidebar answers them", () =>
+it.live("a member's sidebar answers in whichever of their Organizations the URL names", () =>
   inCloud(Effect.gen(function* () {
     const ada = yield* signUp("ada");
     const bo = yield* signUp("bo");
+    expect(yield* chat(bo.caller.organization.slug, { cookie: ada.cookie }, "thread-ada")).toBe(404);
     const { drizzle } = yield* Database;
     yield* drizzle.insert(member).values({ userId: ada.caller.userId, organizationId: bo.caller.organization.id });
-    expect(yield* chat(bo.caller.organization.slug, { cookie: ada.cookie }, "thread-ada")).toBe(409);
+    expect(yield* chat(bo.caller.organization.slug, { cookie: ada.cookie }, "thread-ada")).toBe(200);
   })));
 
 it.live("a member cannot post into another member's thread, and that thread stays as it was", () =>
