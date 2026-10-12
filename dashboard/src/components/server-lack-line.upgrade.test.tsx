@@ -2,12 +2,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DbProvider } from "@tanstack/react-db";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { ServerLacks, requirements } from "#/modules/runtime/daemon-compat";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { listLatestServerUpgradesServerFn, readChannelReleaseServerFn, requestServerUpgradeServerFn } from "#/modules/server-upgrade/server-upgrade.functions";
+import { serverUpgradeKeys } from "#/modules/server-upgrade/server-upgrade.queries";
 import { ServerLackLine } from "./server-lack-line";
 
 vi.mock("#/modules/server-upgrade/server-upgrade.functions", () => ({
@@ -40,14 +41,14 @@ async function renderLine() {
   render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
     <ServerLackLine organizationSlug="acme" name="m-2" lack={new ServerLacks({ machineId: "m-2", capability: requirements.liveLogs.capability })} />
   </RouterContextProvider></DbProvider></QueryClientProvider>);
-  return async () => { cleanup(); await getDbClient(client).cleanup(); client.clear(); };
+  return { client, teardown: async () => { cleanup(); await getDbClient(client).cleanup(); client.clear(); } };
 }
 
 it("names the channel's release and offers Upgrade once the release reads, and Upgrade asks Cloud for that Server", async () => {
   vi.mocked(listLatestServerUpgradesServerFn).mockResolvedValue({ servers: {} });
   vi.mocked(readChannelReleaseServerFn).mockResolvedValue("0.2.4");
   vi.mocked(requestServerUpgradeServerFn).mockResolvedValue(undefined as never);
-  const teardown = await renderLine();
+  const { teardown } = await renderLine();
   try {
     expect((await screen.findByRole("button", { name: "Upgrade" })).closest("[role=status]")?.textContent)
       .toBe("Logs need a newer Ployz on web-2. 0.2.4 is out.Upgrade");
@@ -65,7 +66,7 @@ it("tries again after a read under the line fails, so the release and button com
   vi.mocked(readChannelReleaseServerFn).mockResolvedValue("0.2.4");
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const teardown = await renderLine();
+  const { teardown } = await renderLine();
   try {
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     expect(screen.getByRole("status").textContent).toBe("Logs need a newer Ployz on web-2.");
@@ -73,6 +74,23 @@ it("tries again after a read under the line fails, so the release and button com
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     expect(screen.getByRole("status").textContent).toBe("Logs need a newer Ployz on web-2. 0.2.4 is out.Upgrade");
+  } finally {
+    await teardown();
+  }
+});
+
+it("moves to Upgrading when another session's Upgrade lands through the org change stream, with no click here", async () => {
+  vi.mocked(listLatestServerUpgradesServerFn).mockResolvedValue({ servers: {} });
+  vi.mocked(readChannelReleaseServerFn).mockResolvedValue("0.2.4");
+  const { client, teardown } = await renderLine();
+  try {
+    await screen.findByRole("button", { name: "Upgrade" });
+    vi.mocked(listLatestServerUpgradesServerFn).mockResolvedValue({ servers: { "m-2": {
+      attemptId: "a".repeat(32), outcome: "running", stage: null, error: null, fromVersion: "0.2.3", targetVersion: "0.2.4", startedAt: new Date().toISOString(),
+    } } });
+    await act(async () => { await client.invalidateQueries({ queryKey: serverUpgradeKeys.all }); });
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Upgrading web-2 to 0.2.4"));
+    expect(requestServerUpgradeServerFn).not.toHaveBeenCalled();
   } finally {
     await teardown();
   }

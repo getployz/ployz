@@ -306,6 +306,37 @@ it("gives a Server that lacks the logs capability its own line, leaves every oth
   }
 });
 
+it("gives each of two lacking Servers its own line and no missing-logs alert, where trunk said both servers' logs were missing", async () => {
+  const harness = await lackHarness("both-old", [
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+    { machineId: "older", machineName: "older", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+  ]);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.source.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(screen.getAllByRole("status").map(line => line.textContent)).toEqual(["Older logs need a newer Ployz on old.", "Older logs need a newer Ployz on older."]));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("No logs yet")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("keeps a stopped Server's daemon in the missing-logs alert with no lack line", async () => {
+  const harness = await lackHarness("stopped", []);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.source.dispatchEvent(new Event("live")));
+    await act(async () => opened.source.dispatchEvent(transportError("fsn-2")));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("fsn-2: transport error"));
+    expect(screen.queryByRole("status")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
 it("reopens the log stream once a lacking Server's daemon changes, as after Upgrade", async () => {
   const harness = await lackHarness("upgraded", []);
   try {
