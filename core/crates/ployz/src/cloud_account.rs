@@ -38,8 +38,8 @@ impl Credential {
     }
 }
 
-/// `PLOYZ_TOKEN` (at `cloud`, else the stored sign-in's Cloud, else the default)
-/// wins over the stored sign-in. Never waits for a browser.
+/// `PLOYZ_TOKEN` (at [`named_cloud`], else the default) wins over the stored sign-in.
+/// Never waits for a browser.
 ///
 /// # Errors
 ///
@@ -52,14 +52,31 @@ pub(crate) async fn credential(
     let Some(token) = token.filter(|token| !token.is_empty()) else {
         return cloud_login::signed_in(store).await.map(Credential::Device);
     };
-    let cloud = match cloud {
-        Some(cloud) => cloud,
-        None => store.cloud()?.unwrap_or_else(|| DEFAULT_CLOUD.to_owned()),
-    };
     Ok(Credential::Token {
-        cloud: cloud_origin(&cloud),
+        cloud: named_cloud(store, true, cloud)?.unwrap_or_else(|| cloud_origin(DEFAULT_CLOUD)),
         token: Secret::new(token),
     })
+}
+
+/// The Cloud [`credential`] acts in, when anything names one: with a token, `cloud`
+/// else the stored sign-in's; without, the stored sign-in's (a device acts only where
+/// it signed in) else `cloud`. Whatever else talks to "the Cloud" reads this too, so
+/// it never names a different one than the credential.
+///
+/// # Errors
+///
+/// Returns a credential store that cannot be read, when it is consulted.
+pub(crate) fn named_cloud(
+    store: &CredentialStore,
+    token: bool,
+    cloud: Option<String>,
+) -> Result<Option<String>, LoginError> {
+    let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
+    let named = match cloud {
+        Some(cloud) if token => Some(cloud),
+        cloud => store.cloud()?.or(cloud),
+    };
+    Ok(named.map(|cloud| cloud_origin(&cloud)))
 }
 
 /// [`credential`] from `PLOYZ_TOKEN` and `PLOYZ_CLOUD_URL`: the one way commands
@@ -958,6 +975,26 @@ mod tests {
             cloud: cloud.to_owned(),
             token: Secret::new("ployz_secret".to_owned()),
         }
+    }
+
+    #[test]
+    fn a_device_acts_where_it_signed_in_and_a_token_where_the_cloud_url_says() {
+        let (dir, store) = signed_in_store("http://signed-in.test");
+        let other = || Some("http://other.test".to_owned());
+        assert_eq!(
+            named_cloud(&store, false, other()).unwrap().as_deref(),
+            Some("http://signed-in.test")
+        );
+        assert_eq!(
+            named_cloud(&store, true, other()).unwrap().as_deref(),
+            Some("http://other.test")
+        );
+        let empty = CredentialStore::beside(&dir.path().join("elsewhere/config.yaml"));
+        assert_eq!(
+            named_cloud(&empty, false, other()).unwrap().as_deref(),
+            Some("http://other.test"),
+            "signed out, the Cloud URL still names where commands are read"
+        );
     }
 
     #[tokio::test]

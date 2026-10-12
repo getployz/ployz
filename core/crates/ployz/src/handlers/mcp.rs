@@ -481,6 +481,11 @@ impl Server {
             Ok(Backend::Local(..)) => return Ok(refused(not_here().message).into()),
             Err(text) => return Ok(refused(text).into()),
         };
+        if let Some(setup) = &self.setup
+            && let Err(error) = setup.acts_with(&credential)
+        {
+            return Ok(refused(error.to_string()).into());
+        }
         if command.typed.is_some() {
             return Ok(refused(format!(
                 "`{tool}` asks a human to type the Organization's name first; run `ployz {}` \

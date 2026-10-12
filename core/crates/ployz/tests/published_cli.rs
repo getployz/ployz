@@ -389,3 +389,48 @@ fn a_command_line_that_misses_without_a_cloud_never_touches_the_network() {
     assert!(!output.status.success());
     assert!(cloud.routes().is_empty(), "{:?}", cloud.routes());
 }
+
+#[test]
+fn a_device_signed_in_to_one_cloud_never_reads_commands_from_the_cloud_url_names() {
+    let signed_in = Fixture::new("one");
+    let named = Fixture::new("one");
+    let stored = json!({
+        "state": "signed_in",
+        "cloud": signed_in.url,
+        "token": "session-token",
+        "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+        "organization": { "id": "o1", "slug": "acme" },
+    });
+    std::fs::write(signed_in.home.path().join("cloud.json"), stored.to_string()).unwrap();
+    let entry = entry_rendering("record");
+    let mut args = argv(&entry);
+    args.push("--json".into());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(&args)
+        .env("HOME", signed_in.home.path())
+        .env("PLOYZ_CONFIG", signed_in.config())
+        .env_remove("PLOYZ_TOKEN")
+        .env("PLOYZ_CLOUD_URL", &named.url)
+        .env("NO_PROXY", "127.0.0.1")
+        .env("no_proxy", "127.0.0.1")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        text(&output.stdout),
+        text(&output.stderr)
+    );
+    assert!(named.routes().is_empty(), "{:?}", named.routes());
+    let name = entry["name"].as_str().unwrap();
+    assert_eq!(
+        signed_in.routes(),
+        vec![
+            "GET /api/cli/manifest".to_owned(),
+            format!("POST /api/cli/run/{name}")
+        ],
+        "the manifest and the run both come from the signed-in Cloud"
+    );
+}

@@ -118,6 +118,11 @@ pub(crate) enum PublishError {
     /// The command asks for a typed name and there is no terminal to type it on.
     #[error("ployz {path} asks for the Organization's name on a terminal")]
     NeedsTerminal { path: String },
+    /// The commands were read from one Cloud and the credential acts in another.
+    #[error(
+        "the published commands came from Ployz Cloud at {published}, but ployz acts in {acting}"
+    )]
+    OtherCloud { published: String, acting: String },
 }
 
 impl PublishError {
@@ -132,6 +137,7 @@ impl PublishError {
             }
             Self::Gone { .. } => RpcErrorCode::NotFound,
             Self::NeedsTerminal { .. } => RpcErrorCode::ConfirmationRequired,
+            Self::OtherCloud { .. } => RpcErrorCode::Conflict,
         }
     }
 }
@@ -154,16 +160,16 @@ pub(crate) const UNKNOWN_COMMAND: &str = "unknown_command";
 const FEATURE_UNAVAILABLE: &str = "feature_unavailable";
 
 impl Setup {
-    /// `PLOYZ_CLOUD_URL`, else the signed-in Cloud beside `config`, else the default.
+    /// The Cloud the credential acts in, as [`cloud_account::named_cloud`] picks it from
+    /// `PLOYZ_TOKEN`, `cloud` (`PLOYZ_CLOUD_URL`) and the sign-in beside `config`.
     pub(crate) fn beside(config: &Path, cloud: Option<String>) -> Self {
-        let named = cloud
-            .filter(|cloud| !cloud.trim().is_empty())
-            .or_else(|| CredentialStore::beside(config).cloud().ok().flatten());
-        let configured = named.is_some()
-            || std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
-        let cloud = named.unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
+        let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+        let named = cloud_account::named_cloud(&CredentialStore::beside(config), token, cloud)
+            .ok()
+            .flatten();
+        let configured = named.is_some() || token;
         Self {
-            cloud: crate::cloud_enroll::cloud_origin(&cloud),
+            cloud: named.unwrap_or_else(|| crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD)),
             configured,
             config: config.to_path_buf(),
             dir: config.with_file_name("published"),
@@ -214,6 +220,21 @@ impl Setup {
         )
     }
 
+    /// Refuse to run a command read from this Cloud with a credential for another.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublishError::OtherCloud`] when they differ.
+    pub(crate) fn acts_with(&self, credential: &Credential) -> Result<(), PublishError> {
+        if credential.cloud() == self.cloud {
+            return Ok(());
+        }
+        Err(PublishError::OtherCloud {
+            published: self.cloud.clone(),
+            acting: credential.cloud().to_owned(),
+        })
+    }
+
     fn path(&self) -> PathBuf {
         let hash = Sha256::digest(self.cloud.as_bytes());
         self.dir.join(format!("{}.json", hex(&hash)))
@@ -256,8 +277,8 @@ impl Setup {
     }
 
     /// Fetch the manifest, within [`REFRESH_BUDGET`], and keep it. Unsigned first,
-    /// then with `credential` when Cloud asks for one. A cached revision is sent so an
-    /// unchanged manifest costs no body.
+    /// then with `credential` when Cloud asks for one and `credential` is for this
+    /// Cloud. A cached revision is sent so an unchanged manifest costs no body.
     ///
     /// # Errors
     ///
@@ -287,7 +308,8 @@ impl Setup {
         if matches!(
             response.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-        ) && let Some(credential) = credential
+        ) && let Some(credential) =
+            credential.filter(|credential| credential.cloud() == self.cloud)
         {
             response = send(Some(credential))
                 .await
@@ -561,6 +583,64 @@ mod tests {
             cached.revision, manifest.revision,
             "eviction is not a refresh"
         );
+    }
+
+    /// A Cloud that refuses every request unsigned, and the headers of each it saw.
+    fn refusing_cloud() -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (saw, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    headers.push_str(&line.to_ascii_lowercase());
+                }
+                let _ = saw.send(headers);
+                let body = "{}";
+                write!(
+                    stream,
+                    "HTTP/1.1 401 X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_credential_for_another_cloud_is_never_sent_and_never_runs() {
+        let home = tempfile::tempdir().unwrap();
+        let stored = serde_json::json!({
+            "state": "signed_in",
+            "cloud": "http://signed-in.test",
+            "token": "session-token",
+            "account": { "id": "u1", "email": "dev@example.test", "name": "Dev" },
+            "organization": { "id": "o1", "slug": "acme" },
+        });
+        std::fs::write(home.path().join("cloud.json"), stored.to_string()).unwrap();
+        let store = CredentialStore::beside(&home.path().join("config.yaml"));
+        let device = cloud_account::credential(&store, None, None).await.unwrap();
+        let (url, seen) = refusing_cloud();
+        let elsewhere = setup(tempfile::tempdir().unwrap().path(), &url);
+
+        assert!(elsewhere.refresh(Some(&device)).await.is_err());
+        let requests: Vec<String> = seen.try_iter().collect();
+        assert_eq!(requests.len(), 1, "no signed retry: {requests:?}");
+        assert!(!requests[0].contains("authorization:"), "{}", requests[0]);
+        assert!(matches!(
+            elsewhere.acts_with(&device),
+            Err(PublishError::OtherCloud { .. })
+        ));
     }
 
     #[test]

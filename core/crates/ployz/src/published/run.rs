@@ -37,6 +37,7 @@ pub(crate) fn run(
         .block_on(setup.credential())
         .map_err(Failure::from)?
         .ok_or_else(|| Failure::from(crate::cloud_login::LoginError::SignedOut))?;
+    setup.acts_with(&credential).map_err(Failure::command)?;
     if command.typed == Some(Typed::Organization) {
         if !ui::can_prompt() {
             return Err(Failure::command(PublishError::NeedsTerminal {
