@@ -15,11 +15,9 @@ refreshed. A change here waits for your next deploy, which runs it before your s
 then it shows in its colour: pink for a new primary, green for a new copy, red and struck through
 for one going away. It counts in the bottom bar and Details. Nothing runs on click.
 
-Every server that can hold managed volumes must run a Ployz that can move volumes, 0.2.5 or newer,
-before any volume moves. Until then Placement only shows, and names the servers to upgrade, for
-example "Upgrade db-1 to a newer Ployz". When Ployz can't read what a server runs, it says "Ployz
-can't tell whether db-1 can move volumes" instead. **Use mirror**, **Drain**'s moves and the
-15-minute refresh wait too.
+Every server with storage needs a newer Ployz before any volume moves or mirrors. Until then
+Placement only shows, and names the servers to upgrade, for example "Upgrade db-1 to a newer
+Ployz". **Use mirror**, **Drain**'s moves and the 15-minute refresh wait too.
 
 - **+ Add**, under Mirrors, offers only servers that run services. A volume has one mirror for now.
   The × on a mirror removes it.
@@ -76,11 +74,12 @@ finish. One run at a time per volume: a second one is refused and names the run 
 ployz volume move data --to web-2
 ```
 
-Your service keeps running while Ployz copies the volume and its image to `web-2`.
-Then Ployz stops the service, sends what changed during the copy, and starts the service on
-`web-2` with the same volume. Your service is down only for that last step. A service that
-takes a while to stop or start doesn't fail the move: Ployz waits for Docker, up to ten minutes
-for each stop or start.
+Your service keeps running while Ployz copies the volume to `web-2` in rounds. Then Ployz takes
+the service on the old server out of ingress, lets requests in flight finish for up to 3 seconds,
+and stops it. It takes a last snapshot of the volume. `web-2` pulls that snapshot and starts the
+service there. Then Ployz removes the old server's container. Your service is down only from the
+stop to the start on `web-2`. A service that takes a while to stop or start doesn't fail the
+move. Ployz waits for Docker, up to ten minutes for each stop or start.
 
 The old server keeps a read-only copy, shown as `data-web-1`. Moving back sends only what
 changed since. If the volume already has a mirror on `web-2`, the move starts from it. From the
@@ -91,11 +90,13 @@ moment the service stops until the move ends, deploys of it are refused.
 A move can stop if a server or Ployz Cloud goes away during it. `ployz volume runs data` shows
 why. What happens next depends on how far it got.
 
-- **Before the handover**, Ployz starts your service again on the old server, with all its
-  data. The run fails and names what went wrong. Run the move again when you're ready.
-- **After the handover**, the volume belongs to the new server, and your service stays down
-  until the move finishes there. The run says so: `volume move data --to web-2 again continues
-  from there`. Run that line; it picks up where the move stopped.
+- **Before Ployz stops your service on the old server**, your service keeps running there, with
+  all its data. The run fails and names what went wrong. Run the move again when you're ready.
+- **After it stops and before `web-2` starts it**, Ployz deletes the copy on `web-2` first, then
+  starts your service again on the old server. The run fails and names what went wrong.
+- **Once `web-2` is told to start your service**, the volume belongs to the new server, and your
+  service stays down until the move finishes there. The run says so: `volume move data --to
+  web-2 again continues from there`. Run that line; it picks up where the move stopped.
 
 If the move stopped and nothing started your service again, release the volume:
 
@@ -103,10 +104,11 @@ If the move stopped and nothing started your service again, release the volume:
 ployz volume release data
 ```
 
-Release starts the service again on the old server. It's refused once the volume has been
-handed over, and names the move to run instead.
+Release ends a move that stopped. Before `web-2` starts your service, Release deletes the copy
+on `web-2` and starts your service again on the old server. Once `web-2` runs it, Release
+removes the old server's stopped container and the move is done.
 
-After the handover, finishing the move still needs the old server to answer. If the old server
+Once `web-2` is told to start your service, finishing the move still needs the old server to answer. If the old server
 dies, your service stays down until it comes back or you restore the volume.
 
 ## Restore a volume

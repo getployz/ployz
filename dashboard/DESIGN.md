@@ -391,7 +391,7 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 
 A capability name decides and the Release Channel explains. `daemon-compat.ts` is the one file that maps features to capabilities. `requirements` names each feature and the capability it needs, `requirementFor` finds the feature a refusal names, `ServerLacks` is the typed failure a refusal decodes to, and `serverSupports` answers yes, no, or unknown from a Server's record. A record that lists nothing claims no lack.
 
-Placement is the one place a version decides. Releases before the capability list don't say what they serve, so `daemon-release.ts` reads such a Server's version against 0.2.5, the first release that moves volumes. A version it can't read keeps Placement closed with "Ployz can't tell whether web-2 can move volumes." and claims no Upgrade. That constant is the only release number in Cloud code.
+Placement is the one exception. Every daemon that serves `SetVolumeCopy` lists its capabilities, so an empty list proves the lack. A Server whose record lists no capabilities can't move volumes, so Placement asks for an Upgrade. Cloud code holds no release number.
 
 Beside other Servers' lines, the Logs page reads "web-2 needs an upgrade to show its logs." with a link to web-2, or "2 servers need an upgrade to show their logs." with a link to Servers. With no lines at all it reads "Upgrade web-2 to see its logs" with a link to web-2, or "Upgrade 2 servers to see their logs" with a link to Servers. Logs offer no Upgrade and don't watch for one. The reader upgrades from the Server page and reloads Logs.
 
