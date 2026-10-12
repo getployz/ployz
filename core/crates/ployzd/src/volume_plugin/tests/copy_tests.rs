@@ -547,11 +547,13 @@ fn pull(target: &str) -> Value {
     json!({"name": "data", "from": "::1", "target": target})
 }
 
-/// Polls the copy until the pull landed `target` or stopped with a failure.
+/// Polls the copy until the pull landed `target` read-only or stopped with a failure.
+/// The receive shows `target` before the pull checks the copy's properties.
 async fn landed(socket: &Path, target: &str) -> Value {
     for _ in 0..300 {
         let copy = post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
-        if copy.pointer("/Ok/newest/name") == Some(&json!(target))
+        if (copy.pointer("/Ok/newest/name") == Some(&json!(target))
+            && copy.pointer("/Ok/readonly") == Some(&json!(true)))
             || copy
                 .pointer("/Ok/pull/failure")
                 .is_some_and(|failure| !failure.is_null())
