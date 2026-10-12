@@ -2,10 +2,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import * as runs from "#/modules/volume-run/volume-run.functions";
 import * as functions from "./volume-placement.functions";
-import { useStagedPlacements } from "./volume-placement.hooks";
+import { useDeleteCopy, useStagedPlacements } from "./volume-placement.hooks";
 import type { PlacementRow } from "./volume-placement";
 
 afterEach(() => vi.restoreAllMocks());
@@ -35,4 +36,20 @@ it("Discard all discards a staged restore the Servers haven't answered for yet, 
   await waitFor(() => expect(discarded).toHaveBeenCalledWith({ data: { organizationSlug: "acme", volumeId: "vol-restored", environment } }));
   expect(storeDiscarded).toBe(true);
   expect(result.current.groups).toEqual([]);
+});
+
+it("Delete copy asks for the delete run at once and toasts its outcome", async () => {
+  const deleted = vi.spyOn(functions, "deleteCopyServerFn").mockResolvedValueOnce({ ok: true } as never)
+    .mockResolvedValueOnce({ ok: false, refusal: { message: "data is busy." } } as never);
+  const success = vi.spyOn(toast, "success").mockReturnValue("");
+  const error = vi.spyOn(toast, "error").mockReturnValue("");
+  const queryClient = new QueryClient();
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
+
+  await result.current("web-3");
+  expect(deleted).toHaveBeenCalledWith({ data: { organizationSlug: "acme", volumeId: "v1", environment, server: "web-3" } });
+  expect(success).toHaveBeenCalledWith("Copy deleted");
+  await result.current("web-3");
+  expect(error).toHaveBeenCalledWith("data is busy.");
 });

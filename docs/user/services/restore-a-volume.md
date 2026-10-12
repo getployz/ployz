@@ -8,14 +8,13 @@ A volume with a mirror has restore points: the copies the mirror took on each de
 it. The original volume stays until you delete it.
 
 Restore works on managed volumes in Ployz Cloud, once every server that can hold managed volumes
-runs Ployz 0.2.5 or newer. Until then the points list without **Restore**. A volume without a mirror has no points; add one
+runs Ployz 0.2.5 or newer. Until then the points list without **Restore**. A volume without a mirror has no points. Add one
 with **Add copy** under the volume's **Copies**. See [Move a volume](move-a-volume.md).
 
 ## In Ployz Cloud
 
-Open the volume and pick **Backups**. Each point shows when it was taken and the server that
-holds it, newest first. A mirror keeps only its latest point, so the list has one point per
-mirror.
+Open the volume and click its mirror under **Copies**. **Restore point** shows when the mirror's
+latest point was taken. A mirror keeps only its latest point.
 
 **Restore** on a point stages the restore. It counts in the bottom bar and Details like any other
 change. Nothing runs on click. Details shows the new volume, named after the original and the
@@ -36,5 +35,4 @@ not mounted. Delete it from its **Settings** tab when you no longer need it.
   server cannot fit a second copy, the deploy fails and says how much space is missing.
 - **The original's server must answer** for the copy to run. If the point's mirror is gone by then,
   the deploy fails and names the point.
-- **S3 backups are not here yet.** The Backups tab says so. Keep your own copies off your servers
-  meanwhile.
+- **S3 backups are not here yet.** Keep your own copies off your servers meanwhile.

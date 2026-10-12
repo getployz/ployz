@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Schema } from "effect";
 import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
-import type { EnvironmentRef, VolumeListing } from "@ployz/sdk";
+import type { DiffView, EnvironmentRef, EnvironmentView, MachineId, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel, FieldTitle } from "#/components/ui/field";
@@ -19,8 +19,8 @@ import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { StoreVolumePlacement } from "./StoreVolumePlacement";
-import { StoreVolumeBackups } from "./StoreVolumeBackups";
+import { SafetyLine, useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
+import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
@@ -35,31 +35,51 @@ type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volu
 
 const RESOURCE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId";
 
-/**
- * A Volume in the Config Store, in two tabs. Settings: where it lives, who mounts it, its storage, and its removal.
- * Backups: its restore points, each one a new Volume on Restore. Every edit is staged like any other change; the data
- * goes only with a Deploy that removes a deployed Volume, which asks first.
- */
 type VolumeResourceRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
 
-export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParams }) {
+/**
+ * A Volume in the Config Store, in two tabs. Copies: the live one and every place it survives a dead Server, with a
+ * mirror opening in detail at its own address. Settings: its space, who mounts it, and its removal. Every edit is staged
+ * like any other change, except deleting an old copy, which runs at once after a confirm.
+ */
+export function StoreVolumeDrawer({ params, volumeId = params.resourceId, copy = null }: {
+  params: VolumeResourceRouteParams;
+  volumeId?: string;
+  /** The mirror open in detail, from its own resource address. */
+  copy?: MachineId | null;
+}) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const { tab } = useSearch({ from: RESOURCE_ROUTE_FROM });
-  const navigate = useNavigate({ from: ENVIRONMENT_RESOURCE_ROUTE_TO });
   const { organizationSlug } = params;
   const views = useStoreViews(organizationSlug, [volumesQuery(store), servicesQuery(store), diffQuery(store), environmentSettingsQuery(store)] as const);
   const listings = requireView(views[0]).volumes;
   const services = requireView(views[1]).services;
   const settings = requireView(views[3]);
   const volumes = effectiveVolumes(listings, services, settings);
-  // Staged counts count: a shared volume warns before the Deploy that would share it.
-  const replicasOf = (service: string) => replicaCount(serviceSettingRows(settings, service).get("replicas"));
-  const diff = requireView(views[2]);
-  const writer = useStoreWriter(organizationSlug);
-  const volume = volumes.find((candidate) => candidate.id === params.resourceId);
+  const volume = volumes.find((candidate) => candidate.id === volumeId);
   // A stale link, or removed while open (a new Volume's removal, or from the CLI).
   if (!volume) return <CanvasInspectorNotFound noun="Volume" />;
-  const state: StoreVolume = { organizationSlug, environment: store, volume };
+  return <VolumeDrawer params={params} environment={store} volume={volume} volumes={volumes} services={services}
+    settings={settings} diff={requireView(views[2])} copy={copy} />;
+}
+
+function VolumeDrawer({ params, environment, volume, volumes, services, settings, diff, copy }: {
+  params: VolumeResourceRouteParams;
+  environment: EnvironmentRef;
+  volume: VolumeListing;
+  volumes: readonly VolumeListing[];
+  services: readonly ServiceListing[];
+  settings: EnvironmentView;
+  diff: DiffView;
+  copy: MachineId | null;
+}) {
+  const { organizationSlug } = params;
+  const { tab } = useSearch({ from: RESOURCE_ROUTE_FROM });
+  const navigate = useNavigate({ from: ENVIRONMENT_RESOURCE_ROUTE_TO });
+  const writer = useStoreWriter(organizationSlug);
+  const data = useVolumeCopies(organizationSlug, environment, volume);
+  // Staged counts count: a shared volume warns before the Deploy that would share it.
+  const replicasOf = (service: string) => replicaCount(serviceSettingRows(settings, service).get("replicas"));
+  const state: StoreVolume = { organizationSlug, environment, volume };
   const removing = volume.change === "delete";
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
@@ -67,6 +87,11 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
     ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
   const managed = volume.deployed && volume.storage.kind === "provisioned" && !removing;
+  const mount = volume.mounts[0];
+  const open = (next: MachineId | null) => void navigate({
+    params: { ...params, resourceId: next === null ? volume.id : mirrorResourceId(volume.id, next) },
+    search: (prev) => ({ ...prev, tab: "copies" as const }),
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -75,17 +100,15 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
           <CanvasInspectorNameEditor value={volume.name} schema={nameSchema} editTitle="Edit volume name"
             editDescription="Rename this volume. Its data and mounts stay." placeholder="Volume name"
             {...changedProps(renamed)}
-            onRename={(name) => writer.commit({ command: "rename_volume", environment: store, volume: volume.name, name })} />
+            onRename={(name) => writer.commit({ command: "rename_volume", environment, volume: volume.name, name })} />
         )}
-        {/* What it is and who uses it; the mount paths live in Mounts. */}
         <p className="truncate text-sm text-muted-foreground">
-          {[volumeStorageText(volume.storage), volume.deployed ? null : "not deployed",
-            volume.mounts.length ? `mounted by ${volume.mounts.map((mount) => mount.service).join(", ")}` : "not mounted"]
-            .filter(Boolean).join(" · ")}
+          {mount ? `${[...new Set(volume.mounts.map((entry) => entry.service))].join(", ")} · ${mount.path}` : "Not mounted"}
         </p>
+        {managed && data.copies ? <SafetyLine copies={data.copies} /> : null}
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-        <Tabs value={Schema.is(volumePageSchema)(tab) ? tab : "settings"}
+        <Tabs value={Schema.is(volumePageSchema)(tab) ? tab : "copies"}
           onValueChange={(value) => {
             if (Schema.is(volumePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
           }}
@@ -93,31 +116,32 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
           <TabsList variant="line" className="-mx-4 max-w-none shrink-0 overflow-x-auto sm:mx-0 sm:max-w-full">
             {VOLUME_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
           </TabsList>
+          <TabsContent value="copies" className="mt-3 min-h-0 flex-1 overflow-clip">
+            <div className="h-full overflow-y-auto pr-1 pb-8">
+              <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+                {managed ? <VolumeCopiesPanel {...data} open={copy} onOpen={open} /> : (
+                  <Empty variant="placeholder">
+                    <EmptyDescription>{removing ? "Removed on next deploy." : volume.deployed ? "Managed volumes only." : "Deploy first."}</EmptyDescription>
+                  </Empty>
+                )}
+              </div>
+            </div>
+          </TabsContent>
           <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-                {/* Copies exist once a Deploy made the managed Volume on a Server. */}
-                {managed ? <StoreVolumePlacement organizationSlug={organizationSlug} environment={store} volume={volume} /> : null}
+                <SettingsSection id="space" title="Space">
+                  <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
+                </SettingsSection>
                 {removing ? <SettingsSection id="mounts" title="Mounts">
                     <Empty variant="placeholder">
                       <EmptyDescription>Removed on next deploy.</EmptyDescription>
                     </Empty>
-                  </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={store}
+                  </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={environment}
                     services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} />}
-                <SettingsSection id="storage" title="Storage">
-                  <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
-                </SettingsSection>
                 <SettingsSection id="danger" title="Danger">
                   <StoreVolumeDanger state={state} params={params} version={diff.version} />
                 </SettingsSection>
-              </div>
-            </div>
-          </TabsContent>
-          <TabsContent value="backups" className="mt-3 min-h-0 flex-1 overflow-clip">
-            <div className="h-full overflow-y-auto pr-1 pb-8">
-              <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-                <StoreVolumeBackups organizationSlug={organizationSlug} environment={store} volume={volume} removing={removing}
-                  onAddMirror={() => void navigate({ search: (prev) => ({ ...prev, tab: "settings" }), hash: "placement", replace: true })} />
               </div>
             </div>
           </TabsContent>
