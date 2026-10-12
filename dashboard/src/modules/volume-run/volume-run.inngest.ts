@@ -154,11 +154,11 @@ const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
   copy?.kind === "slot" && copy.pull === null && copy.newest?.guid === target.guid;
 
 /**
- * B pulls `target` from A and the run checks until the pull lands. A landed pull, or one that stopped without landing,
- * is asked again: the same request finishes a landed pull and starts a stopped one.
+ * B pulls `target` from A and the run asks again until the pull lands. Every check resends the same request: it finishes
+ * a landed pull, leaves a running one alone, and resumes one a restart of B stopped.
  */
 async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot }) {
-  const { step, runEffect, run, runId } = steps;
+  const { step, run } = steps;
   const { B, target } = ctx;
   const slot = copyName(run.volumeName, B.name);
   const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
@@ -168,12 +168,9 @@ async function pull(steps: RunSteps, prefix: string, ctx: { readonly B: MachineR
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
     if (failure !== null) throw new NonRetriableError(`${slot} could not receive ${target.name}: ${failure}`);
-    if (copy?.kind === "slot" && (copy.pull === null || copy.newest?.guid === target.guid)) {
-      copy = await mustSet(steps, `${prefix}-pull-${poll}`, B, expectOf(copy), want, still);
-      continue;
-    }
-    await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
-    copy = await step.run(`${prefix}-inspect-${poll}`, () => runEffect(inspectCopy(run, runId, B)));
+    const settled = copy?.kind === "slot" && (copy.pull === null || copy.newest?.guid === target.guid);
+    if (!settled) await step.sleep(`${prefix}-wait-${poll}`, POLL_INTERVAL);
+    copy = await mustSet(steps, `${prefix}-pull-${poll}`, B, expectOf(copy), want, still);
   }
   throw new NonRetriableError(`${slot} is still receiving ${target.name} after ${MAX_POLLS} checks`);
 }

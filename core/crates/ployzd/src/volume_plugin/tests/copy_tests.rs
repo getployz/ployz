@@ -734,6 +734,39 @@ async fn a_pull_resumes_an_interrupted_receive_then_prunes_to_the_target() {
 }
 
 #[tokio::test]
+async fn a_pull_resent_after_a_restart_resumes_the_stopped_receive_by_its_token() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(
+        reply.pointer("/Ok/pull/target"),
+        Some(&json!("w-1-2")),
+        "{reply}"
+    );
+    let copy = landed(&socket, "w-1-2").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("12")),
+        "{copy}"
+    );
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
+    assert_eq!(
+        source.requests(),
+        [
+            "/volume-bound/data",
+            "/volume-send/data?target=w-1-2&token=token-1",
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
     source.answer(

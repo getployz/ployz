@@ -54,8 +54,8 @@ const environment = { project: "shop", environment: "production" };
 const inngest = new Inngest({ id: "volume-run-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
-/** A pull to `target` that fails with a message, or that the Machine drops so it reads as never started. */
-type PullFault = { target: string; kind: "fail" | "drop" };
+/** A pull to `target` that fails with a message, or whose Machine restarts mid-receive and keeps `pull` set. */
+type PullFault = { target: string; kind: "fail" | "restart" };
 
 type FakeMachine = {
   name: string;
@@ -67,6 +67,8 @@ type FakeMachine = {
   /** Writes since the writer's newest snapshot: a Snapshot takes a new one only while this is above zero. */
   writes?: number;
   pullFault?: PullFault;
+  /** A restart stopped the running receive; the next Mirror set resumes it. */
+  stopped?: boolean;
 };
 
 type FakeContainer = { machine: string; id: string; running: boolean };
@@ -187,7 +189,8 @@ describe("volume runs", () => {
 
   /**
    * SetVolumeCopy as the daemon answers it: at the wanted state is success, then a landed pull of the wanted target
-   * finishes whatever the expect, else the expect, else the transition. A receive lands on an inspect and keeps `pull`.
+   * finishes whatever the expect, else the expect, else the transition. A receive lands on an inspect or a Mirror set and
+   * keeps `pull`; a resend for the running target changes nothing.
    */
   const transition = (fake: FakeMachine, expect: ExpectedCopy, want: WantedCopy): CopyRefusal | null => {
     if (atWant(fake, want)) return null;
@@ -222,6 +225,7 @@ describe("volume runs", () => {
     switch (want.kind) {
       case "mirror":
         if (want.from === null) return "no_transition";
+        if (copy?.kind === "slot" && copy.pull?.target === want.target) return null;
         fake.copy = slotCopy(copy?.newest ?? null, { target: want.target, failure: null }, copy?.kind === "slot" ? copy.slot : newSlot());
         return null;
       case "forget":
@@ -243,17 +247,20 @@ describe("volume runs", () => {
     return { code: fault === "busy" ? "unavailable" : "failed_precondition", message: fault, details: { reason: fault, copy } };
   };
 
-  const inspect = (fake: FakeMachine): VolumeCopyView => {
+  const receive = (fake: FakeMachine) => {
     const copy = fake.copy;
     const pull = copy?.kind === "slot" ? copy.pull : null;
-    if (copy?.kind === "slot" && pull !== null && pull.failure === null) {
-      const fault = fake.pullFault;
-      if (fault?.target === pull.target && fault.kind === "fail") fake.copy = { ...copy, pull: { ...pull, failure: "disk full" } };
-      else if (fault?.target === pull.target) {
-        fake.pullFault = undefined;
-        fake.copy = { ...copy, pull: null };
-      } else fake.copy = { ...copy, newest: snapshots.get(pull.target) ?? copy.newest };
-    }
+    if (copy?.kind !== "slot" || pull === null || pull.failure !== null || fake.stopped === true) return;
+    const fault = fake.pullFault;
+    if (fault?.target === pull.target && fault.kind === "fail") fake.copy = { ...copy, pull: { ...pull, failure: "disk full" } };
+    else if (fault?.target === pull.target) {
+      fake.pullFault = undefined;
+      fake.stopped = true;
+    } else fake.copy = { ...copy, newest: snapshots.get(pull.target) ?? copy.newest };
+  };
+
+  const inspect = (fake: FakeMachine): VolumeCopyView => {
+    receive(fake);
     return { copy: fake.copy };
   };
 
@@ -317,6 +324,10 @@ describe("volume runs", () => {
         return fail("down");
       }
       if (fault !== undefined) return fail(fault);
+      if (want.kind === "mirror") {
+        receive(fake);
+        fake.stopped = false;
+      }
       const refused = transition(fake, expected, want);
       return refused === null ? Effect.succeed({ copy: fake.copy }) : fail(refused);
     }),
@@ -777,20 +788,21 @@ describe("volume runs", () => {
       const output = await execute(run.id);
 
       expect(output.error).toBeDefined();
-      expect(verbs.slice(-3)).toEqual(["cut@fsn-1(f-1)", "pull@fsn-2(f-1)", "writer@fsn-1(kept)"]);
+      expect(verbs.slice(-4)).toEqual(["cut@fsn-1(f-1)", "pull@fsn-2(f-1)", "pull@fsn-2(f-1)", "writer@fsn-1(kept)"]);
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, epoch: 1, newest: at("f-1") });
       expect(machines.filter((fake) => fake.copy?.kind === "root")).toHaveLength(1);
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 could not receive f-1: disk full" }]);
     });
 
-    it("a final pull the Machine dropped is asked again", async () => {
-      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "f-1", kind: "drop" } };
+    it("a final pull a restart of B stopped resumes and lands", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: null, pullFault: { target: "f-1", kind: "restart" } };
       const run = await requested({ kind: "move", args: { to: "fsn-2" } });
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, moved: "fsn-2" });
       expect(verbs.filter((verb) => verb === "pull@fsn-2(f-1)")).toHaveLength(3);
+      expect(named("fsn-2")).toMatchObject({ stopped: false, copy: { kind: "root", readonly: false, newest: at("f-1") } });
     });
 
     it("again after the cut continues from the final pull", async () => {
