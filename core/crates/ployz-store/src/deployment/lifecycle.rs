@@ -3,7 +3,8 @@
 use super::*;
 
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
-/// superseded: the newest admission replaces the pending one.
+/// superseded: the newest admission replaces the pending one and takes over the
+/// Services it would have torn down.
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -54,6 +55,17 @@ pub(crate) fn admit(
             json!({}),
         ));
     }
+    let full = services.is_empty() && !frozen.nodes.iter().any(TargetNode::retires);
+    let mut nodes = frozen.nodes.clone();
+    inherit(tx, environment, (&intent, &intent), &mut nodes)?;
+    let mut targets = services.to_vec();
+    for node in nodes.iter().filter(|node| !full && node.retires()) {
+        if let TargetNode::Service { name, .. } = node
+            && !targets.contains(name)
+        {
+            targets.push(name.clone());
+        }
+    }
     let number = queue(tx, environment)?;
     let summary = DeploymentSummary {
         id: id.clone(),
@@ -61,7 +73,7 @@ pub(crate) fn admit(
         number,
         status: DeploymentStatus::Queued,
         saved,
-        services: services.to_vec(),
+        services: targets,
         runner: None,
         upload,
         remove: saved == NOTHING,
@@ -88,7 +100,7 @@ pub(crate) fn admit(
                 .into(),
             revision_param(saved)?.into(),
             json_text(&summary.services).as_str().into(),
-            json_text(&frozen.nodes).as_str().into(),
+            json_text(&nodes).as_str().into(),
             frozen.namespace.as_str().into(),
             json_text(&Run::default()).as_str().into(),
             json_text(&frozen.credentials).as_str().into(),
@@ -135,6 +147,72 @@ pub(crate) fn forget(
         &[stored.summary.environment_id.as_str().into()],
     )?;
     end(tx, stored, outcome, DeploymentStatus::Applied)
+}
+
+/// Add to `nodes` the teardown of each Service `environment`'s queued Deployment
+/// retires and Saved revision `saved` still lacks, but none of the runtime Services
+/// `saved` runs: superseding it must not leave them running. A node of that Service
+/// becomes its teardown, so the next Deployment to supersede this one takes it over.
+/// Each Service it adds takes along the removed Configs that leave with it:
+/// [`unmounted`] from `shipped`, the revision these nodes ship.
+fn inherit(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    (saved, shipped): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
+    nodes: &mut Vec<TargetNode>,
+) -> Result<(), RpcError> {
+    let given = nodes.len();
+    let rows = tx.query(
+        "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
+        &[environment.as_str().into()],
+    )?;
+    for row in &rows {
+        let queued: Vec<TargetNode> = row.json(0, "Deployment")?;
+        for node in queued {
+            let TargetNode::Service {
+                id, name, removals, ..
+            } = node
+            else {
+                continue;
+            };
+            if saved
+                .services
+                .iter()
+                .any(|service| service.id == id.as_str())
+            {
+                continue;
+            }
+            let runtimes = ServiceRemovals::from_names(
+                removals
+                    .iter()
+                    .filter(|runtime| {
+                        !saved
+                            .services
+                            .iter()
+                            .any(|service| service.config.private_dns == **runtime)
+                    })
+                    .cloned(),
+            );
+            if runtimes.is_empty() {
+                continue;
+            }
+            let retire = TargetNode::retire(&Retire { id, name, runtimes })?;
+            match nodes.iter_mut().find(|ours| ours.id() == retire.id()) {
+                Some(TargetNode::Service { removals: ours, .. }) if !ours.is_empty() => {
+                    ours.extend(retire.runtimes().into_iter().cloned());
+                }
+                Some(ours @ TargetNode::Service { .. }) => *ours = retire,
+                Some(_) => {}
+                None => nodes.push(retire),
+            }
+        }
+    }
+    if nodes.len() > given {
+        let applied = applied_state(tx, environment, shipped)?;
+        let unmounted = unmounted(shipped, &applied, nodes)?;
+        nodes.extend(unmounted);
+    }
+    Ok(())
 }
 
 /// Supersede `environment`'s queued Deployment, if any, and number the next one.
@@ -209,15 +287,17 @@ pub(crate) fn retry(
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::removal::guard_removal(tx, &environment)?;
     }
+    let (services, nodes) = retried(tx, &stored)?;
     let number = queue(tx, &stored.summary.environment_id)?;
     let admitted_at = now();
-    // Every frozen column comes from the source, so a retry never re-reads authored state.
+    // Every other frozen column comes from the source, so a retry never re-reads
+    // authored state.
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
           namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
-         SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, services, \
-          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
+         SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
+          ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
          FROM config_deployment WHERE id = ?4",
         &[
             id.as_str().into(),
@@ -228,6 +308,8 @@ pub(crate) fn retry(
             source.as_str().into(),
             admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
+            json_text(&services).as_str().into(),
+            json_text(&nodes).as_str().into(),
         ],
     )?;
     // A retry builds the commits its source pinned.
@@ -242,6 +324,7 @@ pub(crate) fn retry(
         id: id.clone(),
         number,
         status: DeploymentStatus::Queued,
+        services,
         runner: None,
         admitted_by: who.principal.clone(),
         admitted_at,
@@ -252,6 +335,112 @@ pub(crate) fn retry(
         warnings: Vec::new(),
         ..stored.summary
     })
+}
+
+/// The targets and nodes a retry of `stored` ships: its own, but a targeted one
+/// tears down only what the latest Saved revision still lacks, as after an Undo.
+/// Either takes over the teardown of the queued Deployment it supersedes. A retry whose
+/// Saved revision still holds a Service that teardown retires is refused: it would
+/// run that Service again, or tear it down while deploying it, so the teardown stays.
+fn retried(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+) -> Result<(Vec<ServiceName>, Vec<TargetNode>), RpcError> {
+    let environment = &stored.summary.environment_id;
+    let latest = crate::review::latest_saved(tx, environment)?.map(|latest| latest.intent);
+    let source = saved_at(tx, environment, stored.summary.saved)?;
+    let holds = |intent: &SavedEnvironmentIntent, id: &str| {
+        intent.services.iter().any(|service| service.id == id)
+    };
+    for row in &tx.query(
+        "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
+        &[environment.as_str().into()],
+    )? {
+        let queued: Vec<TargetNode> = row.json(0, "Deployment")?;
+        if queued.iter().filter(|node| node.retires()).any(|node| {
+            latest
+                .as_ref()
+                .is_some_and(|latest| !holds(latest, node.id()))
+                && holds(&source, node.id())
+        }) {
+            return Err(error::conflict(
+                "A teardown is queued: deploy instead",
+                json!({ "deployment": stored.summary.id }),
+            ));
+        }
+    }
+    if stored.summary.services.is_empty() {
+        let mut nodes = stored.nodes.clone();
+        if let Some(latest) = &latest {
+            inherit(tx, environment, (latest, &source), &mut nodes)?;
+        }
+        return Ok((Vec::new(), nodes));
+    }
+    let latest = latest.ok_or_else(|| error::corrupt("Saved State"))?;
+    let mut nodes = Vec::new();
+    for node in &stored.nodes {
+        match node {
+            TargetNode::Service {
+                id, name, removals, ..
+            } if !removals.is_empty() => {
+                if latest
+                    .services
+                    .iter()
+                    .any(|service| service.id == id.as_str())
+                {
+                    continue;
+                }
+                let runtimes = ServiceRemovals::from_names(
+                    removals
+                        .iter()
+                        .filter(|runtime| {
+                            !latest
+                                .services
+                                .iter()
+                                .any(|service| service.config.private_dns == **runtime)
+                        })
+                        .cloned(),
+                );
+                if !runtimes.is_empty() {
+                    nodes.push(TargetNode::retire(&Retire {
+                        id: id.clone(),
+                        name: name.clone(),
+                        runtimes,
+                    })?);
+                }
+            }
+            TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                nodes.push(node.clone());
+            }
+        }
+    }
+    inherit(tx, environment, (&latest, &source), &mut nodes)?;
+    let named = |target: &ServiceName| {
+        nodes
+            .iter()
+            .any(|node| matches!(node, TargetNode::Service { name, .. } if name == target))
+    };
+    let mut services: Vec<ServiceName> = stored
+        .summary
+        .services
+        .iter()
+        .filter(|target| named(target))
+        .cloned()
+        .collect();
+    for node in nodes.iter().filter(|node| node.retires()) {
+        if let TargetNode::Service { name, .. } = node
+            && !services.contains(name)
+        {
+            services.push(name.clone());
+        }
+    }
+    if services.is_empty() {
+        return Err(error::conflict(
+            "Every Service this Deployment removes is saved again: deploy instead",
+            json!({ "deployment": stored.summary.id }),
+        ));
+    }
+    Ok((services, nodes))
 }
 
 /// A queued Deployment of `who`'s Organization, checked that a runner may still
@@ -333,6 +522,7 @@ pub(crate) fn claim(
     let uploads = build::uploads_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
+    let (services, removals) = stored.lowering();
     let Lowered {
         input,
         mut intent,
@@ -341,7 +531,7 @@ pub(crate) fn claim(
     } = lower(
         &stored.summary.environment_id,
         &saved,
-        &stored.summary.services,
+        (&services, &removals),
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
@@ -444,10 +634,11 @@ pub(crate) fn input(
 ) -> Result<Value, RpcError> {
     let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
+    let (services, removals) = stored.lowering();
     lower(
         &stored.summary.environment_id,
         &saved,
-        &stored.summary.services,
+        (&services, &removals),
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,
         Some(sealing),
@@ -604,13 +795,25 @@ pub(crate) fn record(
                 &saved,
                 &applied,
                 &Evidence::Executed {
+                    preview,
                     projection: &projection,
                     removed: &removed,
                 },
             );
             let nodes = keep_advanced(&stored.run.nodes, nodes);
-            // A Deploy that left a Volume's data behind didn't finish: a retry removes it.
-            let status = if success && nodes.values().all(|status| *status != NodeStatus::Failed) {
+            // A Deploy that left a Volume's data behind, or may have left a Service
+            // it retires or removes running, didn't finish: a retry removes it.
+            let unfinished = |(id, status): (&String, &NodeStatus)| {
+                *status == NodeStatus::Failed
+                    || (*status == NodeStatus::NotAttempted
+                        && stored.nodes.iter().any(|node| {
+                            node.id() == id
+                                && (node.retires()
+                                    || matches!(node, TargetNode::Service { .. })
+                                        && !saved.services.iter().any(|kept| kept.id == *id))
+                        }))
+            };
+            let status = if success && !nodes.iter().any(unfinished) {
                 DeploymentStatus::Applied
             } else {
                 DeploymentStatus::Failed
@@ -637,15 +840,17 @@ pub(crate) fn record(
             // Everything confirmed so far, and these now.
             let mut confirmed = services;
             for node in &stored.nodes {
-                if let TargetNode::Service { runtime, .. } = node
-                    && stored
-                        .run
-                        .nodes
-                        .get(node.id())
-                        .is_some_and(|status| status.advances())
-                    && !confirmed.contains(runtime)
+                if stored
+                    .run
+                    .nodes
+                    .get(node.id())
+                    .is_some_and(|status| status.advances())
                 {
-                    confirmed.push(runtime.clone());
+                    for runtime in node.runtimes() {
+                        if !confirmed.contains(runtime) {
+                            confirmed.push(runtime.clone());
+                        }
+                    }
                 }
             }
             let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
@@ -761,9 +966,9 @@ fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceNam
     nodes
         .iter()
         .find_map(|node| match node {
-            TargetNode::Service {
-                name, runtime: of, ..
-            } if of == runtime => Some(name.as_str()),
+            TargetNode::Service { name, .. } if node.runtimes().contains(&runtime) => {
+                Some(name.as_str())
+            }
             TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
                 None
             }
@@ -781,6 +986,7 @@ pub(super) enum Evidence<'run> {
         confirmed: &'run [ServiceName],
     },
     Executed {
+        preview: &'run DeployPreview,
         projection: &'run RuntimeOutcomeProjection,
         removed: &'run [VolumeRemoval],
     },
@@ -789,13 +995,17 @@ pub(super) enum Evidence<'run> {
 /// Each target node's Node Outcome from `evidence`. A Service the preview plans
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed and
-/// none ran is Not attempted. A kept Volume follows the targeted Services mounting
-/// it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
+/// none ran is Not attempted. A Service that left Saved State with nothing planned
+/// is Removed when the snapshot saw every Machine, else Not attempted; one with
+/// several runtime Services reads the worst of them. A kept Volume follows the
+/// targeted Services mounting it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
 /// holds it as saved. One no targeted Service mounts is Not attempted when new
 /// (nothing creates its storage), and a held one is Deployed only by a Deploy that
 /// succeeded. A removed
 /// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
 /// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
+/// A removed Config is Removed once the Deploy succeeded and every targeted Service
+/// that mounted it landed, else Not attempted.
 pub(super) fn node_outcomes(
     nodes: &[TargetNode],
     saved: &SavedEnvironmentIntent,
@@ -835,11 +1045,45 @@ pub(super) fn node_outcomes(
             }
         }
     };
+    let (Evidence::Planned { preview, .. } | Evidence::Executed { preview, .. }) = evidence;
+    let complete = preview.prune_refusal != Some(ployz_core::PruneRefusal::IncompleteSnapshot);
+    let removed_service = |runtimes: Vec<&ServiceName>| {
+        let statuses: Vec<NodeStatus> = runtimes
+            .into_iter()
+            .map(|name| match service(name, false) {
+                NodeStatus::Unchanged
+                    if complete
+                        && !preview
+                            .operations
+                            .iter()
+                            .any(|row| row.service_name() == Some(name)) =>
+                {
+                    NodeStatus::Removed
+                }
+                NodeStatus::Unchanged => NodeStatus::NotAttempted,
+                status @ (NodeStatus::Pending
+                | NodeStatus::Deployed
+                | NodeStatus::Removed
+                | NodeStatus::Failed
+                | NodeStatus::NotAttempted
+                | NodeStatus::Unknown) => status,
+            })
+            .collect();
+        [
+            NodeStatus::Failed,
+            NodeStatus::NotAttempted,
+            NodeStatus::Pending,
+        ]
+        .into_iter()
+        .find(|worst| statuses.contains(worst))
+        .unwrap_or(NodeStatus::Removed)
+    };
     let removed_volume = |deletes: &[DockerVolumeId]| match evidence {
         Evidence::Planned { .. } => NodeStatus::Pending,
         Evidence::Executed {
             projection,
             removed,
+            ..
         } => {
             let gone = |id: &DockerVolumeId| {
                 removed.iter().any(|removal| {
@@ -940,19 +1184,42 @@ pub(super) fn node_outcomes(
             NodeStatus::NotAttempted
         }
     };
-    let removed_config = || match evidence {
+    let service_node = |node: &TargetNode, id: &str, runtime: &ServiceName| {
+        if saved.services.iter().any(|kept| kept.id == id) {
+            service(runtime, true)
+        } else {
+            removed_service(node.runtimes())
+        }
+    };
+    let removed_config = |config: &str| match evidence {
         Evidence::Planned { .. } => NodeStatus::Pending,
-        Evidence::Executed { .. } if succeeded(evidence) => NodeStatus::Removed,
+        Evidence::Executed { .. }
+            if succeeded(evidence)
+                && nodes.iter().all(|node| match node {
+                    TargetNode::Service { id, runtime, .. } => {
+                        !applied.services.iter().any(|held| {
+                            held.id == id.as_str()
+                                && held
+                                    .config_attachments
+                                    .iter()
+                                    .any(|mount| mount.config_resource_id == config)
+                        }) || matches!(
+                            service_node(node, id.as_str(), runtime),
+                            NodeStatus::Removed | NodeStatus::Deployed | NodeStatus::Unchanged
+                        )
+                    }
+                    TargetNode::Volume { .. } | TargetNode::Config { .. } => true,
+                }) =>
+        {
+            NodeStatus::Removed
+        }
         Evidence::Executed { .. } => NodeStatus::NotAttempted,
     };
     nodes
         .iter()
         .map(|node| {
             let status = match node {
-                TargetNode::Service { id, runtime, .. } => service(
-                    runtime,
-                    saved.services.iter().any(|kept| kept.id == id.as_str()),
-                ),
+                TargetNode::Service { id, runtime, .. } => service_node(node, id.as_str(), runtime),
                 TargetNode::Volume {
                     deletes: Some(deletes),
                     ..
@@ -968,7 +1235,7 @@ pub(super) fn node_outcomes(
                     .configs
                     .iter()
                     .find(|config| config.resource_id == id.as_str())
-                    .map_or_else(removed_config, kept_config),
+                    .map_or_else(|| removed_config(id.as_str()), kept_config),
             };
             (node.id().to_owned(), status)
         })

@@ -91,6 +91,8 @@ const notSet = Schema.is(Schema.Struct({ secret: Schema.Literal(false) }));
 const isText = Schema.is(Schema.String);
 /** A Config file row: the file at its path, its text too long to list. */
 const isFile = (row: MergeRow) => row.name?.startsWith("files.") === true;
+/** A Service, Volume or Config the PR Environment removed: its node row, with nothing in the preview. */
+const isRemoval = (row: MergeRow) => row.name === null && row.preview === null;
 /** A value as the list shows it; a secret's never comes back. */
 const text = (value: MergeRow["lands"]) => isText(value) ? value : JSON.stringify(value);
 
@@ -107,6 +109,8 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   const { name } = row.name === null ? { name: row.node }
     : isFile(row) ? { name: row.name.slice("files.".length) } : settingName(row.name);
   const excluded = row.ride === "excluded";
+  const removal = isRemoval(row);
+  const kept = row.ride === "kept";
   const edited = row.ride === "edited";
   const preview = store.environment ?? "";
   const node = rows.find((entry) => entry.row === row.requires && entry.ride === "excluded");
@@ -118,14 +122,14 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
     <li className={cn("grid grid-cols-[6rem_minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-x-3 border-b px-4 py-2 last:border-b-0",
       excluded && "text-muted-foreground")}>
       <span className="truncate font-mono text-xs text-muted-foreground">{row.node}</span>
-      <span className={cn("truncate font-mono text-xs", excluded && "opacity-60")}>{name}</span>
+      <span className={cn("truncate font-mono text-xs", excluded && "opacity-60")}>{removal ? null : name}</span>
       <span className={cn("flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs", excluded && "opacity-60")}>
-        <RowValue row={row} preview={preview} />
+        {kept ? <Badge variant="secondary">Kept</Badge> : removal ? <Removal row={row} /> : <RowValue row={row} preview={preview} />}
         {excluded ? <Badge variant="secondary">Excluded</Badge> : null}
       </span>
       <span className="flex items-center gap-1">
         {excluded ? <Button variant="link" size="sm" className="text-muted-foreground" onClick={() => exclude(true)}>Include</Button> : null}
-        <DropdownMenu>
+        {kept ? null : <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`More for ${name}`} />}>
             <EllipsisIcon />
           </DropdownMenuTrigger>
@@ -134,12 +138,28 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
             {edited ? <DropdownMenuItem onClick={() => land()}>Reset</DropdownMenuItem> : null}
             <DropdownMenuItem onClick={() => exclude(excluded)}>{excluded ? "Include" : "Exclude"}</DropdownMenuItem>
           </DropdownMenuContent>
-        </DropdownMenu>
+        </DropdownMenu>}
       </span>
       {editing ? <EditValue row={row} name={name} into={into} preview={preview} onClose={() => setEditing(false)}
         onSave={(value) => { setEditing(false); land(value); }} /> : null}
     </li>
   );
+}
+
+/** What the merge does to a removed node: removes it, or holds it while production still uses it. */
+function Removal({ row }: { row: MergeRow }) {
+  if (row.ride === "excluded") return null;
+  const users = row.refused_by ?? [];
+  if (users.length > 0) {
+    return <>
+      <Badge variant="warning">In use</Badge>
+      <span className="truncate text-muted-foreground">{users.map((user) => user.name === null ? user.node : `${user.node}.${user.name}`).join(", ")}</span>
+    </>;
+  }
+  return <>
+    <Badge variant="destructive">Removes {row.node}</Badge>
+    {row.conflict ? <span className="font-sans text-muted-foreground">Changed there</span> : null}
+  </>;
 }
 
 /** What the merge does to the row: production's value → what lands, with whatever the user should know. */

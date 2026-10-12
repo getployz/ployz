@@ -224,6 +224,7 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
+        _purpose: ployz_core::RemoveContainerPurpose,
     ) -> Result<(), RpcError> {
         unit(self.next(Call::Remove(*machine_id, *container_id)))
     }

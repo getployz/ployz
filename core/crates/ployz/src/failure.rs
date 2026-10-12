@@ -561,7 +561,10 @@ fn plan_code(error: &PlanError) -> RpcErrorCode {
         | PlanError::ConflictingDockerVolumeDefinitions { .. }
         | PlanError::DuplicateTargetService { .. }
         | PlanError::MixedVolumeModes { .. }
-        | PlanError::DependencyCycle { .. } => RpcErrorCode::InvalidArgument,
+        | PlanError::DependencyCycle { .. }
+        | PlanError::RemovalInTarget { .. }
+        | PlanError::RemovalNotSelected { .. }
+        | PlanError::RemovalInReservedNamespace { .. } => RpcErrorCode::InvalidArgument,
         PlanError::Storage { .. }
         | PlanError::HostPortConflict { .. }
         | PlanError::InsufficientCapacity

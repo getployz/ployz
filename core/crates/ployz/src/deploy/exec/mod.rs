@@ -5,8 +5,9 @@ use ployz_core::{
     ContainerRuntimeObservation, CreateContainerRequest, DeployEvent, DockerVolumeId,
     ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
     MachineId, MachineTarget, MembershipObservation, Namespace, OperationPhase, QualifiedService,
-    RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    StartContainerRequest, StopContainerPurpose, StopContainerRequest, UpdateOrder, op,
+    RemoveContainerPurpose, RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec,
+    RpcError, RpcErrorCode, StartContainerRequest, StopContainerPurpose, StopContainerRequest,
+    UpdateOrder, op,
 };
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
@@ -113,6 +114,7 @@ pub(super) trait MachineOperations {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
+        purpose: RemoveContainerPurpose,
     ) -> Result<(), RpcError>;
     async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
 }
@@ -305,11 +307,12 @@ impl MachineOperations for Client {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
+        purpose: RemoveContainerPurpose,
     ) -> Result<(), RpcError> {
         self.invoke::<op::RemoveContainer>(
             RemoveContainerRequest {
                 container_id: *container_id,
-                remove_volumes: true,
+                remove_volumes: purpose == RemoveContainerPurpose::Rollout,
                 force: false,
             },
             &MachineTarget::from(machine_id),
@@ -443,9 +446,11 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         &self,
         machine_id: &MachineId,
         container_id: &ContainerId,
+        purpose: RemoveContainerPurpose,
     ) -> Result<(), RpcError> {
         wait_out_restart(self.cancellation, || {
-            self.inner.remove_container(machine_id, container_id)
+            self.inner
+                .remove_container(machine_id, container_id, purpose)
         })
         .await
     }
@@ -620,13 +625,18 @@ async fn execute_operation<C: MachineOperations>(
         DeployOperation::RemoveContainer {
             machine_id,
             container_id,
+            purpose,
         } => {
             progress.set_running(index, OperationPhase::StoppingContainer);
             ignore_not_found(client.stop_container(machine_id, container_id, None).await)
                 .map_err(|error| machine_error(MachineAction::StopContainer, error))?;
             progress.set_running(index, OperationPhase::RemovingContainer);
-            ignore_not_found(client.remove_container(machine_id, container_id).await)
-                .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
+            ignore_not_found(
+                client
+                    .remove_container(machine_id, container_id, *purpose)
+                    .await,
+            )
+            .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
             client
                 .wait_for_container_observations(
                     &[*container_id],
@@ -766,7 +776,12 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     };
     if let Err(error) = served {
         let _ = client.stop_container(to, &new, None).await;
-        let replacement_removed = ignore_not_found(client.remove_container(to, &new).await).is_ok();
+        let replacement_removed = ignore_not_found(
+            client
+                .remove_container(to, &new, RemoveContainerPurpose::Rollout)
+                .await,
+        )
+        .is_ok();
         return Err(MoveContainerError::NotServing {
             error,
             replacement_removed,
@@ -778,11 +793,14 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
             old_stopped: false,
         }
     })?;
-    ignore_not_found(client.remove_container(from, old).await).map_err(|error| {
-        MoveContainerError::OldNotRemoved {
-            error: machine_error(MachineAction::RemoveContainer, error),
-            old_stopped: true,
-        }
+    ignore_not_found(
+        client
+            .remove_container(from, old, RemoveContainerPurpose::Rollout)
+            .await,
+    )
+    .map_err(|error| MoveContainerError::OldNotRemoved {
+        error: machine_error(MachineAction::RemoveContainer, error),
+        old_stopped: true,
     })?;
     // Waiting keeps the next snapshot from still counting `old`; the move is done either way.
     let _ = client
@@ -825,7 +843,11 @@ async fn create_and_start<C: MachineOperations>(
         // A keyed create can return a Container owned by an earlier attempt.
         if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
             let _ = client
-                .remove_container(machine_id, &created.container_id)
+                .remove_container(
+                    machine_id,
+                    &created.container_id,
+                    RemoveContainerPurpose::Rollout,
+                )
                 .await;
         }
         return Err(ExecutionError::Cancelled);
@@ -839,7 +861,11 @@ async fn create_and_start<C: MachineOperations>(
         // A keyed create can return a Container owned by an earlier attempt.
         if kind != ContainerKind::ServiceContainer || spec.mode != ployz_core::ServiceMode::Global {
             let _ = client
-                .remove_container(machine_id, &created.container_id)
+                .remove_container(
+                    machine_id,
+                    &created.container_id,
+                    RemoveContainerPurpose::Rollout,
+                )
                 .await;
         }
         return Err(machine_error(MachineAction::StartContainer, error));
@@ -1025,7 +1051,11 @@ async fn replace_container<C: MachineOperations>(
     progress.set_running(index, OperationPhase::RemovingContainer);
     ignore_not_found(
         client
-            .remove_container(&operation.machine_id, &operation.old_container_id)
+            .remove_container(
+                &operation.machine_id,
+                &operation.old_container_id,
+                RemoveContainerPurpose::Rollout,
+            )
             .await,
     )
     .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;
@@ -1096,7 +1126,11 @@ async fn stop_and_remove<C: MachineOperations>(
         result => result.map_err(|error| machine_error(MachineAction::StopContainer, error))?,
     }
     let _ = client
-        .remove_container(&operation.machine_id, container_id)
+        .remove_container(
+            &operation.machine_id,
+            container_id,
+            RemoveContainerPurpose::Rollout,
+        )
         .await;
     Ok(())
 }
@@ -1142,7 +1176,11 @@ async fn run_hook<C: MachineOperations>(
     for (old_machine_id, old_container_id) in old_hook_containers {
         ignore_not_found(
             client
-                .remove_container(old_machine_id, old_container_id)
+                .remove_container(
+                    old_machine_id,
+                    old_container_id,
+                    RemoveContainerPurpose::Rollout,
+                )
                 .await,
         )
         .map_err(|error| machine_error(MachineAction::RemoveContainer, error))?;

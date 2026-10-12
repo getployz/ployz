@@ -224,3 +224,41 @@ it("excludes a row, greyed, and includes it again", async () => {
   await waitFor(() => expect(within(item(list, "LOG_LEVEL")).queryByText("Excluded")).toBeNull());
   expect(commands()[1]).toEqual({ command: "never_sync", environment: pr146, rows: ["w:env.LOG_LEVEL"], off: true });
 });
+
+it("reads a removed node as what the merge does to it, without its record", async () => {
+  const removal = (node: string, extra: Partial<MergeRow>): MergeRow =>
+    ({ ...row("", {}), row: `${node}:node` as RowId, node, name: null, production: { image: "postgres:17" }, ...extra });
+  const users = [{ row: "w:variables.DB" as RowId, node: "worker", kind: "service", name: "env.DB" } as const];
+  open({
+    list: onMerge([
+      ...rows,
+      removal("db", { conflict: true }),
+      removal("redis", { refused_by: users }),
+      removal("cron", { ride: "excluded" }),
+      removal("volumes.data", { kind: "volume", ride: "kept", lands: { size: "10GB" }, production: { size: "10GB" } }),
+    ]),
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "On merge · 6" }));
+  const list = within(await screen.findByRole("dialog"));
+  expect(list.getAllByRole("listitem").slice(rows.length - 1).map((entry) => entry.textContent)).toEqual([
+    "dbRemoves dbChanged there",
+    "redisIn useworker.env.DB",
+    "cronExcludedInclude",
+    "volumes.dataKept",
+  ]);
+  expect(list.queryByRole("button", { name: "More for volumes.data" })).toBeNull();
+  fireEvent.click(list.getByRole("button", { name: "More for db" }));
+  expect((await screen.findAllByRole("menuitem")).map((entry) => entry.textContent)).toEqual(["Exclude"]);
+});
+
+it("reads a Kept row of any kind as Kept, with nothing to do", async () => {
+  open({
+    list: onMerge([
+      ...rows,
+      row("mounts.data", { ride: "kept", production: "/data", preview: "/data", lands: "/data" }),
+    ]),
+  });
+  const list = await panel();
+  expect(item(list, "Kept").textContent).toBe("webMount of dataKept");
+  expect(list.queryByRole("button", { name: "More for Mount of data" })).toBeNull();
+});

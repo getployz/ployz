@@ -252,6 +252,7 @@ fn summary(plan: &Plan) -> Vec<String> {
         .map(|row| match row.verdict {
             Verdict::Moves { conflict, .. } => format!("{} move conflict={conflict}", row.id),
             Verdict::Differs(why) => format!("{} differ {}", row.id, json!(why).as_str().unwrap()),
+            Verdict::Kept => format!("{} kept", row.id),
         })
         .collect()
 }
@@ -465,7 +466,7 @@ fn the_policy_table_per_way() {
                     "{} {arrives:?} conflict={conflict}",
                     row.id.to_string().split_once(':').unwrap().1
                 )),
-                Verdict::Differs(_) => None,
+                Verdict::Differs(_) | Verdict::Kept => None,
             })
             .collect::<Vec<_>>()
     };
@@ -543,7 +544,7 @@ fn only_the_senders_own_changes_start_ticked() {
     let plan = compare_with(Some(&parent()), &from, &parent(), Way::Sync, opts);
     let ticked = |id: &str| match row(&plan, id).verdict {
         Verdict::Moves { ticked, .. } => ticked,
-        Verdict::Differs(_) => panic!("{id} differs"),
+        Verdict::Differs(_) | Verdict::Kept => panic!("{id} differs"),
     };
     assert!(ticked(&format!("{API}:startCommand")));
     assert!(!ticked(&format!("{API}:preDeployCommand")));
@@ -1816,6 +1817,7 @@ fn ticked(plan: &Plan, id: &str) -> bool {
     match row(plan, id).verdict {
         Verdict::Moves { ticked, .. } => ticked,
         Verdict::Differs(why) => panic!("{id} differs: {why:?}"),
+        Verdict::Kept => panic!("{id} is kept"),
     }
 }
 
@@ -2004,4 +2006,388 @@ fn unapply_refuses_introduced_node_with_unowned_child() {
         refused.to_string(),
         format!("{JOBS}:variables.LOCAL changed since it landed")
     );
+}
+
+const CONFIG: &str = "a0000000-0000-4000-8000-000000000007";
+
+/// The Parent with variables on cache and a Config, mounted by web, whose file
+/// references worker.
+fn production() -> Value {
+    let seed = 0xb000_0000;
+    let mut env = parent();
+    svc(&mut env, CACHE)["variables"] = json!([
+        variable(seed, 70, "SIZE", literal("1g"), "fp-size"),
+        variable(seed, 71, "PASSWORD", secret("cache-cipher"), "fp-password"),
+    ]);
+    env["configs"] = json!([{
+        "resourceId": id(seed, 60), "resourceLineageId": CONFIG, "name": "app",
+        "files": {"app.conf": {"content": [
+            {"kind": "text", "value": "upstream="},
+            {"kind": "ref", "owner": {"scope": "service", "lineageId": WORKER}, "key": "URL"}],
+            "mode": "0444", "uid": 0, "gid": 0}}}]);
+    svc(&mut env, WEB)["configAttachments"] =
+        json!([{"configResourceId": id(seed, 60), "mountDir": "/etc/app"}]);
+    env
+}
+
+/// `env` without the node at `lineage` and without every mount of it.
+fn without(mut env: Value, lineage: &str) -> Value {
+    let mut gone = Vec::new();
+    for list in ["volumes", "configs"] {
+        if let Some(nodes) = env.get_mut(list).and_then(Value::as_array_mut) {
+            gone.extend(
+                nodes
+                    .iter()
+                    .filter(|n| n["resourceLineageId"] == lineage)
+                    .map(|n| n["resourceId"].clone()),
+            );
+            nodes.retain(|n| n["resourceLineageId"] != lineage);
+        }
+    }
+    let services = env["services"].as_array_mut().unwrap();
+    services.retain(|s| s["lineageId"] != lineage);
+    for service in services {
+        for (list, field) in [
+            ("volumeAttachments", "volumeResourceId"),
+            ("configAttachments", "configResourceId"),
+        ] {
+            if let Some(mounts) = service.get_mut(list).and_then(Value::as_array_mut) {
+                mounts.retain(|m| !gone.contains(&m[field]));
+            }
+        }
+    }
+    env
+}
+
+fn unreference_worker(env: &mut Value) {
+    env["configs"][0]["files"]["app.conf"]["content"] =
+        json!([{"kind": "text", "value": "upstream=static"}]);
+}
+
+fn removal_dependents(
+    plan: &Plan,
+    picks: &[String],
+    values: &BTreeMap<RowId, SealedCell>,
+) -> Vec<String> {
+    plan.removal_dependents(&ids(picks), values)
+        .unwrap()
+        .into_iter()
+        .flat_map(|(node, rows)| rows.into_iter().map(move |row| format!("{node} <- {row}")))
+        .collect()
+}
+
+#[test]
+fn a_merge_removes_the_services_and_configs_the_sender_removed() {
+    let from = without(without(production(), CACHE), CONFIG);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    let (cache, config, mount) = (
+        format!("{CACHE}:node"),
+        format!("{CONFIG}:node"),
+        format!("{WEB}:configs.{CONFIG}"),
+    );
+    assert_has(
+        &summary(&plan),
+        &[
+            format!("{cache} move conflict=false"),
+            format!("{config} move conflict=false"),
+            format!("{mount} move conflict=false"),
+        ],
+    );
+    assert!(ticked(&plan, &cache) && ticked(&plan, &config));
+
+    let picks = [cache.clone(), config.clone(), mount];
+    assert!(removal_dependents(&plan, &picks, &BTreeMap::new()).is_empty());
+    let applied = land(&plan, &picks).unwrap();
+    for env in [json_of(&applied.next), json_of(&applied.base)] {
+        assert!(
+            env["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["lineageId"] != CACHE),
+            "{env:#}"
+        );
+        assert!(
+            env.get("configs")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty),
+            "{env:#}"
+        );
+    }
+    for node in [&cache, &config] {
+        let landed = applied
+            .landed
+            .iter()
+            .find(|l| l.row.to_string() == *node)
+            .unwrap();
+        assert_eq!(landed.value, Cell::Absent);
+    }
+
+    // Every other way still leaves a removed node out.
+    for way in [Way::Sync, Way::Copy, Way::Follow] {
+        assert_has(
+            &summary(&compare(Some(&production()), &from, &production(), way)),
+            &[
+                format!("{cache} differ left_out"),
+                format!("{config} differ left_out"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn a_marked_removal_never_moves() {
+    let from = without(production(), CACHE);
+    let cache = format!("{CACHE}:node");
+    for (from_marks, into_marks) in [(vec![cache.clone()], vec![]), (vec![], vec![cache.clone()])] {
+        let opts = Opts {
+            from_marks,
+            into_marks,
+            ..Opts::default()
+        };
+        let plan = compare_with(Some(&production()), &from, &production(), Way::Merge, opts);
+        assert_eq!(
+            row(&plan, &cache).verdict,
+            Verdict::Differs(Why::NeverSynced)
+        );
+    }
+}
+
+#[test]
+fn a_removal_conflicts_on_any_change_the_receiver_made_to_the_node() {
+    let service_changes: [fn(&mut Value); 9] = [
+        |env| {
+            svc(env, CACHE)["variables"]
+                .as_array_mut()
+                .unwrap()
+                .push(variable(0xd000_0000, 1, "NEW", literal("x"), "fp-new"));
+        },
+        |env| {
+            svc(env, CACHE)["variables"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|v| v["key"] != "SIZE");
+        },
+        |env| var(env, CACHE, "PASSWORD")["valueFingerprint"] = json!("fp-rotated"),
+        |env| var(env, CACHE, "SIZE")["exported"] = json!(true),
+        |env| var(env, CACHE, "SIZE")["description"] = json!("How big"),
+        |env| {
+            svc(env, CACHE)["volumeAttachments"] =
+                json!([{"volumeResourceId": id(0xb000_0000, 30), "mountPath": "/cache"}]);
+        },
+        |env| svc(env, CACHE)["config"]["startCommand"] = json!("into-start"),
+        |env| svc(env, CACHE)["slug"] = json!("redis"),
+        |env| svc(env, CACHE)["config"]["template"] = json!({"id": "redis", "version": 2}),
+    ];
+    let config_changes: [fn(&mut Value); 2] = [unreference_worker, |env| {
+        env["configs"][0]["name"] = json!("app2")
+    }];
+    let cases = service_changes
+        .iter()
+        .map(|change| (CACHE, change))
+        .chain(config_changes.iter().map(|change| (CONFIG, change)));
+    let routed = |routes: u32| {
+        let mut env = production();
+        svc(&mut env, CACHE)["config"]["routes"] = (0..routes)
+            .map(|at| {
+                json!({"id": id(0xb000_0000, 90 + at), "hostname": "cache.example.com",
+                       "targetPort": 8080})
+            })
+            .collect();
+        env
+    };
+    let route_change: fn(&mut Value) =
+        |env| svc(env, CACHE)["config"]["routes"][0]["targetPort"] = json!(9090);
+    let cases = cases
+        .map(|(lineage, change)| (lineage, production(), change))
+        .chain([1, 2].map(|routes| (CACHE, routed(routes), &route_change)));
+    for (lineage, base, change) in cases {
+        let mut into = base.clone();
+        change(&mut into);
+        let from = without(base.clone(), lineage);
+        let plan = compare(Some(&base), &from, &into, Way::Merge);
+        assert!(
+            matches!(
+                row(&plan, &format!("{lineage}:node")).verdict,
+                Verdict::Moves {
+                    conflict: true,
+                    ticked: true,
+                    ..
+                }
+            ),
+            "{:#?}",
+            summary(&plan)
+        );
+    }
+}
+
+#[test]
+fn a_merge_keeps_a_volume_the_sender_removed_whatever_its_marks() {
+    let from = without(production(), DATA);
+    let data = format!("{DATA}:node");
+    for from_marks in [vec![], vec![data.clone()]] {
+        let opts = Opts {
+            from_marks,
+            ..Opts::default()
+        };
+        let plan = compare_with(Some(&production()), &from, &production(), Way::Merge, opts);
+        assert_eq!(row(&plan, &data).verdict, Verdict::Kept);
+        assert_eq!(
+            land(&plan, std::slice::from_ref(&data))
+                .unwrap_err()
+                .message,
+            "Change is meant to differ"
+        );
+    }
+}
+
+#[test]
+fn a_merge_keeps_the_mount_of_a_volume_the_sender_removed() {
+    let mount = format!("{API}:mounts.{DATA}");
+    let from = without(production(), DATA);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    assert_eq!(
+        row(&plan, &mount).verdict,
+        Verdict::Kept,
+        "{:#?}",
+        summary(&plan)
+    );
+
+    // Unless the sender removed the Service too: then it goes whole, mount and all.
+    let from = without(from, API);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    assert!(
+        matches!(
+            row(&plan, &format!("{API}:node")).verdict,
+            Verdict::Moves { .. }
+        ) && plan.rows().iter().all(|row| row.id.to_string() != mount),
+        "{:#?}",
+        summary(&plan)
+    );
+}
+
+#[test]
+fn a_removed_node_the_sender_still_uses_differs_as_live() {
+    let from = without(production(), WORKER);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    assert_eq!(
+        row(&plan, &format!("{WORKER}:node")).verdict,
+        Verdict::Differs(Why::Live)
+    );
+}
+
+#[test]
+fn a_removal_lands_only_once_nothing_left_references_it() {
+    let mut from = without(production(), WORKER);
+    svc(&mut from, API)["variables"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| v["key"] != "WORKER_URL");
+    unreference_worker(&mut from);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    let (node, variable, file) = (
+        format!("{WORKER}:node"),
+        format!("{API}:variables.WORKER_URL"),
+        format!("{CONFIG}:files.app.conf"),
+    );
+    let none = BTreeMap::new();
+
+    // Each owner that still references it is listed, and apply refuses.
+    assert_eq!(
+        removal_dependents(&plan, std::slice::from_ref(&node), &none),
+        [format!("{node} <- {variable}"), format!("{node} <- {file}")]
+    );
+    let refused = land(&plan, std::slice::from_ref(&node)).unwrap_err();
+    assert_eq!(refused.message, "Node is still referenced");
+    let picks = [node.clone(), variable.clone()];
+    assert_eq!(
+        removal_dependents(&plan, &picks, &none),
+        [format!("{node} <- {file}")]
+    );
+    assert!(land(&plan, &picks).is_err());
+
+    // Removing or rewriting every reference lets it land, from next and base.
+    let picks = [node.clone(), variable.clone(), file.clone()];
+    assert!(removal_dependents(&plan, &picks, &none).is_empty());
+    let applied = land(&plan, &picks).unwrap();
+    for env in [json_of(&applied.next), json_of(&applied.base)] {
+        assert!(
+            env["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["lineageId"] != WORKER),
+            "{env:#}"
+        );
+    }
+
+    // An edited value that references it again refuses.
+    let file_id: RowId = file.parse().unwrap();
+    let referencing = BTreeMap::from([(file_id, SealedCell::Cell(row(&plan, &file).into.clone()))]);
+    assert_eq!(
+        removal_dependents(&plan, &picks, &referencing),
+        [format!("{node} <- {file}")]
+    );
+    assert_eq!(
+        plan.apply(&ids(&picks), &referencing).unwrap_err().message,
+        "Node is still referenced"
+    );
+
+    // A dependent kept out by a mark keeps the node in.
+    let opts = Opts {
+        from_marks: vec![variable.clone()],
+        ..Opts::default()
+    };
+    let marked = compare_with(Some(&production()), &from, &production(), Way::Merge, opts);
+    let picks = [node.clone(), file.clone()];
+    assert_eq!(
+        removal_dependents(&marked, &picks, &none),
+        [format!("{node} <- {variable}")]
+    );
+    assert!(land(&marked, &picks).is_err());
+}
+
+#[test]
+fn a_rewritten_reference_lets_a_removal_land() {
+    let mut from = without(production(), WORKER);
+    *var(&mut from, API, "WORKER_URL") = variable(
+        0xb000_0000,
+        12,
+        "WORKER_URL",
+        literal("http://static"),
+        "fp-static",
+    );
+    unreference_worker(&mut from);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    let picks = [
+        format!("{WORKER}:node"),
+        format!("{API}:variables.WORKER_URL"),
+        format!("{CONFIG}:files.app.conf"),
+    ];
+    let mut next = next_of(&plan, &picks);
+    assert_eq!(
+        var(&mut next, API, "WORKER_URL")["value"],
+        literal("http://static")
+    );
+}
+
+#[test]
+fn nodes_removed_together_do_not_hold_each_other() {
+    let from = without(without(without(production(), WORKER), API), CONFIG);
+    let plan = compare(Some(&production()), &from, &production(), Way::Merge);
+    let picks = [
+        format!("{WORKER}:node"),
+        format!("{API}:node"),
+        format!("{CONFIG}:node"),
+        format!("{WEB}:configs.{CONFIG}"),
+    ];
+    assert!(removal_dependents(&plan, &picks, &BTreeMap::new()).is_empty());
+    let next = next_of(&plan, &picks);
+    let left: Vec<&Value> = next["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| &s["lineageId"])
+        .collect();
+    assert_eq!(left, [WEB, CACHE]);
 }

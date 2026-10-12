@@ -577,6 +577,15 @@ pub enum PlanError {
         hostname: IngressHost,
         owner: QualifiedService,
     },
+    /// A Deploy would both run and retire the same Service.
+    #[error("Service {service} can't be deployed and removed in one Deploy")]
+    RemovalInTarget { service: ServiceName },
+    /// A Deploy named a Service to retire without selecting it.
+    #[error("Service {service} is removed but not selected")]
+    RemovalNotSelected { service: ServiceName },
+    /// Services of a reserved Namespace are never retired by name.
+    #[error("Services in Namespace {namespace} can't be removed by a Deploy")]
+    RemovalInReservedNamespace { namespace: Namespace },
 }
 
 struct MachineNames<'names>(&'names [MachineName]);
@@ -631,7 +640,10 @@ impl PlanError {
             | Self::MixedVolumeModes { .. }
             | Self::DependencyCycle { .. }
             | Self::DockerVolumeUnavailable { .. }
-            | Self::HostnameConflict { .. }) => RpcError {
+            | Self::HostnameConflict { .. }
+            | Self::RemovalInTarget { .. }
+            | Self::RemovalNotSelected { .. }
+            | Self::RemovalInReservedNamespace { .. }) => RpcError {
                 code: RpcErrorCode::InvalidArgument,
                 message: error.to_string(),
                 details: serde_json::Value::Null,

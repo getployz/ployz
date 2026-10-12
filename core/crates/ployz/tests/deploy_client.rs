@@ -690,6 +690,7 @@ async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_
     row.operation = DeployOperation::RemoveContainer {
         machine_id: row.machine_id,
         container_id: ContainerId::parse("f".repeat(64)).unwrap(),
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
     };
 
     for _ in 0..2 {

@@ -34,6 +34,42 @@ pub struct PlanOptions {
     /// Service Names this command applies. Empty means full reconciliation.
     #[serde(default)]
     pub selected: Vec<ServiceAttempt>,
+    /// Services this targeted command retires. Each is also in `selected` and
+    /// absent from the target.
+    #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub removals: ServiceRemovals,
+}
+
+/// Services a targeted Deploy tears down by name. It can name only Services,
+/// never a Volume.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(as = "Vec<ServiceName>")]
+pub struct ServiceRemovals(BTreeSet<ServiceName>);
+
+impl ServiceRemovals {
+    pub fn from_names(names: impl IntoIterator<Item = ServiceName>) -> Self {
+        Self(names.into_iter().collect())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ServiceName> {
+        self.0.iter()
+    }
+
+    #[must_use]
+    pub fn contains(&self, name: &ServiceName) -> bool {
+        self.0.contains(name)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn extend(&mut self, names: impl IntoIterator<Item = ServiceName>) {
+        self.0.extend(names);
+    }
 }
 
 /// One Service Name this Deploy will apply from the target.
@@ -371,6 +407,18 @@ pub enum StopContainerPurpose {
     FreeHostPorts,
 }
 
+/// Why a Deploy removes a Container.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoveContainerPurpose {
+    /// Roll a Service out: its anonymous Volumes go with the Container.
+    #[default]
+    Rollout,
+    /// Retire a Service the Deploy removes: its anonymous Volumes stay, since deleting
+    /// data is a Volume decision.
+    Retire,
+}
+
 /// One step in a Deploy Plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -405,6 +453,8 @@ pub enum DeployOperation {
     RemoveContainer {
         machine_id: MachineId,
         container_id: ContainerId,
+        #[serde(default)]
+        purpose: RemoveContainerPurpose,
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),

@@ -324,7 +324,7 @@ pub(crate) fn sync_view(
                 .collect(),
                 at,
             }),
-            Verdict::Differs(_) => {}
+            Verdict::Differs(_) | Verdict::Kept => {}
         }
     }
     let proposal = match found {

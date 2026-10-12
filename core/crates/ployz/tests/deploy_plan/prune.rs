@@ -4,7 +4,7 @@ use super::support::*;
 use ployz::deploy::preview_deploy;
 use ployz_core::{
     ContainerKind, DependencyCondition, DockerVolumeId, MachineFailure, PruneRefusal,
-    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName,
+    QualifiedService, RpcError, RpcErrorCode, ServiceDependency, ServiceName, ServiceRemovals,
     VolumeObservationFailure,
 };
 
@@ -158,6 +158,7 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
             DeployOperation::RunContainer { spec: second, .. },
             DeployOperation::RemoveContainer {
                 container_id: removed,
+                purpose: ployz_core::RemoveContainerPurpose::Retire,
                 ..
             },
         ] => {
@@ -388,12 +389,152 @@ fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
                 operation,
                 DeployOperation::RemoveContainer {
                     container_id: removed,
+                    purpose: ployz_core::RemoveContainerPurpose::Retire,
                     ..
                 } if *removed == container_id('d')
             )
         }),
         "prune is after desired work: {ops:?}"
     );
+}
+
+#[test]
+fn a_removal_only_deploy_removes_exactly_the_named_service() {
+    let (web, snapshot) = shop_with_obsolete_debug();
+    let plan = preview_deploy(&retiring(&[web], &["debug"], &["debug"]), &snapshot).unwrap();
+    assert!(removes(&plan, 'd'));
+    assert!(!removes(&plan, 'c'));
+    assert_eq!(operations(&plan).len(), 1);
+    assert_eq!(plan.prune_refusal, Some(PruneRefusal::SelectedServices));
+}
+
+#[test]
+fn a_mixed_deploy_updates_one_service_retires_another_and_leaves_drift() {
+    let mut web = spec("web");
+    let debug = spec("debug");
+    let stray = spec("stray");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![
+            container('c', '1', &web, &service_id('a')),
+            container('d', '1', &debug, &service_id('b')),
+            container('e', '1', &stray, &service_id('c')),
+        ],
+        ..Default::default()
+    };
+    web.container.image = "busybox".into();
+    let plan = preview_deploy(&retiring(&[web], &["web", "debug"], &["debug"]), &snapshot).unwrap();
+    assert!(removes(&plan, 'd'));
+    assert!(
+        !removes(&plan, 'e'),
+        "unrelated drift stays under a targeted Deploy"
+    );
+    assert!(
+        plan.operations.iter().any(|row| matches!(
+            &row.operation,
+            DeployOperation::ReplaceContainer(replacement)
+                if replacement.old_container_id == container_id('c')
+        )),
+        "web is updated: {:?}",
+        plan.operations
+    );
+    assert_eq!(
+        plan.would_remove,
+        [
+            QualifiedService::parse("app/debug").unwrap(),
+            QualifiedService::parse("app/stray").unwrap(),
+        ]
+    );
+}
+
+#[test]
+fn an_incomplete_snapshot_retires_nothing() {
+    let (web, snapshot) = shop_with_obsolete_debug();
+    let snapshot = DeploySnapshot {
+        volume_snapshot: VolumeSnapshot::try_from_parts(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![machine_id('1')],
+        )
+        .expect("valid Volume Snapshot fixture"),
+        ..snapshot
+    };
+    let plan = preview_deploy(&retiring(&[web], &["debug"], &["debug"]), &snapshot).unwrap();
+    assert!(operations(&plan).is_empty());
+    assert_eq!(plan.prune_refusal, Some(PruneRefusal::IncompleteSnapshot));
+}
+
+#[test]
+fn retiring_an_already_absent_service_plans_nothing() {
+    let web = spec("web");
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![container('c', '1', &web, &service_id('a'))],
+        ..Default::default()
+    };
+    let plan = preview_deploy(&retiring(&[web], &["debug"], &["debug"]), &snapshot).unwrap();
+    assert!(operations(&plan).is_empty());
+}
+
+#[test]
+fn retiring_a_service_the_deploy_also_runs_is_refused() {
+    let (web, snapshot) = shop_with_obsolete_debug();
+    let error = preview_deploy(&retiring(&[web], &["web"], &["web"]), &snapshot).unwrap_err();
+    assert!(
+        matches!(&error, PlanError::RemovalInTarget { service } if service.as_str() == "web"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn retiring_a_service_the_deploy_does_not_select_is_refused() {
+    let (web, snapshot) = shop_with_obsolete_debug();
+    let error = preview_deploy(&retiring(&[web], &["web"], &["debug"]), &snapshot).unwrap_err();
+    assert!(
+        matches!(&error, PlanError::RemovalNotSelected { service } if service.as_str() == "debug"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn retiring_in_the_reserved_namespace_is_refused() {
+    let ingress = spec("ingress");
+    let intent = DeployIntent::new(
+        Namespace::system(),
+        vec![ingress],
+        PlanOptions {
+            selected: vec![ServiceAttempt {
+                name: ServiceName::parse("metrics").unwrap(),
+            }],
+            removals: ServiceRemovals::from_names([ServiceName::parse("metrics").unwrap()]),
+            ..PlanOptions::default()
+        },
+    );
+    let error = preview_deploy(&intent, &DeploySnapshot::default()).unwrap_err();
+    assert!(
+        matches!(error, PlanError::RemovalInReservedNamespace { .. }),
+        "{error:?}"
+    );
+}
+
+/// A targeted Deploy of `target`, applying `selected`, that retires `removals`.
+fn retiring(target: &[RequestedServiceSpec], selected: &[&str], removals: &[&str]) -> DeployIntent {
+    let name = |name: &&str| ServiceName::parse(*name).unwrap();
+    DeployIntent::new(
+        Namespace::parse("app").unwrap(),
+        target.to_vec(),
+        PlanOptions {
+            selected: selected
+                .iter()
+                .map(|service| ServiceAttempt {
+                    name: name(service),
+                })
+                .collect(),
+            removals: ServiceRemovals::from_names(removals.iter().map(name)),
+            ..PlanOptions::default()
+        },
+    )
 }
 
 fn shop_with_obsolete_debug() -> (RequestedServiceSpec, DeploySnapshot) {

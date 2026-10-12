@@ -175,9 +175,10 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         // SAFETY: the dashboard names a row only by the RowId a read gave.
         return { ...view, never_synced: command.off ? kept : [...kept, ...command.rows as RowId[]] };
       });
-      // Excluded, a row stays in the PR Environment at its merge; Included, it rides again, as it is there.
+      // Excluded, a row stays in the PR Environment at its merge; Included, it rides again, as it is there. A
+      // removal's preview is null either way, and a Kept Volume never lands, so neither moves.
       await views<OnMerge>("on_merge", command.environment, (view) => ({ ...view, destinations: view.destinations.map((into) => ({
-        ...into, rows: into.rows.map((row): MergeRow => !rows.has(row.row) || row.ride === "production_keeps" ? row
+        ...into, rows: into.rows.map((row): MergeRow => !rows.has(row.row) || row.ride === "production_keeps" || row.ride === "kept" ? row
           : command.off ? { ...row, ride: "rides", lands: landsAsIs(row) } : { ...row, ride: "excluded", lands: row.preview }),
       })) }));
       // A Sync from or into it offers a newly marked row no more; an unmarked row loses this Environment's mark, and

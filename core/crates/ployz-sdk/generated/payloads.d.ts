@@ -1041,7 +1041,7 @@ machine_id: MachineId,
 /**
  * Assigned storage requirements, including reused Volumes, prepared as one batch.
  */
-specs: Array<ServiceStorageSpec>, } | { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, purpose: StopContainerPurpose, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
+specs: Array<ServiceStorageSpec>, } | { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, purpose: StopContainerPurpose, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, purpose: RemoveContainerPurpose, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
 
 export type DeployOutcome<E> = { "type": "success", completed: Array<DeployOperation>, } | { "type": "failed", completed: Array<DeployOperation>, failed: FailedOperation<E>, unexecuted: Array<DeployOperation>, };
 
@@ -2448,6 +2448,10 @@ conflict: boolean,
  */
 requires: RowId | null,
 /**
+ * The rows that still reference the node it removes: it stays until they change.
+ */
+refused_by?: Array<NamedRow>,
+/**
  * What commands name it by; stable across renames.
  */
 row: RowId,
@@ -2814,7 +2818,12 @@ placement_seed: number,
 /**
  * Service Names this command applies. Empty means full reconciliation.
  */
-selected: Array<ServiceAttempt>, };
+selected: Array<ServiceAttempt>,
+/**
+ * Services this targeted command retires. Each is also in `selected` and
+ * absent from the target.
+ */
+removals?: Array<ServiceName>, };
 
 export type PlanQuery = { environment: EnvironmentRef,
 /**
@@ -3234,6 +3243,8 @@ config: ConfigName,
  */
 file: ConfigFileName, };
 
+export type RemoveContainerPurpose = "rollout" | "retire";
+
 export type RemoveDomain = { environment: EnvironmentRef,
 /**
  * Its hostname, or a generated domain's prefix.
@@ -3422,7 +3433,7 @@ export type ReviewStateProjection = { token: string, nodes: Array<ReviewNodeProj
 
 export type Revision = number;
 
-export type Ride = "rides" | "edited" | "excluded" | "production_keeps";
+export type Ride = "rides" | "edited" | "excluded" | "production_keeps" | "kept";
 
 export type RowId = string & { readonly __brand: "RowId" };
 

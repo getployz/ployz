@@ -33,6 +33,7 @@ async fn dispatches_the_complete_algebra() {
         DeployOperation::RemoveContainer {
             machine_id: first,
             container_id: removed,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
         },
         DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id: first,
@@ -276,6 +277,7 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: removed,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
         },
         DeployOperation::RemoveVolume { id: volume.clone() },
         stop(&machine, &suffix),
@@ -384,6 +386,68 @@ async fn a_private_image_is_created_with_its_services_credentials_only() {
         .map(|request| request.registry_auth.clone())
         .collect::<Vec<_>>();
     assert_eq!(sent, [Some(auth.clone()), Some(auth), None]);
+}
+
+/// What the Machine is asked to remove for a Container removed for `purpose`.
+async fn removal_sent(
+    purpose: ployz_core::RemoveContainerPurpose,
+) -> Vec<ployz_core::RemoveContainerRequest> {
+    use ployz_core::{
+        ContainerChanged, OpaquePayload, RemoveContainerRequest, RpcRequestBody, RpcResponse,
+    };
+    use std::sync::Arc;
+    use tonic::{Request, Response};
+
+    let captured = Arc::new(Mutex::new(Vec::<RemoveContainerRequest>::new()));
+    let requests = captured.clone();
+    let (client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let requests = requests.clone();
+            async move {
+                let RpcRequestBody::RemoveContainer(request) =
+                    rpc.into_inner().decode_request().unwrap().body
+                else {
+                    panic!("only remove is expected");
+                };
+                let container_id = request.container_id;
+                requests.lock().unwrap().push(request);
+                Ok(Response::new(
+                    RpcResponse::from(ContainerChanged { container_id })
+                        .encode()
+                        .unwrap(),
+                ))
+            }
+        })
+        .await;
+    MachineOperations::remove_container(&client, &machine('1'), &container('a'), purpose)
+        .await
+        .unwrap();
+    server.abort();
+    captured.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn retiring_a_container_keeps_its_anonymous_volumes() {
+    assert_eq!(
+        removal_sent(ployz_core::RemoveContainerPurpose::Retire).await,
+        [ployz_core::RemoveContainerRequest {
+            container_id: container('a'),
+            remove_volumes: false,
+            force: false,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_rollout_removes_a_containers_anonymous_volumes_with_it() {
+    assert_eq!(
+        removal_sent(ployz_core::RemoveContainerPurpose::Rollout).await,
+        [ployz_core::RemoveContainerRequest {
+            container_id: container('a'),
+            remove_volumes: true,
+            force: false,
+        }]
+    );
 }
 
 #[tokio::test]

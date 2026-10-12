@@ -11,8 +11,8 @@ use crate::config::service_changes::default_value;
 use crate::config::{
     ConfigAttachment, ConfigError, SavedConfigFile, SavedConfigIntent,
     SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceImageCredentials, ServiceSource, VolumeAttachment, parse_environment_intent,
-    redact_environment_intent,
+    ServiceImageCredentials, ServiceSource, ServiceTemplate, VolumeAttachment,
+    parse_environment_intent, redact_environment_intent,
 };
 
 /// Each side's generated-address suffix, appended to managed hostname prefixes.
@@ -112,6 +112,8 @@ pub enum Verdict {
     },
     /// It differs, but never moves.
     Differs(Why),
+    /// A merge removed a Volume the receiver keeps: its data never leaves with a merge.
+    Kept,
 }
 
 /// How a moving row lands.
@@ -163,6 +165,15 @@ pub struct Applied {
     pub landed: Vec<Landed>,
     /// `NeedsValue` picks that landed without a value.
     pub waiting: Vec<RowId>,
+}
+
+/// `into` with every pick landed but node removals, which land last.
+struct PreparedLanding<'plan> {
+    next: Intent,
+    base: Option<Intent>,
+    removals: Vec<&'plan PlannedRow>,
+    landed: Vec<Landed>,
+    waiting: Vec<RowId>,
 }
 
 /// One landed row: what to [`put`] back to rewind the base or undo the landing.
@@ -342,9 +353,18 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     let id = id.clone();
                     let sides = cells_at(&id);
                     let [b, f, i] = &sides;
-                    if let Some(verdict) = policy.verdict(&id, b, f, i) {
-                        push(id, sides, None, verdict);
-                    }
+                    let Some(verdict) = policy.verdict(&id, b, f, i) else {
+                        continue;
+                    };
+                    // A merge keeps the Volume its sender removed, so it keeps the
+                    // mounts on it too: a Service left without its data loses it all
+                    // the same.
+                    let kept = matches!(&id.at, At::Mount(volume)
+                        if policy.way == Way::Merge
+                            && !from_nodes.contains_key(volume.as_str())
+                            && into_nodes.contains_key(volume.as_str())
+                            && base_nodes.contains_key(volume.as_str()));
+                    push(id, sides, None, if kept { Verdict::Kept } else { verdict });
                 }
                 if let (NodeRef::Volume(_), NodeRef::Volume(_)) = (from_node, into_node) {
                     let id = RowId {
@@ -404,8 +424,55 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                     Verdict::Differs(why),
                 );
             }
-            // ponytail: a node `from` lacks never leaves `into`; a Copy or Follow of a
-            // deleted node shows it as left out. Add node removal when someone asks.
+            (None, Some(&into_node)) if policy.way == Way::Merge && in_base => {
+                let id = RowId::node(lineage);
+                let verdict = match into_node {
+                    // Protection beats marks: no mark makes a merge delete data.
+                    NodeRef::Volume(_) => Some(Verdict::Kept),
+                    NodeRef::Service(_) | NodeRef::Config(_) if uses(from, lineage) => {
+                        Some(Verdict::Differs(Why::Live))
+                    }
+                    NodeRef::Service(_) | NodeRef::Config(_) => {
+                        let uncelled_changed = match (base_nodes.get(lineage), into_node) {
+                            (Some(NodeRef::Service(base)), NodeRef::Service(into)) => {
+                                Uncelled::of(base) != Uncelled::of(into)
+                            }
+                            _ => false,
+                        };
+                        let [b, f, i] = node_cells(lineage);
+                        policy
+                            .verdict(&id, &b, &f, &i)
+                            .map(|verdict| match verdict {
+                                // The node cell holds only what a new node carries, so a
+                                // removal conflicts on a change to any part of the node.
+                                Verdict::Moves {
+                                    ticked, arrives, ..
+                                } => Verdict::Moves {
+                                    conflict: uncelled_changed
+                                        || std::iter::once(&id)
+                                            .chain(
+                                                base_cells
+                                                    .iter()
+                                                    .flat_map(|c| c.places(lineage))
+                                                    .map(|(row, _)| row),
+                                            )
+                                            .chain(into_cells.places(lineage).map(|(row, _)| row))
+                                            .any(|row| {
+                                                let [base, _, into] = cells_at(row);
+                                                base != into
+                                            }),
+                                    ticked,
+                                    arrives,
+                                },
+                                Verdict::Differs(_) | Verdict::Kept => verdict,
+                            })
+                    }
+                };
+                if let Some(verdict) = verdict {
+                    push(id, node_cells(lineage), None, verdict);
+                }
+            }
+            // A Copy, Follow or Sync of a deleted node shows it as left out.
             (None, Some(_)) if uses(from, lineage) || in_base => {
                 let why = if uses(from, lineage) {
                     Why::Live
@@ -468,19 +535,83 @@ impl Plan {
         landable
     }
 
-    /// Land `picks` in `into`: [`put`] once per pick, a new node first. A pick with a
-    /// cell in `values` lands that cell in place of the sender's; a `NeedsValue` pick
-    /// without one lands without its secret and is `waiting`. `values` for rows not
-    /// picked are ignored.
+    /// Land `picks` in `into`: [`put`] once per pick, a new node first and a removed node
+    /// last. A pick with a cell in `values` lands that cell in place of the sender's; a
+    /// `NeedsValue` pick without one lands without its secret and is `waiting`. `values`
+    /// for rows not picked are ignored.
     ///
     /// # Errors
     /// Returns ConfigError for an unknown pick, a pick of a row that differs or whose new
-    /// node isn't picked, a value for a node, a name clash, or a `next` that isn't valid.
+    /// node isn't picked, a value for a node, a name clash, a removed node something
+    /// else still references ([`Self::removal_dependents`]), or a `next` that isn't valid.
     pub fn apply(
         &self,
         picks: &BTreeSet<RowId>,
         values: &BTreeMap<RowId, SealedCell>,
     ) -> Result<Applied, ConfigError> {
+        let PreparedLanding {
+            mut next,
+            mut base,
+            removals,
+            mut landed,
+            waiting,
+        } = self.prepare(picks, values)?;
+        if let Some((removal, _)) = removal_dependents(&next, &removals).into_iter().next() {
+            return Err(ConfigError::at(
+                &removal.to_string(),
+                "Node is still referenced",
+            ));
+        }
+        let into_cells = Cells::of(&self.into, &self.hostnames.into);
+        for row in removals {
+            put_into(&mut next, &row.id, &Cell::Absent)?;
+            if let Some(base) = base.as_mut() {
+                put_into(base, &row.id, &Cell::Absent)?;
+            }
+            landed.push(Landed {
+                row: row.id.clone(),
+                prior: row.base.clone(),
+                was: sealed_cell(&self.into, &into_cells, &row.id),
+                value: Cell::Absent,
+            });
+        }
+        let next = parse_environment_intent(json!(next))?;
+        let base = base.unwrap_or_else(|| {
+            let mut base = self.from.clone();
+            base.services
+                .retain(|service| !self.live.contains(&service.lineage_id));
+            base
+        });
+        Ok(Applied {
+            next,
+            base: redact_environment_intent(base),
+            landed,
+            waiting,
+        })
+    }
+
+    /// The rows of other nodes that still reference each node `picks` removes, once
+    /// every other pick has landed with `values`: what [`Self::apply`] refuses. A row
+    /// of a node that is removed too doesn't count. Only removals with a dependent
+    /// are listed.
+    ///
+    /// # Errors
+    /// Returns ConfigError where [`Self::apply`] does before its removals land.
+    pub fn removal_dependents(
+        &self,
+        picks: &BTreeSet<RowId>,
+        values: &BTreeMap<RowId, SealedCell>,
+    ) -> Result<BTreeMap<RowId, Vec<RowId>>, ConfigError> {
+        let prepared = self.prepare(picks, values)?;
+        Ok(removal_dependents(&prepared.next, &prepared.removals))
+    }
+
+    /// Land every pick but node removals, which it returns to land last.
+    fn prepare<'plan>(
+        &'plan self,
+        picks: &BTreeSet<RowId>,
+        values: &BTreeMap<RowId, SealedCell>,
+    ) -> Result<PreparedLanding<'plan>, ConfigError> {
         let refuse = |message| ConfigError::at("picks", message);
         let mut landing = Vec::new();
         for pick in picks {
@@ -501,6 +632,15 @@ impl Plan {
             }
             landing.push((row, arrives));
         }
+        if landing
+            .iter()
+            .any(|(row, _)| row.id.at == At::Node && values.contains_key(&row.id))
+        {
+            return Err(refuse("A new node takes no value"));
+        }
+        let (removals, mut landing): (Vec<_>, Vec<_>) = landing
+            .into_iter()
+            .partition(|(row, _)| row.id.at == At::Node && row.from == Cell::Absent);
         landing.sort_by_key(|(row, _)| landing_order(&self.from, &row.id));
         let mut next = self.into.clone();
         let mut base = self.base.clone();
@@ -511,9 +651,6 @@ impl Plan {
         for (row, arrives) in landing {
             let id = &row.id;
             let value = match (values.get(id), arrives) {
-                (Some(_), _) if id.at == At::Node => {
-                    return Err(refuse("A new node takes no value"));
-                }
                 (Some(value), _) => value.clone(),
                 (None, Arrives::AsIs) => sealed_cell(&self.from, &from_cells, id),
                 (None, Arrives::NeedsValue) => {
@@ -549,16 +686,10 @@ impl Plan {
                 value: value.to_redacted(),
             });
         }
-        let next = parse_environment_intent(json!(next))?;
-        let base = base.unwrap_or_else(|| {
-            let mut base = self.from.clone();
-            base.services
-                .retain(|service| !self.live.contains(&service.lineage_id));
-            base
-        });
-        Ok(Applied {
+        Ok(PreparedLanding {
             next,
-            base: redact_environment_intent(base),
+            base,
+            removals: removals.into_iter().map(|(row, _)| row).collect(),
             landed,
             waiting,
         })
@@ -732,6 +863,54 @@ pub fn marks_on<'marks>(
     marks.iter().filter(move |mark| {
         *mark == row || (row.at == At::Node && mark.lineage == row.lineage && mark.at.needed())
     })
+}
+
+/// The rows of nodes `removals` keeps in `next` that still use each removed node.
+fn removal_dependents(next: &Intent, removals: &[&PlannedRow]) -> BTreeMap<RowId, Vec<RowId>> {
+    let removed = |lineage: &str| removals.iter().any(|row| row.id.lineage == lineage);
+    removals
+        .iter()
+        .filter_map(|row| {
+            let rows: Vec<RowId> = dependents(next, &row.id.lineage)
+                .into_iter()
+                .filter(|dependent| !removed(&dependent.lineage))
+                .collect();
+            (!rows.is_empty()).then(|| (row.id.clone(), rows))
+        })
+        .collect()
+}
+
+/// What a Service's cells leave out that its Environment doesn't decide.
+#[derive(PartialEq)]
+struct Uncelled<'service> {
+    /// Each variable's description and whether it is exported, by key.
+    labels: BTreeMap<&'service str, (Option<&'service str>, bool)>,
+    /// Each route's hostname and target port, sorted.
+    ports: Vec<(&'service str, Option<u16>)>,
+    template: Option<&'service ServiceTemplate>,
+}
+
+impl<'service> Uncelled<'service> {
+    fn of(service: &'service SavedServiceIntent) -> Self {
+        Self {
+            labels: service
+                .variables
+                .iter()
+                .map(|v| (v.key.as_str(), (v.description.as_deref(), v.exported)))
+                .collect(),
+            ports: {
+                let mut ports: Vec<_> = service
+                    .config
+                    .routes
+                    .iter()
+                    .map(|route| (route.hostname.as_str(), route.target_port))
+                    .collect();
+                ports.sort_unstable();
+                ports
+            },
+            template: service.config.template.as_ref(),
+        }
+    }
 }
 
 /// Whether `env` references a lineage it does not own, i.e. uses it live.

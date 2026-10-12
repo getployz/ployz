@@ -21,15 +21,20 @@ export function onMergeQuery(environment: EnvironmentRef): { query: "on_merge" }
 
 /** A row the merge lands: as the PR Environment has it, or as edited. */
 export const rides = (row: MergeRow) => row.ride === "rides" || row.ride === "edited";
+/** A riding row the merge lands; a removal production still uses stays. */
+const lands = (row: MergeRow) => rides(row) && !row.refused_by?.length;
 
-/** The On merge list: each Destination's rows the PR Environment changed, but not those its Destination already has. */
+/**
+ * The On merge list: each Destination's rows the PR Environment changed, but not those its Destination already has.
+ * A removed Volume stays listed as Kept, so the list says where its data went.
+ */
 export function onMergeLists(view: OnMerge) {
   return view.destinations.map((into) => ({ name: into.name, rows: into.rows.filter((row) => row.ride !== "production_keeps") }));
 }
 
 /** How many changes the merge lands, every Destination counted. */
 export function onMergeCount(view: OnMerge) {
-  return view.destinations.reduce((count, into) => count + into.rows.filter(rides).length, 0);
+  return view.destinations.reduce((count, into) => count + into.rows.filter(lands).length, 0);
 }
 
 /** A plan in words: "On · from staging · db copied · then php artisan migrate". */

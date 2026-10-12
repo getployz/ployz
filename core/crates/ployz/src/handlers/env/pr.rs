@@ -1,7 +1,8 @@
 //! A PR Environment's plan, what its merge lands, and shutting one down.
 
 use clap::ArgMatches;
-use ployz_store::{DeploymentStatus, EnvironmentName, EnvironmentRef, Ride};
+use ployz_core::config::At;
+use ployz_store::{DeploymentStatus, EnvironmentName, EnvironmentRef, MergeRow, Ride};
 use serde_json::{Value, json};
 
 use super::super::deploy;
@@ -158,34 +159,82 @@ pub(super) fn on_merge(root: &ArgMatches) -> Result<(), Error> {
     );
     for into in &view.destinations {
         for row in &into.rows {
-            let (lands, tone) = match row.ride {
-                Ride::Rides | Ride::Edited if row.lands.is_null() => {
-                    ("removed".to_owned(), crate::ui::Tone::Bad)
-                }
-                Ride::Rides | Ride::Edited if !row.production.is_null() && is_file(&row.lands) => {
-                    ("changed".to_owned(), crate::ui::Tone::Good)
-                }
-                Ride::Rides | Ride::Edited => (shown(&row.lands), crate::ui::Tone::Good),
-                Ride::Excluded => ("excluded".to_owned(), crate::ui::Tone::Muted),
-                Ride::ProductionKeeps => ("keeps its own".to_owned(), crate::ui::Tone::Muted),
-            };
-            let mut details = Vec::new();
-            if row.ride == Ride::Edited {
-                details.push("edited");
-            }
-            if row.conflict {
-                details.push("changed there too");
-            }
+            let Shown {
+                now,
+                lands,
+                tone,
+                details,
+            } = shown_row(row);
             table.row([
                 crate::ui::Cell::from(into.name.to_string()),
                 crate::ui::Cell::from(row.at.to_string()),
-                crate::ui::Cell::from(shown(&row.production)),
+                crate::ui::Cell::from(now),
                 crate::ui::Cell::status(lands, tone),
                 crate::ui::Cell::from(details.join(" · ")),
             ]);
         }
     }
     crate::ui::list(&view, &table)
+}
+
+/// One On merge row as the table shows it.
+#[derive(Debug, PartialEq)]
+struct Shown {
+    now: String,
+    lands: String,
+    tone: crate::ui::Tone,
+    details: Vec<String>,
+}
+
+fn shown_row(row: &MergeRow) -> Shown {
+    let mut details = Vec::new();
+    // A new node's row is a node row too; only a removal has no preview.
+    if *row.at.row().at() == At::Node && row.preview.is_null() {
+        let (lands, tone) = match row.ride {
+            Ride::Kept | Ride::ProductionKeeps => ("Kept".to_owned(), crate::ui::Tone::Muted),
+            Ride::Excluded => ("Excluded".to_owned(), crate::ui::Tone::Muted),
+            Ride::Rides | Ride::Edited if !row.refused_by.is_empty() => {
+                details.extend(row.refused_by.iter().map(ToString::to_string));
+                ("In use".to_owned(), crate::ui::Tone::Muted)
+            }
+            Ride::Rides | Ride::Edited => {
+                if row.conflict {
+                    details.push("Changed there".to_owned());
+                }
+                (format!("Removes {}", row.at.node()), crate::ui::Tone::Bad)
+            }
+        };
+        return Shown {
+            now: String::new(),
+            lands,
+            tone,
+            details,
+        };
+    }
+    let (lands, tone) = match row.ride {
+        Ride::Rides | Ride::Edited if row.lands.is_null() => {
+            ("removed".to_owned(), crate::ui::Tone::Bad)
+        }
+        Ride::Rides | Ride::Edited if !row.production.is_null() && is_file(&row.lands) => {
+            ("changed".to_owned(), crate::ui::Tone::Good)
+        }
+        Ride::Rides | Ride::Edited => (shown(&row.lands), crate::ui::Tone::Good),
+        Ride::Excluded => ("excluded".to_owned(), crate::ui::Tone::Muted),
+        Ride::ProductionKeeps => ("keeps its own".to_owned(), crate::ui::Tone::Muted),
+        Ride::Kept => ("Kept".to_owned(), crate::ui::Tone::Muted),
+    };
+    if row.ride == Ride::Edited {
+        details.push("edited".to_owned());
+    }
+    if row.conflict {
+        details.push("changed there too".to_owned());
+    }
+    Shown {
+        now: shown(&row.production),
+        lands,
+        tone,
+        details,
+    }
 }
 
 fn is_file(value: &Value) -> bool {
@@ -215,7 +264,8 @@ fn shown(value: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::shown;
+    use super::{Shown, shown, shown_row};
+    use crate::ui::Tone;
 
     #[test]
     fn only_a_missing_secret_reads_not_set() {
@@ -224,6 +274,83 @@ mod tests {
         assert_eq!(
             shown(&json!({ "type": "http", "path": "/up" })),
             r#"{"path":"/up","type":"http"}"#
+        );
+    }
+
+    /// pr-5's row removing `db`, `ride` and `refused_by` as given.
+    fn removal(ride: &str, conflict: bool, refused_by: serde_json::Value) -> Shown {
+        let row = serde_json::from_value(json!({
+            "row": "00000000-0000-4000-8000-000000000020:node",
+            "node": "db",
+            "kind": "service",
+            "name": null,
+            "production": { "image": "postgres:17" },
+            "lands": null,
+            "preview": null,
+            "ride": ride,
+            "conflict": conflict,
+            "requires": null,
+            "refused_by": refused_by,
+        }))
+        .unwrap();
+        shown_row(&row)
+    }
+
+    #[test]
+    fn a_new_node_row_still_shows_what_lands() {
+        let row = serde_json::from_value(json!({
+            "row": "00000000-0000-4000-8000-000000000020:node",
+            "node": "db",
+            "kind": "service",
+            "name": null,
+            "production": null,
+            "lands": "postgres:17",
+            "preview": "postgres:17",
+            "ride": "rides",
+            "conflict": false,
+            "requires": null,
+        }))
+        .unwrap();
+        assert_eq!(shown_row(&row).lands, "postgres:17");
+    }
+
+    #[test]
+    fn a_node_row_reads_as_its_removal_without_json() {
+        let shown = |lands: &str, tone, details: &[&str]| Shown {
+            now: String::new(),
+            lands: lands.to_owned(),
+            tone,
+            details: details.iter().map(ToString::to_string).collect(),
+        };
+        assert_eq!(
+            removal("rides", false, json!([])),
+            shown("Removes db", Tone::Bad, &[])
+        );
+        assert_eq!(
+            removal("rides", true, json!([])),
+            shown("Removes db", Tone::Bad, &["Changed there"])
+        );
+        let web = json!([{
+            "row": "00000000-0000-4000-8000-000000000003:variables.DB_URL",
+            "node": "web",
+            "kind": "service",
+            "name": "env.DB_URL",
+        }]);
+        assert_eq!(
+            removal("rides", false, web),
+            shown("In use", Tone::Muted, &["web.env.DB_URL"])
+        );
+        assert_eq!(
+            removal("excluded", false, json!([])),
+            shown("Excluded", Tone::Muted, &[])
+        );
+        assert_eq!(
+            removal("kept", false, json!([])),
+            shown("Kept", Tone::Muted, &[])
+        );
+        assert_eq!(
+            removal("production_keeps", false, json!([])),
+            shown("Kept", Tone::Muted, &[])
         );
     }
 }
