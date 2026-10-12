@@ -315,6 +315,8 @@ it("reopens the log stream once a lacking Server's daemon changes, as after Upgr
     expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
     await act(async () => { harness.machines.update("other", draft => { draft.daemonVersion = "0.2.4"; }); });
     expect(harness.sources).toHaveLength(1);
+    await act(async () => { harness.machines.update("old", draft => { draft.observedAt = "2026-10-12T00:01:00Z"; }); });
+    expect(harness.sources).toHaveLength(1);
     await act(async () => { harness.machines.update("old", draft => { draft.daemonVersion = "0.2.4"; }); });
     expect(harness.sources).toHaveLength(2);
     expect(opened.closed).toBe(true);
@@ -355,6 +357,83 @@ it("reopens the log stream when a lacking Server's record first arrives already 
     await act(async () => { harness.machines.update("old", draft => { draft.observedAt = "2026-10-12T00:01:00Z"; }); });
     expect(harness.sources).toHaveLength(2);
   } finally {
+    await harness.teardown();
+  }
+});
+
+it("reopens the log stream when a lacking Server gains capabilities under the same version", async () => {
+  const harness = await lackHarness("rebuilt", []);
+  try {
+    await act(async () => { harness.machines.insert([runtimeMachine("old", "0.2.3")]); });
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened.source);
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
+    await act(async () => { harness.machines.update("old", draft => { draft.capabilities = ["ployz.logs.tail.v1"]; }); });
+    expect(harness.sources).toHaveLength(2);
+    expect(opened.closed).toBe(true);
+  } finally {
+    await harness.teardown();
+  }
+});
+
+const transportError = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "source_error", machineId, containerId: "c", message: "transport error" }) });
+
+it("keeps reopening an upgraded Server's log stream while its new daemon starts, and names it by its Server name", async () => {
+  const harness = await lackHarness("restarting", []);
+  try {
+    await act(async () => { harness.machines.insert([{ ...runtimeMachine("old", "0.2.3"), name: "hel-1" }]); });
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened.source);
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on hel-1.");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(async () => { harness.machines.update("old", draft => { draft.daemonVersion = "0.2.4"; }); });
+    const upgraded = harness.sources.at(-1);
+    if (!upgraded || upgraded === opened) throw new Error("Upgrade did not reopen the log stream");
+    await act(async () => { upgraded.source.dispatchEvent(new Event("live")); upgraded.source.dispatchEvent(transportError("old")); });
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(harness.sources).toHaveLength(3);
+    expect(upgraded.closed).toBe(true);
+    const answered = harness.sources.at(-1);
+    if (!answered) throw new Error("Retry did not reopen the log stream");
+    await act(async () => {
+      answered.source.dispatchEvent(new Event("live"));
+      answered.source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: { ...line, machineId: "old", machineName: "hel-1" } }) }));
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(harness.sources).toHaveLength(3);
+    await act(async () => { answered.source.dispatchEvent(transportError("old")); });
+    expect(screen.getByRole("alert").textContent).toContain("hel-1: transport error");
+  } finally {
+    vi.useRealTimers();
+    await harness.teardown();
+  }
+});
+
+it("says an upgraded Server's logs are missing once its new daemon never answers", async () => {
+  const harness = await lackHarness("stuck", []);
+  try {
+    await act(async () => { harness.machines.insert([runtimeMachine("old", "0.2.3")]); });
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened.source);
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(async () => { harness.machines.update("old", draft => { draft.daemonVersion = "0.2.4"; }); });
+    for (let attempt = 0; attempt < 10 && !screen.queryByRole("alert"); attempt++) {
+      const source = harness.sources.at(-1);
+      await act(async () => { source?.source.dispatchEvent(new Event("live")); source?.source.dispatchEvent(transportError("old")); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    }
+    expect(screen.getByRole("alert").textContent).toContain("old: transport error");
+    const opens = harness.sources.length;
+    expect(opens).toBeGreaterThan(3);
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(harness.sources).toHaveLength(opens);
+  } finally {
+    vi.useRealTimers();
     await harness.teardown();
   }
 });

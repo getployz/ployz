@@ -24,6 +24,8 @@ const INITIAL: LogStreamState = { opened: false, offline: false, refused: false,
 const SHORT_TAIL = 200;
 /** Pages whose lines the live tail already had, read before giving the viewer older ones. */
 const OVERLAP_PAGES = 4;
+/** How often a just-upgraded Server's refusals reopen the stream before its failure shows. */
+const RESTART_ATTEMPTS = 6;
 /** Scrollback stops growing here, until the viewer follows the newest lines again and the page trims it. */
 const SCROLLBACK_LIMIT = LIVE_LOG_LIMIT * 3;
 
@@ -87,6 +89,21 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           const { [containerId]: __, ...failed } = server.failed;
           publish({ ...snapshot, missing: { ...snapshot.missing, live: Object.keys(failed).length ? { ...live, [machineId]: { ...server, failed } } : live } });
         };
+        const machines = getRuntimeCollections(selection.organizationSlug, scope).machines;
+        // A just-upgraded Server refuses until its new daemon serves; each refusal reopens the stream, backing off.
+        const restarting = new Map<string, { attempts: number; timer?: ReturnType<typeof setTimeout> }>();
+        const settle = (machineId: string) => { clearTimeout(restarting.get(machineId)?.timer); restarting.delete(machineId); };
+        const awaitRestart = (machineId: string) => {
+          const server = restarting.get(machineId);
+          if (!server || server.attempts >= RESTART_ATTEMPTS) { settle(machineId); return false; }
+          server.timer ??= setTimeout(() => {
+            server.timer = undefined;
+            server.attempts++;
+            close();
+            close = open();
+          }, Math.min(1_000 * 2 ** server.attempts, 30_000));
+          return true;
+        };
         const open = () => {
           controller = new AbortController();
           const stop = liveStream(`/api/runtime/logs?${query}`, {
@@ -109,13 +126,16 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
                 const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(containerLogEventSchema))(event.data);
                 if (decoded._tag === "None") return;
                 if (decoded.value.type === "record") {
+                  settle(decoded.value.record.machineId);
                   recovered(decoded.value.record.machineId, decoded.value.record.containerId);
                   pending.push(decoded.value.record); flush ??= setTimeout(land, 250);
                 } else if (decoded.value.type === "source_gone") {
                   recovered(decoded.value.machineId, decoded.value.containerId);
                 } else {
                   const { type: _, machineId, containerId, ...reason } = decoded.value;
-                  const machineName = [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
+                  if (reason.capability === undefined && awaitRestart(machineId)) return;
+                  settle(machineId);
+                  const machineName = machines.get(machineId)?.name ?? [...collection.values()].find(row => row.machineId === machineId)?.machineName ?? machineId;
                   const { [containerId]: __, ...failed } = snapshot.missing.live[machineId]?.failed ?? {};
                   publish({ ...snapshot, missing: { ...snapshot.missing, live: { ...snapshot.missing.live, [machineId]: { machineName, failed: { ...failed, [containerId]: reason } } } } });
                 }
@@ -129,15 +149,18 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           Object.values(snapshot.missing.live[machineId]?.failed ?? {}).some(reason => reason.capability !== undefined)
           || snapshot.missing.history.some(server => server.machineId === machineId && server.capability !== undefined);
         // @ployz/sdk never reopens a source it marked failed, so a lacking Server's new daemon needs a fresh stream.
-        const versions = new Map<string, string>();
-        const upgrades = getRuntimeCollections(selection.organizationSlug, scope).machines.subscribeChanges((changes) => {
+        // Released daemons publish no capabilities, so the version tells an upgrade apart too.
+        const daemons = new Map<string, string>();
+        const upgrades = machines.subscribeChanges((changes) => {
           const upgraded = new Set<string>();
           for (const change of changes) {
             if (change.type === "delete") continue;
-            if (versions.get(change.value.id) !== change.value.daemonVersion && lacking(change.value.id)) upgraded.add(change.value.id);
-            versions.set(change.value.id, change.value.daemonVersion);
+            const daemon = `${change.value.daemonVersion}|${change.value.capabilities.join(",")}`;
+            if (daemons.get(change.value.id) !== daemon && lacking(change.value.id)) upgraded.add(change.value.id);
+            daemons.set(change.value.id, daemon);
           }
           if (!upgraded.size) return;
+          for (const machineId of upgraded) { settle(machineId); restarting.set(machineId, { attempts: 0 }); }
           close();
           resetHistory();
           const live = Object.fromEntries(Object.entries(snapshot.missing.live).filter(([machineId]) => !upgraded.has(machineId)));
@@ -147,6 +170,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         }, { includeInitialState: true });
         return () => {
           upgrades.unsubscribe();
+          for (const machineId of [...restarting.keys()]) settle(machineId);
           pending = [];
           land = () => {};
           following = true;
