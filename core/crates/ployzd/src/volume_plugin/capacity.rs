@@ -213,8 +213,7 @@ impl VolumeStorage {
             .ok_or_else(|| unknown("Volume commitments overflow u64"))?;
         match existing_pool {
             Some(pool) => {
-                self.pool
-                    .ensure_capacity(&pool, commitment, managed.capacity.unmanaged_used_bytes)
+                self.ensure_pool_capacity(&pool, commitment, managed.capacity.unmanaged_used_bytes)
                     .await
                     .map_err(storage_error)?;
             }
