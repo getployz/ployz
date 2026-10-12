@@ -36,8 +36,10 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   // The Log Store's position: not read yet, a cursor, or null once it has nothing older.
   let cursor: string | null | undefined;
   const stored = new Set<string>();
-  // Servers whose lines arrived on this connection. Logs and older logs shipped in one release, so a refusal of older logs naming one of them is stale or another daemon's.
+  // Servers whose lines arrived since the stream last connected. Logs and older logs shipped in one release, so a refusal of older logs naming one of them is stale or another daemon's.
   const serving = new Set<string>();
+  // A Server's first line came while a history read was out, so that read may pass the page it refused.
+  let reread = false;
   const servedFailures = (failures: readonly MissingServer[]) => failures.filter(server => server.capability === undefined || !serving.has(server.machineId));
   // Bumped by each reset, so a read begun before it lands nothing.
   let generation = 0;
@@ -111,17 +113,18 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
           if (serving.has(machineId)) return;
           serving.add(machineId);
           const history = servedFailures(snapshot.missing.history);
-          if (history.length === snapshot.missing.history.length) return;
-          publish({ ...snapshot, missing: { ...snapshot.missing, history } });
-          if (snapshot.historyPending) return;
-          resetHistory();
-          void loadOlder();
+          const hid = history.length !== snapshot.missing.history.length;
+          if (hid) publish({ ...snapshot, missing: { ...snapshot.missing, history } });
+          if (snapshot.historyPending) reread = true;
+          else if (hid) { resetHistory(); void loadOlder(); }
         };
         const open = () => {
           controller = new AbortController();
-          serving.clear();
           const stop = liveStream(`/api/runtime/logs?${query}`, {
-            onOpen: () => { if (controller.signal.aborted) controller = new AbortController(); },
+            onOpen: () => {
+              serving.clear();
+              if (controller.signal.aborted) controller = new AbortController();
+            },
             onLost: (why) => {
               if (why === "refused") {
                 controller.abort();
@@ -239,6 +242,12 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       if (!streamSignal.aborted) publish({ ...snapshot, historyPending: false, historyError: true });
     } finally {
       streamSignal.removeEventListener("abort", cancelHistory);
+    }
+    const again = reread;
+    reread = false;
+    if (again && !streamSignal.aborted) {
+      resetHistory();
+      void loadOlder();
     }
   }
   return {

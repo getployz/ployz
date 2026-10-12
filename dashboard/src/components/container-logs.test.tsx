@@ -256,7 +256,7 @@ async function lackHarness(environmentSlug: string, failures: readonly object[])
     close() { const entry = sources.find(entry => entry.source === this); if (entry) entry.closed = true; }
   }
   vi.stubGlobal("EventSource", FakeEventSource);
-  const fetchHistory = vi.fn(async () => Response.json({ rows: [], failures, cursor: null }));
+  const fetchHistory = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ rows: [], failures, cursor: null }));
   vi.stubGlobal("fetch", fetchHistory);
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
@@ -272,7 +272,7 @@ async function lackHarness(environmentSlug: string, failures: readonly object[])
   </RouterContextProvider></DbProvider></QueryClientProvider>);
   const lack = { type: "source_error", machineId: "old", containerId: "c", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" };
   return {
-    sources, fetchHistory,
+    sources, fetchHistory, stream,
     machines: getRuntimeCollections("acme", scope).machines,
     refuse: async (source: EventTarget) => {
       await act(async () => source.dispatchEvent(new Event("live")));
@@ -350,7 +350,7 @@ it("drops a Server's older-logs lack once its lines stream, though its record st
     await harness.refuse(opened.source);
     await waitFor(() => expect(harness.fetchHistory).toHaveBeenCalledTimes(1));
     expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
-    // Its new daemon answers on a reconnected stream before its record catches up.
+    // Its new daemon's lines arrive before its record catches up.
     await act(async () => opened.source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: { ...line, machineId: "old", machineName: "old" } }) })));
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
     expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
@@ -358,6 +358,94 @@ it("drops a Server's older-logs lack once its lines stream, though its record st
     // Its older lines are read again, and the same stale refusal stays dropped.
     await waitFor(() => expect(harness.fetchHistory).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  } finally {
+    await harness.teardown();
+  }
+});
+
+const lineFrom = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "record", record: { ...line, machineId, machineName: machineId } }) });
+const historyRefusal = { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" };
+const refusedTwoPages = async (_url: string, init?: RequestInit) => Response.json({ rows: [], failures: [historyRefusal], cursor: cursorOf(init) === undefined ? "more" : null });
+
+it("reads a Server's older logs again when its first line comes while a read is out, and keeps that read's refusal dropped", async () => {
+  const harness = await lackHarness("pending", [historyRefusal]);
+  try {
+    let answer = (_response: Response) => {};
+    harness.fetchHistory.mockImplementationOnce(() => new Promise<Response>((resolve) => { answer = resolve; }));
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.source.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(harness.fetchHistory).toHaveBeenCalledTimes(1));
+    await act(async () => opened.source.dispatchEvent(lineFrom("old")));
+    await act(async () => answer(Response.json({ rows: [], failures: [historyRefusal], cursor: null })));
+    await waitFor(() => expect(harness.fetchHistory).toHaveBeenCalledTimes(2));
+    expect(cursorOf(harness.fetchHistory.mock.calls[1]?.[1])).toBeUndefined();
+    await waitFor(() => expect(harness.stream.getSnapshot().historyPending).toBe(false));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("keeps a streaming Server's ordinary older-logs failure in the missing-logs alert", async () => {
+  const harness = await lackHarness("serving-failure", [{ machineId: "old", machineName: "old", message: "Its stored logs are unreadable." }]);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.source.dispatchEvent(lineFrom("old")));
+    await act(async () => opened.source.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("old: Its stored logs are unreadable."));
+    expect(screen.queryByRole("status")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("shows a streaming Server's older-logs lack again once its live logs say it lacks a capability", async () => {
+  const harness = await lackHarness("serving-lacks", []);
+  try {
+    harness.fetchHistory.mockImplementation(refusedTwoPages);
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.source.dispatchEvent(lineFrom("old")));
+    await act(async () => opened.source.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(harness.fetchHistory).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(harness.stream.getSnapshot().historyPending).toBe(false));
+    expect(screen.queryByRole("status")).toBeNull();
+    await harness.refuse(opened.source);
+    expect((await screen.findByRole("status")).textContent).toBe("Logs need a newer Ployz on old.");
+    await act(async () => opened.source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "source_gone", machineId: "old", containerId: "c" }) })));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+    await act(async () => { await harness.stream.loadOlder(); });
+    expect(harness.fetchHistory).toHaveBeenCalledTimes(2);
+    expect((await screen.findByRole("status")).textContent).toBe("Older logs need a newer Ployz on old.");
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("shows a Server's older-logs lack again after the stream reconnects, until its lines stream again", async () => {
+  const harness = await lackHarness("serving-reconnect", []);
+  try {
+    harness.fetchHistory.mockImplementation(refusedTwoPages);
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.source.dispatchEvent(lineFrom("old")));
+    await act(async () => opened.source.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(harness.fetchHistory).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(harness.stream.getSnapshot().historyPending).toBe(false));
+    expect(screen.queryByRole("status")).toBeNull();
+    // The browser reconnects the dropped stream by itself.
+    await act(async () => opened.source.dispatchEvent(new Event("open")));
+    await act(async () => { await harness.stream.loadOlder(); });
+    expect(harness.fetchHistory).toHaveBeenCalledTimes(2);
+    expect((await screen.findByRole("status")).textContent).toBe("Older logs need a newer Ployz on old.");
+    await act(async () => opened.source.dispatchEvent(lineFrom("old")));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+    await waitFor(() => expect(harness.fetchHistory).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(harness.stream.getSnapshot().historyPending).toBe(false));
+    expect(screen.queryByRole("status")).toBeNull();
   } finally {
     await harness.teardown();
   }
