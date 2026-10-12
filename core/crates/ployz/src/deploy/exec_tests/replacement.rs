@@ -154,36 +154,41 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
     }
 }
 
+// The stop still runs so the old container's Server never starts it again, as it
+// would an ingress whose first start failed.
 #[tokio::test]
-async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
-    let machine = machine('1');
-    let old = container('a');
-    let new = container('b');
-    let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
-    let client = Scripted::new(vec![
-        observed(Call::Inspect(machine, old), exited(1)),
-        created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Start(machine, new)),
-        observed(Call::Inspect(machine, new), unhealthy()),
-        ok(Call::StopWithGrace(machine, new, 0)),
-        ok(Call::Remove(machine, new)),
-    ]);
+async fn stop_first_stops_but_does_not_restart_an_old_container_already_at_rest() {
+    for runtime in [exited(1), ContainerRuntimeObservation::Created] {
+        let machine = machine('1');
+        let old = container('a');
+        let new = container('b');
+        let plan = vec![replacement(&machine, &old, UpdateOrder::StopFirst)];
+        let client = Scripted::new(vec![
+            observed(Call::Inspect(machine, old), runtime),
+            ok(Call::Stop(machine, old)),
+            created(Call::Create(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Start(machine, new)),
+            observed(Call::Inspect(machine, new), unhealthy()),
+            ok(Call::StopWithGrace(machine, new, 0)),
+            ok(Call::Remove(machine, new)),
+        ]);
 
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
-    assert!(matches!(
-        outcome,
-        DeployOutcome::Failed {
-            failed: FailedOperation::Replacement {
-                compensation: ReplacementCompensation::OldUntouched {
-                    stop_new_container: StopAttempt::Stopped,
+        assert!(matches!(
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Replacement {
+                    compensation: ReplacementCompensation::OldUntouched {
+                        stop_new_container: StopAttempt::Stopped,
+                    },
+                    ..
                 },
                 ..
-            },
-            ..
-        }
-    ));
-    client.assert_done();
+            }
+        ));
+        client.assert_done();
+    }
 }
 
 #[tokio::test]
