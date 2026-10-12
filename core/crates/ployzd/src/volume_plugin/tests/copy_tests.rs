@@ -620,7 +620,9 @@ async fn a_pull_resumes_an_interrupted_receive_then_prunes_to_the_target() {
     assert_eq!(
         source.requests(),
         [
+            "/volume-bound/data",
             "/volume-send/data?target=w-1-2&base=11",
+            "/volume-bound/data",
             "/volume-send/data?target=w-1-2&token=token-1",
         ]
     );
@@ -650,6 +652,7 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     assert_eq!(
         source.requests(),
         [
+            "/volume-bound/data",
             "/volume-send/data?target=w-1-2&base=11",
             "/volume-send/data?target=w-1-2",
         ]
@@ -686,6 +689,33 @@ async fn a_pull_for_another_target_while_a_receive_runs_refuses_busy_and_keeps_t
         reply.pointer("/Ok/pull/target"),
         Some(&json!("w-1-1")),
         "{reply}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_pull_into_a_slot_smaller_than_the_writer_raises_the_slot_to_the_writer_bound() {
+    let source = Source::start(Some(2 * BOUND), "snapshot w-1-2 12\n").await;
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT, "refquota", &BOUND.to_string());
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("12")),
+        "{copy}"
+    );
+    assert_eq!(
+        property(&test, SLOT, "refquota").as_deref(),
+        Some("2147483648")
+    );
+    assert!(
+        commands(&test).contains("refquota=2147483648 tank/ployz-mirror/data/fs"),
+        "{}",
+        commands(&test)
     );
     server.abort();
 }

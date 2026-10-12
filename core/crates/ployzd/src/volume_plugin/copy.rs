@@ -488,8 +488,8 @@ impl VolumeStorage {
                 )
                 .await);
         }
-        let bound = match scope.slot() {
-            Some(slot) => slot.refquota,
+        let (fresh, bound) = match scope.slot() {
+            Some(slot) => (false, slot.refquota),
             None => {
                 let bound = self.fetch_bound(request).await?;
                 if let Err(error) = self
@@ -510,7 +510,7 @@ impl VolumeStorage {
                     .map_err(internal)?;
                 self.create_bounded_slot(&parent, bound).await?;
                 ployzd::faults::kill_inside("SetVolumeCopy.NoneToMirror");
-                bound
+                (true, bound)
             }
         };
         if bound == 0 {
@@ -546,6 +546,12 @@ impl VolumeStorage {
             self.receives.forget(name);
             return self.copy_now(&scope).await;
         }
+        let bound = if fresh {
+            bound
+        } else {
+            self.raise_slot_bound(&scope, &parent, bound, request)
+                .await?
+        };
         let token = match scope.fs() {
             Some(_) => self
                 .property(&fs, RESUME_TOKEN_PROPERTY)
@@ -623,6 +629,43 @@ impl VolumeStorage {
         self.receive(from, &full, fs, bound, fault)
             .await
             .map_err(|failure| failure.to_string())
+    }
+
+    /// The slot's bound raised to the writer's, when the writer's Volume grew since the
+    /// slot was made, so the receive fits whatever the writer holds now.
+    async fn raise_slot_bound(
+        &self,
+        scope: &Scope,
+        parent: &str,
+        bound: u64,
+        request: &PullRequest,
+    ) -> Result<u64, RpcError> {
+        let writer = self.fetch_bound(request).await?;
+        if writer <= bound {
+            return Ok(bound);
+        }
+        match self
+            .ensure_commitment(&scope.pool, &scope.datasets, writer - bound)
+            .await
+        {
+            Ok(()) => {}
+            Err(VolumeError::Capacity(_)) => {
+                return Err(self
+                    .refuse_found(
+                        scope,
+                        CopyRefusal::NoCapacity,
+                        format!(
+                            "this Machine has no room for a {writer} byte copy of {}",
+                            scope.name
+                        ),
+                    )
+                    .await);
+            }
+            Err(error) => return Err(internal(error)),
+        }
+        self.z(&["set", &format!("refquota={writer}"), parent])
+            .await?;
+        Ok(writer)
     }
 
     /// The writer's bound for the Volume, from its send port.
