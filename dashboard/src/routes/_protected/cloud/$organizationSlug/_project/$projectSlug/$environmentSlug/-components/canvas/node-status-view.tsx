@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { CloudOffIcon, TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { RelativeTime, RunningTime } from "#/components/relative-time";
@@ -51,8 +52,13 @@ function StatusMark({ tone }: { tone: Tone }) {
 }
 
 /** What runs now, in one word (grey with its age when it isn't current), ending in the node's ⚠ N. */
-export function StatusLine({ status, issues, className }:
-  { status: Pick<RuntimeLine, "word" | "tone" | "since">; issues: NodeIssues | null; className?: string }) {
+export function StatusLine({ status, issues, onIssues, className }: {
+  status: Pick<RuntimeLine, "word" | "tone" | "since">;
+  issues: NodeIssues | null;
+  /** Makes the ⚠ a link of its own, inside a card that is one. */
+  onIssues?: (event: MouseEvent) => void;
+  className?: string;
+}) {
   return (
     <div className={cn("flex min-w-0 items-center gap-2", className)}>
       <StatusMark tone={status.tone} />
@@ -62,7 +68,8 @@ export function StatusLine({ status, issues, className }:
             {status.word}{status.since ? <> <RelativeTime date={status.since} /></> : null}
           </span>}
       {issues ? (
-        <Badge variant={issues.tone === "bad" ? "destructive" : "warning"} className="ml-auto" aria-label={plural(issues.count, "issue")}>
+        <Badge variant={issues.tone === "bad" ? "destructive" : "warning"} className={cn("ml-auto", onIssues && "cursor-pointer hover:underline")}
+          aria-label={plural(issues.count, "issue")} role={onIssues ? "link" : undefined} onClick={onIssues}>
           <TriangleAlertIcon data-icon="inline-start" />{issues.count}
         </Badge>
       ) : null}

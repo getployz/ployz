@@ -66,6 +66,30 @@ reaches them unasked. The breaking release's CLI refuses to init or add a
 Machine into a Cluster on another line, and its daemon rejects older-line
 joiners. An older release never has to know about a newer one.
 
+Machine RPC changes within a major by seven rules:
+
+1. A new feature is a new catalog row with a new capability name. A name never
+   gets different semantics.
+2. A new response, stream, or watch field is optional. Absent means unknown and
+   claims no capability.
+3. A new request field is added only when a daemon that ignores it does no
+   harm. Otherwise the change is a new route.
+4. Changed semantics get a new versioned route, `.vN`. The old row keeps
+   serving until a major bump.
+5. A new stream variant is opt-in through a request field. Old readers reject
+   unknown variants.
+6. A removed verb is shimmed to its replacement within the major. Otherwise the
+   daemon stops advertising it and refuses with `details.capability`.
+7. Every refusal of a catalogued route names its capability in
+   `details.capability`.
+
+A capability name decides what a client does. Nothing compares versions. Each
+Machine record lists the capabilities its binary serves. An Entry Machine older
+than a peer decodes that peer's record into its own struct and drops fields it
+does not know, so a client attached through it sees no capabilities for the
+peer until the entry upgrades. The live refusal still decides, so nothing wrong
+runs.
+
 **Red flags:** a required new field, a migration step, a reader that rejects
 unknown fields on replicated data, a daemon behaviour that depends on every
 peer being upgraded.

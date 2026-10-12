@@ -31,11 +31,18 @@ const shown = (value: JsonValue) => shownValue(value) || "off";
 
 type Draft = { kind: HealthcheckKind; text: string; error: string | null };
 
-type Props = {
+export type HealthcheckSetting = {
   value: JsonValue | undefined;
   change: ServiceSettingChange | undefined;
   /** Sets the Setting, or unsets it (null). */
   set: (value: JsonValue | null) => Persistable;
+};
+
+type Props = HealthcheckSetting & {
+  label?: string;
+  description?: ReactNode;
+  /** Shows the timeout row; Monitoring leaves it out. */
+  timeout?: boolean;
 };
 
 /**
@@ -47,7 +54,8 @@ export function HealthcheckField(props: Props) {
   return <HealthcheckFields key={check ? `${check.kind}:${check.text}` : ""} check={check} {...props} />;
 }
 
-function HealthcheckFields({ check, change, set }: Props & { check: Healthcheck | null }) {
+function HealthcheckFields({ check, change, set, label = "Healthcheck", description = "A new replica must pass it before it takes traffic.",
+  timeout = true }: Props & { check: Healthcheck | null }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const kind = draft?.kind ?? check?.kind ?? null;
   const text = draft?.text ?? check?.text ?? "";
@@ -68,8 +76,8 @@ function HealthcheckFields({ check, change, set }: Props & { check: Healthcheck 
   return (
     <>
       <Field id="healthcheck" className="scroll-mt-4">
-        <FieldLabel>Healthcheck</FieldLabel>
-        <FieldDescription>A new replica must pass it before it takes traffic.</FieldDescription>
+        <FieldLabel>{label}</FieldLabel>
+        <FieldDescription>{description}</FieldDescription>
         {kind === null ? (
           <div className="grid grid-cols-2 gap-2">
             {(["path", "command"] as const).map((option) => (
@@ -93,7 +101,7 @@ function HealthcheckFields({ check, change, set }: Props & { check: Healthcheck 
             onCancel={() => setDraft(null)} onConfirm={() => confirm(kind)} />
         )}
       </Field>
-      {check ? (
+      {check && timeout ? (
         <Field orientation="responsive">
           <FieldContent><FieldLabel>Healthcheck timeout</FieldLabel></FieldContent>
           <div className="@md/field-group:basis-56 @md/field-group:shrink-0">

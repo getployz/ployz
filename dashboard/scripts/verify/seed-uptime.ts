@@ -4,6 +4,8 @@
 //             and a stray TLS or timeout failure every few hours, so every range's tooltip has failures to show
 //   api       Unreachable: an open 502 incident from 18 minutes ago
 //   worker    Checking: a check with no results yet
+//   redis     Unreachable at its healthcheck path: every result a 404 since its first check 12 minutes ago, so the tab
+//             shows the Healthcheck path field
 //   postgres  Not checked: no check
 // ams and iad get display names and sin keeps its code, so the tooltip shows both a name and the fallback.
 // Each run replaces these checks wholesale (results and incidents cascade), so running it again converges.
@@ -57,7 +59,7 @@ const seed = Effect.gen(function* () {
     if (id === undefined) throw new Error(`No Service ${slug} in production.`);
     return id;
   };
-  const slugs = ["web", "api", "worker", "postgres"] as const;
+  const slugs = ["web", "api", "worker", "redis", "postgres"] as const;
 
   yield* drizzle.insert(uptimeRegion).values(REGIONS.map((region) => ({ region, name: REGION_NAMES[region] })))
     .onConflictDoUpdate({ target: uptimeRegion.region, set: { name: sql`excluded.name` } });
@@ -66,7 +68,7 @@ const seed = Effect.gen(function* () {
     eq(uptimeCheck.environmentId, environmentId),
     inArray(uptimeCheck.serviceId, slugs.map(serviceId)),
   ));
-  const checks = yield* drizzle.insert(uptimeCheck).values((["web", "api", "worker"] as const).map((slug) => ({
+  const checks = yield* drizzle.insert(uptimeCheck).values((["web", "api", "worker", "redis"] as const).map((slug) => ({
     organizationId, environmentId, serviceId: serviceId(slug), name: slug, url: `https://${slug}.acme.com/health`,
   }))).returning({ id: uptimeCheck.id, name: uptimeCheck.name });
   const checkId = (slug: string) => checks.find((check) => check.name === slug)?.id ?? "";
@@ -123,6 +125,13 @@ const seed = Effect.gen(function* () {
   yield* drizzle.insert(uptimeIncident).values({
     id: randomUUID(), organizationId, checkId: checkId("api"), checkRevision: 1, openedAt: new Date(openFrom),
     openedBy: { quorum: { distinctRegions: 2 }, observations: REGIONS.map((region) => observation(region, openFrom, "fail", 502)) },
+  });
+
+  const wrongFrom = now - 12 * MINUTE;
+  yield* history("redis", wrongFrom, 60, { from: wrongFrom, to: now, status: 404 });
+  yield* drizzle.insert(uptimeIncident).values({
+    id: randomUUID(), organizationId, checkId: checkId("redis"), checkRevision: 1, openedAt: new Date(wrongFrom),
+    openedBy: { quorum: { distinctRegions: 2 }, observations: REGIONS.map((region) => observation(region, wrongFrom, "fail", 404)) },
   });
 
   return { environmentId, checks: Object.fromEntries(slugs.map((slug) => [slug, checkId(slug) || "no check"])) };

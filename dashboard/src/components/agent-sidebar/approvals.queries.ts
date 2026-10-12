@@ -1,7 +1,6 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
-import { Option, Schema } from "effect";
-import { APPROVAL_STATUSES, type ApprovalDecision } from "#/modules/approvals/approvals";
-import { getApprovalServerFn, listPendingApprovalsServerFn } from "#/modules/approvals/approvals.functions";
+import type { ApprovalDecision } from "#/modules/approvals/approvals";
+import { decideApprovalServerFn, getApprovalServerFn, listPendingApprovalsServerFn } from "#/modules/approvals/approvals.functions";
 
 export type ApprovalView = Awaited<ReturnType<typeof getApprovalServerFn>>;
 
@@ -30,37 +29,16 @@ export function approvalOptions(organizationSlug: string, id: string) {
   });
 }
 
-const Decided = Schema.Struct({
-  approval: Schema.Struct({
-    status: Schema.Literals(APPROVAL_STATUSES),
-    reason: Schema.NullOr(Schema.String),
-    decided_at: Schema.NullOr(Schema.String),
-  }),
-});
-export type Decided = typeof Decided.Type["approval"];
-const Refused = Schema.Struct({ error: Schema.Struct({ message: Schema.String }) });
+export type Decided = ApprovalView;
 
 /**
  * Approve exactly the digest shown, or deny with a reason, as the CLI does. Answers the refusal's message when Cloud
  * says no, such as a plan that changed since the card drew.
  */
-export async function decideApproval(id: string, decision: ApprovalDecision): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
-  const response = await fetch(`/api/cli/approvals/${encodeURIComponent(id)}`, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(decision),
-  });
-  const body: unknown = await response.json().catch(() => null);
-  const decided = Schema.decodeUnknownOption(Decided)(body);
-  if (response.ok && Option.isSome(decided)) return { ok: true, decided: decided.value.approval };
-  return {
-    ok: false,
-    message: Option.match(Schema.decodeUnknownOption(Refused)(body), {
-      onNone: () => "Cloud didn't take that answer. Try again.",
-      onSome: (refused) => refused.error.message,
-    }),
-  };
+export async function decideApproval(organizationSlug: string, id: string, decision: ApprovalDecision): Promise<{ ok: true; decided: Decided } | { ok: false; message: string }> {
+  const answer = await decideApprovalServerFn({ data: { organizationSlug, id, decision } }).catch(() => null);
+  if (answer === null) return { ok: false, message: "Cloud didn't take that answer. Try again." };
+  return answer.ok ? { ok: true, decided: answer.approval } : answer;
 }
 
 /** Show a decision at once, then reread every approval: the badge and the waiting list drop it. */

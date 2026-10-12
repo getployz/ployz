@@ -18,12 +18,20 @@ account menu.
 In the sidebar, click **Organization** for its settings:
 
 - **General**: your organization's **Domain**, which your services' free addresses live under.
-  It appears with your first deploy. Below it, **Forget all servers** for when your servers were
-  deleted.
+  It appears with your first deploy. Below it, **Allow support access**, and **Forget all
+  servers** for when your servers were deleted.
 - **Builds**: where builds run. See [Where builds run](../builds/where-builds-run.md).
 - **Billing**: your plan.
 
 ![Organization → General: the domain and the Danger section](../images/organization-general.png)
+
+## Let Ployz support in
+
+Turn on **Allow support access** under **Organization → General** to let Ployz support open your
+organization and do what you can. It's off until an owner or admin turns it on, and turning it
+off applies on support's next request. While support has your organization open, a banner at the
+top says so. A [self-hosted Ployz Cloud](../self-hosting.md) has no Ployz support, so the setting
+doesn't appear.
 
 ## Destructive actions ask first
 

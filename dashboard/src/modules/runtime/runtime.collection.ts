@@ -57,6 +57,8 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   runningBuilds: NonnegativeInt,
   /** The Ployz release the Server runs, bare `X.Y.Z`; empty when its record predates the field. */
   daemonVersion: Schema.String,
+  /** Every capability the Server's daemon serves; empty when its record predates the field, which claims nothing. */
+  capabilities: Schema.Array(Schema.String),
   membership: Schema.String,
   observedContainerCount: NonnegativeInt,
   observedAt: Schema.String,

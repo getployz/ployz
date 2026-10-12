@@ -21,7 +21,7 @@ import {
 } from "#/modules/machines/server-drain";
 import { planDrain } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
-import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
+import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -239,7 +239,7 @@ export const listLatestServerDrains = Effect.fn("ServerDrain.listLatest")(functi
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.selectDistinctOn([serverDrainAttempt.machineId]).from(serverDrainAttempt)
     .where(eq(serverDrainAttempt.organizationId, organization.id))

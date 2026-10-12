@@ -18,8 +18,8 @@ use super::step::{
     Act, Action, Ask, AttemptId, BodyDigest, Fix, Gate, RequestKey, Step, Write, WriteSlot,
 };
 use crate::{
-    Batch, BatchCommand, Command, EnvironmentName, EnvironmentRef, EnvironmentSummary, ProjectName,
-    Query, Revision, ServicesQuery, Tell, View, Written,
+    Batch, BatchCommand, Command, EnvironmentName, EnvironmentRef, EnvironmentSummary,
+    OrganizationId, ProjectName, Query, Revision, ServicesQuery, Tell, View, Written,
 };
 
 /// Read and write steps one call may take; waits are bounded by time instead.
@@ -38,11 +38,12 @@ pub struct Place {
 }
 
 /// Which Store a call reaches.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "at", rename_all = "snake_case")]
 pub enum StoreAt {
-    /// Ployz Cloud: it also answers about Servers and GitHub.
-    Cloud,
+    /// Ployz Cloud, acting in one Organization: it also answers about
+    /// Servers and GitHub.
+    Cloud { organization: OrganizationId },
     /// A Config Store on this computer: Store reads and writes only.
     Local,
 }
@@ -353,7 +354,21 @@ impl Cx<'_> {
     /// An ID for what this call creates, the same on every retry of the call.
     pub(crate) fn mint<I: TryFrom<String>>(&self, given: Option<RequestKey>) -> Result<I, Stop> {
         let key = self.request_key(given);
-        I::try_from(AttemptId::derive(&self.call.tool, &key).to_string())
+        self.mint_as(&self.call.tool, &key)
+    }
+
+    /// An ID for `what` under `key`. Cloud IDs are global, so two
+    /// Organizations using one key must not mint the same ID.
+    pub(crate) fn mint_as<I: TryFrom<String>>(
+        &self,
+        what: &str,
+        key: &RequestKey,
+    ) -> Result<I, Stop> {
+        let seed = match &self.place.store {
+            StoreAt::Cloud { organization } => format!("{organization}:{what}"),
+            StoreAt::Local => what.to_owned(),
+        };
+        I::try_from(AttemptId::derive(&seed, key).to_string())
             .map_err(|_| Refusal::internal("An ID did not mint").into())
     }
 

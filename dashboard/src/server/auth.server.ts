@@ -197,6 +197,8 @@ const makeAuth = Effect.gen(function* () {
       schema: AuthSchema,
     }),
     trustedOrigins: url.trustedOrigins,
+    // Every OAuth failure, a bad state included, lands on the sign-in page; a per-request errorCallbackURL misses those.
+    onAPIError: { errorURL: "/auth" },
     emailAndPassword: { enabled: config.nodeEnv !== "production" },
     socialProviders: {
       github: {

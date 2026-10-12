@@ -6,8 +6,10 @@ import { sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { fakeText } from "@tanstack/ai/testing";
+import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
+import { FAILURES } from "#/modules/agent/provider-error";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
@@ -165,6 +167,24 @@ it.live("a store tool the agent mints ids for creates a Service where the member
     expect(answered.said).toBe("Done.");
     const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "shop", environment: "production" } }));
     expect(JSON.stringify(listed)).toContain('"api"');
+  }));
+
+it.live("a turn Claude fails tells the member what happened in plain words, never the provider's JSON", () =>
+  Effect.gen(function* () {
+    const { say } = yield* sidebar({ removeWeb: false });
+    const claude = createAnthropicChat("claude-sonnet-5-5", "sk-test", {
+      maxRetries: 0,
+      fetch: () => Promise.resolve(Response.json({
+        type: "error",
+        error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API." },
+        request_id: "req_1",
+      }, { status: 400 })),
+    });
+    const answered = yield* say("list services", {}, claude);
+    expect(answered.errors).toEqual([FAILURES.agent_unavailable]);
+    const failed = answered.chunks.find((chunk) => chunk.type === EventType.RUN_ERROR);
+    expect(failed).toMatchObject({ code: "agent_unavailable" });
+    expect(JSON.stringify(failed)).not.toContain("credit balance");
   }));
 
 it.live("a Service restart runs through Cloud without asking anyone", () =>

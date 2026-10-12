@@ -403,6 +403,23 @@ impl AsyncWrite for ChildIo {
     }
 }
 
+/// Name the capability and target on a bare `Unsupported` for a catalogued route.
+#[must_use]
+pub(crate) fn name_refusal(mut error: RpcError, path: &str, target: &MachineTarget) -> RpcError {
+    if error.code == RpcErrorCode::Unsupported
+        && error.details.is_null()
+        && let Some(details) = refusal_details(path, target)
+    {
+        error.details = details;
+    }
+    error
+}
+
+fn refusal_details(path: &str, target: &MachineTarget) -> Option<Value> {
+    ployz_core::capability_of(path)
+        .map(|capability| json!({ "capability": capability, "target": target.as_str() }))
+}
+
 pub(crate) fn rpc_error(error: ConnectError) -> RpcError {
     match error {
         ConnectError::AllFailed {
@@ -822,6 +839,27 @@ impl TransportError {
             error.code = tonic::Code::Unavailable;
         }
         error
+    }
+
+    pub(crate) fn name_refusal(mut self, path: &str, target: &MachineTarget) -> Self {
+        if self.code == tonic::Code::Unimplemented
+            && self.details.is_null()
+            && let Some(details) = refusal_details(path, target)
+        {
+            self.details = details;
+        }
+        self
+    }
+
+    pub(crate) fn addressed_as(mut self, target: &str) -> Self {
+        if let Some(details) = self
+            .details
+            .as_object_mut()
+            .filter(|details| details.contains_key("capability"))
+        {
+            details.insert("target".into(), target.into());
+        }
+        self
     }
 
     #[must_use]

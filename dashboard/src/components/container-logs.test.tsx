@@ -7,6 +7,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
+import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { ContainerLogs } from "./container-logs";
 
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };
@@ -239,5 +240,140 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     cleanup();
     await stream.collection.cleanup();
     await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+  }
+});
+
+const lackNotice = () => screen.queryByText(/ to see (its|their) logs$| to show (its|their) logs\.$/)?.textContent ?? null;
+const lineFrom = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "record", record: { ...line, machineId, machineName: machineId } }) });
+const transportError = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "source_error", machineId, containerId: "c", message: "transport error" }) });
+const historyRefusal = { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" };
+
+const runtimeMachine = (id: string, daemonVersion: string): RuntimeMachineRecord => ({
+  id, name: id, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
+  buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion, capabilities: [], membership: "active",
+  observedContainerCount: 0, observedAt: "2026-10-12T00:00:00Z",
+});
+
+async function lackHarness(environmentSlug: string, failures: readonly object[]) {
+  const sources: EventTarget[] = [];
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); sources.push(this); }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ rows: [], failures, cursor: null })));
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const selection = { organizationSlug: "acme", environmentSlug };
+  const scope = { queryClient: client, sessionId: "session", userId: "user" };
+  const stream = getContainerLogStream(selection, scope);
+  render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+    <ContainerLogs selection={selection} />
+  </RouterContextProvider></DbProvider></QueryClientProvider>);
+  const lack = { type: "source_error", machineId: "old", containerId: "c", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" };
+  return {
+    sources,
+    machines: getRuntimeCollections("acme", scope).machines,
+    refuse: async (source: EventTarget) => {
+      await act(async () => source.dispatchEvent(new Event("live")));
+      await act(async () => source.dispatchEvent(new MessageEvent("log", { data: JSON.stringify(lack) })));
+    },
+    teardown: async () => {
+      cleanup();
+      await stream.collection.cleanup();
+      await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
+    },
+  };
+}
+
+it("says to upgrade a Server that lacks the logs capability inside the viewer, links its page, and leaves every other failure in the alert", async () => {
+  const harness = await lackHarness("mixed", [
+    { machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." },
+    { machineId: "old", machineName: "old", message: "Its stored logs are unreadable." },
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+  ]);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("fsn-1: Its log service isn’t running."));
+    await waitFor(() => expect(lackNotice()).toBe("Upgrade old to see its logs"));
+    expect(screen.getByRole("link", { name: "Open old" }).getAttribute("href")).toBe("/cloud/acme/~/servers/old");
+    expect(screen.queryByRole("button", { name: /upgrade|try again/i })).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("old: Its stored logs are unreadable.");
+    expect(screen.getByRole("alert").textContent).not.toContain("unsupported");
+    expect(screen.getByText("2 servers’ logs are missing")).toBeTruthy();
+    expect(screen.queryByText("No logs yet")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("says to upgrade two lacking Servers inside the viewer with a link to Servers, and no missing-logs alert", async () => {
+  const harness = await lackHarness("both-old", [
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+    { machineId: "older", machineName: "older", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+  ]);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(lackNotice()).toBe("Upgrade 2 servers to see their logs"));
+    expect(screen.getByRole("link", { name: "Open Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
+    expect(screen.queryByRole("button", { name: /upgrade|try again/i })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("No logs yet")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("notes a lacking Server above other Servers' lines with a link to its page", async () => {
+  const harness = await lackHarness("mixed-rows", [historyRefusal]);
+  try {
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.dispatchEvent(new Event("live")));
+    await act(async () => opened.dispatchEvent(lineFrom("fsn-1")));
+    await waitFor(() => expect(lackNotice()).toBe("old needs an upgrade to show its logs. Open old"));
+    expect(screen.getByRole("link", { name: "Open old" }).getAttribute("href")).toBe("/cloud/acme/~/servers/old");
+    expect(screen.queryByRole("button", { name: /upgrade|try again/i })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("keeps a stopped Server's daemon in the missing-logs alert by its Server name, with no lack line", async () => {
+  const harness = await lackHarness("stopped", []);
+  try {
+    await act(async () => { harness.machines.insert([{ ...runtimeMachine("fsn-2", "0.2.4"), name: "hel-2" }]); });
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await act(async () => opened.dispatchEvent(new Event("live")));
+    await act(async () => opened.dispatchEvent(transportError("fsn-2")));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("hel-2: transport error"));
+    expect(lackNotice()).toBeNull();
+  } finally {
+    await harness.teardown();
+  }
+});
+
+it("names a lacking Server with no lines by its Server name, and links its page", async () => {
+  const harness = await lackHarness("named", []);
+  try {
+    await act(async () => { harness.machines.insert([{ ...runtimeMachine("old", "0.2.3"), name: "hel-1" }]); });
+    const opened = harness.sources.at(-1);
+    if (!opened) throw new Error("Viewer did not open its log stream");
+    await harness.refuse(opened);
+    await waitFor(() => expect(lackNotice()).toBe("Upgrade hel-1 to see its logs"));
+    expect(screen.getByRole("link", { name: "Open hel-1" }).getAttribute("href")).toBe("/cloud/acme/~/servers/old");
+  } finally {
+    await harness.teardown();
   }
 });

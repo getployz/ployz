@@ -1,74 +1,36 @@
-import {
-  useEffect,
-  useState,
-  useTransition,
-  type FormEvent,
-} from "react";
-import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import { Button } from "#/components/ui/button";
-import {
-  useHydrated,
-  useRouter,
-  useRouterState,
-} from "@tanstack/react-router";
-import { Spinner } from "#/components/ui/spinner";
+import { useEffect, useState, useTransition } from "react";
+import { useHydrated, useRouter } from "@tanstack/react-router";
 import { authClient } from "#/auth/auth-client";
+import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { PloyzMark } from "#/components/icons/ployz-logo";
+import { Button } from "#/components/ui/button";
+import { Spinner } from "#/components/ui/spinner";
 
-export function LoginPanel() {
+export function LoginPanel({
+  title,
+  description,
+  action,
+  callbackURL,
+}: {
+  title: string;
+  description?: string;
+  action: string;
+  /** Where GitHub sign-in returns: a path on this origin. */
+  callbackURL: string;
+}) {
   const isHydrated = useHydrated();
   const router = useRouter();
-  const isPublicShell = useRouterState({
-    select: (state) =>
-      state.matches.some((match) => match.routeId === "/_public"),
-  });
-  const currentLocation = useRouterState({
-    select: (state) => state.location.href,
-  });
-  const callbackURL = isPublicShell ? "/cloud" : currentLocation;
   const [error, setError] = useState<string | null>(null);
   const [isGithubPending, setIsGithubPending] = useState(false);
-  const [isRandomAccountPending, startRandomAccountTransition] =
-    useTransition();
+  const [isRandomAccountPending, startRandomAccountTransition] = useTransition();
   const isPending = isGithubPending || isRandomAccountPending;
 
+  // Back from GitHub through the browser's back button: the page comes from the bfcache with the spinner still on.
   useEffect(() => {
     const reset = () => setIsGithubPending(false);
     window.addEventListener("pageshow", reset);
     return () => window.removeEventListener("pageshow", reset);
   }, []);
-
-  async function signInWithGithub(event: FormEvent<HTMLFormElement>) {
-    if (!isHydrated) {
-      return;
-    }
-
-    event.preventDefault();
-    if (isPending) return;
-    setError(null);
-    setIsGithubPending(true);
-    try {
-      const response = await authClient.signIn.social({
-        provider: "github",
-        callbackURL,
-        newUserCallbackURL: "/cloud?welcome=true",
-      });
-
-      if (response.error) {
-        const detail = response.error.message || response.error.code;
-        setError(
-          detail
-            ? `Could not start GitHub sign-in: ${detail}`
-            : "Could not start GitHub sign-in.",
-        );
-        setIsGithubPending(false);
-      }
-    } catch {
-      setError(
-        "Could not reach the auth server. Check that the dev server is running.",
-      );
-      setIsGithubPending(false);
-    }
-  }
 
   function createRandomDevAccount() {
     setError(null);
@@ -83,48 +45,37 @@ export function LoginPanel() {
 
         if (response.error) {
           const detail = response.error.message || response.error.code;
-          setError(
-            detail
-              ? `Could not create a dev account: ${detail}`
-              : "Could not create a dev account.",
-          );
+          setError(detail ? `Could not create a dev account: ${detail}` : "Could not create a dev account.");
           return;
         }
 
         await router.navigate({ to: "/cloud", search: { welcome: true }, reloadDocument: true });
       } catch {
-        setError(
-          "Could not reach the auth server. Check that the dev server is running.",
-        );
+        setError("Could not reach the auth server. Check that the dev server is running.");
       }
     });
   }
 
   return (
-    <div className="flex flex-col items-center gap-6 px-2 py-4 text-center">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-xl font-semibold">Sign in to Ployz</h2>
-        <p className="text-sm text-muted-foreground">
-          Push-to-deploy on your own servers.
-        </p>
+    <div className="flex w-full flex-col items-center gap-6 text-center">
+      <PloyzMark className="size-11" decorative />
+      <div className="flex flex-col gap-2">
+        <h1 className="text-3xl font-semibold tracking-tight text-balance">{title}</h1>
+        {description ? <p className="text-balance text-muted-foreground">{description}</p> : null}
       </div>
       <div className="flex w-full flex-col gap-2">
-        <form method="post" action="/api/auth/github" onSubmit={signInWithGithub}>
-          <input type="hidden" name="callbackURL" value={callbackURL} />
-          <Button
-            type="submit"
-            disabled={isPending}
-            size="lg"
-            className="w-full"
-          >
-            {isGithubPending ? (
-              <Spinner data-icon="inline-start" />
-            ) : (
-              <GitHubMarkIcon data-icon="inline-start" />
-            )}
-            {isGithubPending ? "Connecting to GitHub…" : "Continue with GitHub"}
-          </Button>
-        </form>
+        <Button
+          variant="ink"
+          size="lg"
+          className="w-full"
+          nativeButton={false}
+          aria-busy={isGithubPending || undefined}
+          render={<a href={`/auth/github?${new URLSearchParams({ callbackURL })}`} />}
+          onClick={() => setIsGithubPending(true)}
+        >
+          {isGithubPending ? <Spinner data-icon="inline-start" /> : <GitHubMarkIcon data-icon="inline-start" />}
+          {action}
+        </Button>
         {import.meta.env.DEV ? (
           <Button
             type="button"
@@ -134,9 +85,7 @@ export function LoginPanel() {
             className="w-full"
             onClick={createRandomDevAccount}
           >
-            {isRandomAccountPending ? (
-              <Spinner data-icon="inline-start" />
-            ) : null}
+            {isRandomAccountPending ? <Spinner data-icon="inline-start" /> : null}
             Create random dev account
           </Button>
         ) : null}

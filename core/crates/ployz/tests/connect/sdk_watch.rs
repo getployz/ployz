@@ -38,6 +38,13 @@ async fn missing_watch_capability_is_unsupported_and_never_polls_list_rpcs() {
     assert_eq!(error.code, RpcErrorCode::Unsupported);
     assert!(error.message.contains(RUNTIME_WATCH_CAPABILITY));
     assert_eq!(
+        error.details,
+        serde_json::json!({
+            "capability": RUNTIME_WATCH_CAPABILITY,
+            "target": description.machine_id.to_string(),
+        })
+    );
+    assert_eq!(
         service
             .watch_opens
             .load(std::sync::atomic::Ordering::SeqCst),

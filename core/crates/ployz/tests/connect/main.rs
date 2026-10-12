@@ -492,6 +492,131 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
 }
 
 #[tokio::test]
+async fn a_refused_tail_names_the_capability_and_the_server() {
+    let mut service = DiscoveryService::new(test_description());
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(listing_container(
+            'c',
+            'c',
+            "api",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ));
+    service.tail_failure = Some(Status::unimplemented(""));
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["logs", "app/api", "--follow"]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Machine RPC failed"), "{stderr}");
+    assert!(!stderr.contains("cause:"), "{stderr}");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_refused_exec_names_the_capability_and_the_server() {
+    let service = DiscoveryService::new(test_description());
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(listing_container(
+            'a',
+            'a',
+            "web",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ));
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["exec", "-T", "app/web", "true"]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.container.exec.v1."),
+        "{stderr}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_refused_tail_after_history_ends_the_json_stream_partial() {
+    let mut service = DiscoveryService::new(test_description());
+    service
+        .listed_containers
+        .lock()
+        .unwrap()
+        .push(listing_container(
+            'c',
+            'c',
+            "api",
+            ContainerKind::ServiceContainer,
+            ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+        ));
+    service.tail_failure = Some(Status::unimplemented(""));
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["--json", "logs", "app/api", "--follow"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Server one needs a newer Ployz. It cannot serve ployz.logs.tail.v1."),
+        "{stderr}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_refused_history_read_names_the_capability_not_a_silent_server() {
+    let mut service = DiscoveryService::new(test_description());
+    service.machines.push(machine('b', "old"));
+    service
+        .history_failures
+        .lock()
+        .unwrap()
+        .insert(machine_id('b'), Status::unimplemented(""));
+    let (address, server) = serve_discovery(service).await;
+
+    let output = run_ployz(address, &["logs", "app/gone"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("! Server old needs a newer Ployz. It cannot serve ployz.logs.history.v2."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("old did not answer"), "{stderr}");
+
+    let output = run_ployz(address, &["--json", "logs", "app/gone"]).await;
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let gaps = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|row| row.get("failures").is_some())
+        .unwrap();
+    assert_eq!(
+        gaps.pointer("/failures/0/error/details"),
+        Some(&json!({ "capability": "ployz.logs.history.v2", "target": "old" }))
+    );
+    server.abort();
+}
+
+#[tokio::test]
 async fn cli_exact_history_reads_without_docker_discovery() {
     let mut service = DiscoveryService::new(test_description());
     service.machines.push(machine('b', "other"));

@@ -55,8 +55,7 @@ pub(crate) fn parse_connections(
     connections: serde_json::Value,
 ) -> Result<Vec<ployz::context::Connection>> {
     let connections: Vec<ployz::context::Connection> =
-        serde_json::from_value(whole_numbers(connections))
-            .map_err(|_| invalid_argument("invalid management connections"))?;
+        from_js(connections).map_err(|_| invalid_argument("invalid management connections"))?;
     if !cfg!(feature = "eval")
         && connections
             .iter()
@@ -232,8 +231,7 @@ impl Client {
     /// Returns invalid input, transport failures or Register domain errors.
     #[napi]
     pub async fn register(&self, assignment: serde_json::Value) -> Result<serde_json::Value> {
-        let assignment =
-            ployz_core::decode::decode(&whole_numbers(assignment)).map_err(invalid_argument)?;
+        let assignment = from_js(assignment).map_err(invalid_argument)?;
         to_json(
             &self
                 .inner
@@ -252,8 +250,7 @@ impl Client {
         &self,
         request: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let request =
-            ployz_core::decode::decode(&whole_numbers(request)).map_err(invalid_argument)?;
+        let request = from_js(request).map_err(invalid_argument)?;
         to_json(
             &self
                 .inner
@@ -280,7 +277,7 @@ impl Client {
     /// Returns malformed input and Machine transport failures.
     #[napi]
     pub async fn container_logs(&self, input: serde_json::Value) -> Result<ContainerLogStream> {
-        let input = ployz_core::decode::decode(&whole_numbers(input)).map_err(invalid_argument)?;
+        let input = from_js(input).map_err(invalid_argument)?;
         Ok(ContainerLogStream {
             inner: self
                 .inner
@@ -295,7 +292,7 @@ impl Client {
     /// Returns malformed input and Machine transport failures.
     #[napi]
     pub async fn log_history(&self, input: serde_json::Value) -> Result<LogHistoryStream> {
-        let input = ployz_core::decode::decode(&input).map_err(invalid_argument)?;
+        let input = from_js(input).map_err(invalid_argument)?;
         Ok(LogHistoryStream {
             inner: self.inner.log_history(input).await.map_err(rpc_to_napi)?,
         })
@@ -306,7 +303,7 @@ impl Client {
     /// Returns malformed input, a closed session, or a failure to list Machines.
     #[napi]
     pub async fn metric_history(&self, input: serde_json::Value) -> Result<serde_json::Value> {
-        let input = ployz_core::decode::decode(&input).map_err(invalid_argument)?;
+        let input = from_js(input).map_err(invalid_argument)?;
         to_json(
             &self
                 .inner
@@ -334,7 +331,7 @@ impl Client {
     /// Rejects malformed input or closed sessions.
     #[napi]
     pub fn prepare(&self, input: serde_json::Value) -> Result<PreparationHandle> {
-        let input = ployz_core::decode::decode(&whole_numbers(input)).map_err(invalid_argument)?;
+        let input = from_js(input).map_err(invalid_argument)?;
         Ok(PreparationHandle {
             inner: self.inner.prepare(input).map_err(rpc_to_napi)?,
         })
@@ -350,7 +347,7 @@ impl Client {
         input: serde_json::Value,
         start_within_ms: Option<u32>,
     ) -> Result<BuildHandle> {
-        let input = ployz_core::decode::decode(&whole_numbers(input)).map_err(invalid_argument)?;
+        let input = from_js(input).map_err(invalid_argument)?;
         let start_within = start_within_ms.map(|ms| std::time::Duration::from_millis(ms.into()));
         Ok(BuildHandle {
             inner: self.inner.build(input, start_within).map_err(rpc_to_napi)?,
@@ -367,8 +364,7 @@ impl Client {
     /// [`DeployIntent`](ployz_core::DeployIntent) data, the session is closed, or planning fails.
     #[napi]
     pub async fn preview(&self, intent: serde_json::Value) -> Result<DeployPreviewHandle> {
-        let intent =
-            ployz_core::decode::decode(&whole_numbers(intent)).map_err(invalid_argument)?;
+        let intent = from_js(intent).map_err(invalid_argument)?;
         let inner = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
     }
@@ -406,8 +402,7 @@ impl Client {
     /// every failure or omission retains its Docker Volume identity.
     #[napi]
     pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
-        let request: RemoveVolumesRequest =
-            ployz_core::decode::decode(&whole_numbers(request)).map_err(invalid_argument)?;
+        let request: RemoveVolumesRequest = from_js(request).map_err(invalid_argument)?;
         let result = self
             .inner
             .remove_volumes(request)
@@ -424,8 +419,7 @@ impl Client {
     /// `PruneTarget` list or the session is closed.
     #[napi]
     pub async fn prune_images(&self, targets: serde_json::Value) -> Result<serde_json::Value> {
-        let targets: Vec<ployz_core::PruneTarget> =
-            ployz_core::decode::decode(&whole_numbers(targets)).map_err(invalid_argument)?;
+        let targets: Vec<ployz_core::PruneTarget> = from_js(targets).map_err(invalid_argument)?;
         let report = self
             .inner
             .prune_images(&targets)
@@ -471,8 +465,7 @@ impl Client {
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            ployz_core::decode::decode(&whole_numbers(confirm_data_loss))
-                .map_err(invalid_argument)?;
+            from_js(confirm_data_loss).map_err(invalid_argument)?;
         let removed = self
             .inner
             .remove_machine(&machine, &confirm_data_loss)
@@ -495,8 +488,7 @@ impl Client {
         machine: String,
         scope: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let scope: ployz::drain::DrainScope =
-            ployz_core::decode::decode(&whole_numbers(scope)).map_err(invalid_argument)?;
+        let scope: ployz::drain::DrainScope = from_js(scope).map_err(invalid_argument)?;
         let report = self
             .inner
             .drain_machine(&machine, &scope)
@@ -533,10 +525,15 @@ impl Client {
         machine: String,
         request: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        self.inner
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "whole numbers first, as `from_js`"
+        )]
+        let switched = self
+            .inner
             .volume_switch(&machine, whole_numbers(request))
-            .await
-            .map_err(rpc_to_napi)
+            .await;
+        switched.map_err(rpc_to_napi)
     }
 
     /// Container `container` on `machine` with its spec's real environment values.
@@ -590,8 +587,7 @@ impl Client {
         machine: String,
         update: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let update: ployz_core::MachineUpdate =
-            ployz_core::decode::decode(&whole_numbers(update)).map_err(invalid_argument)?;
+        let update: ployz_core::MachineUpdate = from_js(update).map_err(invalid_argument)?;
         let updated = self
             .inner
             .update_machine(&machine, update)
@@ -608,7 +604,7 @@ impl Client {
         request: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let request: ployz_core::RequestMachineUpgradeRequest =
-            ployz_core::decode::decode(&whole_numbers(request)).map_err(invalid_argument)?;
+            from_js(request).map_err(invalid_argument)?;
         let attempt = self
             .inner
             .request_machine_upgrade(&machine, request)
@@ -626,7 +622,7 @@ impl Client {
         request: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let request: ployz_core::InspectMachineUpgradeRequest =
-            ployz_core::decode::decode(&whole_numbers(request)).map_err(invalid_argument)?;
+            from_js(request).map_err(invalid_argument)?;
         let attempt = self
             .inner
             .inspect_machine_upgrade(&machine, request)
@@ -679,8 +675,7 @@ impl Client {
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            ployz_core::decode::decode(&whole_numbers(confirm_data_loss))
-                .map_err(invalid_argument)?;
+            from_js(confirm_data_loss).map_err(invalid_argument)?;
         let outcome = self
             .inner
             .destroy_namespace(&namespace, &confirm_data_loss, volume_fate(destroy_volumes))
@@ -724,8 +719,7 @@ impl Client {
         confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
-            ployz_core::decode::decode(&whole_numbers(confirm_data_loss))
-                .map_err(invalid_argument)?;
+            from_js(confirm_data_loss).map_err(invalid_argument)?;
         let teardown = self
             .inner
             .destroy_cluster(&confirm_data_loss)
@@ -880,7 +874,17 @@ fn to_json(value: &impl serde::Serialize) -> Result<serde_json::Value> {
 /// napi hands every JavaScript number above `u32::MAX` over as a float, even a whole one:
 /// `5_000_000_000` arrives as `5000000000.0`, which `u64` fields such as byte counts refuse.
 /// Give whole floats their integer form back before any payload is parsed.
-fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
+/// Decode JSON JavaScript sent. Napi hands a JS whole number above `u32::MAX` over
+/// as a float, which no integer field accepts, so every decode of a JS value goes
+/// through here.
+pub(crate) fn from_js<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> std::result::Result<T, ployz_core::decode::DecodeError> {
+    #[expect(clippy::disallowed_methods, reason = "the one decode of a JS value")]
+    ployz_core::decode::decode(&whole_numbers(value))
+}
+
+pub(crate) fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     match value {
@@ -935,11 +939,9 @@ pub fn allocate_enrollment(
     snapshot: serde_json::Value,
     saved: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let request = ployz_core::decode::decode(&whole_numbers(request)).map_err(invalid_argument)?;
-    let snapshot =
-        ployz_core::decode::decode(&whole_numbers(snapshot)).map_err(invalid_argument)?;
-    let saved: Vec<ployz_core::EnrollmentAssignment> =
-        ployz_core::decode::decode(&whole_numbers(saved)).map_err(invalid_argument)?;
+    let request = from_js(request).map_err(invalid_argument)?;
+    let snapshot = from_js(snapshot).map_err(invalid_argument)?;
+    let saved: Vec<ployz_core::EnrollmentAssignment> = from_js(saved).map_err(invalid_argument)?;
     let assignment =
         ployz_core::allocate_enrollment(&request, &snapshot, &saved).map_err(|error| {
             rpc_to_napi(ployz_core::RpcError {

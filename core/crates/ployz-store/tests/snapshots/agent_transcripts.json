@@ -7,7 +7,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-environment_show",
     "turns": [
@@ -194,7 +197,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-environment_show",
     "turns": [
@@ -374,6 +379,141 @@
     ]
   },
   {
+    "tool": "project_create",
+    "input": {
+      "name": "docs",
+      "request_key": "q8Lz3fWn2KcT"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-project_create",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "create_project",
+              "id": "c8848322-7ae8-861c-96a2-6c4f7c23864d",
+              "name": "docs",
+              "default_environment": "d37ac3e6-adf1-803b-b32f-774f0e0a84dc"
+            }
+          }
+        },
+        "answers": [
+          {
+            "value": {
+              "environment": {
+                "id": "d37ac3e6-adf1-803b-b32f-774f0e0a84dc",
+                "name": "production",
+                "project": "docs",
+                "revision": 1
+              },
+              "project": {
+                "id": "c8848322-7ae8-861c-96a2-6c4f7c23864d",
+                "name": "docs"
+              },
+              "written": "project"
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "at": "docs/production",
+              "environment": "production",
+              "next": {
+                "input": {
+                  "project": "docs"
+                },
+                "tool": "environment_show"
+              },
+              "project": "docs"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "project_create",
+    "input": {
+      "name": "docs",
+      "request_key": "q8Lz3fWn2KcT"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-project_create",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "create_project",
+              "id": "0921af36-58d3-8b9e-8783-8eebd6db32ac",
+              "name": "docs",
+              "default_environment": "abb2dc30-8712-86fc-b4f8-44d5db8ea7aa"
+            }
+          }
+        },
+        "answers": [
+          {
+            "value": {
+              "environment": {
+                "id": "abb2dc30-8712-86fc-b4f8-44d5db8ea7aa",
+                "name": "production",
+                "project": "docs",
+                "revision": 1
+              },
+              "project": {
+                "id": "0921af36-58d3-8b9e-8783-8eebd6db32ac",
+                "name": "docs"
+              },
+              "written": "project"
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "at": "docs/production",
+              "environment": "production",
+              "next": {
+                "input": {
+                  "project": "docs"
+                },
+                "tool": "environment_show"
+              },
+              "project": "docs"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "service_inspect",
     "input": {
       "service": "web"
@@ -381,7 +521,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_inspect",
     "turns": [
@@ -464,7 +607,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_inspect",
     "turns": [
@@ -548,7 +693,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_add",
     "turns": [
@@ -566,7 +714,7 @@
               "commands": [
                 {
                   "command": "create_service",
-                  "id": "f891949f-bc75-8b53-ad7b-f593bdddb5b8",
+                  "id": "ddd59dc1-3473-8f74-adee-b574ce23950b",
                   "environment": {
                     "project": "shop",
                     "environment": null
@@ -591,7 +739,7 @@
                     "revision": 2
                   },
                   "service": {
-                    "id": "f891949f-bc75-8b53-ad7b-f593bdddb5b8",
+                    "id": "ddd59dc1-3473-8f74-adee-b574ce23950b",
                     "name": "whoami",
                     "private_dns": "whoami"
                   },
@@ -643,7 +791,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_add",
     "turns": [
@@ -745,7 +895,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_update",
     "turns": [
@@ -837,7 +990,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_update",
     "turns": [
@@ -922,7 +1077,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_rename",
     "turns": [
@@ -986,7 +1144,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_rename",
     "turns": [
@@ -1049,7 +1209,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_remove",
     "turns": [
@@ -1141,7 +1304,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_remove",
     "turns": [
@@ -1234,7 +1399,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-domain_add",
     "turns": [
@@ -1300,7 +1468,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-domain_add",
     "turns": [
@@ -1366,7 +1536,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-domain_update",
     "turns": [
@@ -1434,7 +1607,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-domain_update",
     "turns": [
@@ -1501,7 +1676,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-domain_remove",
     "turns": [
@@ -1567,7 +1745,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-domain_remove",
     "turns": [
@@ -1636,7 +1816,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_add",
     "turns": [
@@ -1654,7 +1837,7 @@
               "commands": [
                 {
                   "command": "create_volume",
-                  "id": "e56535ba-56c3-87e6-a81b-4cfa0473d680",
+                  "id": "eae6d957-2477-887d-8030-70316102e3dd",
                   "environment": {
                     "project": "shop",
                     "environment": null
@@ -1726,7 +1909,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_add",
     "turns": [
@@ -1814,7 +1999,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_update",
     "turns": [
@@ -1878,7 +2066,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_update",
     "turns": [
@@ -1941,7 +2131,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_remove",
     "turns": [
@@ -2033,7 +2226,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_remove",
     "turns": [
@@ -2130,7 +2325,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-config_write",
     "turns": [
@@ -2179,7 +2377,7 @@
               "commands": [
                 {
                   "command": "create_config",
-                  "id": "ac5a52fb-8476-8f89-afd5-a39720a0ab8c",
+                  "id": "4c599a46-ff28-8dfc-ba60-6de0543c9100",
                   "environment": {
                     "project": "shop",
                     "environment": null
@@ -2267,7 +2465,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-config_write",
     "turns": [
@@ -2400,7 +2600,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-config_remove",
     "turns": [
@@ -2474,7 +2677,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-config_remove",
     "turns": [
@@ -2547,7 +2752,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-review",
     "turns": [
@@ -2615,7 +2823,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-review",
     "turns": [
@@ -2683,7 +2893,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-discard",
     "turns": [
@@ -2756,7 +2969,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-discard",
     "turns": [
@@ -2829,7 +3044,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-publish",
     "turns": [
@@ -2898,7 +3116,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-publish",
     "turns": [
@@ -2963,7 +3183,7 @@
     "tool": "deploy",
     "input": {
       "message": "Raise web's log level",
-      "request_key": "deploy-web-0001",
+      "request_key": "h4Rv9sNb6YeD",
       "services": [
         "web"
       ]
@@ -2971,7 +3191,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-deploy",
     "turns": [
@@ -3014,7 +3237,7 @@
             "write": {
               "command": "admit",
               "admit": "deploy",
-              "id": "baa00169-652d-87f6-b98c-0907346be0e7",
+              "id": "330d4b88-f0be-868a-b486-b1fc0c9319db",
               "environment": {
                 "project": "shop",
                 "environment": null
@@ -3053,7 +3276,7 @@
                 "tool": "deploy",
                 "input": {
                   "message": "Raise web's log level",
-                  "request_key": "deploy-web-0001",
+                  "request_key": "h4Rv9sNb6YeD",
                   "services": [
                     "web"
                   ]
@@ -3071,7 +3294,7 @@
     "tool": "deploy",
     "input": {
       "message": "Raise web's log level",
-      "request_key": "deploy-web-0001",
+      "request_key": "h4Rv9sNb6YeD",
       "services": [
         "web"
       ]
@@ -3079,7 +3302,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-deploy",
     "turns": [
@@ -3122,7 +3347,7 @@
             "write": {
               "command": "admit",
               "admit": "deploy",
-              "id": "baa00169-652d-87f6-b98c-0907346be0e7",
+              "id": "b2ebcddc-f72a-8ec4-8a8a-602bd2f53739",
               "environment": {
                 "project": "shop",
                 "environment": null
@@ -3161,7 +3386,7 @@
                 "tool": "deploy",
                 "input": {
                   "message": "Raise web's log level",
-                  "request_key": "deploy-web-0001",
+                  "request_key": "h4Rv9sNb6YeD",
                   "services": [
                     "web"
                   ]
@@ -3184,7 +3409,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-deployment_show",
     "turns": [
@@ -3254,7 +3482,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-deployment_show",
     "turns": [
@@ -3323,7 +3553,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-deployment_cancel",
     "turns": [
@@ -3391,7 +3624,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-deployment_cancel",
     "turns": [
@@ -3460,7 +3695,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-environment_pr",
     "turns": [
@@ -3574,7 +3812,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-environment_pr",
     "turns": [
@@ -3687,7 +3927,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-environment_setup",
     "turns": [
@@ -3776,7 +4019,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-environment_setup",
     "turns": [
@@ -3823,7 +4068,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-github_ls",
     "turns": [
@@ -3883,7 +4131,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-github_ls",
     "turns": [
@@ -3921,7 +4171,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-github_connect",
     "turns": [
@@ -3973,7 +4226,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-github_connect",
     "turns": [
@@ -4010,7 +4265,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-server_show",
     "turns": [
@@ -4079,7 +4337,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-server_show",
     "turns": [
@@ -4118,7 +4378,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_status",
     "turns": [
@@ -4239,7 +4502,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_status",
     "turns": [
@@ -4285,7 +4550,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_logs",
     "turns": [
@@ -4380,7 +4648,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_logs",
     "turns": [
@@ -4426,7 +4696,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_show",
     "turns": [
@@ -4512,7 +4785,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_show",
     "turns": [
@@ -4557,7 +4832,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_restart",
     "turns": [
@@ -4633,7 +4911,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_restart",
     "turns": [
@@ -4679,7 +4959,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_start",
     "turns": [
@@ -4755,7 +5038,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_start",
     "turns": [
@@ -4801,7 +5086,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-service_stop",
     "turns": [
@@ -4877,7 +5165,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-service_stop",
     "turns": [
@@ -4923,7 +5213,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-server_drain",
     "turns": [
@@ -4982,7 +5275,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-server_drain",
     "turns": [
@@ -5022,7 +5317,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-server_upgrade",
     "turns": [
@@ -5079,7 +5377,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-server_upgrade",
     "turns": [
@@ -5118,7 +5418,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-server_clean",
     "turns": [
@@ -5187,7 +5490,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-server_clean",
     "turns": [
@@ -5228,7 +5533,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_mirror",
     "turns": [
@@ -5332,7 +5640,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_mirror",
     "turns": [
@@ -5378,7 +5688,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_mirror_remove",
     "turns": [
@@ -5441,7 +5754,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_mirror_remove",
     "turns": [
@@ -5487,7 +5802,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_move",
     "turns": [
@@ -5568,7 +5886,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_move",
     "turns": [
@@ -5615,7 +5935,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-volume_release",
     "turns": [
@@ -5680,7 +6003,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-volume_release",
     "turns": [
@@ -5726,7 +6051,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-environment_remove",
     "turns": [
@@ -5795,7 +6123,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-environment_remove",
     "turns": [
@@ -5864,7 +6194,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-project_remove",
     "turns": [
@@ -5925,7 +6258,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-project_remove",
     "turns": [
@@ -5985,7 +6320,10 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "cloud"
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
     },
     "call_key": "call-server_remove",
     "turns": [
@@ -6042,7 +6380,9 @@
     "place": {
       "project": "shop",
       "environment": null,
-      "store": "local"
+      "store": {
+        "at": "local"
+      }
     },
     "call_key": "call-server_remove",
     "turns": [

@@ -295,3 +295,25 @@ test("duplicate IDs survive a fanout horizon while time-bound Servers restart th
   assert.deepEqual(pages.map(record => record.id).sort(), whole.records.map(record => record.id).sort());
   assert.ok(t.inputs.some(input => input.until_nanos !== null), "the fanout must exercise time-bound continuation");
 });
+
+const lacking = () => Object.assign(new Error("ployz.logs.history.v2 is not served"), { code: "unsupported", details: { capability: "ployz.logs.history.v2", target: "m2" } });
+test("a Server whose store refuses for a missing capability keeps the code and capability", async () => {
+  const t = store(input => input.machine_id === "m2" ? lacking() : [described("a"), line("a", 5), end(null)]);
+  const page = await history(t, { filter: { namespace: "env" } });
+  assert.deepEqual(page.failures, [{ machineId: "m2", machineName: "fsn-2", message: "ployz.logs.history.v2 is not served", code: "unsupported", capability: "ployz.logs.history.v2" }]);
+});
+test("a source that refuses to open keeps the code and capability", async () => {
+  const t = transport(); const open = t.open;
+  t.open = input => input.container_id === "bad" ? Promise.reject(lacking()) : open(input);
+  t.frames.push({ containers: [container("bad")] });
+  const output = logs(t, { follow: false });
+  assert.deepEqual((await output.next()).value, { type: "source_error", machineId: "machine", containerId: "bad", message: "ployz.logs.history.v2 is not served", code: "unsupported", capability: "ployz.logs.history.v2" });
+  assert.equal((await output.next()).done, true);
+});
+test("a source that fails mid-stream keeps the code and capability", async () => {
+  const t = transport();
+  t.open = async () => ({ next: () => Promise.reject(lacking()), cancel() {} });
+  t.frames.push({ containers: [container("bad")] });
+  const output = logs(t, { follow: false });
+  assert.deepEqual((await output.next()).value, { type: "source_error", machineId: "machine", containerId: "bad", message: "ployz.logs.history.v2 is not served", code: "unsupported", capability: "ployz.logs.history.v2" });
+});

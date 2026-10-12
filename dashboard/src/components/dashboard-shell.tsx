@@ -19,12 +19,15 @@ export function DashboardShell({
   scope,
   chat,
   onChat,
+  banner,
   children,
 }: {
   scope: DashboardScope;
   /** The agent thread open in the sidebar, if any. */
   chat: string | undefined;
   onChat: (thread: string | undefined) => void;
+  /** A thin line above the top bar, such as the support visit notice. */
+  banner?: ReactNode;
   children: ReactNode;
 }) {
   const collectionScope = useCollectionScope();
@@ -40,6 +43,7 @@ export function DashboardShell({
       <Rail organizationSlug={scope.organizationSlug} places={places} organization={organization} narrow={canvas}
         account={<DashboardAccountMenu scope={scope} side="right" variant={canvas ? "avatar" : "row"} />} />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+        {banner}
         {/* The one top bar: on phones it also carries the logo and the avatar, which live in the rail on desktop. */}
         <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
           <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />

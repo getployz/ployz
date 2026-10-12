@@ -85,6 +85,7 @@ const rawFields = {
   // The Inngest SDK also reads INNGEST_BASE_URL.
   inngestBaseUrl: Config.url("INNGEST_BASE_URL").pipe(Config.withDefault(new URL("https://api.inngest.com"))),
   encryptionSecret: Config.schema(EncryptionSecret, "APP_ENCRYPTION_SECRET"),
+  supportStaffUserIds: optional(Config.nonEmptyString("PLOYZ_SUPPORT_STAFF_USER_IDS")),
 };
 /**
  * Config.all stops at the first bad variable. Read every field once so one
@@ -146,6 +147,10 @@ const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
   } as const;
 });
 
+/** Comma-separated user ids, taken exactly: no email or domain matching. */
+const parseUserIds = (value: string | undefined): ReadonlyArray<string> =>
+  value === undefined ? [] : value.split(",").map((id) => id.trim()).filter((id) => id !== "");
+
 const makeAppConfig = Effect.gen(function* () {
   const raw = yield* loadRawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
@@ -186,6 +191,8 @@ const makeAppConfig = Effect.gen(function* () {
     // Unset (Self-hosted Cloud): no marketing proxy; / sends signed-out visitors to /auth.
     marketingOrigin: raw.marketingOrigin,
     encryptionSecret: raw.encryptionSecret,
+    // Ployz support exists only on Ployz-hosted Cloud: a Self-hosted Cloud never has staff, whatever the variable says.
+    supportStaffUserIds: polar.mode === "self_hosted" ? [] : parseUserIds(raw.supportStaffUserIds),
   } as const;
 });
 
