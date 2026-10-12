@@ -1,4 +1,5 @@
-import { Suspense } from "react";
+import { type ReactNode, Suspense, useEffect } from "react";
+import { useQueryErrorResetBoundary } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
 import { CatchBoundary } from "@tanstack/react-router";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -17,9 +18,21 @@ export function ServerLackLine({ organizationSlug, lack, name }: { organizationS
   const unread = <LackLine server={machine?.name ?? name} remedy={remedy({
     feature, server: { name: machine?.name ?? name, daemonVersion: machine?.daemonVersion ?? "" }, release: { state: "pending" }, line: null,
   })} onUpgrade={() => {}} />;
-  return <CatchBoundary getResetKey={() => lack.machineId} errorComponent={() => unread}>
+  return <CatchBoundary getResetKey={() => lack.machineId} errorComponent={({ reset }) => <Retrying reset={reset}>{unread}</Retrying>}>
     <Suspense fallback={unread}>{machine ? <Upgradable organizationSlug={organizationSlug} machine={machine} capability={lack.capability} /> : unread}</Suspense>
   </CatchBoundary>;
+}
+
+/** A read that failed under the line tries again after a while, so its release and button come back without a reload. */
+const RETRY_MS = 10_000;
+
+function Retrying({ reset, children }: { reset: () => void; children: ReactNode }) {
+  const queries = useQueryErrorResetBoundary();
+  useEffect(() => {
+    const timer = setTimeout(() => { queries.reset(); reset(); }, RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [queries, reset]);
+  return children;
 }
 
 function Upgradable({ organizationSlug, machine, capability }: { organizationSlug: string; machine: RuntimeMachineRecord; capability: string }) {
