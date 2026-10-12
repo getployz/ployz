@@ -1,5 +1,5 @@
 import type { RuntimeWatchView } from "@ployz/sdk";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { runtimeContainerStateSchema, type RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
 
 /**
@@ -26,7 +26,11 @@ const runtimeWatchMachineSchema = Schema.Struct({
     accepts_builds: Schema.Boolean,
     accepts_services: Schema.Boolean,
     build_concurrency: Schema.NullOr(Schema.Number),
-    runtime: Schema.Struct({ daemon_version: Schema.String, running_builds: Schema.Number }),
+    runtime: Schema.Struct({
+      daemon_version: Schema.String,
+      running_builds: Schema.Number,
+      capabilities: Schema.Array(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+    }),
   }),
   membership: Schema.String,
   storage: Schema.NullOr(Schema.Struct({ state: Schema.Literals(["stateless", "ready", "pool"]) })),
@@ -129,6 +133,7 @@ export function runtimeWatchFrameForTransport(
         runtime: {
           daemon_version: machine.machine.runtime.daemon_version,
           running_builds: machine.machine.runtime.running_builds,
+          capabilities: [...(machine.machine.runtime.capabilities ?? [])],
         },
       },
       membership: machine.membership,
@@ -203,6 +208,7 @@ export function runtimeSnapshotFromWatchFrame(
       effectiveBuildConcurrency: frame.effective_build_concurrency[machine.machine.id] ?? 1,
       runningBuilds: machine.machine.runtime.running_builds,
       daemonVersion: machine.machine.runtime.daemon_version,
+      capabilities: machine.machine.runtime.capabilities,
       membership: machine.membership,
       observedContainerCount: containerCounts.get(machine.machine.id) ?? 0,
       observedAt,

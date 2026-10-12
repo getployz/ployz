@@ -43,7 +43,11 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const matches = (row: ContainerLogRow) => row.kind === "gap" ? !search && !levels.length
     : (!levels.length || levels.includes(row.level)) && row.message.toLowerCase().includes(search.toLowerCase());
   const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && matches(row)).sort(compareLogRows);
-  const missingServers = [...missing.history, ...Object.entries(missing.live).filter(([id]) => !missing.history.some(server => server.machineId === id)).map(([machineId, { machineName, failed }]) => ({ machineId, machineName, message: Object.values(failed).at(-1) ?? "" }))];
+  const failures = [...Object.entries(missing.live).flatMap(([machineId, { machineName, failed }]) =>
+    Object.values(failed).map(reason => ({ machineId, machineName, ...reason }))), ...missing.history];
+  const lacking = [...new Map(failures.filter(server => server.capability !== undefined).map(server => [server.machineId, server.machineName]))];
+  const rest = failures.filter(server => server.capability === undefined);
+  const missingServers = rest.filter((server, index) => rest.findIndex(other => other.machineId === server.machineId) === index);
   const touchY = useRef(0);
   const dragging = useRef(false);
   function loadAtTop(delta = 0) {
@@ -62,12 +66,23 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   // A line names its service and server only where they vary; a filter shows only with something to pick.
   const servicesVary = !selection.serviceId && services.length > 1;
   const machinesVary = machines.size > 1;
-  const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className="underline underline-offset-4">Check your servers</Link>;
+  const linkClass = "underline underline-offset-4";
+  const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Check your servers</Link>;
+  const [only] = lacking.length === 1 ? lacking : [];
+  const lack = !lacking.length ? null : only ? {
+    title: `Upgrade ${only[1]} to see its logs`, note: `${only[1]} needs an upgrade to show its logs.`,
+    link: <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug: selection.organizationSlug, serverId: only[0] }} className={linkClass}>Open {only[1]}</Link>,
+  } : {
+    title: `Upgrade ${lacking.length} servers to see their logs`, note: `${lacking.length} servers need an upgrade to show their logs.`,
+    link: <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Open Servers</Link>,
+  };
   const empty = rows.length ? null
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened || (historyPending && !loaded.length) ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
     : loaded.length ? <LogEmpty title="No logs match your filters">{stream.hasOlder ? "Scroll up or press Home to check older logs." : null}</LogEmpty>
+    : lack ? <LogEmpty title={lack.title}>{lack.link}</LogEmpty>
+    : failures.length ? null
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
   return <div className="flex min-h-0 grow flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">
@@ -80,6 +95,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     </div>
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
+    {lack && loaded.length > 0 ? <p className="text-muted-foreground">{lack.note} {lack.link}</p> : null}
     {missingServers.length ? <Alert role="alert">
       <AlertTitle>{missingServers.length === 1 ? "A server’s logs are missing" : `${missingServers.length} servers’ logs are missing`}</AlertTitle>
       <AlertDescription><ul>{missingServers.map(server => <li key={server.machineId}><span className="font-medium">{server.machineName}</span>: {server.message}</li>)}</ul></AlertDescription>

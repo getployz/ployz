@@ -197,6 +197,16 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it("ends with the lacking Server's sentence before any Server that did not answer", () => {
+    const old: Member = { machine: member("fsn-3", "unanswered").machine, answered: false, lack: "Volume move needs a newer Ployz on fsn-3. 0.2.5 is out." };
+    const members = [member("fsn-1", "writer"), member("fsn-2", "unanswered"), old];
+    expect(planFromCopies(mirror("fsn-2"), members)).toEqual({
+      ok: false,
+      refusal: { code: "server_lacks", message: "Volume move needs a newer Ployz on fsn-3. 0.2.5 is out." },
+    });
+    expect(planFromCopies(remove("fsn-2"), members)).toMatchObject({ ok: false, refusal: { code: "server_lacks" } });
+  });
+
   it("names the Server without managed storage", () => {
     expect(planFromCopies(mirror("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "empty", { pool: false })])).toEqual({
       ok: false,

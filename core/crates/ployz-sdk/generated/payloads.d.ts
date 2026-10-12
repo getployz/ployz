@@ -2256,7 +2256,13 @@ memory_total_bytes?: number | null,
 /**
  * Builds this Machine's daemon is running now; live, never persisted.
  */
-running_builds: number, };
+running_builds: number,
+/**
+ * Every capability name the daemon binary serves. Empty from a daemon
+ * that predates the field, and when an older entry relays a newer peer's
+ * record, so empty claims nothing.
+ */
+capabilities?: Array<string>, };
 
 export type MachineStorageBudget = {
 /**

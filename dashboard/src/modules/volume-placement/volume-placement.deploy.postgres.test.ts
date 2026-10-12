@@ -6,7 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
-  advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
+  advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, SupportUnknown, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { listPlacements, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
@@ -301,12 +301,19 @@ describe("deploying a Volume placement", () => {
   });
 
   describe("gating a staged placement on every Server with storage", () => {
-    const stage = (read: () => Effect.Effect<readonly string[], string>) => run(unlessPlacementRefused(organizationId,
+    const stage = (read: () => Effect.Effect<readonly string[], unknown>) => run(unlessPlacementRefused(organizationId,
       stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [] }), read));
 
     it("refuses while one runs an older daemon, and stages nothing", async () => {
       expect(await stage(() => Effect.succeed(["db-old"]))).toEqual({ ok: false, refusal: {
-        code: "upgrade_required", message: "Every Server with storage must run Ployz 0.2.5 or later. Upgrade db-old first.", details: { servers: ["db-old"] },
+        code: "upgrade_required", message: "Every Server with storage needs a newer Ployz. Upgrade db-old first.", details: { servers: ["db-old"] },
+      } });
+      expect(await run(listPlacements(organizationId))).toEqual([]);
+    });
+
+    it("refuses without claiming an Upgrade while a Server's record can't say what it serves", async () => {
+      expect(await stage(() => Effect.fail(new SupportUnknown({ servers: ["db-quiet"] })))).toEqual({ ok: false, refusal: {
+        code: "support_unknown", message: "Ployz can't tell whether db-quiet can move volumes.", details: { servers: ["db-quiet"] },
       } });
       expect(await run(listPlacements(organizationId))).toEqual([]);
     });

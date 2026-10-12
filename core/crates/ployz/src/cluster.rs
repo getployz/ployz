@@ -19,6 +19,7 @@ use ployz_core::{
     RpcError, RpcErrorCode, RpcResponseBody, StartContainerRequest, StopContainerRequest,
     StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
     derive_live_services, op,
+    rpc::{BUILD_PATH, EXEC_PATH},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -351,7 +352,8 @@ impl Client {
                     PathAndQuery::from_static(path),
                     ProstCodec::<OpaquePayload, OpaquePayload>::default(),
                 )
-                .await?
+                .await
+                .map_err(|status| refused(status, path, Some(target)))?
                 .into_inner()
                 .decode_response()?)
         })
@@ -371,7 +373,8 @@ impl Client {
         Ok(self
             .machine_rpc()
             .build(target_request(input, Some(target)))
-            .await?
+            .await
+            .map_err(|status| TransportError::from(status).name_refusal(BUILD_PATH, target))?
             .into_inner())
     }
 
@@ -383,7 +386,8 @@ impl Client {
         let mut rpc = self.machine_rpc();
         Ok(rpc
             .exec(target_request(input, Some(target)))
-            .await?
+            .await
+            .map_err(|status| TransportError::from(status).name_refusal(EXEC_PATH, target))?
             .into_inner())
     }
 
@@ -395,7 +399,10 @@ impl Client {
         let mut rpc = self.machine_rpc();
         Ok(rpc
             .tail_logs(target_request(request, Some(target)))
-            .await?
+            .await
+            .map_err(|status| {
+                TransportError::from(status).name_refusal(op::TailLogs::PATH, target)
+            })?
             .into_inner())
     }
 
@@ -410,7 +417,10 @@ impl Client {
             .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
         Ok(rpc
             .log_history(target_request(request, Some(target)))
-            .await?
+            .await
+            .map_err(|status| {
+                TransportError::from(status).name_refusal(op::LogHistory::PATH, target)
+            })?
             .into_inner())
     }
 
@@ -441,7 +451,8 @@ impl Client {
                 PathAndQuery::from_static(T::PATH),
                 ProstCodec::<OpaquePayload, OpaquePayload>::default(),
             )
-            .await?
+            .await
+            .map_err(|status| refused(status, T::PATH, target))?
             .into_inner()
             .decode_response()?;
         if let RpcResponseBody::Error(error) = &response.body {
@@ -1085,6 +1096,16 @@ impl Client {
         let capacity = capacity::observe(self, &machines).await;
         snapshot_from_partial(machines, containers, volumes, capacity).map_err(ConnectError::Remote)
     }
+}
+
+/// Only a gRPC status can mean an old daemon lacks the route. An error body
+/// is the daemon's own answer, so it keeps the daemon's sentence.
+fn refused(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
+    let error = TransportError::from(status);
+    ConnectError::Rpc(match target {
+        Some(target) => error.name_refusal(path, target),
+        None => error,
+    })
 }
 
 pub(crate) fn snapshot_from_partial(

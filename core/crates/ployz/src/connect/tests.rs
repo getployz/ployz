@@ -2,7 +2,7 @@ use std::{fs, os::unix::fs::symlink, process::Command as StdCommand, time::Durat
 
 use super::*;
 use crate::context::SshDestination;
-use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER};
+use ployz_core::{ONE_TARGET_BINARY_HEADER, ONE_TARGET_HEADER, Rpc};
 use tokio::io::AsyncWriteExt;
 
 #[test]
@@ -477,4 +477,72 @@ fn a_dropped_connection_keeps_the_network_reason_as_the_deepest_cause() {
     let error = TransportError::from(status);
     assert_eq!(error.to_string(), "transport error");
     assert_eq!(crate::ui::causes(&error), ["connection reset by peer"]);
+}
+
+async fn prepare_volumes_answered_with(answer: Result<RpcError, tonic::Status>) -> RpcError {
+    let (client, server) = crate::connect::test_support::rpc_client(move |_| {
+        let answer = answer.clone();
+        async move {
+            let error = answer?;
+            Ok(tonic::Response::new(
+                ployz_core::RpcResponse::from(error).encode().unwrap(),
+            ))
+        }
+    })
+    .await;
+    let error = client
+        .invoke::<ployz_core::op::PrepareVolumes>(
+            ployz_core::PrepareVolumesRequest { specs: Vec::new() },
+            &MachineTarget::parse("machine-2").unwrap(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    server.abort();
+    error
+}
+
+#[tokio::test]
+async fn a_bare_unimplemented_status_names_the_capability_and_the_target() {
+    let error = prepare_volumes_answered_with(Err(tonic::Status::unimplemented(""))).await;
+    assert_eq!(error.code, RpcErrorCode::Unsupported);
+    assert_eq!(
+        error.details,
+        json!({ "capability": "ployz.storage.prepare.v1", "target": "machine-2" })
+    );
+
+    let tail = TransportError::from(tonic::Status::unimplemented("")).name_refusal(
+        ployz_core::op::TailLogs::PATH,
+        &MachineTarget::parse("machine-2").unwrap(),
+    );
+    assert_eq!(
+        tail.to_rpc_error().details.get("capability"),
+        Some(&json!("ployz.logs.tail.v1"))
+    );
+}
+
+#[tokio::test]
+async fn a_daemon_refusal_keeps_its_own_sentence() {
+    let refusal = RpcError {
+        code: RpcErrorCode::Unsupported,
+        message: "this Machine cannot host a mounted Provisioned Volume".into(),
+        details: Value::Null,
+        cause: Vec::new(),
+    };
+    assert_eq!(
+        prepare_volumes_answered_with(Ok(refusal.clone())).await,
+        refusal
+    );
+}
+
+#[test]
+fn other_statuses_and_unknown_routes_stay_unnamed() {
+    let target = MachineTarget::parse("machine-2").unwrap();
+    let unavailable = TransportError::from(tonic::Status::unavailable("down"))
+        .name_refusal(ployz_core::op::PrepareVolumes::PATH, &target);
+    assert_eq!(unavailable.to_rpc_error().details, Value::Null);
+
+    let unknown_route = TransportError::from(tonic::Status::unimplemented(""))
+        .name_refusal("/other.Service/Inspect", &target);
+    assert_eq!(unknown_route.to_rpc_error().details, Value::Null);
 }

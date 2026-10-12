@@ -1,22 +1,40 @@
-import { isCurrent } from "#/modules/server-upgrade/server-upgrade";
+import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { compareVersions } from "#/modules/server-upgrade/server-upgrade";
 
-/** The first daemon release that runs the volume verbs. */
-export const PLACEMENT_RELEASE = "0.2.5";
+/** The first release that runs the volume verbs, for a daemon too old to list its capabilities. */
+const PLACEMENT_RELEASE = "0.2.5";
 
-export const runsPlacement = (daemonVersion: string) => isCurrent(daemonVersion, PLACEMENT_RELEASE);
+type Daemon = { readonly daemonVersion: string; readonly capabilities: readonly string[] };
+
+const placementSupport = (machine: Daemon): boolean | "unknown" => {
+  const listed = serverSupports(machine, requirements.volumeMove);
+  if (listed !== "unknown") return listed;
+  const order = compareVersions(machine.daemonVersion, PLACEMENT_RELEASE);
+  return order === null ? "unknown" : order >= 0;
+};
+
+export const runsPlacement = (machine: Daemon) => placementSupport(machine) === true;
 
 /** A Server as the gate sees it. `storage` null is a Server whose storage the daemon manages, as the planner counts it. */
-export type StorageServer = { readonly name: string; readonly storage: "stateless" | "ready" | "pool" | null; readonly daemonVersion: string };
+export type StorageServer = Daemon & { readonly name: string; readonly storage: "stateless" | "ready" | "pool" | null };
 
-/**
- * The Servers with storage still on an older daemon. A volume run asks every one of them, so placement and restore stay
- * closed for the whole organization until this is empty.
- */
 export const placementBlockers = (machines: readonly StorageServer[]) =>
-  machines.filter((machine) => machine.storage !== "stateless" && !runsPlacement(machine.daemonVersion)).map((machine) => machine.name);
+  machines.filter((machine) => machine.storage !== "stateless" && !runsPlacement(machine)).map((machine) => machine.name);
+
+const answering = (machines: readonly StorageServer[], answer: false | "unknown") =>
+  machines.filter((machine) => machine.storage !== "stateless" && placementSupport(machine) === answer).map((machine) => machine.name);
+
+/** The blockers whose records say they lack the verbs: the only ones an Upgrade is claimed to fix. */
+export const placementLacking = (machines: readonly StorageServer[]) => answering(machines, false);
+
+/** The blockers whose records list no capabilities and no version Ployz can read, so it cannot tell whether they serve the verbs. */
+export const placementUnknown = (machines: readonly StorageServer[]) => answering(machines, "unknown");
 
 export const placementUpgradeMessage = (blockers: readonly string[]) =>
-  `Every Server with storage must run Ployz ${PLACEMENT_RELEASE} or later. Upgrade ${blockers.join(", ")} first.`;
+  `Every Server with storage needs a newer Ployz. Upgrade ${blockers.join(", ")} first.`;
+
+export const placementUnknownMessage = (servers: readonly string[]) =>
+  `Ployz can't tell whether ${servers.join(", ")} can move volumes.`;
 
 type PlacementMachine = StorageServer & { readonly id: string; readonly acceptsServices: boolean };
 
@@ -24,9 +42,8 @@ type PlacementMachine = StorageServer & { readonly id: string; readonly acceptsS
 export const placementServers = (machines: readonly PlacementMachine[]) =>
   placementBlockers(machines).length > 0
     ? new Set<string>()
-    : new Set(machines.filter((machine) => machine.acceptsServices && runsPlacement(machine.daemonVersion)).map((machine) => machine.id));
+    : new Set(machines.filter((machine) => machine.acceptsServices && runsPlacement(machine)).map((machine) => machine.id));
 
-/** Restore seeds the new Volume on the Primary's Server, so its daemon needs SeedVolume, and the run's plan asks every Server with storage. */
 export const restoreOpen = (machines: readonly (StorageServer & { readonly id: string })[], primary: string | null) =>
   primary !== null && placementBlockers(machines).length === 0
-  && machines.some((machine) => machine.id === primary && runsPlacement(machine.daemonVersion));
+  && machines.some((machine) => machine.id === primary && runsPlacement(machine));
