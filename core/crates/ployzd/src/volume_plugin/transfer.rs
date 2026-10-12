@@ -1,72 +1,24 @@
-//! The receive task: one stream from the writer Machine into the slot's `fs`, identified
-//! by the position that started it so a restarted plugin still answers for it.
+//! The receive task: one stream into a slot's `fs`, from the writer Machine or, for a
+//! seed, from a local snapshot.
 
 use std::{
     collections::BTreeMap,
-    fmt,
     process::Stdio,
-    str::FromStr,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use futures_util::StreamExt as _;
-use ployz_core::{Lease, ManagementAddress, Pos, SendStream, SnapshotName};
+use ployz_core::{ManagementAddress, SendStream};
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{DockerVolumeName, VolumeStorage};
-
-/// On the slot parent: `<lease>:<seq>.<round>.<sub>:<target>` of the receive last started.
-pub(super) const RECEIVE_PROPERTY: &str = "ployz:receive";
 
 /// A receive's `kill-daemon` fault fires once this much of the stream is in, so ZFS holds a
 /// partial receive to resume.
 const KILL_AFTER_BYTES: u64 = 1 << 20;
 
 pub(super) const RECEIVE_STALL: Duration = Duration::from_secs(60);
-
-/// Which receive a slot last admitted. Outlives the plugin process, unlike the task.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ReceiveRecord {
-    pub(super) lease: Lease,
-    pub(super) pos: Pos,
-    pub(super) target: SnapshotName,
-}
-
-impl fmt::Display for ReceiveRecord {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}:{}:{}", self.lease, self.pos, self.target)
-    }
-}
-
-impl FromStr for ReceiveRecord {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let invalid = || format!("invalid receive record {value:?}");
-        let mut fields = value.split(':');
-        let (Some(lease), Some(pos), Some(target), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return Err(invalid());
-        };
-        let mut parts = pos.split('.');
-        let (Some(seq), Some(round), Some(sub), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(invalid());
-        };
-        Ok(Self {
-            lease: Lease::new(lease.parse().map_err(|_| invalid())?),
-            pos: Pos {
-                seq: seq.parse().map_err(|_| invalid())?,
-                round: round.parse().map_err(|_| invalid())?,
-                sub: sub.parse().map_err(|_| invalid())?,
-            },
-            target: target.parse().map_err(|_| invalid())?,
-        })
-    }
-}
 
 /// The receive tasks this process started, by Volume name; a finished task keeps its
 /// outcome until the next one replaces it.

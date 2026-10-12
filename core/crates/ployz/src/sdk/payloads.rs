@@ -141,8 +141,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<super::MetricHistoryInput>();
     declarations.add::<super::CopyObservation>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
+    declarations.add::<ployz_core::SeedVolumeRequest>();
     declarations.add::<ployz_core::VolumeCopyView>();
-    declarations.add::<ployz_core::SwitchReply>();
     declarations.add::<ployz_core::SwitchError>();
     declarations.add::<ployz_core::SetVolumeCopyRequest>();
     declarations.add::<ployz_core::SetVolumeCopyReply>();

@@ -324,11 +324,10 @@ function describeDrain(entry: DrainReport["services"][number]): string {
 }
 void describeDrain;
 
-declare const switchArgs: import("../generated/payloads").Switch;
 client.volumeSwitch("one" as MachineTarget, { command: "inspect_volume_copy", payload: { name: "data" } }) satisfies Promise<import("../generated/payloads").VolumeCopyView>;
-client.volumeSwitch("one" as MachineTarget, { command: "begin_round", payload: { switch: switchArgs, name: "data" } }) satisfies Promise<import("../generated/payloads").SwitchReply>;
+client.volumeSwitch("one" as MachineTarget, { command: "seed_volume", payload: { name: "data", into: "data2", guid: "7" } }) satisfies Promise<import("../generated/payloads").VolumeCopyView>;
 // @ts-expect-error hand_over is not a Volume switch command
-client.volumeSwitch("one" as MachineTarget, { command: "hand_over", payload: { switch: switchArgs, name: "data" } });
+client.volumeSwitch("one" as MachineTarget, { command: "hand_over", payload: { name: "data" } });
 import("../index").then((sdk) => sdk.observeCopies([]) satisfies Promise<import("../generated/payloads").CopyObservation>);
 client.runtime.metricHistory({ subject: { kind: "service", service: "prod/web" as import("../generated/payloads").QualifiedService }, since_nanos: "0", until_nanos: "60000000000" }) satisfies Promise<import("../generated/payloads").MetricHistory>;
 // @ts-expect-error nanosecond bounds cross as decimal strings

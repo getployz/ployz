@@ -67,7 +67,6 @@ import type {
   SeedVolumeRequest,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
-  SwitchReply,
   VolumeCopyView,
 } from "./generated/payloads";
 
@@ -78,11 +77,9 @@ export type VolumeSwitchRequest =
   | { command: "set_volume_copy"; payload: SetVolumeCopyRequest };
 
 /** The reply payload of one Volume copy verb. */
-export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> = C extends "inspect_volume_copy"
-  ? VolumeCopyView
-  : C extends "set_volume_copy"
-    ? SetVolumeCopyReply
-    : SwitchReply;
+export type VolumeSwitchReply<C extends VolumeSwitchRequest["command"]> = C extends "set_volume_copy"
+  ? SetVolumeCopyReply
+  : VolumeCopyView;
 
 /** Same serialized descriptors as CLI contexts. Backend only: Management is an admin capability. */
 export type Connection = (

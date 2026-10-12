@@ -242,7 +242,11 @@ impl VolumeStorage {
 
     /// A slot parent bounded like the copy it will hold. Unlike the old mirror slot it
     /// carries no lease marker.
-    async fn create_bounded_slot(&self, parent: &str, bound: u64) -> Result<(), RpcError> {
+    pub(super) async fn create_bounded_slot(
+        &self,
+        parent: &str,
+        bound: u64,
+    ) -> Result<(), RpcError> {
         self.z(&[
             "create",
             "-o",

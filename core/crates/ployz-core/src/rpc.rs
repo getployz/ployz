@@ -1,6 +1,6 @@
 use crate::{
     InspectVolumeCopyRequest, SeedVolumeRequest, SetVolumeCopyReply, SetVolumeCopyRequest,
-    StorageCapacity, SwitchReply, VolumeCopyView,
+    StorageCapacity, VolumeCopyView,
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 use std::{
@@ -1067,7 +1067,6 @@ define_responses! {
     VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
-    SwitchReply(crate::SwitchReply) => "switch_reply";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";
     ImagePulled(ImagePulled) => "image_pulled";

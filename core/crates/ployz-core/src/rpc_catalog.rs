@@ -64,7 +64,7 @@ macro_rules! rpc_catalog {
                 InspectVolume: (inspect_volume, "InspectVolume", InspectVolumeRequest, "inspect_volume", DockerVolume, INSPECT_VOLUME_CAPABILITY, "ployz.volume.inspect.v1", Container),
                 RemoveVolume: (remove_volume, "RemoveVolume", RemoveVolumeRequest, "remove_volume", VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container),
                 InspectVolumeCopy: (inspect_volume_copy, "InspectVolumeCopy", InspectVolumeCopyRequest, "inspect_volume_copy", VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container),
-                SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", SwitchReply, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
+                SeedVolume: (seed_volume, "SeedVolume", SeedVolumeRequest, "seed_volume", VolumeCopyView, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container),
                 SetVolumeCopy: (set_volume_copy, "SetVolumeCopy", SetVolumeCopyRequest, "set_volume_copy", SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container),
                 ListImages: (list_images, "ListImages", ListImagesRequest, "list_images", MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container),
                 RemoveImages: (remove_images, "RemoveImages", RemoveImagesRequest, "remove_images", ImagesRemoved, REMOVE_IMAGES_CAPABILITY, "ployz.image.remove.v1", Container),

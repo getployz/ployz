@@ -1746,8 +1746,6 @@ export type FailedAt = "build" | "create" | "start" | "health" | "hook" | "stop"
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
 
-export type FenceDecision = "admit" | "replay" | "adopt" | "refuse_stale_lease" | "refuse_stale_step";
-
 export type FileMode = string;
 
 export type Fix = "use_cloud" | "connect_servers" | { "open_dashboard": { page: string, } } | "update_client" | { "server_remove": { server: string, } };
@@ -3546,6 +3544,8 @@ export type ScopedVolumeSource = { namespace: Namespace, logical_name: DockerVol
 
 export type SecretRow = Record<symbol, never>;
 
+export type SeedVolumeRequest = { name: DockerVolumeName, into: DockerVolumeName, guid: SnapshotGuid, };
+
 export type SelectedEndpoint = string;
 
 export type ServerLog = { server: MachineName, text: LogText, };
@@ -4121,12 +4121,6 @@ export type Sweep = {
 now: number, };
 
 export type SwitchError = { "reason": "stale_lease" } | { "reason": "stale_step" } | { "reason": "precondition" } | { "reason": "busy" } | { "reason": "volume_switching" } | { "reason": "no_writer" } | { "reason": "restore_point_gone" } | { "reason": "no_capacity" };
-
-export type SwitchReply = { decision: FenceDecision,
-/**
- * The record after admission.
- */
-lease: LeaseRecord, copy: VolumeCopy | null, };
 
 export type SyncChange = "new" | "changed" | "conflict";
 

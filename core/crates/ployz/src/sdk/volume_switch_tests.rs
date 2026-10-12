@@ -8,10 +8,6 @@ fn body(command: &str, payload: Value) -> RpcRequestBody {
         .unwrap_or_else(|error| panic!("{command} parses: {error}"))
 }
 
-fn switch() -> Value {
-    json!({ "lease": 3, "pos": { "seq": 4, "round": 0, "sub": 0 } })
-}
-
 #[test]
 fn every_volume_copy_verb_is_sent_on_its_own_path() {
     let cases = [
@@ -22,7 +18,7 @@ fn every_volume_copy_verb_is_sent_on_its_own_path() {
         ),
         (
             "seed_volume",
-            json!({ "switch": switch(), "name": "data", "into": "data2", "guid": "7" }),
+            json!({ "name": "data", "into": "data2", "guid": "7" }),
             "SeedVolume",
         ),
         (

@@ -477,7 +477,7 @@ export class SwitchAttemptError extends Error {
 }
 
 /** The verbs a run still sends through `sendSwitch`: SeedVolume and the reads. */
-type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "inspect_receive" | "inspect_volume_copy" }>;
+type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "inspect_volume_copy" }>;
 
 /** A refusal with a message ends the run; Busy and transport failures fail only the attempt, so the step retries. */
 export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunId: string, machine: MachineRef, request: R) => {
@@ -702,21 +702,6 @@ export const takeEpoch = Effect.fn("VolumeRun.epoch")(function* (ctx: RunContext
   const epoch = row?.epoch;
   if (epoch === null || epoch === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no epoch.`));
   return { epoch };
-});
-
-/** SeedVolume still stamps its requests with a lease, above every lease this Volume's runs took. */
-export const takeLease = Effect.fn("VolumeRun.lease")(function* (ctx: RunContext, inngestRunId: string, source: AnsweredMember) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  const { drizzle } = yield* Database;
-  const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
-    .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
-  yield* drizzle.update(volumeRun)
-    .set({ lease: Math.max(source.view.lease?.lease ?? 0, recorded?.lease ?? 0) + 1, updatedAt: new Date() })
-    .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease)));
-  const row = yield* readRow(ctx.id);
-  const lease = row?.lease;
-  if (lease === null || lease === undefined) return yield* Effect.fail(new Error(`Volume run ${ctx.id} has no lease.`));
-  return { lease };
 });
 
 const CLOSED_BY = {

@@ -134,21 +134,3 @@ async fn remove_refuses_handed_root() {
     assert!(commands(&test).contains("zfs destroy -r tank/ployz/data"));
     server.abort();
 }
-
-/// A request at `lease`, step `seq.round.sub`, with the verb's own fields merged in.
-pub(super) fn at(lease: u64, seq: u16, round: u32, sub: u8, fields: Value) -> Value {
-    let mut request = json!({
-        "switch": {
-            "lease": lease,
-            "pos": {"seq": seq, "round": round, "sub": sub},
-        },
-        "name": "data",
-    });
-    for (key, value) in fields.as_object().unwrap() {
-        request
-            .as_object_mut()
-            .unwrap()
-            .insert(key.clone(), value.clone());
-    }
-    request
-}

@@ -1,70 +1,80 @@
 //! SeedVolume: a new Volume holding one restore point of another, received on this Machine
-//! from the writer's own snapshot. The copy grows under the mirror parent, where only
-//! InspectReceive sees it, and lands as a root the next call finds complete.
+//! from the writer's own snapshot. The copy grows in a slot of `into` marked with the point
+//! it pulls, and lands as a root the next call finds complete. Every call answers the copy
+//! of `into` as it stands, so the same request resent converges.
 
 use std::process::Stdio;
 
 use axum::{Json, extract::State};
-use ployz_core::{RpcError, SeedVolumeRequest, SwitchError, SwitchReply};
+use ployz_core::{RpcError, SeedVolumeRequest, SwitchError, VolumeCopyView};
 use tokio::process::Command;
 
 use super::{
     VolumeStorage,
     lease::internal,
     mirror,
-    storage::{PROMOTE_PROPERTY, root_dataset, slot_fs, slot_parent},
-    transfer::{RECEIVE_PROPERTY, ReceiveRecord},
+    storage::{PROMOTE_PROPERTY, PULL_PROPERTY, root_dataset, slot_fs, slot_parent},
 };
 
 /// On a seeded root: the guid of the restore point it holds.
 pub(super) const SEED_PROPERTY: &str = "ployz:seed";
 
 impl VolumeStorage {
-    async fn seed_volume(&self, request: &SeedVolumeRequest) -> Result<SwitchReply, RpcError> {
+    async fn seed_volume(&self, request: &SeedVolumeRequest) -> Result<VolumeCopyView, RpcError> {
         let name = mirror::name(&request.name)?;
         let into = mirror::name(&request.into)?;
         let guid = request.guid;
-        let mut scope = self.leased(&name, &request.switch).await?;
-        let root = root_dataset(&scope.pool, &into);
-        if let Some(seeded) =
-            Self::dataset(&scope.datasets, &scope.pool, &into).map_err(internal)?
-        {
+        let _held = self.admit_mutation().await.map_err(internal)?;
+        let pool = self.one_pool().await.map_err(internal)?;
+        let datasets = self.datasets(&pool).await.map_err(internal)?;
+        let root = root_dataset(&pool, &into);
+        let parent = slot_parent(&pool, &into);
+        let fs = slot_fs(&pool, &into);
+        let slot = Self::slot(&datasets, &pool, &into).is_some();
+        if let Some(seeded) = Self::dataset(&datasets, &pool, &into).map_err(internal)? {
             let seed = self
                 .property(&seeded.name, SEED_PROPERTY)
                 .await
                 .map_err(internal)?;
-            if seed == Some(guid.to_string()) {
-                let snapshots = self.snapshots(&seeded.name).await.map_err(internal)?;
-                if let Some(received) = snapshots.iter().find(|snapshot| snapshot.guid == guid) {
-                    let parent = scope
-                        .slot(&into)
-                        .is_some()
-                        .then(|| slot_parent(&scope.pool, &into));
-                    self.finish_landing(&root, parent.as_deref(), &received.name.to_string())
-                        .await?;
-                }
-                return self.reply(&scope.pool, &name, scope.admitted).await;
+            if seed != Some(guid.to_string()) {
+                return Err(SwitchError::Precondition
+                    .rpc_error(format!("Volume {into} already exists on this Machine")));
             }
-            return Err(SwitchError::Precondition
-                .rpc_error(format!("Volume {into} already exists on this Machine")));
+            let snapshots = self.snapshots(&seeded.name).await.map_err(internal)?;
+            if let Some(received) = snapshots.iter().find(|snapshot| snapshot.guid == guid) {
+                let parent = slot.then_some(parent.as_str());
+                self.finish_landing(&root, parent, &received.name.to_string())
+                    .await?;
+            }
+            return self.seeded(&pool, &into).await;
         }
         if self.receives.running(&into) {
-            return Err(SwitchError::Busy.rpc_error(format!("the copy into {into} is running")));
+            return self.seeded(&pool, &into).await;
         }
-        let parent = slot_parent(&scope.pool, &into);
-        let fs = slot_fs(&scope.pool, &into);
-        if let Some(copy) = scope.fs(&into) {
-            let landed = self.snapshots(&copy.name).await.map_err(internal)?;
+        if let Some(failure) = self.receives.failure(&into) {
+            // Answer the failure once; the next call starts the copy over.
+            let view = self.seeded(&pool, &into).await;
+            self.receives.forget(&into);
+            tracing::warn!(%into, failure, "Volume seed copy failed");
+            return view;
+        }
+        if Self::slot_fs(&datasets, &pool, &into).is_some() {
+            let landed = self.snapshots(&fs).await.map_err(internal)?;
             if let Some(newest) = landed.first().filter(|newest| newest.guid == guid) {
-                self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
-                    .await?;
-                ployzd::faults::kill_after_record("SeedVolume");
                 self.land(&fs, &parent, &root, &newest.name.to_string(), request)
                     .await?;
-                return self.reply(&scope.pool, &name, scope.admitted).await;
+                return self.seeded(&pool, &into).await;
             }
         }
-        let source = scope.require_root(&name)?;
+        let source = root_dataset(&pool, &name);
+        let Some(bound) = datasets
+            .iter()
+            .find(|dataset| dataset.name == source)
+            .map(|dataset| dataset.refquota)
+        else {
+            return Err(SwitchError::Precondition
+                .rpc_error(format!("Volume {name} has no writer on this Machine")));
+        };
         let point = self
             .snapshots(&source)
             .await
@@ -76,44 +86,25 @@ impl VolumeStorage {
                     "restore point {guid} is no longer on Volume {name}"
                 ))
             })?;
-        let bound = scope
-            .datasets
-            .iter()
-            .find(|dataset| dataset.name == source)
-            .map_or(0, |dataset| dataset.refquota);
         if bound == 0 {
             return Err(SwitchError::Precondition
                 .rpc_error(format!("Volume {name} has no bound to seed {into} with")));
         }
-        self.record(&scope.pool, &scope.datasets, &name, &mut scope.admitted)
-            .await?;
-        ployzd::faults::kill_after_record("SeedVolume");
-        let stale = scope.fs(&into).is_some();
-        let unplaced = scope.slot(&into).is_none();
-        if stale {
+        if slot {
             // Another point, or a copy that never finished: it goes and the receive starts over.
             self.zfs(&["destroy", "-r", &parent])
                 .await
                 .map_err(internal)?;
-        } else if unplaced {
-            self.ensure_commitment(&scope.pool, &scope.datasets, bound)
+        } else {
+            self.ensure_commitment(&pool, &datasets, bound)
                 .await
                 .map_err(internal)?;
-            self.ensure_mirror_root(&scope.pool, &scope.datasets)
-                .await
-                .map_err(internal)?;
-        }
-        if stale || unplaced {
-            self.create_slot_parent(&parent, bound)
+            self.ensure_mirror_root(&pool, &datasets)
                 .await
                 .map_err(internal)?;
         }
-        let record = ReceiveRecord {
-            lease: request.switch.lease,
-            pos: request.switch.pos,
-            target: point.name.clone(),
-        };
-        self.zfs(&["set", &format!("{RECEIVE_PROPERTY}={record}"), &parent])
+        self.create_bounded_slot(&parent, bound).await?;
+        self.zfs(&["set", &format!("{PULL_PROPERTY}={}", point.name), &parent])
             .await
             .map_err(internal)?;
         let outcome = self.receives.start(&into);
@@ -121,12 +112,20 @@ impl VolumeStorage {
         let snapshot = format!("{source}@{}", point.name);
         tokio::spawn(async move {
             let result = storage.copy_snapshot(&snapshot, &fs, bound).await;
-            if let Err(error) = &result {
-                tracing::warn!(%fs, error, "Volume seed copy failed");
-            }
             *outcome.lock().expect("outcome lock") = Some(result);
         });
-        self.reply(&scope.pool, &name, scope.admitted).await
+        self.seeded(&pool, &into).await
+    }
+
+    /// The copy of `into` as the datasets stand now: a slot while it copies, a root once landed.
+    async fn seeded(
+        &self,
+        pool: &ployzd::machine_pool::MachinePool,
+        into: &super::DockerVolumeName,
+    ) -> Result<VolumeCopyView, RpcError> {
+        let datasets = self.datasets(pool).await.map_err(internal)?;
+        let copy = self.copy(&datasets, pool, into).await.map_err(internal)?;
+        Ok(VolumeCopyView { copy, lease: None })
     }
 
     /// Makes the complete copy the root of `into`, marked with its point and unregistered
@@ -142,19 +141,15 @@ impl VolumeStorage {
         self.zfs(&["set", &format!("{SEED_PROPERTY}={}", request.guid), fs])
             .await
             .map_err(internal)?;
-        self.zfs(&[
-            "set",
-            &format!("{PROMOTE_PROPERTY}={}", request.switch.lease),
-            fs,
-        ])
-        .await
-        .map_err(internal)?;
+        self.zfs(&["set", &format!("{PROMOTE_PROPERTY}=on"), fs])
+            .await
+            .map_err(internal)?;
         self.zfs(&["rename", fs, root]).await.map_err(internal)?;
         self.finish_landing(root, Some(parent), snapshot).await
     }
 
     /// The landing after the rename, repeatable. The received snapshot goes last, so a root
-    /// still holding it has not finished landing. Its name belongs to the source's lease,
+    /// still holding it has not finished landing. Its name belongs to the source's runs,
     /// and the new Volume's own runs name theirs from one.
     async fn finish_landing(
         &self,
@@ -233,6 +228,6 @@ impl VolumeStorage {
 pub(super) async fn seed_volume(
     State(storage): State<VolumeStorage>,
     Json(request): Json<SeedVolumeRequest>,
-) -> Json<Result<SwitchReply, RpcError>> {
+) -> Json<Result<VolumeCopyView, RpcError>> {
     Json(storage.seed_volume(&request).await)
 }

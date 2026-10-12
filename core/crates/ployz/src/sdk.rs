@@ -139,11 +139,10 @@ fn volume_switch_path(body: &RpcRequestBody) -> Result<&'static str, RpcError> {
 /// The JSON a Volume switch verb's answer carries, or the Machine's error as it sent it.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the switch verbs answer with three reply kinds; any other kind is a Machine fault"
+    reason = "the volume copy verbs answer with two reply kinds; any other kind is a Machine fault"
 )]
 fn volume_switch_payload(command: &str, body: RpcResponseBody) -> Result<Value, RpcError> {
     let payload = match body {
-        RpcResponseBody::SwitchReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::VolumeCopyView(view) => serde_json::to_value(view),
         RpcResponseBody::SetVolumeCopyReply(reply) => serde_json::to_value(reply),
         RpcResponseBody::Error(error) => return Err(error),

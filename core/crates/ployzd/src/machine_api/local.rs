@@ -517,7 +517,7 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::SeedVolume>(request)?;
-        self.switch_verb::<ployz_core::SwitchReply>("SeedVolume", "Volume.Seed", &request)
+        self.switch_verb::<ployz_core::VolumeCopyView>("SeedVolume", "Volume.Seed", &request)
             .await
     }
 

@@ -5,7 +5,8 @@
 //! (`name<TAB>guid<TAB>creation` per line, newest first). A `zfs receive` reads one line
 //! of stream text: `snapshot <name> <guid>` lands that snapshot; `break` leaves a resume
 //! token behind and fails like an interrupted stream. The `readonly-lost` marker stands for
-//! a ZFS that does not keep `readonly=on` on the received copy, however it is set. Like ZFS,
+//! a ZFS that does not keep `readonly=on` on the received copy, however it is set, and
+//! `props/receive-fails` a receive that fails outright. Like ZFS,
 //! a command naming a dataset no marker stands for fails with `dataset does not exist`.
 
 use std::{
@@ -359,6 +360,7 @@ case "$*" in
     if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
+    if [ -e '{props}/receive-fails' ]; then cat >/dev/null; echo 'cannot receive: out of space' >&2; exit 1; fi
     case "$8" in
       tank/ployz-mirror/data/fs) touch '{mirror_fs}' ;;
       *) touch '{seed_fs}' ;;

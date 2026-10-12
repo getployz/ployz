@@ -37,7 +37,6 @@ import {
   startOnTarget,
   SwitchAttemptError,
   takeEpoch,
-  takeLease,
 } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 import type { AppServices } from "#/server/runtime.server";
@@ -535,51 +534,34 @@ async function undoMove(
 
 /**
  * Seed copies one restore point of this Volume into a new Volume's slot on the same Machine, then lands it as an
- * unregistered root, so the Deploy that follows adopts it. The copy runs on the Machine; the run only asks after it.
+ * unregistered root, so the Deploy that follows adopts it. The Machine copies and lands; the run resends the same
+ * request until the copy it answers is a root.
  */
 async function seedVolume({ step, runEffect, run, runId }: RunSteps, phase: PhaseOf<"seed">) {
   // SAFETY: the run's kind is seed, so its args are seed's.
   const args = run.args as VolumeRunArgs["seed"];
   const source = phase.source.machine;
-  const into = args.into.dockerVolume;
-  const { lease } = await step.run("02-lease", () => runEffect(takeLease(run, runId, phase.source)));
-  const seed = (id: string, pos: { seq: number; round: number; sub: number }) => step.run(id, () => runEffect(sendSwitch(run, runId, source, {
-    command: "seed_volume",
-    payload: { switch: { lease, pos }, name: run.dockerVolume, into, guid: args.guid },
-  }).pipe(
-    Effect.asVoid,
-    Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.void),
-  )));
   const failed = async (id: string, message: string): Promise<never> => {
     await step.run(id, () => runEffect(failRun(run, runId, message)));
     throw new NonRetriableError(message);
   };
 
-  await seed("03-seed", { seq: 3, round: 0, sub: 0 });
-  let restarts = 0;
   for (let poll = 0; ; poll += 1) {
-    if (poll === MAX_POLLS) return failed("04-too-long", `${args.into.name} is still copying after ${MAX_POLLS} checks`);
-    await step.sleep(`04-wait-${poll}`, POLL_INTERVAL);
-    const status = await step.run(`04-inspect-${poll}`, () =>
-      runEffect(sendSwitch(run, runId, source, { command: "inspect_receive", payload: { name: into, round: 0 } })
-        .pipe(Effect.map((view) => view.status))));
-    if (status.state === "running") continue;
-    if (status.state === "failed") return failed("04-failed", `${args.into.name} could not copy ${args.name}: ${status.reason}`);
-    if (status.state === "resumable") {
-      restarts += 1;
-      await seed(`04-restart-${poll}`, { seq: 3, round: 0, sub: restarts });
-      continue;
-    }
-    break;
+    if (poll === MAX_POLLS) return failed("03-too-long", `${args.into.name} is still copying after ${MAX_POLLS} checks`);
+    if (poll > 0) await step.sleep(`03-wait-${poll}`, POLL_INTERVAL);
+    const copy = await step.run(`03-seed-${poll}`, () => runEffect(sendSwitch(run, runId, source, {
+      command: "seed_volume",
+      payload: { name: run.dockerVolume, into: args.into.dockerVolume, guid: args.guid },
+    }).pipe(
+      Effect.map((view) => view.copy),
+      Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed(null)),
+    )));
+    if (copy?.kind === "root") break;
+    const failure = copy?.kind === "slot" ? copy.pull?.failure : null;
+    if (failure) return failed("03-failed", `${args.into.name} could not copy ${args.name}: ${failure}`);
   }
 
-  await seed("05-land", { seq: 5, round: 0, sub: 0 });
-  const landed = await step.run("06-check", () => runEffect(sendSwitch(run, runId, source, {
-    command: "inspect_volume_copy",
-    payload: { name: into },
-  }).pipe(Effect.map((view) => view.copy?.kind === "root"))));
-  if (!landed) return failed("06-not-landed", `${args.into.name} did not land on ${source.name}`);
-  await step.run("07-finish", () => runEffect(endRun(run, runId, "done", `${args.into.name} copied from ${run.volumeName} on ${source.name}`)));
+  await step.run("04-finish", () => runEffect(endRun(run, runId, "done", `${args.into.name} copied from ${run.volumeName} on ${source.name}`)));
   return { runId: run.id, seeded: args.into.name };
 }
 

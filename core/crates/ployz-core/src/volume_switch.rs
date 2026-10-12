@@ -463,11 +463,10 @@ pub struct InspectVolumeCopyRequest {
 }
 
 /// SeedVolume on the writer: a new Volume `into` holding the restore point `guid` of
-/// `name`, received locally from the writer's own snapshot. Leased on `name`; converges
-/// on retry, replying once `into` is a root here.
+/// `name`, received locally from the writer's own snapshot. Resent until it converges: it
+/// answers the copy of `into`, a slot while it copies and a root once it lands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SeedVolumeRequest {
-    pub switch: Switch,
     pub name: DockerVolumeName,
     pub into: DockerVolumeName,
     pub guid: SnapshotGuid,
@@ -541,15 +540,6 @@ impl SendStream {
 pub const DATASET_ROOT: &str = "ployz";
 /// The mirror root under a Pool: `<pool>/ployz-mirror/<name>` holds a Volume's slot.
 pub const MIRROR_ROOT: &str = "ployz-mirror";
-
-/// Every admitted switch verb answers the same shape, so a replay answers as the original did.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct SwitchReply {
-    pub decision: FenceDecision,
-    /// The record after admission.
-    pub lease: LeaseRecord,
-    pub copy: Option<VolumeCopy>,
-}
 
 /// Why a Machine refused a switch request, in `RpcError.details`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

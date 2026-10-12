@@ -2,9 +2,8 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    Cycle, FenceDecision, InspectVolumeCopyRequest, LeaseRecord, MirrorMarker, Pull, RpcError,
-    RpcErrorCode, SlotId, Snapshot, SnapshotGuid, SnapshotName, Switch, SwitchError, SwitchReply,
-    VolumeCopy, VolumeCopyView, WriterEpoch, WriterMarker,
+    InspectVolumeCopyRequest, LeaseRecord, MirrorMarker, Pull, RpcError, RpcErrorCode, SlotId,
+    Snapshot, SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch, WriterMarker,
 };
 use ployzd::machine_pool::MachinePool;
 
@@ -32,42 +31,6 @@ fn lease_property(name: &DockerVolumeName) -> String {
         property.push(character.to_ascii_lowercase());
     }
     property
-}
-
-pub(super) fn fence(recorded: Option<LeaseRecord>, request: &Switch) -> FenceDecision {
-    let Some(recorded) = recorded else {
-        return FenceDecision::Adopt;
-    };
-    if request.lease < recorded.lease {
-        return FenceDecision::RefuseStaleLease;
-    }
-    if request.lease > recorded.lease {
-        return FenceDecision::Adopt;
-    }
-    match request.pos.cmp(&recorded.pos) {
-        std::cmp::Ordering::Less => FenceDecision::RefuseStaleStep,
-        std::cmp::Ordering::Equal => FenceDecision::Replay,
-        std::cmp::Ordering::Greater => FenceDecision::Admit,
-    }
-}
-
-pub(super) fn refusal(
-    decision: FenceDecision,
-    request: &Switch,
-    recorded: Option<LeaseRecord>,
-) -> Option<RpcError> {
-    let recorded = recorded.map_or_else(|| "no record".to_owned(), |record| record.to_string());
-    match decision {
-        FenceDecision::Admit | FenceDecision::Replay | FenceDecision::Adopt => None,
-        FenceDecision::RefuseStaleLease => Some(SwitchError::StaleLease.rpc_error(format!(
-            "lease {} is older than this Machine's record {recorded}",
-            request.lease
-        ))),
-        FenceDecision::RefuseStaleStep => Some(SwitchError::StaleStep.rpc_error(format!(
-            "step {} of lease {} is behind this Machine's record {recorded}",
-            request.pos, request.lease
-        ))),
-    }
 }
 
 pub(super) fn internal(error: VolumeError) -> RpcError {
@@ -109,22 +72,6 @@ impl VolumeStorage {
             .parse::<LeaseRecord>()
             .map(Some)
             .map_err(|error| format!("{error} on {root}").into())
-    }
-
-    async fn write_lease_record(
-        &self,
-        datasets: &[Dataset],
-        pool: &MachinePool,
-        name: &DockerVolumeName,
-        record: LeaseRecord,
-    ) -> Result<()> {
-        let root = format!("{}/{DATASET_ROOT}", pool.name());
-        if !datasets.iter().any(|dataset| dataset.name == root) {
-            self.create_root(&root).await?;
-        }
-        self.zfs(&["set", &format!("{}={record}", lease_property(name)), &root])
-            .await?;
-        Ok(())
     }
 
     pub(super) async fn unregistered(&self, dataset: &str) -> Result<bool> {
@@ -310,69 +257,6 @@ impl VolumeStorage {
         datasets.iter().find(|dataset| dataset.name == fs)
     }
 
-    /// Fences `request` for `name`. The caller holds the mutation lock and calls
-    /// [`Self::record`] once its preconditions pass, so a refusal leaves the record as it was.
-    pub(super) async fn admit(
-        &self,
-        pool: &MachinePool,
-        datasets: &[Dataset],
-        name: &DockerVolumeName,
-        request: &Switch,
-    ) -> std::result::Result<Admitted, RpcError> {
-        let recorded = self
-            .lease_record(datasets, pool, name)
-            .await
-            .map_err(internal)?;
-        let decision = fence(recorded, request);
-        if let Some(error) = refusal(decision, request, recorded) {
-            return Err(error);
-        }
-        let lease = LeaseRecord {
-            lease: request.lease,
-            pos: request.pos,
-            cycle: recorded.map_or(Cycle::Closed, |record| record.cycle),
-        };
-        Ok(Admitted {
-            decision,
-            lease,
-            recorded,
-        })
-    }
-
-    /// Records the admitted position as the effect begins; a no-op once recorded.
-    pub(super) async fn record(
-        &self,
-        pool: &MachinePool,
-        datasets: &[Dataset],
-        name: &DockerVolumeName,
-        admitted: &mut Admitted,
-    ) -> std::result::Result<(), RpcError> {
-        if admitted.recorded != Some(admitted.lease) {
-            self.write_lease_record(datasets, pool, name, admitted.lease)
-                .await
-                .map_err(internal)?;
-            admitted.recorded = Some(admitted.lease);
-        }
-        Ok(())
-    }
-
-    /// The reply every leased verb ends with: the decision, the record and the copy as
-    /// it is after the effect. Records the position if the verb had no effect to record it.
-    pub(super) async fn reply(
-        &self,
-        pool: &MachinePool,
-        name: &DockerVolumeName,
-        mut admitted: Admitted,
-    ) -> std::result::Result<SwitchReply, RpcError> {
-        let datasets = self.datasets(pool).await.map_err(internal)?;
-        self.record(pool, &datasets, name, &mut admitted).await?;
-        Ok(SwitchReply {
-            decision: admitted.decision,
-            lease: admitted.lease,
-            copy: self.copy(&datasets, pool, name).await.map_err(internal)?,
-        })
-    }
-
     async fn inspect_copy(&self, name: &DockerVolumeName) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
         let Some(pool) = self.pool.one_usable().await? else {
@@ -389,14 +273,6 @@ impl VolumeStorage {
     }
 }
 
-/// A fenced request's decision, the record it writes, and the record on disk.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Admitted {
-    pub(super) decision: FenceDecision,
-    pub(super) lease: LeaseRecord,
-    pub(super) recorded: Option<LeaseRecord>,
-}
-
 pub(super) async fn inspect(
     State(storage): State<VolumeStorage>,
     Json(request): Json<InspectVolumeCopyRequest>,
@@ -406,77 +282,4 @@ pub(super) async fn inspect(
         Err(error) => Err(internal(error)),
     };
     Json(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use ployz_core::{Lease, Pos};
-
-    use super::*;
-
-    fn record(lease: u64, pos: Pos, cycle: Cycle) -> LeaseRecord {
-        LeaseRecord {
-            lease: Lease::new(lease),
-            pos,
-            cycle,
-        }
-    }
-
-    fn pos(seq: u16, round: u32, sub: u8) -> Pos {
-        Pos { seq, round, sub }
-    }
-
-    #[test]
-    fn lease_fence_table() {
-        let recorded = Some(record(5, pos(4, 2, 5), Cycle::Closed));
-        let departed = Some(record(5, Pos::DEPARTED, Cycle::Closed));
-        let rows = [
-            (recorded, 5, pos(5, 0, 0), FenceDecision::Admit),
-            (recorded, 5, pos(4, 2, 5), FenceDecision::Replay),
-            (recorded, 6, pos(2, 0, 0), FenceDecision::Adopt),
-            (None, 1, pos(2, 0, 0), FenceDecision::Adopt),
-            (recorded, 4, pos(9, 0, 0), FenceDecision::RefuseStaleLease),
-            (recorded, 5, pos(4, 2, 1), FenceDecision::RefuseStaleStep),
-            (recorded, 5, pos(4, 1, 9), FenceDecision::RefuseStaleStep),
-            (departed, 5, pos(9, 0, 0), FenceDecision::RefuseStaleStep),
-            (departed, 6, pos(3, 0, 0), FenceDecision::Adopt),
-        ];
-        for (recorded, lease, pos, expected) in rows {
-            let request = Switch {
-                lease: Lease::new(lease),
-                pos,
-            };
-            assert_eq!(
-                fence(recorded, &request),
-                expected,
-                "record {recorded:?}, request {request:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn refusals_name_their_reason() {
-        let request = Switch {
-            lease: Lease::new(3),
-            pos: Pos::step(2),
-        };
-        let recorded = Some(record(4, Pos::step(2), Cycle::Closed));
-        let error = refusal(FenceDecision::RefuseStaleLease, &request, recorded).unwrap();
-        assert_eq!(
-            SwitchError::from_details(&error.details),
-            Some(SwitchError::StaleLease)
-        );
-        assert!(
-            error.message.contains("4:2.0.0:closed"),
-            "{}",
-            error.message
-        );
-        for admitted in [
-            FenceDecision::Admit,
-            FenceDecision::Replay,
-            FenceDecision::Adopt,
-        ] {
-            assert!(refusal(admitted, &request, recorded).is_none());
-        }
-    }
 }
