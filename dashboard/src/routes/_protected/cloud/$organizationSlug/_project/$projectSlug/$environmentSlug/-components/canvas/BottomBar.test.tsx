@@ -153,6 +153,22 @@ it("shows how a Deployment it watched ended, until dismissed, and a Deployed one
   vi.useRealTimers();
 });
 
+it("shows a failed Deployment above the changes it handed back, until dismissed", async () => {
+  active = [deployment(running, "running", 1)];
+  open(canvasUrl, [replicas], 1);
+  expect((await bar()).getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
+  act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
+  const both = await bar();
+  const rows = both.getAllByText(/Failed · Deployment #1|^1 change$/).map((node) => node.textContent);
+  expect(rows).toEqual(["Failed · Deployment #1", "1 change", "1 change"]);
+  expect(both.getByRole("link", { name: "Logs" })).toBeTruthy();
+  expect(both.getByRole("button", { name: /^Deploy$/ })).toBeTruthy();
+  fireEvent.click(both.getByRole("button", { name: "Dismiss" }));
+  const staged = await bar();
+  expect(staged.queryByText("Failed · Deployment #1")).toBeNull();
+  expect(staged.getAllByText("1 change")).toHaveLength(2);
+});
+
 it("never shows a Deployment that ended before it was watched", async () => {
   open(canvasUrl);
   act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
