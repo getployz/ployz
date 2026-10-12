@@ -2155,7 +2155,7 @@ fn a_marked_removal_never_moves() {
 
 #[test]
 fn a_removal_conflicts_on_any_change_the_receiver_made_to_the_node() {
-    let service_changes: [fn(&mut Value); 8] = [
+    let service_changes: [fn(&mut Value); 9] = [
         |env| {
             svc(env, CACHE)["variables"]
                 .as_array_mut()
@@ -2177,6 +2177,7 @@ fn a_removal_conflicts_on_any_change_the_receiver_made_to_the_node() {
         },
         |env| svc(env, CACHE)["config"]["startCommand"] = json!("into-start"),
         |env| svc(env, CACHE)["slug"] = json!("redis"),
+        |env| svc(env, CACHE)["config"]["template"] = json!({"id": "redis", "version": 2}),
     ];
     let config_changes: [fn(&mut Value); 2] = [unreference_worker, |env| {
         env["configs"][0]["name"] = json!("app2")
@@ -2185,11 +2186,23 @@ fn a_removal_conflicts_on_any_change_the_receiver_made_to_the_node() {
         .iter()
         .map(|change| (CACHE, change))
         .chain(config_changes.iter().map(|change| (CONFIG, change)));
-    for (lineage, change) in cases {
-        let mut into = production();
+    let routed = || {
+        let mut env = production();
+        svc(&mut env, CACHE)["config"]["routes"] = json!([
+            {"id": id(0xb000_0000, 90), "hostname": "cache.example.com", "targetPort": 8080}
+        ]);
+        env
+    };
+    let route_changes: [fn(&mut Value); 1] =
+        [|env| svc(env, CACHE)["config"]["routes"][0]["targetPort"] = json!(9090)];
+    let cases = cases
+        .map(|(lineage, change)| (lineage, production(), change))
+        .chain(route_changes.iter().map(|change| (CACHE, routed(), change)));
+    for (lineage, base, change) in cases {
+        let mut into = base.clone();
         change(&mut into);
-        let from = without(production(), lineage);
-        let plan = compare(Some(&production()), &from, &into, Way::Merge);
+        let from = without(base.clone(), lineage);
+        let plan = compare(Some(&base), &from, &into, Way::Merge);
         assert!(
             matches!(
                 row(&plan, &format!("{lineage}:node")).verdict,

@@ -11,8 +11,8 @@ use crate::config::service_changes::default_value;
 use crate::config::{
     ConfigAttachment, ConfigError, SavedConfigFile, SavedConfigIntent,
     SavedEnvironmentIntent as Intent, SavedServiceIntent, SavedVolumeIntent,
-    ServiceImageCredentials, ServiceSource, VolumeAttachment, parse_environment_intent,
-    redact_environment_intent,
+    ServiceImageCredentials, ServiceSource, ServiceTemplate, VolumeAttachment,
+    parse_environment_intent, redact_environment_intent,
 };
 
 /// Each side's generated-address suffix, appended to managed hostname prefixes.
@@ -433,9 +433,9 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                         Some(Verdict::Differs(Why::Live))
                     }
                     NodeRef::Service(_) | NodeRef::Config(_) => {
-                        let relabeled = match (base_nodes.get(lineage), into_node) {
+                        let uncelled_changed = match (base_nodes.get(lineage), into_node) {
                             (Some(NodeRef::Service(base)), NodeRef::Service(into)) => {
-                                labels(base) != labels(into)
+                                Uncelled::of(base) != Uncelled::of(into)
                             }
                             _ => false,
                         };
@@ -448,7 +448,7 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                                 Verdict::Moves {
                                     ticked, arrives, ..
                                 } => Verdict::Moves {
-                                    conflict: relabeled
+                                    conflict: uncelled_changed
                                         || std::iter::once(&id)
                                             .chain(
                                                 base_cells
@@ -880,14 +880,33 @@ fn removal_dependents(next: &Intent, removals: &[&PlannedRow]) -> BTreeMap<RowId
         .collect()
 }
 
-/// What `service`'s cells leave out of its variables: each one's description and
-/// whether it is exported.
-fn labels(service: &SavedServiceIntent) -> BTreeMap<&str, (Option<&str>, bool)> {
-    service
-        .variables
-        .iter()
-        .map(|v| (v.key.as_str(), (v.description.as_deref(), v.exported)))
-        .collect()
+/// What a Service's cells leave out that its Environment doesn't decide.
+#[derive(PartialEq)]
+struct Uncelled<'service> {
+    /// Each variable's description and whether it is exported, by key.
+    labels: BTreeMap<&'service str, (Option<&'service str>, bool)>,
+    /// Each route's target port, by hostname.
+    ports: BTreeMap<&'service str, Option<u16>>,
+    template: Option<&'service ServiceTemplate>,
+}
+
+impl<'service> Uncelled<'service> {
+    fn of(service: &'service SavedServiceIntent) -> Self {
+        Self {
+            labels: service
+                .variables
+                .iter()
+                .map(|v| (v.key.as_str(), (v.description.as_deref(), v.exported)))
+                .collect(),
+            ports: service
+                .config
+                .routes
+                .iter()
+                .map(|route| (route.hostname.as_str(), route.target_port))
+                .collect(),
+            template: service.config.template.as_ref(),
+        }
+    }
 }
 
 /// Whether `env` references a lineage it does not own, i.e. uses it live.
