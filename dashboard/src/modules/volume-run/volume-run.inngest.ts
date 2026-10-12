@@ -22,12 +22,15 @@ import {
   findHolder,
   findSpec,
   type Holder,
+  holderVerb,
   type MachineRef,
   observeMembers,
   organizationsWithMachines,
   refuseRun,
   type RunContext,
+  runningHolders,
   sendSwitch,
+  setSnapshot,
   startHanded,
   SwitchAttemptError,
   type SwitchOptions,
@@ -106,6 +109,7 @@ export async function runVolume(
   if (phase.kind === "restore") return restoreVolume({ step, runEffect, run, runId }, phase);
   if (phase.kind === "demote") return demoteVolume({ step, runEffect, run, runId }, phase);
   if (phase.kind === "seed") return seedVolume({ step, runEffect, run, runId }, phase);
+  if (phase.kind === "restore_snapshot") return restoreSnapshot({ step, runEffect, run, runId }, phase);
   const source = phase.kind === "move" ? (phase.start === "close" ? null : phase.writer) : phase.kind === "release" && phase.thaw ? phase.source : null;
   let holder: Holder | null = null;
   if (source !== null) {
@@ -165,28 +169,33 @@ export async function runVolume(
   const mirror = phase.kind === "mirror" ? phase.target : phase.mirror;
   const A = writer.machine;
   const B = mirror.machine;
-  const declare = (id: string, pos: Pos) =>
-    verb(id, sendSwitch(run, runId, B, {
-      command: "declare_mirror",
-      payload: { switch: at(pos), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
-    }));
 
-  if (phase.kind === "mirror" && phase.declare) await declare("03-declare", { seq: 3, round: 0, sub: 0 });
-  if (phase.kind === "sync" && phase.full) {
-    await verb("03-reset-destroy", sendSwitch(run, runId, B, {
-      command: "destroy_mirror",
-      payload: mirrorRequest({ seq: 3, round: 0, sub: 0 }),
-    }));
-    await verb("03-reset-forget", sendSwitch(run, runId, A, {
-      command: "forget_snapshots",
-      payload: mirrorRequest({ seq: 3, round: 0, sub: 1 }),
-    }));
-    await declare("03-reset-declare", { seq: 3, round: 0, sub: 2 });
-  }
+  if (phase.kind === "mirror" && phase.declare) await declare(steps, B, "03-declare", { seq: 3, round: 0, sub: 0 });
+  if (phase.kind === "sync" && phase.full) await resetMirror(steps, A, B);
 
   const rounds = await runRounds(steps, { A, B, writerAddress: writer.address });
   await step.run("05-finish", () => runEffect(endRun(run, runId, "done", null)));
   return { runId: run.id, rounds };
+}
+
+const declare = ({ step, runEffect, run, runId, at }: RunSteps, B: MachineRef, id: string, pos: Pos) =>
+  step.run(id, () => runEffect(sendSwitch(run, runId, B, {
+    command: "declare_mirror",
+    payload: { switch: at(pos), name: run.dockerVolume, refquota_bytes: run.refquotaBytes },
+  }).pipe(Effect.asVoid)));
+
+/** A mirror that no longer shares a snapshot with the writer starts over: its slot and the writer's sent snapshots go. */
+async function resetMirror(steps: RunSteps, A: MachineRef, B: MachineRef) {
+  const { step, runEffect, run, runId, mirrorRequest } = steps;
+  await step.run("03-reset-destroy", () => runEffect(sendSwitch(run, runId, B, {
+    command: "destroy_mirror",
+    payload: mirrorRequest({ seq: 3, round: 0, sub: 0 }),
+  }).pipe(Effect.asVoid)));
+  await step.run("03-reset-forget", () => runEffect(sendSwitch(run, runId, A, {
+    command: "forget_snapshots",
+    payload: mirrorRequest({ seq: 3, round: 0, sub: 1 }),
+  }).pipe(Effect.asVoid)));
+  await declare(steps, B, "03-reset-declare", { seq: 3, round: 0, sub: 2 });
 }
 
 type RestoreSteps = Pick<RunSteps, "step" | "runEffect" | "run" | "runId">;
@@ -277,6 +286,49 @@ async function seedVolume({ step, runEffect, run, runId }: RestoreSteps, phase: 
   return { runId: run.id, seeded: args.into.name };
 }
 
+/**
+ * A snapshot restore saves the writer's data as a Before restore snapshot and swaps the snapshot in, with the Service
+ * stopped, since the writer refuses the swap while a container holds the Volume. The writer answers a resent swap with
+ * the swap it already made, so a retried step restores once. A mirror shares no snapshot with the restored data, so it
+ * starts over from it.
+ */
+async function restoreSnapshot({ step, runEffect, run, runId }: RestoreSteps, phase: PhaseOf<"restore_snapshot">) {
+  // SAFETY: the run's kind is restore_snapshot, so its args are restore_snapshot's.
+  const args = run.args as VolumeRunArgs["restore_snapshot"];
+  const writer = phase.writer.machine;
+  const running = await step.run("02-running", () => runEffect(runningHolders(run, runId, writer)));
+  for (const [index, container] of running.entries()) {
+    await step.run(`03-stop-${index}`, () => runEffect(holderVerb(run, runId, writer, container, "stop")));
+  }
+  let refused: string | null = null;
+  try {
+    await containerStep({ step, runEffect }, "04-swap", setSnapshot(run, runId, writer, {
+      name: run.dockerVolume,
+      expect: args.expect,
+      want: { kind: "restored", from: args.from, save: args.save, label: { kind: "before_restore", note: args.note } },
+    }), `${writer.name} is still busy with ${run.volumeName}`);
+  } catch (error) {
+    refused = error instanceof Error ? error.message : String(error);
+  }
+  // The Service starts again on whatever data the writer holds, so a refused swap leaves it serving the old data.
+  for (const [index, container] of running.entries()) {
+    await step.run(`05-start-${index}`, () => runEffect(holderVerb(run, runId, writer, container, "start")));
+  }
+  if (refused !== null) {
+    await step.run("05-refused", () => runEffect(endRun(run, runId, "failed", refused)));
+    throw new NonRetriableError(refused);
+  }
+  if (phase.mirror !== null) {
+    const { lease } = await step.run("06-lease", () => runEffect(takeLease(run, runId, participantsOf(phase), null)));
+    const at = (pos: Pos) => ({ lease, pos });
+    const steps: RunSteps = { step, runEffect, run, runId, at, mirrorRequest: (pos) => ({ switch: at(pos), name: run.dockerVolume }) };
+    await resetMirror(steps, writer, phase.mirror.machine);
+    await runRounds(steps, { A: writer, B: phase.mirror.machine, writerAddress: phase.writer.address });
+  }
+  await step.run("07-finish", () => runEffect(endRun(run, runId, "done", null)));
+  return { runId: run.id, restored: args.from };
+}
+
 const sourceRequest = ({ at, run }: RunSteps, holder: Holder, pos: Pos) =>
   ({ switch: at(pos), name: run.dockerVolume, container_id: holder.containerId });
 
@@ -311,7 +363,7 @@ async function attempt(
  * Freeze's docker stop and the docker start of a Thaw or a handed Start run on the Machine until Docker answers, and
  * the Machine answers Busy meanwhile. The run sleeps and asks again at the same position, which spends no retry.
  */
-async function containerStep<T>({ step, runEffect }: RunSteps, id: string, effect: Effect.Effect<T, Error, AppServices>, still: string) {
+async function containerStep<T>({ step, runEffect }: Pick<RunSteps, "step" | "runEffect">, id: string, effect: Effect.Effect<T, Error, AppServices>, still: string) {
   for (let check = 0; check < CONTAINER_CHECKS; check += 1) {
     if (check > 0) await step.sleep(`${id}-wait-${check}`, POLL_INTERVAL);
     // SAFETY: step output is the JSON of an Asked<T>, and each T a Container step answers holds only JSON values.

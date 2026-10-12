@@ -44,7 +44,7 @@ describe("deploying a Volume placement", () => {
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
           if (query.query === "deployment") {
             const state = statuses.get(query.id ?? "") ?? status;
-            return { status: state, in_flight: state === "queued", environment: { id: "env-1", project: "shop", name: "production" }, nodes: [] };
+            return { status: state, number: 7, in_flight: state === "queued", environment: { id: "env-1", project: "shop", name: "production" }, nodes: [] };
           }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
@@ -228,6 +228,57 @@ describe("deploying a Volume placement", () => {
 
     const seeding = await run(advancePlacement(organizationId, "dep-2", null, byVolume, answered));
     expect(seeding).toMatchObject({ kind: "wait", wait: { volumeId: "vol2", step: { change: { kind: "seed" } } } });
+  });
+
+  describe("restoring a snapshot", () => {
+    const restore = { from: "s1", at: 1_790_000_000, losesBytes: 0, save: "b1", expect: 4 };
+    const stageRestore = async () => {
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      const staged = { primary: web("web-1"), mirrors: [web("web-2")], deletes: [], restore };
+      await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-2")] }));
+      await run(stampPlacements(organizationId, "env-1", "dep-1"));
+      const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
+      if (started.kind !== "wait") throw new Error("expected a run");
+      return started.wait;
+    };
+    const restoreRuns = async () => (await harness.pool.query(`select args from volume_run where kind = 'restore_snapshot'`)).rows;
+
+    it("runs one restore noted with the Deploy, and once it is done no later step restores again", async () => {
+      const wait = await stageRestore();
+      expect(await restoreRuns()).toEqual([{ args: { from: "s1", save: "b1", expect: 4, note: "#7", mirror: "web-2" } }]);
+
+      await endRun(wait.runId, "done");
+      expect(await run(advancePlacement(organizationId, "dep-1", wait, inspect, answered))).toEqual({ kind: "done" });
+      expect(await run(advancePlacement(organizationId, "dep-1", wait, inspect, answered))).toEqual({ kind: "done" });
+      expect(await restoreRuns()).toHaveLength(1);
+      expect(await placement()).toMatchObject({ mirrors: [web("web-2")], staged: null, deploymentId: null });
+    });
+
+    it("fails the Deploy when the restore fails, and drops it", async () => {
+      const wait = await stageRestore();
+
+      await endRun(wait.runId, "failed", "data moved since its snapshots were listed; restore again");
+      expect(await run(advancePlacement(organizationId, "dep-1", wait, inspect, answered))).toEqual({
+        kind: "failed", message: "data: data moved since its snapshots were listed; restore again",
+      });
+      expect(await placement()).toMatchObject({ staged: null, deploymentId: null });
+    });
+
+    it("drops only the failed restore, returning a mirror staged beside it", async () => {
+      members = [member("web-1", "writer"), member("web-2", "mirror")];
+      const staged = { primary: web("web-1"), mirrors: [web("web-2"), web("web-3")], deletes: [], restore };
+      await run(stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [web("web-2")] }));
+      await run(stampPlacements(organizationId, "env-1", "dep-1"));
+      const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
+      if (started.kind !== "wait") throw new Error("expected a run");
+      expect(await restoreRuns()).toHaveLength(1);
+
+      await endRun(started.wait.runId, "failed", "data moved since its snapshots were listed; restore again");
+      expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toMatchObject({ kind: "failed" });
+      expect(await placement()).toEqual(expect.objectContaining({
+        staged: { primary: web("web-1"), mirrors: [web("web-2"), web("web-3")], deletes: [] }, unreached: true, deploymentId: null,
+      }));
+    });
   });
 
   it("stops between runs once the Deploy is cancelled, leaving the Volume staged", async () => {

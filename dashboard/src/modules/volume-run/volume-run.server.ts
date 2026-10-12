@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, CopyObservation, DestructiveEffect, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
+import type { ContainerId, ContainerObservation, CopyObservation, DestructiveEffect, EnvironmentRef, MachineId, MachineName, SnapshotRefusal, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -192,6 +192,7 @@ function phaseEffects(volume: ResolvedVolume, phase: PlannedPhase): DestructiveE
     case "restore":
     case "demote":
     case "seed":
+    case "restore_snapshot":
       return [];
   }
 }
@@ -204,6 +205,7 @@ const VERBS = {
   move: null,
   restore: null,
   seed: null,
+  restore_snapshot: null,
 } satisfies Record<VolumeRunKind, OperationVerb | null>;
 
 export type VolumeRunPlan =
@@ -466,15 +468,18 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
 
 export type Holder = ServiceSpec & { readonly containerId: ContainerId };
 
+const holdersOn = (ctx: RunContext, containers: readonly ContainerObservation[], writer: MachineRef) =>
+  containers.filter((container) =>
+    container.machine_id === writer.id
+    && container.kind === "service_container"
+    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume));
+
 /** The one Service container on the writer that mounts this Volume: Freeze stops it, Thaw restarts it, and Start rebuilds it on the target. */
 export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
-  const holders = frame.containers.filter((container) =>
-    container.machine_id === writer.id
-    && container.kind === "service_container"
-    && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume));
+  const holders = holdersOn(ctx, frame.containers, writer);
   const [holder] = holders;
   if (holder === undefined || holders.length > 1) {
     const found = holders.length === 0 ? "no Service container" : `${holders.length} Service containers`;
@@ -482,6 +487,69 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
   }
   return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec } } as const;
 }, Effect.scoped);
+
+/** The Service containers running on the writer with this Volume mounted, which a snapshot restore stops for its swap. */
+export const runningHolders = Effect.fn("VolumeRun.runningHolders")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  return holdersOn(ctx, frame.containers, writer)
+    .filter((container) => container.runtime.state === "running")
+    .map((container) => container.container_id);
+}, Effect.scoped);
+
+export const holderVerb = Effect.fn("VolumeRun.holderVerb")(function* (
+  ctx: RunContext,
+  inngestRunId: string,
+  writer: MachineRef,
+  container: ContainerId,
+  verb: "stop" | "start",
+) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const sent = verb === "stop" ? session.stopContainer(writer.id, container) : session.startContainer(writer.id, container).pipe(Effect.asVoid);
+  yield* sent.pipe(Effect.mapError((error) => new Error(`${verb} ${container} on ${writer.name}: ${sdkFailureMessage(error, [writer])}`)));
+}, Effect.scoped);
+
+const decodeSnapshotRefusal = Schema.decodeUnknownOption(Schema.Struct({
+  details: Schema.Struct({ reason: Schema.Literals(["mismatch", "no_writer", "busy", "not_found"]) }),
+}));
+
+export function snapshotRefusalOf(error: PloyzSdkError): SnapshotRefusal | null {
+  const decoded = decodeSnapshotRefusal("cause" in error ? error.cause : undefined);
+  return Option.isSome(decoded) ? decoded.value.details.reason : null;
+}
+
+type SetSnapshot = Extract<VolumeSwitchRequest, { command: "set_volume_snapshot" }>;
+
+/**
+ * Busy is a SwitchAttemptError the caller waits out; any other refusal is a NonRetriableError, so the caller can start
+ * the Service again before it fails the run. A Mismatch never retries: the writer moved since the snapshot was listed,
+ * and only a fresh listing names the right epoch.
+ */
+export const setSnapshot = (ctx: RunContext, inngestRunId: string, writer: MachineRef, payload: SetSnapshot["payload"]) =>
+  Effect.gen(function* () {
+    yield* requireOwner(ctx.id, inngestRunId);
+    const session = yield* openSession(ctx.organizationId);
+    return yield* session.volumeSwitch(writer.id, { command: "set_volume_snapshot", payload } satisfies SetSnapshot).pipe(
+      Effect.asVoid,
+      Effect.catch((error): Effect.Effect<never, Error> => {
+        const reason = snapshotRefusalOf(error);
+        switch (reason) {
+          case "busy":
+            return Effect.fail(new SwitchAttemptError("busy", `${ctx.volumeName} is busy on ${writer.name}`));
+          case "mismatch":
+            return Effect.fail(new NonRetriableError(`${ctx.volumeName} moved since its snapshots were listed; restore again`));
+          case "no_writer":
+            return Effect.fail(new NonRetriableError(`${ctx.volumeName} has no writer on ${writer.name}`));
+          case "not_found":
+            return Effect.fail(new NonRetriableError("Snapshot not found"));
+          case null:
+            return Effect.fail(new SwitchAttemptError(null, `set_volume_snapshot on ${writer.name}: ${sdkFailureMessage(error, [writer])}`));
+        }
+      }),
+    );
+  }).pipe(Effect.scoped);
 
 /** Restore registers the Volume with the spec of the newest Service container that mounts it, stopped ones included. */
 export const findSpec = Effect.fn("VolumeRun.findSpec")(function* (ctx: RunContext, inngestRunId: string) {
@@ -569,6 +637,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
 /** What a run of each kind is called when a Server can't run it. */
 const RUN_FEATURES = {
   mirror: "Volume mirror", sync: "Mirror refresh", delete_mirror: "Mirror removal", move: "Volume move", release: "Volume move", restore: "Using a mirror", seed: "Volume restore",
+  restore_snapshot: "Snapshot restore",
 } satisfies Record<VolumeRunKind, string>;
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (

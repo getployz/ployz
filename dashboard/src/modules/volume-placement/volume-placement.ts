@@ -205,7 +205,8 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
     .filter((id) => copyOn(id) !== undefined && !applied.includes(id))
     .map((id) => ({ kind: "delete_copy", volume, server: machine(id) }));
   if (staged.restore !== undefined) {
-    const mirrors = applied.filter((id) => staged.mirrors.includes(id)).map(machine);
+    // A mirror the move promotes is reseeded too, or the move would hand over data from before the restore.
+    const mirrors = applied.filter((id) => staged.mirrors.includes(id) || id === staged.primary).map(machine);
     changes.unshift({ kind: "restore_snapshot", volume, restore: staged.restore, mirrors });
   }
   // A move to a mirror is unfinished while that mirror is still listed: after the hand-over the target holds the root,
@@ -250,10 +251,22 @@ const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirr
 
 /**
  * Each change's runs; deletions free the one copy slot before a move or a mirror fills it. A restore goes first, on the
- * Server that holds its snapshots, and has no run yet: the Deploy refuses it in `advancePlacement`.
+ * Server that holds its snapshots, so a later move carries the restored data.
  */
 const STEPS = {
-  restore_snapshot: { order: 0, runs: () => [] },
+  restore_snapshot: {
+    order: 0,
+    runs: (change, deploy) => [{
+      kind: "restore_snapshot",
+      args: {
+        from: change.restore.from,
+        save: change.restore.save,
+        expect: change.restore.expect,
+        note: `#${deploy}`,
+        mirror: change.mirrors[0]?.name ?? null,
+      },
+    }],
+  },
   delete_copy: { order: 1, runs: (change) => [deleteSlot(change.server)] },
   remove_mirror: { order: 2, runs: (change) => [deleteSlot(change.server)] },
   move: {
@@ -271,9 +284,11 @@ const STEPS = {
     }],
   },
   add_mirror: { order: 4, runs: (change) => [...change.clears.map(deleteSlot), { kind: "mirror", args: { to: change.server.name } }] },
-} satisfies { [K in PlacementChange["kind"]]: { order: number; runs: (change: Extract<PlacementChange, { kind: K }>) => VolumeRunInput[] } };
+} satisfies {
+  [K in PlacementChange["kind"]]: { order: number; runs: (change: Extract<PlacementChange, { kind: K }>, deploy: number) => VolumeRunInput[] };
+};
 
-function runsOf(change: PlacementChange): VolumeRunInput[] {
+function runsOf(change: PlacementChange, deploy: number): VolumeRunInput[] {
   switch (change.kind) {
     case "delete_copy":
       return STEPS.delete_copy.runs(change);
@@ -286,13 +301,13 @@ function runsOf(change: PlacementChange): VolumeRunInput[] {
     case "seed":
       return STEPS.seed.runs(change);
     case "restore_snapshot":
-      return STEPS.restore_snapshot.runs();
+      return STEPS.restore_snapshot.runs(change, deploy);
   }
 }
 
-/** The runs a Deploy makes, in order. Each run observes the copies again, so a Deploy plans one step at a time. */
-export function placementSteps(changes: readonly PlacementChange[]): VolumeRunInput[] {
-  return [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order).flatMap(runsOf);
+/** The runs Deploy `deploy` makes, in order. Each run observes the copies again, so a Deploy plans one step at a time. */
+export function placementSteps(changes: readonly PlacementChange[], deploy: number): VolumeRunInput[] {
+  return [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order).flatMap((change) => runsOf(change, deploy));
 }
 
 /**
@@ -319,10 +334,10 @@ export const sameChange = (a: ChangeKey, b: ChangeKey) => a.kind === b.kind && a
 /** The next run a Deploy makes, and the mirrors once it ends: a change's mirrors move only with its last run. */
 export type PlacementStep = { readonly run: VolumeRunInput; readonly mirrors: readonly MachineId[]; readonly change: ChangeKey };
 
-export function nextPlacementStep(changes: readonly PlacementChange[], mirrors: readonly MachineId[]): PlacementStep | null {
+export function nextPlacementStep(changes: readonly PlacementChange[], mirrors: readonly MachineId[], deploy: number): PlacementStep | null {
   const [change] = [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order);
   if (change === undefined) return null;
-  const [run, ...rest] = runsOf(change);
+  const [run, ...rest] = runsOf(change, deploy);
   if (run === undefined) return null;
   return { run, mirrors: rest.length === 0 ? mirrorsAfter(mirrors, change) : [...mirrors], change: changeKey(change) };
 }
