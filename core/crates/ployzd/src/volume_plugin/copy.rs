@@ -496,6 +496,14 @@ impl VolumeStorage {
                 )
                 .await);
         }
+        if pulling.as_deref() == Some(target.as_str()) && self.receives.failure(name).is_some() {
+            // A resend after the receive failed answers that failure instead of hiding it
+            // under a fresh receive. The answer clears it, so the next want for this
+            // target retries, and a want for another target replaces it.
+            let copy = self.copy_now(&scope).await;
+            self.receives.forget(name);
+            return copy;
+        }
         let (fresh, bound) = match scope.slot() {
             Some(slot) => (false, slot.refquota),
             None => {
