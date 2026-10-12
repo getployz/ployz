@@ -2467,8 +2467,20 @@ fn a_removed_volume_is_kept_with_its_data() {
     let data = row(&store, &who, "volumes.data");
     assert_eq!((data.ride, &data.lands), (Ride::Kept, &data.production));
     assert_ne!(data.production, Value::Null);
+    // db keeps its mount on the Volume it keeps.
+    assert_eq!(
+        labels(&store, &who),
+        [
+            ("db.mounts.data".to_owned(), Ride::Kept),
+            ("volumes.data".to_owned(), Ride::Kept)
+        ]
+    );
 
     merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "db.mounts.data"),
+        Some(json!("/var/lib/data"))
+    );
     let kept = store.read(
         &who,
         &ployz_store::VolumeQuery {

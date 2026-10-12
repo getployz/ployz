@@ -82,7 +82,8 @@ A service or config the preview removed reads **Removes db**. If production chan
 preview started, the row adds **Changed there**; the merge removes it anyway. If something in
 production still uses it, like a variable that references `db`, the row reads **In use** with what
 uses it, and the merge leaves it in production while the rest lands. A removed volume reads
-**Kept**: the merge never removes a volume or its data. Remove it in production yourself when
+**Kept**: the merge never removes a volume or its data, and production's services keep their mounts
+on it unless the preview removed the service too. Remove it in production yourself when
 you're sure. Only what the preview copied can be removed this way; a service the preview never
 had stays in production untouched.
 
