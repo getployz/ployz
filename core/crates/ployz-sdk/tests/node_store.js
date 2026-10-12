@@ -68,7 +68,7 @@ async function expectInvalid(what, fn) {
     default_environment: "00000000-0000-4000-8000-000000000002",
   });
   await store.write("acme", { command: "create_volume", id: "00000000-0000-4000-8000-000000000005", name: "pgdata" });
-  let turn = sdk.agentStart("environment_show", {}, { project: "shop", environment: null, store: "cloud" }, "call-1");
+  let turn = sdk.agentStart("environment_show", {}, { project: "shop", environment: null, store: { at: "cloud", organization: "acme" } }, "call-1");
   while (turn.step.step !== "done") {
     const answers = [];
     for (const { ask } of turn.step.asks) answers.push({ value: await store.read("acme", ask) });

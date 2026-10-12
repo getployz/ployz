@@ -112,7 +112,7 @@ const TRUSTED = {
 };
 
 async function call(store, tool, input, key) {
-  let turn = sdk.agentStart(tool, input, { project: "shop", environment: null, store: "cloud" }, key);
+  let turn = sdk.agentStart(tool, input, { project: "shop", environment: null, store: { at: "cloud", organization: ORG } }, key);
   for (;;) {
     walk(turn, `${tool}.turn`);
     const { step, state } = turn;
