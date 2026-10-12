@@ -122,9 +122,12 @@ describe("placementChanges", () => {
     expect(review(members, row(["web-2"], { primary: "web-1" }))).toEqual([{ kind: "remove", name: "Mirror", currentValue: "web-2", newValue: "" }]);
   });
 
-  it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent Server", () => {
+  it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent or missing Server", () => {
     expect(changes([member("web-1", "writer"), pooled("web-2")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
     expect(steps([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"], { primary: "web-1" }))).toEqual([
+      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
+    ]);
+    expect(steps([member("web-1", "writer")], row(["web-2"], { primary: "web-1" }))).toEqual([
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
     ]);
   });

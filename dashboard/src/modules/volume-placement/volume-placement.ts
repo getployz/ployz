@@ -175,7 +175,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
   const moving = observed.primary?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
-  const gone = (id: MachineId) => copyOn(id) === undefined && !observed.unanswered.some((server) => server.id === id);
+  const gone = (id: MachineId) => copyOn(id) === undefined && members.some((member) => member.machine.id === id && member.answered);
   for (const id of applied) {
     if (!staged.mirrors.includes(id) && !(moving && id === staged.primary) && !gone(id)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
   }
