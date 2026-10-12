@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigStore, MachineId } from "@ployz/sdk";
+import type { ConfigCommand, ConfigStore, MachineId } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -9,7 +9,10 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, stagePlacement, stampPlacements } from "#/modules/volume-placement/volume-placement.server";
+import {
+  deleteOldCopy, discardPlacement, listPlacements, placementAdmission, requestUnclaimedRun, stagePlacement, stampPlacements,
+} from "#/modules/volume-placement/volume-placement.server";
+import type { Member } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
@@ -31,6 +34,8 @@ describe("volume placement", () => {
   let harness: PostgresTestHarness;
   let inFlight: boolean;
   let unreadable: boolean;
+  /** The Store lists the Volume as one the next Deploy deletes. */
+  let deleting: boolean;
   // Runs once, as the Store answers `query`: a Deploy admitted while the edit is between its check and its write.
   let between: { readonly query: string; readonly run: () => Promise<void> } | null;
 
@@ -51,7 +56,11 @@ describe("volume placement", () => {
           if (query.query === "deployment" && unreadable) throw new RpcError({ code: "unavailable", message: "Store down", details: null });
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
           if (query.query === "deployment") return { in_flight: inFlight };
-          return { environment: { id: "env-1", project: "shop", name: "production", revision: 1 }, volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }] };
+          if (query.query === "diff") return { version: "diff-7" };
+          return {
+            environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
+            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 }, change: deleting ? "delete" : null }],
+          };
         },
       })),
     }),
@@ -64,6 +73,7 @@ describe("volume placement", () => {
   beforeEach(async () => {
     inFlight = true;
     unreadable = false;
+    deleting = false;
     between = null;
     await harness.pool.query(`
       truncate table organization cascade;
@@ -182,5 +192,45 @@ describe("volume placement", () => {
     const requested = await run(requestUnclaimedRun({ userId: null, organizationId }, { volumeId, environment, kind: "sync", args: { full: false } }));
     expect(requested).toMatchObject({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
+  });
+
+  describe("admitting a Deploy", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const admit = (accept: string[], version: string | null = "v1"): ConfigCommand =>
+      ({ command: "admit", admit: "deploy", id: "dep-1", environment, services: [], version, accept_volume_loss: accept });
+    const admission = (command: ConfigCommand, inspect: () => Effect.Effect<Member[], Error> = () => Effect.succeed(members)) =>
+      run(placementAdmission(organizationId, command, inspect).pipe(
+        Effect.map((admitted) => ({ ok: true as const, command: admitted })),
+        Effect.catchTag("StoreRefused", (error) => Effect.succeed({ ok: false as const, refusal: error.refusal })),
+      ));
+
+    it("refuses a Deploy that deletes a copy until it accepts the Volume by name, as the Store refuses deleting one", async () => {
+      await stage("web-1");
+      expect(await admission(admit([]))).toEqual({ ok: false, refusal: {
+        code: "confirmation_required",
+        message: "Deploying loses data of data. Accept each by name",
+        details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-2") }] }], accept: ["data"], version: "v1" },
+      } });
+      expect(await admission(admit(["other"], null))).toMatchObject({ ok: false, refusal: { details: { accept: ["other", "data"], version: "diff-7" } } });
+      expect(await admission(admit(["data", "other"]))).toEqual({ ok: true, command: admit(["other"]) });
+    });
+
+    it("leaves the name with the Store when the Deploy deletes the Volume there too", async () => {
+      await stage("web-1");
+      deleting = true;
+      expect(await admission(admit(["data"]))).toEqual({ ok: true, command: admit(["data"]) });
+    });
+
+    it("refuses while a Server holding a copy doesn't answer", async () => {
+      await stage("web-1");
+      expect(await admission(admit(["data"]), () => Effect.fail(new Error("down")))).toMatchObject({ ok: false, refusal: { code: "unavailable" } });
+    });
+
+    it("passes a Deploy that keeps every copy, and any other command, through untouched", async () => {
+      await stage("web-2");
+      expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });
+      const publish: ConfigCommand = { command: "publish", environment, version: null, accept_volume_loss: [] };
+      expect(await admission(publish, () => Effect.die("never inspected"))).toEqual({ ok: true, command: publish });
+    });
   });
 });

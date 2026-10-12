@@ -484,30 +484,41 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
 }
 
 /**
- * What a Deploy of staged changes takes from the Servers, for its typed confirm: copies it deletes, and whether a restore
- * drops writes. A restore from a restore point counts the source's writes after it, since the app stops seeing them.
+ * One thing a Deploy of staged changes takes from the Servers: a copy of `volume` on `server`, or for a restore from a
+ * restore point, the source's writes `after` it, since the app stops seeing them.
  */
-export type PlacementLoss = { readonly items: readonly DeletionItem[]; readonly losesWrites: boolean };
+export type PlacementLost = { readonly volume: PlacementVolume; readonly server: MachineRef; readonly after: Date | null };
+
+export function placementLosses(changes: readonly PlacementChange[]): PlacementLost[] {
+  const copy = (volume: PlacementVolume, server: MachineRef): PlacementLost => ({ volume, server, after: null });
+  return changes.flatMap((change) => {
+    const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
+    switch (change.kind) {
+      case "move":
+        return change.how === "restore" && change.from !== null ? [...cleared, copy(change.volume, change.from)] : cleared;
+      case "add_mirror":
+        return cleared;
+      case "remove_mirror":
+      case "delete_copy":
+        return [copy(change.volume, change.server)];
+      case "seed":
+        return [{ volume: change.source, server: change.to, after: new Date(change.point.at * 1000) }];
+    }
+  });
+}
+
+/**
+ * What a Deploy of staged changes takes, for its typed confirm: what goes, whether a restore drops writes, and the name
+ * of each Volume that loses something, which the Deploy accepts as it accepts a Volume the Store deletes.
+ */
+export type PlacementLoss = { readonly items: readonly DeletionItem[]; readonly losesWrites: boolean; readonly accept: readonly string[] };
 
 export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
-  const copy = (volume: PlacementVolume, server: MachineRef): DeletionItem => ({ kind: "volume", name: volume.name, detail: server.name });
-  const restores = (change: PlacementChange) => (change.kind === "move" && change.how === "restore") || change.kind === "seed";
+  const lost = placementLosses(changes);
   return {
-    items: changes.flatMap((change) => {
-      const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
-      switch (change.kind) {
-        case "move":
-          return change.how === "restore" && change.from !== null ? [...cleared, copy(change.volume, change.from)] : cleared;
-        case "add_mirror":
-          return cleared;
-        case "remove_mirror":
-        case "delete_copy":
-          return [copy(change.volume, change.server)];
-        case "seed":
-          return [{ kind: "volume", name: change.source.name, detail: `changes after ${lossTime(new Date(change.point.at * 1000))}` }];
-      }
-    }),
-    losesWrites: changes.some(restores),
+    items: lost.map(({ volume, server, after }) => ({ kind: "volume", name: volume.name, detail: after === null ? server.name : `changes after ${lossTime(after)}` })),
+    losesWrites: changes.some((change) => (change.kind === "move" && change.how === "restore") || change.kind === "seed"),
+    accept: [...new Set(lost.map(({ volume }) => volume.name))],
   };
 }
 

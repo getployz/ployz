@@ -6,7 +6,7 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeAcceptance as Acceptance } from "#/modules/config-store/use-volume-loss-check";
 import type { PlacementLoss } from "#/modules/volume-placement/volume-placement";
 type Action = "deploy" | "publish";
-export const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false };
+const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [] };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
 type Message = string | null;
 
@@ -16,12 +16,13 @@ type Message = string | null;
  *
  * When a Deploy or Publish would delete Volume data the Servers hold, the Store refuses with `confirmation_required`;
  * the user reads every Volume that goes, types where, and it runs again accepting exactly those. A Deploy whose staged
- * copy changes delete a copy or drop a restore's writes asks the same way before it goes to the Store. Any other refusal
- * (Servers that can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
+ * copy changes delete a copy or drop a restore's writes asks the same way before it goes, from `placementLoss` when this
+ * tab has it, else from Cloud's refusal, which checks the copies again at admission. Any other refusal (Servers that
+ * can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
-  version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss) {
+  version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
   const writer = useStoreWriter(organizationSlug);
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
@@ -51,7 +52,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   function deploy(message: Message) {
     if (inFlight.current) return;
     if (placementLoss.items.length > 0) {
-      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: [], version } }, message });
+      setLoss({ action: "deploy", check: { items: placementLoss.items, evidence: { accept: placementLoss.accept, version } }, message });
       return;
     }
     inFlight.current = true;

@@ -1,14 +1,16 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import type { BatchCommand, EnvironmentRef, MachineId } from "@ployz/sdk";
+import type { BatchCommand, ConfigCommand, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
-import { Deferred, Effect, Fiber, Semaphore } from "effect";
+import { Deferred, Effect, Fiber, Option, Semaphore } from "effect";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import { volumePlacement } from "#/modules/volume-placement/tables";
-import { lossTime, oldCopies, observePlacement, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
+import {
+  lossTime, oldCopies, observePlacement, placementChanges, placementLosses, type Placement, type PlacementLost, type PlacementRow, type Seed,
+} from "#/modules/volume-placement/volume-placement";
 import { dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
@@ -30,6 +32,7 @@ const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check 
 const RESTORING: StoreRefusal = { code: "conflict", message: "This Volume is a staged restore. Deploy or discard it first.", details: null };
 const ELSEWHERE: StoreRefusal = { code: "conflict", message: "This restore belongs to another Environment.", details: null };
 const STAGING: StoreRefusal = { code: "conflict", message: "This restore is still being staged. Try again in a minute.", details: null };
+const UNANSWERED: StoreRefusal = { code: "unavailable", message: "Your servers aren't answering. Try again once they are.", details: null };
 
 const restoreLock = (volumeId: string) => sql`hashtext(${`volume-restore:${volumeId}`})`;
 
@@ -222,6 +225,48 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
     .returning();
   if (row === undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
   return { ok: true, placement: view(row) } satisfies PlacementDiscard;
+});
+
+/**
+ * Admits `command` against what its Deploy takes from the Servers, where every path to the Store meets it: the
+ * dashboard, the CLI, MCP and the agent. Any other command passes through. The Deploy is refused `confirmation_required`,
+ * as the Store refuses one that deletes Volumes, unless it names each Volume whose copy or writes go, and `unavailable`
+ * while a Server holding one doesn't answer. The names consumed here leave `accept_volume_loss`, since the Store refuses
+ * a name it doesn't delete itself.
+ */
+export const placementAdmission = Effect.fn("VolumePlacement.admission")(function* (
+  organizationId: string, command: ConfigCommand, inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
+) {
+  if (command.command !== "admit" || command.admit !== "deploy") return command;
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(volumePlacement)
+    .where(and(eq(volumePlacement.organizationId, organizationId), isNotNull(volumePlacement.staged)));
+  if (rows.length === 0) return command;
+  const { environment, volumes } = yield* readStore(organizationId, { query: "volumes", environment: command.environment });
+  const lost: PlacementLost[] = [];
+  for (const row of rows) {
+    const volume = volumes.find((entry) => entry.id === row.volumeId);
+    if (row.environmentId !== environment.id || volume === undefined) continue;
+    const members = yield* inspect(organizationId, command.environment, row.volumeId).pipe(Effect.option);
+    if (Option.isNone(members)) return yield* new StoreRefused(UNANSWERED);
+    lost.push(...placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value, view(row))));
+  }
+  const names = [...new Set(lost.map(({ volume }) => volume.name))];
+  const accepted = command.accept_volume_loss ?? [];
+  if (!names.every((name) => accepted.includes(name))) {
+    const version = command.version ?? (yield* readStore(organizationId, { query: "diff", environment: command.environment })).version;
+    return yield* new StoreRefused({
+      code: "confirmation_required",
+      message: `Deploying loses data of ${names.join(", ")}. Accept each by name`,
+      details: {
+        volumes: names.map((name) => ({ name, deletes: lost.filter(({ volume }) => volume.name === name).map(({ server }) => ({ machine_id: server.id })) })),
+        accept: [...new Set([...accepted, ...names])],
+        version,
+      },
+    });
+  }
+  const deleted = (name: string) => volumes.some((volume) => volume.name === name && volume.change === "delete");
+  return { ...command, accept_volume_loss: accepted.filter((name) => !names.includes(name) || deleted(name)) };
 });
 
 /** Deploy `deploymentId` takes every placement staged in its Environment. */
