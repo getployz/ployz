@@ -160,9 +160,17 @@ was already replaced keeps the new version, and services later in the order stay
 > Ployz doesn't undo a pre-deploy command. If a migration ran and the deploy then failed, your
 > database keeps the change while the old version of your app runs against it.
 
-A failed deploy drops the volume change it failed on, so the volume stays where it was. Volume
-changes it never got to go back to your staged changes, and **Details** marks them **Not
-reached**. Deploy again to run them.
+A failed deploy drops the volume change it failed on. Volume changes it never got to go back to
+your staged changes, and **Details** marks them **Not reached**. Deploy again to run them. What
+the dropped change leaves behind depends on how far it got:
+
+- A move that failed before the handover leaves the volume on its old server, with all its data.
+  Stage the move again when you're ready.
+- A move that failed after the handover is not undone: the volume belongs to the new server, and
+  your service stays down until the move finishes there. The move stays in your changes, so
+  deploy again to finish it. See [When a move stops](../services/move-a-volume.md#when-a-move-stops).
+- A restore that failed leaves the new volume with no data. Run the restore again, or delete the
+  volume.
 
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a
