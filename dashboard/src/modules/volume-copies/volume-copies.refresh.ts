@@ -15,12 +15,14 @@ export function mirrorLast(copy: MirrorCopy, now: Date): MirrorLast {
   return { spin: false, words, stale: isStale(copy, now) };
 }
 
-/** Why a mirror is behind, or null while its rounds land. `clock` prints a wall-clock time: "14:15". */
-export function skippedWords(copy: MirrorCopy, now: Date, clock: (at: Date) => string): string | null {
+/**
+ * Why a mirror is behind, or null while its rounds land. Names no time: a round skips a Volume whose Server is silent or
+ * that a Deploy holds, so the last good round says nothing about when the Server stopped answering.
+ */
+export function skippedWords(copy: MirrorCopy, now: Date): string | null {
   if (!copy.skipped || copy.busy !== null || copy.refreshedAt === null || !isStale(copy, now)) return null;
-  const missed = new Date(copy.refreshedAt.getTime() + MIRROR_ROUND_MINUTES * 60_000);
   const behind = span(Math.round((now.getTime() - copy.refreshedAt.getTime()) / 60_000));
-  return `${copy.server.name} stopped answering at ${clock(missed)}. Ployz retries every ${MIRROR_ROUND_MINUTES} minutes. `
+  return `${copy.server.name} is not answering. Ployz retries every ${MIRROR_ROUND_MINUTES} minutes. `
     + `Until it catches up, a failover loses ${behind} of writes.`;
 }
 

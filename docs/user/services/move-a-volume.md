@@ -53,7 +53,7 @@ Click a mirror to open it. It shows its server, when it last refreshed, **Refres
 primary** and **Remove mirror**. Refresh now runs a refresh at once: the mirror reads
 "Refreshing", then "Mirror refreshed" pops up and its age resets. If anything else is running on
 the volume, Refresh now says so instead of queueing. A mirror more than an hour behind whose last
-refresh failed says **Refresh skipped**, when its server stopped answering, and how much of its
+refresh failed says **Refresh skipped**, that its server is not answering, and how much of its
 writes a failover would lose. A staged mirror has none of these actions, so discard it in Details.
 
 A mirror or an old copy also gives the volume restore points. See [Restore a volume](restore-a-volume.md).

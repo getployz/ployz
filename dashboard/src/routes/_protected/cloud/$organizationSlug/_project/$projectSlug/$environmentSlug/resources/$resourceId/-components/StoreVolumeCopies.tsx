@@ -29,7 +29,6 @@ import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/vol
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
 import type { Member, VolumeRunView } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useVolumeMembers } from "#/modules/volume-run/volume-run.queries";
-import { useTimeZone } from "#/utils/time-zone";
 
 /** A Volume as the Copies tab shows it: who mounts it names who its Primary runs. */
 export type CopiesVolume = PlacementVolume & { readonly mounts: readonly { readonly service: string }[] };
@@ -49,7 +48,6 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const deleteCopy = useDeleteCopy(organizationSlug, environment, volume);
   const inFlight = useInFlightDeployments(organizationSlug, environment);
   const mirror = useRefreshMirror(organizationSlug, environment, volume.id);
-  const hourMinute = new Intl.DateTimeFormat("en-GB", { hourCycle: "h23", hour: "2-digit", minute: "2-digit", timeZone: useTimeZone() });
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
   const copies = members === undefined ? null
     : copiesFromPlacement({ volume, members, row, active: running, lastSync: mirror.lastSync, lastDone: mirror.lastDone });
@@ -71,7 +69,6 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     deleteCopy,
     refresh: mirror.refresh,
     refreshing: mirror.pending,
-    clock: (at: Date) => hourMinute.format(at),
   };
 }
 
@@ -98,8 +95,6 @@ export type CopiesPanelProps = {
   refresh: () => void;
   /** From the Refresh now click until its round ends. */
   refreshing: boolean;
-  /** A wall-clock time in the viewer's zone: "14:15". */
-  clock: (at: Date) => string;
   open: MachineId | null;
   onOpen: (copy: MachineId | null) => void;
   now?: Date;
@@ -314,7 +309,7 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 
 /** Its staged actions build the same placement the list would; only Details discards them. */
 function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, refresh, refreshing,
-  clock, onBack, now = new Date() }:
+  onBack, now = new Date() }:
   Resolved & { copy: MirrorCopy; onBack: () => void }) {
   const blocked = upgrade.length > 0;
   const panel = mirrorPanel(volume, members, row, copy.server.id, accepting);
@@ -327,7 +322,7 @@ function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade
   const stale = isStale(copy, now);
   const shown = refreshing && copy.busy === null ? { ...copy, busy: "Refreshing" } : copy;
   const last = mirrorLast(shown, now);
-  const skipped = skippedWords(shown, now, clock);
+  const skipped = skippedWords(shown, now);
   const offer = restoreOffer(volume, members, rows, copy.server.id, locked, restore);
 
   return <div className="flex flex-col gap-4">
