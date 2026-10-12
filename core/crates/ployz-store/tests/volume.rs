@@ -840,6 +840,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
         .write(
             &who,
             &CreateVolume {
+                storage_locked: false,
                 shared_writes: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
                 id: VolumeId::parse(LOGS).unwrap(),
