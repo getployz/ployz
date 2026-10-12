@@ -315,7 +315,7 @@ describe("placementTargets", () => {
 describe("storageStep", () => {
   const run = (volumeId: string, message: string | null): VolumeRunView => ({
     id: "r1", volume_id: volumeId, volume_name: "pg-data", kind: "move", args: { to: "web-2" }, orphan: false, state: "running",
-    lease: null, epoch: null, message, created_at: "", updated_at: "", finished_at: null,
+    epoch: null, message, created_at: "", updated_at: "", finished_at: null,
   });
   const taken = { ...row([]), deploymentId: "dep-1" };
 

@@ -21,11 +21,11 @@ export function member(server: string, copy: Copy, options: { pool?: boolean; ep
   const machine = { id: server.padEnd(32, "0") as MachineId, name: server };
   if (copy === "unanswered") return { machine, answered: false };
   const answer: VolumeCopy | null = copy === "empty" ? null : COPIES[copy];
-  const view = { copy: answer?.kind === "root" && options.epoch !== undefined ? { ...answer, epoch: options.epoch } : answer, lease: null };
+  const view = { copy: answer?.kind === "root" && options.epoch !== undefined ? { ...answer, epoch: options.epoch } : answer };
   return { machine, address: "fdcc::1", answered: true, pool: options.pool ?? copy !== "empty", view };
 }
 
 export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], state: VolumeRunView["state"]): VolumeRunView => ({
-  id: `${kind}-${state}`, volume_id: "v1", volume_name: "data", kind, args, orphan: false, state, lease: null, epoch: 1, message: null,
+  id: `${kind}-${state}`, volume_id: "v1", volume_name: "data", kind, args, orphan: false, state, epoch: 1, message: null,
   created_at: "2026-10-09T00:00:00.000Z", updated_at: "2026-10-09T00:00:00.000Z", finished_at: null,
 });

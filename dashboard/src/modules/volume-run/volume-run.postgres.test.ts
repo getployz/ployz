@@ -254,7 +254,7 @@ describe("volume runs", () => {
         fake.copy = { ...copy, pull: null };
       } else fake.copy = { ...copy, newest: snapshots.get(pull.target) ?? copy.newest };
     }
-    return { copy: fake.copy, lease: null };
+    return { copy: fake.copy };
   };
 
   const session = asTestDouble<PloyzSession>()({

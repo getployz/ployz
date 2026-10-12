@@ -88,7 +88,6 @@ export function volumeRunView(row: VolumeRunRow): VolumeRunView {
     args: row.args,
     orphan: row.orphan,
     state: row.state,
-    lease: row.lease,
     epoch: row.epoch,
     message: row.message,
     created_at: row.createdAt.toISOString(),
@@ -417,9 +416,8 @@ const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId
   return session.connected;
 });
 
-/** The reasons SeedVolume, the one old verb a run still sends, may refuse with. */
-type SeedRefusal = Exclude<SwitchError["reason"], "stale_lease" | "stale_step">;
-export type SwitchReason = CopyRefusal | SeedRefusal;
+/** The reasons SeedVolume and the copy verbs may refuse with. */
+export type SwitchReason = CopyRefusal | SwitchError["reason"];
 
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",

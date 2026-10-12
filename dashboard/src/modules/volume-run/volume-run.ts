@@ -41,7 +41,6 @@ export type VolumeRunView = {
   readonly args: AnyVolumeRunArgs;
   readonly orphan: boolean;
   readonly state: VolumeRunState;
-  readonly lease: number | null;
   readonly epoch: number | null;
   readonly message: string | null;
   readonly created_at: string;

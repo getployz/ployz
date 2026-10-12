@@ -72,7 +72,7 @@ describe("expectOf", () => {
 describe("observedEpoch", () => {
   it("takes the highest epoch from roots and from the run that named a newest snapshot", () => {
     expect(observedEpoch([member("a", "writer", { epoch: 2 }), member("b", "mirror"), member("c", "unanswered")])).toBe(2);
-    const later = { ...member("b", "mirror"), view: { copy: { ...COPIES.mirror, newest: { name: "f-7-1", guid: "12", created_unix_seconds: 0 } }, lease: null } };
+    const later = { ...member("b", "mirror"), view: { copy: { ...COPIES.mirror, newest: { name: "f-7-1", guid: "12", created_unix_seconds: 0 } } } };
     expect(observedEpoch([member("a", "writer", { epoch: 2 }), later])).toBe(7);
     expect(observedEpoch([member("a", "empty"), member("b", "unanswered")])).toBe(0);
   });
@@ -216,7 +216,7 @@ describe("plan_from_copies_table", () => {
   });
 
   it("refuses to restore a slot that holds no snapshot", () => {
-    const bare = { ...member("fsn-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: null }, lease: null } };
+    const bare = { ...member("fsn-2", "mirror"), view: { copy: { ...COPIES.mirror, newest: null } } };
     expect(planFromCopies(restore("fsn-2"), [bare])).toEqual({
       ok: false,
       refusal: { code: "no_copy", message: "data-fsn-2 holds no snapshot to restore" },

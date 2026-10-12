@@ -36,7 +36,7 @@ fn named() -> RunEnvironment {
 fn run(state: &str, kind: &str, args: Value) -> Value {
     json!({
         "id": RUN, "volume_id": VOLUME, "volume_name": "data", "kind": kind, "args": args,
-        "orphan": false, "state": state, "lease": null, "message": null,
+        "orphan": false, "state": state, "message": null,
         "created_at": "2026-10-07T18:00:00.000Z", "updated_at": "2026-10-07T18:00:00.000Z",
         "finished_at": null,
     })
