@@ -12,7 +12,7 @@ pub use path::{NodeName, SettingPath};
 
 mod size;
 
-use ployz_core::RpcError;
+use ployz_core::{RpcError, ServiceName};
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
@@ -241,15 +241,17 @@ impl ServiceSetting {
         }
     }
 
-    /// The value `unset` restores; `null` when the Setting has none.
-    pub(crate) fn default(self) -> Value {
+    /// The value `unset` restores for `service`; `null` when the Setting has none. A
+    /// Private DNS name defaults to the Service's current name, so it has none until
+    /// a Service is named.
+    pub(crate) fn default(self, service: Option<&ServiceName>) -> Value {
         match self {
+            Self::PrivateDns => service.map_or(Value::Null, |name| json!(name)),
             Self::CpuLimit
             | Self::Healthcheck
             | Self::Image
             | Self::MemLimit
             | Self::PreDeployCommand
-            | Self::PrivateDns
             | Self::RegistryCredential
             | Self::StartCommand
             | Self::Template => Value::Null,
@@ -594,7 +596,7 @@ impl ServiceSetting {
                 config.healthcheck = ServiceHealthcheck::None;
                 Ok(())
             }
-            _ => self.store(config, self.default()),
+            _ => self.store(config, self.default(None)),
         }
     }
 
