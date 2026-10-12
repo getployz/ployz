@@ -45,10 +45,11 @@ import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
 import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
-import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
+import { servicePages, servicePageSchema } from "./service-pages";
 import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
-import { usePrefetchServiceUptime } from "#/modules/uptime/uptime.queries";
+import { usePrefetchServiceUptime, useUptimeEnabled } from "#/modules/uptime/uptime.queries";
 import { MonitoringTab } from "./monitoring/MonitoringTab";
+import { monitoringSections } from "./monitoring/monitoring-sections";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
 export type StoreService = {
@@ -116,6 +117,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const { tab, from = DEFAULT_RANGE.from, to = DEFAULT_RANGE.to } = useSearch({ from: SERVICE_ROUTE_FROM });
   const range = { from, to };
   const prefetchUptime = usePrefetchServiceUptime({ organizationSlug, environmentId }, params.serviceId);
+  const monitoring = monitoringSections({ uptimeEnabled: useUptimeEnabled(organizationSlug) });
+  const pages = servicePages(monitoring);
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
@@ -202,13 +205,13 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
         <div className="mx-auto mt-3 w-full max-w-2xl empty:hidden"><HealthcheckFailing state={state} namespace={namespace} /></div>
-        <Tabs value={Schema.is(servicePageSchema)(tab) ? tab : "settings"}
+        <Tabs value={pages.find((page) => page.id === tab)?.id ?? "settings"}
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
           }}
           className="flex min-h-0 flex-1 flex-col overflow-visible sm:overflow-clip">
           <TabsList variant="line" className="-mx-4 max-w-none shrink-0 overflow-x-auto sm:mx-0 sm:max-w-full">
-            {SERVICE_PAGES.map((page) => (
+            {pages.map((page) => (
               <TabsTrigger key={page.id} value={page.id}
                 onPointerEnter={page.id === "monitoring" ? () => prefetchUptime(range) : undefined}>{page.label}</TabsTrigger>
             ))}
@@ -225,10 +228,10 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             <ContainerLogs selection={{ organizationSlug, projectSlug: params.projectSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
           </TabsContent>
-          <TabsContent value="monitoring" className="mt-3 min-h-0 flex-1 overflow-clip">
+          {monitoring.length > 0 ? <TabsContent value="monitoring" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto w-full max-w-2xl">
-                <MonitoringTab organizationSlug={organizationSlug} service={service} range={range}
+                <MonitoringTab organizationSlug={organizationSlug} sections={monitoring} service={service} range={range}
                   onRange={(next) => {
                     const fallback = next.from === DEFAULT_RANGE.from && next.to === DEFAULT_RANGE.to;
                     void navigate({ search: (prev) => ({ ...prev, from: fallback ? undefined : next.from, to: fallback ? undefined : next.to }), replace: true });
@@ -242,7 +245,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
                   healthcheck={healthcheck} />
               </div>
             </div>
-          </TabsContent>
+          </TabsContent> : null}
           <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">

@@ -36,17 +36,20 @@ import {
   type TimeWindow,
 } from "#/modules/uptime/uptime";
 import { checkWindow, instantEdge, resolveRange, type UptimeRange } from "#/modules/uptime/uptime-range";
-import type { RegionNames, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
+import type { RegionNames, ServiceUptime, UptimeCheckResult, UptimeIncidentEntry } from "#/modules/uptime/uptime-status";
 import { type UptimeScope, usePrefetchServiceUptime, useRequestUptimeProbe, useServiceUptime } from "#/modules/uptime/uptime.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../../../../-components/environment-route-paths";
 import { HealthcheckField, type HealthcheckSetting } from "../HealthcheckField";
 import { useTimeZone } from "#/utils/time-zone";
 import { atFormat, MetricChart, type MetricSeries, type TimeBand } from "./MetricChart";
+import type { MonitoringSection } from "./monitoring-sections";
 import { RangePicker } from "./RangePicker";
 import { ResponseTooltip } from "./ResponseTooltip";
 
 type MonitoringProps = {
   organizationSlug: string;
+  /** Not empty: without a section there is no tab. */
+  sections: readonly MonitoringSection[];
   service: ServiceListing;
   range: UptimeRange;
   onRange: (range: UptimeRange) => void;
@@ -66,7 +69,7 @@ export function MonitoringTab(props: MonitoringProps) {
   const toggle = <RangePicker range={props.range} onRange={props.onRange} onHover={prefetch} />;
   return (
     <CatchBoundary getResetKey={() => props.service.id} errorComponent={MonitoringError}>
-      <Suspense fallback={<MonitoringSkeleton toggle={toggle} />}>
+      <Suspense fallback={<MonitoringSkeleton toggle={toggle} uptime={props.sections.includes("uptime")} />}>
         <Monitoring {...props} scope={scope} toggle={toggle} />
       </Suspense>
     </CatchBoundary>
@@ -101,20 +104,24 @@ function StripEnds({ from, to }: { from: ReactNode; to: ReactNode }) {
 }
 
 /** The tab's shape before its first read lands: a quiet header, grey bars, and the Response time card's outline. */
-function MonitoringSkeleton({ toggle }: { toggle: ReactNode }) {
+function MonitoringSkeleton({ toggle, uptime }: { toggle: ReactNode; uptime: boolean }) {
   return (
     <div className="flex flex-col gap-6" aria-busy>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <StatusLine tone="quiet"><Skeleton className="h-4 w-40" /></StatusLine>
-        {toggle}
+        {uptime ? <StatusLine tone="quiet"><Skeleton className="h-4 w-40" /></StatusLine> : null}
+        <div className="ml-auto">{toggle}</div>
       </div>
-      <div className="flex flex-col gap-1.5">
-        <div className="flex h-7 items-stretch gap-px">
-          {Array.from({ length: 30 }, (_, index) => <div key={index} className="flex-1 rounded-[1px] bg-muted" />)}
-        </div>
-        <StripEnds from={null} to={null} />
-      </div>
-      <EmptyChartCard title="Response time" />
+      {uptime ? (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex h-7 items-stretch gap-px">
+              {Array.from({ length: 30 }, (_, index) => <div key={index} className="flex-1 rounded-[1px] bg-muted" />)}
+            </div>
+            <StripEnds from={null} to={null} />
+          </div>
+          <EmptyChartCard title="Response time" />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -146,16 +153,28 @@ type Picked = { readonly incident: UptimeIncidentEntry; readonly x: number; read
 /** An incident the charts zoomed onto, and the range they read for it, fixed when zoomed so each poll reads the same key. */
 type Zoom = { readonly incident: UptimeIncidentEntry; readonly range: UptimeRange };
 
-/** Ployz collects no Service metrics yet; dev builds draw invented ones so the layout can be judged. */
-const PREVIEW_METRICS = import.meta.env.DEV;
+type ViewProps = MonitoringProps & { scope: UptimeScope; toggle: ReactNode; shown: UptimeRange };
 
 /**
  * Status, history, then every metric on one time axis, all over one range. Incidents shade each chart; a click tells the
  * story. A new range keeps the old one, dimmed, until its read lands.
  */
-function Monitoring({ organizationSlug, service, range: chosen, addDomain, healthcheck, scope, toggle }: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
-  const range = useDeferredValue(chosen);
-  const { data: uptime, dataUpdatedAt } = useServiceUptime(scope, service.id, range);
+function Monitoring(props: MonitoringProps & { scope: UptimeScope; toggle: ReactNode }) {
+  const shown = useDeferredValue(props.range);
+  return props.sections.includes("uptime") ? <UptimeMonitoring {...props} shown={shown} /> : <MonitoringView {...props} shown={shown} read={null} />;
+}
+
+function UptimeMonitoring(props: ViewProps) {
+  const { data, dataUpdatedAt } = useServiceUptime(props.scope, props.service.id, props.shown);
+  return <MonitoringView {...props} read={{ uptime: data, at: dataUpdatedAt }} />;
+}
+
+/** `read`: the uptime read and when Cloud answered it, or null on a Cloud without the uptime checker. */
+function MonitoringView({ organizationSlug, service, sections, range: chosen, shown: range, addDomain, healthcheck, scope, toggle, read }: ViewProps & {
+  read: { uptime: ServiceUptime | null; at: number } | null;
+}) {
+  const uptime = read?.uptime ?? null;
+  const [mountedAt] = useState(Date.now);
   const checkNow = useRequestUptimeProbe(scope, service.id);
   const checking = checkNow.isPending || (uptime?.probe ? !uptime.probe.answered : false);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
@@ -179,7 +198,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
     };
   }, [cursor]);
   // When Cloud answered, so the page renders the same on server and client and moves on with each poll.
-  const now = dataUpdatedAt;
+  const now = read?.at ?? mountedAt;
   const at = atFormat(useTimeZone());
   const state = checkState(uptime);
   const incidents = uptime?.incidents ?? [];
@@ -189,7 +208,8 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
   const charted = zoom?.range ?? range;
   const window = chartWindow(resolveRange(charted, now), now, (uptime?.check.intervalSeconds ?? 60) * 1000);
   const times = steps(window);
-  const metrics = PREVIEW_METRICS ? previewMetrics(incidents, window, now) : [];
+  const showMetrics = sections.includes("metrics");
+  const metrics = showMetrics ? previewMetrics(incidents, window, now) : [];
   const deploys = deployments.flatMap((deployment) => {
     const ended = admission(deployment).ended?.getTime();
     const touched = deployment.services.length === 0 || deployment.services.includes(service.name);
@@ -224,7 +244,7 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <StatusLine tone={STATUS_TONES[state]}>
+        {read ? <StatusLine tone={STATUS_TONES[state]}>
           <span className="shrink-0">{STATUS_WORDS[state]}</span>
           <span className="flex min-w-0 items-center gap-1 whitespace-nowrap font-normal text-muted-foreground tabular-nums">
             {state === "no_domain" ? <span className="truncate">· Needs a public domain</span> : null}
@@ -239,9 +259,9 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
             ) : null}
             {uptime && !open ? <span className="truncate font-mono">· {checkedUrl(uptime.check.url)}</span> : null}
           </span>
-        </StatusLine>
-        <div className="flex shrink-0 items-center gap-2">
-          {state === "no_domain" ? addDomain : null}
+        </StatusLine> : null}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {read && state === "no_domain" ? addDomain : null}
           {uptime ? (
             <Button variant="outline" size="sm" disabled={checking} onClick={() => checkNow.mutate()}>
               {checking ? <Spinner data-icon="inline-start" /> : null}
@@ -264,10 +284,10 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
           </CardContent>
         </Card>
       ) : null}
-      <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
-        from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} />
+      {read ? <HistoryStrip bars={bars} regions={uptime?.regions ?? {}} at={at} zoomed={zoom?.incident ?? null} onZoom={zoomTo}
+        from={at.format(bars[0]?.result ? bars[0].start : checked.from)} to={checked.to >= now ? "Now" : at.format(checked.to)} /> : null}
       <div className={cn("grid gap-3 sm:grid-cols-2", range !== chosen && "opacity-60")}>
-        <div className="sm:col-span-2">
+        {read ? <div className="sm:col-span-2">
           {uptime === null ? (
             <MetricChart id="response" title="Response time" format={formatMs} {...chart} value="–" series={[]} />
           ) : (
@@ -275,12 +295,12 @@ function Monitoring({ organizationSlug, service, range: chosen, addDomain, healt
               <Suspense fallback={<MetricChart id="response" title="Response time" format={formatMs} {...chart} value="" series={[]} />}>
                 <ResponseTime scope={scope} serviceId={service.id} range={charted} window={window}
                   pending={state === "pending" ? `First check within ${formatSpan(uptime.check.intervalSeconds * 1000)}` : null}
-                  edge={PREVIEW_METRICS ? column("edgeMs") : null} frame={frame} />
+                  edge={showMetrics ? column("edgeMs") : null} frame={frame} />
               </Suspense>
             </CatchBoundary>
           )}
-        </div>
-        {PREVIEW_METRICS ? (
+        </div> : null}
+        {showMetrics ? (
           <>
             <div className="sm:col-span-2">
               <MetricChart id="requests" title="Requests" value={requests === null ? "–" : `${Math.round(requests)}/min`} format={unit("/min")} {...chart}
