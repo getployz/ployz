@@ -2,8 +2,10 @@ export const SERVICE_NODE_WIDTH = 288;
 export const SERVICE_NODE_HEIGHT = 144;
 /** How much each Volume tray under a Service adds to its node. */
 export const VOLUME_TRAY_HEIGHT = 40;
-/** How much each mirror under a node adds: its dashed link and its card. */
-export const MIRROR_NODE_HEIGHT = 80;
+/** How much the row of copies under a node adds: its dashed link and its cards. */
+export const HANG_HEIGHT = 80;
+export const COPY_CARD_WIDTH = 176;
+export const COPY_CARD_GAP = 12;
 export const CANVAS_MIN_ZOOM = 0.4;
 export const CANVAS_MAX_ZOOM = 1.35;
 export const SERVICE_NODE_SIZE = {

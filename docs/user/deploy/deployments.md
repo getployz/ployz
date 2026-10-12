@@ -81,6 +81,9 @@ An environment runs one deployment at a time. While one runs, **Deploy** reads *
 and yours waits as **Queued**. If you deploy again while one is waiting, the newest one takes its
 place.
 
+On the canvas, **Deploying** shows only on the services the running deployment restarts. A service
+it leaves running keeps its staged changes on its card.
+
 ## Follow a deployment
 
 **Deployments** in the sidebar lists every deployment, newest first. A deployment's page shows

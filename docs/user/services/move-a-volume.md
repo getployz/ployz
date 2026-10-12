@@ -45,9 +45,10 @@ lets the step under way finish, and the rest waits for your next deploy. If the 
 change that failed is dropped and the changes it never reached wait for your next deploy again.
 
 On the canvas the mirror hangs under its volume's tray as its own small card, for example
-`data-web-2` with "Mirror · 4 minutes ago". A mirror more than an hour behind turns amber. A staged
-mirror shows **New** in green, a staged removal shows **Removing** in red, and a mirror about to
-become the primary shows **Primary**. Old copies stay in the volume's Copies.
+`data-web-2` with "Mirror · 4 minutes ago". A mirror more than an hour behind shows its age in
+amber with a warning sign. A staged mirror shows **New** in green, a staged removal shows
+**Removing** in red, and a mirror about to become the primary shows **Primary** in blue. Old copies
+stay in the volume's Copies. A staged move shows on the tray, for example "Moving to web-2".
 
 Click a mirror to open it. It shows its server, when it last refreshed, **Make primary** and
 **Remove mirror**. A staged mirror has neither, so discard it in Details.

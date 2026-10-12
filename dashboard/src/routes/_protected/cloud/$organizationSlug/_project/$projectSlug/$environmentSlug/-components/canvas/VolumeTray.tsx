@@ -9,10 +9,9 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../enviro
 import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { usePlacementStaged } from "#/modules/volume-placement/volume-placement.hooks";
-import { trayMoving } from "#/modules/volume-run/volume-copies";
-import { useActiveVolumeRuns } from "#/modules/volume-run/volume-run.queries";
+import { traySpeech } from "#/modules/volume-copies/volume-copies";
+import { Spinner } from "#/components/ui/spinner";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
 import { SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
@@ -23,14 +22,12 @@ export function LitVolumeProvider({ children }: { children: ReactNode }) {
   return <LitVolume value={useState<string | null>(null)}>{children}</LitVolume>;
 }
 
-export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }, selected }: { tray: MountedVolume; selected: boolean }) {
+export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, copies }, selected }: { tray: MountedVolume; selected: boolean }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const [litVolumeId, setLitVolumeId] = use(LitVolume);
   const lighting = useNodeLighting(volume.id);
   const pick = useNodePick(volume.name);
-  const lens = useRuntimeLens(params.organizationSlug);
-  const { data: active = [] } = useActiveVolumeRuns(params.organizationSlug);
-  const moving = trayMoving({ volume, copies: lens.volumeCopies, active: active.find((run) => run.volume_id === volume.id) ?? null });
+  const speech = copies === null ? null : traySpeech(copies);
   const placed = usePlacementStaged(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store, volume);
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged || placed ? "update" : null));
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
@@ -51,7 +48,9 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers }
     <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
       : surface === "destructive" ? <span>Removing</span>
-      : moving ? <span className="shrink-0 text-info">{moving}</span>
+      : speech ? <span className={cn("flex shrink-0 items-center gap-1", speech.tone === "staged" && "text-info")}>
+        {speech.tone === "busy" && <Spinner className="size-3" aria-hidden />}{speech.words}
+      </span>
       : shared ? <span className="shrink-0 text-warning">shared · {writers} writers</span>
       : alsoMounted ? <LinkIcon className="size-3.5 shrink-0" aria-label={alsoMounted} /> : null}
   </>;

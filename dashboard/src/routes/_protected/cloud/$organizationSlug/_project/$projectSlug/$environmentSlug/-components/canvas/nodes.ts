@@ -3,9 +3,10 @@ import { Position, type Edge } from "@xyflow/react";
 import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { serviceChanges } from "#/modules/config-store/store-services";
 import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
-import { MIRROR_NODE_HEIGHT, SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
+import { COPY_CARD_GAP, COPY_CARD_WIDTH, HANG_HEIGHT, SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
-import { type CanvasMirror, parseMirrorResourceId } from "#/modules/volume-placement/volume-placement";
+import { parseMirrorResourceId } from "#/modules/volume-placement/volume-placement";
+import { hangingCopies, type VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import type {
   CanvasResourceNode,
   CanvasResourceType,
@@ -49,7 +50,7 @@ function getPositionByCanvasResource(
  * `diff` stages that Service's mount of it; `unmounted`, the Volumes no Service here mounts, which stay nodes of their own.
  */
 export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name">[], volumes: readonly VolumeListing[], diff: DiffView,
-  replicasOf: (service: string) => number = () => 1) {
+  replicasOf: (service: string) => number = () => 1, copies: ReadonlyMap<string, VolumeCopies> = new Map()) {
   const names = new Set(services.map((service) => service.name));
   const mounted = volumes.map((volume) => ({ volume, by: [...new Set(volume.mounts.map((mount) => mount.service))].filter((name) => names.has(name)) }));
   return {
@@ -58,7 +59,7 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
       const changes = serviceChanges(diff, service.id);
       return [service.id, mounted.flatMap(({ volume, by }): MountedVolume[] => by.includes(service.name)
         ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(`mounts.${volume.name}`),
-          writers: volumeWriters(volume, replicasOf).total }] : [])];
+          writers: volumeWriters(volume, replicasOf).total, copies: copies.get(volume.id) ?? null }] : [])];
     })),
     unmounted: mounted.flatMap(({ volume, by }) => by.length === 0 ? [volume] : []),
   };
@@ -70,16 +71,16 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
  * or Config a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "live" | "mirrors">>,
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "live" | "copies">>,
   canvasPositions: CanvasPosition[],
   environmentId: string,
 ): CanvasResourceNode[] {
   const trayCount = new Map(store.services.map(({ service, trays, configTrays }) => [service.id, trays.length + configTrays.length]));
-  const mirrorsOf = mirrorsByNode(store);
-  // A node grows by its trays and mirrors; placing one keeps clear of each node's whole height.
+  const hangOf = hangByNode(store);
+  // A node grows by its trays and the row of copies under them; placing one keeps clear of each node's whole height.
   const sizeOf = (id: string) => ({
     ...SERVICE_NODE_SIZE,
-    height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT + (mirrorsOf.get(id)?.length ?? 0) * MIRROR_NODE_HEIGHT,
+    height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT + (hangOf.has(id) ? HANG_HEIGHT : 0),
   });
   const positionByResource = getPositionByCanvasResource(canvasPositions);
   const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
@@ -102,7 +103,7 @@ export function buildStoreNodes(
         id: service.service.id,
         type: "storeService",
         position: place("service", service.service.id),
-        data: { ...service, mirrors: mirrorsOf.get(service.service.id) ?? [], resourceType: "service", resourceId: service.service.id, environmentId },
+        data: { ...service, hang: hangOf.get(service.service.id) ?? [], resourceType: "service", resourceId: service.service.id, environmentId },
       } satisfies CanvasStoreServiceNode;
     }),
     ...store.unmountedVolumes.map((volume) => {
@@ -114,7 +115,7 @@ export function buildStoreNodes(
         id: volume.id,
         type: "storeVolume",
         position: place("volume", volume.id),
-        data: { volume, mirrors: mirrorsOf.get(volume.id) ?? [], resourceType: "volume", resourceId: volume.id, environmentId },
+        data: { volume, hang: hangOf.get(volume.id) ?? [], resourceType: "volume", resourceId: volume.id, environmentId },
       } satisfies CanvasStoreVolumeNode;
     }),
     ...store.unmountedConfigs.map((config) => ({
@@ -136,14 +137,22 @@ export function buildStoreNodes(
   ];
 }
 
-/** Each Volume's mirrors, keyed by the node that shows the Volume: its first Service's, else its own. */
-export function mirrorsByNode(store: Pick<StoreCanvas, "services"> & Partial<Pick<StoreCanvas, "mirrors">>) {
-  const byNode = new Map<string, CanvasMirror[]>();
-  for (const [volumeId, mirrors] of store.mirrors ?? []) {
+/** The copies of each Volume with any to hang, keyed by the node that shows the Volume: its first Service's, else its own. */
+export function hangByNode(store: Pick<StoreCanvas, "services"> & Partial<Pick<StoreCanvas, "copies">>) {
+  const byNode = new Map<string, VolumeCopies[]>();
+  for (const [volumeId, copies] of store.copies ?? []) {
+    if (hangingCopies(copies).length === 0) continue;
     const shownBy = store.services.find(({ trays }) => trays.some((tray) => tray.volume.id === volumeId))?.service.id ?? volumeId;
-    byNode.set(shownBy, [...byNode.get(shownBy) ?? [], ...mirrors]);
+    byNode.set(shownBy, [...byNode.get(shownBy) ?? [], copies]);
   }
   return byNode;
+}
+
+/** How far a node's row of copies reaches past each side of its card, centred under it. */
+export function hangOverhang(hang: readonly VolumeCopies[]) {
+  const cards = hang.reduce((sum, copies) => sum + hangingCopies(copies).length, 0);
+  const width = cards * COPY_CARD_WIDTH + Math.max(0, cards - 1) * COPY_CARD_GAP;
+  return Math.max(0, (width - SERVICE_NODE_WIDTH) / 2);
 }
 
 /** Links into Live Nodes are dashed. */

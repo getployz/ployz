@@ -1,4 +1,4 @@
-import type { DeploymentSummary, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
+import type { DeploymentSummary, DeploymentView, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -126,17 +126,24 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 /**
  * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
  * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; one naming no Services deploys every one.
+ * `restarting`: the Services the running Deploy stops or starts, null until its plan is read. A Service it targets but
+ * leaves running (only snapshots its Volume, or nothing changed) is not Deploying.
  */
 export function deployChip(
   service: Pick<ServiceListing, "name" | "change">,
   changeCount: number,
   inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "started_at" | "admitted_at">[],
+  restarting: ReadonlySet<string> | null = null,
 ): DeployChipState | null {
   const targeting = inFlight.filter((deployment) => deployment.services.length === 0 || deployment.services.includes(service.name));
   const running = targeting.find((deployment) => deployment.status !== "queued");
-  if (running) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
-  if (targeting.length > 0) return { kind: "queued" };
+  if (running && (restarting === null || restarting.has(service.name))) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
+  if (targeting.some((deployment) => deployment.status === "queued")) return { kind: "queued" };
   return service.change === null ? null : stagedChip(service.change, changeCount);
+}
+
+export function restartedServices(deployment: Pick<DeploymentView, "nodes">): ReadonlySet<string> {
+  return new Set(deployment.nodes.flatMap((node) => node.type === "service" && node.outcome !== "unchanged" ? [node.name] : []));
 }
 
 /**
