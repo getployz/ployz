@@ -2684,3 +2684,52 @@ fn each_destination_decides_its_own_removal() {
     assert!(saved_has(&store, &who, "production", "db"));
 }
 
+#[test]
+fn the_check_names_a_removal_apart_from_values_and_reads_neutral_while_it_is_in_use() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: at("pr-5"),
+                volume: ployz_store::VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let removes = check(&store, &who).unwrap();
+    assert_eq!(
+        removes,
+        OnMergeCheck {
+            conclusion: OnMergeConclusion::Success,
+            title: "2 config changes".into(),
+            summary: "- `web · DB_URL`: ${{ db.PLOYZ_PRIVATE_DOMAIN }} → db.internal\n\
+                      - Removes `db`\n\n\
+                      - `volumes.data`: Kept"
+                .into(),
+            merged_into: None,
+        }
+    );
+
+    // production's worker references db since pr-5 started: the removal waits.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("worker.env.DB", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+    save(&store, &who, "production");
+    let in_use = check(&store, &who).unwrap();
+    assert_eq!(
+        in_use,
+        OnMergeCheck {
+            conclusion: OnMergeConclusion::Neutral,
+            title: "1 config change".into(),
+            summary: "- `web · DB_URL`: ${{ db.PLOYZ_PRIVATE_DOMAIN }} → db.internal\n\n\
+                      - `db`: In use · worker.env.DB\n\n\
+                      - `volumes.data`: Kept"
+                .into(),
+            merged_into: None,
+        }
+    );
+}

@@ -81,7 +81,7 @@ pub(super) fn check(
     let riding: Vec<&MergeRow> = sections
         .iter()
         .flat_map(|(_, into)| &into.rows)
-        .filter(|row| row.ride.rides())
+        .filter(|row| lands_here(row))
         .collect();
     let mut not_set: Vec<String> = Vec::new();
     for row in &riding {
@@ -89,7 +89,11 @@ pub(super) fn check(
             not_set.push(key(row));
         }
     }
-    let neutral = !not_set.is_empty() || riding.iter().any(|row| row.conflict);
+    let neutral = !not_set.is_empty()
+        || riding.iter().any(|row| row.conflict)
+        || sections
+            .iter()
+            .any(|(_, into)| into.rows.iter().any(in_use));
     let mut summary = String::new();
     let title = if riding.is_empty() {
         "No config changes".to_owned()
@@ -181,9 +185,18 @@ fn section(summary: &mut String, preview: &EnvironmentName, into: &OnMergeInto) 
     let rides = |conflict: bool| {
         into.rows
             .iter()
-            .filter(move |row| row.ride.rides() && row.conflict == conflict)
+            .filter(move |row| lands_here(row) && row.conflict == conflict)
     };
     list(summary, rides(false), lands);
+    list(summary, into.rows.iter().filter(|row| in_use(row)), |row| {
+        let names: Vec<String> = row.refused_by.iter().map(ToString::to_string).collect();
+        format!("In use · {}", names.join(", "))
+    });
+    list(
+        summary,
+        into.rows.iter().filter(|row| row.ride == Ride::Kept),
+        |_| "Kept".to_owned(),
+    );
     if rides(true).next().is_some() {
         let _ = writeln!(summary, "### Changed in {}\n", into.name);
         list(summary, rides(true), lands);
@@ -193,6 +206,7 @@ fn section(summary: &mut String, preview: &EnvironmentName, into: &OnMergeInto) 
     if staying().next().is_some() {
         let _ = writeln!(summary, "### Stays in {preview}\n");
         list(summary, staying(), |row| match is_file(row) {
+            _ if is_removal(row) => "Excluded".to_owned(),
             true => file_move(&row.production, &row.preview),
             false => format!("{} → {}", from(&row.production), to(&row.preview)),
         });
@@ -206,12 +220,29 @@ fn list<'a>(
 ) {
     let mut any = false;
     for row in rows {
-        let _ = writeln!(summary, "- `{}`: {}", label(row), line(row));
+        let _ = match is_removal(row) && lands_here(row) {
+            true => writeln!(summary, "- Removes `{}`", label(row)),
+            false => writeln!(summary, "- `{}`: {}", label(row), line(row)),
+        };
         any = true;
     }
     if any {
         summary.push('\n');
     }
+}
+
+/// A riding row the merge lands; a removal still in use stays.
+fn lands_here(row: &MergeRow) -> bool {
+    row.ride.rides() && row.refused_by.is_empty()
+}
+
+fn in_use(row: &MergeRow) -> bool {
+    row.ride.rides() && !row.refused_by.is_empty()
+}
+
+/// A node row with nothing in the preview; a new node's row has its record there.
+fn is_removal(row: &MergeRow) -> bool {
+    row.at.name.is_none() && row.preview.is_null()
 }
 
 /// What a riding row lands, over the Destination's value.
