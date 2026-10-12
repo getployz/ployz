@@ -173,6 +173,13 @@ it("offers only Exclude on a removed row", async () => {
   expect((await screen.findAllByRole("menuitem")).map((entry) => entry.textContent)).toEqual(["Exclude"]);
 });
 
+it("reads a secret the preview removed as removed", async () => {
+  open({ list: onMerge([...rows, row("env.KEY", { production: { secret: true } })]) });
+  fireEvent.click(await screen.findByRole("button", { name: "On merge · 6" }));
+  const list = within(await screen.findByRole("dialog"));
+  expect(item(list, "KEY").textContent).toBe("webKEYSealed••••••→Removed");
+});
+
 it("reads a Config file row as its path, changed", async () => {
   open({
     list: onMerge([

@@ -150,7 +150,10 @@ function RowValue({ row, preview }: { row: MergeRow; preview: string }) {
       <Badge variant="secondary"><LockIcon />Sealed</Badge>
       {notSet(row.lands)
         ? <Badge variant="warning">Not set in production</Badge>
-        : edited ? <>
+        : row.lands === null ? <>
+          <span className="text-muted-foreground">••••••</span>
+          <span className="text-muted-foreground">→</span><Badge variant="secondary">Removed</Badge>
+        </> : edited ? <>
           <span className="text-muted-foreground">{row.production === null ? "New" : "••••••"}</span>
           <span className="text-muted-foreground">→</span>••••••<Badge variant="secondary">Edited</Badge>
         </> : null}
