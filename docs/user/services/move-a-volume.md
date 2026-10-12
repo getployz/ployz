@@ -21,8 +21,9 @@ Copies only shows, and names the servers to upgrade, for example "Upgrade db-1 t
 What moves data waits for your next deploy, which runs it before your services. That covers
 **Add copy**, **Make primary** and **Remove mirror**. Until then the change shows in its colour.
 Pink is a new primary, green a new copy, and red a copy going away. It counts in the bottom bar and
-Details, and you drop it in Details. **Remove mirror** asks you to type your
-`project/environment`, because its data goes with it.
+Details, and you drop it in Details. A deploy that removes a mirror asks you to type your
+`project/environment` first, because its data goes with it. See
+[Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 
 - **Add copy** offers only servers that run services. A volume has one mirror for now.
 - **Make primary**, on a mirror, moves the volume and its service to the mirror's server. The
@@ -32,8 +33,9 @@ Details, and you drop it in Details. **Remove mirror** asks you to type your
   last point.
 - A move or mirror onto a server that holds an old copy deletes that copy first. Details says so.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
-  changes are lost from, for example "Changes after 10:36 lost". **Make primary** on the mirror
-  moves the volume there at the next deploy.
+  changes are lost from, for example "Changes after 10:36 lost". **Use mirror**, or **Make
+  primary** on the mirror, moves the volume there at the next deploy, which asks you to confirm
+  **Data loss**.
 - **Drain** on a server page also moves each primary there off at the next deploy, to its mirror
   or else to the first other server that runs services. The page says "Next deploy moves 2
   volumes". Each environment's next deploy moves them.
@@ -50,19 +52,20 @@ change that failed is dropped and the changes it never reached wait for your nex
 On the canvas the mirror hangs under its volume's tray as its own small card, for example
 `data-web-2` with "Mirror · 4 minutes ago". A mirror more than an hour behind shows its age in
 amber with a warning sign. A staged mirror shows **New** in green, a staged removal shows
-**Removing** in red, and a mirror about to become the primary shows **Primary** in blue. Old copies
+**Removing** in red, and a mirror about to become the primary shows **Primary** in pink. Old copies
 stay in the volume's Copies. A staged move shows on the tray, for example "Moving to web-2".
 
-Click a mirror to open it. It shows its server, when it last refreshed, **Refresh now**, **Make
-primary** and **Remove mirror**. Refresh now runs a refresh at once: the mirror reads
-"Refreshing", then "Mirror refreshed" pops up and its age resets. If anything else is running on
-the volume, Refresh now says so instead of queueing. A mirror more than an hour behind says
-**Refresh skipped** and why. Either its server is not answering or its last refresh failed. It
-also says how much of its writes a failover would lose. A staged mirror has none of these actions, so discard it in Details.
+Click a mirror, on the canvas or under **Elsewhere**, to open it. It shows its server, when it last
+refreshed, **Refresh now**, **Make primary** and **Remove mirror**. Refresh now runs a refresh at
+once. The mirror reads "Refreshing", then "Mirror refreshed" pops up and its age resets. If
+anything else is running on the volume, Refresh now says so instead of queueing. A mirror more than
+an hour behind says **Refresh skipped** and why. Either its server is not answering or its last
+refresh failed. It also says how much of its writes a failover would lose. A staged mirror has none
+of these actions, so discard it in Details.
 
 A mirror or an old copy also gives the volume restore points. See [Restore a volume](restore-a-volume.md).
 
-The commands below do the same from the CLI, one run at a time. Deleting a mirror is CLI-only.
+The commands below do the same from the CLI, one run at a time, without waiting for a deploy.
 
 ## Mirror a volume
 

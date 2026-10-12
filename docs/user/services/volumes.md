@@ -61,13 +61,14 @@ doesn't. Everything that mounts the volume still runs on its server.
 ## When its server goes down
 
 The services that mount the volume stop until the server is back. Nothing moves to another
-server on its own, and a volume can't be [moved](move-a-volume.md) while its server is down. To
-keep deploying your other services meanwhile, see
-[When a server goes down](scaling.md#when-a-server-goes-down).
+server on its own, and the CLI can't [move](move-a-volume.md) a volume while its server is down.
+With a mirror, **Use mirror** under the volume's **Copies** moves it there at your next deploy,
+losing the writes since the mirror's last refresh. To keep deploying your other services meanwhile,
+see [When a server goes down](scaling.md#when-a-server-goes-down).
 
 > [!WARNING]
 > Ployz doesn't back up volumes. A [mirror](move-a-volume.md#mirror-a-volume) holds the data as
-> of its last refresh, nothing newer, and Ployz doesn't switch to it when the server goes down.
+> of its last refresh, nothing newer, and Ployz doesn't switch to it on its own.
 > Keep your own copies off your servers. See
 > [Back up a database](databases.md#back-up-a-database).
 
