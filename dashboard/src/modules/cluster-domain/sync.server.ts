@@ -5,6 +5,7 @@ import type { PublishCertificateMaterialRequest } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
+import { probeIngress } from "#/modules/cluster-domain/ingress-probe.server";
 import {
   HostedDnsError,
   type HostedDomainTarget,
@@ -23,9 +24,6 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
-const PROBE_TIMEOUT_MS = 5_000;
-/** Caddy answers it on port 80 of every ingress Server with the Machine id (core `INGRESS_VERIFY_PATH`). */
-const INGRESS_VERIFY_PATH = "/.ployz-verify";
 /** The wildcard is replaced once it has less than this left. */
 const CERTIFICATE_RENEW_BEFORE_MS = 30 * 86_400_000;
 /** A failed replacement with fewer days than this left is an operator error, not a warning. */
@@ -78,15 +76,8 @@ export const withClusterDomain = <A, R>(
   ));
 });
 
-/** True when `GET http://<ip>/.ployz-verify` answers with the Machine id within five seconds. */
-const probeIngressServer = (server: IngressServerAddress) => Effect.tryPromise(async (signal) => {
-  const host = isIPv6(server.address) ? `[${server.address}]` : server.address;
-  const response = await fetch(`http://${host}${INGRESS_VERIFY_PATH}`, {
-    redirect: "manual",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)]),
-  });
-  return response.status === 200 && (await response.text()).trim() === server.machineId;
-}).pipe(Effect.orElseSucceed(() => false));
+const probeIngressServer = (server: IngressServerAddress) =>
+  probeIngress(`http://${isIPv6(server.address) ? `[${server.address}]` : server.address}`, server.machineId);
 
 /** Probes every ingress Server with a public IP in the Cluster's runtime frame. */
 export const probeIngressServers = Effect.fn("ClusterDomain.probeIngressServers")(function* (organizationId: string) {
