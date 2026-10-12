@@ -300,7 +300,9 @@ pub enum CopyPlan {
 /// its first snapshot converges. A root already at a Writer want's snapshot and epoch
 /// resumes its start whatever `expect` says, so a promote resent after its ZFS half
 /// converges too. A slot whose pull for the want's target landed finishes that pull
-/// whatever `expect` says, since the landing itself moved `newest` past the expect.
+/// whatever `expect` says, since the landing itself moved `newest` past the expect. A
+/// slot pulling the want's target continues that pull when `expect` names the same
+/// slot, even after its `newest` moved or emptied.
 #[must_use]
 pub fn plan(
     copy: Option<&VolumeCopy>,
