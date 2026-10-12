@@ -2733,3 +2733,306 @@ fn the_check_names_a_removal_apart_from_values_and_reads_neutral_while_it_is_in_
         }
     );
 }
+
+fn runner() -> ployz_store::RunnerId {
+    ployz_store::RunnerId::parse("runner").unwrap()
+}
+
+/// Run Deployment `id` to its end, touching `services`.
+fn run(store: &ConfigStore, id: &ployz_store::DeploymentId, services: &[&str]) {
+    let claimed = store.claim(id, &runner()).unwrap();
+    let operation = |index: usize| {
+        json!({"type": "remove_container", "machine_id": "a".repeat(32),
+               "container_id": format!("{index:x}").repeat(64)})
+    };
+    let preview: ployz_core::DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace,
+        "operations": services.iter().enumerate().map(|(index, name)| json!({
+            "index": index, "machine_id": "a".repeat(32), "service_name": name,
+            "operation": operation(index), "status": {"type": "pending"}
+        })).collect::<Vec<_>>(),
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(id, &runner(), ployz_store::RunEvidence::Prepared(preview))
+        .unwrap();
+    let outcome: ployz_core::DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(json!({
+            "type": "success",
+            "completed": (0..services.len()).map(operation).collect::<Vec<_>>()
+        }))
+        .unwrap();
+    store
+        .record(
+            id,
+            &runner(),
+            ployz_store::RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+/// Deploy `services` of production by hand.
+fn deploy_by_hand(
+    store: &ConfigStore,
+    who: &Actor,
+    services: &[&str],
+) -> ployz_store::DeploymentId {
+    let id = ployz_store::DeploymentId::parse(::uuid::Uuid::new_v4().to_string()).unwrap();
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: id.clone(),
+                environment: at("production"),
+                services: services
+                    .iter()
+                    .map(|service| ServiceName::parse(*service).unwrap())
+                    .collect(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    id
+}
+
+/// production's `db` and `worker` run.
+fn running(store: &ConfigStore, who: &Actor) {
+    let id = deploy_by_hand(store, who, &["db", "worker"]);
+    run(store, &id, &["db", "worker"]);
+}
+
+/// What the one Deployment `automated` admitted tells its runner: the Services it
+/// selects, the ones it tears down, and the Volumes it targets.
+fn teardown(store: &ConfigStore, who: &Actor, automated: &Automated) -> [Vec<String>; 3] {
+    let [admitted] = automated.admitted.as_slice() else {
+        panic!("one Deployment: {automated:?}")
+    };
+    told(store, who, &admitted.deployment.id)
+}
+
+fn told(store: &ConfigStore, who: &Actor, id: &ployz_store::DeploymentId) -> [Vec<String>; 3] {
+    let claimed = store.claim(id, &runner()).unwrap();
+    let volumes = store
+        .read(who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|node| matches!(node.node, ployz_store::DeployedNode::Volume { .. }))
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    [
+        claimed
+            .intent
+            .options
+            .selected
+            .iter()
+            .map(|attempt| attempt.name.to_string())
+            .collect(),
+        claimed
+            .intent
+            .options
+            .removals
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        volumes,
+    ]
+}
+
+/// [`shop_with_nodes`] where nothing references `db`.
+fn shop_with_lone_db() -> (ConfigStore, Actor) {
+    shop_copying(
+        |store, who| {
+            production_nodes(store, who);
+            unset(store, who, "production", "web.env.DB_URL");
+            save(store, who, "production");
+        },
+        Some(vec![
+            node("db"),
+            node("volumes.data"),
+            node("configs.sentry"),
+        ]),
+    )
+}
+
+/// Undo what pull request #5's merge landed in production, and save it.
+fn undo_merge(store: &ConfigStore, who: &Actor) {
+    let landed = history(store, who)
+        .into_iter()
+        .find(|revision| revision.message.as_deref() == Some("Merged #5"))
+        .unwrap();
+    let query = HistoryPreviewQuery {
+        environment: at("production"),
+        revision: landed.revision,
+        action: HistoryAction::Undo,
+    };
+    let preview = store.read(who, &query).unwrap();
+    store
+        .write(
+            who,
+            &StageHistory {
+                environment: at("production"),
+                revision: query.revision,
+                action: query.action,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    save(store, who, "production");
+}
+
+const NOTHING: Vec<String> = Vec::new();
+
+#[test]
+fn a_merge_that_removes_a_running_service_tears_it_down_with_its_push() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(landed.admitted.is_empty(), "{landed:?}");
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    // web for the DB_URL that landed, and db's teardown; never Volume data.
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [
+            vec!["web".to_owned(), "db".to_owned()],
+            vec!["db".to_owned()],
+            NOTHING
+        ]
+    );
+    // Once.
+    let next = system(
+        &store,
+        &who,
+        &push(Some(MERGE), LATER, Some(&["README.md"])),
+    );
+    assert!(next.admitted.is_empty(), "{next:?}");
+}
+
+#[test]
+fn a_merge_that_only_removes_a_service_tears_it_down_alone_after_its_push() {
+    let (store, who) = shop_with_lone_db();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_service(&store, &who, "pr-5", "db");
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    // A teardown of db alone, never a full Deploy pruning whatever else runs.
+    assert_eq!(
+        teardown(&store, &who, &landed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+}
+
+#[test]
+fn a_removal_waits_for_ci_with_what_the_merge_changed() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    set(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.watchPaths", json!(["web/**"])),
+            ("web.waitForCi", json!(true)),
+        ],
+    );
+    system(&store, &who, &push(None, HEAD, None));
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        (pushed.waiting.len(), pushed.admitted.len()),
+        (1, 0),
+        "{pushed:?}"
+    );
+
+    let checked = passed(&store, &who, MERGE);
+    assert_eq!(
+        teardown(&store, &who, &checked),
+        [
+            vec!["web".to_owned(), "db".to_owned()],
+            vec!["db".to_owned()],
+            NOTHING
+        ]
+    );
+}
+
+#[test]
+fn a_removed_service_that_never_ran_deploys_nothing() {
+    let (store, who) = shop_with_lone_db();
+    watching(&store, &who);
+    remove_service(&store, &who, "pr-5", "db");
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(landed.admitted.is_empty(), "{landed:?}");
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+    assert!(pushed.skipped.is_empty(), "{pushed:?}");
+}
+
+#[test]
+fn undo_then_deploy_brings_a_torn_down_service_back() {
+    let (store, who) = shop_with_lone_db();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_service(&store, &who, "pr-5", "db");
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    run(&store, &landed.admitted[0].deployment.id, &["db"]);
+
+    undo_merge(&store, &who);
+    let id = deploy_by_hand(&store, &who, &["db"]);
+    assert_eq!(
+        told(&store, &who, &id),
+        [vec!["db".to_owned()], NOTHING, vec!["data".to_owned()]]
+    );
+}
+
+#[test]
+fn undo_before_the_push_keeps_the_service_running() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+
+    undo_merge(&store, &who);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    // web still deploys for the merge; db is saved again, so nothing tears it down.
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["web".to_owned()], NOTHING, NOTHING]
+    );
+}
+
+#[test]
+fn a_manual_deploy_of_other_services_leaves_the_teardown_to_the_push() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let web = deploy_by_hand(&store, &who, &["web"]);
+    run(&store, &web, &["web"]);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+}

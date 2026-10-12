@@ -42,13 +42,6 @@ pub(crate) struct Retire {
 /// dropped them: each by the runtime Services Applied State and every started
 /// Deployment ran it as. One still in `saved`, or that never ran, has nothing to
 /// tear down, and a runtime Service another kept Service runs is never one.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Merge teardown admits through it in the next layer."
-    )
-)]
 pub(crate) fn retirements(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,

@@ -20,6 +20,7 @@ use crate::branch::{
     Carried, Move, NamedRow, RowRef, config, end_included, json_of, named, resolve_one, row_id,
     share, shown,
 };
+use crate::id::ServiceLineageId;
 use crate::storage;
 use crate::variables::{self, VariableKey};
 
@@ -566,23 +567,31 @@ pub(crate) struct Merging<'a> {
 pub(crate) struct Merged {
     /// Whether every Destination took it; false when there is none.
     pub(crate) all: bool,
-    /// The IDs of the Services the merge removed, by Destination.
-    // TODO: the merge's Deploy tears these down once targeted Deploys can retire a
-    // Service; until then they stay running until a full Deploy.
-    #[expect(dead_code, reason = "the merge's Deploy doesn't retire Services yet")]
-    pub(crate) removals: BTreeMap<EnvironmentId, Vec<String>>,
 }
 
-/// What a merge changed in one Destination's Services.
-struct MergedServices {
+/// What a merge changed in one Destination's Services, which its Deploy takes.
+#[derive(Default)]
+pub(crate) struct MergedServices {
     /// The IDs of the Services it changed that Saved State still has.
-    updates: Vec<String>,
-    /// The IDs of the Services it removed, as Saved State had them before.
-    removals: Vec<String>,
+    pub(crate) updates: BTreeSet<String>,
+    /// The Services it removed, as Saved State had them before: the Deploy tears
+    /// down what they ran.
+    pub(crate) removals: BTreeSet<ServiceLineageId>,
+}
+
+impl MergedServices {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.updates.is_empty() && self.removals.is_empty()
+    }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.updates.extend(other.updates);
+        self.removals.extend(other.removals);
+    }
 }
 
 /// Land what PR Environment `from`'s pull request lands in each Destination, one
-/// Saved revision each, and deploy the Services it changed there. A Destination
+/// Saved revision each, and deploy the Services it changed or removed there. A Destination
 /// that can't take it is skipped and keeps what it had. A merge into a branch
 /// nothing deploys lands nowhere, so the PR Environment keeps what it holds. What
 /// didn't land, or landed but didn't deploy, goes in `unlanded`. The caller holds
@@ -597,24 +606,16 @@ pub(crate) fn land(
     let from = scope::load_by_id(tx, from)?;
     let (pull_request, landings) = landings(tx, who, &from)?;
     let mut all = !landings.is_empty();
-    let mut removals = BTreeMap::new();
     for landing in landings {
         let into = landing.into.summary.clone();
         let landed = storage::attempt(tx, |tx| {
             land_one(tx, who, &from, landing, (&pull_request, merge.target))
         });
         match landed {
-            Ok(MergedServices {
-                updates,
-                removals: removed,
-            }) => {
-                if !removed.is_empty() {
-                    removals.insert(into.id.clone(), removed);
-                }
-                if updates.is_empty() {
+            Ok(services) => {
+                if services.is_empty() {
                     continue;
                 }
-                let services = updates;
                 let skipped = automated.skipped.len();
                 automation::deploy_landed(
                     tx,
@@ -658,7 +659,7 @@ pub(crate) fn land(
             Err(error) => return Err(error),
         }
     }
-    Ok(Merged { all, removals })
+    Ok(Merged { all })
 }
 
 /// Land `landing` in its Destination: Saved State takes every riding row, and
@@ -679,10 +680,7 @@ fn land_one(
         rows,
     } = landing;
     if picks.is_empty() {
-        return Ok(MergedServices {
-            updates: Vec::new(),
-            removals: Vec::new(),
-        });
+        return Ok(MergedServices::default());
     }
     let into = destination.summary.id.clone();
     let values = edited_values(edits(tx, &from.summary.id, &into)?, &rows);
@@ -718,8 +716,9 @@ fn land_one(
         .services
         .iter()
         .filter(|service| removed.contains(service.lineage_id.as_str()))
-        .map(|service| service.id.clone())
-        .collect();
+        .map(|service| ServiceLineageId::parse(service.id.as_str()))
+        .collect::<Result<_, _>>()
+        .map_err(|_| error::corrupt("Service ID"))?;
     let (saved, _) = scope::checked(
         tx,
         &destination.summary,
@@ -847,7 +846,7 @@ fn land_one(
 /// The IDs of the Services of `saved` that `picks` changed: their own rows, a Volume
 /// or Config they mount, or a variable they read, through other variables or a
 /// mounted Config's files too.
-fn affected(saved: &SavedEnvironmentIntent, picks: &BTreeSet<RowId>) -> Vec<String> {
+fn affected(saved: &SavedEnvironmentIntent, picks: &BTreeSet<RowId>) -> BTreeSet<String> {
     let lineages: BTreeSet<&str> = picks.iter().map(RowId::lineage).collect();
     // A Service's Private DNS also produces its built-in address variables.
     let mut changed: BTreeSet<(String, String)> = picks

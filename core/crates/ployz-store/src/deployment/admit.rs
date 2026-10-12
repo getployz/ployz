@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+use crate::automation::Shipped;
 use crate::deployment::{self, DeploymentSummary, UploadedSource};
 use crate::domain;
 use crate::id::{DeploymentId, Hostname, VolumeName};
@@ -270,18 +271,22 @@ fn deploy(
         &frozen,
     )?;
     // What merges landed and this Deploy ships no longer waits for a push.
-    let shipped = saved_intent
-        .services
-        .iter()
-        .filter(|service| {
-            admit.services.is_empty()
-                || admit
-                    .services
-                    .iter()
-                    .any(|name| name.as_str() == service.slug)
-        })
-        .map(|service| service.id.as_str())
-        .collect();
+    let shipped = match admit.services.is_empty() {
+        true => Shipped::All(&saved_intent),
+        false => Shipped::Services(
+            saved_intent
+                .services
+                .iter()
+                .filter(|service| {
+                    admit
+                        .services
+                        .iter()
+                        .any(|name| name.as_str() == service.slug)
+                })
+                .map(|service| service.id.as_str())
+                .collect(),
+        ),
+    };
     crate::automation::shipped_landed(tx, id, &shipped)?;
     Ok(summary)
 }

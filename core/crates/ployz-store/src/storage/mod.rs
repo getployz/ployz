@@ -65,6 +65,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0013_removal_mark",
         Step::Sql(include_str!("migrations/0013_removal_mark.sql")),
     ),
+    (
+        "0014_merge_removed_services",
+        Step::Sql(include_str!("migrations/0014_merge_removed_services.sql")),
+    ),
 ];
 
 /// One migration.

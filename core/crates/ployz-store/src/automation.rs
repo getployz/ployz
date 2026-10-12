@@ -14,7 +14,7 @@
 use crate::id::{BranchName, CommitSha, RepositoryId};
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::config::{SavedServiceIntent, ServiceSource};
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, ServiceSource};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,10 +24,10 @@ use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
-use crate::pull_request::on_merge::Merging;
+use crate::pull_request::on_merge::{MergedServices, Merging};
 use crate::review;
 use crate::scope::{self, EnvironmentSummary};
-use crate::storage::{Tx, name_of};
+use crate::storage::{Row, Tx, name_of};
 use crate::{Actor, Trusted, build, registry};
 
 /// An observation Cloud made, of GitHub or of the Cluster. Never caller testimony: only Cloud's worker
@@ -473,22 +473,21 @@ fn deploy(
     Ok(())
 }
 
-/// Deploy the Services `services` a merge at `commit` into `branch` landed in
-/// `environment`: now when the branch's head is or came after `commit`, else with
-/// the push that carries `commit`. Kept until a Deployment takes them.
+/// Deploy what a merge at `commit` into `branch` changed and removed in
+/// `environment`, `services`: now when the branch's head is or came after `commit`,
+/// else with the push that carries `commit`. Kept until a Deployment takes them.
 pub(crate) fn deploy_landed(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
     repository_id: RepositoryId,
     merge: &Merging<'_>,
-    services: Vec<String>,
+    mut pending: MergedServices,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let (branch, commit) = (merge.target, merge.commit);
-    let mut pending: BTreeSet<String> = services.into_iter().collect();
     let earlier = tx.query(
-        "SELECT services FROM config_merge_deploy \
+        "SELECT services, removed_services FROM config_merge_deploy \
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
         &[
             environment.as_str().into(),
@@ -498,25 +497,25 @@ pub(crate) fn deploy_landed(
         ],
     )?;
     if let Some(row) = earlier.first() {
-        pending.extend(row.json::<Vec<String>>(0, "merge deploy")?);
+        pending.extend(merged_services(row)?);
     }
     tx.execute(
         "INSERT INTO config_merge_deploy \
-         (environment_id, repository_id, branch, commit_sha, seq, organization_id, services) \
-         SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(seq), 0) + 1, ?5, ?6 FROM config_merge_deploy \
+         (environment_id, repository_id, branch, commit_sha, seq, organization_id, services, \
+          removed_services) \
+         SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(seq), 0) + 1, ?5, ?6, ?7 FROM config_merge_deploy \
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 \
          ON CONFLICT (environment_id, repository_id, branch, commit_sha) \
-         DO UPDATE SET services = excluded.services",
+         DO UPDATE SET services = excluded.services, \
+         removed_services = excluded.removed_services",
         &[
             environment.as_str().into(),
             repository_id.into(),
             branch.as_str().into(),
             commit.as_str().into(),
             who.organization.as_str().into(),
-            serde_json::to_string(&pending)
-                .expect("Service IDs are JSON")
-                .as_str()
-                .into(),
+            json_of(&pending.updates).as_str().into(),
+            json_of(&pending.removals).as_str().into(),
         ],
     )?;
     let Some(head) = head(tx, &who.organization, repository_id, branch)? else {
@@ -559,16 +558,29 @@ pub(crate) fn deploy_landed(
     )
 }
 
+/// The Service IDs a merge Deploy row holds: `services`, then `removed_services`.
+fn merged_services(row: &Row) -> Result<MergedServices, RpcError> {
+    Ok(MergedServices {
+        updates: row.json(0, "merge deploy")?,
+        removals: row.json(1, "merge deploy")?,
+    })
+}
+
+fn json_of(ids: &BTreeSet<impl Serialize>) -> String {
+    serde_json::to_string(ids).expect("Service IDs are JSON")
+}
+
 /// What merges into the branch of `push` landed in `environment` that no Deployment
-/// took yet and `push` carries: their merge commits, and their Services. A head that
-/// is one of those commits carries it and the merges before it; any other head all.
+/// took yet and `push` carries: their merge commits, and the Services they changed
+/// and removed. A head that is one of those commits carries it and the merges before
+/// it; any other head all.
 fn landed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     push: &Push<'_>,
-) -> Result<(Vec<String>, BTreeSet<String>), RpcError> {
+) -> Result<(Vec<String>, MergedServices), RpcError> {
     let rows = tx.query(
-        "SELECT commit_sha, services FROM config_merge_deploy \
+        "SELECT services, removed_services, commit_sha FROM config_merge_deploy \
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 ORDER BY seq",
         &[
             environment.as_str().into(),
@@ -578,7 +590,7 @@ fn landed(
     )?;
     let mut commits = rows
         .iter()
-        .map(|row| row.text(0).map(str::to_owned))
+        .map(|row| row.text(2).map(str::to_owned))
         .collect::<Result<Vec<_>, _>>()?;
     if let Some(at) = commits
         .iter()
@@ -586,9 +598,9 @@ fn landed(
     {
         commits.truncate(at + 1);
     }
-    let mut services = BTreeSet::new();
+    let mut services = MergedServices::default();
     for row in rows.iter().take(commits.len()) {
-        services.extend(row.json::<Vec<String>>(1, "merge deploy")?);
+        services.extend(merged_services(row)?);
     }
     Ok((commits, services))
 }
@@ -648,7 +660,7 @@ fn admit(
     let mut wait = false;
     for service in &saved.intent.services {
         let tracks = crate::git::tracks(service, push.repository_id, push.branch);
-        let merged = landed.contains(&service.id);
+        let merged = landed.updates.contains(&service.id);
         if !tracks && !merged {
             continue;
         }
@@ -670,16 +682,23 @@ fn admit(
         push.branch.as_str().into(),
     ];
     let [environment_param, repository_param, branch_param] = key;
-    if selected.is_empty() || trusted.runnable().is_err() {
+    // What the merges removed goes with them, unless it never ran. A shut-down
+    // Environment deploys all of it, which tears every one down.
+    let retire = match shut_down {
+        true => Vec::new(),
+        false => deployment::retirements(tx, id, &saved.intent, &landed.removals)?,
+    };
+    let idle = selected.is_empty() && retire.is_empty();
+    if idle || trusted.runnable().is_err() {
         tx.execute(
             "DELETE FROM config_waiting_deploy \
              WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
             &key,
         )?;
-        if selected.is_empty() {
+        if idle {
             forget_landed(tx, id, push, &merges)?;
         }
-        return Ok((!selected.is_empty()).then_some(Deploy::NoServers));
+        return Ok((!idle).then_some(Deploy::NoServers));
     }
     if wait && !passed(tx, who, push)? {
         let services: Vec<&str> = selected
@@ -747,7 +766,7 @@ fn admit(
             tx,
             who,
             (&environment, &saved),
-            (&names, &[]),
+            (&names, &retire),
             (cluster_domain.as_ref(), &pins),
             trusted,
         )
@@ -756,52 +775,73 @@ fn admit(
     Ok(Some(Deploy::Admitted(Box::new(summary))))
 }
 
-/// Forget the landed Services of `environment` a Deployment just took: `shipped`
-/// holds their Service IDs.
+/// What a Deployment of `environment` shipped, which landed merges stop waiting on.
+pub(crate) enum Shipped<'a> {
+    /// A full Deploy of a Saved revision: each Service it holds, and the teardown of
+    /// each one it doesn't.
+    All(&'a SavedEnvironmentIntent),
+    /// A narrowed Deploy: these Services, by ID.
+    Services(BTreeSet<&'a str>),
+}
+
+/// Forget what landed merges changed and removed in `environment` that a Deployment
+/// just took, `shipped`.
 pub(crate) fn shipped_landed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    shipped: &BTreeSet<&str>,
+    shipped: &Shipped<'_>,
 ) -> Result<(), RpcError> {
     let rows = tx.query(
-        "SELECT repository_id, branch, commit_sha, services FROM config_merge_deploy \
-         WHERE environment_id = ?1",
+        "SELECT services, removed_services, repository_id, branch, commit_sha \
+         FROM config_merge_deploy WHERE environment_id = ?1",
         &[environment.as_str().into()],
     )?;
     for row in &rows {
-        let repository_id: RepositoryId = row.number(0, "merge deploy")?;
-        let branch = row.text(1)?;
-        let commit = row.text(2)?;
-        let mut pending: Vec<String> = row.json(3, "merge deploy")?;
-        let before = pending.len();
-        pending.retain(|service| !shipped.contains(service.as_str()));
-        if pending.len() == before {
+        let mut pending = merged_services(row)?;
+        let repository_id: RepositoryId = row.number(2, "merge deploy")?;
+        let branch = row.text(3)?;
+        let commit = row.text(4)?;
+        let before = (pending.updates.len(), pending.removals.len());
+        match shipped {
+            Shipped::All(saved) => {
+                let kept = |id: &str| saved.services.iter().any(|service| service.id == id);
+                pending.updates.retain(|service| !kept(service));
+                pending.removals.retain(|service| kept(service.as_str()));
+            }
+            Shipped::Services(services) => {
+                pending
+                    .updates
+                    .retain(|service| !services.contains(service.as_str()));
+            }
+        }
+        if (pending.updates.len(), pending.removals.len()) == before {
             continue;
         }
+        let key = [
+            environment.as_str().into(),
+            repository_id.into(),
+            branch.into(),
+            commit.into(),
+        ];
         if pending.is_empty() {
             tx.execute(
                 "DELETE FROM config_merge_deploy WHERE environment_id = ?1 \
                  AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
-                &[
-                    environment.as_str().into(),
-                    repository_id.into(),
-                    branch.into(),
-                    commit.into(),
-                ],
+                &key,
             )?;
         } else {
+            let [environment, repository_id, branch, commit] = key;
             tx.execute(
-                "UPDATE config_merge_deploy SET services = ?5 WHERE environment_id = ?1 \
-                 AND repository_id = ?2 AND branch = ?3 AND commit_sha = ?4",
+                "UPDATE config_merge_deploy SET services = ?5, removed_services = ?6 \
+                 WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 \
+                 AND commit_sha = ?4",
                 &[
-                    environment.as_str().into(),
-                    repository_id.into(),
-                    branch.into(),
-                    commit.into(),
-                    serde_json::to_string(&pending)
-                        .expect("Service IDs are JSON")
-                        .as_str()
-                        .into(),
+                    environment,
+                    repository_id,
+                    branch,
+                    commit,
+                    json_of(&pending.updates).as_str().into(),
+                    json_of(&pending.removals).as_str().into(),
                 ],
             )?;
         }
