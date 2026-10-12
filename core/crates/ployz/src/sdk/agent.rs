@@ -358,7 +358,7 @@ fn summarize(
                         .deployment_id
                         .clone()
                         .and_then(|id| DeploymentId::parse(id).ok()),
-                    kind: marker.kind.clone(),
+                    kind: marker.kind,
                 })
             })
             .take(METRIC_EVENTS)

@@ -10,14 +10,15 @@ use std::collections::BTreeMap;
 use ployz_core::{DeployOutcome, DeployPreview, ServiceName};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
-    Act, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, Place, Refusal, STEP_BUDGET, Step,
-    StoreAt, ToolResult, WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
+    Act, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
+    MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, ToolResult, WAIT_CAP_SECONDS,
+    Write, Writes, catalog, example, lint, resume, start,
 };
 use ployz_store::{
     Actor, Admit, ConfigStore, CreateEnvironment, CreateProject, CreateService, CreateVolume,
     Deploy, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery,
-    OrganizationId, ProjectId, ProjectName, RowTracker, RunEvidence, RunnerId, SealingKey,
-    ServiceLineageId, VolumeId, VolumeName,
+    NamespacesQuery, OrganizationId, ProjectId, ProjectName, RowTracker, RunEvidence, RunnerId,
+    SealingKey, ServiceLineageId, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -231,8 +232,10 @@ fn the_catalog_has_the_agreed_tools() {
             "github_ls",
             "github_connect",
             "server_show",
+            "server_metrics",
             "service_status",
             "service_logs",
+            "service_metrics",
             "volume_show",
             "service_restart",
             "service_start",
@@ -543,10 +546,12 @@ fn two_organizations_create_with_the_same_key() {
 }
 
 /// The tools that need Ployz Cloud's view of the Servers.
-const CLOUD_TOOLS: [&str; 15] = [
+const CLOUD_TOOLS: [&str; 17] = [
     "server_show",
+    "server_metrics",
     "service_status",
     "service_logs",
+    "service_metrics",
     "volume_show",
     "service_restart",
     "service_start",
@@ -942,6 +947,166 @@ fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
             "input": { "service": "web", "deployment": failed["deployment"] },
         })
     );
+}
+
+/// Cloud's metrics answer with `events`, one CPU row and nothing unanswered.
+fn metrics_answer(events: Value) -> Value {
+    json!({
+        "since": 100, "until": 200,
+        "metrics": [{ "metric": "CPU", "now": "0.25 vCPU", "avg": "0.20 vCPU", "peak": "0.90 vCPU" }],
+        "oom_kills": 1, "exits": 1, "restarts": 0,
+        "events": events, "notes": [], "seen": servers(&[])["seen"],
+    })
+}
+
+#[test]
+fn a_deployments_metrics_show_its_oom_kill_and_exit_code_by_deployment_number() {
+    let (store, id) = deploying();
+    let mut asked = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Metrics(query)) => {
+            let MetricsSubject::Service { namespace, .. } = &query.subject else {
+                panic!("asked about a Server: {query:?}");
+            };
+            let event = |at: u32, kind: Value| {
+                let mut event = json!({
+                    "at": at, "server": "web-1", "namespace": namespace, "service": "web",
+                    "deployment": id,
+                });
+                event
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(kind.as_object().unwrap().clone());
+                event
+            };
+            let answer = metrics_answer(json!([
+                event(150, json!({ "kind": "exit", "exit_code": 137 })),
+                event(140, json!({ "kind": "oom" })),
+            ]));
+            asked.push(query);
+            Ok(answer)
+        }
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
+    };
+
+    let shown = drive(
+        &store,
+        in_org(),
+        "service_metrics",
+        json!({ "service": "web", "deployment": 1 }),
+        "metrics-1",
+        &mut cloud,
+    )
+    .ok();
+
+    let [query] = asked.as_slice() else {
+        panic!("asked {asked:?}");
+    };
+    assert_eq!(query.deployment.as_ref(), Some(&id), "only its events");
+    assert!(
+        matches!(query.since, MetricsSince::At { .. }),
+        "the range starts at the Deployment: {query:?}"
+    );
+    assert!(
+        matches!(&query.subject, MetricsSubject::Service { service, .. } if service.as_str() == "web"),
+        "{query:?}"
+    );
+    assert_eq!(shown["oom_kills"], 1);
+    assert_eq!(shown["exits"], 1);
+    assert_eq!(shown["metrics"][0]["peak"], "0.90 vCPU");
+    assert_eq!(
+        shown["events"],
+        json!([
+            { "at": 150, "server": "web-1", "kind": "exit", "exit_code": 137, "deployment": 1 },
+            { "at": 140, "server": "web-1", "kind": "oom", "deployment": 1 },
+        ])
+    );
+}
+
+#[test]
+fn a_servers_metrics_name_each_events_environment_or_its_leftover() {
+    let (store, _) = deploying();
+    let owned = store.read(&who(), &NamespacesQuery {}).unwrap();
+    let production = owned.namespaces[0].namespace.clone();
+    let mut asked = Vec::new();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a'), ("web-2", 'b')])),
+        Cloud::Ask(CloudQuery::Metrics(query)) => {
+            asked.push(query);
+            Ok(metrics_answer(json!([
+                {
+                    "at": 150, "server": "web-2", "namespace": production, "service": "web",
+                    "deployment": null, "kind": "oom",
+                },
+                {
+                    "at": 140, "server": "web-2", "namespace": "stray", "service": "cron",
+                    "deployment": null, "kind": "exit", "exit_code": 1,
+                },
+            ])))
+        }
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
+    };
+
+    let shown = drive(
+        &store,
+        in_org(),
+        "server_metrics",
+        json!({ "server": "web-2" }),
+        "metrics-1",
+        &mut cloud,
+    )
+    .ok();
+
+    let [
+        MetricsQuery {
+            subject: MetricsSubject::Server { server },
+            since: MetricsSince::MinutesAgo { minutes: 60 },
+            deployment: None,
+        },
+    ] = asked.as_slice()
+    else {
+        panic!("asked {asked:?}");
+    };
+    assert_eq!(server.name.as_str(), "web-2");
+    assert_eq!(server.machine.to_string(), "b".repeat(32));
+    assert_eq!(
+        shown["events"],
+        json!([
+            {
+                "at": 150, "server": "web-2", "kind": "oom", "service": "web",
+                "project": "shop", "environment": "production",
+            },
+            {
+                "at": 140, "server": "web-2", "kind": "exit", "exit_code": 1,
+                "service": "cron", "leftover": "stray",
+            },
+        ])
+    );
+}
+
+#[test]
+fn metrics_of_an_unknown_server_are_refused_before_any_are_read() {
+    let store = shop();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
+    };
+
+    let refusal = drive(
+        &store,
+        in_org(),
+        "server_metrics",
+        json!({ "server": "web-9" }),
+        "metrics-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(refusal.code, RpcErrorCode::NotFound);
+    assert_eq!(refusal.did_you_mean.as_deref(), Some("web-1"));
 }
 
 #[test]

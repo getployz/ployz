@@ -1,5 +1,5 @@
 {
-  "instructions": "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers and their logs need Ployz Cloud.",
+  "instructions": "Ployz runs Projects with Environments of Services on your servers. Names, not ids. Every result says where it ran as at. A refusal has code, message, field, expected, example, retry (a complete call), writes (none, committed or unknown) and next (the calls to make now). When writes is unknown, make the next call before anything else. Most writes are Staged: review shows them, discard undoes them, deploy ships them. Not here: branches, tokens, servers added, exec, live logs, up; the member does those in the terminal. project and environment default to the place you are in. request_key: any 8 to 64 letters, digits, - or _; send the same key again after a lost reply and you get the same run, never a second one. wait_seconds: wait up to that long (max 300) for the outcome; 0 returns once accepted. accept_volume_loss, every_copy and version come only from a refusal, for exactly the loss the member accepted. Reads say when they were seen; a server that did not answer is listed, never guessed. Logs never show a secret; do not ask a tool for one. Servers, their logs and metrics need Ployz Cloud.",
   "tools": [
     {
       "description": "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, and the latest Deployment. Never asks a human to approve.",
@@ -1562,6 +1562,33 @@
       "read_only": true
     },
     {
+      "description": "A server's CPU, memory, network and disk (now, avg, peak) and its containers' OOM kills, exits and restarts. Default: the last hour. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "server": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "since_minutes": {
+            "maximum": 10080,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "server"
+        ],
+        "type": "object"
+      },
+      "name": "server_metrics",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
       "description": "A Service's state as the canvas shows it, and its containers per server: health, restarts, image, Deployment, latest restart, start or stop. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
@@ -1635,6 +1662,46 @@
         "type": "object"
       },
       "name": "service_logs",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true
+    },
+    {
+      "description": "A Service's CPU, memory, network and disk (now, avg, peak) and its OOM kills, exits and restarts. Default: the last hour. Never asks a human to approve.",
+      "gate": "never",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "deployment": {
+            "description": "Deployment number: from its start, its events only.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "environment": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "service": {
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "since_minutes": {
+            "maximum": 10080,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "service"
+        ],
+        "type": "object"
+      },
+      "name": "service_metrics",
       "output_schema": {
         "type": "object"
       },

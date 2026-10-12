@@ -1,19 +1,19 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+use ployz_core::metrics::{
+    MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
+};
 use ployz_core::{
     ConfiguredHealthcheck, ContainerId, ContainerKind, HealthcheckCommand, HealthcheckSpec,
-    Namespace, ServiceName,
+    MachineFailure, MachineSuccess, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId,
+    ServiceName,
 };
-use ployz_store::{
-    EnvironmentId,
-    tools::{
-        LineCap, LogText, LogsQuery, ServerRef, Withheld,
-        cloud::{ContainerState, LogsAnswer},
-    },
-};
+use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
+use ployz_store::tools::{LineCap, LogText, LogsQuery, ServerName, ServerRef, Timestamp, Withheld};
+use ployz_store::{DeploymentId, EnvironmentId};
 use tokio::time::Instant;
 
-use super::{ServiceCopy, Started, copies_of, logs, start_one};
+use super::{NANOS_PER_SECOND, ServiceCopy, Started, copies_of, logs, start_one, summarize};
 use crate::global_fixtures::{container_id, machine, running_on};
 use crate::sdk::test_support as support;
 
@@ -41,6 +41,137 @@ fn a_services_copies_include_its_hook_containers_marked_as_hooks() {
         hook,
     };
     assert_eq!(copies, [copy('1', false), copy('2', true)]);
+}
+
+const SECOND: i64 = NANOS_PER_SECOND;
+
+fn marked(
+    machine: ployz_core::MachineId,
+    at: i64,
+    deployment: &str,
+    kind: MarkerKind,
+) -> MetricMarker {
+    MetricMarker {
+        machine_id: machine,
+        container_id: ContainerId::parse("b".repeat(64)).unwrap(),
+        service_id: ServiceId::parse("c".repeat(32)).unwrap(),
+        service: QualifiedService::parse("prod/web").unwrap(),
+        deployment_id: Some(deployment.to_owned()),
+        replica: "web-1".into(),
+        ts: at * SECOND,
+        kind,
+    }
+}
+
+#[test]
+fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
+    let one = support::machine('a', "one");
+    let two = support::machine('b', "two");
+    let ours = "00000000-0000-4000-8000-000000000101";
+    let older = "00000000-0000-4000-8000-000000000100";
+    let points = vec![ServicePoint {
+        ts: 1_000 * SECOND,
+        cpu_usec: Some(250_000.0),
+        mem_bytes: Some(500_000_000),
+        mem_limit: Some(512_000_000),
+        rx: None,
+        tx: None,
+        io_r: None,
+        io_w: None,
+    }];
+    let history = crate::sdk::MetricHistory {
+        step_nanos: Some(10 * SECOND),
+        points: MetricPoints::Service(points.clone()),
+        machines: vec![MachineSuccess {
+            machine_id: one.machine.id,
+            value: MetricHistoryReply {
+                points: MetricPoints::Service(points),
+                step_nanos: 10 * SECOND,
+                gaps: Vec::new(),
+                markers: vec![
+                    marked(one.machine.id, 990, ours, MarkerKind::Oom),
+                    marked(
+                        one.machine.id,
+                        991,
+                        ours,
+                        MarkerKind::Exit {
+                            exit_code: Some(137),
+                        },
+                    ),
+                    marked(one.machine.id, 995, older, MarkerKind::Restart),
+                ],
+            },
+        }],
+        unanswered: vec![MachineFailure {
+            machine_id: two.machine.id,
+            error: RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: "unknown operation metric_history".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }],
+    };
+    let ours = DeploymentId::parse(ours).unwrap();
+
+    let answer = summarize(
+        &history,
+        &[one.clone(), two],
+        Some(&ours),
+        (Timestamp(900), 1_000 * SECOND),
+    );
+
+    assert_eq!((answer.oom_kills, answer.exits, answer.restarts), (1, 1, 0));
+    let kinds = answer
+        .events
+        .iter()
+        .map(|event| {
+            (
+                event.at,
+                event.server.as_str(),
+                event.kind,
+                event.deployment.as_ref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            (
+                Timestamp(991),
+                "one",
+                MarkerKind::Exit {
+                    exit_code: Some(137)
+                },
+                Some(&ours)
+            ),
+            (Timestamp(990), "one", MarkerKind::Oom, Some(&ours)),
+        ]
+    );
+    assert_eq!(
+        answer.notes,
+        ["two did not answer: unknown operation metric_history"]
+    );
+    assert_eq!(answer.seen.unanswered, [ServerName::parse("two").unwrap()]);
+    assert_eq!(
+        answer.metrics[1],
+        MetricRow {
+            metric: "Memory".into(),
+            now: Some("500 MB / 512 MB".into()),
+            avg: Some("500 MB".into()),
+            peak: Some("500 MB".into()),
+        }
+    );
+    assert_eq!(
+        answer.metrics[2],
+        MetricRow {
+            metric: "Net in".into(),
+            now: None,
+            avg: None,
+            peak: None,
+        },
+        "a metric with no reading is absent, never zero"
+    );
 }
 
 async fn started(service: support::DeployService) -> Started {
