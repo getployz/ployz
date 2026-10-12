@@ -186,6 +186,12 @@ fn target(target: &Target, named: Option<&ServiceName>) -> Value {
         Target::Mount(_) => mount(),
         Target::ConfigMount(_) => config_mount(),
         Target::Setting(one) => setting(*one, named),
+        Target::Domains => json!({
+            "title": "Domains",
+            "description": "The Service's generated and custom domains. Read here; domain add, domain set and domain rm change them.",
+            "readOnly": true,
+            "x-ployz-apply": "staged",
+        }),
         Target::Source => json!({
             "title": "Source",
             "description": "Where the Service runs from, as one change: its image, or its repository and root directory. Discard takes it back whole; set image or repository to change it.",

@@ -103,6 +103,7 @@ pub(crate) fn environment(
                     )?),
                     Target::Setting(_)
                     | Target::Source
+                    | Target::Domains
                     | Target::Exported(_)
                     | Target::Mount(_)
                     | Target::ConfigMount(_) => None,

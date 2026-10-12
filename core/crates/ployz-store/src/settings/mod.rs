@@ -7,7 +7,7 @@ pub(crate) mod edit;
 mod path;
 pub(crate) mod query;
 
-pub(crate) use path::{NodeField, Target, config_name, name_a_setting};
+pub(crate) use path::{NodeField, Target, config_name, domains_are_read_only, name_a_setting};
 pub use path::{NodeName, SettingPath};
 
 mod size;
@@ -668,7 +668,7 @@ impl ServiceSetting {
                 let names = Self::ALL
                     .map(Self::name)
                     .into_iter()
-                    .chain(["env", "mounts"]);
+                    .chain(["env", "mounts", "domains"]);
                 let first = name.split('.').next().unwrap_or(name);
                 let closest = error::did_you_mean(first, names.clone());
                 let mut details = serde_json::Map::new();

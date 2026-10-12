@@ -236,6 +236,9 @@ pub(crate) fn edit(
                     setting.apply(),
                 )
             }
+            (Some(Target::Domains), _) => {
+                return Err(super::domains_are_read_only(&path, service));
+            }
             (Some(Target::Source), _) => {
                 return Err(error::invalid(
                     format!("{path}: set image or repository instead"),

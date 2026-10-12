@@ -355,7 +355,10 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
         Some(value) => value.to_string(),
         None => String::new(),
     };
-    let example = shell_words::join(["ployz", "set", &format!("{}={example}", explained.path)]);
+    let example = match explained.path.domains_of() {
+        Some(service) => shell_words::join(["ployz", "domain", "add", service.as_str()]),
+        None => shell_words::join(["ployz", "set", &format!("{}={example}", explained.path)]),
+    };
     let explanation = Explanation { explained, example };
     let schema = &explanation.explained.schema;
     let text = |key: &str| schema.get(key).and_then(Value::as_str).unwrap_or_default();

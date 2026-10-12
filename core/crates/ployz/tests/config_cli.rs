@@ -984,14 +984,19 @@ fn an_agent_adds_checks_and_removes_domains() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|row| row["domain"]["prefix"].as_str().or(row["domain"]["hostname"].as_str()))
+            .map(|row| row["prefix"].as_str().or(row["hostname"].as_str()))
             .collect::<Vec<_>>();
-        assert_eq!(hostnames, [Some("web"), Some("app.example.com")]);
+        assert_eq!(hostnames, [Some("app.example.com"), Some("web")]);
         let explained = ok(store, &["explain", "web.domains"]);
         assert_eq!(explained["path"], json!("web.domains"));
         assert_eq!(explained["schema"]["readOnly"], json!(true));
         assert_eq!(explained["example"], json!("ployz domain add web"));
-        for edit in [&["set", "web.domains=shop"][..], &["unset", "web.domains"]] {
+        let edits = [
+            &["set", "web.domains=shop"][..],
+            &["unset", "web.domains"],
+            &["discard", "web.domains"],
+        ];
+        for edit in edits {
             let refused = error(store, edit);
             assert_eq!(refused["code"], json!("invalid_argument"), "{edit:?}");
             assert_eq!(refused["details"]["next"], json!("ployz domain add web"), "{edit:?}");
