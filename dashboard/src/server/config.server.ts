@@ -80,6 +80,7 @@ const rawFields = {
     Config.schema(NonEmptySecret, "PLOYZ_HOSTED_DNS_MINT_KEY"),
   ),
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
+  uptimeEnabled: Config.boolean("UPTIME_ENABLED").pipe(Config.withDefault(false)),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
   inngestSigningKey: Config.schema(NonEmptySecret, "INNGEST_SIGNING_KEY"),
   // The Inngest SDK also reads INNGEST_BASE_URL.
@@ -190,6 +191,8 @@ const makeAppConfig = Effect.gen(function* () {
     },
     // Unset (Self-hosted Cloud): no marketing proxy; / sends signed-out visitors to /auth.
     marketingOrigin: raw.marketingOrigin,
+    // Unset (Self-hosted Cloud): no uptime checker runs, so the dashboard shows no uptime.
+    uptimeEnabled: raw.uptimeEnabled,
     encryptionSecret: raw.encryptionSecret,
     // Ployz support exists only on Ployz-hosted Cloud: a Self-hosted Cloud never has staff, whatever the variable says.
     supportStaffUserIds: polar.mode === "self_hosted" ? [] : parseUserIds(raw.supportStaffUserIds),

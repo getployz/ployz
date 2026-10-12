@@ -8,8 +8,10 @@ import type { JsonValue, ServiceListing, ServiceSettingChange } from "@ployz/sdk
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { storeDeploymentsOptions } from "#/modules/config-store/store-view.queries";
+import { rangeLabel } from "#/modules/uptime/uptime-range";
 import type { IncidentObservation, ServiceUptime } from "#/modules/uptime/uptime-status";
 import { MonitoringTab } from "./MonitoringTab";
+import type { MonitoringSection } from "./monitoring-sections";
 
 beforeEach(() => vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} }));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -31,7 +33,7 @@ const down = (status: number, share: number) => uptime({
 const range = { from: "1h", to: "now" };
 const store = { project: "shop", environment: "production" };
 
-async function open(shown: ServiceUptime, change?: ServiceSettingChange) {
+async function open(shown: ServiceUptime, change?: ServiceSettingChange, sections: readonly MonitoringSection[] = ["uptime"]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
@@ -48,7 +50,7 @@ async function open(shown: ServiceUptime, change?: ServiceSettingChange) {
     getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug",
     loader: () => ({ environmentId: "env", store }),
     component: () => (
-      <MonitoringTab organizationSlug="acme" service={{ id: "api", name: "api" } as ServiceListing} range={range}
+      <MonitoringTab organizationSlug="acme" sections={sections} service={{ id: "api", name: "api" } as ServiceListing} range={range}
         onRange={() => {}} addDomain={null} healthcheck={{ value: { path: "/health", timeoutSeconds: 30 }, change, set }} />
     ),
   });
@@ -57,8 +59,8 @@ async function open(shown: ServiceUptime, change?: ServiceSettingChange) {
     history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/production"] }),
   });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
-  await screen.findByRole("heading", { level: 2 });
-  return { set };
+  await (sections.includes("uptime") ? screen.findByRole("heading", { level: 2 }) : screen.findByRole("heading", { level: 3, name: "CPU" }));
+  return { set, queryClient };
 }
 
 const statusLine = () => screen.getByRole("heading", { level: 2 }).textContent;
@@ -94,4 +96,23 @@ it.each([
 ])("leaves the field out for %s", async (_, shown) => {
   await open(shown);
   expect(screen.queryByLabelText("Healthcheck path")).toBeNull();
+});
+
+const uptimeShown = () => ({
+  status: screen.queryByRole("heading", { level: 2 }) !== null,
+  history: screen.queryByLabelText("History") !== null,
+  responseTime: screen.queryByRole("heading", { level: 3, name: "Response time" }) !== null,
+  checkNow: screen.queryByRole("button", { name: "Check now" }) !== null,
+});
+
+it("shows the status line, history strip, Response time chart and Check now on a Cloud with the uptime checker", async () => {
+  await open(uptime(), undefined, ["uptime", "metrics"]);
+  expect(uptimeShown()).toEqual({ status: true, history: true, responseTime: true, checkNow: true });
+});
+
+it("shows no uptime and reads none on a Cloud without the uptime checker, keeping the metrics and their range", async () => {
+  const { queryClient } = await open(uptime(), undefined, ["metrics"]);
+  expect(uptimeShown()).toEqual({ status: false, history: false, responseTime: false, checkNow: false });
+  expect(screen.getByRole("button", { name: rangeLabel(range, "UTC", Date.now()) })).toBeDefined();
+  expect(queryClient.getQueryCache().findAll({ queryKey: ["uptime"] }).map((query) => query.getObserversCount())).toEqual([0]);
 });

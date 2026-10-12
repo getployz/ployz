@@ -21,7 +21,8 @@ services:
       timeout: 5s
       retries: 10
 
-  # The uptime checker in `all` mode. Apply migrations first with `pnpm db:migrate`.
+  # The uptime checker in `all` mode. Apply migrations first with `pnpm db:migrate`, and set UPTIME_ENABLED=true in
+  # `.env` so the dashboard shows what it finds.
   uptime:
     profiles: [ uptime ]
     build:

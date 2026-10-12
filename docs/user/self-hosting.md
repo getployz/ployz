@@ -183,5 +183,7 @@ before it stops.
   settings included, is in `ployz-cloud-self-host_postgres-data`.
 - **Adding a GitHub permission later.** Existing installations keep working without it until
   their owner approves the new permissions on GitHub.
+- **No uptime checks yet.** Self-hosted Ployz Cloud doesn't run the uptime checker, so services
+  show no up or down status and have no Monitoring tab.
 - **Behind Cloudflare?** Your apps' domains need **SSL/TLS** set to **Full (strict)**. See
   [My domain is behind Cloudflare](troubleshooting/app-not-reachable.md#my-domain-is-behind-cloudflare).

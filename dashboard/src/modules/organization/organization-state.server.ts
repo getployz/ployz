@@ -5,6 +5,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { member, session, user } from "#/modules/identity/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { allocateUnique, getSlugWithSuffix } from "#/utils/slug";
@@ -110,8 +111,10 @@ export const getOrganizationState = Effect.fn(
   const organizations = yield* listAccessibleOrganizations(actor);
   const polar = yield* Polar;
   const staff = yield* SupportStaff;
+  const config = yield* AppConfig;
   return {
     billingEnabled: polar.mode === "hosted",
+    uptimeEnabled: config.uptimeEnabled,
     /** Whether this Cloud has Ployz support at all, so the support switch means something. */
     supportAvailable: staff.available,
     activeOrganization:

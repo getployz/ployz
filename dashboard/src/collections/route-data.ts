@@ -80,6 +80,12 @@ export function streamRemote(context: RouteDataContext, ...reads: Array<Pick<Fet
   for (const options of reads) void context.queryClient.prefetchQuery(options);
 }
 
+/** `streamRemote` for uptime reads, on a Cloud that runs the uptime checker only. Waits only for the Organization state. */
+export async function prefetchRemoteUptime(context: RouteDataContext, organizationSlug: string, ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
+  const { uptimeEnabled } = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
+  if (uptimeEnabled) streamRemote(context, ...reads);
+}
+
 /** `prefetchRemote` for Config Store views, started together. */
 export async function prefetchStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: ConfigQuery[]) {
   await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)));

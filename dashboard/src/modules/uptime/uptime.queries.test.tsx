@@ -6,7 +6,8 @@ import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ServiceUptime } from "./uptime-status";
 import * as functions from "./uptime-status.functions";
-import { useRequestUptimeProbe } from "./uptime.queries";
+import { useRequestUptimeProbe, useUnreachableHost } from "./uptime.queries";
+import { organizationKeys } from "#/modules/organization/organization-state.queries";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -47,4 +48,18 @@ it("reads the Service's probe as pending before Cloud answers, and puts it back 
 
   act(() => refuse(new Error("offline")));
   await waitFor(() => expect(queryClient.getQueryData<ServiceUptime>(day)?.probe).toBeNull());
+});
+
+it.each([[true, "api.acme.dev"], [false, null]])("reads a Service's open incident for the canvas only where the uptime checker runs (%s)", async (uptimeEnabled, host) => {
+  const read = vi.spyOn(functions, "readEnvironmentUptimeServerFn")
+    .mockResolvedValue([{ serviceId: "api", url: "https://api.acme.dev/health", openIncidentAt: "2026-10-12T00:00:00Z" }]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(organizationKeys.state("acme"), { uptimeEnabled });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useUnreachableHost({ organizationSlug: "acme", environmentId: "env" }, "api"), { wrapper });
+
+  await waitFor(() => expect(result.current).toBe(host));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(result.current).toBe(host);
+  expect(read).toHaveBeenCalledTimes(uptimeEnabled ? 1 : 0);
 });
