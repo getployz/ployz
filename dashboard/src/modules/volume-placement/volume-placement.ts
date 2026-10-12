@@ -114,6 +114,11 @@ export function detachedCopies(observed: ObservedPlacement, row: PlacementRow | 
   return observed.copies.filter((copy) => copy.kind === "slot" && !mirrors.includes(copy.server.id));
 }
 
+export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null): readonly ObservedCopy[] {
+  const target = targetPlacement(observed, row);
+  return detachedCopies(observed, row).filter((copy) => copy.server.id !== target?.primary && !target?.mirrors.includes(copy.server.id));
+}
+
 /**
  * What the next Deploy aims for: the staged placement, else what is applied. With no primary answering, the silent
  * Server is presumed to hold it. Null when no Server holds the Volume.
@@ -366,8 +371,7 @@ export function placementForm(volume: PlacementVolume, members: readonly Member[
   const mirrors = [...new Set([...appliedMirrors(observed, row), ...target.mirrors])].filter((id) => id !== target.primary)
     .map((id) => item(machine(id), kindOf(changeOn(["add_mirror", "remove_mirror"], id))));
   const left = onPrimary?.kind === "move" && onPrimary.how !== "restore" && onPrimary.from !== null ? [item(onPrimary.from, "add")] : [];
-  const detached = detachedCopies(observed, row)
-    .filter((copy) => copy.server.id !== target.primary && !target.mirrors.includes(copy.server.id))
+  const detached = oldCopies(observed, row)
     .map((copy) => item(copy.server, changeOn(["delete_copy"], copy.server.id) || cleared.has(copy.server.id) ? "remove" : null));
   return { primary: item(machine(target.primary), kindOf(onPrimary)), mirrors, detached: [...left, ...detached] };
 }

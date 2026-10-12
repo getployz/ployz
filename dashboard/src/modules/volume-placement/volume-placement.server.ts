@@ -8,9 +8,9 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import { volumePlacement } from "#/modules/volume-placement/tables";
-import { lossTime, observePlacement, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
+import { lossTime, oldCopies, observePlacement, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
 import { dockerVolumeName, parseDockerVolumeName } from "#/modules/volume-run/volume-run";
-import { inspectVolumeCopies, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { inspectVolumeCopies, planVolumeRun, requestVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
 type Row = typeof volumePlacement.$inferSelect;
@@ -235,4 +235,22 @@ export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (org
       eq(volumePlacement.environmentId, environmentId),
       isNotNull(volumePlacement.staged),
     ));
+});
+
+export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function* (
+  organizationId: string,
+  userId: string | null,
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string },
+  inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
+) {
+  const members = yield* inspect(organizationId, input.environment, input.volumeId);
+  const row = yield* readRow(organizationId, input.volumeId);
+  if (!oldCopies(observePlacement(members), row === undefined ? null : view(row)).some((copy) => copy.server.name === input.server)) {
+    return { ok: false, refusal: { message: "Not an old copy" } } as const;
+  }
+  const run = { volumeId: input.volumeId, environment: input.environment, kind: "delete_mirror", args: { slot: input.server, confirmed_name: null } } as const;
+  const planned = yield* planVolumeRun(organizationId, run);
+  if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
+  const requested = yield* requestVolumeRun({ userId, organizationId }, run);
+  return requested.ok ? { ok: true } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
