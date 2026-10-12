@@ -182,7 +182,8 @@ the dropped change leaves behind depends on how far it got:
 
 When the deploy took a **Before** snapshot of a volume, its page shows **Restore data**. Each row
 names the volume and how much was written since. **Restore** stages that snapshot for your next
-deploy, as in [Snapshots](../services/volumes.md#snapshots). Use it to undo what a migration did.
+deploy, as in [Snapshots](../services/volumes.md#snapshots). Use it to undo what a migration did. Once
+that deploy restores it, the row says **Restored** with that deploy's number.
 
 Fix the cause and deploy again; see [Troubleshooting deployments](../troubleshooting/deployments.md).
 Or click **Fix it on a branch** on the deployment's page to try the fix in a

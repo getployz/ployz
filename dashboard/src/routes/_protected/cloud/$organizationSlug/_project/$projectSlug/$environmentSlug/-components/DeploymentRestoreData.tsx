@@ -5,7 +5,7 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { useCachedStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
-import { deploySnapshotId } from "#/modules/volume-copies/snapshot-schedule";
+import { deployRestoreSaveId, deploySnapshotId } from "#/modules/volume-copies/snapshot-schedule";
 import { SNAPSHOT_WORDS, sizeWords } from "#/modules/volume-copies/volume-snapshots";
 import { mountedServices, snapshotRestoreTarget, useVolumeCopies, type VolumeCopiesData } from "../resources/$resourceId/-components/StoreVolumeCopies";
 import { RestoreDialog, stagedSnapshot } from "../resources/$resourceId/-components/StoreVolumeSnapshots";
@@ -48,7 +48,10 @@ export type RestoreRowData = Pick<VolumeCopiesData, "volume" | "members" | "rows
   readonly live: string;
 };
 
-/** One Volume's row: absent unless this deploy's Before snapshot is listed and a restore can be staged, or already is. */
+/**
+ * One Volume's row: absent unless this deploy's Before snapshot is listed and a restore can be staged, already is, or
+ * ran. The restore's Before restore snapshot, named after this deploy, says it ran and which deploy ran it.
+ */
 export function RestoreDataRow({ deploymentId, data }: { deploymentId: string; data: RestoreRowData }) {
   const { volume } = data;
   const [open, setOpen] = useState(false);
@@ -56,8 +59,10 @@ export function RestoreDataRow({ deploymentId, data }: { deploymentId: string; d
   const epoch = data.snapshots.list?.epoch ?? null;
   const snapshot = data.snapshots.list?.snapshots.find((entry) => entry.id === id);
   const restoreTo = snapshotRestoreTarget(data);
+  const save = deployRestoreSaveId(deploymentId);
+  const restored = data.snapshots.list?.snapshots.find((entry) => entry.id === save);
   const staged = data.rows.find((row) => row.volumeId === volume.id)?.staged?.restore?.from === id;
-  if (snapshot === undefined || epoch === null || (restoreTo === null && !staged)) return null;
+  if (snapshot === undefined || epoch === null || (restoreTo === null && !staged && restored === undefined)) return null;
   const now = new Date();
   const label = `${SNAPSHOT_WORDS[snapshot.kind]} · ${data.snapshotClock.when(snapshot.at, now)}`;
 
@@ -67,16 +72,18 @@ export function RestoreDataRow({ deploymentId, data }: { deploymentId: string; d
       <ItemDescription>{label}</ItemDescription>
     </ItemContent>
     <ItemActions>
-      <span className="text-sm text-muted-foreground tabular-nums">
-        {snapshot.losesBytes > 0 ? `${sizeWords(snapshot.losesBytes)} written since` : "Unchanged"}
-      </span>
-      {staged ? <Badge variant="changed">Staged</Badge>
-        : <Button variant="outline" size="xs" disabled={data.disabled} onClick={() => setOpen(true)}>Restore</Button>}
+      {restored !== undefined ? <Badge variant="success">Restored {restored.note}</Badge> : <>
+        <span className="text-sm text-muted-foreground tabular-nums">
+          {snapshot.losesBytes > 0 ? `${sizeWords(snapshot.losesBytes)} written since` : "Unchanged"}
+        </span>
+        {staged ? <Badge variant="changed">Staged</Badge>
+          : <Button variant="outline" size="xs" disabled={data.disabled} onClick={() => setOpen(true)}>Restore</Button>}
+      </>}
     </ItemActions>
     <RestoreDialog volume={volume.name} services={mountedServices(volume)} live={data.live} snapshot={open ? snapshot : null} label={label} now={now}
       onOpenChange={setOpen}
       onRestore={(chosen) => {
-        if (restoreTo !== null) data.stage(...stagedSnapshot(restoreTo, chosen, epoch));
+        if (restoreTo !== null) data.stage(...stagedSnapshot(restoreTo, chosen, epoch, save));
         setOpen(false);
       }} />
   </Item>;

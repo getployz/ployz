@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MachineId } from "@ployz/sdk";
-import { deploySnapshotId } from "#/modules/volume-copies/snapshot-schedule";
+import { deployRestoreSaveId, deploySnapshotId } from "#/modules/volume-copies/snapshot-schedule";
 import type { Snapshot } from "#/modules/volume-copies/volume-copies";
 import { snapshotClock } from "#/modules/volume-copies/volume-snapshots";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
@@ -53,9 +53,15 @@ describe("RestoreDataRow", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
     expect(stage).toHaveBeenCalledWith(
-      expect.objectContaining({ primary: id("web-1"), restore: expect.objectContaining({ from: BEFORE, losesBytes: 3e8, expect: 7 }) }),
+      expect.objectContaining({ primary: id("web-1"), restore: expect.objectContaining({ from: BEFORE, losesBytes: 3e8, expect: 7, save: deployRestoreSaveId("dep-1") }) }),
       [],
     );
+  });
+
+  it("says Restored with the restoring deploy's number once the restore ran, and offers no Restore", () => {
+    show({ snapshots: [snapshot(), snapshot({ id: deployRestoreSaveId("dep-1"), kind: "before_restore", kept: true, note: "#13" })] });
+    expect(items()).toEqual(["dbBefore deploy · 10:00Restored #13"]);
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
   });
 
   it("says Unchanged when nothing was written since", () => {

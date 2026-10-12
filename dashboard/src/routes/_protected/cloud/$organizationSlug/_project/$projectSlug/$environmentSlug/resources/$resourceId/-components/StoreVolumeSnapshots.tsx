@@ -18,10 +18,13 @@ import { useScheduleEditor, type VolumeScheduleData } from "./StoreVolumeSchedul
 
 export type RestoreTarget = { readonly target: Placement; readonly applied: readonly MachineId[] };
 
-/** The staged swap that brings `snapshot` back on the next Deploy; `epoch` is the list it was read from. */
-export const stagedSnapshot = ({ target, applied }: RestoreTarget, snapshot: Snapshot, epoch: number) => {
+/**
+ * The staged swap that brings `snapshot` back on the next Deploy; `epoch` is the list it was read from, and `save` names
+ * the Before restore snapshot of the data it replaces.
+ */
+export const stagedSnapshot = ({ target, applied }: RestoreTarget, snapshot: Snapshot, epoch: number, save: string = crypto.randomUUID()) => {
   const restore: SnapshotRestore = {
-    from: snapshot.id, at: Math.floor(snapshot.at.getTime() / 1000), losesBytes: snapshot.losesBytes, save: crypto.randomUUID(), expect: epoch,
+    from: snapshot.id, at: Math.floor(snapshot.at.getTime() / 1000), losesBytes: snapshot.losesBytes, save, expect: epoch,
   };
   return [{ ...target, restore }, applied] as const;
 };

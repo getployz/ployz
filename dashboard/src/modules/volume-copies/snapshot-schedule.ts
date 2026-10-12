@@ -78,6 +78,9 @@ export type DeployMoment = "before" | "after";
 
 export const deploySnapshotId = (moment: DeployMoment, deploymentId: string) => `${moment}-${digest(deploymentId)}`;
 
+/** The Before restore snapshot that Restore data on a failed deploy saves, so its page can tell the restore ran. */
+export const deployRestoreSaveId = (deploymentId: string) => `undo-${digest(deploymentId)}`;
+
 export function deploysWords(policy: SnapshotPolicy): string {
   if (!policy.before && !policy.after) return "Off";
   const which = policy.before && policy.after ? "Before and after" : policy.before ? "Before" : "After";
