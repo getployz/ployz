@@ -26,6 +26,33 @@ the address shows **Unreachable** within seconds. Between deploys, it checks eve
 To check now, click **Check now** on the **Monitoring** tab. The button reads **Checking** until
 the result is in, and the status line moves with it.
 
+## From the CLI or an agent
+
+On a Ployz Cloud backend, `ployz uptime show` prints what the **Monitoring** tab shows: the
+status, the share of checks that passed, what each region's latest check got back, its last
+error, and the incidents in the range.
+
+```sh
+ployz uptime show web
+ployz uptime show web --project shop --environment staging --from 6h
+```
+
+`--project` and `--environment` default to your default Project and its default Environment.
+`--from` and `--to` take an offset back from now such as `15m`, `6h` or `7d`, or a UTC instant.
+The range is the last hour when you leave them out.
+
+`ployz uptime check` does what **Check now** does, waits for the check to answer, and prints
+what each region got back. It changes no setting. If the check hasn't answered within the wait, it says
+so, and `ployz uptime show` shows the result once it lands.
+
+```sh
+ployz uptime check web
+```
+
+The sidebar and `ployz mcp` offer both as `uptime_show` and `uptime_check`, so an agent can see
+that a service answers 500 and check it again after a fix. A service with no public address
+answers `not_checked`.
+
 ## Good to know
 
 - **What gets checked.** The service's generated domain, or its first custom domain when it has
