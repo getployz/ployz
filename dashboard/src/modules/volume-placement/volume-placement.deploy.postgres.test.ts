@@ -211,6 +211,23 @@ describe("deploying a Volume placement", () => {
     expect(await placement()).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
   });
 
+  it("leaves the source staged while its restore waits for its Volume in the Store", async () => {
+    members = [member("web-1", "writer"), member("web-2", "mirror")];
+    const seed = { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } };
+    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
+    await harness.pool.query(
+      `insert into volume_placement (volume_id, organization_id, environment_id, mirrors, staged) values ('vol3', $1, 'env-1', '[]', $2)`,
+      [organizationId, JSON.stringify({ primary: web("web-1"), mirrors: [], deletes: [], seed })],
+    );
+    await run(stampPlacements(organizationId, "env-1", "dep-1"));
+
+    expect(await run(advancePlacement(organizationId, "dep-1", null, inspect, answered))).toEqual({ kind: "done" });
+    expect((await harness.pool.query(`select id from volume_run`)).rows).toEqual([]);
+    const rows = await run(listPlacements(organizationId));
+    expect(rows.find((row) => row.volumeId === volumeId)).toMatchObject({ staged: { primary: web("web-2") }, deploymentId: null });
+    expect(rows.find((row) => row.volumeId === "vol3")).toMatchObject({ staged: { seed }, deploymentId: null });
+  });
+
   it("keeps a restore staged when its Volume isn't in the Store yet", async () => {
     const seed = { sourceVolumeId: volumeId, sourceName: "data", dockerVolume: "shop-production_vol-vol3", point: { guid: "11", name: "ployz-1", at: 1_790_000_000 } };
     await harness.pool.query(

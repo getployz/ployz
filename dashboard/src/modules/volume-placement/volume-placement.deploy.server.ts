@@ -112,11 +112,19 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
   const ordered = [...rows].sort((a, b) => Number(b.staged?.seed !== undefined) - Number(a.staged?.seed !== undefined));
+  // Sources of restores whose Volume isn't in the Store yet: a move on one waits, so the restore point stays.
+  const waiting = new Set<string>();
   for (const row of ordered) {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     if (volume === undefined) {
       // A restore's Volume can be still on its way into the Store; only staging or discarding the restore drops its row.
-      yield* settleClaimed(row.volumeId, deploymentId, row.staged?.seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
+      const seed = row.staged?.seed;
+      if (seed !== undefined) waiting.add(seed.sourceVolumeId);
+      yield* settleClaimed(row.volumeId, deploymentId, seed === undefined ? { staged: null, deploymentId: null } : { deploymentId: null });
+      continue;
+    }
+    if (waiting.has(row.volumeId)) {
+      yield* settleClaimed(row.volumeId, deploymentId, { deploymentId: null });
       continue;
     }
     // A restore's run belongs to its source, the Volume it copies from.
@@ -127,7 +135,8 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     const members = yield* inspect(organizationId, environment, row.volumeId);
     const step = nextPlacementStep(placementChanges(volume, members, placement), appliedMirrors(observePlacement(members), placement));
     if (step === null) {
-      yield* settleClaimed(row.volumeId, deploymentId, { staged: null, deploymentId: null });
+      // Nothing left to run, so the Servers hold what was staged.
+      yield* settleClaimed(row.volumeId, deploymentId, { mirrors: [...(row.staged?.mirrors ?? [])], staged: null, deploymentId: null });
       continue;
     }
     // Touching the row without changing it confirms the claim right before the run starts.

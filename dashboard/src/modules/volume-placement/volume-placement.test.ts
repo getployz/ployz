@@ -122,6 +122,13 @@ describe("placementChanges", () => {
     expect(review(members, row(["web-2"], { primary: "web-1" }))).toEqual([{ kind: "remove", name: "Mirror", currentValue: "web-2", newValue: "" }]);
   });
 
+  it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent Server", () => {
+    expect(changes([member("web-1", "writer"), pooled("web-2")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
+    expect(steps([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"], { primary: "web-1" }))).toEqual([
+      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
+    ]);
+  });
+
   it("orders runs so deletions free the copy slot before a move, and a new mirror comes last", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
     expect(steps(members, row(["web-2"], { primary: "web-2", mirrors: ["web-3"] }))).toEqual([

@@ -174,8 +174,10 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // yet the next Deploy must finish the same move, not take the mirror away.
   const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
   const moving = observed.primary?.id !== staged.primary || handing;
+  // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
+  const gone = (id: MachineId) => copyOn(id) === undefined && !observed.unanswered.some((server) => server.id === id);
   for (const id of applied) {
-    if (!staged.mirrors.includes(id) && !(moving && id === staged.primary)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
+    if (!staged.mirrors.includes(id) && !(moving && id === staged.primary) && !gone(id)) changes.push({ kind: "remove_mirror", volume, server: machine(id) });
   }
   if (moving) {
     const target = copyOn(staged.primary);
