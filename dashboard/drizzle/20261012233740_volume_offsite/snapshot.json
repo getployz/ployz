@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "9138c6af-b8a1-4df3-b885-269065d445a6",
+  "id": "34cb61ab-a5ca-49df-8785-52fc755ee66f",
   "prevIds": [
-    "980e267f-8632-4af6-a374-b1367f68b6b4"
+    "0aea9303-d943-49c7-8e80-63d42281e67c"
   ],
   "ddl": [
     {
@@ -170,7 +170,19 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "organization_support_access",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "volume_run",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "failed_restore",
       "entityType": "tables",
       "schema": "public"
     },
@@ -3436,6 +3448,97 @@
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "allowed",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "variables",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "configs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "logs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "changed_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
       "default": "gen_random_uuid()",
       "generated": null,
       "identity": null,
@@ -3603,6 +3706,19 @@
     {
       "type": "text",
       "typeSchema": null,
+      "notNull": true,
+      "dimensions": 1,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "stopped_holders",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,
@@ -3677,6 +3793,45 @@
       "entityType": "columns",
       "schema": "public",
       "table": "volume_run"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "volume_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "failed_restore"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "failed_restore"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "failed_restore"
     },
     {
       "type": "text",
@@ -8193,6 +8348,40 @@
       ],
       "onUpdate": "NO ACTION",
       "onDelete": "CASCADE",
+      "name": "organization_support_access_kLfPQs8MyHZC_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "changed_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "organization_support_access_changed_by_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "organization_support_access"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
       "name": "volume_run_organization_id_organization_id_fkey",
       "entityType": "fks",
       "schema": "public",
@@ -8214,6 +8403,23 @@
       "entityType": "fks",
       "schema": "public",
       "table": "volume_run"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "failed_restore_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "failed_restore"
     },
     {
       "nameExplicit": false,
@@ -8927,12 +9133,32 @@
     },
     {
       "columns": [
+        "organization_id"
+      ],
+      "nameExplicit": false,
+      "name": "organization_support_access_pkey",
+      "schema": "public",
+      "table": "organization_support_access",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
       "name": "volume_run_pkey",
       "schema": "public",
       "table": "volume_run",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "volume_id"
+      ],
+      "nameExplicit": false,
+      "name": "failed_restore_pkey",
+      "schema": "public",
+      "table": "failed_restore",
       "entityType": "pks"
     },
     {
@@ -9471,6 +9697,13 @@
       "entityType": "checks",
       "schema": "public",
       "table": "server_upgrade_attempt"
+    },
+    {
+      "value": "\"allowed\" or not (\"variables\" or \"configs\" or \"logs\")",
+      "name": "organization_support_access_shows_only_when_allowed",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_support_access"
     },
     {
       "value": "\"kind\" in ('mirror','sync','delete_mirror','move','release','restore','seed','restore_snapshot')",
