@@ -54,48 +54,49 @@ CELLS = ["Writer>Mirror", "Writer>Snapshot", "Writer>Forget", "Mirror>Writer", "
          "None>Mirror"]
 
 # `machine` is the side the effect runs on: the Volume's writer before the case, or the other Machine.
-# `fault` is a daemon fault point set on both Machines; only the side that serves the verb fires it.
-# `trigger` says when `action` runs: once a fault line appears in a journal, or once `zfs receive` runs on `machine`.
+# `fault` is a daemon fault point, set on `fault_on` or on both Machines; only the side that serves it fires it.
+# `mirror` is whether the other Machine must hold a mirror before the case starts.
+# `trigger` says when `action` runs: once a fault line appears in a journal, once `zfs receive` runs on
+# `machine`, once the writer's db Container stops (the cut), or on the `nth` fault line `machine` logs after
+# that stop. `delay-rpc` matches the whole SetVolumeCopy verb, so the stop and the count pick out the cell.
 KILLS = [
-    dict(name="kill-freeze", cell="Writer>Mirror", old_step="06-freeze", op="move", machine="writer",
-         fault="kill-after-record:Freeze", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-handover", cell="Writer>Mirror", old_step="08-handover", op="move", machine="writer",
-         fault="kill-after-record:HandOver", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-warm", cell="Writer>Snapshot", old_step="04-rounds warm snapshot", op="move", machine="writer",
-         fault="kill-after-record:WarmSnapshot", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-close", cell="Writer>Forget", old_step="12-close", op="move", machine="writer",
-         fault="kill-after-record:Close", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-promote", cell="Mirror>Writer", old_step="10-promote", op="move", machine="other",
-         fault="kill-after-record:Promote", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-start", cell="Mirror>Writer", old_step="11-start", op="move", machine="other",
-         fault="kill-after-record:StartHandedContainer", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-receive", cell="Mirror>Mirror", old_step="04-rounds receive", op="move", machine="other",
-         fault="kill-daemon:StartReceive", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-destroy", cell="Mirror>Forget", old_step="03-destroy (mirror rm)", op="mirror-rm",
-         machine="other", fault="kill-daemon:DestroyMirror", trigger="fault", action="none", recover="rerun"),
-    dict(name="kill-declare", cell="None>Mirror", old_step="03-declare (mirror)", op="mirror", machine="other",
-         fault="kill-daemon:DeclareMirror", trigger="fault", action="none", recover="rerun"),
+    dict(name="kill-snapshot", cell="Writer>Snapshot", step="1-rounds", op="move", machine="writer",
+         fault="kill-daemon:SetVolumeCopy.WriterToSnapshot", trigger="fault", action="none", recover="rerun"),
+    dict(name="kill-pull", cell="Mirror>Mirror", step="1-rounds", op="move", machine="other", mirror="present",
+         fault="kill-daemon:SetVolumeCopy.MirrorToMirror", trigger="fault", action="none", recover="rerun"),
+    dict(name="kill-first-pull", cell="None>Mirror", step="mirror", op="mirror", machine="other", mirror="absent",
+         fault="kill-daemon:SetVolumeCopy.NoneToMirror", trigger="fault", action="none", recover="rerun"),
+    dict(name="kill-cut", cell="Writer>Mirror", step="3-cut", op="move", machine="writer",
+         fault="kill-daemon:SetVolumeCopy.WriterToMirror", trigger="fault", action="none", recover="rerun"),
+    dict(name="kill-writer", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
+         fault="kill-daemon:SetVolumeCopy.MirrorToWriter", trigger="fault", action="none", recover="rerun"),
+    dict(name="kill-forget-mirror", cell="Mirror>Forget", step="mirror rm", op="mirror-rm", machine="other",
+         mirror="present", fault="kill-daemon:SetVolumeCopy.MirrorToForget", trigger="fault", action="none",
+         recover="rerun"),
+    dict(name="kill-forget-writer", cell="Writer>Forget", step="mirror rm", op="mirror-rm", machine="writer",
+         mirror="present", fault="kill-daemon:SetVolumeCopy.WriterToForget", trigger="fault", action="none",
+         recover="rerun"),
 ]
 
 CASES = [
-    dict(name="clean", cell=None, old_step="move", op="move", machine="writer", fault=None, trigger=None,
+    dict(name="clean", cell=None, step="move", op="move", machine="writer", fault=None, trigger=None,
          action="none", recover="rerun"),
-    dict(name="undo-before-cut", cell="Mirror>Writer", old_step="05-withdraw then release", op="move",
-         machine="writer", fault="delay-rpc:Withdraw:90", trigger="fault", action="cancel", recover="release"),
-    dict(name="undo-after-cut", cell="Mirror>Writer", old_step="09-accept then release", op="move",
-         machine="other", fault="delay-rpc:AcceptHandOff:90", trigger="fault", action="cancel", recover="release"),
+    dict(name="undo-before-cut", cell="Writer>Writer", step="1-rounds", op="move", machine="writer",
+         fault_on="writer", fault="delay-rpc:SetVolumeCopy:90", trigger="fault", action="cancel",
+         recover="release"),
+    dict(name="undo-after-cut", cell="Mirror>Writer", step="5-writer", op="move", machine="other",
+         fault_on="other", fault="delay-rpc:SetVolumeCopy:90", trigger="fault-after-stop", nth=2,
+         action="cancel", recover="release"),
     *KILLS,
 ]
 
 SOAK_STEPS = [
-    ("05-withdraw", "writer", "delay-rpc:Withdraw:20"),
-    ("06-freeze", "writer", "delay-rpc:Freeze:20"),
-    ("07-final", "other", "delay-rpc:BeginRound:20"),
-    ("08-handover", "writer", "delay-rpc:HandOver:20"),
-    ("09-accept", "other", "delay-rpc:AcceptHandOff:20"),
-    ("10-promote", "other", "delay-rpc:Promote:20"),
-    ("11-start", "other", "delay-rpc:StartHandedContainer:20"),
-    ("12-close", "writer", "delay-rpc:Close:20"),
+    ("1-rounds", "other", None, "receiving", 1),
+    ("2-image", "other", "delay-rpc:PullImageFromMachine:20", "fault", 1),
+    ("3-cut", "writer", None, "stopped", 1),
+    ("4-final", "other", "delay-rpc:SetVolumeCopy:20", "fault-after-stop", 1),
+    ("5-writer", "other", "delay-rpc:SetVolumeCopy:20", "fault-after-stop", 2),
+    ("6-remove", "writer", "delay-rpc:RemoveContainer:20", "fault", 1),
 ]
 SOAK_ACTIONS = [("runner-kill", None), ("kill-ployz", "writer"), ("kill-ployz", "other"),
                 ("kill-docker", "writer"), ("kill-docker", "other")]
@@ -103,16 +104,31 @@ SOAK_ACTIONS = [("runner-kill", None), ("kill-ployz", "writer"), ("kill-ployz", 
 
 def soak_cases():
     clean = [dict(CASES[0], name=f"soak-clean-{number}") for number in range(1, 4)]
-    steps = [(step, side, fault, "fault") for step, side, fault in SOAK_STEPS]
-    steps.append(("04-receive", "other", None, "receiving"))
     faulted = []
-    for step, side, fault, trigger in steps:
+    for step, side, fault, trigger, nth in SOAK_STEPS:
         for action, target in SOAK_ACTIONS:
             faulted.append(dict(
-                name=f"soak-{step}-{action}" + (f"-{target}" if target else ""), cell=None, old_step=step,
-                op="move", machine=target or side, trigger_machine=side, fault=fault, trigger=trigger,
-                action=action, recover="rerun", full=trigger == "receiving"))
+                name=f"soak-{step}-{action}" + (f"-{target}" if target else ""), cell=None, step=step,
+                op="move", machine=target or side, trigger_machine=side, fault_on=side, fault=fault,
+                trigger=trigger, nth=nth, action=action, recover="rerun",
+                mirror="absent" if trigger == "receiving" else None))
     return clean + faulted
+
+
+def stamped(output):
+    lines = []
+    for line in output.splitlines():
+        at, _, rest = line.partition(" ")
+        try:
+            lines.append((float(at), rest))
+        except ValueError:
+            continue
+    return lines
+
+
+def nth_after(lines, moment, nth):
+    later = [line for at, line in lines if at > moment]
+    return later[nth - 1] if len(later) >= nth else None
 
 
 TERMINAL = {"done", "failed", "cancelled", "lost", "not_started"}
@@ -408,14 +424,14 @@ class VolumeMove:
             return None
         return sorted(acked - {int(line) for line in result.stdout.split() if line.isdigit()})
 
-    def fault(self, value):
+    def fault(self, value, machine=None):
         script = "touch /etc/default/ployz; sed -i '/^PLOYZD_FAULT=/d' /etc/default/ployz; "
         if value:
             script += f"echo {shlex.quote('PLOYZD_FAULT=' + value)} >> /etc/default/ployz; "
         script += ("systemctl restart ployz.service; systemctl stop ployz-volume-plugin.service || true; "
                    "for i in $(seq 60); do systemctl is-active --quiet ployz.service && break; sleep 1; done")
-        for machine in self.machines:
-            self.sh(machine, script)
+        for target in [machine] if machine else self.machines:
+            self.sh(target, script)
 
     def fired(self, since):
         for machine in self.machines:
@@ -424,6 +440,27 @@ class VolumeMove:
             if lines:
                 return f"{machine}: {lines.splitlines()[0][:300]}"
         return None
+
+    def fault_lines(self, machine, since):
+        return stamped(self.sh(machine, f"journalctl -u ployz.service -u ployz-volume-plugin.service --since @{int(since) - 2} --no-pager -o short-unix "
+                                        "| grep -F 'fault:' || true", check=False).stdout)
+
+    def stopped_at(self, machine, since):
+        result = self.sh(machine, f"/usr/bin/docker ps -aq --filter volume={shlex.quote(self.physical)} --filter status=exited "
+                                  "| xargs -r /usr/bin/docker inspect -f '{{.State.FinishedAt}}' | xargs -r -n1 date +%s.%N -d",
+                         check=False)
+        times = [float(word) for word in result.stdout.split() if re.fullmatch(r"\d+\.\d+", word)]
+        times = [at for at in times if at >= since]
+        return min(times) if times else None
+
+    def stopped(self, writer, since):
+        at = self.stopped_at(writer, since)
+        return f"{writer}: db stopped at {at}" if at else None
+
+    def fault_after_stop(self, writer, machine, since, nth):
+        stopped = self.stopped_at(writer, since)
+        line = None if stopped is None else nth_after(self.fault_lines(machine, since), stopped, nth)
+        return f"{machine}: {line[:300]}" if line else None
 
     def receiving(self, machine):
         result = self.sh(machine, "pgrep -f 'zfs (recv|receive)' >/dev/null && echo yes || echo no", check=False)
@@ -454,11 +491,17 @@ class VolumeMove:
             self.sleep(4)
         return dict(last, state=f"still {last.get('state')} after {limit}s")
 
-    def wait_trigger(self, case, row, since, machine, limit=900):
+    def wait_trigger(self, case, row, since, side, limit=900):
+        machine = side[case.get("trigger_machine", case["machine"])]
+        triggers = {
+            "fault": lambda: self.fired(since),
+            "receiving": lambda: f"{machine}: zfs receive running" if self.receiving(machine) else None,
+            "stopped": lambda: self.stopped(side["writer"], since),
+            "fault-after-stop": lambda: self.fault_after_stop(side["writer"], machine, since, case.get("nth", 1)),
+        }
         deadline = self.clock() + limit
         while self.clock() < deadline:
-            seen = self.fired(since) if case["trigger"] == "fault" else (
-                f"{machine}: zfs receive running" if self.receiving(machine) else None)
+            seen = triggers[case["trigger"]]()
             if seen:
                 return seen
             current = next((found for found in self.runs() if found["id"] == row.get("id")), row)
@@ -509,10 +552,10 @@ class VolumeMove:
             self.sh(machine, "systemctl start docker.service ployz.service", check=False)
         return []
 
-    def prepare(self, case, writer, other):
-        if case["op"] == "mirror-rm" and not self.has_mirror(other):
+    def prepare(self, case, other):
+        if case.get("mirror") == "present" and not self.has_mirror(other):
             self.wait_run(self.start_op("mirror", other))
-        if (case["op"] == "mirror" or case.get("full")) and self.has_mirror(other):
+        if case.get("mirror") == "absent" and self.has_mirror(other):
             self.wait_run(self.start_op("mirror-rm", other))
 
     def evidence(self, name, since):
@@ -529,15 +572,15 @@ class VolumeMove:
         other = self.other(writer)
         side = dict(writer=writer, other=other)
         destination = other
-        self.prepare(case, writer, other)
+        self.prepare(case, other)
         started = self.clock()
         result = dict(case, writer_before=writer, destination=destination, started=started)
         if case["fault"]:
-            self.fault(case["fault"])
+            self.fault(case["fault"], side.get(case.get("fault_on")))
         row = self.start_op(case["op"], destination)
         result["run"] = row
         if case["trigger"]:
-            result["triggered"] = self.wait_trigger(case, row, started, side[case.get("trigger_machine", case["machine"])])
+            result["triggered"] = self.wait_trigger(case, row, started, side)
             if result["triggered"]:
                 result["action_evidence"] = self.act(case["action"], side[case["machine"]], row)
         if case["fault"]:
@@ -603,7 +646,7 @@ class VolumeMove:
                                                               capture_output=True, text=True).stdout.strip(),
             physical=self.physical, size_gb=self.size_gb, probe=report, downtime=downtime(results),
             passed=all(result["passed"] for result in results) and bool(report) and not report.get("lost"),
-            cases=[dict(name=result["name"], cell=result.get("cell"), old_step=result.get("old_step"),
+            cases=[dict(name=result["name"], cell=result.get("cell"), step=result.get("step"),
                         passed=result["passed"], final_writer=result.get("final_writer"),
                         run=result.get("run", {}).get("state"),
                         recovery=[row.get("state") for row in result.get("recovery", [])],

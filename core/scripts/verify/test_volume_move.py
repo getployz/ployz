@@ -111,7 +111,7 @@ class ClusterModel:
             return 0, ""
         if "fault:" in script:
             plugin_journal = "-u ployz-volume-plugin.service" in script
-            return 0, "fault: killing the plugin after the record, before the effect\n" if self.fired and plugin_journal else ""
+            return 0, "fault: killing daemon inside the effect\n" if self.fired and plugin_journal else ""
         if script.startswith("for d in"):
             lines = []
             two_writers = self.mutation == "two-writers"
@@ -285,18 +285,52 @@ class VolumeMoveTests(unittest.TestCase):
         results.append(dict(op="mirror", probe=dict(longest_gap_seconds=99.0)))
         self.assertEqual(volume_move.downtime(results), dict(moves=3, p50=3.0, max=9.0))
 
-    def test_kill_table_covers_every_cell_with_known_columns(self):
-        self.assertEqual({row["cell"] for row in volume_move.KILLS}, set(volume_move.CELLS))
+    def test_kill_table_covers_every_cell_once_with_its_own_fault_point(self):
+        self.assertEqual(sorted(row["cell"] for row in volume_move.KILLS), sorted(volume_move.CELLS))
+        for row in volume_move.KILLS:
+            with self.subTest(row["name"]):
+                self.assertEqual(row["fault"], "kill-daemon:SetVolumeCopy." + row["cell"].replace(">", "To"))
+
+    def test_rows_use_known_columns_and_no_retired_fault(self):
         for row in volume_move.CASES + volume_move.soak_cases():
             with self.subTest(row["name"]):
                 self.assertIn(row["op"], {"move", "mirror", "mirror-rm"})
                 self.assertIn(row["machine"], {"writer", "other"})
+                self.assertIn(row.get("fault_on"), {None, "writer", "other"})
+                self.assertIn(row.get("mirror"), {None, "present", "absent"})
                 self.assertIn(row["action"], {"none", "cancel", "runner-kill", "kill-ployz", "kill-docker"})
                 self.assertIn(row["recover"], {"rerun", "release"})
-                self.assertIn(row["trigger"], {None, "fault", "receiving"})
-                self.assertTrue(row["old_step"])
+                self.assertIn(row["trigger"], {None, "fault", "receiving", "stopped", "fault-after-stop"})
+                self.assertTrue(row["step"])
+                self.assertNotIn("after-record", row["fault"] or "")
         self.assertEqual(len({row["name"] for row in volume_move.CASES}), len(volume_move.CASES))
-        self.assertEqual(len(volume_move.soak_cases()), 3 + 9 * 5)
+
+    def test_delete_mirror_and_first_mirror_cells_run_their_own_op(self):
+        ops = {row["cell"]: (row["op"], row.get("mirror")) for row in volume_move.KILLS}
+        self.assertEqual(ops["Writer>Forget"], ("mirror-rm", "present"))
+        self.assertEqual(ops["Mirror>Forget"], ("mirror-rm", "present"))
+        self.assertEqual(ops["None>Mirror"], ("mirror", "absent"))
+        self.assertEqual(ops["Mirror>Mirror"], ("move", "present"))
+
+    def test_undo_after_cut_waits_for_the_writer_step_on_the_other_machine(self):
+        undo = {row["name"]: row for row in volume_move.CASES}
+        self.assertEqual((undo["undo-before-cut"]["fault_on"], undo["undo-before-cut"]["trigger"]), ("writer", "fault"))
+        after = undo["undo-after-cut"]
+        self.assertEqual((after["fault_on"], after["trigger"], after["nth"]), ("other", "fault-after-stop", 2))
+
+    def test_soak_runs_the_six_move_steps_under_every_action(self):
+        self.assertEqual([step[0] for step in volume_move.SOAK_STEPS],
+                         ["1-rounds", "2-image", "3-cut", "4-final", "5-writer", "6-remove"])
+        self.assertEqual(len(volume_move.soak_cases()), 3 + 6 * 5)
+
+    def test_nth_after_counts_only_lines_after_the_stop(self):
+        lines = volume_move.stamped("100.5 m-2 ployzd[1]: fault: round\n200.0 m-2 ployzd[1]: fault: final\n"
+                                    "-- No entries --\n201.5 m-2 ployzd[1]: fault: writer\n")
+        self.assertEqual([at for at, _ in lines], [100.5, 200.0, 201.5])
+        self.assertTrue(volume_move.nth_after(lines, 150.0, 2).endswith("fault: writer"))
+        self.assertTrue(volume_move.nth_after(lines, 150.0, 1).endswith("fault: final"))
+        self.assertIsNone(volume_move.nth_after(lines, 200.5, 2))
+        self.assertIsNone(volume_move.nth_after(lines, 300.0, 1))
 
     def test_clean_move_passes_and_records_the_new_writer(self):
         summary, _ = self.run_cases([volume_move.CASES[0]])
