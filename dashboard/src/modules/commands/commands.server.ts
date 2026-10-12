@@ -8,7 +8,7 @@ import { type CommandCall, type Ran, refused } from "#/modules/commands/command.
 import { COMMANDS } from "#/modules/commands/registry.server";
 import type { Caller } from "#/modules/identity/actor";
 
-type Published = (typeof COMMANDS)[number];
+export type Published = (typeof COMMANDS)[number];
 export type CommandName = Published["name"];
 type OutputOf<N extends string> = Extract<Published, { name: N }>["output"]["Type"];
 
@@ -35,7 +35,7 @@ function jsonSchema(schema: Schema.Top): JsonObject {
 }
 
 /** Effect writes an empty struct as "object or array" and drops an empty `required`; `ployz` reads neither. */
-function inputSchema(command: Published): JsonObject {
+export function inputSchema(command: Published): JsonObject {
   if (Object.keys(command.input.fields).length === 0) return EMPTY_INPUT;
   const schema = jsonSchema(command.input);
   return { ...schema, required: schema["required"] ?? [] };
