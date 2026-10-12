@@ -159,6 +159,10 @@ class Client {
     return withRpcError(this._inner.inspectContainer(machine, container));
   }
 
+  removeContainer(machine, container) {
+    return withRpcError(this._inner.removeContainer(machine, container));
+  }
+
   copyContainerImage(source, container, dest) {
     return withRpcError(this._inner.copyContainerImage(source, container, dest));
   }
