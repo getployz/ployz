@@ -7,7 +7,7 @@ import { callStore, readStore } from "#/modules/config-store/config-store.server
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
-import { volumePlacement } from "#/modules/volume-placement/tables";
+import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import {
   lossByVolume, lossTime, oldCopies, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
 } from "#/modules/volume-placement/volume-placement";
@@ -230,6 +230,17 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
   return { ok: true, placement: view(row) } satisfies PlacementDiscard;
 });
 
+export const RESTORE_FAILED: StoreRefusal = { code: "conflict", message: "Restore failed. Restore again.", details: null };
+
+/** Whether Deployment `deploymentId`'s revision holds a restored Volume whose copy failed: shipping it again mounts it empty. */
+export const holdsFailedRestore = Effect.fn("VolumePlacement.holdsFailedRestore")(function* (organizationId: string, deploymentId: string) {
+  const { drizzle } = yield* Database;
+  const failed = yield* drizzle.select({ volumeId: failedRestore.volumeId }).from(failedRestore).where(eq(failedRestore.organizationId, organizationId));
+  if (failed.length === 0) return false;
+  const { nodes } = yield* readStore(organizationId, { query: "deployment", id: deploymentId });
+  return nodes.some((node) => node.type === "volume" && failed.some((row) => row.volumeId === node.id));
+});
+
 /**
  * Writes `command` through `write`, where every path to the Store meets it: the dashboard, the CLI, MCP and the agent.
  * An admitted Deploy takes the placements staged in its Environment, and only one admit stamps: a Redeploy ships what
@@ -245,6 +256,10 @@ export const writeAdmitted = <R>(
   write: (command: ConfigCommand) => Effect.Effect<ConfigCommitted, StoreRefused, R>,
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) => Effect.gen(function* () {
+  if (command.command === "admit" && command.admit === "retry") {
+    if (yield* holdsFailedRestore(organizationId, command.deployment)) return yield* new StoreRefused(RESTORE_FAILED);
+    return yield* write(command);
+  }
   if (command.command !== "admit" || command.admit !== "deploy") return yield* write(command);
   const database = yield* Database;
   const { environment } = yield* readStore(organizationId, { query: "volumes", environment: command.environment });

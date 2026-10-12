@@ -39,7 +39,7 @@ describe("deploying a Volume placement", () => {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
         read: async (_: string, query: { query: string }) => {
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
-          if (query.query === "deployment") return { status, in_flight: status === "queued", environment: { id: "env-1", project: "shop", name: "production" } };
+          if (query.query === "deployment") return { status, in_flight: status === "queued", environment: { id: "env-1", project: "shop", name: "production" }, nodes: [] };
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
             volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 } }, { id: "vol2", name: "data-1430", storage: restoredStorage }],
