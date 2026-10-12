@@ -11,8 +11,8 @@ use ployz_core::{DeployOutcome, DeployPreview, ServiceName};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
     Act, Ask, Call, CloudQuery, Fix, Gate, INSTRUCTIONS, MetricsQuery, MetricsSince,
-    MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, ToolResult, WAIT_CAP_SECONDS,
-    Write, Writes, catalog, example, lint, resume, start,
+    MetricsSubject, Place, Refusal, STEP_BUDGET, Step, StoreAt, Timestamp, ToolResult,
+    WAIT_CAP_SECONDS, Write, Writes, catalog, example, lint, resume, start,
 };
 use ployz_store::{
     Actor, Admit, ConfigStore, CreateEnvironment, CreateProject, CreateService, CreateVolume,
@@ -940,13 +940,131 @@ fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
     let failed = call(&store, "deployment_show", json!({}), "show-2").ok();
     assert_eq!(failed["in_flight"], false);
     assert!(failed.get("progress").is_none(), "{failed}");
+    let input = json!({ "service": "web", "deployment": failed["deployment"] });
     assert_eq!(
         failed["next"],
-        json!({
-            "tool": "service_logs",
-            "input": { "service": "web", "deployment": failed["deployment"] },
-        })
+        json!([
+            { "tool": "service_logs", "input": input },
+            { "tool": "service_metrics", "input": input },
+        ])
     );
+}
+
+/// [`deploying`] run to its end: its one row left in `row`, its runner saying
+/// `outcome`.
+fn ended(row: Value, outcome: Value) -> (ConfigStore, DeploymentId) {
+    let (store, id) = deploying();
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    let operation = json!({
+        "index": 0, "machine_id": machine('a'), "service_name": "web",
+        "operation": remove_container(),
+    });
+    let mut pending = operation.clone();
+    pending["status"] = json!({ "type": "pending" });
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": claimed.intent.namespace, "operations": [pending],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+    }))
+    .unwrap();
+    store
+        .record(&id, &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let mut done = operation;
+    done["status"] = row;
+    let rows: Vec<ployz_core::OperationRow> = serde_json::from_value(json!([done])).unwrap();
+    store
+        .record(
+            &id,
+            &runner,
+            RunEvidence::Executed {
+                progress: RowTracker::default().changes(&rows),
+                outcome: Box::new(serde_json::from_value(outcome).unwrap()),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    (store, id)
+}
+
+#[test]
+fn a_failed_deployments_next_calls_read_its_own_window_as_given() {
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": { "code": "internal", "message": "exit 1", "details": {} },
+    });
+    let (store, id) = ended(
+        json!({ "type": "failed", "error": error }),
+        json!({
+            "type": "failed", "completed": [], "unexecuted": [],
+            "failed": { "type": "operation", "operation": remove_container(), "error": error },
+        }),
+    );
+    let shown = call(
+        &store,
+        "deployment_show",
+        json!({ "project": "shop", "environment": "production" }),
+        "show-1",
+    )
+    .ok();
+    let started = shown["started_at"]
+        .as_i64()
+        .expect("a run Deployment started");
+
+    let (mut logs, mut metrics) = (Vec::new(), Vec::new());
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Logs(query)) => {
+            logs.push(query);
+            Ok(json!({ "servers": [], "seen": servers(&[])["seen"] }))
+        }
+        Cloud::Ask(CloudQuery::Metrics(query)) => {
+            metrics.push(query);
+            Ok(metrics_answer(json!([])))
+        }
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("a read acts on nothing: {act:?}"),
+    };
+    for next in shown["next"].as_array().expect("a list of next calls") {
+        drive(
+            &store,
+            in_org(),
+            next["tool"].as_str().unwrap(),
+            next["input"].clone(),
+            "next-1",
+            &mut cloud,
+        )
+        .ok();
+    }
+
+    let [logs] = logs.as_slice() else {
+        panic!("asked logs {logs:?}");
+    };
+    assert_eq!(logs.deployment.as_ref(), Some(&id), "its containers");
+    assert_eq!(logs.since, None, "not cut to a recent window");
+    let [metrics] = metrics.as_slice() else {
+        panic!("asked metrics {metrics:?}");
+    };
+    assert_eq!(metrics.deployment.as_ref(), Some(&id), "its events");
+    assert_eq!(
+        metrics.since,
+        MetricsSince::At {
+            at: Timestamp(started)
+        },
+        "from its start"
+    );
+}
+
+#[test]
+fn a_succeeded_deployment_names_no_next_call() {
+    let (store, _) = ended(
+        json!({ "type": "completed" }),
+        json!({ "type": "success", "completed": [remove_container()] }),
+    );
+
+    let shown = call(&store, "deployment_show", json!({}), "show-1").ok();
+    assert_eq!(shown["in_flight"], false);
+    assert_eq!(shown["nodes"][0]["outcome"], "deployed", "{shown}");
+    assert!(shown.get("next").is_none(), "{shown}");
 }
 
 /// Cloud's metrics answer with `events`, one CPU row and nothing unanswered.

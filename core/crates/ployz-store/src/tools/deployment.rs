@@ -102,8 +102,10 @@ fn progress(view: &DeploymentView) -> Value {
     })
 }
 
-/// `service_logs` for the first Service whose work failed, at this Deployment.
-fn failed_logs(view: &DeploymentView, call: &Call) -> Option<Call> {
+/// `service_logs` and `service_metrics` for the first Service whose work
+/// failed, over this Deployment: an exit code shows in logs, an OOM kill only in
+/// metrics.
+fn diagnose(view: &DeploymentView, call: &Call) -> Option<[Call; 2]> {
     let service = view.nodes.iter().find_map(|node| match &node.node {
         DeployedNode::Service { name, .. }
             if node
@@ -120,7 +122,11 @@ fn failed_logs(view: &DeploymentView, call: &Call) -> Option<Call> {
     let mut input = place(call);
     input.insert("service".into(), json!(service));
     input.insert("deployment".into(), view.deployment.number.into());
-    Some(Call::new("service_logs", Value::Object(input)))
+    let input = Value::Object(input);
+    Some([
+        Call::new("service_logs", input.clone()),
+        Call::new("service_metrics", input),
+    ])
 }
 
 fn show(view: &DeploymentView) -> Value {
@@ -194,8 +200,8 @@ impl Tool for DeploymentShow {
                 "next".into(),
                 json!(Call::new(Self::NAME, Value::Object(input))),
             );
-        } else if let Some(logs) = failed_logs(&view, cx.call()) {
-            object.insert("next".into(), json!(logs));
+        } else if let Some(calls) = diagnose(&view, cx.call()) {
+            object.insert("next".into(), json!(calls));
         }
         Ok(shown)
     }
