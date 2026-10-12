@@ -694,7 +694,7 @@ async fn a_host_that_elicits_asks_the_human_and_an_approval_resends_the_write() 
     assert_eq!(asking["method"], "elicitation/create", "{asking}");
     assert_eq!(
         asking["params"]["message"],
-        format!("Approve this deploy to production?\n{REVIEW}")
+        format!("Approve this deploy to shop/production?\n{REVIEW}")
     );
     let schema = &asking["params"]["requestedSchema"];
     assert_eq!(
@@ -954,7 +954,7 @@ async fn a_host_without_initialize_gets_the_dialog_in_the_result_and_its_approva
     assert_eq!(dialog["params"]["mode"], "form", "{asking}");
     assert_eq!(
         dialog["params"]["message"],
-        format!("Approve this deploy to production?\n{REVIEW}")
+        format!("Approve this deploy to shop/production?\n{REVIEW}")
     );
     assert_eq!(
         dialog["params"]["requestedSchema"]["required"],
@@ -991,9 +991,9 @@ async fn an_answer_after_the_deadline_decides_nothing_and_writes_nothing() {
     assert_eq!(late["result"]["isError"], true, "{late}");
     assert_eq!(
         late["result"]["content"][0]["text"],
-        "The human answered more than 1 seconds after this deploy to production was called, \
+        "The human answered more than 1 seconds after this deploy to shop/production was called, \
          so the answer was not recorded and nothing was deployed. The approval of this \
-         deploy to production stays pending in Ployz Cloud; call the tool again to ask again."
+         deploy to shop/production stays pending in Ployz Cloud; call the tool again to ask again."
     );
     let seen = fake.requests();
     assert!(decisions(&seen).is_empty(), "{seen:?}");
@@ -1225,9 +1225,9 @@ async fn a_host_without_elicitation_gets_a_tool_error_naming_where_to_approve() 
     assert_eq!(
         text,
         format!(
-            "A human must approve this deploy to production first, and this agent cannot ask \
+            "A human must approve this deploy to shop/production first, and this agent cannot ask \
              them. Show them what it destroys, then ask them to approve this deploy to \
-             production in the Ployz Cloud sidebar. Once they approve, call this tool again \
+             shop/production in the Ployz Cloud sidebar. Once they approve, call this tool again \
              with `approval` set to `apr_1`.\n{REVIEW}"
         )
     );
