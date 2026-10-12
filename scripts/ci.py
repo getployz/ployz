@@ -22,16 +22,22 @@ CONTRACT_SCRIPTS = {
 
 def select(paths):
     selected = select_normal(paths)
-    # Release builds cross-compile every native dependency, so new dependencies select them too.
-    if "core/Cargo.lock" in paths or release_inputs_changed(paths):
+    # Only release builds exercise the release profile, features, and native dependencies on every target.
+    manifest_changed = any(path.startswith("core/") and Path(path).name in {"Cargo.toml", "Cargo.lock"} for path in paths)
+    if manifest_changed or release_inputs_changed(paths):
         selected.add("release-contracts")
     return selected
 
 
 def release_inputs_changed(paths):
-    return subprocess.check_output(
-        ["bash", str(ROOT / "core/scripts/release-artifacts-needed.sh"), "pull_request", *paths], text=True
-    ).strip() == "true"
+    # Batches keep a huge diff under the kernel's argument length limit.
+    return any(
+        subprocess.check_output(
+            ["bash", str(ROOT / "core/scripts/release-artifacts-needed.sh"), "pull_request", *paths[i : i + 1000]],
+            text=True,
+        ).strip() == "true"
+        for i in range(0, len(paths), 1000)
+    )
 
 
 def select_normal(paths):

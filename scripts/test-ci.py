@@ -34,10 +34,10 @@ class CiTest(unittest.TestCase):
         for paths, expected in cases:
             with self.subTest(paths=paths):
                 self.assertEqual(ci["select"](paths), expected)
-        for path in [".github/workflows/ci.yml", "core/crates/ployzd/Cargo.toml", "core/crates/new-config", "unknown.config"]:
+        for path in [".github/workflows/ci.yml", "core/crates/new-config", "unknown.config"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"] - {"release-contracts"})
-        for path in ["core/Cargo.lock", ".github/workflows/release.yml", ".github/workflows/release-contracts.yml"]:
+        for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", ".github/workflows/release.yml", ".github/workflows/release-contracts.yml"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))
