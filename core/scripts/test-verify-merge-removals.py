@@ -146,6 +146,7 @@ try:
     assert {"web", "db", "worker", "anchor"} <= before["services"].keys(), before["services"]
     assert len(before["containers"].get("db", [])) == 1, "One db container runs before the merge"
     pg_data = keep("storage-before", storage(mounted(before["containers"]["db"][0]["id"])))
+    assert len(pg_data["dataset"]) == 1, f"pg-data has one ZFS dataset on the Machine: {pg_data}"
 
     opened = fixture("open", organization)
     assert services("pr-501").keys() >= {"web", "db"}, "PR 501 opened a PR Environment with web and db copied"
@@ -175,7 +176,7 @@ try:
     production = [deployment for deployment, found in shown.items() if found["environment"]["name"] == "production"]
     assert len(production) == 1, f"The merge admits one production Deployment: {shown}"
     deployment = wait(lambda: (found := view("deployment", "show", production[0]))["status"] in
-                      ("applied", "failed", "cancelled", "unknown") and found, 900, "The merge Deployment never finished")
+                      ("applied", "failed", "cancelled", "superseded", "unknown") and found, 900, "The merge Deployment never finished")
     keep("merge-deployment", deployment)
     assert deployment["status"] == "applied", f"The merge Deployment applied: {deployment['status']}"
     assert not deployment["remove"], "The merge Deployment is not an Environment removal"
