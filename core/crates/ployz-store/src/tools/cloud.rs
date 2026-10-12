@@ -136,7 +136,7 @@ pub struct MetricsAnswer {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct MetricRow {
     pub metric: String,
-    /// Absent when the newest reading is too old to be current.
+    /// Absent when there is no recent reading.
     pub now: Option<String>,
     pub avg: Option<String>,
     pub peak: Option<String>,

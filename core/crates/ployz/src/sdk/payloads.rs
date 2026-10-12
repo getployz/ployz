@@ -162,6 +162,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_store::tools::cloud::ServersAnswer>();
     declarations.add::<ployz_store::tools::cloud::ContainersAnswer>();
     declarations.add::<ployz_store::tools::cloud::LogsAnswer>();
+    declarations.add::<ployz_store::tools::cloud::MetricsAnswer>();
     declarations.add::<ployz_store::tools::cloud::CopiesAnswer>();
     declarations.add::<ployz_store::tools::cloud::OperationsAnswer>();
 

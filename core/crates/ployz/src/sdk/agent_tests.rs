@@ -154,22 +154,22 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
     );
     assert_eq!(answer.seen.unanswered, [ServerName::parse("two").unwrap()]);
     assert_eq!(
-        answer.metrics[1],
-        MetricRow {
+        answer.metrics.get(1),
+        Some(&MetricRow {
             metric: "Memory".into(),
             now: Some("500 MB / 512 MB".into()),
             avg: Some("500 MB".into()),
             peak: Some("500 MB".into()),
-        }
+        })
     );
     assert_eq!(
-        answer.metrics[2],
-        MetricRow {
+        answer.metrics.get(2),
+        Some(&MetricRow {
             metric: "Net in".into(),
             now: None,
             avg: None,
             peak: None,
-        },
+        }),
         "a metric with no reading is absent, never zero"
     );
 }

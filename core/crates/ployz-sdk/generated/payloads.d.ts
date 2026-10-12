@@ -441,7 +441,7 @@ conclusion: CheckConclusion | null,
  */
 updated: GithubTimestamp, };
 
-export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
+export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "metrics" } & MetricsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
@@ -2478,6 +2478,12 @@ kind: EnvironmentNodeType,
  */
 name: string | null, };
 
+export type MetricEvent = { at: Timestamp, server: MachineName, namespace: Namespace, service: ServiceName, deployment: DeploymentId | null, } & ({ "kind": "oom" } | { "kind": "exit",
+/**
+ * Absent when Docker did not say.
+ */
+exit_code?: number, } | { "kind": "restart" });
+
 export type MetricGap = { from: number, to: number, reason: MetricGapReason, };
 
 export type MetricGapReason = "not_sampled" | "timeout";
@@ -2518,7 +2524,37 @@ exit_code?: number, } | { "kind": "restart" });
 
 export type MetricPoints = { "machine": Array<HostPoint> } | { "service": Array<ServicePoint> };
 
+export type MetricRow = { metric: string,
+/**
+ * Absent when there is no recent reading.
+ */
+now: string | null, avg: string | null, peak: string | null, };
+
 export type MetricSubject = { "kind": "machine", machine_id: MachineId, } | { "kind": "service", service: QualifiedService, };
+
+export type MetricsAnswer = { since: Timestamp, until: Timestamp,
+/**
+ * Empty when no Server reported a reading in the range.
+ */
+metrics: Array<MetricRow>, oom_kills: number, exits: number, restarts: number,
+/**
+ * The newest OOM kills, exits and restarts, newest first.
+ */
+events: Array<MetricEvent>,
+/**
+ * Spans with no readings, and why a Server did not answer.
+ */
+notes: Array<string>, seen: Freshness, };
+
+export type MetricsQuery = { subject: MetricsSubject, since: MetricsSince,
+/**
+ * Keep only this Deployment's OOM kills, exits and restarts.
+ */
+deployment: DeploymentId | null, };
+
+export type MetricsSince = { "kind": "minutes_ago", minutes: number, } | { "kind": "at", at: Timestamp, };
+
+export type MetricsSubject = { "kind": "service", namespace: Namespace, service: ServiceName, } | { "kind": "server", server: ServerRef, };
 
 export type MintBuildGrantRequest = {
 /**
