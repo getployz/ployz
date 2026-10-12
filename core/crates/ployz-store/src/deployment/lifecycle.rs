@@ -57,7 +57,7 @@ pub(crate) fn admit(
     }
     let full = services.is_empty() && !frozen.nodes.iter().any(TargetNode::retires);
     let mut nodes = frozen.nodes.clone();
-    inherit(tx, environment, &intent, &mut nodes)?;
+    inherit(tx, environment, (&intent, &intent), &mut nodes)?;
     let mut targets = services.to_vec();
     for node in nodes.iter().filter(|node| !full && node.retires()) {
         if let TargetNode::Service { name, .. } = node
@@ -153,12 +153,15 @@ pub(crate) fn forget(
 /// retires and Saved revision `saved` still lacks, but none of the runtime Services
 /// `saved` runs: superseding it must not leave them running. A node of that Service
 /// becomes its teardown, so the next Deployment to supersede this one takes it over.
+/// Each Service it adds takes along the removed Configs that leave with it:
+/// [`unmounted`] from `shipped`, the revision these nodes ship.
 fn inherit(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    saved: &SavedEnvironmentIntent,
+    (saved, shipped): (&SavedEnvironmentIntent, &SavedEnvironmentIntent),
     nodes: &mut Vec<TargetNode>,
 ) -> Result<(), RpcError> {
+    let given = nodes.len();
     let rows = tx.query(
         "SELECT nodes FROM config_deployment WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into()],
@@ -203,6 +206,11 @@ fn inherit(
                 None => nodes.push(retire),
             }
         }
+    }
+    if nodes.len() > given {
+        let applied = applied_state(tx, environment, shipped)?;
+        let unmounted = unmounted(shipped, &applied, nodes)?;
+        nodes.extend(unmounted);
     }
     Ok(())
 }
@@ -364,7 +372,7 @@ fn retried(
     if stored.summary.services.is_empty() {
         let mut nodes = stored.nodes.clone();
         if let Some(latest) = &latest {
-            inherit(tx, environment, latest, &mut nodes)?;
+            inherit(tx, environment, (latest, &source), &mut nodes)?;
         }
         return Ok((Vec::new(), nodes));
     }
@@ -406,7 +414,7 @@ fn retried(
             }
         }
     }
-    inherit(tx, environment, &latest, &mut nodes)?;
+    inherit(tx, environment, (&latest, &source), &mut nodes)?;
     let named = |target: &ServiceName| {
         nodes
             .iter()

@@ -228,35 +228,23 @@ pub(crate) fn freeze(
             .any(|old| old.resource_id == config.resource_id);
         targeted.contains(&true) && (fresh || !targeted.contains(&false))
     };
-    // A removed Config leaves with the Services that mounted it, once every one ships.
-    let unmounts = |old: &SavedConfigIntent| {
-        let targeted: Vec<bool> = applied
-            .services
-            .iter()
-            .filter(|service| {
-                service
-                    .config_attachments
-                    .iter()
-                    .any(|mount| mount.config_resource_id == old.resource_id)
-            })
-            .map(|service| nodes.iter().any(|node| node.id() == service.id))
-            .collect();
-        targeted.contains(&true) && !targeted.contains(&false)
-    };
     let configs: Vec<TargetNode> = saved
         .configs
         .iter()
         .filter(|config| full || applies(config))
         .chain(applied.configs.iter().filter(|old| {
-            !saved
+            full && !saved
                 .configs
                 .iter()
                 .any(|new| new.resource_id == old.resource_id)
-                && (full || unmounts(old))
         }))
         .map(TargetNode::config)
         .collect::<Result<_, _>>()?;
     nodes.extend(configs);
+    if !full {
+        let unmounted = unmounted(saved, applied, &nodes)?;
+        nodes.extend(unmounted);
+    }
     for loss in losses {
         let volume = applied
             .volumes
@@ -290,6 +278,42 @@ pub(crate) fn freeze(
         cluster_domain: cluster_domain.cloned(),
         sourceless,
     })
+}
+
+/// Each Config Applied State `applied` holds and `saved` lacks that `nodes` don't
+/// ship yet but leave with: a removed Config goes with the Services that mounted
+/// it, once `nodes` ship every one.
+pub(super) fn unmounted(
+    saved: &SavedEnvironmentIntent,
+    applied: &SavedEnvironmentIntent,
+    nodes: &[TargetNode],
+) -> Result<Vec<TargetNode>, RpcError> {
+    let ships = |id: &str| nodes.iter().any(|node| node.id() == id);
+    applied
+        .configs
+        .iter()
+        .filter(|old| {
+            let targeted: Vec<bool> = applied
+                .services
+                .iter()
+                .filter(|service| {
+                    service
+                        .config_attachments
+                        .iter()
+                        .any(|mount| mount.config_resource_id == old.resource_id)
+                })
+                .map(|service| ships(&service.id))
+                .collect();
+            !saved
+                .configs
+                .iter()
+                .any(|new| new.resource_id == old.resource_id)
+                && !ships(&old.resource_id)
+                && targeted.contains(&true)
+                && !targeted.contains(&false)
+        })
+        .map(TargetNode::config)
+        .collect()
 }
 
 /// A Deployment lowered at claim.
