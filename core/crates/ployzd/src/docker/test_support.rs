@@ -36,8 +36,12 @@ pub(crate) struct FakeDocker {
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
+    /// A start waits here twice: once to announce it began, once to be released.
+    pub(crate) start_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
+    /// Another start attaches the network first, so this connect finds it attached.
+    pub(crate) connect_raced: Arc<AtomicBool>,
 }
 
 async fn fake_docker(
@@ -310,6 +314,12 @@ async fn fake_docker(
             (StatusCode::CREATED, response)
         }
     } else if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
+        if path.ends_with("/start")
+            && let Some(barrier) = &fake.start_barrier
+        {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
         (StatusCode::NO_CONTENT, serde_json::Value::Null)
     } else if method == Method::DELETE && path.contains("/volumes/") {
         let name = path.rsplit('/').next().unwrap();
@@ -336,6 +346,25 @@ async fn fake_docker(
             fake.volume_users.lock().unwrap().remove(name);
             fake.volumes.lock().unwrap().remove(name);
             (StatusCode::NO_CONTENT, serde_json::Value::Null)
+        }
+    } else if method == Method::POST && path.ends_with("/connect") {
+        if let Some(networks) = fake
+            .existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|container| container.pointer_mut("/NetworkSettings/Networks"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            networks.insert("ployz".into(), serde_json::json!({}));
+        }
+        if fake.connect_raced.load(Ordering::SeqCst) {
+            (
+                StatusCode::FORBIDDEN,
+                serde_json::json!({"message":"endpoint with name api already exists in network ployz"}),
+            )
+        } else {
+            (StatusCode::OK, serde_json::Value::Null)
         }
     } else if method == Method::DELETE && path.contains("/containers/") {
         fake.existing_container.lock().unwrap().take();

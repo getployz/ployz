@@ -2,7 +2,10 @@ use std::future::Future;
 
 use bollard::{
     errors::Error as DockerError,
-    models::{ContainerCreateBody, Mount, MountType},
+    models::{
+        ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum, Mount, MountType,
+        NetworkConnectRequest,
+    },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
@@ -16,7 +19,7 @@ use ployz_core::{
 #[cfg(test)]
 use ployz_core::MachineGateway;
 
-use crate::docker_image::prepare_image;
+use crate::{docker_image::prepare_image, network::DOCKER_NETWORK_NAME};
 
 use super::{
     ContainerRuntime, Error, ManagedLabels, create, docker_error, spec_store::ConfigOperation,
@@ -354,13 +357,87 @@ impl ContainerRuntime {
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
-        self.ensure_managed(container_id).await?;
+        let inspected = self.ensure_managed(container_id).await?;
+        self.stranded().await.held.remove(container_id);
+        self.start_inspected(container_id, &inspected).await
+    }
+
+    async fn start_inspected(
+        &self,
+        container_id: &ContainerId,
+        inspected: &ContainerInspectResponse,
+    ) -> Result<(), Error> {
+        if lost_ployz_network(inspected)
+            && let Err(error) = self
+                .docker
+                .client
+                .connect_network(
+                    DOCKER_NETWORK_NAME,
+                    NetworkConnectRequest {
+                        container: container_id.to_string(),
+                        endpoint_config: None,
+                    },
+                )
+                .await
+            // A concurrent start may have attached it first.
+            && lost_ployz_network(&self.ensure_managed(container_id).await?)
+        {
+            return Err(docker_error(container_id, error));
+        }
         let result = self
             .docker
             .client
             .start_container(container_id.as_str(), None)
             .await;
         idempotent_lifecycle_result(container_id, result)
+    }
+
+    /// Start an Ingress Proxy whose last start failed, unless a request stopped it
+    /// or is about to, or a container was created since `creates` was read or is
+    /// being created.
+    pub(super) async fn start_stranded(&self, container_id: &ContainerId, creates: u64) {
+        let gate = self
+            .stranded()
+            .await
+            .gates
+            .entry(*container_id)
+            .or_default()
+            .clone();
+        let Ok(_gate) = gate.try_lock() else {
+            return;
+        };
+        if self.stranded().await.held.contains(container_id)
+            || self.stopping.borrow().contains_key(container_id)
+        {
+            return;
+        }
+        let result = async {
+            let inspected = self.ensure_managed(container_id).await?;
+            // A newer Ingress Proxy may be about to take port 80; the next scan decides.
+            if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
+                return Ok(());
+            }
+            self.start_inspected(container_id, &inspected).await
+        }
+        .await;
+        let mut stranded = self.stranded().await;
+        match result {
+            Ok(()) => stranded.reported = None,
+            Err(error) if stranded.reported != Some(*container_id) => {
+                eprintln!(
+                    "Ingress Proxy {container_id} is still not started: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
+                stranded.reported = Some(*container_id);
+            }
+            Err(_) => {}
+        }
+    }
+
+    pub(super) async fn stranded(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, super::observe::StrandedIngress> {
+        self.stranded.lock().await
     }
 
     pub async fn stop(
@@ -370,6 +447,14 @@ impl ContainerRuntime {
         grace_period_seconds: Option<i32>,
     ) -> Result<(), Error> {
         self.ensure_managed(container_id).await?;
+        let gate = {
+            let mut stranded = self.stranded().await;
+            stranded.held.insert(*container_id);
+            stranded.gates.get(container_id).cloned()
+        };
+        if let Some(gate) = gate {
+            drop(gate.lock().await);
+        }
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -395,9 +480,9 @@ impl ContainerRuntime {
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
         match self.ensure_managed(container_id).await {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
-                self.forget_checks(container_id);
+                self.forget(container_id).await;
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -419,7 +504,7 @@ impl ContainerRuntime {
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
             Err(error) => return Err(error),
         }
-        self.forget_checks(container_id);
+        self.forget(container_id).await;
         Ok(())
     }
 
@@ -441,12 +526,15 @@ impl ContainerRuntime {
             }
             self.force_remove_container(&container_id).await?;
             config_operation.remove(&container_id).await?;
-            self.forget_checks(&container_id);
+            self.forget(&container_id).await;
         }
         Ok(())
     }
 
-    async fn ensure_managed(&self, container_id: &ContainerId) -> Result<(), Error> {
+    async fn ensure_managed(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<ContainerInspectResponse, Error> {
         let inspected = self
             .docker
             .client
@@ -455,14 +543,15 @@ impl ContainerRuntime {
             .map_err(|error| docker_error(container_id, error))?;
         let labels = inspected
             .config
-            .and_then(|config| config.labels)
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
             .ok_or(Error::NotManaged)?;
-        ManagedLabels::parse(&labels)?;
+        ManagedLabels::parse(labels)?;
         self.specs
             .get(container_id)
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        Ok(())
+        Ok(inspected)
     }
 
     async fn force_remove_container(&self, container_id: &ContainerId) -> Result<(), Error> {
@@ -493,6 +582,7 @@ impl super::LocalDocker {
         if self.bridge_capacity().await?.free_endpoints() == 0 {
             return Err(Error::EndpointCapacity);
         }
+        let _creating = super::Creating::new(&self.creates);
         Ok(self.client.create_container(options, body).await?)
     }
 }
@@ -606,9 +696,353 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
     }
 }
 
+/// Docker left this container created and recorded why its start failed.
+/// Docker clears `State.Error` when a start succeeds, so a container at rest with one
+/// recorded is one whose last start failed: its first, or the one at boot that
+/// leaves it exited with no retry.
+fn failed_start(inspected: &ContainerInspectResponse) -> bool {
+    inspected.state.as_ref().is_some_and(|state| {
+        matches!(
+            state.status,
+            Some(ContainerStateStatusEnum::CREATED | ContainerStateStatusEnum::EXITED)
+        ) && state
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty())
+    })
+}
+
+/// Docker 29 empties a container's networks when its start fails, and a later start
+/// then runs it with no network and no published ports.
+fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
+    let created_on_ployz = inspected
+        .host_config
+        .as_ref()
+        .and_then(|host| host.network_mode.as_deref())
+        == Some(DOCKER_NETWORK_NAME);
+    let attached = inspected
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.networks.as_ref())
+        .is_some_and(|networks| networks.contains_key(DOCKER_NETWORK_NAME));
+    created_on_ployz && !attached
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::docker::test_support::{
+        FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+    };
+
+    fn inspected(network_mode: &str, networks: serde_json::Value) -> ContainerInspectResponse {
+        serde_json::from_value(serde_json::json!({
+            "HostConfig": { "NetworkMode": network_mode },
+            "NetworkSettings": { "Networks": networks },
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_container_whose_failed_start_dropped_its_network_gets_it_back() {
+        assert!(lost_ployz_network(&inspected(
+            "ployz",
+            serde_json::json!({})
+        )));
+        assert!(lost_ployz_network(&inspected(
+            "ployz",
+            serde_json::json!({ "bridge": {} })
+        )));
+    }
+
+    #[test]
+    fn an_attached_or_differently_networked_container_is_left_alone() {
+        assert!(!lost_ployz_network(&inspected(
+            "ployz",
+            serde_json::json!({ "ployz": {} })
+        )));
+        assert!(!lost_ployz_network(&inspected(
+            "host",
+            serde_json::json!({})
+        )));
+    }
+
+    async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {
+        stranded_with("created", error, FakeDocker::default()).await
+    }
+
+    async fn stranded_with(
+        status: &str,
+        error: &str,
+        fake: FakeDocker,
+    ) -> (ContainerRuntime, FakeDocker, ContainerId) {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+            ..fake
+        })
+        .await;
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(Vec::new());
+        let created = runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                container_request(
+                    ContainerKind::ServiceContainer,
+                    &namespace,
+                    &spec,
+                    std::future::ready(None),
+                ),
+            )
+            .await
+            .unwrap();
+        let labels = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap()
+            .1
+            .get("Labels")
+            .unwrap()
+            .clone();
+        *fake.existing_container.lock().unwrap() = Some(serde_json::json!({
+            "Id": created.container_id.as_str(),
+            "Config": { "Labels": labels },
+            "HostConfig": { "NetworkMode": "ployz" },
+            "NetworkSettings": { "Networks": {} },
+            "State": { "Status": status, "ExitCode": 128, "Error": error },
+        }));
+        fake.requests.lock().unwrap().clear();
+        (runtime, fake, created.container_id)
+    }
+
+    fn started(fake: &FakeDocker) -> bool {
+        fake.requests
+            .lock()
+            .unwrap()
+            .drain(..)
+            .any(|(method, path)| method == axum::http::Method::POST && path.ends_with("/start"))
+    }
+
+    const PORT_TAKEN: &str = "failed to bind host port 0.0.0.0:80/tcp: address already in use";
+
+    #[tokio::test]
+    async fn a_stranded_ingress_starts_until_a_request_stops_it() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+        assert!(started(&fake), "a failed first start is retried");
+
+        runtime.stop(&container_id, None, None).await.unwrap();
+        fake.requests.lock().unwrap().clear();
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+        assert!(!started(&fake), "a stopped ingress stays stopped");
+
+        runtime.start(&container_id).await.unwrap();
+        fake.requests.lock().unwrap().clear();
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+        assert!(started(&fake), "a requested start lifts the stop");
+    }
+
+    #[tokio::test]
+    async fn an_ingress_about_to_be_stopped_is_not_started() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+
+        runtime.mark_stopping(container_id);
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+
+        assert!(!started(&fake));
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_races_a_stranded_start_leaves_the_ingress_stopped() {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let (runtime, fake, container_id) = stranded_with(
+            "created",
+            PORT_TAKEN,
+            FakeDocker {
+                start_barrier: Some(barrier.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let starting = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .start_stranded(&container_id, runtime.docker.creates())
+                    .await
+            }
+        });
+        barrier.wait().await;
+        let stopping = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.stop(&container_id, None, None).await }
+        });
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| path.ends_with("/stop")),
+            "the stop waits for the start it raced"
+        );
+        barrier.wait().await;
+        starting.await.unwrap();
+        stopping.await.unwrap().unwrap();
+
+        let lifecycle = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == axum::http::Method::POST)
+            .map(|(_, path)| path.rsplit('/').next().unwrap().to_owned())
+            .filter(|action| action == "start" || action == "stop")
+            .collect::<Vec<_>>();
+        assert_eq!(lifecycle, ["start", "stop"]);
+        fake.requests.lock().unwrap().clear();
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+        assert!(!started(&fake), "the stop holds");
+    }
+
+    #[tokio::test]
+    async fn a_create_in_flight_when_the_scan_began_voids_the_start() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        let creating = super::super::Creating::new(&runtime.docker.creates);
+        let creates = runtime.docker.creates();
+
+        runtime.start_stranded(&container_id, creates).await;
+        assert!(!started(&fake), "a newer ingress may be appearing");
+
+        drop(creating);
+        runtime.start_stranded(&container_id, creates).await;
+        assert!(!started(&fake), "it appeared after the scan began");
+
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+        assert!(started(&fake), "the next scan decides");
+    }
+
+    #[tokio::test]
+    async fn a_container_created_since_the_scan_voids_the_start() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        let creates = runtime.docker.creates();
+        let stranded = fake.existing_container.lock().unwrap().clone();
+        runtime
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                container_request(
+                    ContainerKind::ServiceContainer,
+                    &Namespace::parse("app").unwrap(),
+                    &spec_with_sources(Vec::new()),
+                    std::future::ready(None),
+                ),
+            )
+            .await
+            .unwrap();
+        *fake.existing_container.lock().unwrap() = stranded;
+        fake.requests.lock().unwrap().clear();
+
+        runtime.start_stranded(&container_id, creates).await;
+
+        assert!(!started(&fake), "the next scan decides");
+    }
+
+    #[tokio::test]
+    async fn a_stranded_start_in_flight_does_not_hold_up_other_containers() {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let (runtime, _fake, container_id) = stranded_with(
+            "created",
+            PORT_TAKEN,
+            FakeDocker {
+                start_barrier: Some(barrier.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+        let other = ContainerId::parse("b".repeat(64)).unwrap();
+
+        let starting = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .start_stranded(&container_id, runtime.docker.creates())
+                    .await
+            }
+        });
+        barrier.wait().await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), runtime.forget(&other))
+            .await
+            .expect("forgetting another container does not wait for the start");
+        barrier.wait().await;
+        starting.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_ingress_docker_never_tried_to_start_is_left_alone() {
+        let (runtime, fake, container_id) = stranded("").await;
+
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+
+        assert!(!started(&fake));
+    }
+
+    // Docker starts a container with a restart policy once at boot and records a
+    // failure as exited, with no retry.
+    #[tokio::test]
+    async fn an_ingress_whose_start_at_boot_failed_is_started_again() {
+        let (runtime, fake, container_id) =
+            stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
+
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+
+        assert!(started(&fake));
+    }
+
+    #[tokio::test]
+    async fn an_ingress_that_exited_on_its_own_is_left_alone() {
+        let (runtime, fake, container_id) =
+            stranded_with("exited", "", FakeDocker::default()).await;
+
+        runtime
+            .start_stranded(&container_id, runtime.docker.creates())
+            .await;
+
+        assert!(!started(&fake));
+    }
+
+    #[tokio::test]
+    async fn a_start_that_races_another_for_the_network_still_starts() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        fake.connect_raced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        runtime.start(&container_id).await.unwrap();
+
+        assert!(started(&fake));
+    }
 
     #[test]
     fn name_conflicts_retry_with_a_fresh_four_character_suffix() {

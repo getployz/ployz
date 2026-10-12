@@ -70,6 +70,35 @@ pub const LABEL_HOOK_PRE_DEPLOY: &str = "pre-deploy";
 pub struct LocalDocker {
     client: Docker,
     endpoint_creates: Arc<Mutex<()>>,
+    /// Counts container creates, so a stranded ingress retry can tell a newer
+    /// container may have appeared since its scan, or be appearing still.
+    creates: Arc<Creates>,
+}
+
+#[derive(Default)]
+struct Creates {
+    started: std::sync::atomic::AtomicU64,
+    finished: std::sync::atomic::AtomicU64,
+}
+
+/// Counts a create as finished when dropped, even if the create was cancelled.
+struct Creating<'a>(&'a Creates);
+
+impl<'a> Creating<'a> {
+    fn new(creates: &'a Creates) -> Self {
+        creates
+            .started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(creates)
+    }
+}
+
+impl Drop for Creating<'_> {
+    fn drop(&mut self) {
+        self.0
+            .finished
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl LocalDocker {
@@ -81,6 +110,7 @@ impl LocalDocker {
         Self {
             client,
             endpoint_creates: Arc::new(Mutex::new(())),
+            creates: Arc::default(),
         }
     }
 
@@ -102,6 +132,21 @@ impl LocalDocker {
             .driver_status
             .as_deref()
             .is_some_and(containerd_store))
+    }
+
+    /// Creates finished so far.
+    fn creates(&self) -> u64 {
+        self.creates
+            .finished
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Every create started so far had finished when `creates` was read.
+    fn created_nothing_since(&self, creates: u64) -> bool {
+        self.creates
+            .started
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == creates
     }
 
     async fn managed_container_ids(&self) -> Result<Vec<ContainerId>, Error> {
@@ -141,6 +186,7 @@ pub struct ContainerRuntime {
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, Withdrawal>>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
+    stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
 }
 
 impl ContainerRuntime {
@@ -152,6 +198,7 @@ impl ContainerRuntime {
             sink: None,
             stopping: watch::Sender::new(BTreeMap::new()),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
+            stranded: Arc::default(),
         }
     }
 
@@ -198,11 +245,15 @@ impl ContainerRuntime {
             .send_if_modified(|stopping| stopping.remove(container_id).is_some());
     }
 
-    fn forget_checks(&self, container_id: &ContainerId) {
+    /// Drop what the daemon remembers about a container Docker no longer has.
+    async fn forget(&self, container_id: &ContainerId) {
         self.checks
             .lock()
             .expect("check records are never poisoned")
             .forget(container_id);
+        let mut stranded = self.stranded().await;
+        stranded.held.remove(container_id);
+        stranded.gates.remove(container_id);
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {

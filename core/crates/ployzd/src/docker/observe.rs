@@ -1,13 +1,15 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
-    CADDY_ADMIN_ENV, ContainerId, ContainerObservation, CopyRole, DockerVolume, DockerVolumeName,
-    DockerVolumeStorageObservation, LocalMachinePhase, MIRROR_ROOT, VolumeInventory,
+    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+    CopyRole, DockerVolume, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
+    MIRROR_ROOT, VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +19,18 @@ use crate::machine::RecordOwner;
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+pub(super) struct StrandedIngress {
+    /// Stopped on request, so never started unasked.
+    pub(super) held: BTreeSet<ContainerId>,
+    /// The last one whose failure was logged. Docker names a fresh endpoint in
+    /// every failure, so comparing the messages would log every scan.
+    pub(super) reported: Option<ContainerId>,
+    /// Taken through each start, so a stop that races it lands after it and holds,
+    /// while other containers never wait on the Docker calls.
+    pub(super) gates: BTreeMap<ContainerId, Arc<tokio::sync::Mutex<()>>>,
+}
 
 #[derive(Clone)]
 pub(super) struct ObservationSink {
@@ -210,13 +224,16 @@ impl ContainerRuntime {
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
         // TODO: preserve stale rows when Docker cannot provide a complete inventory.
         let machine_id = sink.local.record().id();
+        let creates = self.docker.creates();
         let inventory = self.docker.managed_container_ids().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
+        let mut observed = Vec::with_capacity(container_ids.len());
         for container_id in &container_ids {
             match self.inspect_managed(container_id, &machine_id).await {
                 Ok(observation) => {
                     live.observed(redacted_container(&observation));
+                    observed.push(observation);
                 }
                 Err(error) => {
                     eprintln!(
@@ -235,8 +252,24 @@ impl ContainerRuntime {
         let changes = local_container_changes(&existing, &live);
         publication
             .apply_container_rows(&machine_id, &changes.deletions, &changes.upserts)
-            .await
-            .map_err(Error::from)
+            .await?;
+        // Started after the guard drops, so a slow Docker start never stalls publication.
+        // A reset that takes the guard meanwhile removes the container anyway. The record
+        // is read again here, so a policy change that committed during publication holds.
+        drop(publication);
+        let local = sink.local.record();
+        if local.phase() == LocalMachinePhase::Participating
+            && local
+                .machine()
+                .is_some_and(|machine| machine.accepts_ingress)
+            && let Some(container_id) =
+                stranded_ingress(&observed, observed.len() == container_ids.len())
+        {
+            // Off the event loop, so a slow Docker start never delays later scans.
+            let runtime = self.clone();
+            tokio::spawn(async move { runtime.start_stranded(&container_id, creates).await });
+        }
+        Ok(())
     }
 
     async fn sync_volume_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
@@ -393,6 +426,33 @@ fn local_volume_changes(
     }
 }
 
+/// The newest local Ingress Proxy, when no local one runs.
+///
+/// Docker's restart policy covers an ingress that ran and died, not one whose start
+/// failed, such as when another process held port 80 at enrollment or at boot. The
+/// candidate's inspect decides whether its last start failed. A scan that could not
+/// inspect every container may have missed a running one, so it names nothing.
+fn stranded_ingress(observations: &[ContainerObservation], complete: bool) -> Option<ContainerId> {
+    if !complete {
+        return None;
+    }
+    let ingresses = observations.iter().filter(|observation| {
+        observation.kind == ContainerKind::ServiceContainer
+            && crate::ingress::is_system_ingress(observation)
+    });
+    let at_rest = ingresses.clone().all(|observation| {
+        matches!(
+            observation.runtime,
+            ContainerRuntimeObservation::Created
+                | ContainerRuntimeObservation::Exited { .. }
+                | ContainerRuntimeObservation::Dead
+        )
+    });
+    let newest = ingresses
+        .max_by_key(|observation| (observation.created_at_unix_nanos, observation.container_id))?;
+    at_rest.then_some(newest.container_id)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -402,8 +462,112 @@ mod tests {
 
     use super::{
         local_container_changes, local_volume_changes, observe_copies, redacted_container,
+        stranded_ingress,
     };
     use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot};
+
+    fn container(
+        id: char,
+        namespace: &str,
+        name: &str,
+        created_at: i64,
+        runtime: serde_json::Value,
+    ) -> ContainerObservation {
+        serde_json::from_value(json!({
+            "container_id": id.to_string().repeat(64),
+            "display_name": format!("{name}-{id}"),
+            "created_at_unix_nanos": created_at,
+            "machine_id": "b".repeat(32),
+            "namespace": namespace,
+            "kind": "service_container",
+            "runtime": runtime,
+            "resolved_spec": {
+                "service_id": "c".repeat(32),
+                "name": name,
+                "mode": { "mode": "replicated", "replicas": 1 },
+                "container": { "image": "caddy:2", "pull_policy": "missing" }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn ingress(id: char, created_at: i64, runtime: serde_json::Value) -> ContainerObservation {
+        container(id, "ployz-system", "ingress", created_at, runtime)
+    }
+
+    fn id(id: char) -> ContainerId {
+        ContainerId::parse(id.to_string().repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn ingress_that_never_started_is_started_again() {
+        let created = json!({ "state": "created" });
+        assert_eq!(
+            stranded_ingress(&[ingress('a', 1, created)], true),
+            Some(id('a'))
+        );
+    }
+
+    #[test]
+    fn newest_ingress_at_rest_is_the_candidate_when_none_runs() {
+        assert_eq!(
+            stranded_ingress(
+                &[
+                    ingress('a', 1, json!({ "state": "exited", "code": 0 })),
+                    ingress('d', 2, json!({ "state": "created" })),
+                ],
+                true
+            ),
+            Some(id('d'))
+        );
+        assert_eq!(
+            stranded_ingress(
+                &[
+                    ingress('a', 2, json!({ "state": "exited", "code": 255 })),
+                    ingress('d', 1, json!({ "state": "created" })),
+                ],
+                true
+            ),
+            Some(id('a'))
+        );
+    }
+
+    #[test]
+    fn ingress_is_left_alone_while_one_runs_or_belongs_to_an_app() {
+        let created = json!({ "state": "created" });
+        let running = json!({ "state": "running", "health": "healthy" });
+        assert_eq!(
+            stranded_ingress(
+                &[ingress('a', 1, running), ingress('d', 2, created.clone())],
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            stranded_ingress(
+                &[
+                    ingress('a', 2, json!({ "state": "restarting" })),
+                    ingress('d', 1, created.clone()),
+                ],
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            stranded_ingress(
+                &[container('a', "app", "ingress", 1, created.clone())],
+                true
+            ),
+            None
+        );
+        assert_eq!(stranded_ingress(&[], true), None);
+    }
+
+    #[test]
+    fn a_scan_that_could_not_inspect_every_container_starts_no_ingress() {
+        let created = json!({ "state": "created" });
+        assert_eq!(stranded_ingress(&[ingress('a', 1, created)], false), None);
+    }
 
     #[test]
     fn publication_redacts_service_and_hook_environment_values() {

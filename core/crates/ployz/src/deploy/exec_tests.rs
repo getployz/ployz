@@ -64,6 +64,7 @@ enum Reply {
         Option<ployz_core::HealthcheckSpec>,
         Option<LastHealthCheck>,
     ),
+    ObservedIngress(ContainerRuntimeObservation),
     Pending,
     Error(RpcError),
 }
@@ -138,6 +139,7 @@ impl MachineOperations for Scripted {
             | Reply::Created(_)
             | Reply::CreatedLater(_)
             | Reply::Observed(..)
+            | Reply::ObservedIngress(_)
             | Reply::Pending => {
                 panic!("scripted list requires Listed or Error")
             }
@@ -167,7 +169,7 @@ impl MachineOperations for Scripted {
             }
             Reply::Error(error) => Err(error),
             Reply::Pending => std::future::pending().await,
-            Reply::Ok | Reply::Listed(_) | Reply::Observed(..) => {
+            Reply::Ok | Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedIngress(_) => {
                 panic!("scripted create requires Created or Error")
             }
         }
@@ -197,6 +199,21 @@ impl MachineOperations for Scripted {
                     environment: None,
                     image_id: None,
                     last_check,
+                })
+            }
+            Reply::ObservedIngress(runtime) => {
+                let mut container = observation(machine_id, container_id, runtime);
+                container
+                    .try_update(|parts| {
+                        parts.namespace = Namespace::system();
+                        parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
+                    })
+                    .unwrap();
+                Ok(ContainerDetails {
+                    container,
+                    environment: None,
+                    image_id: None,
+                    last_check: None,
                 })
             }
             Reply::Pending => std::future::pending().await,
@@ -242,6 +259,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::Created(_)
         | Reply::CreatedLater(_)
         | Reply::Observed(..)
+        | Reply::ObservedIngress(_)
         | Reply::Pending => {
             panic!("scripted mutation requires Ok or Error")
         }
@@ -455,6 +473,10 @@ fn created_later(call: Call, container_id: &ContainerId) -> Step {
 
 fn observed(call: Call, runtime: ContainerRuntimeObservation) -> Step {
     Step(call, Reply::Observed(runtime, None, None))
+}
+
+fn observed_ingress(call: Call, runtime: ContainerRuntimeObservation) -> Step {
+    Step(call, Reply::ObservedIngress(runtime))
 }
 
 fn observed_with_healthcheck(

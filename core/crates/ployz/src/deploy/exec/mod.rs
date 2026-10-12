@@ -978,21 +978,38 @@ async fn replace_container<C: MachineOperations>(
                 return Err(machine_error(MachineAction::InspectContainer, error).into());
             }
         };
-        let active = old.is_some_and(|old| super::is_active_runtime(&old.runtime));
-        if active {
-            progress.set_running(index, OperationPhase::StoppingContainer);
-            match client
-                .stop_container(&operation.machine_id, &operation.old_container_id, None)
-                .await
-            {
-                Ok(()) => true,
-                Err(error) if error.code == RpcErrorCode::NotFound => false,
-                Err(error) => {
-                    return Err(machine_error(MachineAction::StopContainer, error).into());
+        match old {
+            // A stop holds an old container at rest too: its Server restarts an
+            // ingress whose start failed unless a request stopped it.
+            Some(old) => {
+                progress.set_running(index, OperationPhase::StoppingContainer);
+                match client
+                    .stop_container(&operation.machine_id, &operation.old_container_id, None)
+                    .await
+                {
+                    // An ingress at rest is handed back by a start, which lifts the
+                    // hold even when the start fails again. That includes one a user
+                    // stopped. Any other container at rest stays down, and one in a
+                    // runtime this client does not recognize is handed back.
+                    Ok(()) => match old.runtime {
+                        ContainerRuntimeObservation::Created
+                        | ContainerRuntimeObservation::Exited { .. }
+                        | ContainerRuntimeObservation::Dead => {
+                            crate::ingress::is_system_ingress(&old)
+                        }
+                        ContainerRuntimeObservation::Removing => false,
+                        ContainerRuntimeObservation::Running { .. }
+                        | ContainerRuntimeObservation::Paused
+                        | ContainerRuntimeObservation::Restarting
+                        | ContainerRuntimeObservation::Unknown { .. } => true,
+                    },
+                    Err(error) if error.code == RpcErrorCode::NotFound => false,
+                    Err(error) => {
+                        return Err(machine_error(MachineAction::StopContainer, error).into());
+                    }
                 }
             }
-        } else {
-            false
+            None => false,
         }
     } else {
         false

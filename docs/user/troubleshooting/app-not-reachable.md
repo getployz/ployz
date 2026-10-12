@@ -137,8 +137,9 @@ sudo ss -ltnp '( sport = :80 or sport = :443 )'
 ```
 
 Stop that web server, or move it to another server. To keep Ployz Cloud on the same server,
-publish it through a Cloudflare Tunnel instead. Then click **Check again** under **Domain** in
-**Organization → General**.
+publish it through a Cloudflare Tunnel instead. Once port 80 is free, the server starts its
+ingress on its own within a minute. You don't need to remove and re-add the server. Then click
+**Check again** under **Domain** in **Organization → General**.
 
 ## None of my servers takes web traffic
 

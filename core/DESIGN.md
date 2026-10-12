@@ -454,6 +454,30 @@ continues after the command that started it returns, which bet 3 flags. It is
 serving, not reconciling: it reads one spec, answers queries, and does no work
 on other Machines or on its own schedule.
 
+**Ingress the Machine already holds starts.** Docker's restart policy restarts an
+Ingress Proxy that ran and died, but never one whose start failed, as when
+another process held port 80 at enrollment or at boot. A Deploy or catch-up
+keeps that container, so the Machine would stay without ingress until someone
+redeployed. On each local container scan (Docker events and a 30 second rescan)
+the daemon starts the newest local Ingress Proxy when Docker recorded its failed
+last start and no other local one is running or restarting. It does so only
+while the Machine participates and its own record still accepts ingress, and
+only after a scan that inspected every local container, and no container was
+created since that scan began, so a newer Ingress Proxy keeps port 80. It decides from its own
+Docker and record alone. It never creates, replaces, moves or removes a
+container. A stopped Ingress Proxy stays stopped: a requested stop holds the
+container down, even one that never ran, until a requested start; the hold lives
+in daemon memory, so a daemon restart forgets it, and a stop or an in-flight
+stopping mark wins over a scan that races it. A stop-first replacement
+therefore stops the old container even at rest. When the replacement fails, it
+hands an old Ingress Proxy at rest back with a start, even one a user stopped,
+and leaves any other container at rest stopped. This extends Docker's restart
+policy to Machine-local serving infrastructure. It is behavior on the daemon's
+own schedule, which bet 3 flags, and it is the only Service Container the daemon
+starts unasked. Docker also drops a container's network when its start fails, so
+every daemon start reattaches the `ployz` network first when the container lost
+it.
+
 **Red flags:** daemon-side policy without one of the three reasons, daemon logic
 a client could compute from the observations it already gathers, a daemon stop
 path that stops serving infrastructure, a second writer of `dns.json` or the DNS
