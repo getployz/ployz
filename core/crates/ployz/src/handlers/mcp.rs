@@ -432,7 +432,7 @@ impl Server {
                 if let Answer::Refused(refused) = self.decide(verb, &asked, answer).await? {
                     return Ok(refused.into());
                 }
-                approve_with(&mut argv, &asked.id);
+                approve_with(&mut argv, call.entry, &asked.id);
             }
             let ran = self.run(call.entry, &argv).await?;
             let Some(asked) = ran.asked else {
@@ -637,13 +637,19 @@ fn asked(stdout: &str) -> Option<Asked> {
     Asked::of(&error)
 }
 
-fn approve_with(argv: &mut Vec<String>, id: &str) {
+/// The call again with `--approval=id`. An `up` rerun drops `--server` and `--reset`:
+/// the first run already added that Server, and adding it again would fail or reset it.
+fn approve_with(argv: &mut Vec<String>, entry: &CommandEntry, id: &str) {
     let flags = argv
         .iter()
         .position(|word| word == "--json")
         .unwrap_or(argv.len());
     let rest = argv.split_off(flags);
-    argv.retain(|word| !word.starts_with("--approval="));
+    let up = entry.command == "up";
+    argv.retain(|word| {
+        !word.starts_with("--approval=")
+            && !(up && (word.starts_with("--server=") || word == "--reset"))
+    });
     argv.push(format!("--approval={id}"));
     argv.extend(rest);
 }
@@ -1521,11 +1527,28 @@ mod tests {
         let mut argv: Vec<String> = ["deploy", "--approval=apr_0", "--json", "--", "--approval=x"]
             .map(str::to_owned)
             .to_vec();
-        approve_with(&mut argv, "apr_1");
+        let deploy = catalog::commands()
+            .into_iter()
+            .find(|entry| entry.command == "deploy")
+            .unwrap();
+        approve_with(&mut argv, &deploy, "apr_1");
         assert_eq!(
             argv,
             ["deploy", "--approval=apr_1", "--json", "--", "--approval=x"]
         );
+    }
+
+    #[test]
+    fn an_up_rerun_after_approval_does_not_add_its_server_again() {
+        let up = catalog::commands()
+            .into_iter()
+            .find(|entry| entry.command == "up")
+            .unwrap();
+        let arguments = json!({ "server": "root@host", "reset": true, "env": "staging" });
+        let mut argv = argv(&up, &[], arguments.as_object().cloned().unwrap()).unwrap();
+        assert!(argv.contains(&"--server=root@host".to_owned()), "{argv:?}");
+        approve_with(&mut argv, &up, "apr_1");
+        assert_eq!(argv, ["up", "--env=staging", "--approval=apr_1", "--json"]);
     }
 
     fn fake_cloud() -> (String, std::sync::mpsc::Receiver<(String, String, Value)>) {
@@ -1676,7 +1699,7 @@ mod tests {
         assert_eq!(asking["method"], "elicitation/create", "{asking}");
         assert_eq!(
             asking["params"]["message"],
-            "Approve this deploy to production?\n\
+            "Approve this deploy to shop/production?\n\
              This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         );
         let schema = &asking["params"]["requestedSchema"];
@@ -1864,9 +1887,9 @@ mod tests {
         assert_eq!(late["result"]["isError"], true, "{late}");
         assert_eq!(
             late["result"]["content"][0]["text"],
-            "The human answered more than 1 seconds after this deploy to production was called, \
+            "The human answered more than 1 seconds after this deploy to shop/production was called, \
              so the answer was not recorded and nothing was deployed. The approval of this \
-             deploy to production stays pending in Ployz Cloud; call the tool again to ask again."
+             deploy to shop/production stays pending in Ployz Cloud; call the tool again to ask again."
         );
         assert!(
             decisions.try_recv().is_err(),
@@ -2032,7 +2055,7 @@ mod tests {
         assert_eq!(dialog["params"]["mode"], "form", "{asking}");
         assert_eq!(
             dialog["params"]["message"],
-            "Approve this deploy to production?\n\
+            "Approve this deploy to shop/production?\n\
              This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         );
         assert_eq!(
@@ -2122,9 +2145,9 @@ mod tests {
         let text = refused["result"]["content"][0]["text"].as_str().unwrap();
         assert_eq!(
             text,
-            "A human must approve this deploy to production first, and this agent cannot ask \
+            "A human must approve this deploy to shop/production first, and this agent cannot ask \
              them. Show them what it destroys, then ask them to approve this deploy to \
-             production in the Ployz Cloud sidebar, or to run the command themselves in a \
+             shop/production in the Ployz Cloud sidebar, or to run the command themselves in a \
              terminal. Once they approve, call this tool again with `approval` set to `apr_1`.\n\
              This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         );
