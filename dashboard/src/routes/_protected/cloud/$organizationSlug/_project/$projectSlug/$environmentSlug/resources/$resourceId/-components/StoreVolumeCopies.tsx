@@ -12,6 +12,7 @@ import { Field, FieldContent, FieldTitle } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
+import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import {
   addableCopies, cardLine, COPY_WORDS, isStale, type MirrorCopy, type OldCopy, safetyLine, STAGED_WORDS, type StagedCopy,
@@ -44,6 +45,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const placement = useStagePlacement(organizationSlug, environment, volume);
   const restore = useStageRestore(organizationSlug, environment, volume);
   const deleteCopy = useDeleteCopy(organizationSlug, environment, volume);
+  const inFlight = useInFlightDeployments(organizationSlug, environment);
   const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
   const copies = members === undefined ? null : copiesFromPlacement({ volume, members, row, active: running, lastSync: null, lastDone: null });
   const accepting = placementServers(lens.machines);
@@ -58,6 +60,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
     upgrade: placementBlockers(lens.machines),
     seeds: members !== undefined && restoreOpen(lens.machines, observePlacement(members).primary?.id ?? null),
     disabled: placement.pending || restore.pending,
+    deploying: row?.deploymentId != null && inFlight.some((deployment) => deployment.id === row.deploymentId),
     stage: placement.stage,
     restore: restore.restore,
     deleteCopy,
@@ -79,6 +82,8 @@ export type CopiesPanelProps = {
   /** Whether the Primary's daemon can seed a restore. */
   seeds: boolean;
   disabled: boolean;
+  /** A Deploy still runs the Volume's placement: the server refuses edits and deletes until it ends. */
+  deploying: boolean;
   stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
   restore: (point: RestorePoint) => void;
   deleteCopy: (server: MachineName) => Promise<void>;
@@ -110,14 +115,14 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
 
 type Resolved = CopiesPanelProps & { members: readonly Member[]; row: PlacementRow | null; copies: VolumeCopies };
 
-function CopiesView({ volume, members, row, copies, target, servers, accepting, upgrade, disabled, stage, deleteCopy, onOpen, now = new Date() }:
+function CopiesView({ volume, members, row, copies, target, servers, accepting, upgrade, disabled, deploying, stage, deleteCopy, onOpen, now = new Date() }:
   Resolved & { target: Placement }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<OldCopy | null>(null);
   const observed = observePlacement(members);
   const applied = appliedMirrors(observed, row);
   const blocked = upgrade.length > 0;
-  const locked = disabled || row?.deploymentId != null || blocked;
+  const locked = disabled || deploying || blocked;
   const edit = (change: PlacementEdit) => stage(editPlacement(target, change), applied);
   const offer = failover(observed, row);
   const mirrorOn = placementTargets(volume, members, row, accepting).mirror.filter((server) => server.id !== target.primary);
@@ -275,14 +280,14 @@ function AddCopyDialog({ open, onOpenChange, volume, live, servers, mirrorOn, on
 }
 
 /** Both actions stage the same placement the list would; only Details discards it. */
-function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade, seeds, disabled, stage, restore, onBack, now = new Date() }:
+function CopyView({ volume, members, row, rows, copies, copy, accepting, upgrade, seeds, disabled, deploying, stage, restore, onBack, now = new Date() }:
   Resolved & { copy: MirrorCopy; onBack: () => void }) {
   const blocked = upgrade.length > 0;
   const panel = mirrorPanel(volume, members, row, copy.server.id, accepting);
   const promote = blocked ? null : panel?.promote ?? null;
   const remove = blocked ? null : panel?.remove ?? null;
   const applied = panel?.applied ?? [];
-  const locked = disabled || row?.deploymentId != null;
+  const locked = disabled || deploying;
   const live = copies.live.server?.name ?? "the live server";
   const services = [...new Set(volume.mounts.map((mount) => mount.service))].join(", ") || volume.name;
   const stale = isStale(copy, now);
