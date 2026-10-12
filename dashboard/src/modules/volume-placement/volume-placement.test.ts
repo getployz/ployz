@@ -24,6 +24,8 @@ import {
   stagedOffServer,
   storageStep,
   targetPlacement,
+  changeKey,
+  dropChange,
   undoPlacement,
   type PlacementItem,
   type PlacementRow,
@@ -205,12 +207,44 @@ describe("undoPlacement", () => {
   });
 });
 
+describe("dropChange", () => {
+  const drop = (members: Member[], placement: PlacementRow, kind: string) => {
+    const change = changes(members, placement).find((one) => one.kind === kind);
+    if (change === undefined) throw new Error(`no ${kind}`);
+    return dropChange(volume, members, placement, changeKey(change));
+  };
+
+  it("drops the change that failed and keeps its siblings", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
+    const placement = row(["web-2"], { primary: "web-2", deletes: ["web-3"] });
+    expect(drop(members, placement, "delete_copy")).toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
+    expect(drop(members, placement, "move")).toEqual({ primary: id("web-1"), mirrors: [id("web-2")], deletes: [id("web-3")] });
+  });
+
+  it("keeps everything when the Servers no longer show the change, since it landed despite the failure", () => {
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
+    const placement = row(["web-2"], { primary: "web-2", deletes: ["web-3"] });
+    expect(dropChange(volume, members, placement, { kind: "delete_copy", server: id("web-3") })).toEqual(placement.staged);
+  });
+
+  it("keeps a move that failed after the hand-over, since the next Deploy must finish it", () => {
+    const members = [member("web-1", "handed", { lease: 3 }), member("web-2", "promoted", { lease: 4 })];
+    const placement = row(["web-2"], { primary: "web-2" });
+    expect(drop(members, placement, "move")).toEqual(placement.staged);
+  });
+
+  it("drops the row when the primary isn't answering, so nothing moves to a Server that may be gone", () => {
+    const members = [member("web-1", "unanswered"), member("web-2", "mirror")];
+    expect(drop(members, row(["web-2"], { primary: "web-2" }), "move")).toBeNull();
+  });
+});
+
 describe("nextPlacementStep", () => {
   const next = (members: Member[], placement: PlacementRow) => nextPlacementStep(changes(members, placement), placement.mirrors ?? []);
 
   it("drops the promoted mirror once the move ends, and leaves the old primary detached", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
-    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [] });
+    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [], change: { kind: "move", server: id("web-2") } });
   });
 
   it("keeps the mirrors while a change still has runs after this one", () => {
@@ -218,9 +252,10 @@ describe("nextPlacementStep", () => {
     expect(next(members, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({
       run: { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null } },
       mirrors: [],
+      change: { kind: "add_mirror", server: id("web-3") },
     });
     const deleted = [member("web-2", "writer"), pooled("web-1"), pooled("web-3")];
-    expect(next(deleted, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({ run: { kind: "mirror", args: { to: "web-3" } }, mirrors: [id("web-3")] });
+    expect(next(deleted, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({ run: { kind: "mirror", args: { to: "web-3" } }, mirrors: [id("web-3")], change: { kind: "add_mirror", server: id("web-3") } });
   });
 
   it("is null once the Servers hold what was staged", () => {
@@ -440,6 +475,7 @@ describe("restore into a new Volume", () => {
     expect(nextPlacementStep(changes([], seeded), [])).toEqual({
       run: { kind: "seed", args: { into: { volumeId: "v1", dockerVolume: "ns_vol-v1", name: "pg-data" }, guid: "11", name: "ployz-1" } },
       mirrors: [],
+      change: { kind: "seed", server: id("web-1") },
     });
     expect(changes([member("web-1", "writer")], seeded)).toEqual([]);
   });

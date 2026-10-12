@@ -262,15 +262,23 @@ export function placementSteps(changes: readonly PlacementChange[]): VolumeRunIn
   return [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order).flatMap(runsOf);
 }
 
+/** Names a change across a Deploy's wait, so a failure finds the same change among the ones read afresh. */
+export type ChangeKey = { readonly kind: PlacementChange["kind"]; readonly server: MachineId };
+
+export const changeKey = (change: PlacementChange): ChangeKey =>
+  ({ kind: change.kind, server: change.kind === "move" || change.kind === "seed" ? change.to.id : change.server.id });
+
+const sameChange = (a: ChangeKey, b: ChangeKey) => a.kind === b.kind && a.server === b.server;
+
 /** The next run a Deploy makes, and the mirrors once it ends: a change's mirrors move only with its last run. */
-export type PlacementStep = { readonly run: VolumeRunInput; readonly mirrors: readonly MachineId[] };
+export type PlacementStep = { readonly run: VolumeRunInput; readonly mirrors: readonly MachineId[]; readonly change: ChangeKey };
 
 export function nextPlacementStep(changes: readonly PlacementChange[], mirrors: readonly MachineId[]): PlacementStep | null {
   const [change] = [...changes].sort((a, b) => STEPS[a.kind].order - STEPS[b.kind].order);
   if (change === undefined) return null;
   const [run, ...rest] = runsOf(change);
   if (run === undefined) return null;
-  return { run, mirrors: rest.length === 0 ? mirrorsAfter(mirrors, change) : [...mirrors] };
+  return { run, mirrors: rest.length === 0 ? mirrorsAfter(mirrors, change) : [...mirrors], change: changeKey(change) };
 }
 
 /** The mirrors once `change` has run. A move consumes the mirror it promotes. */
@@ -433,6 +441,23 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
     }
   })();
   return next === null || placementChanges(volume, members, { ...row, staged: next }).length === 0 ? null : next;
+}
+
+/**
+ * What stays staged once a Deploy's run for the change `key` names failed: the change goes, and the rest waits for the
+ * next Deploy. A change the Servers no longer show landed despite the failure, so everything stays. A move the Servers
+ * handed over already stays too, since only finishing it brings the Volume back; one whose primary isn't answering has
+ * nowhere to go back to, and a restore's Volume gets no data, so both drop the row.
+ */
+export function dropChange(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, key: ChangeKey): Placement | null {
+  const change = placementChanges(volume, members, row).find((one) => sameChange(changeKey(one), key));
+  if (change === undefined) return row.staged;
+  if (change.kind === "move") {
+    const primary = observePlacement(members).primary;
+    if (primary === null) return null;
+    if (primary.id === row.staged?.primary) return row.staged;
+  }
+  return undoPlacement(volume, members, row, change);
 }
 
 /** A restore's steps; Download only when the restore point is offsite. */
