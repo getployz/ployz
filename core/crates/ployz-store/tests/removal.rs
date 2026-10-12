@@ -1296,6 +1296,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
     being_removed(write(ployz_store::Command::Publish(Publish {
         environment: at("production"),
         version: None,
+        message: None,
         accept_volume_loss: Vec::new(),
     })));
     being_removed(write(ployz_store::Command::CreateBranch(CreateBranch {
@@ -1311,11 +1312,12 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
     being_removed(write(ployz_store::Command::Sync(SyncChanges {
         from: at("fix"),
         into: Some(at("production")),
-        when: None,
+        close_after: false,
         version: "stale".into(),
         picks: None,
         skip: Vec::new(),
         values: BTreeMap::new(),
+        id: None,
     })));
     being_removed(write(ployz_store::Command::SetDefaultEnvironment(
         SetDefaultEnvironment {

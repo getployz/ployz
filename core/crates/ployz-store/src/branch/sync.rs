@@ -1,32 +1,29 @@
 //! Sync: one Environment's changes, chosen row by row, into another of the same
-//! Project as the receiver's changes to deploy, now or at a pull request's merge.
-//! It never deletes and never deploys; a secret the receiver lacks arrives with the
+//! Project as the receiver's changes to deploy. It never deletes and never deploys; a secret the receiver lacks arrives with the
 //! value the person syncing gives it, or without one.
 
+use super::proposal;
 use super::*;
 use crate::SealingKey;
-use crate::pull_request::{PullRequest, PullRequestRef};
 use crate::variables::{VariableKey, validate_text};
 
-/// Sync one Environment's changes into another of its Project: staged in the
-/// receiver's Working State now, or a Conditional Sync that lands with the pull
-/// request's merge. Nothing is deleted, published or deployed.
+/// Sync one Environment's changes into another of its Project, staged in the
+/// receiver's Working State. Nothing is deleted, published or deployed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SyncChanges {
     /// The Environment whose changes sync.
     #[serde(default)]
     pub from: EnvironmentRef,
-    /// Where they land, in the same Project; omitted, a PR Environment's only
-    /// Destination at the merge, else the sender's Parent.
+    /// Where they land, in the same Project; omitted, the sender's Parent.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// When they land; omitted, at the merge from a PR Environment into one of its
-    /// Destinations, else now.
+    /// Close the Branch once its changes landed in its Parent: refused for a kept
+    /// Branch, and for a Sync into anything but its Parent.
     #[serde(default)]
-    #[ts(optional = nullable)]
-    pub when: Option<When>,
+    #[ts(as = "Option<bool>", optional)]
+    pub close_after: bool,
     /// Refused with `conflict` unless the Sync view is still at this version.
     pub version: String,
     /// The rows to sync; omitted, every row ticked. One left out is offered again
@@ -40,10 +37,14 @@ pub struct SyncChanges {
     #[ts(as = "Option<Vec<RowRef>>", optional)]
     pub skip: Vec<RowRef>,
     /// A value for each picked secret the receiver lacks: sealed at once, never
-    /// shown back. At the merge it is held until then.
+    /// shown back.
     #[serde(default)]
     #[ts(as = "Option<BTreeMap<RowRef, String>>", optional)]
     pub values: BTreeMap<RowRef, String>,
+    /// The Sync's ID, so a retry is answered with what it did; omitted, a new one.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub id: Option<SyncId>,
 }
 
 /// Read what a Sync would stage.
@@ -57,10 +58,6 @@ pub struct SyncQuery {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
-    /// As [`SyncChanges::when`]; `close_after` reads nothing different.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub when: Option<When>,
 }
 
 /// The rows a Sync would carry, and the version that guards them.
@@ -70,8 +67,6 @@ pub struct SyncView {
     pub from: EnvironmentSummary,
     /// Where they land.
     pub into: EnvironmentSummary,
-    /// The pull request whose merge they go live with; none when staged now.
-    pub at_merge: Option<PullRequestNumber>,
     /// Pass to [`SyncChanges::version`] to sync exactly these rows.
     pub version: String,
     /// Each row a Sync can carry. Settings each Environment keeps as its own
@@ -79,6 +74,8 @@ pub struct SyncView {
     pub rows: Vec<SyncRow>,
     /// The rows it would carry but that either side marked Never sync.
     pub never_synced: Vec<NeverSyncedRow>,
+    /// `from` as it is included in `into`'s draft already; none when it isn't.
+    pub proposal: Option<Included>,
 }
 
 /// A row a Sync would carry but for Never sync.
@@ -122,6 +119,9 @@ pub struct SyncRow {
     pub requires: Option<RowId>,
     /// A secret's row.
     pub secret: Option<SecretRow>,
+    /// The source whose included change the receiver holds at this row: it can't
+    /// be synced until that is removed.
+    pub held_by: Option<String>,
 }
 
 /// What a row does in the receiver.
@@ -137,12 +137,9 @@ pub enum SyncChange {
 }
 
 /// A secret a Sync carries without its value: give [`SyncChanges::values`] one, or
-/// it arrives without one and the receiver's Deploy refuses until it has one.
+/// it arrives Not set and the receiver's deploys skip it until it has one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct SecretRow {
-    /// A value is held for it to land with at the merge.
-    pub held: bool,
-}
+pub struct SecretRow {}
 
 /// What a Sync staged.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -153,31 +150,16 @@ pub struct Synced {
     pub from: EnvironmentSummary,
     /// Where they landed.
     pub into: EnvironmentSummary,
-    /// When they land.
-    pub when: SyncedWhen,
-}
-
-/// When a Sync's changes land, as it decided.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SyncedWhen {
-    /// Staged in the receiver now.
-    Now {
-        /// Nodes staged in `into`'s Working State.
-        staged: Vec<NodeName>,
-        /// The Branch is closing, as [`When::Now`] asked.
-        closing: bool,
-    },
-    /// Held for the pull request's merge.
-    AtMerge {
-        /// The Conditional Sync standing now.
-        conditional_sync: crate::ConditionalSync,
-    },
+    /// Nodes staged in `into`'s Working State.
+    pub staged: Vec<NodeName>,
+    /// The Branch is closing, as [`SyncChanges::close_after`] asked.
+    pub closing: bool,
+    /// The proposal that includes `from` in `into`'s draft.
+    pub proposal: ProposalId,
 }
 
 /// Undo a Sync: what it staged goes back to what the receiver held, refused once
-/// any of it deployed or changed since. A Conditional Sync still standing is
-/// withdrawn.
+/// any of it deployed or changed since.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct UndoSync {
@@ -192,18 +174,10 @@ pub struct Undone {
     pub into: EnvironmentSummary,
 }
 
-/// Where a Sync goes, and when it lands.
+/// Where a Sync goes.
 pub(crate) struct Target {
     from: EnvironmentId,
     into: EnvironmentId,
-    lands: Lands,
-}
-
-/// When a Sync lands.
-#[expect(clippy::large_enum_variant, reason = "one per command, never stored")]
-enum Lands {
-    Now { close_after: bool },
-    AtMerge(PullRequest),
 }
 
 pub(crate) fn sync(
@@ -213,15 +187,22 @@ pub(crate) fn sync(
     request: &SyncChanges,
 ) -> Result<Synced, RpcError> {
     let side = (&request.from, request.into.as_ref());
-    let target = target(tx, who, side, request.when)?;
+    let target = target(tx, who, side)?;
     scope::lock_project(tx, &target.from)?;
     let (from, mut into) = scope::load_pair(tx, who, (&target.from, &target.into), true)?;
-    let close_after = match target.lands {
-        Lands::AtMerge(pr) => {
-            return crate::conditional_sync::sync(tx, who, sealing, request, (from, into, pr));
-        }
-        Lands::Now { close_after } => close_after,
-    };
+    let identity = proposal::identity(tx, &from, &into.summary.id)?;
+    let mut found = proposal::find(tx, &into.summary.id, &identity)?;
+    let close_after = request.close_after;
+    // A retry of the Sync that last included `from` is answered with what it did.
+    if let Some(found) = &found
+        && request.id.as_ref() == Some(&found.last_sync)
+    {
+        return proposal::receipt(tx, (from, into), found, close_after);
+    }
+    if let Some(id) = &request.id {
+        proposal::refuse_reused_sync_id(tx, who, id)?;
+    }
+    // A shut-down PR Environment (its removal applied, no mark) keeps every row: it syncs.
     crate::removal::marked(tx, &from)?;
     crate::removal::marked(tx, &into)?;
     if close_after {
@@ -236,13 +217,35 @@ pub(crate) fn sync(
         }
         closable(tx, &from)?;
     }
-    let sync = Move::sync(tx, &from, &into)?;
+    if let Some(found) = &mut found {
+        proposal::rebind(tx, &into, found, &from)?;
+    }
+    let owners = proposal::owners(tx, &into.summary.id, found.as_ref().map(|found| &found.id))?;
+    let sync = Move::include(tx, &from, &into, &owners)?;
     let checked = sync.check(tx, &into, Guard::Sync(&request.version))?;
     let sides = [&from.working, &into.working];
     let (picks, values) = picks(checked.rows(), &sides, request)?;
+    proposal::refuse_held(checked.rows(), &sides, &picks, &owners)?;
     let values = sealed(sealing, checked.rows(), &sides, &picks, &values)?;
-    let id = SyncId::parse(uuid::Uuid::new_v4().to_string())?;
-    let staged = checked.apply(tx, who, &mut into, &picks, &values, Some(&id))?;
+    let id = match &request.id {
+        Some(id) => id.clone(),
+        None => SyncId::parse(uuid::Uuid::new_v4().to_string())?,
+    };
+    let proposal = proposal::record(
+        tx,
+        who,
+        &into.summary.id,
+        &from,
+        (found.as_ref(), &identity),
+        &id,
+    )?;
+    let owner = Owner::Proposal {
+        id: &proposal,
+        sync: &id,
+    };
+    let before = proposal::credentials(tx, &into)?;
+    let staged = checked.apply(tx, who, &mut into, &picks, &values, owner)?;
+    proposal::keep_carried(tx, &into, &proposal, &before)?;
     if close_after {
         let because = crate::removal::mark::Closed::Synced;
         crate::removal::close(tx, who, &from.summary.id, because, &mut Default::default())?;
@@ -251,10 +254,9 @@ pub(crate) fn sync(
         sync: id,
         from: from.summary,
         into: into.summary,
-        when: SyncedWhen::Now {
-            staged,
-            closing: close_after,
-        },
+        staged,
+        closing: close_after,
+        proposal,
     })
 }
 
@@ -264,17 +266,9 @@ pub(crate) fn sync_view(
     query: &SyncQuery,
 ) -> Result<SyncView, RpcError> {
     let side = (&query.from, query.into.as_ref());
-    let target = target(tx, who, side, query.when)?;
+    let target = target(tx, who, side)?;
     let (from, into) = scope::load_pair(tx, who, (&target.from, &target.into), false)?;
-    let pr = match target.lands {
-        Lands::Now { .. } => None,
-        Lands::AtMerge(pr) => Some(pr),
-    };
-    let held = match &pr {
-        Some(pr) => crate::conditional_sync::held(tx, &into.summary.id, &pr.reference())?,
-        None => BTreeMap::new(),
-    };
-    let sync = Move::sync(tx, &from, &into)?;
+    let (sync, found, owners) = proposal::planned(tx, &from, &into)?;
     let plan = sync.plan(&into.working);
     let (from_names, into_names) = (from.names(), into.names());
     let mut rows = Vec::new();
@@ -295,9 +289,24 @@ pub(crate) fn sync_view(
                 into: shown(&into.working, &into_names, &row.id, &row.into),
                 ticked,
                 requires: row.requires.clone(),
-                secret: (row.from.is_secret() || row.into.is_secret()).then(|| SecretRow {
-                    held: held.contains_key(&row.id),
-                }),
+                secret: (row.from.is_secret() || row.into.is_secret()).then_some(SecretRow {}),
+                held_by: None,
+                at,
+            }),
+            Verdict::Differs(Why::Included) => rows.push(SyncRow {
+                change: match &row.into {
+                    Cell::Absent => SyncChange::New,
+                    into if *into != row.base => SyncChange::Conflict,
+                    Cell::Value(_) | Cell::Secret { .. } | Cell::SecretWithoutValue => {
+                        SyncChange::Changed
+                    }
+                },
+                from: shown(&from.working, &from_names, &row.id, &row.from),
+                into: shown(&into.working, &into_names, &row.id, &row.into),
+                ticked: false,
+                requires: row.requires.clone(),
+                secret: (row.from.is_secret() || row.into.is_secret()).then_some(SecretRow {}),
+                held_by: owners.held.get(&row.id).cloned(),
                 at,
             }),
             Verdict::Differs(Why::NeverSynced) => never_synced.push(NeverSyncedRow {
@@ -318,9 +327,15 @@ pub(crate) fn sync_view(
             Verdict::Differs(_) => {}
         }
     }
+    let proposal = match found {
+        Some(found) => proposal::included(tx, &into.summary.id)?
+            .into_iter()
+            .find(|included| included.proposal == found.id),
+        None => None,
+    };
     Ok(SyncView {
+        proposal,
         version: version(&into, &plan),
-        at_merge: pr.map(|pr| pr.number),
         from: from.summary,
         into: into.summary,
         rows,
@@ -328,25 +343,17 @@ pub(crate) fn sync_view(
     })
 }
 
-/// Where a Sync from `from` goes, and when. It goes into `into`, else a PR
-/// Environment's only Destination, else the sender's Parent; at the merge when that is
-/// one of a PR Environment's Destinations and `when` doesn't say now, else now.
+/// Where a Sync from `from` goes: into `into`, else the sender's Parent.
 fn target(
     tx: &mut dyn Tx,
     who: &Actor,
     (from, into): (&EnvironmentRef, Option<&EnvironmentRef>),
-    when: Option<When>,
 ) -> Result<Target, RpcError> {
     let summary = scope::environment(tx, who, from)?.summary;
     let next = json!({ "next": format!("ployz env sync --to ENV --project {} --env {}", summary.project, summary.name) });
-    let merge = match when {
-        Some(When::Now { .. }) => None,
-        Some(When::AtMerge) | None => merge_of(tx, who, &summary)?,
-    };
-    let into = match (into, &merge) {
-        (Some(into), _) => scope::environment(tx, who, into)?.summary,
-        (None, Some((pr, destinations))) => destination(tx, pr, destinations)?,
-        (None, None) => match row(tx, &summary.id)? {
+    let into = match into {
+        Some(into) => scope::environment(tx, who, into)?.summary,
+        None => match row(tx, &summary.id)? {
             Some(row) => scope::load_by_id(tx, &row.parent)?.summary,
             None => {
                 return Err(error::invalid(
@@ -355,32 +362,6 @@ fn target(
                 ));
             }
         },
-    };
-    let destined = merge
-        .as_ref()
-        .is_some_and(|(_, destinations)| destinations.contains(&into.id));
-    let lands = match (when, merge, destined) {
-        (Some(When::AtMerge), None, _) => {
-            return Err(error::invalid(
-                format!(
-                    "{} is not a PR Environment: its changes sync now",
-                    summary.name
-                ),
-                json!({}),
-            ));
-        }
-        (Some(When::AtMerge), Some((pr, destinations)), false) => {
-            return Err(error::conflict(
-                format!(
-                    "That Environment doesn't deploy {}: sync into one that does",
-                    pr.target_branch
-                ),
-                json!({ "valid_children": names(tx, &destinations)? }),
-            ));
-        }
-        (Some(When::AtMerge) | None, Some((pr, _)), true) => Lands::AtMerge(pr),
-        (Some(When::Now { close_after }), _, _) => Lands::Now { close_after },
-        (None, _, _) => Lands::Now { close_after: false },
     };
     if into.project != summary.project {
         return Err(error::invalid(
@@ -400,62 +381,7 @@ fn target(
     Ok(Target {
         from: summary.id,
         into: into.id,
-        lands,
     })
-}
-
-/// A PR Environment's pull request and the Environments that deploy its target
-/// branch: its Destinations. None for any other Environment.
-fn merge_of(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    from: &EnvironmentSummary,
-) -> Result<Option<(PullRequest, Vec<EnvironmentId>)>, RpcError> {
-    let Some(PullRequestRef {
-        repository_id,
-        number,
-    }) = crate::pull_request::of(tx, &from.id)?
-    else {
-        return Ok(None);
-    };
-    let pr = crate::pull_request::facts(tx, who, repository_id, number)?
-        .ok_or_else(|| error::corrupt("pull request"))?;
-    let project = scope::project_of(tx, &from.id)?.id;
-    let destinations =
-        crate::pull_request::destinations_of(tx, &project, repository_id, &pr.target_branch)?;
-    Ok(Some((pr, destinations)))
-}
-
-/// The Destination of `pr` a Sync named nowhere goes into: its only one.
-fn destination(
-    tx: &mut dyn Tx,
-    pr: &PullRequest,
-    destinations: &[EnvironmentId],
-) -> Result<EnvironmentSummary, RpcError> {
-    match destinations {
-        [one] => Ok(scope::load_by_id(tx, one)?.summary),
-        [] => Err(error::conflict(
-            format!(
-                "Nothing deploys {} now: there is nowhere to sync into",
-                pr.target_branch
-            ),
-            json!({}),
-        )),
-        _ => {
-            let names = names(tx, destinations)?;
-            Err(error::invalid(
-                format!("Name the Destination: {}", names.join(", ")),
-                json!({ "valid_children": names }),
-            ))
-        }
-    }
-}
-
-fn names(tx: &mut dyn Tx, environments: &[EnvironmentId]) -> Result<Vec<String>, RpcError> {
-    environments
-        .iter()
-        .map(|id| Ok(scope::load_by_id(tx, id)?.summary.name.to_string()))
-        .collect()
 }
 
 /// The rows a Sync lands, and the values given for them: those `request` picks,
@@ -466,9 +392,12 @@ pub(crate) fn picks(
     sides: &[&SavedEnvironmentIntent; 2],
     request: &SyncChanges,
 ) -> Result<(BTreeSet<RowId>, BTreeMap<RowId, String>), RpcError> {
-    let moves = rows
-        .iter()
-        .filter(|row| matches!(row.verdict, Verdict::Moves { .. }));
+    let moves = rows.iter().filter(|row| {
+        matches!(
+            row.verdict,
+            Verdict::Moves { .. } | Verdict::Differs(Why::Included)
+        )
+    });
     let named = named_in(sides, moves.map(|row| &row.id));
     let values = request
         .values
@@ -509,7 +438,7 @@ pub(crate) fn sealed(
     sides: &[&SavedEnvironmentIntent; 2],
     picks: &BTreeSet<RowId>,
     values: &BTreeMap<RowId, String>,
-) -> Result<BTreeMap<RowId, SealedSecret>, RpcError> {
+) -> Result<BTreeMap<RowId, SealedCell>, RpcError> {
     values
         .iter()
         .map(|(row, value)| {
@@ -531,7 +460,8 @@ pub(crate) fn sealed(
                     json!({ "row": row }),
                 ));
             }
-            Ok((row.clone(), seal_secret(sealing, row, &label, value)?))
+            let sealed = seal_secret(sealing, row, &label, value)?;
+            Ok((row.clone(), SealedCell::Secret(sealed)))
         })
         .collect()
 }
@@ -574,9 +504,13 @@ fn closable(tx: &mut dyn Tx, branch: &Environment) -> Result<(), RpcError> {
     crate::removal::guard(tx, branch)
 }
 
-/// Undo Sync `request.sync` in its receiver, or withdraw the Conditional Sync it made.
+/// Undo Sync `request.sync` in its receiver. A Sync that included a proposal is
+/// undone by removing it, while it is that proposal's only Sync.
 pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<Undone, RpcError> {
     let id = &request.sync;
+    if let Some(undone) = proposal::undo(tx, who, id)? {
+        return Ok(undone);
+    }
     let landed = tx.query(
         "SELECT environment_id FROM config_sync_arrival \
          WHERE sync_id = ?1 AND organization_id = ?2",
@@ -584,8 +518,7 @@ pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<U
     )?;
     let missing = || error::not_found(format!("No Sync {id} to undo"), json!({}));
     let Some(receiver) = landed.first() else {
-        let into = crate::conditional_sync::withdraw_one(tx, who, id)?.ok_or_else(missing)?;
-        return Ok(Undone { into });
+        return Err(missing());
     };
     let receiver = receiver.parse::<EnvironmentId>(0, "Sync")?;
     scope::lock_project(tx, &receiver)?;
@@ -598,10 +531,8 @@ pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<U
     })
 }
 
-/// Stage the hints `take` names, from a landed Conditional Sync or the Parent.
+/// Stage the hints `take` names, from the Parent.
 pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Taken, RpcError> {
-    match &take.from {
-        HintSource::ConditionalSync(id) => crate::conditional_sync::take(tx, who, id, take),
-        HintSource::Parent(parent) => follow::take(tx, who, parent, take),
-    }
+    let HintSource::Parent(parent) = &take.from;
+    follow::take(tx, who, parent, take)
 }

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { ChangeKind, RowId } from "@ployz/sdk";
-import { ArrowRightIcon, MinusIcon, MoreVerticalIcon, PencilIcon, PinIcon, PlusIcon, Undo2Icon } from "lucide-react";
+import type { ChangeKind, Included, RowId } from "@ployz/sdk";
+import { ArrowRightIcon, MinusIcon, MoreVerticalIcon, PencilIcon, PinIcon, PlusIcon, RefreshCwIcon, Undo2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
@@ -32,14 +32,20 @@ export type EnvironmentChangesReviewProps = {
   admitting?: boolean;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
-  /** A change's second line: a merged pull request's or the Parent's value, with Use. */
+  /** A change's second line: the Parent's deployed value, with Use theirs. */
   noteFor?: (row: ChangeRow) => ReactNode;
   /** Never sync for a change that arrived from another Environment: marks it and discards it. */
   neverSyncFor?: (row: ChangeRow) => (() => void) | undefined;
   /** Where the changes in a Sync row (a setting's, or a node's) came from; none for this Environment's own edits. */
   originFor?: (row: RowId) => ChangeOrigin | undefined;
-  /** Lists after the changes: merged pull requests' and the Parent's values no change shows. */
+  /** Lists after the changes: the Parent's deployed values no change shows. */
   after?: ReactNode;
+  /** The sources Syncs included in this draft. */
+  included?: readonly Included[];
+  /** Takes a source back out: what it still holds returns to what it was. */
+  onRemoveIncluded?: (included: Included) => void;
+  /** Reviews the Sync from a source that changed since, to include its newer changes. */
+  onIncludeNewer?: (included: Included) => void;
 };
 
 /**
@@ -47,8 +53,8 @@ export type EnvironmentChangesReviewProps = {
  * change, coloured by its kind; Discard and Never sync in each line's ⋯; Discard all and Publish in the footer.
  */
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
-  const { environment, canPublish, canDeploy, totalChanges, onClose, after, message, onMessageChange } = props;
-  const staged = canPublish || totalChanges > 0;
+  const { environment, canPublish, canDeploy, totalChanges, onClose, after, message, onMessageChange, included = [] } = props;
+  const staged = canPublish || totalChanges > 0 || included.length > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
@@ -56,17 +62,18 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
           <DialogTitle>Environment changes</DialogTitle>
           <DialogDescription>
             {!staged ? "Nothing staged here"
-              : `${plural(totalChanges, "change")} in ${environment}, ${canPublish ? "not yet published" : "published, not yet deployed"}.`}
+              : `${plural(totalChanges, "change")} in ${environment}, ${canPublish ? "not yet saved" : "saved, not yet deployed"}.`}
           </DialogDescription>
-          {staged && canDeploy ? (
+          {staged && (canPublish || canDeploy) ? (
             <InputGroup>
-              <InputGroupInput aria-label="Deploy message" placeholder="Deploy message (optional)" maxLength={500} value={message}
+              <InputGroupInput aria-label="Change message" placeholder="Message (optional)" maxLength={500} value={message}
                 onChange={(event) => onMessageChange(event.target.value)} />
             </InputGroup>
           ) : null}
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-          {staged ? <Groups {...props} /> : null}
+          <IncludedList {...props} included={included} />
+          {staged ? <ChangeGroups {...props} /> : null}
           {after ? <div className="flex flex-col gap-3">{after}</div> : null}
         </div>
         {staged ? <Footer {...props} /> : null}
@@ -96,7 +103,7 @@ function changeSections(groups: readonly ChangeGroup[], originFor: EnvironmentCh
   return [...sections.values()].filter((section) => section.lines.length);
 }
 
-function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, noteFor, neverSyncFor, originFor }: EnvironmentChangesReviewProps) {
+export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, neverSyncFor, originFor }: Pick<EnvironmentChangesReviewProps, "groups" | "noteFor" | "neverSyncFor" | "originFor"> & Partial<Pick<EnvironmentChangesReviewProps, "onDiscardNode" | "onDiscardRow">>) {
   const sections = changeSections(groups, originFor);
   const firstConfigLines = new Map<string, Line>();
   for (const { lines } of sections) {
@@ -104,12 +111,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
       if (line.group.nodeType === "config" && !firstConfigLines.has(line.group.nodeId)) firstConfigLines.set(line.group.nodeId, line);
     }
   }
-  // The last change gone, nothing is left to review.
-  const leaving = (last: boolean, leave: () => void) => () => {
-    if (last) onClose();
-    leave();
-  };
-  return sections.map(({ origin, lines }) => {
+  return <>{sections.map(({ origin, lines }) => {
     // Alone, this Environment's own edits need no heading.
     const title = origin?.title ?? (sections.length > 1 ? "Your changes" : undefined);
     return (
@@ -123,7 +125,7 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
             const restarts = firstConfig && group.restarts.length ? (
               <p className="text-muted-foreground">Deploying {group.nodeName} restarts {listNames(group.restarts)}.</p>
             ) : null;
-            const discardNode = group.canDiscard ? leaving(groups.length === 1, () => onDiscardNode(group)) : undefined;
+            const discardNode = group.canDiscard && onDiscardNode ? () => onDiscardNode(group) : undefined;
             if (!row) {
               const kind = nodeKinds[group.lifecycle];
               return (
@@ -140,9 +142,9 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
             return (
               <ChangeLine key={row.changeKey} kind={row.kind} label={`${group.nodeName} ${row.label}`}
                 value={row.configFile ? undefined : <Value kind={row.kind} before={row.currentValue} after={row.newValue} />}
-                onDiscard={row.canDiscard ? leaving(totalChanges === 1, () => onDiscardRow(group, row.path)) : undefined}
+                onDiscard={row.canDiscard && onDiscardRow ? () => onDiscardRow(group, row.path) : undefined}
                 discardNode={(!row.canDiscard || firstConfig) && discardNode ? { name: group.nodeName, run: discardNode } : undefined}
-                onNeverSync={neverSync && leaving(totalChanges === 1, neverSync)}>
+                onNeverSync={neverSync}>
                 <p className="flex min-w-0 items-baseline gap-2">
                   <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
@@ -158,7 +160,52 @@ function Groups({ groups, totalChanges, onClose, onDiscardNode, onDiscardRow, no
         </ul>
       </section>
     );
-  });
+  })}</>;
+}
+
+/**
+ * The sources Syncs included here, each with Include newer changes in its ⋯ once it changed, and Remove. Nothing
+ * renders for no sources.
+ */
+function IncludedList({ included, onRemoveIncluded, onIncludeNewer }: Pick<EnvironmentChangesReviewProps, "onRemoveIncluded" | "onIncludeNewer"> & {
+  included: readonly Included[];
+}) {
+  if (!included.length) return null;
+  return (
+    <section aria-label="Included">
+      <h3 className="font-medium">Included</h3>
+      <ul>
+        {included.map((item) => <IncludedItem key={item.proposal} item={item} onRemove={onRemoveIncluded} onIncludeNewer={onIncludeNewer} />)}
+      </ul>
+    </section>
+  );
+}
+
+function IncludedItem({ item, onRemove, onIncludeNewer }: {
+  item: Included; onRemove?: (included: Included) => void; onIncludeNewer?: (included: Included) => void;
+}) {
+  const { source } = item;
+  const live = source.kind === "environment" ? source.live : source.environment !== null;
+  const newer = item.newer && live && onIncludeNewer ? () => onIncludeNewer(item) : undefined;
+  return (
+    <li className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-b py-1.5 last:border-b-0">
+      <div className="min-w-0">
+        <p className="truncate">{source.name} · {plural(item.changes, "change")}</p>
+        {item.newer ? <p className="text-muted-foreground">{source.name} changed since</p> : null}
+      </div>
+      {onRemove ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${source.name}`} />}>
+            <MoreVerticalIcon />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-auto">
+            {newer ? <DropdownMenuItem onClick={newer}><RefreshCwIcon />Include newer changes</DropdownMenuItem> : null}
+            <DropdownMenuItem variant="destructive" onClick={() => onRemove(item)}><Undo2Icon />Remove</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : <span />}
+    </li>
+  );
 }
 
 const nodeKinds = { create: "add", update: "update", delete: "remove" } as const;
@@ -242,7 +289,7 @@ function Footer({ groups, canDeploy, canPublish, onPublish, onDiscardAll, onDepl
       {groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={onDiscardAll}>Discard all</Button>
       ) : null}
-      <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Publish</Button>
+      <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Save</Button>
       {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}
     </DialogFooter>
   );

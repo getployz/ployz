@@ -197,6 +197,9 @@ fn target(target: &Target, named: Option<&ServiceName>) -> Value {
             "description": "Where the Service runs from, as one change: its image, or its repository and root directory. Discard takes it back whole; set image or repository to change it.",
         }),
         Target::Variable(_) => variables::schema(),
+        Target::Description(_) => {
+            json!({ "title": "Description", "type": ["string", "null"], "readOnly": true })
+        }
         Target::Exported(_) => json!({
             "title": "Exported",
             "description": "Whether other Services are meant to reference this variable as ${{ service.KEY }}.",

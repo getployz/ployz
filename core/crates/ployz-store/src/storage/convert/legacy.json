@@ -1,0 +1,38 @@
+{
+  "held": [
+    {
+      "at": "variables.TOKEN",
+      "environment_id": "00000000-0000-4000-8000-000000000002",
+      "lineage": "00000000-0000-4000-8000-000000000003",
+      "number": 5,
+      "organization_id": "org",
+      "repository_id": 11,
+      "value": "{\"fingerprint\":\"v1:8f8ce95792d339314c8d71a8d5335e71cec26dca7294ae312e6609671b354270\",\"value\":{\"version\":1,\"iv\":\"OfFt0AnLKIHeFr+E\",\"tag\":\"p2IRXT8J4/4puK2iPRQO9A==\",\"ciphertext\":\"uAUozltNjgepxUQ=\"}}"
+    }
+  ],
+  "pull_requests": [
+    {
+      "facts": "{\"repository_id\":11,\"number\":5,\"title\":\"Add search\",\"author\":\"ada\",\"bot\":false,\"head_branch\":\"search\",\"head\":\"1111111111111111111111111111111111111111\",\"target_branch\":\"main\",\"commits\":1,\"open\":true,\"merge_commit\":null,\"merge_reached\":null,\"updated\":\"2026-09-29T10:00:01Z\"}",
+      "number": 5,
+      "organization_id": "org",
+      "repository_id": 11,
+      "updated": "2026-09-29T10:00:01Z"
+    }
+  ],
+  "syncs": [
+    {
+      "environment_id": "00000000-0000-4000-8000-000000000002",
+      "id": "230b26fc-1a78-4990-b6a4-92e36c4b44d0",
+      "merge_commit": null,
+      "number": 5,
+      "organization_id": "org",
+      "pr_environment_id": "c62f9351-5dcd-40ef-877f-1617f38124fd",
+      "repository_id": 11,
+      "state": "standing",
+      "stored": "{\"picks\":[{\"reviewed\":\"absent\",\"at\":{\"row\":\"00000000-0000-4000-8000-000000000003:configs.00000000-0000-4000-8000-000000000040\",\"node\":\"web\",\"kind\":\"service\",\"name\":\"configs.sentry\"},\"from\":\"/etc/sentry\",\"staged\":null},{\"reviewed\":\"absent\",\"at\":{\"row\":\"00000000-0000-4000-8000-000000000003:variables.MODE\",\"node\":\"web\",\"kind\":\"service\",\"name\":\"env.MODE\"},\"from\":\"fast\",\"staged\":null},{\"reviewed\":\"absent\",\"at\":{\"row\":\"00000000-0000-4000-8000-000000000003:variables.TOKEN\",\"node\":\"web\",\"kind\":\"service\",\"name\":\"env.TOKEN\"},\"from\":{\"secret\":true},\"staged\":null},{\"reviewed\":\"absent\",\"at\":{\"row\":\"00000000-0000-4000-8000-000000000040:node\",\"node\":\"configs.sentry\",\"kind\":\"config\",\"name\":null},\"from\":{\"name\":\"sentry\"},\"staged\":null},{\"reviewed\":\"absent\",\"at\":{\"row\":\"00000000-0000-4000-8000-000000000040:files.sentry.yml\",\"node\":\"configs.sentry\",\"kind\":\"config\",\"name\":\"files.sentry.yml\"},\"from\":{\"content\":\"dsn: x\\n\",\"gid\":0,\"mode\":\"0444\",\"uid\":0},\"staged\":null}],\"from\":{\"version\":1,\"environmentSlug\":\"pr-5\",\"services\":[{\"id\":\"2e9d1520-2691-4214-9d75-70b27e6f0fd9\",\"lineageId\":\"00000000-0000-4000-8000-000000000003\",\"slug\":\"web\",\"config\":{\"version\":2,\"source\":{\"type\":\"git\",\"version\":2,\"repository\":\"acme/web\",\"repositoryId\":11,\"access\":{\"type\":\"github-installation\",\"installationId\":7},\"rootDir\":\"/\",\"branch\":{\"type\":\"connected\",\"name\":\"search\"}},\"preDeployCommand\":null,\"startCommand\":null,\"healthcheck\":{\"type\":\"none\"},\"restartPolicy\":\"unless-stopped\",\"maxRetries\":10,\"replicas\":1,\"cpuLimit\":null,\"memLimit\":null,\"privateDns\":\"web\",\"routes\":[],\"managedHostnames\":[],\"build\":{\"buildMethod\":\"railpack\",\"dockerfilePath\":null,\"command\":null}},\"variables\":[{\"id\":\"35cb5e6d-559e-4f51-904e-910253bf473d\",\"key\":\"MODE\",\"description\":null,\"exported\":false,\"valueFingerprint\":\"v1:8e06e48eeb0e97c272dfca688522ccf7f41a3eb846456a6725b1132dd9a658a1\",\"value\":{\"kind\":\"literal\",\"value\":\"fast\"}},{\"id\":\"6e962b97-f817-4e77-91a5-1d3e3d637fd3\",\"key\":\"TOKEN\",\"description\":null,\"exported\":false,\"valueFingerprint\":\"v1:e70073a95b8987d5c9c19d50706232ed34d923b6c77c304b79b1e44a88d366ba\",\"value\":{\"kind\":\"secret\",\"encryptedValue\":null}}],\"volumeAttachments\":[],\"configAttachments\":[{\"configResourceId\":\"00000000-0000-4000-8000-000000000040\",\"mountDir\":\"/etc/sentry\"}]},{\"id\":\"2692fd76-5304-4de2-8b28-7064a3657b96\",\"lineageId\":\"00000000-0000-4000-8000-000000000004\",\"slug\":\"api\",\"config\":{\"version\":2,\"source\":{\"type\":\"git\",\"version\":2,\"repository\":\"acme/web\",\"repositoryId\":11,\"access\":{\"type\":\"github-installation\",\"installationId\":7},\"rootDir\":\"/\",\"branch\":{\"type\":\"connected\",\"name\":\"search\"}},\"preDeployCommand\":null,\"startCommand\":null,\"healthcheck\":{\"type\":\"none\"},\"restartPolicy\":\"unless-stopped\",\"maxRetries\":10,\"replicas\":1,\"cpuLimit\":null,\"memLimit\":null,\"privateDns\":\"api\",\"routes\":[],\"managedHostnames\":[],\"build\":{\"buildMethod\":\"railpack\",\"dockerfilePath\":null,\"command\":null}},\"variables\":[],\"volumeAttachments\":[]}],\"volumes\":[],\"configs\":[{\"resourceId\":\"00000000-0000-4000-8000-000000000040\",\"resourceLineageId\":\"00000000-0000-4000-8000-000000000040\",\"name\":\"sentry\",\"files\":{\"sentry.yml\":{\"content\":[{\"kind\":\"text\",\"value\":\"dsn: x\\n\"}],\"mode\":\"0444\",\"uid\":0,\"gid\":0}}}]},\"base\":{\"version\":1,\"environmentSlug\":\"production\",\"services\":[{\"id\":\"00000000-0000-4000-8000-000000000003\",\"lineageId\":\"00000000-0000-4000-8000-000000000003\",\"slug\":\"web\",\"config\":{\"version\":2,\"source\":{\"type\":\"git\",\"version\":2,\"repository\":\"acme/web\",\"repositoryId\":11,\"access\":{\"type\":\"github-installation\",\"installationId\":7},\"rootDir\":\"/\",\"branch\":{\"type\":\"connected\",\"name\":\"main\"}},\"preDeployCommand\":null,\"startCommand\":null,\"healthcheck\":{\"type\":\"none\"},\"restartPolicy\":\"unless-stopped\",\"maxRetries\":10,\"replicas\":1,\"cpuLimit\":null,\"memLimit\":null,\"privateDns\":\"web\",\"routes\":[],\"managedHostnames\":[],\"build\":{\"buildMethod\":\"railpack\",\"dockerfilePath\":null,\"command\":null}},\"variables\":[],\"volumeAttachments\":[]},{\"id\":\"00000000-0000-4000-8000-000000000004\",\"lineageId\":\"00000000-0000-4000-8000-000000000004\",\"slug\":\"api\",\"config\":{\"version\":2,\"source\":{\"type\":\"git\",\"version\":2,\"repository\":\"acme/web\",\"repositoryId\":11,\"access\":{\"type\":\"github-installation\",\"installationId\":7},\"rootDir\":\"/\",\"branch\":{\"type\":\"connected\",\"name\":\"main\"}},\"preDeployCommand\":null,\"startCommand\":null,\"healthcheck\":{\"type\":\"none\"},\"restartPolicy\":\"unless-stopped\",\"maxRetries\":10,\"replicas\":1,\"cpuLimit\":null,\"memLimit\":null,\"privateDns\":\"api\",\"routes\":[],\"managedHostnames\":[],\"build\":{\"buildMethod\":\"railpack\",\"dockerfilePath\":null,\"command\":null}},\"variables\":[],\"volumeAttachments\":[]}],\"volumes\":[]},\"hostnames\":{\"from\":\"-pr-5\",\"into\":\"\"},\"carried\":{\"credentials\":{},\"policies\":{}},\"environment\":{\"id\":\"c62f9351-5dcd-40ef-877f-1617f38124fd\",\"project\":\"shop\",\"name\":\"pr-5\",\"revision\":6},\"landed\":null}",
+      "synced_at": 1791646183,
+      "target_branch": "main",
+      "working_revision": 6
+    }
+  ]
+}
