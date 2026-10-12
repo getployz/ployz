@@ -111,6 +111,19 @@ it("titles the ask Data loss when Cloud refuses a Deploy whose staged restore dr
   expect(screen.queryByText("Deletes data")).toBeNull();
 });
 
+it("says a snapshot restore saves the writes it drops before the typed confirm admits it", async () => {
+  const test = setup({ items: [{ kind: "volume", name: "pg-data", detail: "back to 09:00 · 1.2 GB · 3 hours of writes" }], losesWrites: true, accept: ["pg-data"], version: shown, savesFirst: true });
+  test.write.mockResolvedValueOnce(admitted);
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await screen.findByText("Data loss");
+  expect(screen.getByText(/Ployz saves them first as a Before restore snapshot/)).toBeTruthy();
+  expect(screen.getByText("back to 09:00 · 1.2 GB · 3 hours of writes")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByPlaceholderText("shop/production"), { target: { value: "shop/production" } });
+  fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+});
+
 it("discards a Setting by its Store path, through the Environment's queue", async () => {
   const test = setup();
   test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded", environment: { revision: 4 } } } as never);

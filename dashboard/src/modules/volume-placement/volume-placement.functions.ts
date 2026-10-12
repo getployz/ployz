@@ -9,7 +9,11 @@ import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } fro
 
 const Organization = Schema.Struct({ organizationSlug: Schema.NonEmptyString });
 const Machine = rustMachineIdSchema;
-const Placement = Schema.Struct({ primary: Machine, mirrors: Schema.Array(Machine), deletes: Schema.Array(Machine) });
+const SnapshotId = Schema.String.check(Schema.isPattern(/^[a-z0-9-]{1,64}$/));
+const SnapshotRestore = Schema.Struct({ from: SnapshotId, at: Schema.Number, losesBytes: Schema.Number, save: SnapshotId, expect: Schema.Number });
+const Placement = Schema.Struct({
+  primary: Machine, mirrors: Schema.Array(Machine), deletes: Schema.Array(Machine), restore: Schema.optionalKey(SnapshotRestore),
+});
 const Environment = Schema.Struct({ project: Schema.NullOr(Schema.String), environment: Schema.NullOr(Schema.String) });
 const VolumeInput = Schema.Struct({ ...Organization.fields, volumeId: Schema.NonEmptyString, environment: Environment });
 const StageInput = Schema.Struct({

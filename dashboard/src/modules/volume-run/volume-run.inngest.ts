@@ -297,7 +297,7 @@ async function attempt(
   { step, runEffect, run, runId }: RunSteps,
   id: string,
   machine: MachineRef,
-  request: Exclude<VolumeSwitchRequest, { command: "inspect_volume_copy" | "inspect_receive" }>,
+  request: Exclude<VolumeSwitchRequest, { command: "inspect_volume_copy" | "inspect_receive" | "set_volume_snapshot" | "list_volume_snapshots" }>,
 ) {
   const result = await step.run(id, () => runEffect(sendSwitch(run, runId, machine, request, { onRefusal: "throw" }).pipe(
     Effect.map((reply) => ({ ok: true as const, reply })),

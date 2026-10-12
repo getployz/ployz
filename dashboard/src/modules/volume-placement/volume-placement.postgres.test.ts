@@ -9,6 +9,7 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { dropStagedRestore } from "#/modules/volume-copies/volume-snapshots.server";
 import {
   deleteOldCopy, discardPlacement, listPlacements, requestUnclaimedRun, restoreSettled, stagePlacement, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
@@ -155,6 +156,20 @@ describe("volume placement", () => {
     expect(await stage("web-3")).toMatchObject(unchecked);
     expect(await run(discardPlacement(organizationId, null, volumeId, environment))).toMatchObject(unchecked);
     expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("web-2") }, deploymentId: "dep-1" }]);
+  });
+
+  it("stages a snapshot restore, and drops it when its snapshot is deleted, unless a Deploy took it", async () => {
+    const restore = { from: "s1", at: 1_760_000_000, losesBytes: 5e6, save: "b1", expect: 4 };
+    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-1"), mirrors: [], deletes: [], restore }, mirrors: [] }));
+    expect((await run(listPlacements(organizationId)))[0]?.staged).toEqual({ primary: web("web-1"), mirrors: [], deletes: [], restore });
+    await run(dropStagedRestore(organizationId, volumeId, "s2"));
+    expect((await run(listPlacements(organizationId)))[0]?.staged?.restore).toEqual(restore);
+    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
+    await run(dropStagedRestore(organizationId, volumeId, "s1"));
+    expect((await run(listPlacements(organizationId)))[0]?.staged?.restore).toEqual(restore);
+    await harness.pool.query("update volume_placement set deployment_id = null");
+    await run(dropStagedRestore(organizationId, volumeId, "s1"));
+    expect((await run(listPlacements(organizationId)))[0]?.staged).toEqual({ primary: web("web-1"), mirrors: [], deletes: [] });
   });
 
   it("deletes only an old copy at once, never the writer or a mirror", async () => {

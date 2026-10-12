@@ -2,6 +2,7 @@ import type { ChangeKind, MachineId, MachineName } from "@ployz/sdk";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
+import { lossWords, snapshotClock } from "#/modules/volume-copies/volume-snapshots";
 import { planFromCopies } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -34,12 +35,24 @@ export type Seed = {
   readonly point: { readonly guid: string; readonly name: string; readonly at: number };
 };
 
+/** A snapshot the next Deploy puts back in place. `save` names the Before restore snapshot of the data it replaces. */
+export type SnapshotRestore = {
+  readonly from: string;
+  /** The snapshot's time in Unix seconds. */
+  readonly at: number;
+  readonly losesBytes: number;
+  readonly save: string;
+  /** The writer epoch the snapshot was listed under. */
+  readonly expect: number;
+};
+
 /** Where the user wants the Volume. `deletes` names detached copies to delete. */
 export type Placement = {
   readonly primary: MachineId;
   readonly mirrors: readonly MachineId[];
   readonly deletes: readonly MachineId[];
   readonly seed?: Seed;
+  readonly restore?: SnapshotRestore;
 };
 
 /** The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark. */
@@ -87,6 +100,13 @@ export type PlacementChange =
     readonly to: MachineRef;
     readonly dockerVolume: string;
     readonly point: Seed["point"];
+  }
+  | {
+    readonly kind: "restore_snapshot";
+    readonly volume: PlacementVolume;
+    readonly restore: SnapshotRestore;
+    /** Mirrors the restore leaves behind, which start over from the restored data. */
+    readonly mirrors: readonly MachineRef[];
   };
 
 const toDate = (seconds: number | undefined) => (seconds === undefined ? null : new Date(seconds * 1000));
@@ -184,6 +204,10 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   const changes: PlacementChange[] = staged.deletes
     .filter((id) => copyOn(id) !== undefined && !applied.includes(id))
     .map((id) => ({ kind: "delete_copy", volume, server: machine(id) }));
+  if (staged.restore !== undefined) {
+    const mirrors = applied.filter((id) => staged.mirrors.includes(id)).map(machine);
+    changes.unshift({ kind: "restore_snapshot", volume, restore: staged.restore, mirrors });
+  }
   // A move to a mirror is unfinished while that mirror is still listed: after the hand-over the target holds the root,
   // yet the next Deploy must finish the same move, not take the mirror away.
   const handing = observed.primary?.id === staged.primary && applied.includes(staged.primary);
@@ -224,25 +248,29 @@ export const lossTime = (at: Date) => clock.format(at);
 
 const deleteSlot = (server: MachineRef): VolumeRunInput => ({ kind: "delete_mirror", args: { slot: server.name, confirmed_name: null } });
 
-/** Each change's runs; deletions free the one copy slot before a move or a mirror fills it. */
+/**
+ * Each change's runs; deletions free the one copy slot before a move or a mirror fills it. A restore goes first, on the
+ * Server that holds its snapshots, and has no run yet: the Deploy refuses it in `advancePlacement`.
+ */
 const STEPS = {
-  delete_copy: { order: 0, runs: (change) => [deleteSlot(change.server)] },
-  remove_mirror: { order: 1, runs: (change) => [deleteSlot(change.server)] },
+  restore_snapshot: { order: 0, runs: () => [] },
+  delete_copy: { order: 1, runs: (change) => [deleteSlot(change.server)] },
+  remove_mirror: { order: 2, runs: (change) => [deleteSlot(change.server)] },
   move: {
-    order: 2,
+    order: 3,
     runs: (change) => [
       ...change.clears.map(deleteSlot),
       change.how === "restore" ? { kind: "restore", args: { from: change.to.name } } : { kind: "move", args: { to: change.to.name } },
     ],
   },
   seed: {
-    order: 2,
+    order: 3,
     runs: (change) => [{
       kind: "seed",
       args: { into: { volumeId: change.volume.id, dockerVolume: change.dockerVolume, name: change.volume.name }, guid: change.point.guid, name: change.point.name },
     }],
   },
-  add_mirror: { order: 3, runs: (change) => [...change.clears.map(deleteSlot), { kind: "mirror", args: { to: change.server.name } }] },
+  add_mirror: { order: 4, runs: (change) => [...change.clears.map(deleteSlot), { kind: "mirror", args: { to: change.server.name } }] },
 } satisfies { [K in PlacementChange["kind"]]: { order: number; runs: (change: Extract<PlacementChange, { kind: K }>) => VolumeRunInput[] } };
 
 function runsOf(change: PlacementChange): VolumeRunInput[] {
@@ -257,6 +285,8 @@ function runsOf(change: PlacementChange): VolumeRunInput[] {
       return STEPS.add_mirror.runs(change);
     case "seed":
       return STEPS.seed.runs(change);
+    case "restore_snapshot":
+      return STEPS.restore_snapshot.runs();
   }
 }
 
@@ -269,12 +299,20 @@ export function placementSteps(changes: readonly PlacementChange[]): VolumeRunIn
  * Names a change across a Deploy's wait, so a failure finds the same change among the ones read afresh. A move keeps the
  * Server it left: once that Server stops answering, it is still the one holding the Volume.
  */
-export type ChangeKey = { readonly kind: PlacementChange["kind"]; readonly server: MachineId; readonly from?: MachineId };
+export type ChangeKey = { readonly kind: PlacementChange["kind"]; readonly server: MachineId | null; readonly from?: MachineId };
 
-export const changeKey = (change: PlacementChange): ChangeKey => {
-  if (change.kind === "move") return change.from === null ? { kind: "move", server: change.to.id } : { kind: "move", server: change.to.id, from: change.from.id };
-  return { kind: change.kind, server: change.kind === "seed" ? change.to.id : change.server.id };
-};
+export function changeKey(change: PlacementChange): ChangeKey {
+  switch (change.kind) {
+    case "move":
+      return change.from === null ? { kind: "move", server: change.to.id } : { kind: "move", server: change.to.id, from: change.from.id };
+    case "seed":
+      return { kind: change.kind, server: change.to.id };
+    case "restore_snapshot":
+      return { kind: change.kind, server: null };
+    default:
+      return { kind: change.kind, server: change.server.id };
+  }
+}
 
 export const sameChange = (a: ChangeKey, b: ChangeKey) => a.kind === b.kind && a.server === b.server;
 
@@ -300,6 +338,7 @@ export function mirrorsAfter(mirrors: readonly MachineId[], change: PlacementCha
       return mirrors.filter((id) => id !== change.server.id);
     case "delete_copy":
     case "seed":
+    case "restore_snapshot":
       return [...mirrors];
   }
 }
@@ -364,7 +403,7 @@ export function stagedOffServer(server: string, rows: readonly PlacementRow[], c
   return rows.filter((row) => primaries.has(row.volumeId) && row.staged !== null && row.staged.primary !== server).length;
 }
 
-const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove", seed: "add" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;
+const CHANGE_KINDS = { move: "update", add_mirror: "add", remove_mirror: "remove", delete_copy: "remove", seed: "add", restore_snapshot: "update" } as const satisfies Record<PlacementChange["kind"], ChangeKind>;
 
 /** One Server in the Placement form, and what the next Deploy does to it: add, update, remove, or nothing (null). */
 export type PlacementItem = {
@@ -446,6 +485,10 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
         return { ...staged, deletes: staged.deletes.filter((id) => id !== change.server.id) };
       case "seed":
         return null;
+      case "restore_snapshot": {
+        const { restore: _restore, ...rest } = staged;
+        return rest;
+      }
     }
   })();
   return next === null || placementChanges(volume, members, { ...row, staged: next }).length === 0 ? null : next;
@@ -492,20 +535,30 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
     case "delete_copy":
       return ["Delete"];
     case "seed":
-      return ["Save current", "Stop", "Swap", "Start"];
+      return RESTORE_STEPS;
+    case "restore_snapshot":
+      return [...RESTORE_STEPS, ...change.mirrors.length > 0 ? ["Seed"] : []];
   }
 }
+
+const RESTORE_STEPS = ["Save current", "Stop", "Swap", "Start"];
 
 /**
  * One thing a Deploy of staged changes takes: the copy of `volume` on `server`, or a restore's dropped writes, the
  * source's after `after` when a restore point bounds them. A restore drops both the unanswered primary's copy and its
- * writes.
+ * writes. A snapshot restore carries its own `detail`, the point and what it drops.
  */
-export type PlacementLost = { readonly volume: PlacementVolume; readonly server: MachineRef | null; readonly writes: boolean; readonly after: Date | null };
+export type PlacementLost = {
+  readonly volume: PlacementVolume;
+  readonly server: MachineRef | null;
+  readonly writes: boolean;
+  readonly after: Date | null;
+  readonly detail?: string;
+};
 
 export function placementLosses(changes: readonly PlacementChange[]): PlacementLost[] {
   const copy = (volume: PlacementVolume, server: MachineRef): PlacementLost => ({ volume, server, writes: false, after: null });
-  return changes.flatMap((change) => {
+  return changes.flatMap((change): PlacementLost[] => {
     const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
     switch (change.kind) {
       case "move":
@@ -517,6 +570,10 @@ export function placementLosses(changes: readonly PlacementChange[]): PlacementL
         return [copy(change.volume, change.server)];
       case "seed":
         return [{ volume: change.source, server: null, writes: true, after: new Date(change.point.at * 1000) }];
+      case "restore_snapshot":
+        return change.restore.losesBytes > 0
+          ? [{ volume: change.volume, server: null, writes: true, after: restoreAt(change.restore), detail: restoreLoss(change.restore) }]
+          : [];
     }
   });
 }
@@ -583,21 +640,35 @@ export type PlacementLoss = {
   readonly losesWrites: boolean;
   readonly accept: readonly string[];
   readonly version: (version: string) => string;
+  readonly savesFirst?: true;
 };
 
 export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
   const lost = placementLosses(changes);
   const volumes = lossByVolume(lost);
   const servers = lost.flatMap(({ server }) => server ?? []);
-  return {
-    items: volumeLossItems(volumes, (id) => servers.find((server) => server.id === id)?.name),
+  const restores = new Map(lost.flatMap(({ volume, detail }) => detail === undefined ? [] : [[volume.name, detail] as const]));
+  const loss: PlacementLoss = {
+    items: volumeLossItems(volumes, (id) => servers.find((server) => server.id === id)?.name)
+      .map((item) => ({ ...item, detail: restores.get(item.name) ?? item.detail })),
     losesWrites: volumes.some(({ loss }) => loss === "writes"),
     accept: [...new Set(lost.map(({ volume }) => volume.name))],
     version: (version) => lossVersion(version, lost),
   };
+  return changes.some((change) => change.kind === "restore_snapshot" && change.restore.losesBytes > 0) ? { ...loss, savesFirst: true } : loss;
 }
 
-function detailsRow(volume: PlacementVolume, change: PlacementChange) {
+const restoreClock = snapshotClock();
+const restoreAt = (restore: SnapshotRestore) => new Date(restore.at * 1000);
+
+/** A staged restore in the tray's words: "Restore 14:15". */
+export const restoreLabel = (restore: SnapshotRestore, now = new Date(), clock = restoreClock) => clock.when(restoreAt(restore), now);
+
+function restoreLoss(restore: SnapshotRestore, now = new Date()) {
+  return [`back to ${restoreLabel(restore, now)}`, lossWords({ at: restoreAt(restore), losesBytes: restore.losesBytes }, now)].filter(Boolean).join(" · ");
+}
+
+function detailsRow(volume: PlacementVolume, change: PlacementChange, now: Date) {
   const clears = "clears" in change && change.clears.length > 0 ? `Deletes ${detachedName(volume)} first` : undefined;
   switch (change.kind) {
     case "move":
@@ -620,6 +691,14 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange) {
         detail: "Volume data, not database point-in-time.",
       };
     }
+    case "restore_snapshot": {
+      const { restore } = change;
+      return {
+        name: "Restore", currentValue: "", newValue: restoreLabel(restore, now),
+        loss: restore.losesBytes > 0 ? `Changes after ${lossTime(restoreAt(restore))} lost` : undefined,
+        detail: "Current data saved as Before restore",
+      };
+    }
   }
 }
 
@@ -637,7 +716,7 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     canDiscard: true,
     unreached,
     rows: changes.map((change, index) => {
-      const words = detailsRow(volume, change);
+      const words = detailsRow(volume, change, now);
       return {
         changeKey: `${volume.id}:placement:${index}`,
         label: words.name,

@@ -49,6 +49,8 @@ export type Snapshot = {
   readonly note: string | null;
   readonly kept: boolean;
   readonly bytes: number;
+  /** Bytes written to the live Volume since this snapshot: what a restore to it loses. */
+  readonly losesBytes: number;
 };
 
 export type LiveCopy = {

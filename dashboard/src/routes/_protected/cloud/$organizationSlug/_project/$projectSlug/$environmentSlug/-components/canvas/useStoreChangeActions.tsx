@@ -87,6 +87,9 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
         onOpenChange={(open) => { if (!open) setLoss(null); }}
         title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}
+        sentence={loss?.action === "deploy" && placementLoss.savesFirst
+          ? "Writes since then leave the live volume. Ployz saves them first as a Before restore snapshot, but the app won't see them."
+          : undefined}
         confirmLabel={loss?.action === "publish" ? "Save" : "Deploy"}
         items={loss?.check.items}
         callbacks={{

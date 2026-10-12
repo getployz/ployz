@@ -8,7 +8,7 @@ import {
 const today = (time: string) => new Date(`2026-10-12T${time}:00Z`);
 const server = (name: string) => ({ id: name.padEnd(32, "0") as MachineId, name });
 const snapshots = (n: number): Snapshot[] =>
-  Array.from({ length: n }, (_, i) => ({ id: `s${i}`, at: today("05:00"), kind: "hourly", note: null, kept: false, bytes: 20e6 }));
+  Array.from({ length: n }, (_, i) => ({ id: `s${i}`, at: today("05:00"), kind: "hourly", note: null, kept: false, bytes: 20e6, losesBytes: 0 }));
 
 const mirror = (refreshedAt: Date, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, staged: null, busy: null, ...extra,

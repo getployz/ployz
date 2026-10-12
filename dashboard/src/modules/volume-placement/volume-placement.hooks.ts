@@ -6,9 +6,10 @@ import { toErrorMessage } from "#/lib/error-message";
 import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
+import { volumeSnapshotsQueryOptions } from "#/modules/volume-copies/volume-snapshots.hooks";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
-  appliedMirrors, observePlacement, type Placement, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementVolume, type RestorePoint,
+  appliedMirrors, observePlacement, type Placement, type PlacementRow, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
 } from "./volume-placement";
 import { deleteCopyServerFn, discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
@@ -86,9 +87,19 @@ export function useStagedPlacements(
   const rows = (useVolumePlacements(organizationSlug).data ?? [])
     .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
   const members = useQueries({ queries: rows.map((row) => volumeMembersQueryOptions(organizationSlug, environment, row.volumeId)) });
+  const restoring = rows.filter((row) => row.staged?.restore !== undefined);
+  const lists = useQueries({ queries: restoring.map((row) => volumeSnapshotsQueryOptions(organizationSlug, environment, row.volumeId)) });
+  // A staged restore loses every write since it was staged too, so the typed confirm reads the writer's count now.
+  const fresh = (row: PlacementRow): PlacementRow => {
+    const restore = row.staged?.restore;
+    const listed = lists[restoring.indexOf(row)]?.data;
+    const snapshot = listed?.ok === true ? listed.snapshots.snapshots.find((entry) => entry.id === restore?.from) : undefined;
+    if (row.staged === null || restore === undefined || snapshot === undefined) return row;
+    return { ...row, staged: { ...row.staged, restore: { ...restore, losesBytes: snapshot.loses_bytes } } };
+  };
   const failure = "Could not discard the Volume changes";
   const { settle } = useSettle(failure, organizationSlug, environment);
-  const staged = rows.flatMap((row, index) => {
+  const staged = rows.map(fresh).flatMap((row, index) => {
     const volume = volumes.find((entry) => entry.id === row.volumeId);
     const answered = members[index]?.data;
     if (volume === undefined || answered === undefined) return [];
