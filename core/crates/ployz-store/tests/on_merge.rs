@@ -3260,6 +3260,64 @@ fn a_retry_after_undo_never_tears_down_what_saved_holds_again() {
 }
 
 #[test]
+fn a_removed_config_reads_removed_only_once_the_service_that_mounted_it_is_gone() {
+    for (touched, complete, outcome) in [
+        (&["web"][..], false, ployz_store::NodeStatus::NotAttempted),
+        (&["web", "db"][..], true, ployz_store::NodeStatus::Removed),
+    ] {
+        let (store, who) = shop_copying(
+            |store, who| {
+                production_nodes(store, who);
+                config(store, who, 26, "dbconf", &["db"]);
+                save(store, who, "production");
+            },
+            Some(vec![
+                node("db"),
+                node("volumes.data"),
+                node("configs.sentry"),
+                node("configs.dbconf"),
+            ]),
+        );
+        let full = deploy_by_hand(&store, &who, &[]);
+        run(&store, &full, &["web", "worker", "db"]);
+        watching(&store, &who);
+        remove_db(&store, &who);
+        store
+            .write(
+                &who,
+                &ployz_store::DeleteConfig {
+                    environment: at("pr-5"),
+                    config: ployz_core::ConfigName::parse("dbconf").unwrap(),
+                },
+            )
+            .unwrap();
+        merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+        let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+        let [admitted] = pushed.admitted.as_slice() else {
+            panic!("one Deployment: {pushed:?}")
+        };
+        let id = &admitted.deployment.id;
+        run_seeing(&store, id, touched, complete);
+
+        let outcomes: Vec<(String, ployz_store::NodeStatus)> = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+            .unwrap()
+            .nodes
+            .into_iter()
+            .map(|node| (node.node.name().to_owned(), node.outcome))
+            .collect();
+        assert!(
+            outcomes.contains(&("db".to_owned(), outcome)),
+            "{outcomes:?}"
+        );
+        assert!(
+            outcomes.contains(&("dbconf".to_owned(), outcome)),
+            "{outcomes:?}"
+        );
+    }
+}
+
+#[test]
 fn a_merge_that_removes_a_mounted_config_takes_it_out_with_the_service() {
     let (store, who) = shop_with_nodes();
     let full = deploy_by_hand(&store, &who, &[]);

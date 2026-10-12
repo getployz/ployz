@@ -988,6 +988,8 @@ pub(super) enum Evidence<'run> {
 /// succeeded. A removed
 /// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
 /// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
+/// A removed Config is Removed once the Deploy succeeded and every targeted Service
+/// that mounted it landed, else Not attempted.
 pub(super) fn node_outcomes(
     nodes: &[TargetNode],
     saved: &SavedEnvironmentIntent,
@@ -1166,22 +1168,42 @@ pub(super) fn node_outcomes(
             NodeStatus::NotAttempted
         }
     };
-    let removed_config = || match evidence {
+    let service_node = |node: &TargetNode, id: &str, runtime: &ServiceName| {
+        if saved.services.iter().any(|kept| kept.id == id) {
+            service(runtime, true)
+        } else {
+            removed_service(node.runtimes())
+        }
+    };
+    let removed_config = |config: &str| match evidence {
         Evidence::Planned { .. } => NodeStatus::Pending,
-        Evidence::Executed { .. } if succeeded(evidence) => NodeStatus::Removed,
+        Evidence::Executed { .. }
+            if succeeded(evidence)
+                && nodes.iter().all(|node| match node {
+                    TargetNode::Service { id, runtime, .. } => {
+                        !applied.services.iter().any(|held| {
+                            held.id == id.as_str()
+                                && held
+                                    .config_attachments
+                                    .iter()
+                                    .any(|mount| mount.config_resource_id == config)
+                        }) || matches!(
+                            service_node(node, id.as_str(), runtime),
+                            NodeStatus::Removed | NodeStatus::Deployed | NodeStatus::Unchanged
+                        )
+                    }
+                    TargetNode::Volume { .. } | TargetNode::Config { .. } => true,
+                }) =>
+        {
+            NodeStatus::Removed
+        }
         Evidence::Executed { .. } => NodeStatus::NotAttempted,
     };
     nodes
         .iter()
         .map(|node| {
             let status = match node {
-                TargetNode::Service { id, runtime, .. } => {
-                    if saved.services.iter().any(|kept| kept.id == id.as_str()) {
-                        service(runtime, true)
-                    } else {
-                        removed_service(node.runtimes())
-                    }
-                }
+                TargetNode::Service { id, runtime, .. } => service_node(node, id.as_str(), runtime),
                 TargetNode::Volume {
                     deletes: Some(deletes),
                     ..
@@ -1197,7 +1219,7 @@ pub(super) fn node_outcomes(
                     .configs
                     .iter()
                     .find(|config| config.resource_id == id.as_str())
-                    .map_or_else(removed_config, kept_config),
+                    .map_or_else(|| removed_config(id.as_str()), kept_config),
             };
             (node.id().to_owned(), status)
         })
