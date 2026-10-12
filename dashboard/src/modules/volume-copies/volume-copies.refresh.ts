@@ -20,10 +20,10 @@ export function mirrorLast(copy: MirrorCopy, now: Date): MirrorLast {
  * that a Deploy holds, so the last good round says nothing about when the Server stopped answering.
  */
 export function skippedWords(copy: MirrorCopy, now: Date): string | null {
-  if (!copy.skipped || copy.busy !== null || copy.refreshedAt === null || !isStale(copy, now)) return null;
+  if (copy.skipped === null || copy.busy !== null || copy.refreshedAt === null || !isStale(copy, now)) return null;
   const behind = span(Math.round((now.getTime() - copy.refreshedAt.getTime()) / 60_000));
-  return `${copy.server.name} is not answering. Ployz retries every ${MIRROR_ROUND_MINUTES} minutes. `
-    + `Until it catches up, a failover loses ${behind} of writes.`;
+  const cause = copy.skipped === "silent" ? `${copy.server.name} is not answering.` : "The last refresh failed.";
+  return `${cause} Ployz retries every ${MIRROR_ROUND_MINUTES} minutes. Until it catches up, a failover loses ${behind} of writes.`;
 }
 
 function span(minutes: number) {

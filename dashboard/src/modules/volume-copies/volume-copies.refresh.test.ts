@@ -7,12 +7,12 @@ const now = new Date("2026-10-12T16:00:00Z");
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
 const mirror = (refreshedAt: Date | null, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "web-2", server: { id: "web-2".padEnd(32, "0") as MachineId, name: "web-2" }, name: "pg-data-web-2",
-  refreshedAt, skipped: false, staged: null, busy: null, ...extra,
+  refreshedAt, skipped: null, staged: null, busy: null, ...extra,
 });
 
 describe("mirrorLast", () => {
   it("spins on what runs now, whatever the age", () => {
-    expect(mirrorLast(mirror(minutesAgo(200), { busy: "Refreshing", skipped: true }), now))
+    expect(mirrorLast(mirror(minutesAgo(200), { busy: "Refreshing", skipped: "silent" }), now))
       .toEqual({ spin: true, words: "Refreshing", stale: false });
   });
 
@@ -33,24 +33,30 @@ describe("mirrorLast", () => {
 
 describe("skippedWords", () => {
   it("says the mirror is not answering and how many writes a failover loses", () => {
-    expect(skippedWords(mirror(minutesAgo(135), { skipped: true }), now)).toBe(
+    expect(skippedWords(mirror(minutesAgo(135), { skipped: "silent" }), now)).toBe(
       "web-2 is not answering. Ployz retries every 15 minutes. Until it catches up, a failover loses 2 hours of writes.",
     );
-    expect(skippedWords(mirror(minutesAgo(61), { skipped: true }), now)).toMatch(/loses 1 hour of writes\.$/);
-    expect(skippedWords(mirror(minutesAgo(3 * 1440), { skipped: true }), now)).toMatch(/loses 3 days of writes\.$/);
+    expect(skippedWords(mirror(minutesAgo(61), { skipped: "silent" }), now)).toMatch(/loses 1 hour of writes\.$/);
+    expect(skippedWords(mirror(minutesAgo(3 * 1440), { skipped: "silent" }), now)).toMatch(/loses 3 days of writes\.$/);
+  });
+
+  it("says the last refresh failed when the mirror's Server answers", () => {
+    expect(skippedWords(mirror(minutesAgo(135), { skipped: "failed" }), now)).toBe(
+      "The last refresh failed. Ployz retries every 15 minutes. Until it catches up, a failover loses 2 hours of writes.",
+    );
   });
 
   it("names no time when rounds skipped the Volume before its Server went silent", () => {
     const at = new Date("2026-10-12T14:35:00Z");
-    const words = skippedWords(mirror(at, { skipped: true }), new Date("2026-10-12T15:38:49Z"));
+    const words = skippedWords(mirror(at, { skipped: "silent" }), new Date("2026-10-12T15:38:49Z"));
     expect(words).toBe("web-2 is not answering. Ployz retries every 15 minutes. Until it catches up, a failover loses 1 hour of writes.");
     expect(words).not.toMatch(/\d\d:\d\d/);
   });
 
   it("says nothing while rounds land, the mirror is fresh, or a round runs", () => {
     expect(skippedWords(mirror(minutesAgo(135)), now)).toBeNull();
-    expect(skippedWords(mirror(minutesAgo(20), { skipped: true }), now)).toBeNull();
-    expect(skippedWords(mirror(minutesAgo(135), { skipped: true, busy: "Refreshing" }), now)).toBeNull();
-    expect(skippedWords(mirror(null, { skipped: true }), now)).toBeNull();
+    expect(skippedWords(mirror(minutesAgo(20), { skipped: "silent" }), now)).toBeNull();
+    expect(skippedWords(mirror(minutesAgo(135), { skipped: "silent", busy: "Refreshing" }), now)).toBeNull();
+    expect(skippedWords(mirror(null, { skipped: "silent" }), now)).toBeNull();
   });
 });

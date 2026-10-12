@@ -17,8 +17,8 @@ export type MirrorCopy = CopyBase & {
   readonly server: ServerRef;
   readonly name: string;
   readonly refreshedAt: Date | null;
-  /** The last refresh did not run, so the age keeps growing until it catches up. */
-  readonly skipped: boolean;
+  /** Why the last refresh did not land, so the age keeps growing until it catches up. */
+  readonly skipped: "silent" | "failed" | null;
 };
 
 export type OffsiteCopy = CopyBase & {

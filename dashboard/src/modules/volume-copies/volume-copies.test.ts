@@ -11,7 +11,7 @@ const snapshots = (n: number): Snapshot[] =>
   Array.from({ length: n }, (_, i) => ({ id: `s${i}`, at: today("05:00"), kind: "hourly", note: null, kept: false, bytes: 20e6 }));
 
 const mirror = (refreshedAt: Date, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
-  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: false, staged: null, busy: null, ...extra,
+  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, staged: null, busy: null, ...extra,
 });
 const offsite: OffsiteCopy = {
   kind: "offsite", id: "acme-backups", bucket: "acme-backups", region: "eu-central-1", keep: 7, uploadedAt: today("07:04"), staged: null, busy: null,
@@ -82,7 +82,7 @@ describe("protected", () => {
 
 describe("stale mirror", () => {
   const now = today("14:04");
-  const behind = mirror(today("11:02"), { skipped: true });
+  const behind = mirror(today("11:02"), { skipped: "failed" });
   const copies = pgData([behind, offsite, old]);
 
   it("reads Mirror behind with the mirror's age", () => {
