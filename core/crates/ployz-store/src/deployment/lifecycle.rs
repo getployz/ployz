@@ -3,8 +3,8 @@
 use super::*;
 
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
-/// superseded: the newest admission replaces the pending one, and a targeted one
-/// takes over the Services it would have torn down.
+/// superseded: the newest admission replaces the pending one and takes over the
+/// Services it would have torn down.
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -55,12 +55,11 @@ pub(crate) fn admit(
             json!({}),
         ));
     }
+    let full = services.is_empty() && !frozen.nodes.iter().any(TargetNode::retires);
     let mut nodes = frozen.nodes.clone();
-    if !services.is_empty() || nodes.iter().any(TargetNode::retires) {
-        inherit(tx, environment, &intent, &mut nodes)?;
-    }
+    inherit(tx, environment, &intent, &mut nodes)?;
     let mut targets = services.to_vec();
-    for node in nodes.iter().filter(|node| node.retires()) {
+    for node in nodes.iter().filter(|node| !full && node.retires()) {
         if let TargetNode::Service { name, .. } = node
             && !targets.contains(name)
         {
@@ -152,7 +151,8 @@ pub(crate) fn forget(
 
 /// Add to `nodes` the teardown of each Service `environment`'s queued Deployment
 /// retires and Saved revision `saved` still lacks, but none of the runtime Services
-/// `saved` runs: superseding it must not leave them running.
+/// `saved` runs: superseding it must not leave them running. A node of that Service
+/// becomes its teardown, so the next Deployment to supersede this one takes it over.
 fn inherit(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -190,13 +190,17 @@ fn inherit(
                     })
                     .cloned(),
             );
-            match nodes.iter_mut().find(|ours| ours.id() == id.as_str()) {
+            if runtimes.is_empty() {
+                continue;
+            }
+            let retire = TargetNode::retire(&Retire { id, name, runtimes })?;
+            match nodes.iter_mut().find(|ours| ours.id() == retire.id()) {
                 Some(TargetNode::Service { removals: ours, .. }) if !ours.is_empty() => {
-                    ours.extend(runtimes.iter().cloned());
+                    ours.extend(retire.runtimes().into_iter().cloned());
                 }
+                Some(ours @ TargetNode::Service { .. }) => *ours = retire,
                 Some(_) => {}
-                None if runtimes.is_empty() => {}
-                None => nodes.push(TargetNode::retire(&Retire { id, name, runtimes })?),
+                None => nodes.push(retire),
             }
         }
     }
@@ -326,8 +330,8 @@ pub(crate) fn retry(
 }
 
 /// The targets and nodes a retry of `stored` ships: its own, but a targeted one
-/// tears down only what the latest Saved revision still lacks, as after an Undo, and
-/// takes over the teardown of the queued Deployment it supersedes. A retry whose
+/// tears down only what the latest Saved revision still lacks, as after an Undo.
+/// Either takes over the teardown of the queued Deployment it supersedes. A retry whose
 /// Saved revision still holds a Service that teardown retires is refused: it would
 /// run that Service again, or tear it down while deploying it, so the teardown stays.
 fn retried(
@@ -358,7 +362,11 @@ fn retried(
         }
     }
     if stored.summary.services.is_empty() {
-        return Ok((Vec::new(), stored.nodes.clone()));
+        let mut nodes = stored.nodes.clone();
+        if let Some(latest) = &latest {
+            inherit(tx, environment, latest, &mut nodes)?;
+        }
+        return Ok((Vec::new(), nodes));
     }
     let latest = latest.ok_or_else(|| error::corrupt("Saved State"))?;
     let mut nodes = Vec::new();

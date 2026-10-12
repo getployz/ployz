@@ -3112,6 +3112,74 @@ fn a_full_deploy_over_a_queued_teardown_that_cant_see_every_server_is_not_applie
     retry(&store, &who, &full).unwrap();
 }
 
+/// The Services production's Applied State runs.
+fn applied(store: &ConfigStore, who: &Actor) -> Vec<String> {
+    store
+        .read(
+            who,
+            &ployz_store::NamespaceQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .services
+        .into_keys()
+        .map(|name| name.to_string())
+        .collect()
+}
+
+#[test]
+fn a_targeted_deploy_over_a_full_one_over_a_teardown_keeps_it() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let [queued] = pushed.admitted.as_slice() else {
+        panic!("one Deployment: {pushed:?}")
+    };
+    let full = deploy_by_hand(&store, &who, &[]);
+    let worker = deploy_by_hand(&store, &who, &["worker"]);
+
+    for superseded in [&queued.deployment.id, &full] {
+        assert_eq!(
+            status(&store, &who, superseded),
+            ployz_store::DeploymentStatus::Superseded
+        );
+    }
+    let [_, removals, _] = told(&store, &who, &worker);
+    assert_eq!(removals, vec!["db".to_owned()]);
+    run(&store, &worker, &["worker", "db"]);
+    assert_eq!(
+        status(&store, &who, &worker),
+        ployz_store::DeploymentStatus::Applied
+    );
+    assert!(
+        !applied(&store, &who).contains(&"db".to_owned()),
+        "{:?}",
+        applied(&store, &who)
+    );
+}
+
+#[test]
+fn a_targeted_deploy_over_a_full_retry_over_a_teardown_keeps_it() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let full = deploy_by_hand(&store, &who, &[]);
+    cancel(&store, &who, &full);
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+    retry(&store, &who, &full).unwrap();
+    let worker = deploy_by_hand(&store, &who, &["worker"]);
+
+    let [_, removals, _] = told(&store, &who, &worker);
+    assert_eq!(removals, vec!["db".to_owned()]);
+}
+
 #[test]
 fn a_full_deploy_that_tore_the_service_down_leaves_the_push_nothing() {
     let (store, who) = shop_with_nodes();

@@ -369,7 +369,7 @@ pub(crate) enum TargetNode {
         name: ServiceName,
         /// The runtime Service it lowers to, which its Node Outcome is confirmed by.
         runtime: ServiceName,
-        /// For a Service a targeted Deployment retires: every runtime Service it
+        /// For a Service the Deployment retires: every runtime Service it
         /// tears down, `runtime` among them.
         #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
         removals: ServiceRemovals,
@@ -413,7 +413,7 @@ impl TargetNode {
         })
     }
 
-    /// Whether it is a Service a targeted Deployment tears down.
+    /// Whether it is a Service the Deployment tears down.
     pub(crate) fn retires(&self) -> bool {
         matches!(self, Self::Service { removals, .. } if !removals.is_empty())
     }
@@ -560,8 +560,12 @@ pub(crate) struct Stored {
 
 impl Stored {
     /// What it lowers: the Saved Services it ships, then the runtime Services it
-    /// tears down. Neither is a full Deploy.
+    /// tears down. A full Deploy lowers neither: it prunes every Service its Saved
+    /// revision lacks.
     pub(crate) fn lowering(&self) -> (Vec<ServiceName>, ServiceRemovals) {
+        if self.summary.services.is_empty() {
+            return (Vec::new(), ServiceRemovals::default());
+        }
         let mut shipped = Vec::new();
         let mut removals = ServiceRemovals::default();
         for node in &self.nodes {
