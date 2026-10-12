@@ -331,7 +331,7 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{} needs a newer Ployz. It cannot serve {}.",
+            "Server {} needs a newer Ployz. It cannot serve {}.",
             self.target, self.capability
         )
     }
@@ -997,7 +997,7 @@ mod tests {
         let failure = Failure::from(unsupported(details.clone()));
         assert_eq!(
             failure.to_string(),
-            "beta needs a newer Ployz. It cannot serve ployz.volume.mirror.v1."
+            "Server beta needs a newer Ployz. It cannot serve ployz.volume.mirror.v1."
         );
         let report = failure.report();
         assert_eq!(report.code, RpcErrorCode::Unsupported);
@@ -1025,7 +1025,7 @@ mod tests {
         let failure = Failure::from(error);
         assert_eq!(
             failure.to_string(),
-            "beta needs a newer Ployz. It cannot serve ployz.logs.tail.v1."
+            "Server beta needs a newer Ployz. It cannot serve ployz.logs.tail.v1."
         );
         assert_eq!(failure.causes(), Vec::<String>::new());
         assert_eq!(failure.report().cause, Vec::<String>::new());
