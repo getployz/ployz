@@ -141,7 +141,7 @@ pub struct ContainerRuntime {
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, Withdrawal>>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
-    stranded: Arc<std::sync::Mutex<observe::StrandedIngress>>,
+    stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
 }
 
 impl ContainerRuntime {
@@ -200,11 +200,13 @@ impl ContainerRuntime {
             .send_if_modified(|stopping| stopping.remove(container_id).is_some());
     }
 
-    fn forget_checks(&self, container_id: &ContainerId) {
+    /// Drop what the daemon remembers about a container Docker no longer has.
+    async fn forget(&self, container_id: &ContainerId) {
         self.checks
             .lock()
             .expect("check records are never poisoned")
             .forget(container_id);
+        self.stranded().await.held.remove(container_id);
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {

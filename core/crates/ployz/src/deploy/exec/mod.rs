@@ -987,7 +987,12 @@ async fn replace_container<C: MachineOperations>(
                     .stop_container(&operation.machine_id, &operation.old_container_id, None)
                     .await
                 {
-                    Ok(()) => super::is_active_runtime(&old.runtime),
+                    // A never-started old container is handed back by a start, which
+                    // lifts the hold even when the start fails again.
+                    Ok(()) => {
+                        super::is_active_runtime(&old.runtime)
+                            || old.runtime == ContainerRuntimeObservation::Created
+                    }
                     Err(error) if error.code == RpcErrorCode::NotFound => false,
                     Err(error) => {
                         return Err(machine_error(MachineAction::StopContainer, error).into());

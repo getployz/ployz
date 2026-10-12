@@ -358,7 +358,7 @@ impl ContainerRuntime {
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.ensure_managed(container_id).await?;
-        self.stranded().held.remove(container_id);
+        self.stranded().await.held.remove(container_id);
         self.start_inspected(container_id, &inspected).await
     }
 
@@ -392,9 +392,13 @@ impl ContainerRuntime {
         idempotent_lifecycle_result(container_id, result)
     }
 
-    /// Start an Ingress Proxy whose first start failed, unless a request stopped it.
+    /// Start an Ingress Proxy whose last start failed, unless a request stopped it
+    /// or is about to.
     pub(super) async fn start_stranded(&self, container_id: &ContainerId) {
-        if self.stranded().held.contains(container_id) {
+        // Held through the start, so a stop that races it lands after it and holds.
+        let mut stranded = self.stranded().await;
+        if stranded.held.contains(container_id) || self.stopping.borrow().contains_key(container_id)
+        {
             return;
         }
         let result = async {
@@ -405,7 +409,6 @@ impl ContainerRuntime {
             self.start_inspected(container_id, &inspected).await
         }
         .await;
-        let mut stranded = self.stranded();
         match result {
             Ok(()) => stranded.reported = None,
             Err(error) if stranded.reported != Some(*container_id) => {
@@ -419,10 +422,10 @@ impl ContainerRuntime {
         }
     }
 
-    pub(super) fn stranded(&self) -> std::sync::MutexGuard<'_, super::observe::StrandedIngress> {
-        self.stranded
-            .lock()
-            .expect("stranded ingress is never poisoned")
+    pub(super) async fn stranded(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, super::observe::StrandedIngress> {
+        self.stranded.lock().await
     }
 
     pub async fn stop(
@@ -432,7 +435,7 @@ impl ContainerRuntime {
         grace_period_seconds: Option<i32>,
     ) -> Result<(), Error> {
         self.ensure_managed(container_id).await?;
-        self.stranded().held.insert(*container_id);
+        self.stranded().await.held.insert(*container_id);
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -460,7 +463,7 @@ impl ContainerRuntime {
         match self.ensure_managed(container_id).await {
             Ok(_) => {}
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {
-                self.forget_checks(container_id);
+                self.forget(container_id).await;
                 return Ok(());
             }
             Err(error) => return Err(error),
@@ -482,7 +485,7 @@ impl ContainerRuntime {
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
             Err(error) => return Err(error),
         }
-        self.forget_checks(container_id);
+        self.forget(container_id).await;
         Ok(())
     }
 
@@ -504,7 +507,7 @@ impl ContainerRuntime {
             }
             self.force_remove_container(&container_id).await?;
             config_operation.remove(&container_id).await?;
-            self.forget_checks(&container_id);
+            self.forget(&container_id).await;
         }
         Ok(())
     }
@@ -674,13 +677,18 @@ pub(super) fn test_machine(machine_id: MachineId, gateway: MachineGateway) -> Ma
 }
 
 /// Docker left this container created and recorded why its start failed.
+/// Docker clears `State.Error` when a start succeeds, so a container at rest with one
+/// recorded is one whose last start failed: its first, or the one at boot that
+/// leaves it exited with no retry.
 fn failed_start(inspected: &ContainerInspectResponse) -> bool {
     inspected.state.as_ref().is_some_and(|state| {
-        state.status == Some(ContainerStateStatusEnum::CREATED)
-            && state
-                .error
-                .as_deref()
-                .is_some_and(|error| !error.is_empty())
+        matches!(
+            state.status,
+            Some(ContainerStateStatusEnum::CREATED | ContainerStateStatusEnum::EXITED)
+        ) && state
+            .error
+            .as_deref()
+            .is_some_and(|error| !error.is_empty())
     })
 }
 
@@ -740,9 +748,17 @@ mod tests {
     }
 
     async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {
+        stranded_with("created", error, FakeDocker::default()).await
+    }
+
+    async fn stranded_with(
+        status: &str,
+        error: &str,
+        fake: FakeDocker,
+    ) -> (ContainerRuntime, FakeDocker, ContainerId) {
         let (runtime, fake) = fake_runtime_with(FakeDocker {
             create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
-            ..Default::default()
+            ..fake
         })
         .await;
         let namespace = Namespace::parse("app").unwrap();
@@ -775,7 +791,7 @@ mod tests {
             "Config": { "Labels": labels },
             "HostConfig": { "NetworkMode": "ployz" },
             "NetworkSettings": { "Networks": {} },
-            "State": { "Status": "created", "ExitCode": 128, "Error": error },
+            "State": { "Status": status, "ExitCode": 128, "Error": error },
         }));
         fake.requests.lock().unwrap().clear();
         (runtime, fake, created.container_id)
@@ -810,8 +826,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ingress_about_to_be_stopped_is_not_started() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+
+        runtime.mark_stopping(container_id);
+        runtime.start_stranded(&container_id).await;
+
+        assert!(!started(&fake));
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_races_a_stranded_start_leaves_the_ingress_stopped() {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let (runtime, fake, container_id) = stranded_with(
+            "created",
+            PORT_TAKEN,
+            FakeDocker {
+                start_barrier: Some(barrier.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        let starting = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.start_stranded(&container_id).await }
+        });
+        barrier.wait().await;
+        let stopping = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.stop(&container_id, None, None).await }
+        });
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| path.ends_with("/stop")),
+            "the stop waits for the start it raced"
+        );
+        barrier.wait().await;
+        starting.await.unwrap();
+        stopping.await.unwrap().unwrap();
+
+        let lifecycle = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == axum::http::Method::POST)
+            .map(|(_, path)| path.rsplit('/').next().unwrap().to_owned())
+            .filter(|action| action == "start" || action == "stop")
+            .collect::<Vec<_>>();
+        assert_eq!(lifecycle, ["start", "stop"]);
+        fake.requests.lock().unwrap().clear();
+        runtime.start_stranded(&container_id).await;
+        assert!(!started(&fake), "the stop holds");
+    }
+
+    #[tokio::test]
     async fn an_ingress_docker_never_tried_to_start_is_left_alone() {
         let (runtime, fake, container_id) = stranded("").await;
+
+        runtime.start_stranded(&container_id).await;
+
+        assert!(!started(&fake));
+    }
+
+    // Docker starts a container with a restart policy once at boot and records a
+    // failure as exited, with no retry.
+    #[tokio::test]
+    async fn an_ingress_whose_start_at_boot_failed_is_started_again() {
+        let (runtime, fake, container_id) =
+            stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
+
+        runtime.start_stranded(&container_id).await;
+
+        assert!(started(&fake));
+    }
+
+    #[tokio::test]
+    async fn an_ingress_that_exited_on_its_own_is_left_alone() {
+        let (runtime, fake, container_id) =
+            stranded_with("exited", "", FakeDocker::default()).await;
 
         runtime.start_stranded(&container_id).await;
 

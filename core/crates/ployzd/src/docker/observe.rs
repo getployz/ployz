@@ -243,9 +243,6 @@ impl ContainerRuntime {
         if local.phase() != LocalMachinePhase::Participating || local.id() != machine_id {
             return Ok(());
         }
-        self.stranded()
-            .held
-            .retain(|held| container_ids.contains(held));
         if local
             .machine()
             .is_some_and(|machine| machine.accepts_ingress)
@@ -416,11 +413,12 @@ fn local_volume_changes(
     }
 }
 
-/// The newest local Ingress Proxy, when it never ran and no other one runs.
+/// The newest local Ingress Proxy, when no local one runs.
 ///
-/// Docker's restart policy covers an ingress that ran and died, not one whose first
-/// start failed, such as when another process held port 80. A scan that could not
-/// inspect every container may have missed a running one, so it starts nothing.
+/// Docker's restart policy covers an ingress that ran and died, not one whose start
+/// failed, such as when another process held port 80 at enrollment or at boot. The
+/// candidate's inspect decides whether its last start failed. A scan that could not
+/// inspect every container may have missed a running one, so it names nothing.
 fn stranded_ingress(observations: &[ContainerObservation], complete: bool) -> Option<ContainerId> {
     if !complete {
         return None;
@@ -439,8 +437,7 @@ fn stranded_ingress(observations: &[ContainerObservation], complete: bool) -> Op
     });
     let newest = ingresses
         .max_by_key(|observation| (observation.created_at_unix_nanos, observation.container_id))?;
-    (at_rest && newest.runtime == ContainerRuntimeObservation::Created)
-        .then_some(newest.container_id)
+    at_rest.then_some(newest.container_id)
 }
 
 #[cfg(test)]
@@ -499,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn newest_unstarted_ingress_is_started_when_none_runs() {
+    fn newest_ingress_at_rest_is_the_candidate_when_none_runs() {
         assert_eq!(
             stranded_ingress(
                 &[
@@ -510,10 +507,20 @@ mod tests {
             ),
             Some(id('d'))
         );
+        assert_eq!(
+            stranded_ingress(
+                &[
+                    ingress('a', 2, json!({ "state": "exited", "code": 255 })),
+                    ingress('d', 1, json!({ "state": "created" })),
+                ],
+                true
+            ),
+            Some(id('a'))
+        );
     }
 
     #[test]
-    fn ingress_is_left_alone_while_one_runs_stops_or_belongs_to_an_app() {
+    fn ingress_is_left_alone_while_one_runs_or_belongs_to_an_app() {
         let created = json!({ "state": "created" });
         let running = json!({ "state": "running", "health": "healthy" });
         assert_eq!(
@@ -526,7 +533,7 @@ mod tests {
         assert_eq!(
             stranded_ingress(
                 &[
-                    ingress('a', 2, json!({ "state": "exited", "code": 0 })),
+                    ingress('a', 2, json!({ "state": "restarting" })),
                     ingress('d', 1, created.clone()),
                 ],
                 true

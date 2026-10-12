@@ -36,6 +36,8 @@ pub(crate) struct FakeDocker {
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
+    /// A start waits here twice: once to announce it began, once to be released.
+    pub(crate) start_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) reject_list: Arc<AtomicBool>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
     /// Another start attaches the network first, so this connect finds it attached.
@@ -312,6 +314,12 @@ async fn fake_docker(
             (StatusCode::CREATED, response)
         }
     } else if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
+        if path.ends_with("/start")
+            && let Some(barrier) = &fake.start_barrier
+        {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
         (StatusCode::NO_CONTENT, serde_json::Value::Null)
     } else if method == Method::DELETE && path.contains("/volumes/") {
         let name = path.rsplit('/').next().unwrap();
