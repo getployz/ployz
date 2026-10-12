@@ -104,7 +104,7 @@ jobs:
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
       actions: write
@@ -144,11 +144,20 @@ jobs:
       - name: Config Store behaviour suite on Postgres
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run --package ployz-store --test store --test review --test deployment --test git --test service --test config_item --test variables --test registry --test domain --test volume --test automation --test branch --test teardown --test pull_request --test conditional_sync --test sync --test migration --test never_sync --test follow --test batch --locked
+        run: cargo nextest run --package ployz-store --test store --test review --test deployment --test git --test service --test config_item --test variables --test registry --test domain --test volume --test automation --test branch --test removal --test pull_request --test conditional_sync --test sync --test migration --test never_sync --test follow --test batch --locked
       - name: Check the missing SSH prerequisite
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
         run: bash scripts/test-missing-ssh-client.sh
+      # Last: installing Docker restarts dockerd, which stops the Postgres service.
+      - name: Decode the latest Docker's local log files as docker logs prints them
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
+        run: |
+          curl -fsSL https://get.docker.com | sudo sh >/dev/null
+          docker version --format 'Docker {{.Server.Version}}'
+          docker pull --quiet alpine:3.23.3
+          cargo nextest run --package ployzd --all-features --locked --run-ignored only -E 'test(observe::integration_tests::decoding_matches_docker_logs_byte_for_byte)'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -156,6 +165,35 @@ jobs:
           path: core/target/cargo-timings/*.html
           retention-days: 7
           if-no-files-found: ignore
+
+  uptime:
+    defaults:
+      run:
+        working-directory: dashboard/uptime
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: uptime
+          components: clippy,rustfmt
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2
+        with:
+          tool: cargo-nextest@0.9.143
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      # The Postgres tests start their own postgres:16-alpine containers through the Docker CLI.
+      - run: docker pull --quiet postgres:16-alpine
+      - run: cargo nextest run --locked
+      - name: Build the Railway image
+        working-directory: .
+        run: docker build --file dashboard/uptime/Dockerfile .
 
   sdk-types:
     needs: changes
@@ -207,7 +245,7 @@ jobs:
   ready:
     name: CI ready
     if: always()
-    needs: [changes, contracts, rust-lint, rust-tests, sdk-types, macos-cli, cloud, release-contracts]
+    needs: [changes, contracts, rust-lint, rust-tests, uptime, sdk-types, macos-cli, cloud, release-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

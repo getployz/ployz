@@ -156,6 +156,9 @@ pub(super) struct DiscoveryService {
     pub(super) recover_volume_on_storage_inspect: Option<DockerVolume>,
     pub(super) container_list_calls: Arc<Mutex<BTreeMap<MachineId, usize>>>,
     pub(super) container_list_outcomes: Arc<Mutex<ContainerListOutcomes>>,
+    pub(super) history_requests: Arc<Mutex<Vec<(MachineId, ployz_core::LogHistoryRequest)>>>,
+    pub(super) history_failures: Arc<Mutex<BTreeMap<MachineId, Status>>>,
+    pub(super) history_blocked: Option<Arc<tokio::sync::Notify>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     pub(super) watch_accepts_gzip: Arc<AtomicBool>,
     watch: Arc<WatchHub>,
@@ -211,6 +214,9 @@ impl DiscoveryService {
             recover_volume_on_storage_inspect: None,
             container_list_calls: Arc::new(Mutex::new(BTreeMap::new())),
             container_list_outcomes: Arc::new(Mutex::new(BTreeMap::new())),
+            history_requests: Arc::new(Mutex::new(Vec::new())),
+            history_failures: Arc::new(Mutex::new(BTreeMap::new())),
+            history_blocked: None,
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch_accepts_gzip: Arc::new(AtomicBool::new(false)),
             watch: Arc::new(WatchHub::new()),
@@ -472,9 +478,8 @@ impl MachineRpc for DiscoveryService {
         });
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
-    type ContainerLogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type ContainerLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type MachineLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
+    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -1229,24 +1234,58 @@ impl MachineRpc for DiscoveryService {
         )))
     }
 
-    async fn container_logs(
+    /// Every Server's Log Store holds one line of a removed `app/gone`.
+    async fn log_history(
         &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogsStream>, Status> {
-        Err(Status::unimplemented("unused"))
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+        let machine_id =
+            MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
+        let RpcRequestBody::LogHistory(history) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected log_history"));
+        };
+        self.history_requests
+            .lock()
+            .unwrap()
+            .push((machine_id, history));
+        if let Some(error) = self.history_failures.lock().unwrap().get(&machine_id) {
+            return Err(error.clone());
+        }
+        if let Some(received) = &self.history_blocked {
+            received.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let container_id = ContainerId::parse("9".repeat(64)).unwrap();
+        let rows = [
+            ployz_core::HistoryRow::Container(ployz_core::HistoryContainer {
+                container_id,
+                namespace: Some("app".into()),
+                service: Some("gone".into()),
+                deployment: Some("dep_old".into()),
+                replica: "gone-1".into(),
+                kind: ployz_core::HistoryContainerKind::Service,
+            }),
+            ployz_core::HistoryRow::Line {
+                container_id,
+                ts: 1_760_000_000_000_000_000,
+                stream: ployz_core::HistoryStream::Stdout,
+                text: b"shutting down".to_vec(),
+            },
+            ployz_core::HistoryRow::End { next: None },
+        ];
+        let mut payloads = Vec::new();
+        for row in &rows {
+            payloads.push(Ok(row.encode().unwrap()));
+        }
+        Ok(Response::new(tokio_stream::iter(payloads)))
     }
 
-    async fn container_log_history(
+    async fn tail_logs(
         &self,
         _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::ContainerLogHistoryStream>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
-    async fn machine_logs(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::MachineLogsStream>, Status> {
+    ) -> Result<Response<Self::TailLogsStream>, Status> {
         self.stream_opens.fetch_add(1, Ordering::SeqCst);
         Ok(Response::new(tokio_stream::empty()))
     }

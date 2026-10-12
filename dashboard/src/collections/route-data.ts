@@ -10,6 +10,7 @@ import { configQuery, configsQuery, environmentsQuery, projectsQuery, requireVie
  * Route loaders call only the helpers in this file.
  * - `require*` awaits a route decision (access, not-found, redirect) on server and client.
  * - `prefetch*` awaits on the server so SSR HTML is complete, and never blocks client navigation.
+ * - `stream*` never awaits: the page renders its fallback and the read streams in after the HTML.
  */
 type RouteDataContext = {
   queryClient: QueryClient;
@@ -69,6 +70,14 @@ export async function prefetchRemote(context: RouteDataContext, ...reads: Array<
 export async function prefetchRemoteWithStoreViews(context: RouteDataContext, organizationSlug: string, queries: ConfigQuery[],
   ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
   await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)), ...reads);
+}
+
+/**
+ * Starts every read and returns at once, on the server too: SSR sends the page's skeleton and streams the data after
+ * it. For reads a page can show late but that must never hold its HTML back.
+ */
+export function streamRemote(context: RouteDataContext, ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
+  for (const options of reads) void context.queryClient.prefetchQuery(options);
 }
 
 /** `prefetchRemote` for Config Store views, started together. */

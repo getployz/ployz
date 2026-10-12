@@ -21,7 +21,7 @@ describe("the fake fleet", () => {
     });
     expect(messages).toContain("starting session store");
     const ledger = yield* fleet.ledger;
-    expect(ledger.filter(({ command }) => command === "container_logs").map(({ machine }) => machine)).toContain("web-1");
+    expect(ledger.filter(({ command }) => command === "tail_logs").map(({ machine }) => machine)).toContain("web-1");
     expect(ledger.filter(({ machine }) => machine === "web-3")).toEqual([]);
   }));
 });

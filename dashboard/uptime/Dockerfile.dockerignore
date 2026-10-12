@@ -1,0 +1,9 @@
+**
+!core/Cargo.toml
+!core/crates/ployz-core/
+!core/crates/ployz-core/**
+!dashboard/uptime/
+!dashboard/uptime/**
+dashboard/uptime/target/
+**/.env
+**/.env.*

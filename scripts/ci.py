@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-JOBS = {"contracts", "rust-lint", "rust-tests", "sdk-types", "macos-cli", "cloud", "release-contracts"}
+JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "sdk-types", "macos-cli", "cloud", "release-contracts"}
 RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
     "check-layer3-runner.sh",
@@ -24,15 +24,24 @@ def select(paths):
     for path in paths:
         if path.endswith(".md") or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "core/site/")):
             continue
+        # The uptime crate is its own Cargo workspace, so its manifests select only its job.
+        if path.startswith("dashboard/uptime/"):
+            selected.add("uptime")
+            continue
         if path.startswith(".github/") or Path(path).name in {"Cargo.toml", "Cargo.lock"}:
             return JOBS.copy()
         if path.startswith("dashboard/"):
             selected.add("cloud")
+            # The uptime tests apply every migration and read the dashboard's incident fence.
+            if path.startswith(("dashboard/drizzle/", "dashboard/src/modules/uptime/")):
+                selected.add("uptime")
         elif path.startswith("core/crates/"):
             if path.count("/") < 3:
                 return JOBS.copy()
             _, _, crate, relative = path.split("/", 3)
             selected |= RUST
+            if crate == "ployz-core" and not relative.startswith("tests/"):
+                selected.add("uptime")
             if crate == "ployzd":
                 continue
             selected.add("macos-cli")
