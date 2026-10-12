@@ -39,9 +39,10 @@ pub(crate) struct Retire {
 }
 
 /// What tearing down the Services `removed` takes once Saved revision `saved`
-/// dropped them: each by the runtime Services Applied State and every started
-/// Deployment ran it as. One still in `saved`, or that never ran, has nothing to
-/// tear down, and a runtime Service another kept Service runs is never one.
+/// dropped them: each by the runtime Services Applied State and every started or
+/// queued Deployment since the last one that removed it runs it as. One still in
+/// `saved`, or that never ran nor will, has nothing to tear down, and a runtime
+/// Service another kept Service runs is never one.
 pub(crate) fn retirements(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -79,8 +80,9 @@ pub(crate) fn retirements(
             runtimes.extend([service.config.private_dns.clone()]);
         }
         let rows = tx.query(
-            "SELECT nodes FROM config_deployment \
-             WHERE environment_id = ?1 AND started IS NOT NULL AND nodes LIKE ?2 \
+            "SELECT nodes, run FROM config_deployment \
+             WHERE environment_id = ?1 AND (started IS NOT NULL OR status = 'queued') \
+             AND nodes LIKE ?2 \
              ORDER BY number DESC",
             &[
                 environment.as_str().into(),
@@ -88,6 +90,11 @@ pub(crate) fn retirements(
             ],
         )?;
         for row in &rows {
+            let run: Run = row.json(1, "Deployment")?;
+            // What ran it before a Deployment removed it is gone.
+            if run.nodes.get(id.as_str()) == Some(&NodeStatus::Removed) {
+                break;
+            }
             let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
             for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
                 if let TargetNode::Service { name: then, .. } = node {
@@ -221,15 +228,31 @@ pub(crate) fn freeze(
             .any(|old| old.resource_id == config.resource_id);
         targeted.contains(&true) && (fresh || !targeted.contains(&false))
     };
+    // A removed Config leaves with the Services that mounted it, once every one ships.
+    let unmounts = |old: &SavedConfigIntent| {
+        let targeted: Vec<bool> = applied
+            .services
+            .iter()
+            .filter(|service| {
+                service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == old.resource_id)
+            })
+            .map(|service| nodes.iter().any(|node| node.id() == service.id))
+            .collect();
+        targeted.contains(&true) && !targeted.contains(&false)
+    };
     let configs: Vec<TargetNode> = saved
         .configs
         .iter()
         .filter(|config| full || applies(config))
         .chain(applied.configs.iter().filter(|old| {
-            full && !saved
+            !saved
                 .configs
                 .iter()
                 .any(|new| new.resource_id == old.resource_id)
+                && (full || unmounts(old))
         }))
         .map(TargetNode::config)
         .collect::<Result<_, _>>()?;

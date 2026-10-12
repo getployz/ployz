@@ -2746,12 +2746,38 @@ fn the_check_names_a_removal_apart_from_values_and_reads_neutral_while_it_is_in_
     );
 }
 
+#[test]
+fn the_check_says_a_removal_was_changed_there() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    set(&store, &who, "production", &[("db.env.POOL", json!("10"))]);
+    save(&store, &who, "production");
+    assert_eq!(
+        check(&store, &who).unwrap().summary,
+        "- `web · DB_URL`: ${{ db.PLOYZ_PRIVATE_DOMAIN }} → db.internal\n\n\
+         ### Changed in production\n\n\
+         - Removes `db` · Changed there\n\n\
+         The merge sets these. Undo in Ployz History reverts it."
+    );
+}
+
 fn runner() -> ployz_store::RunnerId {
     ployz_store::RunnerId::parse("runner").unwrap()
 }
 
 /// Run Deployment `id` to its end, touching `services`.
 fn run(store: &ConfigStore, id: &ployz_store::DeploymentId, services: &[&str]) {
+    run_seeing(store, id, services, true);
+}
+
+/// Run Deployment `id` to its end, touching `services`, with a snapshot of every
+/// Server when `complete`.
+fn run_seeing(
+    store: &ConfigStore,
+    id: &ployz_store::DeploymentId,
+    services: &[&str],
+    complete: bool,
+) {
     let claimed = store.claim(id, &runner()).unwrap();
     let operation = |index: usize| {
         json!({"type": "remove_container", "machine_id": "a".repeat(32),
@@ -2763,7 +2789,8 @@ fn run(store: &ConfigStore, id: &ployz_store::DeploymentId, services: &[&str]) {
             "index": index, "machine_id": "a".repeat(32), "service_name": name,
             "operation": operation(index), "status": {"type": "pending"}
         })).collect::<Vec<_>>(),
-        "warnings": [], "would_remove": [], "preserved_volumes": []
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "prune_refusal": (!complete).then_some("incomplete_snapshot")
     }))
     .unwrap();
     store
@@ -3047,4 +3074,163 @@ fn a_manual_deploy_of_other_services_leaves_the_teardown_to_the_push() {
         teardown(&store, &who, &pushed),
         [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
     );
+}
+
+#[test]
+fn a_full_deploy_that_cant_see_every_server_leaves_the_teardown_to_the_push() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let full = deploy_by_hand(&store, &who, &[]);
+    run_seeing(&store, &full, &["web", "worker"], false);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+}
+
+#[test]
+fn a_full_deploy_that_tore_the_service_down_leaves_the_push_nothing() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let full = deploy_by_hand(&store, &who, &[]);
+    run(&store, &full, &["web", "worker", "db"]);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+}
+
+#[test]
+fn a_removal_supersedes_a_queued_deploy_that_would_run_the_service() {
+    let (store, who) = shop_with_lone_db();
+    watching(&store, &who);
+    let queued = deploy_by_hand(&store, &who, &["db"]);
+    remove_service(&store, &who, "pr-5", "db");
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+    assert!(store.claim(&queued, &runner()).is_err());
+}
+
+#[test]
+fn a_removal_tears_down_what_a_deploy_claimed_before_its_push() {
+    let (store, who) = shop_with_lone_db();
+    watching(&store, &who);
+    let queued = deploy_by_hand(&store, &who, &["db"]);
+    remove_service(&store, &who, "pr-5", "db");
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    store.claim(&queued, &runner()).unwrap();
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    assert_eq!(
+        teardown(&store, &who, &pushed),
+        [vec!["db".to_owned()], vec!["db".to_owned()], NOTHING]
+    );
+}
+
+fn cancel(store: &ConfigStore, who: &Actor, id: &ployz_store::DeploymentId) {
+    store
+        .write(
+            who,
+            &ployz_store::Cancel {
+                deployment: id.clone(),
+            },
+        )
+        .unwrap();
+}
+
+fn retry(
+    store: &ConfigStore,
+    who: &Actor,
+    source: &ployz_store::DeploymentId,
+) -> Result<ployz_store::DeploymentId, ployz_core::RpcError> {
+    let id = ployz_store::DeploymentId::parse(::uuid::Uuid::new_v4().to_string()).unwrap();
+    store.write_trusted(
+        who,
+        &ployz_store::Admit::Retry(ployz_store::Retry {
+            id: id.clone(),
+            deployment: source.clone(),
+        }),
+        &Trusted::default(),
+    )?;
+    Ok(id)
+}
+
+#[test]
+fn a_retry_takes_over_the_teardown_it_supersedes() {
+    let (store, who) = shop_with_nodes();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_db(&store, &who);
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let worker = deploy_by_hand(&store, &who, &["worker"]);
+    cancel(&store, &who, &worker);
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+
+    let retried = retry(&store, &who, &worker).unwrap();
+    let [_, removals, _] = told(&store, &who, &retried);
+    assert_eq!(removals, vec!["db".to_owned()]);
+}
+
+#[test]
+fn a_retry_after_undo_never_tears_down_what_saved_holds_again() {
+    let (store, who) = shop_with_lone_db();
+    running(&store, &who);
+    watching(&store, &who);
+    remove_service(&store, &who, "pr-5", "db");
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let teardown = landed.admitted[0].deployment.id.clone();
+    cancel(&store, &who, &teardown);
+
+    undo_merge(&store, &who);
+    let refused = retry(&store, &who, &teardown).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+}
+
+#[test]
+fn a_merge_that_removes_a_mounted_config_takes_it_out_with_the_service() {
+    let (store, who) = shop_with_nodes();
+    let full = deploy_by_hand(&store, &who, &[]);
+    run(&store, &full, &["web", "worker", "db"]);
+    watching(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: at("pr-5"),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+
+    let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+    let [admitted] = pushed.admitted.as_slice() else {
+        panic!("one Deployment: {pushed:?}")
+    };
+    let nodes: Vec<String> = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: admitted.deployment.id.clone(),
+            },
+        )
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.node.name().to_owned())
+        .collect();
+    assert_eq!(nodes, vec!["web".to_owned(), "sentry".to_owned()]);
 }

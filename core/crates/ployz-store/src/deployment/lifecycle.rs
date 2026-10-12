@@ -275,15 +275,17 @@ pub(crate) fn retry(
         let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::removal::guard_removal(tx, &environment)?;
     }
+    let (services, nodes) = retried(tx, &stored)?;
     let number = queue(tx, &stored.summary.environment_id)?;
     let admitted_at = now();
-    // Every frozen column comes from the source, so a retry never re-reads authored state.
+    // Every other frozen column comes from the source, so a retry never re-reads
+    // authored state.
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
           namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
-         SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, services, \
-          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
+         SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
+          ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
          FROM config_deployment WHERE id = ?4",
         &[
             id.as_str().into(),
@@ -294,6 +296,8 @@ pub(crate) fn retry(
             source.as_str().into(),
             admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
+            json_text(&services).as_str().into(),
+            json_text(&nodes).as_str().into(),
         ],
     )?;
     // A retry builds the commits its source pinned.
@@ -308,6 +312,7 @@ pub(crate) fn retry(
         id: id.clone(),
         number,
         status: DeploymentStatus::Queued,
+        services,
         runner: None,
         admitted_by: who.principal.clone(),
         admitted_at,
@@ -318,6 +323,86 @@ pub(crate) fn retry(
         warnings: Vec::new(),
         ..stored.summary
     })
+}
+
+/// The targets and nodes a retry of `stored` ships: its own, but a targeted one
+/// tears down only what the latest Saved revision still lacks, as after an Undo, and
+/// takes over the teardown of the queued Deployment it supersedes.
+fn retried(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+) -> Result<(Vec<ServiceName>, Vec<TargetNode>), RpcError> {
+    let environment = &stored.summary.environment_id;
+    if stored.summary.services.is_empty() {
+        return Ok((Vec::new(), stored.nodes.clone()));
+    }
+    let latest = crate::review::latest_saved(tx, environment)?
+        .ok_or_else(|| error::corrupt("Saved State"))?
+        .intent;
+    let mut nodes = Vec::new();
+    for node in &stored.nodes {
+        match node {
+            TargetNode::Service {
+                id, name, removals, ..
+            } if !removals.is_empty() => {
+                if latest
+                    .services
+                    .iter()
+                    .any(|service| service.id == id.as_str())
+                {
+                    continue;
+                }
+                let runtimes = ServiceRemovals::from_names(
+                    removals
+                        .iter()
+                        .filter(|runtime| {
+                            !latest
+                                .services
+                                .iter()
+                                .any(|service| service.config.private_dns == **runtime)
+                        })
+                        .cloned(),
+                );
+                if !runtimes.is_empty() {
+                    nodes.push(TargetNode::retire(&Retire {
+                        id: id.clone(),
+                        name: name.clone(),
+                        runtimes,
+                    })?);
+                }
+            }
+            TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                nodes.push(node.clone());
+            }
+        }
+    }
+    inherit(tx, environment, &latest, &mut nodes)?;
+    let named = |target: &ServiceName| {
+        nodes
+            .iter()
+            .any(|node| matches!(node, TargetNode::Service { name, .. } if name == target))
+    };
+    let mut services: Vec<ServiceName> = stored
+        .summary
+        .services
+        .iter()
+        .filter(|target| named(target))
+        .cloned()
+        .collect();
+    for node in nodes.iter().filter(|node| node.retires()) {
+        if let TargetNode::Service { name, .. } = node
+            && !services.contains(name)
+        {
+            services.push(name.clone());
+        }
+    }
+    if services.is_empty() {
+        return Err(error::conflict(
+            "Every Service this Deployment removes is saved again: deploy instead",
+            json!({ "deployment": stored.summary.id }),
+        ));
+    }
+    Ok((services, nodes))
 }
 
 /// A queued Deployment of `who`'s Organization, checked that a runner may still

@@ -727,6 +727,7 @@ fn remove_unused(
             operations.push(DeployOperation::RemoveContainer {
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
+                purpose: ployz_core::RemoveContainerPurpose::Rollout,
             });
             placement.capacity.release(&observation.machine_id);
             placement

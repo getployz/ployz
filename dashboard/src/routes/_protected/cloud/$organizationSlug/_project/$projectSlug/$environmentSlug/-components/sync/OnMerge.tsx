@@ -110,6 +110,7 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
     : isFile(row) ? { name: row.name.slice("files.".length) } : settingName(row.name);
   const excluded = row.ride === "excluded";
   const removal = isRemoval(row);
+  const kept = row.ride === "kept";
   const edited = row.ride === "edited";
   const preview = store.environment ?? "";
   const node = rows.find((entry) => entry.row === row.requires && entry.ride === "excluded");
@@ -123,12 +124,12 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
       <span className="truncate font-mono text-xs text-muted-foreground">{row.node}</span>
       <span className={cn("truncate font-mono text-xs", excluded && "opacity-60")}>{removal ? null : name}</span>
       <span className={cn("flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs", excluded && "opacity-60")}>
-        {removal ? <Removal row={row} /> : <RowValue row={row} preview={preview} />}
+        {kept ? <Badge variant="secondary">Kept</Badge> : removal ? <Removal row={row} /> : <RowValue row={row} preview={preview} />}
         {excluded ? <Badge variant="secondary">Excluded</Badge> : null}
       </span>
       <span className="flex items-center gap-1">
         {excluded ? <Button variant="link" size="sm" className="text-muted-foreground" onClick={() => exclude(true)}>Include</Button> : null}
-        {row.ride === "kept" ? null : <DropdownMenu>
+        {kept ? null : <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`More for ${name}`} />}>
             <EllipsisIcon />
           </DropdownMenuTrigger>
@@ -145,9 +146,8 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   );
 }
 
-/** What the merge does to a removed node: removes it, or keeps it while production still uses it; a Volume keeps its data. */
+/** What the merge does to a removed node: removes it, or holds it while production still uses it. */
 function Removal({ row }: { row: MergeRow }) {
-  if (row.ride === "kept") return <Badge variant="secondary">Kept</Badge>;
   if (row.ride === "excluded") return null;
   const users = row.refused_by ?? [];
   if (users.length > 0) {

@@ -777,15 +777,14 @@ fn admit(
 
 /// What a Deployment of `environment` shipped, which landed merges stop waiting on.
 pub(crate) enum Shipped<'a> {
-    /// A full Deploy of a Saved revision: each Service it holds, and the teardown of
-    /// each one it doesn't.
+    /// A full Deploy of a Saved revision: each Service it holds.
     All(&'a SavedEnvironmentIntent),
     /// A narrowed Deploy: these Services, by ID.
     Services(BTreeSet<&'a str>),
 }
 
-/// Forget what landed merges changed and removed in `environment` that a Deployment
-/// just took, `shipped`.
+/// Forget what landed merges changed in `environment` that a Deployment just took,
+/// `shipped`.
 pub(crate) fn shipped_landed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -803,10 +802,11 @@ pub(crate) fn shipped_landed(
         let commit = row.text(4)?;
         let before = (pending.updates.len(), pending.removals.len());
         match shipped {
+            // Its outcome isn't known yet, so a removal stays for the next push, which
+            // finds nothing left to tear down once this Deploy did.
             Shipped::All(saved) => {
                 let kept = |id: &str| saved.services.iter().any(|service| service.id == id);
                 pending.updates.retain(|service| !kept(service));
-                pending.removals.retain(|service| kept(service.as_str()));
             }
             Shipped::Services(services) => {
                 pending

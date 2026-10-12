@@ -407,6 +407,18 @@ pub enum StopContainerPurpose {
     FreeHostPorts,
 }
 
+/// Why a Deploy removes a Container.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoveContainerPurpose {
+    /// Roll a Service out: its anonymous Volumes go with the Container.
+    #[default]
+    Rollout,
+    /// Retire a Service the Deploy removes: its anonymous Volumes stay, since deleting
+    /// data is a Volume decision.
+    Retire,
+}
+
 /// One step in a Deploy Plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -441,6 +453,8 @@ pub enum DeployOperation {
     RemoveContainer {
         machine_id: MachineId,
         container_id: ContainerId,
+        #[serde(default)]
+        purpose: RemoveContainerPurpose,
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),

@@ -553,6 +553,7 @@ fn removal_operations(
             DeployOperation::RemoveContainer {
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
+                purpose: ployz_core::RemoveContainerPurpose::Retire,
             }
         })
         .collect()

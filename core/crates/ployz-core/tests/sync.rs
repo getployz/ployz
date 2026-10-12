@@ -2155,7 +2155,7 @@ fn a_marked_removal_never_moves() {
 
 #[test]
 fn a_removal_conflicts_on_any_change_the_receiver_made_to_the_node() {
-    let service_changes: [fn(&mut Value); 6] = [
+    let service_changes: [fn(&mut Value); 8] = [
         |env| {
             svc(env, CACHE)["variables"]
                 .as_array_mut()
@@ -2169,6 +2169,8 @@ fn a_removal_conflicts_on_any_change_the_receiver_made_to_the_node() {
                 .retain(|v| v["key"] != "SIZE");
         },
         |env| var(env, CACHE, "PASSWORD")["valueFingerprint"] = json!("fp-rotated"),
+        |env| var(env, CACHE, "SIZE")["exported"] = json!(true),
+        |env| var(env, CACHE, "SIZE")["description"] = json!("How big"),
         |env| {
             svc(env, CACHE)["volumeAttachments"] =
                 json!([{"volumeResourceId": id(0xb000_0000, 30), "mountPath": "/cache"}]);

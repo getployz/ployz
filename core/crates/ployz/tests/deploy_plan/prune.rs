@@ -158,6 +158,7 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
             DeployOperation::RunContainer { spec: second, .. },
             DeployOperation::RemoveContainer {
                 container_id: removed,
+                purpose: ployz_core::RemoveContainerPurpose::Retire,
                 ..
             },
         ] => {
@@ -388,6 +389,7 @@ fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
                 operation,
                 DeployOperation::RemoveContainer {
                     container_id: removed,
+                    purpose: ployz_core::RemoveContainerPurpose::Retire,
                     ..
                 } if *removed == container_id('d')
             )

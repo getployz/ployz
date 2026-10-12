@@ -433,27 +433,34 @@ pub fn plan(sides: Sides, policy: &Policy) -> Plan {
                         Some(Verdict::Differs(Why::Live))
                     }
                     NodeRef::Service(_) | NodeRef::Config(_) => {
+                        let relabeled = match (base_nodes.get(lineage), into_node) {
+                            (Some(NodeRef::Service(base)), NodeRef::Service(into)) => {
+                                labels(base) != labels(into)
+                            }
+                            _ => false,
+                        };
                         let [b, f, i] = node_cells(lineage);
                         policy
                             .verdict(&id, &b, &f, &i)
                             .map(|verdict| match verdict {
                                 // The node cell holds only what a new node carries, so a
-                                // removal conflicts on a change to any cell of the node.
+                                // removal conflicts on a change to any part of the node.
                                 Verdict::Moves {
                                     ticked, arrives, ..
                                 } => Verdict::Moves {
-                                    conflict: std::iter::once(&id)
-                                        .chain(
-                                            base_cells
-                                                .iter()
-                                                .flat_map(|c| c.places(lineage))
-                                                .map(|(row, _)| row),
-                                        )
-                                        .chain(into_cells.places(lineage).map(|(row, _)| row))
-                                        .any(|row| {
-                                            let [base, _, into] = cells_at(row);
-                                            base != into
-                                        }),
+                                    conflict: relabeled
+                                        || std::iter::once(&id)
+                                            .chain(
+                                                base_cells
+                                                    .iter()
+                                                    .flat_map(|c| c.places(lineage))
+                                                    .map(|(row, _)| row),
+                                            )
+                                            .chain(into_cells.places(lineage).map(|(row, _)| row))
+                                            .any(|row| {
+                                                let [base, _, into] = cells_at(row);
+                                                base != into
+                                            }),
                                     ticked,
                                     arrives,
                                 },
@@ -874,6 +881,16 @@ fn removal_dependents(next: &Intent, removals: &[&PlannedRow]) -> BTreeMap<RowId
 }
 
 /// Whether `env` references a lineage it does not own, i.e. uses it live.
+/// What `service`'s cells leave out of its variables: each one's description and
+/// whether it is exported.
+fn labels(service: &SavedServiceIntent) -> BTreeMap<&str, (Option<&str>, bool)> {
+    service
+        .variables
+        .iter()
+        .map(|v| (v.key.as_str(), (v.description.as_deref(), v.exported)))
+        .collect()
+}
+
 fn uses(env: &Intent, lineage: &str) -> bool {
     env.services
         .iter()
