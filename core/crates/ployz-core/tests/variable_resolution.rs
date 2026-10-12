@@ -63,6 +63,38 @@ fn resolves_literals_references_secrets_missing_and_diamonds() {
 }
 
 #[test]
+fn a_secret_without_a_value_leaves_whatever_reads_it_not_set() {
+    let producers = json!([
+        producer("TOKEN", json!({"kind":"not_set"})),
+        producer(
+            "PASSWORD",
+            json!({"kind":"secret","value":"private-sentinel"})
+        ),
+        producer(
+            "URL",
+            json!({"kind":"template","parts":[reference("PASSWORD"),reference("TOKEN")]})
+        )
+    ]);
+    assert_eq!(
+        run(json!([reference("TOKEN")]), producers.clone()),
+        json!({"status":"not_set"})
+    );
+    assert_eq!(
+        run(
+            json!([{"kind":"text","value":"x"}, reference("URL")]),
+            producers.clone()
+        ),
+        json!({"status":"not_set"})
+    );
+    let other = run(json!([reference("PASSWORD")]), producers.clone());
+    assert_eq!(other["value"], "private-sentinel");
+    assert_eq!(other["secret"], true);
+    let file = file("app.env", "T=${{ db.TOKEN }}", producers);
+    assert_eq!(file.content, "T=");
+    assert!(file.secret);
+}
+
+#[test]
 fn cycle_reports_only_owner_keys_even_after_a_secret_was_resolved() {
     for chain in [vec!["B", "A"], vec!["B", "C", "A"]] {
         let mut producers = vec![producer(

@@ -62,7 +62,12 @@ enum Input {
 /// A variable's value as reads show it: text with references by Service name,
 /// `{"secret": true}`, or `{"secret": false}` for a secret still without a value.
 pub(crate) fn shown(variable: &SavedVariableIntent, names: &BTreeMap<String, String>) -> Value {
-    match &variable.value {
+    shown_value(&variable.value, names)
+}
+
+/// `value` as [`shown`] shows a variable holding it.
+pub(crate) fn shown_value(value: &SavedVariableValue, names: &BTreeMap<String, String>) -> Value {
+    match value {
         SavedVariableValue::Secret { .. } => json!({ "secret": true }),
         SavedVariableValue::SecretWithoutValue => json!({ "secret": false }),
         SavedVariableValue::Literal { value } => json!(render_variable_parts(
@@ -419,12 +424,16 @@ pub(crate) struct Resolved {
     pub(crate) env: BTreeMap<String, BTreeMap<String, String>>,
     /// Each Config's files, by Config ID.
     pub(crate) configs: BTreeMap<String, BTreeMap<ConfigFileName, ResolvedConfigFile>>,
+    /// Each Service's variables left out because a secret without a value reaches
+    /// them, by Service ID.
+    pub(crate) not_set: BTreeMap<String, Vec<String>>,
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers. With `unseal`, secrets and values
 /// that reference one resolve to plaintext. Without it, such a variable is left
-/// out and such a file is empty.
+/// out and such a file is empty. A variable a secret without a value reaches is
+/// always left out; in a file that secret is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, or `internal` when a sealed
@@ -451,10 +460,7 @@ pub(crate) fn resolve(
             SavedVariableValue::Secret { encrypted_value } => ResolverValue::Secret {
                 value: open(encrypted_value.as_ref())?.unwrap_or_default(),
             },
-            // Deploy refuses it, so a claim never meets one.
-            SavedVariableValue::SecretWithoutValue => ResolverValue::Secret {
-                value: open(None)?.unwrap_or_default(),
-            },
+            SavedVariableValue::SecretWithoutValue => ResolverValue::NotSet,
         };
         producers.push(VariableProducer {
             owner_id: producer.owner_id.clone(),
@@ -468,6 +474,7 @@ pub(crate) fn resolve(
     let mut resolved = Resolved {
         env: BTreeMap::new(),
         configs: BTreeMap::new(),
+        not_set: BTreeMap::new(),
     };
     for node in &compiled.node_snapshots {
         let config = match &node.snapshot.0 {
@@ -488,6 +495,7 @@ pub(crate) fn resolve(
             CompiledNodeConfig::Volume(_) => continue,
         };
         let mut env = BTreeMap::new();
+        let mut not_set = Vec::new();
         for (key, value) in &config.env {
             let value = match value {
                 ServiceEnvValue::Literal { value, parts: None } => Some(value.clone()),
@@ -501,10 +509,23 @@ pub(crate) fn resolve(
                     ResolveVariablesResult::Resolved { value, secret, .. } => {
                         (unseal.is_some() || !secret).then_some(value)
                     }
+                    ResolveVariablesResult::NotSet => {
+                        not_set.push(key.clone());
+                        None
+                    }
                     ResolveVariablesResult::Cycle { path } => {
                         return Err(cycle(compiled, &path));
                     }
                 },
+                // Only a secret without a value has no fingerprint.
+                ServiceEnvValue::Secret {
+                    encrypted_value: None,
+                    fingerprint,
+                    ..
+                } if fingerprint.is_empty() => {
+                    not_set.push(key.clone());
+                    None
+                }
                 ServiceEnvValue::Secret {
                     encrypted_value, ..
                 } => open(encrypted_value.as_ref())?,
@@ -512,6 +533,9 @@ pub(crate) fn resolve(
             if let Some(value) = value {
                 env.insert(key.clone(), value);
             }
+        }
+        if !not_set.is_empty() {
+            resolved.not_set.insert(node.node_id.clone(), not_set);
         }
         resolved.env.insert(node.node_id.clone(), env);
     }

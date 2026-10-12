@@ -9,10 +9,7 @@
 
 use crate::ui::{self, Hint};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_store::{
-    Change, Edit, EnvironmentQuery, HoldSecret, Instead, PullRequestNumber, Revision, SettingPath,
-    TypedAddresses,
-};
+use ployz_store::{Change, Edit, EnvironmentQuery, Instead, Revision, SettingPath, TypedAddresses};
 use serde_json::{Value, json};
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
@@ -52,13 +49,6 @@ pub(crate) fn set_command() -> Command {
             value("from-env-file", None)
                 .value_name("FILE")
                 .help("Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret"),
-        )
-        .arg(
-            value("at-merge", None)
-                .value_name("PR")
-                .requires("secret")
-                .conflicts_with_all(["patch", "from-env-file", "expect"])
-                .help("With --secret: hold the --env Destination's value for a secret pull request PR syncs there by name only; it lands with the merge"),
         )
         .arg(expect())
 }
@@ -191,9 +181,6 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             return Err(Error::usage(format!(
                 "No secret on stdin for {path}; pipe one in: printf %s \"$VALUE\" | ployz set {path} --secret"
             )));
-        }
-        if let Some(number) = matches.get_one::<String>("at-merge") {
-            return hold(root, number, &path, secret);
         }
         return edit(
             root,
@@ -393,35 +380,6 @@ fn unchanged(changes: &[Change]) -> String {
         (false, false) => format!("{paths} already has that value"),
         (false, true) => format!("{paths} already have those values"),
     }
-}
-
-/// Hold `secret` as the Destination's value of the row `asked` names for pull
-/// request `number`'s merge.
-fn hold(root: &ArgMatches, number: &str, asked: &str, secret: String) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let pull_request = number
-        .trim_start_matches('#')
-        .parse()
-        .ok()
-        .and_then(|number| PullRequestNumber::parse(number).ok())
-        .ok_or_else(|| {
-            Error::usage("Expected --at-merge PR to be a pull request number, for example 142")
-        })?;
-    let environment = environment(matches)?;
-    let store = store(root)?;
-    let request = HoldSecret {
-        environment,
-        pull_request,
-        row: asked.into(),
-        value: secret,
-    };
-    let held = store.write(&request)?;
-    crate::ui::finish(&held, || {
-        crate::ui::stream(format_args!(
-            "Holding {}'s value of {asked} for #{}'s merge.",
-            held.environment.name, held.pull_request
-        ));
-    })
 }
 
 /// What a variable's Typed Addresses cost, and what to set instead.

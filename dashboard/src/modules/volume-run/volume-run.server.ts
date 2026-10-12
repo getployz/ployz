@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
-import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, Namespace, ResolvedServiceSpec, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
-import { and, desc, eq, inArray, isNull, lt, max, sql } from "drizzle-orm";
+import type { ContainerId, CopyObservation, EnvironmentRef, MachineId, MachineName, SwitchError, VolumeSwitchReply, VolumeSwitchRequest } from "@ployz/sdk";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, max, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -21,6 +21,7 @@ import {
   managementAddress,
   type Member,
   parseDockerVolumeName,
+  type ServiceSpec,
   VOLUME_RUN_MESSAGE_LIMIT,
   VOLUME_RUN_RUNNING_CHECK_MS,
   VOLUME_RUN_UNCLAIMED_LIMIT_MS,
@@ -111,7 +112,7 @@ const readRow = Effect.fn("VolumeRun.readRow")(function* (id: string) {
   return row;
 });
 
-const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
+export const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   organizationId: string,
   environment: EnvironmentRef,
   volumeId: string,
@@ -130,12 +131,37 @@ const resolveVolume = Effect.fn("VolumeRun.resolveVolume")(function* (
   };
 });
 
+/** A seed copies the source's dataset as is, so the restored Volume must still ask for the source's storage. */
+const seedLandingRefusal = Effect.fn("VolumeRun.seedLandingRefusal")(function* (
+  organizationId: string,
+  environment: EnvironmentRef,
+  sourceId: string,
+  intoId: string,
+) {
+  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  const source = volumes.find((entry) => entry.id === sourceId);
+  const into = volumes.find((entry) => entry.id === intoId);
+  if (source === undefined || into === undefined) {
+    return { code: "conflict", message: "The restored Volume or its source is gone. Discard the restore.", details: null } satisfies StoreRefusal;
+  }
+  if (JSON.stringify(source.storage) === JSON.stringify(into.storage)) return null;
+  return {
+    code: "conflict",
+    message: `${into.name}'s storage no longer matches ${source.name}'s, so the restore can't land on it. Discard the restore and restore again.`,
+    details: null,
+  } satisfies StoreRefusal;
+});
+
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
 ) {
   const { drizzle } = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
+  if (input.kind === "seed") {
+    const refusal = yield* seedLandingRefusal(caller.organizationId, input.environment, input.volumeId, input.args.into.volumeId);
+    if (refusal !== null) return { ok: false, refusal } as const;
+  }
   const [inserted] = yield* drizzle.insert(volumeRun).values({
     organizationId: caller.organizationId,
     environmentId: volume.environmentId,
@@ -166,6 +192,20 @@ export const listVolumeRuns = Effect.fn("VolumeRun.list")(function* (organizatio
     .where(and(eq(volumeRun.organizationId, organizationId), eq(volumeRun.volumeId, volumeId)))
     .orderBy(desc(volumeRun.createdAt), desc(volumeRun.id))
     .limit(50);
+  return rows.map(volumeRunView);
+});
+
+/** The Volume's copies as each managed Machine answers for them, for the panel to plan its offers from. */
+export const inspectVolumeCopies = Effect.fn("VolumeRun.inspectCopies")(function* (organizationId: string, environment: EnvironmentRef, volumeId: string) {
+  const volume = yield* resolveVolume(organizationId, environment, volumeId);
+  return yield* inspectMembers(organizationId, volume.dockerVolume);
+});
+
+/** Every run in progress across the organization's Volumes, for the canvas trays. */
+export const listActiveVolumeRuns = Effect.fn("VolumeRun.listActive")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(volumeRun)
+    .where(and(eq(volumeRun.organizationId, organizationId), inArray(volumeRun.state, ACTIVE_VOLUME_RUN_STATES)));
   return rows.map(volumeRunView);
 });
 
@@ -240,7 +280,7 @@ const openSession = Effect.fn("VolumeRun.openSession")(function* (organizationId
 
 const SwitchErrorDetails = Schema.Struct({
   details: Schema.Struct({
-    reason: Schema.Literals(["stale_lease", "stale_step", "precondition", "busy", "volume_switching", "no_writer", "no_capacity"]),
+    reason: Schema.Literals(["stale_lease", "stale_step", "precondition", "busy", "volume_switching", "no_writer", "no_capacity", "restore_point_gone"]),
   }),
 });
 const decodeSwitchError = Schema.decodeUnknownOption(SwitchErrorDetails);
@@ -274,6 +314,8 @@ export function switchFailureMessage(
       return `${name} has no writer on ${machine.name}`;
     case "no_capacity":
       return `${machine.name} has no room for ${name}'s mirror`;
+    case "restore_point_gone":
+      return `the restore point is gone from ${name} on ${machine.name}`;
     case "busy":
       return undefined;
   }
@@ -317,7 +359,7 @@ export const sendSwitch = <R extends VolumeSwitchRequest>(
   }).pipe(Effect.scoped) as Effect.Effect<VolumeSwitchReply<R["command"]>, Error, Database | OrganizationRuntime>;
 };
 
-export type Holder = { readonly containerId: ContainerId; readonly namespace: Namespace; readonly redactedSpec: ResolvedServiceSpec };
+export type Holder = ServiceSpec & { readonly containerId: ContainerId };
 
 /** The one Service container on the writer that mounts this Volume: Freeze stops it, Thaw restarts it, and Start rebuilds it on the target. */
 export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, writer: MachineRef) {
@@ -334,6 +376,31 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
     return { ok: false, refusal: { code: "invalid", message: `${ctx.volumeName} has ${found} on ${writer.name}; a move needs exactly one` } } as const;
   }
   return { ok: true, holder: { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec } } as const;
+}, Effect.scoped);
+
+/** Restore registers the Volume with the spec of the newest Service container that mounts it, stopped ones included. */
+export const findSpec = Effect.fn("VolumeRun.findSpec")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  const session = yield* openSession(ctx.organizationId);
+  const frame = yield* session.watchFirstFrame(5_000);
+  const newest = frame.containers
+    .filter((container) =>
+      container.kind === "service_container"
+      && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === ctx.dockerVolume))
+    .reduce<(typeof frame.containers)[number] | undefined>(
+      (found, container) => found === undefined || container.created_at_unix_nanos > found.created_at_unix_nanos ? container : found,
+      undefined,
+    );
+  if (newest !== undefined) return { ok: true, spec: { namespace: newest.namespace, redactedSpec: newest.resolved_spec } satisfies ServiceSpec } as const;
+  const { drizzle } = yield* Database;
+  const [kept] = yield* drizzle.select({ spec: volumeRun.serviceSpec }).from(volumeRun)
+    .where(and(eq(volumeRun.volumeId, ctx.volumeId), isNotNull(volumeRun.serviceSpec)))
+    .orderBy(desc(volumeRun.createdAt))
+    .limit(1);
+  if (kept?.spec === null || kept?.spec === undefined) {
+    return { ok: false, refusal: { code: "invalid", message: `no Service container mounts ${ctx.volumeName}, and no earlier run saw one; Restore takes its spec from one` } } as const;
+  }
+  return { ok: true, spec: kept.spec } as const;
 }, Effect.scoped);
 
 export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunContext, inngestRunId: string, from: MachineRef, holder: Holder, to: MachineRef) {
@@ -371,14 +438,14 @@ export const startHanded = Effect.fn("VolumeRun.startHanded")(function* (
   } satisfies StartHanded, { onRefusal: "throw" });
 }, Effect.scoped);
 
-export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
-  yield* requireOwner(ctx.id, inngestRunId);
-  const session = yield* openSession(ctx.organizationId);
+/** Each managed Machine's own answer for one Volume: the evidence a run plans from, and the panel offers from. */
+const inspectMembers = Effect.fn("VolumeRun.inspectMembers")(function* (organizationId: string, dockerVolume: string) {
+  const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
   return yield* Effect.forEach(managed, ({ machine, storage }) =>
-    session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: ctx.dockerVolume } }).pipe(
+    session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       Effect.timeout(OBSERVE_TIMEOUT),
       Effect.option,
       Effect.map((view): Member => {
@@ -396,11 +463,17 @@ export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: Run
     ), { concurrency: "unbounded" });
 }, Effect.scoped);
 
+export const observeMembers = Effect.fn("VolumeRun.observe")(function* (ctx: RunContext, inngestRunId: string) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* inspectMembers(ctx.organizationId, ctx.dockerVolume);
+});
+
 /** Above every lease this Volume's runs took and every record its participants hold, so a Cloud database reset can't reuse one. */
 export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   ctx: RunContext,
   inngestRunId: string,
   participants: readonly AnsweredMember[],
+  spec: ServiceSpec | null,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
   const { drizzle } = yield* Database;
@@ -408,7 +481,7 @@ export const takeLease = Effect.fn("VolumeRun.lease")(function* (
   const [recorded] = yield* drizzle.select({ lease: max(volumeRun.lease) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
   yield* drizzle.update(volumeRun)
-    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, updatedAt: new Date() })
+    .set({ lease: Math.max(held, recorded?.lease ?? 0) + 1, serviceSpec: spec ?? undefined, updatedAt: new Date() })
     .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.lease)));
   const row = yield* readRow(ctx.id);
   const lease = row?.lease;

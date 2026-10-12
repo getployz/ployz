@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use axum::{Json, extract::State};
-use ployz_core::{Cycle, LeaseRecord, MirrorMarker, Pos, RpcError};
+use ployz_core::{Cycle, LeaseRecord, MirrorMarker, MirrorRequest, Pos, RpcError, SwitchReply};
 use ployzd::machine_pool::MachinePool;
 
 use super::{
@@ -13,6 +13,7 @@ use super::{
     lease::{
         LEASE_PROPERTY_PREFIX, MIRROR_PROPERTY, WRITER_PROPERTY, internal, slot_fs, slot_parent,
     },
+    mirror::name,
 };
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
@@ -46,42 +47,84 @@ impl VolumeStorage {
         let mut demoted = Vec::new();
         for name in names {
             let name = name.parse::<DockerVolumeName>()?;
-            match self.departure(&pool, &datasets, &name).await? {
-                Departure::Root(root) => {
-                    self.freeze_root(root, &name, now_unix_seconds).await?;
-                    self.ensure_mirror_root(&pool, &datasets).await?;
-                    self.create_slot_parent(&slot_parent(&pool, &name), root.refquota)
-                        .await?;
-                    self.move_into_slot(&pool, root, &name).await?;
-                    demoted.push(name.to_string());
-                }
-                Departure::RootBesideEmptySlot(root) => {
-                    self.freeze_root(root, &name, now_unix_seconds).await?;
-                    self.move_into_slot(&pool, root, &name).await?;
-                    demoted.push(name.to_string());
-                }
-                Departure::RootBesideMirror => {
-                    return Err(format!(
-                        "Volume {name} has both a writer and a mirror on this Machine; remove one before departing"
-                    )
-                    .into());
-                }
-                Departure::UnsealedSlot(fs) => {
-                    self.seal(&fs.name).await?;
-                    demoted.push(name.to_string());
-                }
-                Departure::Departed => {}
-            }
-            if let Some(slot) = Self::slot(&datasets, &pool, &name) {
-                self.zfs(&[
-                    "set",
-                    &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
-                    &slot.name,
-                ])
-                .await?;
+            if self
+                .demote_copy(&pool, &datasets, &name, now_unix_seconds)
+                .await?
+            {
+                demoted.push(name.to_string());
             }
         }
         self.close_lease_records(&pool, &datasets).await?;
+        Ok(demoted)
+    }
+
+    /// Demotes this Machine's copy of one Volume, the old copy Cloud found beside a newer
+    /// writer. The root turns read-only before it moves, so a Container still writing to
+    /// it fails at once. The record closes at the request's step only once the root is a
+    /// slot: Cloud tells the old copy by its lower record, so a demote cut short by a busy
+    /// mount must not raise it above the writer's. The retry redoes what is left.
+    async fn demote_volume(
+        &self,
+        request: &MirrorRequest,
+        now_unix_seconds: i64,
+    ) -> Result<SwitchReply, RpcError> {
+        let name = name(&request.name)?;
+        let mut scope = self.leased(&name, &request.switch).await?;
+        scope.admitted.lease.cycle = Cycle::Closed;
+        if let Some(root) = Self::dataset(&scope.datasets, &scope.pool, &name).map_err(internal)? {
+            self.zfs(&["set", "readonly=on", &root.name])
+                .await
+                .map_err(internal)?;
+        }
+        self.demote_copy(&scope.pool, &scope.datasets, &name, now_unix_seconds)
+            .await
+            .map_err(internal)?;
+        self.reply(&scope.pool, &name, scope.admitted).await
+    }
+
+    /// Turns `name`'s root into a sealed slot with an idle marker. Answers whether it
+    /// demoted anything.
+    async fn demote_copy(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        name: &DockerVolumeName,
+        now_unix_seconds: i64,
+    ) -> super::Result<bool> {
+        let demoted = match self.departure(pool, datasets, name).await? {
+            Departure::Root(root) => {
+                self.freeze_root(root, name, now_unix_seconds).await?;
+                self.ensure_mirror_root(pool, datasets).await?;
+                self.create_slot_parent(&slot_parent(pool, name), root.refquota)
+                    .await?;
+                self.move_into_slot(pool, root, name).await?;
+                true
+            }
+            Departure::RootBesideEmptySlot(root) => {
+                self.freeze_root(root, name, now_unix_seconds).await?;
+                self.move_into_slot(pool, root, name).await?;
+                true
+            }
+            Departure::RootBesideMirror => {
+                return Err(format!(
+                    "Volume {name} has both a writer and a mirror on this Machine; remove one before departing"
+                )
+                .into());
+            }
+            Departure::UnsealedSlot(fs) => {
+                self.seal(&fs.name).await?;
+                true
+            }
+            Departure::Departed => false,
+        };
+        if let Some(slot) = Self::slot(datasets, pool, name) {
+            self.zfs(&[
+                "set",
+                &format!("{MIRROR_PROPERTY}={}", MirrorMarker::Idle),
+                &slot.name,
+            ])
+            .await?;
+        }
         Ok(demoted)
     }
 
@@ -203,4 +246,12 @@ pub(super) async fn demote(
 ) -> Json<Result<Vec<String>, RpcError>> {
     let now = chrono::Utc::now().timestamp();
     Json(storage.demote_all(now).await.map_err(internal))
+}
+
+pub(super) async fn demote_volume(
+    State(storage): State<VolumeStorage>,
+    Json(request): Json<MirrorRequest>,
+) -> Json<Result<SwitchReply, RpcError>> {
+    let now = chrono::Utc::now().timestamp();
+    Json(storage.demote_volume(&request, now).await)
 }

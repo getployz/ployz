@@ -3,6 +3,8 @@ import type { ConfigListing, DiffView, RowId, ServiceListing, VolumeListing } fr
 import { asTestDouble } from "#/lib/test-double";
 import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
+import type { MachineId } from "@ployz/sdk";
+import type { CanvasMirror } from "#/modules/volume-placement/volume-placement";
 import { buildStoreEdges, buildStoreNodes, canvasNodeOf, shownNodeIds, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
@@ -41,7 +43,7 @@ describe("Config Store nodes", () => {
   const configs = configTrays(listings, [config("sentry", [{ service: "web", dir: "/etc/sentry" }]), config("spare", [])], diff);
   const store = {
     services: listings.map((service) => ({ service, domains: [], changeCount: 0, runtimeIdentity: null, desiredReplicas: null,
-      trays: trays.get(service.id) ?? [], configTrays: configs.trays.get(service.id) ?? [] })),
+      trays: trays.get(service.id) ?? [], configTrays: configs.trays.get(service.id) ?? [], notSet: [] })),
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,
   };
@@ -92,7 +94,48 @@ describe("Config Store nodes", () => {
     expect(canvasNodeOf(nodes, "unknown")).toBeNull();
   });
 
+  it("finds a mirror by the node that shows its Volume", () => {
+    const nodes = buildStoreNodes(store, [], "e");
+    expect(canvasNodeOf(nodes, "shared~web-2")).toBe("s1");
+    expect(canvasNodeOf(nodes, "loose~web-3")).toBe("loose");
+  });
+
   it("shows what a Deployment Page lights by the nodes that show it, each once", () => {
     expect(shownNodeIds(buildStoreNodes(store, [], "e"), ["shared", "own", "s2", "loose", "gone"])).toEqual(["s1", "s2", "loose"]);
+  });
+
+  describe("mirrors", () => {
+    const mirror = (volumeId: string, server: string): CanvasMirror =>
+      ({ volume: { id: volumeId, name: volumeId }, server: { id: server as MachineId, name: server }, change: null, newest: null });
+    const mirrors = new Map([["shared", [mirror("shared", "web-2")]], ["loose", [mirror("loose", "web-3")]]]);
+    const withMirrors = { ...store, mirrors };
+
+    it("hangs a mounted Volume's mirror under the first Service that shows it, once, and grows that Service", () => {
+      const nodes = buildStoreNodes(withMirrors, [], "e");
+      const s1 = nodes.find((node) => node.id === "s1");
+      const s2 = nodes.find((node) => node.id === "s2");
+      expect(s1?.data).toMatchObject({ mirrors: [{ server: { name: "web-2" } }] });
+      expect(s1?.height).toBe(144 + 2 * 40 + 80);
+      expect(s2?.data).toMatchObject({ mirrors: [] });
+      expect(s2?.height).toBe(144 + 2 * 40);
+    });
+
+    it("hangs an unmounted Volume's mirror under its own node", () => {
+      const loose = buildStoreNodes(withMirrors, [], "e").find((node) => node.id === "loose");
+      expect(loose?.data).toMatchObject({ mirrors: [{ server: { name: "web-3" } }] });
+      expect(loose?.height).toBe(144 + 80);
+    });
+
+    it("places a new node clear of a Service's mirrors", () => {
+      const nodes = buildStoreNodes(withMirrors, [createCanvasPosition({ resourceId: "s1", x: 0, y: 0 })], "e");
+      const { x, y } = nodes.find((node) => node.id === "s2")?.position ?? { x: 0, y: 0 };
+      const clear = y >= 144 + 2 * 40 + 80 || y + 144 + 2 * 40 <= 0 || x >= 288 || x + 288 <= 0;
+      expect(clear).toBe(true);
+    });
+
+    it("keeps a stored position as it is when a mirror appears", () => {
+      const nodes = buildStoreNodes(withMirrors, [createCanvasPosition({ resourceId: "s1", x: 480, y: 96 })], "e");
+      expect(nodes[0]?.position).toEqual({ x: 480, y: 96 });
+    });
   });
 });

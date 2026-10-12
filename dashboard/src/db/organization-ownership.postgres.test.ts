@@ -40,7 +40,6 @@ const notOrganizationOwned = {
   agent_threads: "One member's private sidebar conversation, read only through the agent chat route; no view reads it, so it needs no change log.",
   agent_runs: "A sidebar turn's run record, read only by its own conversation; no view reads it, so it needs no change log.",
   agent_interrupts: "A sidebar turn's pending question, read only by its own conversation; no view reads it, so it needs no change log.",
-  volume_run: "A volume command's run record, read only by its own run, the sweep and `volume runs`; no view reads it, so it needs no change log.",
   uptime_alert: "The uptime alert outbox, read only by the alert sender; no view reads it, so it needs no change log.",
   uptime_region: "Display names for the probe regions, shared by every Organization and written only by the uptime checker.",
   uptime_result: "Probe results, read as a Remote Read; growing history that would flood the change log.",

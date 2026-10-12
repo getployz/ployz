@@ -2,6 +2,8 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 use crate::handlers;
 
+pub(crate) mod metrics;
+
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
     pub const BUILD_GRANT: &str = "PLOYZ_BUILD_GRANT";
@@ -47,6 +49,7 @@ pub fn command() -> Command {
         .subcommand(handlers::deploy::deploy_command())
         .subcommand(handlers::deploy::deployment_command())
         .subcommand(handlers::review::diff_command())
+        .subcommand(handlers::review::history_command())
         .subcommand(handlers::review::discard_command())
         .subcommand(handlers::domain::command())
         .subcommand(handlers::env::command())
@@ -59,6 +62,7 @@ pub fn command() -> Command {
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::operator::logs_command())
         .subcommand(handlers::mcp::command())
+        .subcommand(handlers::metrics::command())
         .subcommand(handlers::account::org_command())
         .subcommand(handlers::server::command())
         .subcommand(handlers::service::command())

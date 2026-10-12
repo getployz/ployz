@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Database } from "#/server/database.server";
 import { editUptimeCheckStatement } from "./incident-fence";
@@ -51,9 +51,10 @@ const updateUptimeCheck = Effect.fn("Uptime.updateCheck")(function* (check: type
 /**
  * Make `environmentId`'s uptime checks match its Applied State: one per Service with a public domain. Creates the
  * missing, updates a changed URL, deletes a check whose Service or domain is gone, and leaves the rest. Running it
- * again changes nothing. Syncs of one Environment run one at a time.
+ * again changes nothing. Syncs of one Environment run one at a time. With `probed`, the Deployment that just applied,
+ * the checks of every Service it applied are probed now.
  */
-export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organizationId: string, environmentId: string) {
+export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organizationId: string, environmentId: string, probed?: string) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -81,6 +82,15 @@ export const syncUptimeChecks = Effect.fn("Uptime.sync")(function* (organization
     if (wanted.size > 0) {
       yield* drizzle.insert(uptimeCheck)
         .values([...wanted.values()].map(({ serviceId, name, url }) => ({ organizationId, environmentId, serviceId, name, url })));
+    }
+    if (probed !== undefined) {
+      // The clock after the lock: now() is the transaction's start, which a long lock wait leaves already stale.
+      yield* drizzle.update(uptimeCheck).set({ probeRequestedAt: sql`clock_timestamp()` }).where(and(
+        eq(uptimeCheck.organizationId, organizationId),
+        eq(uptimeCheck.environmentId, environmentId),
+        inArray(uptimeCheck.serviceId, sql`(select node_id from config_applied
+          where environment_id = ${environmentId} and deployment_id = ${probed} and node_type = 'service')`),
+      ));
     }
   }));
 });

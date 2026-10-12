@@ -872,6 +872,15 @@ impl MachineRpc for MachineService {
         }
     }
 
+    async fn seed_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SeedVolume>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("SeedVolume", "Volume.Seed", &request)
+            .await
+    }
+
     async fn declare_mirror(
         &self,
         request: Request<OpaquePayload>,
@@ -982,6 +991,15 @@ impl MachineRpc for MachineService {
             .await
     }
 
+    async fn demote_volume(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::DemoteVolume>(request)?;
+        self.switch_verb::<ployz_core::SwitchReply>("DemoteVolume", "Volume.Demote", &request)
+            .await
+    }
+
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
@@ -1016,6 +1034,15 @@ impl MachineRpc for MachineService {
             op::LogHistory::from_request_body(request_body(request)?).map_err(invalid_request)?;
         request.validate().map_err(Status::invalid_argument)?;
         self.observe.history(request).await.map(Response::new)
+    }
+
+    async fn metric_history(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::MetricHistory>(request)?;
+        request.validate().map_err(Status::invalid_argument)?;
+        respond(self.observe.metrics(request).await?)
     }
 
     async fn tail_logs(

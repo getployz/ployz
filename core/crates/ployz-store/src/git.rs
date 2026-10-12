@@ -377,6 +377,11 @@ impl GitSetting {
     }
 }
 
+/// Whether `service` builds from a Git repository.
+pub(crate) fn is_git(service: &ployz_core::config::SavedServiceIntent) -> bool {
+    matches!(service.config.source, ServiceSource::Git { .. })
+}
+
 /// Whether `service` builds `branch` of repository `repository_id`.
 pub(crate) fn tracks(
     service: &ployz_core::config::SavedServiceIntent,

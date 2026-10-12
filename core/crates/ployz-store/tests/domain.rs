@@ -344,6 +344,7 @@ fn removing_a_deployed_generated_domain_is_destructive() {
     let publish = Publish {
         environment: EnvironmentRef::default(),
         version: None,
+        message: None,
         accept_volume_loss: Vec::new(),
     };
     let asking = Trusted {

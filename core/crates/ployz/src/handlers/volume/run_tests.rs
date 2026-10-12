@@ -102,6 +102,15 @@ fn each_volume_run_command_parses_to_its_own_handler() {
     assert_eq!(path(&released), "volume release");
     assert!(leaf_matches(&released).get_flag("wait"));
 
+    let restored = parsed(&["ployz", "volume", "restore", "data", "--from", "web-2"]).unwrap();
+    assert_eq!(path(&restored), "volume restore");
+    assert_eq!(
+        leaf_matches(&restored)
+            .get_one::<String>("from")
+            .map(String::as_str),
+        Some("web-2")
+    );
+
     let runs = parsed(&["ployz", "volume", "runs", "data", RUN]).unwrap();
     assert_eq!(path(&runs), "volume runs");
     assert_eq!(
@@ -111,7 +120,15 @@ fn each_volume_run_command_parses_to_its_own_handler() {
         Some(RUN)
     );
 
-    for words in ["mirror", "mirror rm", "sync", "move", "release", "runs"] {
+    for words in [
+        "mirror",
+        "mirror rm",
+        "sync",
+        "move",
+        "release",
+        "restore",
+        "runs",
+    ] {
         assert!(super::super::handler(words).is_some(), "volume {words}");
     }
 }
@@ -126,6 +143,8 @@ fn a_mirror_names_its_server_and_a_removal_names_its_mirror() {
     let error = parsed(&["ployz", "volume", "move", "data"]).unwrap_err();
     assert!(error.to_string().contains("--to"), "{error}");
     assert!(parsed(&["ployz", "volume", "release", "data", "--to", "web-2"]).is_err());
+    let error = parsed(&["ployz", "volume", "restore", "data"]).unwrap_err();
+    assert!(error.to_string().contains("--from"), "{error}");
     assert!(VolumeRunId::parse("not-a-run").is_err());
 }
 
@@ -182,6 +201,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 full: None,
                 slot: None,
                 confirm: None,
+                from: None,
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "mirror", "to": "web-2" }),
             json!({ "to": "web-2" }),
@@ -194,6 +214,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 full: Some(false),
                 slot: None,
                 confirm: None,
+                from: None,
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "sync", "full": false }),
             json!({ "full": false }),
@@ -206,6 +227,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 full: None,
                 slot: Some(MachineName::parse("web-2").unwrap()),
                 confirm: Some("data".to_owned()),
+                from: None,
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
             json!({ "slot": "web-2", "confirmed_name": "data" }),
@@ -218,6 +240,7 @@ async fn each_kind_posts_only_its_own_fields() {
                 full: None,
                 slot: None,
                 confirm: None,
+                from: None,
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2" }),
             json!({ "to": "web-2" }),
@@ -230,9 +253,23 @@ async fn each_kind_posts_only_its_own_fields() {
                 full: None,
                 slot: None,
                 confirm: None,
+                from: None,
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "release" }),
             json!({}),
+        ),
+        (
+            RunRequest {
+                environment: named(),
+                kind: VolumeRunKind::Restore,
+                to: None,
+                full: None,
+                slot: None,
+                confirm: None,
+                from: Some(MachineName::parse("web-2").unwrap()),
+            },
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "restore", "from": "web-2" }),
+            json!({ "from": "web-2" }),
         ),
     ];
     for (request, body, args) in cases {
@@ -267,6 +304,7 @@ async fn a_refused_run_keeps_cloud_s_refusal() {
         full: Some(false),
         slot: None,
         confirm: None,
+        from: None,
     };
     let error = start(&token(&cloud), &volume(), &request)
         .await

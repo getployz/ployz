@@ -122,6 +122,18 @@ _Avoid_: Container name as identity, replica identity
 The Machine-local copy of the output of every container Ployz runs, kept after the container is removed, capped by size and age. It holds only the output of containers that ran on its own Machine.
 _Avoid_: log database, log cache
 
+**Observe Store**:
+The disposable Machine-local state `ployz-observe` keeps: the Log Store, Metric Samples, and Rollups. It holds only what its own Machine observed, needs no migrations, and Cloud reads it without copying it.
+_Avoid_: telemetry store, metrics database, TSDB
+
+**Metric Sample**:
+One 10 second reading of one Container's counters and gauges, or of its Machine's, stamped with the Service, Deployment, and Container it belonged to when read. Counters are raw cumulative values; rates come at query time. A value the Machine could not read is absent, never zero. Raw samples are kept 24 hours.
+_Avoid_: datapoint, stat, metric event
+
+**Rollup**:
+A 5 minute summary of Metric Samples for one Service and Deployment, or for the Machine itself, folded from a closed hour of samples and kept 90 days. It outlives the Containers it summarizes, so a removed Container's history stays under its Service. Folding the same hour again yields the same Rollup.
+_Avoid_: aggregate, archive, downsample (the query-time bucketing of points)
+
 **Container Runtime Observation**:
 A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unrecognized external state carried verbatim as its observed value. Container observations do not combine into an authoritative Service state.
 Running health `stopping` is the daemon's own overlay, not Docker's: a client marked the Container ahead of a stop so the Ingress Proxies drop it first. The mark lives in daemon memory and ends when the stop runs.
@@ -270,12 +282,12 @@ The mutable Environment configuration currently being edited, with a revision th
 _Avoid_: Saved State, deployable revision, client diff ledger
 
 **Saved State**:
-An Environment's published configuration revisions. The latest is the only configuration a Deploy is admitted from; publishing Working State adds a revision without deploying.
+An Environment's immutable saved configuration revisions, with optional message, actor and time. Save adds a revision from Working State without deploying. Repeating an unchanged Save preserves the existing snapshot and metadata. The latest is the only configuration a Deploy is admitted from.
 _Avoid_: Working State, deployed configuration, draft
 
 **Publish**:
-Adding a revision to an Environment's Saved State from its Working State without deploying. A manual Deploy publishes first.
-_Avoid_: Save, commit, promote
+The Store and CLI command adding a revision to an Environment's Saved State from its Working State without deploying. The dashboard names this action Save. A manual Deploy saves first when needed and uses its message for that new revision.
+_Avoid_: commit, promote
 
 **Deployment**:
 The Config Store's record of one Deploy: its Attempt Target, who started it and from what source, its Node Outcomes and its events. It stays after the Deploy ends; its runner is recorded, so a Deployment whose runner is gone reads as outcome unknown, never as running.
@@ -294,7 +306,7 @@ The per-Environment-Node projection of the latest confirmed runtime outcomes. Su
 _Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" in user-facing copy
 
 **Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Deployment's Saved revision to Working State, falling back to per-node Applied State when none is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. A node never deployed compares against its Node Introduction, published or not, so every edit of it is a change; once it is in Applied State, never again. Lifecycle changes and setting changes are counted once; deployment progress is separate.
+One pure, serializable comparison from the latest queued or running Deployment's Saved revision to Working State, falling back to per-node Applied State when none is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. A node never deployed compares against its Node Introduction, published or not, so every edit of it is a change; once it is in Applied State, never again. Lifecycle changes and setting changes are counted once; deployment progress is separate. Changes also derives Working versus latest Saved so a draft reversal remains reviewable even with no runtime changes.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Environment Publication Review**:
@@ -302,12 +314,16 @@ Authority to publish the current Working State revision against one exact Saved 
 _Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
 
 **Saved State Command**:
-One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Discard publishes at most one replacement revision in the same transaction as its Working State reset.
+One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Save adds at most one immutable revision; Discard and History actions never mutate Saved State.
 _Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
 
 **Discard**:
-One command restoring a field, node, or the whole Environment to the Environment Change Set's comparison baseline in Working and Saved State. It guards the Working revision, Saved basis, and comparison baseline and writes both states atomically. A new-node field reset uses its Node Introduction without publishing that node. Discard never changes an accepted deployment's target.
+One command restoring a field, node, or the whole Environment into Working State without saving it. Head returns to the runtime comparison baseline, Saved abandons an inverse draft back to the latest Saved revision, and Review discards the server-derived visible list against each row's baseline. It guards the Working revision, Saved basis, and comparison baseline and writes one complete validated draft atomically. A new-node field reset uses its Node Introduction. Discard never changes History or an accepted deployment's target.
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
+
+**History**:
+The selected Environment's immutable Saved revisions, newest first. Restore stages a complete saved snapshot. Undo reverses only that revision's change relative to its recorded predecessor and preserves unrelated later edits. The first recorded revision has no Undo. A preview names the exact draft fields the final candidate overwrites; staging requires the exact current review version and explicit consent for those fields. Neither action saves or deploys. Variable secrets restore their sealed versioned values within the same Environment; preview values remain redacted. Registry credential material stays current outside snapshots.
+_Avoid_: deployment history, commit graph, second draft
 
 **Node Introduction**:
 The strictly versioned configuration an environment node had immediately after its creation transaction finalized. It is the comparison and reset source for edits made before the node has Applied State; it is not a second editable draft.
@@ -323,9 +339,13 @@ _Avoid_: Saved Service config, copied consumer snapshot, second source of truth
 An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. Unless it is a Kept Branch, it may close once it syncs into its Parent, and closes on its own a week after its latest Deployment. Branching rules are pure authored-configuration rules, the same for every client.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch
 
-**Conditional Sync**:
-A PR Environment's Sync into one of its Destinations that goes live with its pull request's merge; a Sync from it into any other Environment stages now. It keeps what landing needs, sealed secrets and registry credentials included, so it lands even once the PR Environment is gone. Where the Destination changed a row too, the pull request's value lands only as a hint, which a take stages. The author's own edits to the PR Environment, or a new target Git branch, withdraw it; what the PR Environment follows from its Parent doesn't.
-_Avoid_: Approval, deferred sync, Conditional Save
+**On merge list**:
+The changes a PR Environment made since it started that go to its Destination when the pull request merges on GitHub. Every change joins unless Excluded, removals included; seals, Sizing and custom domains stay behind. A row can carry an Edit, the value the Destination gets instead of the preview's. A setting the Destination changed after the preview started still takes the preview's value. The list is derived from the PR Environment's Working State and the Destination's latest Saved State, never stored.
+_Avoid_: Offer, Conditional Sync, queue, approval
+
+**Merge landing**:
+The Saved revision "Merged #N" that a pull request's first merge writes into each Destination from its On merge list, and the deploy of what it changed. It happens once per pull request; Undo in History reverts it like any Saved revision.
+_Avoid_: Conditional Save, auto-promote, Apply
 
 **Parent**:
 The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.
@@ -356,7 +376,7 @@ Where a Branch syncs its changes by default: its Parent, or for a PR Environment
 _Avoid_: Target, sync target
 
 **Sync**:
-Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. Each Config file is one setting, so syncing a conflict replaces the whole file; lines never merge. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives without a value, which the receiver's Deploy refuses until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked.
+Putting one Environment's changes, chosen change by change, into another Environment of the same Project as the receiver's changes to deploy. It takes the sender's Working State, deployed or not, and never deletes or deploys anything. It compares over what the two last shared, so a change left out, or discarded by the receiver before it deploys, is offered again; a change the receiver also made since then is flagged and, if synced, overwritten. Sizing, custom domains, generated addresses, the Git branch and Volume data never sync. Each Config file is one setting, so syncing a conflict replaces the whole file; lines never merge. A secret's value never syncs either: a secret the receiver has stays as it is, and one it lacks arrives Not set, and the receiver's deploys skip it until it is set. Any two Environments of a Project sync: a Branch into its Parent, sideways or skipping a level, a root into a Branch or into another root. A pair that never synced compares over where the sending Branch was made, else where the receiving Branch was made, else the receiver itself. Unless a Branch syncs into its own Parent, what it only got from its Parent is left out unless picked.
 _Avoid_: Save, push, promote, merge (a GitHub merge only), Publish
 
 **Follow**:
@@ -365,6 +385,7 @@ _Avoid_: Update, pull, rebase, inherit
 
 **Never sync**:
 A mark an Environment puts on one of its settings: Sync never carries it from that Environment and never changes it there. It joins sizing, custom domains, generated addresses, the Git branch and Volume data, none of which ever sync. A Branch of the Environment still gets the Environment's value; the mark doesn't carry into Branches. A Config's marks are per file.
+The exclusion takes effect immediately; a discarded arrival stages a Working State reversal, and only explicit Save records it in Saved State.
 _Avoid_: Pin, lock, local override
 
 **Deploy Snapshot**:

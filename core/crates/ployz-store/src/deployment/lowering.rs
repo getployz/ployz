@@ -139,8 +139,9 @@ pub(super) struct Lowered {
     /// The lowering input the runner lowers again once it built.
     pub(super) input: Value,
     pub(super) intent: DeployIntent,
-    /// Config file references whose resolved value may break the file. Only
-    /// lowering with the sealing key sees every value, so only it warns.
+    /// Service variables a secret without a value left out, then Config file
+    /// references whose resolved value may break the file. Only lowering with the
+    /// sealing key sees every value, so only it warns of those.
     pub(super) warnings: Vec<DeploymentWarning>,
 }
 
@@ -216,7 +217,22 @@ pub(super) fn lower(
         .iter()
         .map(|service| (service.lineage_id.as_str(), service.slug.as_str()))
         .collect();
-    let mut warnings = Vec::new();
+    // Only the Services this Deploy ships; the rest ride along unchanged.
+    let mut warnings: Vec<DeploymentWarning> = snapshots
+        .iter()
+        .filter_map(|(config, snapshot)| {
+            let id = snapshot.service_id.as_deref()?;
+            if !services.is_empty() && !targeted.contains(&id) {
+                return None;
+            }
+            let keys = resolved.not_set.remove(id)?;
+            Some(keys.into_iter().map(|variable| DeploymentWarning::NotSet {
+                service: config.settings.private_dns.clone(),
+                variable,
+            }))
+        })
+        .flatten()
+        .collect();
     let mut configs = Vec::new();
     for config in &saved.configs {
         let mounting: Vec<&str> = saved
@@ -250,10 +266,8 @@ pub(super) fn lower(
         for (name, file) in &config.files {
             let resolved = files.remove(name).ok_or_else(|| error::corrupt("Config"))?;
             if warns {
-                warnings.extend(resolved.fragile.iter().map(|reference| DeploymentWarning {
-                    config: config.name.clone(),
-                    file: name.clone(),
-                    variable: match &reference.owner {
+                let shown =
+                    |reference: &ployz_core::config::FragileReference| match &reference.owner {
                         ValuePartOwner::Service { lineage_id } => {
                             match slugs.get(lineage_id.as_str()) {
                                 Some(slug) => format!("{slug}.{}", reference.key),
@@ -261,7 +275,20 @@ pub(super) fn lower(
                             }
                         }
                         ValuePartOwner::Self_ => reference.key.clone(),
-                    },
+                    };
+                warnings.extend(resolved.fragile.iter().map(|reference| {
+                    DeploymentWarning::Fragile {
+                        config: config.name.clone(),
+                        file: name.clone(),
+                        variable: shown(reference),
+                    }
+                }));
+                warnings.extend(resolved.not_set.iter().map(|reference| {
+                    DeploymentWarning::NotSetInFile {
+                        config: config.name.clone(),
+                        file: name.clone(),
+                        secret: shown(reference),
+                    }
                 }));
             }
             lowered.insert(

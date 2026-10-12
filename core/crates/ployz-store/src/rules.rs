@@ -582,6 +582,7 @@ pub(crate) mod tests {
                         path: "/data".into(),
                     }],
                     shared_writes: false,
+                    storage_locked: false,
                 },
             )
             .unwrap();
@@ -731,7 +732,6 @@ pub(crate) mod tests {
         let query = crate::SyncQuery {
             from: feature.clone(),
             into: None,
-            when: None,
         };
         let view = store.read(&who, &query).unwrap();
         let sync = |labels: &[&str]| {
@@ -740,11 +740,12 @@ pub(crate) mod tests {
                 &crate::SyncChanges {
                     from: feature.clone(),
                     into: None,
-                    when: None,
+                    close_after: false,
                     version: view.version.clone(),
                     picks: Some(labels.iter().map(|label| (*label).into()).collect()),
                     skip: Vec::new(),
                     values: std::collections::BTreeMap::new(),
+                    id: None,
                 },
             )
         };
