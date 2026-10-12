@@ -96,7 +96,7 @@ export function useStagedPlacements(
     return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
   });
   const now = new Date();
-  const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.staged?.unreached === true));
+  const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.unreached));
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
   return {
     groups,

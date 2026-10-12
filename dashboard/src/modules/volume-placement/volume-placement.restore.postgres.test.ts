@@ -61,7 +61,7 @@ it.live("stages a restore as one Store write and a seeded row, and discards both
   if (!staged.ok) throw new Error(staged.refusal.message);
   const id = staged.placement.volumeId;
   expect(staged.placement).toEqual({
-    volumeId: id, environmentId: expect.any(String), mirrors: [], deploymentId: null,
+    volumeId: id, environmentId: expect.any(String), mirrors: [], unreached: false, deploymentId: null,
     staged: {
       primary: member("web-1", "writer").machine.id, mirrors: [], deletes: [],
       seed: { sourceVolumeId: SOURCE, sourceName: "data", dockerVolume: `${namespace}_vol-${id}`, point },

@@ -75,7 +75,7 @@ describe("volume placement", () => {
     await stage("web-2");
     await stage("web-3");
     expect(await run(listPlacements(organizationId))).toEqual([{
-      volumeId, environmentId: "env-1", mirrors: [web("web-2")], staged: { primary: web("web-3"), mirrors: [], deletes: [] }, deploymentId: null,
+      volumeId, environmentId: "env-1", mirrors: [web("web-2")], staged: { primary: web("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
     }]);
   });
 

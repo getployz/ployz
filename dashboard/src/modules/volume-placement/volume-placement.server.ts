@@ -18,13 +18,12 @@ type Row = typeof volumePlacement.$inferSelect;
 export type PlacementWrite = { readonly ok: true; readonly placement: PlacementRow } | { readonly ok: false; readonly refusal: StoreRefusal };
 type PlacementDiscard = { readonly ok: true; readonly placement: PlacementRow | null } | { readonly ok: false; readonly refusal: StoreRefusal };
 
-const view = (row: Row): PlacementRow => ({
-  volumeId: row.volumeId,
-  environmentId: row.environmentId,
-  mirrors: row.mirrors,
-  staged: row.staged,
-  deploymentId: row.deploymentId,
-});
+export const view = (row: Row): PlacementRow => {
+  const { volumeId, environmentId, mirrors, deploymentId } = row;
+  if (row.staged === null) return { volumeId, environmentId, mirrors, staged: null, unreached: false, deploymentId };
+  const { unreached = false, ...staged } = row.staged;
+  return { volumeId, environmentId, mirrors, staged, unreached, deploymentId };
+};
 
 export const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
 const UNCHECKED: StoreRefusal = { code: "unavailable", message: "Couldn't check the Deploy that took this Volume. Try again.", details: null };

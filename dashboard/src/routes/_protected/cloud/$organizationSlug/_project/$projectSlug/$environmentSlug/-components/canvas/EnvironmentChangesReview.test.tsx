@@ -58,7 +58,7 @@ describe("Details", () => {
     const volume = { id: "v1", name: "pg-data" };
     const id = (server: string) => member(server, "empty").machine.id;
     const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
-      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, deploymentId: null,
+      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
     });
     const handlers = review({ groups: [placementGroup(volume, changes, new Date())] });
     expect(lineOf("Primary").getByTitle("web-3").textContent).toBe("web-1web-3");
@@ -70,7 +70,7 @@ describe("Details", () => {
     const volume = { id: "v1", name: "pg-data" };
     const id = (server: string) => member(server, "empty").machine.id;
     const changes = placementChanges(volume, [member("web-1", "writer"), member("web-3", "empty", { pool: true })], {
-      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, deploymentId: null,
+      volumeId: "v1", environmentId: "e1", mirrors: [], staged: { primary: id("web-3"), mirrors: [], deletes: [] }, unreached: false, deploymentId: null,
     });
     review({ groups: [placementGroup(volume, changes, new Date())] });
     expect(lineOf("Primary").getByText("Seed · Final sync · Stop · Start")).toBeTruthy();
