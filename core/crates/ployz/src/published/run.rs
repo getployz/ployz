@@ -147,36 +147,94 @@ fn print(
 ) -> Result<(), Failure> {
     match command.render {
         Render::Message => ui::done(&output, message.unwrap_or_default()),
-        Render::Record => {
-            let mut fields = ui::Fields::new();
-            for name in properties(&command.output) {
-                fields.push(label(&name), cell(output.get(&name)));
-            }
-            ui::fields(&output, &fields)
-        }
+        Render::Record => ui::fields(&output, &record(&command.output, &output)),
         Render::Table => {
-            let columns = properties(command.output.get("items").unwrap_or(&Value::Null));
+            let columns = properties(items_of(&command.output));
             let mut table = ui::Table::new(
                 columns
                     .iter()
                     .map(|column| column.replace('_', " ").to_uppercase()),
                 format!("Nothing from ployz {} yet.", command.path()),
             );
+            let items = items_of(&command.output);
             for row in output.as_array().into_iter().flatten() {
-                table.row(columns.iter().map(|column| cell(row.get(column))));
+                table.row(
+                    columns
+                        .iter()
+                        .map(|column| cell(row.get(column), property(items, column))),
+                );
             }
             ui::list(&output, &table)
         }
     }
 }
 
-/// Property names in the order the schema lists them.
+/// One field per property, in schema order. A list of records under one property
+/// takes one field per record, the way `volume show` repeats `mounted by`.
+fn record(schema: &Value, output: &Value) -> ui::Fields {
+    let mut fields = ui::Fields::new();
+    for name in properties(schema) {
+        let under = property(schema, &name);
+        match output.get(&name) {
+            Some(Value::Array(items)) if items.iter().any(Value::is_object) => {
+                for item in items {
+                    fields.push(label(&name), inline(item, items_of(under)));
+                }
+            }
+            value => fields.push(label(&name), cell(value, under)),
+        }
+    }
+    fields
+}
+
+/// Property names as the schema lists them. Cloud's `required` keeps that order; a
+/// property outside it follows, in name order.
 fn properties(schema: &Value) -> Vec<String> {
+    let schema = shaped(schema);
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|name| properties.contains_key(*name))
+        .map(ToOwned::to_owned)
+        .collect();
+    let rest: Vec<String> = properties
+        .keys()
+        .filter(|name| !names.contains(name))
+        .cloned()
+        .collect();
+    names.extend(rest);
+    names
+}
+
+/// The branch of `schema` that has a shape: itself, or the first `anyOf` branch that
+/// is not `null`.
+fn shaped(schema: &Value) -> &Value {
     schema
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .and_then(|branches| {
+            branches
+                .iter()
+                .find(|branch| branch.get("type") != Some(&Value::from("null")))
+        })
+        .unwrap_or(schema)
+}
+
+fn property<'a>(schema: &'a Value, name: &str) -> &'a Value {
+    shaped(schema)
         .get("properties")
-        .and_then(Value::as_object)
-        .map(|properties| properties.keys().cloned().collect())
-        .unwrap_or_default()
+        .and_then(|properties| properties.get(name))
+        .unwrap_or(&Value::Null)
+}
+
+fn items_of(schema: &Value) -> &Value {
+    shaped(schema).get("items").unwrap_or(&Value::Null)
 }
 
 fn label(name: &str) -> String {
@@ -188,15 +246,154 @@ fn label(name: &str) -> String {
     label
 }
 
-fn cell(value: Option<&Value>) -> String {
+fn cell(value: Option<&Value>, schema: &Value) -> String {
+    value.map_or_else(String::new, |value| inline(value, schema))
+}
+
+/// A value on one line: a word for a scalar, a list as its items, and a record as
+/// `key value` pairs in schema order, with a nested record or list in parentheses.
+/// A key with nothing under it is left out.
+fn inline(value: &Value, schema: &Value) -> String {
     match value {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| cell(Some(item)))
-            .collect::<Vec<_>>()
-            .join(", "),
-        Some(other) => other.to_string(),
+        Value::Null => String::new(),
+        Value::Bool(true) => "yes".to_owned(),
+        Value::Bool(false) => "no".to_owned(),
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => text.clone(),
+        Value::Array(items) => {
+            let between = if items.iter().any(Value::is_object) {
+                "; "
+            } else {
+                ", "
+            };
+            items
+                .iter()
+                .map(|item| inline(item, items_of(schema)))
+                .collect::<Vec<_>>()
+                .join(between)
+        }
+        Value::Object(pairs) => {
+            let mut keys = properties(schema);
+            let rest: Vec<String> = pairs
+                .keys()
+                .filter(|key| !keys.contains(key))
+                .cloned()
+                .collect();
+            keys.extend(rest);
+            keys.iter()
+                .filter_map(|key| pairs.get(key).map(|value| (key, value)))
+                .filter(|(_, value)| !empty(value))
+                .map(|(key, value)| {
+                    let text = inline(value, property(schema, key));
+                    let key = key.replace('_', " ");
+                    if matches!(value, Value::Object(_) | Value::Array(_)) {
+                        format!("{key} ({text})")
+                    } else {
+                        format!("{key} {text}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+}
+
+fn empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.is_empty(),
+        Value::Object(pairs) => pairs.is_empty(),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A record under `schema` with every property filled, two items per list. With
+    /// `hollow`, each property that may be null is.
+    fn sample(schema: &Value, name: &str, hollow: bool) -> Value {
+        if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
+            if hollow && branches.iter().any(|branch| branch["type"] == "null") {
+                return Value::Null;
+            }
+            return sample(&branches[0], name, hollow);
+        }
+        let kinds: Vec<&str> = match &schema["type"] {
+            Value::String(kind) => vec![kind],
+            Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).collect(),
+            other @ (Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_)) => {
+                panic!("{name} has no type: {other}")
+            }
+        };
+        if hollow && kinds.contains(&"null") {
+            return Value::Null;
+        }
+        match kinds.iter().find(|kind| **kind != "null").unwrap() {
+            &"string" => schema["enum"]
+                .as_array()
+                .map_or_else(|| json!(format!("<{name}>")), |choices| choices[0].clone()),
+            &"number" | &"integer" => json!(12),
+            &"boolean" => json!(true),
+            &"array" => json!([
+                sample(&schema["items"], name, false),
+                sample(&schema["items"], name, true),
+            ]),
+            &"object" => Value::Object(
+                schema["properties"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(key, schema)| (key.clone(), sample(schema, key, hollow)))
+                    .collect(),
+            ),
+            kind => panic!("{name} is a {kind}"),
+        }
+    }
+
+    fn written(fields: &ui::Fields, aligned: bool) -> String {
+        let mut out = anstream::StripStream::new(Vec::new());
+        fields.write(&mut out, aligned).unwrap();
+        String::from_utf8(out.into_inner()).unwrap()
+    }
+
+    #[test]
+    fn a_record_with_nested_lists_reads_as_one_field_per_item_and_never_as_json() {
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/nested-record-output.json"
+        ))
+        .unwrap();
+        let output = sample(&schema, "output", false);
+        let record = record(&schema, &output);
+        let expected = include_str!("../../tests/fixtures/nested-record-output.txt");
+        assert_eq!(written(&record, false), expected);
+        let aligned = written(&record, true);
+        assert_eq!(aligned.lines().count(), expected.lines().count());
+        for text in [&aligned, expected] {
+            assert!(!text.contains('{') && !text.contains('"'), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_table_cell_holding_a_record_reads_as_its_pairs_in_schema_order() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "ms": { "type": "number" },
+                "at": { "type": "string" },
+                "note": { "type": ["string", "null"] }
+            },
+            "required": ["ms", "at", "note"]
+        });
+        let row = json!({ "name": "web", "latest": { "at": "noon", "ms": 12, "note": null } });
+        assert_eq!(cell(row.get("latest"), &schema), "ms 12, at noon");
+        assert_eq!(cell(row.get("missing"), &schema), "");
+        assert_eq!(
+            inline(&json!([true, "a", 1.5]), &Value::Null),
+            "yes, a, 1.5"
+        );
     }
 }
