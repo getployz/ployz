@@ -3172,12 +3172,30 @@ fn a_targeted_deploy_over_a_full_retry_over_a_teardown_keeps_it() {
     let full = deploy_by_hand(&store, &who, &[]);
     cancel(&store, &who, &full);
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
-    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
-    retry(&store, &who, &full).unwrap();
+    let [queued] = pushed.admitted.as_slice() else {
+        panic!("one Deployment: {pushed:?}")
+    };
+    let retried = retry(&store, &who, &full).unwrap();
     let worker = deploy_by_hand(&store, &who, &["worker"]);
 
+    for superseded in [&queued.deployment.id, &retried] {
+        assert_eq!(
+            status(&store, &who, superseded),
+            ployz_store::DeploymentStatus::Superseded
+        );
+    }
     let [_, removals, _] = told(&store, &who, &worker);
     assert_eq!(removals, vec!["db".to_owned()]);
+    run(&store, &worker, &["worker", "db"]);
+    assert_eq!(
+        status(&store, &who, &worker),
+        ployz_store::DeploymentStatus::Applied
+    );
+    assert!(
+        !applied(&store, &who).contains(&"db".to_owned()),
+        "{:?}",
+        applied(&store, &who)
+    );
 }
 
 /// Run Deployment `id` of `service` to a failure on Server `a…`.
