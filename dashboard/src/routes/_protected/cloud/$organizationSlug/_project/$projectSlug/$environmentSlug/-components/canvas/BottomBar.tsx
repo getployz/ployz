@@ -97,12 +97,15 @@ export function BottomBar({
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
   const [watched, setWatched] = useState<ReadonlySet<string>>(new Set());
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
+  // Watched: seen in flight here, and still listed. One `ended` no longer lists is past showing, so it goes.
   useEffect(() => {
-    if (active.every((deployment) => watched.has(deployment.id))) return;
-    setWatched(new Set([...watched, ...active.map((deployment) => deployment.id)]));
-  }, [active, watched]);
+    const listed = new Set([...active, ...ended].map((deployment) => deployment.id));
+    const next = new Set([...active.map((deployment) => deployment.id), ...[...watched].filter((id) => listed.has(id))]);
+    if (next.size === watched.size && [...next].every((id) => watched.has(id))) return;
+    setWatched(next);
+  }, [active, ended, watched]);
   const latest = ended.find((deployment) => watched.has(deployment.id));
-  const outcome = hasChanges || shown || latest === undefined || dismissed.has(latest.id) || latest.id === viewedId ? undefined : latest;
+  const outcome = shown || latest === undefined || dismissed.has(latest.id) || latest.id === viewedId ? undefined : latest;
   const dismiss = (id: string) => setDismissed((ids) => new Set([...ids, id]));
   const deployed = outcome?.status === "applied" ? outcome.id : null;
   useEffect(() => {
@@ -155,7 +158,7 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
-  const row = hasChanges ? (
+  const staged = hasChanges ? (
     <Row staged title={totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save"}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
@@ -179,9 +182,14 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} />
-    : outcome ? <AttemptState deployment={outcome} storage={null} onDismiss={() => dismiss(outcome.id)} /> : null;
-  const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
+  ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} /> : null;
+  // A failed Deploy hands its unreached changes back: how it ended stays above them until dismissed.
+  const bar = staged || outcome ? (
+    <div role="group" aria-label="Bottom bar" className="bottom-bar">
+      {outcome ? <AttemptState deployment={outcome} storage={null} onDismiss={() => dismiss(outcome.id)} /> : null}
+      {staged}
+    </div>
+  ) : null;
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
