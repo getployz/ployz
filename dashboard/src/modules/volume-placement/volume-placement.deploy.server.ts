@@ -178,7 +178,7 @@ const lackingOrUnknown = (servers: readonly StorageServer[]): Effect.Effect<read
 
 export const readPlacementBlockers: BlockerReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
   Effect.flatMap((frame): Effect.Effect<readonly string[], SupportUnknown | string> => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : lackingOrUnknown(frame.machines.map((entry) => ({
-    name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities,
+    name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities ?? [],
   })))),
 );
 

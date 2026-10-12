@@ -133,7 +133,7 @@ export function runtimeWatchFrameForTransport(
         runtime: {
           daemon_version: machine.machine.runtime.daemon_version,
           running_builds: machine.machine.runtime.running_builds,
-          capabilities: [...machine.machine.runtime.capabilities],
+          capabilities: [...(machine.machine.runtime.capabilities ?? [])],
         },
       },
       membership: machine.membership,
