@@ -206,7 +206,9 @@ impl ContainerRuntime {
             .lock()
             .expect("check records are never poisoned")
             .forget(container_id);
-        self.stranded().await.held.remove(container_id);
+        let mut stranded = self.stranded().await;
+        stranded.held.remove(container_id);
+        stranded.gates.remove(container_id);
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {

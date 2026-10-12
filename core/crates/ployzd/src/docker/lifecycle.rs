@@ -395,9 +395,16 @@ impl ContainerRuntime {
     /// Start an Ingress Proxy whose last start failed, unless a request stopped it
     /// or is about to.
     pub(super) async fn start_stranded(&self, container_id: &ContainerId) {
-        // Held through the start, so a stop that races it lands after it and holds.
-        let mut stranded = self.stranded().await;
-        if stranded.held.contains(container_id) || self.stopping.borrow().contains_key(container_id)
+        let gate = self
+            .stranded()
+            .await
+            .gates
+            .entry(*container_id)
+            .or_default()
+            .clone();
+        let _gate = gate.lock().await;
+        if self.stranded().await.held.contains(container_id)
+            || self.stopping.borrow().contains_key(container_id)
         {
             return;
         }
@@ -409,6 +416,7 @@ impl ContainerRuntime {
             self.start_inspected(container_id, &inspected).await
         }
         .await;
+        let mut stranded = self.stranded().await;
         match result {
             Ok(()) => stranded.reported = None,
             Err(error) if stranded.reported != Some(*container_id) => {
@@ -435,7 +443,14 @@ impl ContainerRuntime {
         grace_period_seconds: Option<i32>,
     ) -> Result<(), Error> {
         self.ensure_managed(container_id).await?;
-        self.stranded().await.held.insert(*container_id);
+        let gate = {
+            let mut stranded = self.stranded().await;
+            stranded.held.insert(*container_id);
+            stranded.gates.get(container_id).cloned()
+        };
+        if let Some(gate) = gate {
+            drop(gate.lock().await);
+        }
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -886,6 +901,32 @@ mod tests {
         fake.requests.lock().unwrap().clear();
         runtime.start_stranded(&container_id).await;
         assert!(!started(&fake), "the stop holds");
+    }
+
+    #[tokio::test]
+    async fn a_stranded_start_in_flight_does_not_hold_up_other_containers() {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let (runtime, _fake, container_id) = stranded_with(
+            "created",
+            PORT_TAKEN,
+            FakeDocker {
+                start_barrier: Some(barrier.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+        let other = ContainerId::parse("b".repeat(64)).unwrap();
+
+        let starting = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.start_stranded(&container_id).await }
+        });
+        barrier.wait().await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), runtime.forget(&other))
+            .await
+            .expect("forgetting another container does not wait for the start");
+        barrier.wait().await;
+        starting.await.unwrap();
     }
 
     #[tokio::test]

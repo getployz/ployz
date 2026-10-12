@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -26,6 +27,9 @@ pub(super) struct StrandedIngress {
     /// The last one whose failure was logged. Docker names a fresh endpoint in
     /// every failure, so comparing the messages would log every scan.
     pub(super) reported: Option<ContainerId>,
+    /// Taken through each start, so a stop that races it lands after it and holds,
+    /// while other containers never wait on the Docker calls.
+    pub(super) gates: BTreeMap<ContainerId, Arc<tokio::sync::Mutex<()>>>,
 }
 
 #[derive(Clone)]
