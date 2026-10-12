@@ -15,7 +15,10 @@ export function copiesFromPlacement(input: {
   readonly members: readonly Member[];
   readonly row: PlacementRow | null;
   readonly active: VolumeRunView | null;
+  /** The newest mirror round that ended, whatever its end. */
   readonly lastSync: VolumeRunView | null;
+  /** The newest mirror round that ended done: a silent mirror's last good refresh. */
+  readonly lastDone: VolumeRunView | null;
 }): VolumeCopies | null {
   const { volume, members, row, active } = input;
   const form = placementForm(volume, members, row);
@@ -24,6 +27,8 @@ export function copiesFromPlacement(input: {
   const moving = form.primary.change !== null && row?.staged?.seed === undefined;
   const promoted = moving && appliedMirrors(observed, row).includes(form.primary.server.id);
   const skipped = input.lastSync !== null && ["failed", "lost"].includes(input.lastSync.state);
+  const silent = new Set(members.filter((member) => !member.answered).map((member) => member.machine.id));
+  const doneAt = input.lastDone?.finished_at == null ? null : new Date(input.lastDone.finished_at);
   const target = active === null ? null : runTarget(active);
 
   const busyOn = (server: MachineName): string | null => {
@@ -33,16 +38,19 @@ export function copiesFromPlacement(input: {
     if (active.kind === "delete_mirror" && target === server) return "Removing";
     return null;
   };
-  const mirror = (item: PlacementItem, staged: StagedCopy | null): MirrorCopy => ({
-    kind: "mirror",
-    id: item.server.id,
-    server: item.server,
-    name: copyName(volume.name, item.server.name),
-    refreshedAt: item.newest,
-    skipped,
-    staged,
-    busy: busyOn(item.server.name),
-  });
+  const mirror = (item: PlacementItem, staged: StagedCopy | null): MirrorCopy => {
+    const quiet = silent.has(item.server.id);
+    return {
+      kind: "mirror",
+      id: item.server.id,
+      server: item.server,
+      name: copyName(volume.name, item.server.name),
+      refreshedAt: quiet ? doneAt : item.newest,
+      skipped: skipped || quiet,
+      staged,
+      busy: busyOn(item.server.name),
+    };
+  };
   const old = (item: PlacementItem): OldCopy => ({
     kind: "old",
     id: item.server.id,
