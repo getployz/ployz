@@ -264,6 +264,7 @@ fn deploy(
         (admit.version.as_deref(), &admit.accept_volume_loss),
         trusted.volumes.as_ref(),
     )?;
+    review::approve(who, id, &review, &saved_intent, &trusted.approval)?;
     let (saved, _) = review::publish(
         tx,
         who,

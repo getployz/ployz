@@ -122,6 +122,18 @@ _Avoid_: Container name as identity, replica identity
 The Machine-local copy of the output of every container Ployz runs, kept after the container is removed, capped by size and age. It holds only the output of containers that ran on its own Machine.
 _Avoid_: log database, log cache
 
+**Observe Store**:
+The disposable Machine-local state `ployz-observe` keeps: the Log Store, Metric Samples, and Rollups. It holds only what its own Machine observed, needs no migrations, and Cloud reads it without copying it.
+_Avoid_: telemetry store, metrics database, TSDB
+
+**Metric Sample**:
+One 10 second reading of one Container's counters and gauges, or of its Machine's, stamped with the Service, Deployment, and Container it belonged to when read. Counters are raw cumulative values; rates come at query time. A value the Machine could not read is absent, never zero. Raw samples are kept 24 hours.
+_Avoid_: datapoint, stat, metric event
+
+**Rollup**:
+A 5 minute summary of Metric Samples for one Service and Deployment, or for the Machine itself, folded from a closed hour of samples and kept 90 days. It outlives the Containers it summarizes, so a removed Container's history stays under its Service. Folding the same hour again yields the same Rollup.
+_Avoid_: aggregate, archive, downsample (the query-time bucketing of points)
+
 **Container Runtime Observation**:
 A point-in-time Docker lifecycle observation such as created, running with health, paused, restarting, exited, removing, dead, or an unrecognized external state carried verbatim as its observed value. Container observations do not combine into an authoritative Service state.
 Running health `stopping` is the daemon's own overlay, not Docker's: a client marked the Container ahead of a stop so the Ingress Proxies drop it first. The mark lives in daemon memory and ends when the stop runs.
@@ -298,7 +310,7 @@ One pure, serializable comparison from the latest queued or running Deployment's
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Environment Publication Review**:
-Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Publish and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
+Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. It carries that destructive set as Destructive Effects, each naming the node and the row it changes, and the Approval digest over them. Publish and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
 _Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
 
 **Saved State Command**:
@@ -389,8 +401,12 @@ The observer-relative plan-plus-warnings offered for confirmation before one Dep
 _Avoid_: persisted plan, cluster decision record
 
 **Destructive Change**:
-Removal of an existing Service or explicitly requested destruction of a Docker Volume, requiring operator approval. Ordinary Service updates, container replacements, and scaling changes do not require additional destructive confirmation.
+Removal of a Service, deletion or detachment of a Volume, or removal of a domain, each one that Applied State holds or the Deployment in flight puts in place. Each is one Destructive Effect. Ordinary Service updates, image rolls, variable changes, replica changes, container replacements, and Setting edits are not destructive; replicas stay 1–50, so no replica change stops a Service.
 _Avoid_: Every container replacement, implicit Volume deletion
+
+**Approval**:
+A human's assent to one exact destructive set, pinned as `version:digest`. The version pins the Working and Saved revisions and the Head reviewed; the digest hashes the Organization, the Environment, and the sorted Destructive Effects. Publish and a manual Deploy that publishes ask; so do removing a Server Cloud manages (always), a Drain that leaves a Global Service running on no other Server, and a clean of a Namespace that stops a Service or deletes Volume data. Each asks only when Cloud requires it as trusted evidence. Setting edits and Deploys of already-Saved State never ask. A removal not yet deployed asks again on every Publication that still carries it. A stale or different digest refuses with the fresh review. Approval is separate from Data Loss Confirmation, which still names each Volume whose data a Deploy deletes.
+_Avoid_: Confirmation flag, approval token, caller-asserted approval
 
 **Deploy Progress**:
 Live evidence of one in-flight Deploy: the current operation, the completed prefix, and health/hook waits. It is not Cluster Watch, not a workflow status, and not persisted.

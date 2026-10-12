@@ -26,6 +26,7 @@ const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryColle
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumePlacement.tsx": "a Volume run under way",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
   "components/ui/spinner.tsx": "the primitive",
   "components/ui/sonner.tsx": "promise toasts for writes",
@@ -38,6 +39,7 @@ const SPINNER_FILES = {
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "the removal Deployment running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/monitoring/MonitoringTab.tsx": "Checking while a requested probe runs",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",
@@ -71,6 +73,7 @@ const ON_DEMAND_READS = {
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
   githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
+  volumeMembersQueryOptions: "asks every Server for its copy live, so a slow Server would hold the drawer open; the Placement section waits on it instead",
   strayNamespacesQueryOptions: "asks about the Namespaces the Servers report live, known only once the Runtime Watch answers",
 };
 

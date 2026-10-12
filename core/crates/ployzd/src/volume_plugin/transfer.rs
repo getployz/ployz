@@ -110,7 +110,7 @@ impl Receives {
             .remove(&name.0);
     }
 
-    fn start(&self, name: &DockerVolumeName) -> Arc<Mutex<Option<Result<(), String>>>> {
+    pub(super) fn start(&self, name: &DockerVolumeName) -> Arc<Mutex<Option<Result<(), String>>>> {
         let outcome = Arc::new(Mutex::new(None));
         self.0
             .lock()
@@ -309,7 +309,7 @@ impl VolumeStorage {
         self.finish_copy(fs, bound).await
     }
 
-    async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
+    pub(super) async fn finish_copy(&self, fs: &str, bound: u64) -> Result<(), String> {
         let refquota = format!("refquota={bound}");
         for property in ["readonly=on", &refquota] {
             self.zfs(&["set", property, fs])

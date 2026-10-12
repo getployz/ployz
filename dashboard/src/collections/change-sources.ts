@@ -27,8 +27,11 @@ export const changeNameSources = {
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],
   organization_server_upgrades: ["organization_server_upgrades"],
+  organization_settings: ["organization_settings"],
   server_upgrade: ["server_upgrade_attempt"],
   server_drain: ["server_drain_attempt"],
+  volume_run: ["volume_run"],
+  volume_placement: ["volume_placement"],
   ...storeViewSources,
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 

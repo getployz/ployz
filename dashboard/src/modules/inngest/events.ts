@@ -82,6 +82,7 @@ export type VolumeRunRequestedEventData = {
   runId: string;
 };
 export const serverDrainRequestedEvent = "server/drain.requested";
+export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
@@ -121,6 +122,8 @@ export type ServerUpgradeRequestedEventData = {
   machineId: string | null;
   trigger: UpgradeTrigger;
   userId: string | null;
+  /** The attempt ID the CLI polls, minted by its request; only with `machineId`. Absent, the run mints one. */
+  attemptId?: string;
 };
 
 export type MachineRemoveRequestedEventData = {
@@ -132,6 +135,12 @@ export type ServerDrainRequestedEventData = {
   attemptId: string;
   organizationId: string;
   machineId: string;
+};
+
+/** A clean of a Namespace no Environment owns was requested: its row is written. */
+export type NamespaceCleanupRequestedEventData = {
+  cleanupId: string;
+  organizationId: string;
 };
 
 export type ClusterDomainSyncRequestedEventData = {
@@ -245,6 +254,10 @@ export const serverDrainRequestedEventType = eventType(
   serverDrainRequestedEvent,
   { schema: staticSchema<ServerDrainRequestedEventData>() },
 );
+export const namespaceCleanupRequestedEventType = eventType(
+  namespaceCleanupRequestedEvent,
+  { schema: staticSchema<NamespaceCleanupRequestedEventData>() },
+);
 export const volumeRunRequestedEventType = eventType(
   volumeRunRequestedEvent,
   { schema: staticSchema<VolumeRunRequestedEventData>() },
@@ -346,6 +359,11 @@ export function createVolumeRunRequestedEvent(data: VolumeRunRequestedEventData)
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
 export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventData) {
   return { id: `server-drain-${data.attemptId}`, name: serverDrainRequestedEvent, data } as const;
+}
+
+/** Keyed by the clean's row: sending it again for the same request runs nothing new. */
+export function createNamespaceCleanupRequestedEvent(data: NamespaceCleanupRequestedEventData) {
+  return { id: `namespace-cleanup-${data.cleanupId}`, name: namespaceCleanupRequestedEvent, data } as const;
 }
 
 /** Keyed by founding: a retried completion sends it again, and Inngest runs it once. */
@@ -512,6 +530,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
+  | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>

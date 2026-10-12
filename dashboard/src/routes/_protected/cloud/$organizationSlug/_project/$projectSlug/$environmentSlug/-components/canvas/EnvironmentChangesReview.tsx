@@ -82,7 +82,7 @@ type Line = { group: ChangeGroup; row?: ChangeRow };
 function changeSections(groups: readonly ChangeGroup[], originFor: EnvironmentChangesReviewProps["originFor"]) {
   const sections = new Map<string, { origin?: ChangeOrigin; lines: Line[] }>([["", { lines: [] }]]);
   for (const group of groups) {
-    const node = originFor?.(group.row);
+    const node = group.row === null ? undefined : originFor?.(group.row);
     const lines: Line[] = group.lifecycle !== "update" || !group.rows.length ? [{ group }] : [];
     for (const line of [...lines, ...group.rows.map((row) => ({ group, row }))]) {
       // A setting of a node that arrived whole came with it.
@@ -142,6 +142,8 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
                   <span className="shrink-0 text-muted-foreground">{group.nodeName}</span>
                   <span className={cn("truncate", row.variable && "font-mono")}>{row.name}</span>
                 </p>
+                {row.loss !== undefined ? <p className="text-destructive">{row.loss}</p> : null}
+                {row.detail !== undefined ? <p className="text-muted-foreground">{row.detail}</p> : null}
                 {restarts}
                 {row.configFile ? <ConfigFileValue {...row.configFile} /> : null}
                 {note ? <div className="text-muted-foreground">{note}</div> : null}

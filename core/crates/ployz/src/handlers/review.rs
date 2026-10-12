@@ -17,6 +17,7 @@ pub(crate) fn publish_command() -> Command {
     scoped(Command::new("publish").about("Put staged changes in Saved State without deploying"))
         .arg(version())
         .arg(value("message", None).help("Message saved with the new revision"))
+        .arg(crate::cli::approval())
 }
 
 pub(crate) fn history_command() -> Command {

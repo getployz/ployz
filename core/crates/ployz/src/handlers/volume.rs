@@ -80,6 +80,7 @@ pub(crate) fn command() -> Command {
         .subcommand(run::sync_command())
         .subcommand(run::move_command())
         .subcommand(run::release_command())
+        .subcommand(run::restore_command())
         .subcommand(run::runs_command())
 }
 
@@ -96,6 +97,7 @@ pub(super) fn handler(path: &str) -> Option<Runnable> {
         "sync" => cloud(Never, run::sync),
         "move" => cloud(Never, run::move_volume),
         "release" => cloud(Never, run::release),
+        "restore" => cloud(Always, run::restore),
         "runs" => cloud(Never, run::runs),
         _ => return None,
     })
@@ -129,6 +131,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         storage,
         mounts,
         shared_writes: matches.get_one("shared-writes") == Some(&true),
+        storage_locked: false,
     })?;
     warn_docker(storage);
     if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
