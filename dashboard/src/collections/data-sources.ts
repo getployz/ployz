@@ -23,6 +23,7 @@ export const dataSources = {
   "modules/machines/server-drain.queries.ts": { kind: "remote", freshness: "each Server's latest Drain, the latest-of over history computed on the server; the change stream refetches it when a Drain's row changes" },
   "modules/volume-placement/volume-placement.queries.ts": { kind: "remote", freshness: "every Volume's mirrors and staged placement; the change stream refetches them when a row changes" },
   "modules/volume-copies/volume-copies.queries.ts": { kind: "remote", freshness: "a Volume's newest finished mirror round and its newest done one; the change stream refetches it when a run's row changes; a requested Refresh now is polled every 3s by volume-run.queries.ts, and its end refetches this by the volume-run key prefix" },
+  "modules/volume-copies/volume-offsite.queries.ts": { kind: "remote", freshness: "the Volume's offsite copy, project buckets and the bucket's backups listed from the writer; cached 60s, and an add or upload refetches it" },
   "modules/volume-copies/volume-snapshots.queries.ts": { kind: "remote", freshness: "the writer's snapshots and epoch; polls every 60s, and a take, keep or delete writes the reply back into the cache" },
   "modules/volume-run/volume-run.queries.ts": { kind: "remote", freshness: "a Volume's last 50 runs, newest first; the change stream refetches them when a run's row changes" },
   "modules/billing/billing.queries.ts": { kind: "remote", freshness: "cached briefly; the subscription changes in Polar, not here" },
