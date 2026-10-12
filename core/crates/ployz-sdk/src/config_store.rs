@@ -13,7 +13,7 @@ use ployz_core::{RpcError, ServiceName};
 use ployz_store::{Actor, DeploymentId, GithubBuildId, OrganizationId, RunEvidence, RunnerId};
 use serde::de::DeserializeOwned;
 
-use crate::{invalid_argument, rpc_to_napi};
+use crate::{invalid_argument, rpc_to_napi, whole_numbers};
 
 /// One Config Store over one database.
 #[napi]
@@ -88,7 +88,7 @@ impl ConfigStore {
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
-        let query = ployz_store::Query::decode(whole(query))
+        let query = ployz_store::Query::decode(whole_numbers(query))
             .map_err(|error| refused("Expected a Config Store query", &error))?;
         let trusted = evidence(trusted)?;
         self.run(move |store| store.read_trusted(&who, &query, &trusted))
@@ -110,7 +110,7 @@ impl ConfigStore {
         principal: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, principal)?;
-        let command = ployz_store::Command::decode(whole(command))
+        let command = ployz_store::Command::decode(whole_numbers(command))
             .map_err(|error| refused("Expected a Config Store command", &error))?;
         let trusted = evidence(trusted)?;
         self.run(move |store| store.commit(&who, &command, &trusted))
@@ -484,7 +484,7 @@ fn repository(repository_id: i64) -> Result<u64> {
 /// Decode what JavaScript sent, its whole numbers as integers first; `refusal` names
 /// what was expected.
 fn decode<T: DeserializeOwned>(value: serde_json::Value, refusal: &str) -> Result<T> {
-    ployz_core::decode::decode(&whole(value)).map_err(|error| refused(refusal, &error))
+    ployz_core::decode::decode(&whole_numbers(value)).map_err(|error| refused(refusal, &error))
 }
 
 /// `refusal`, then where and why the input did not fit, never a value it holds.
@@ -544,33 +544,4 @@ fn evidence(trusted: Option<serde_json::Value>) -> Result<ployz_store::Trusted> 
         .map(|trusted| decode(trusted, "Expected Config Store evidence"))
         .transpose()?
         .unwrap_or_default())
-}
-
-/// `value` with whole numbers as integers: JavaScript hands GitHub's IDs past 2^31
-/// over as floats, which integer fields refuse.
-fn whole(value: serde_json::Value) -> serde_json::Value {
-    use serde_json::Value;
-    match value {
-        Value::Number(number) => match number.as_f64() {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "only whole, non-negative values below 2^53 are converted"
-            )]
-            Some(float)
-                if float.fract() == 0.0 && (0.0..9_007_199_254_740_992.0).contains(&float) =>
-            {
-                Value::from(float as u64)
-            }
-            Some(_) | None => Value::Number(number),
-        },
-        Value::Array(items) => Value::Array(items.into_iter().map(whole).collect()),
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .map(|(key, value)| (key, whole(value)))
-                .collect(),
-        ),
-        Value::Null | Value::Bool(_) | Value::String(_) => value,
-    }
 }
