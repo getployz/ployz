@@ -14,9 +14,9 @@ use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, ConfigStore,
     CreateGitService, CreateProject, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentName,
     EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, HistoryAction, HistoryPreviewQuery,
-    HistoryQuery, MergeRow, NeverSync, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeQuery,
-    OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery, Ride,
-    SavedRevision, ServiceLineageId, SetMergeValue, SetPrPlan, SettingPath, StageHistory,
+    HistoryQuery, MergeRow, NeverSync, NodeName, OnMerge, OnMergeCheck, OnMergeConclusion,
+    OnMergeQuery, OrganizationId, ProjectId, ProjectName, Publish, PullRequest, PullRequestQuery,
+    Ride, SavedRevision, ServiceLineageId, SetMergeValue, SetPrPlan, SettingPath, StageHistory,
     SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
@@ -57,6 +57,14 @@ fn shop() -> (ConfigStore, Actor) {
 
 /// [`shop`], with `setup` run on `production` before pull request #5 opens.
 fn shop_with(setup: impl FnOnce(&ConfigStore, &Actor)) -> (ConfigStore, Actor) {
+    shop_copying(setup, None)
+}
+
+/// [`shop_with`], with pr-5 also copying `copy`.
+fn shop_copying(
+    setup: impl FnOnce(&ConfigStore, &Actor),
+    copy: Option<Vec<NodeName>>,
+) -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
@@ -102,7 +110,7 @@ fn shop_with(setup: impl FnOnce(&ConfigStore, &Actor)) -> (ConfigStore, Actor) {
                 repository: backend::repo_name("acme/web"),
                 enabled: Some(true),
                 start_from: Some(EnvironmentName::parse("production").unwrap()),
-                copy: None,
+                copy,
                 setup: None,
                 remove_on_close: None,
                 include_bots: None,
@@ -2154,3 +2162,525 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
         [("web", None)]
     );
 }
+
+// Node removals.
+
+fn node(name: &str) -> NodeName {
+    NodeName::parse(name).unwrap()
+}
+
+fn image_service(store: &ConfigStore, who: &Actor, environment: &str, n: u8, name: &str) {
+    store
+        .write(
+            who,
+            &ployz_store::CreateService {
+                id: ServiceLineageId::parse(uuid(n)).unwrap(),
+                environment: at(environment),
+                name: ServiceName::parse(name).unwrap(),
+                image: Some(format!("{name}:1")),
+                template: None,
+            },
+        )
+        .unwrap();
+}
+
+fn volume(store: &ConfigStore, who: &Actor, n: u8, name: &str, on: &str) {
+    store
+        .write(
+            who,
+            &ployz_store::CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse(uuid(n)).unwrap(),
+                environment: at("production"),
+                name: ployz_store::VolumeName::parse(name).unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse(on).unwrap(),
+                    path: format!("/var/lib/{name}"),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+fn config(store: &ConfigStore, who: &Actor, n: u8, name: &str, on: &[&str]) {
+    store
+        .write(
+            who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(n)).unwrap(),
+                environment: at("production"),
+                name: ployz_core::ConfigName::parse(name).unwrap(),
+                mounts: on
+                    .iter()
+                    .map(|service| ployz_store::ConfigMountAt {
+                        service: ServiceName::parse(*service).unwrap(),
+                        dir: format!("/etc/{name}"),
+                    })
+                    .collect(),
+            },
+        )
+        .unwrap();
+}
+
+/// production's `db`, its Volume `data` and the Config `sentry` that `web` mounts,
+/// beside `worker`, its Volume `cache` and an unmounted Config `extra`, all saved.
+/// `web.env.DB_URL` references `db`.
+fn production_nodes(store: &ConfigStore, who: &Actor) {
+    image_service(store, who, "production", 20, "db");
+    image_service(store, who, "production", 21, "worker");
+    volume(store, who, 22, "data", "db");
+    volume(store, who, 23, "cache", "worker");
+    config(store, who, 24, "sentry", &["web"]);
+    config(store, who, 25, "extra", &[]);
+    store
+        .write(
+            who,
+            &ployz_store::PutConfigFile {
+                environment: at("production"),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+                file: ployz_core::ConfigFileName::parse("sentry.yml").unwrap(),
+                content: "dsn: ${{ web.PLOYZ_PRIVATE_DOMAIN }}".into(),
+                mode: Some(ployz_core::config::FileMode::parse("0640").unwrap()),
+                uid: Some(1000),
+                gid: None,
+            },
+        )
+        .unwrap();
+    set(
+        store,
+        who,
+        "production",
+        &[
+            ("web.env.DB_URL", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
+            ("db.env.PASSWORD", json!({ "secret": "hunter2" })),
+            ("db.env.USER", json!("app")),
+            (
+                "db.registryCredential",
+                json!({ "username": "bot", "secret": "pull-token" }),
+            ),
+        ],
+    );
+    save(store, who, "production");
+}
+
+/// [`shop`] over [`production_nodes`]: pr-5 copies `web`, `sentry`, `db` and
+/// `data`, and leaves `worker`, `cache` and `extra` in production.
+fn shop_with_nodes() -> (ConfigStore, Actor) {
+    shop_copying(
+        production_nodes,
+        Some(vec![
+            node("db"),
+            node("volumes.data"),
+            node("configs.sentry"),
+        ]),
+    )
+}
+
+fn remove_service(store: &ConfigStore, who: &Actor, environment: &str, service: &str) {
+    store
+        .write(
+            who,
+            &ployz_store::RemoveService {
+                environment: at(environment),
+                service: ServiceName::parse(service).unwrap(),
+            },
+        )
+        .unwrap();
+}
+
+/// pr-5 stops referencing `db` and removes it.
+fn remove_db(store: &ConfigStore, who: &Actor) {
+    set(
+        store,
+        who,
+        "pr-5",
+        &[("web.env.DB_URL", json!("db.internal"))],
+    );
+    remove_service(store, who, "pr-5", "db");
+}
+
+/// Whether `environment`'s latest Saved revision has `name`, by what Working
+/// changes against it.
+fn saved_has(store: &ConfigStore, who: &Actor, environment: &str, name: &str) -> bool {
+    let working = value(store, who, environment, &format!("{name}.image")).is_some();
+    let diff = store
+        .read(
+            who,
+            &DiffQuery {
+                environment: at(environment),
+            },
+        )
+        .unwrap();
+    let drafted = diff.draft_changes.iter().find(|change| change.name == name);
+    match drafted.map(|change| change.lifecycle) {
+        Some(ployz_core::config::ReviewLifecycleKind::Create) => false,
+        Some(ployz_core::config::ReviewLifecycleKind::Delete) => true,
+        _ => working,
+    }
+}
+
+#[test]
+fn production_nodes_the_pr_environment_never_copied_make_no_rows() {
+    let (store, who) = shop_with_nodes();
+    assert_eq!(labels(&store, &who), []);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    assert_eq!(
+        labels(&store, &who),
+        [("web.env.A".to_owned(), Ride::Rides)]
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    for name in ["db", "worker"] {
+        assert!(saved_has(&store, &who, "production", name), "{name}");
+    }
+}
+
+#[test]
+fn a_removed_service_rides_and_the_merge_takes_it_out_of_production() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    let db = row(&store, &who, "db");
+    assert_eq!(
+        (db.lands, db.preview, db.ride, db.conflict, db.refused_by),
+        (Value::Null, Value::Null, Ride::Rides, false, vec![])
+    );
+    assert_ne!(db.production, Value::Null);
+    assert_eq!(row(&store, &who, "web.env.DB_URL").ride, Ride::Rides);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(!saved_has(&store, &who, "production", "db"));
+    assert_eq!(value(&store, &who, "production", "db.image"), None);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.DB_URL"),
+        Some(json!("db.internal"))
+    );
+    assert!(production_diff(&store, &who).published);
+    // The rest of production stays.
+    assert!(saved_has(&store, &who, "production", "worker"));
+}
+
+#[test]
+fn an_excluded_removal_keeps_the_node_until_included_again() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    exclude(&store, &who, "db", false);
+    assert_eq!(row(&store, &who, "db").ride, Ride::Excluded);
+    exclude(&store, &who, "db", true);
+    assert_eq!(row(&store, &who, "db").ride, Ride::Rides);
+    exclude(&store, &who, "db", false);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(saved_has(&store, &who, "production", "db"));
+    assert_eq!(
+        value(&store, &who, "production", "web.env.DB_URL"),
+        Some(json!("db.internal"))
+    );
+}
+
+#[test]
+fn removing_a_node_production_changed_since_is_a_conflict() {
+    let (store, who) = shop_with_nodes();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.USER", json!("admin"))],
+    );
+    save(&store, &who, "production");
+    remove_db(&store, &who);
+    let db = row(&store, &who, "db");
+    assert_eq!((db.ride, db.conflict), (Ride::Rides, true));
+}
+
+#[test]
+fn a_removal_production_still_references_stays_in_use_and_the_rest_lands() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    // production's worker references db since pr-5 started.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("worker.env.DB", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+    save(&store, &who, "production");
+    let db = row(&store, &who, "db");
+    assert_eq!(
+        (
+            db.ride,
+            db.refused_by
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        ),
+        (Ride::Rides, vec!["worker.env.DB".to_owned()])
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(saved_has(&store, &who, "production", "db"));
+    assert_eq!(
+        value(&store, &who, "production", "web.env.DB_URL"),
+        Some(json!("db.internal"))
+    );
+    assert!(production_diff(&store, &who).published);
+}
+
+#[test]
+fn a_removal_is_refused_by_the_value_that_lands_not_the_previews() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    // Excluding the edit that stopped referencing db keeps production's reference.
+    exclude(&store, &who, "web.env.DB_URL", false);
+    let refused: Vec<String> = row(&store, &who, "db")
+        .refused_by
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(refused, ["web.env.DB_URL"]);
+    exclude(&store, &who, "web.env.DB_URL", true);
+    assert_eq!(row(&store, &who, "db").refused_by, []);
+
+    // An Edit landing the reference refuses it too.
+    store
+        .write(
+            &who,
+            &merge_value("web.env.DB_URL", Some("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
+        )
+        .unwrap();
+    assert_eq!(row(&store, &who, "db").refused_by.len(), 1);
+}
+
+#[test]
+fn a_removed_volume_is_kept_with_its_data() {
+    let (store, who) = shop_with_nodes();
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: at("pr-5"),
+                volume: ployz_store::VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let data = row(&store, &who, "volumes.data");
+    assert_eq!((data.ride, &data.lands), (Ride::Kept, &data.production));
+    assert_ne!(data.production, Value::Null);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    let kept = store.read(
+        &who,
+        &ployz_store::VolumeQuery {
+            environment: at("production"),
+            volume: ployz_store::VolumeName::parse("data").unwrap(),
+        },
+    );
+    assert!(kept.is_ok(), "{kept:?}");
+    assert!(production_diff(&store, &who).published);
+}
+
+#[test]
+fn a_draft_on_a_removed_service_stays_in_working_while_saved_takes_the_removal() {
+    let (store, who) = shop_with_nodes();
+    remove_db(&store, &who);
+    // Only whether USER is exported changes: its value, and so its cell, doesn't.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.USER.exported", json!("true"))],
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(!saved_has(&store, &who, "production", "db"));
+    assert_eq!(
+        value(&store, &who, "production", "db.env.USER.exported"),
+        Some(json!(true))
+    );
+}
+
+#[test]
+fn undo_brings_a_removed_service_and_config_back_whole() {
+    let (store, who) = shop_with_nodes();
+    let snapshot = |store: &ConfigStore| {
+        let settings = store
+            .read(
+                &who,
+                &EnvironmentQuery {
+                    environment: at("production"),
+                    path: None,
+                    all: true,
+                },
+            )
+            .unwrap()
+            .settings;
+        let db = store
+            .read(
+                &who,
+                &ployz_store::ServiceQuery {
+                    environment: at("production"),
+                    service: ServiceName::parse("db").unwrap(),
+                },
+            )
+            .unwrap();
+        let configs = store
+            .read(
+                &who,
+                &ployz_store::ConfigsQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap()
+            .configs;
+        json!({
+            "settings": settings,
+            "db": [db.service, db.lineage, db.values],
+            "configs": configs,
+        })
+    };
+    let before = snapshot(&store);
+    remove_db(&store, &who);
+    store
+        .write(
+            &who,
+            &ployz_store::DeleteConfig {
+                environment: at("pr-5"),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(row(&store, &who, "configs.sentry").ride, Ride::Rides);
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(!saved_has(&store, &who, "production", "db"));
+    let landed = history(&store, &who)
+        .into_iter()
+        .find(|revision| revision.message.as_deref() == Some("Merged #5"))
+        .unwrap();
+    let query = HistoryPreviewQuery {
+        environment: at("production"),
+        revision: landed.revision,
+        action: HistoryAction::Undo,
+    };
+    let preview = store.read(&who, &query).unwrap();
+    store
+        .write(
+            &who,
+            &StageHistory {
+                environment: at("production"),
+                revision: query.revision,
+                action: query.action,
+                version: preview.version,
+                accept_overwrite: false,
+            },
+        )
+        .unwrap();
+    // IDs, sealed values, mounts, files, and the registry credential kept by ID.
+    assert_eq!(snapshot(&store), before);
+}
+
+#[test]
+fn each_destination_decides_its_own_removal() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(1)).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+            },
+        )
+        .unwrap();
+    // production deploys `release`; its Branches staging and qa deploy `main`.
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse(uuid(3)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                repository: backend::repo_name("acme/web"),
+                branch: Some(backend::git_branch("release")),
+            },
+            &vouched(),
+        )
+        .unwrap();
+    image_service(&store, &who, "production", 20, "db");
+    save(&store, &who, "production");
+    for (n, name) in [(30, "staging"), (31, "qa")] {
+        store
+            .write(
+                &who,
+                &ployz_store::CreateBranch {
+                    id: EnvironmentId::parse(uuid(n)).unwrap(),
+                    from: at("production"),
+                    name: EnvironmentName::parse(name).unwrap(),
+                    copy: vec![node("web"), node("db")],
+                    live: Vec::new(),
+                    setup: Vec::new(),
+                    keep: true,
+                    fix: None,
+                },
+            )
+            .unwrap();
+        set(&store, &who, name, &[("web.branch", json!("main"))]);
+        save(&store, &who, name);
+    }
+    // qa references db since.
+    set(
+        &store,
+        &who,
+        "qa",
+        &[("web.env.DB_URL", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
+    );
+    save(&store, &who, "qa");
+    store
+        .write(
+            &who,
+            &SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: Some(true),
+                start_from: Some(EnvironmentName::parse("production").unwrap()),
+                copy: Some(vec![node("db")]),
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    pull(&store, &who, "main", "2026-09-29T10:00:00Z");
+    remove_service(&store, &who, "pr-5", "db");
+
+    let destinations: Vec<_> = on_merge(&store, &who)
+        .destinations
+        .into_iter()
+        .map(|destination| {
+            let rows: Vec<_> = destination
+                .rows
+                .into_iter()
+                .map(|row| (row.at.to_string(), row.ride, row.refused_by.len()))
+                .collect();
+            (destination.name.to_string(), rows)
+        })
+        .collect();
+    assert_eq!(
+        destinations,
+        [
+            (
+                "staging".to_owned(),
+                vec![("db".to_owned(), Ride::Rides, 0)]
+            ),
+            ("qa".to_owned(), vec![("db".to_owned(), Ride::Rides, 1)]),
+        ]
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert!(!saved_has(&store, &who, "staging", "db"));
+    assert!(saved_has(&store, &who, "qa", "db"));
+    assert!(saved_has(&store, &who, "production", "db"));
+}
+

@@ -183,6 +183,31 @@ impl Move {
         let mut way = Self::sync(tx, from, into)?;
         way.rules.way = Way::Merge;
         way.nothing = format!("Nothing lands in {}", into.summary.name);
+        // The base holds every node `from` was made with, copied or not. Only a node
+        // `from` introduced and no longer has is one it removed.
+        let introduced = review::introductions(tx, from)?;
+        let stays: BTreeSet<&str> = [&way.from, &introduced]
+            .into_iter()
+            .flat_map(|intent| {
+                let services = intent.services.iter().map(|s| s.lineage_id.as_str());
+                let volumes = intent
+                    .volumes
+                    .iter()
+                    .map(|v| v.resource_lineage_id.as_str());
+                let configs = intent
+                    .configs
+                    .iter()
+                    .map(|c| c.resource_lineage_id.as_str());
+                services.chain(volumes).chain(configs)
+            })
+            .collect();
+        let base = &mut way.base;
+        base.services
+            .retain(|s| stays.contains(s.lineage_id.as_str()));
+        base.volumes
+            .retain(|v| stays.contains(v.resource_lineage_id.as_str()));
+        base.configs
+            .retain(|c| stays.contains(c.resource_lineage_id.as_str()));
         Ok(way)
     }
 
@@ -1035,6 +1060,26 @@ pub(crate) fn land(
         {
             staged.push(NodeName::Config(config.name.clone().into()));
             scope::introduce(tx, who, &id, scope::Node::Config(config))?;
+        }
+    }
+    // A removed node keeps its credential, policy and Introduction: Undo brings it
+    // back by ID.
+    for service in &before.services {
+        if !branch.working.services.iter().any(|s| s.id == service.id) {
+            staged.push(NodeName::Service(
+                ServiceName::parse(service.slug.as_str())
+                    .map_err(|_| error::corrupt("Service name"))?,
+            ));
+        }
+    }
+    for config in &before.configs {
+        if !branch
+            .working
+            .configs
+            .iter()
+            .any(|c| c.resource_id == config.resource_id)
+        {
+            staged.push(NodeName::Config(config.name.clone().into()));
         }
     }
     staged.sort();

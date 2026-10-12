@@ -478,8 +478,9 @@ pub(crate) fn pull_request(
                 target_head: event.target_head.as_ref(),
                 trusted,
             };
-            let all = on_merge::land(tx, who, environment, &at, (&mut automated, &mut unlanded))?;
-            if !all {
+            let merged =
+                on_merge::land(tx, who, environment, &at, (&mut automated, &mut unlanded))?;
+            if !merged.all {
                 kept.insert(environment.clone());
                 // A close that came before the merge is undone: it stays open.
                 tx.execute(
