@@ -1305,6 +1305,27 @@ it.live("a refused tool call shows in PostHog as an error", () =>
     expect(captured.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_is_error: true } });
   }));
 
+it.live("an approved call finished by a resumed run hangs under that run's trace in PostHog", () =>
+  Effect.gen(function* () {
+    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: true });
+    const approval = yield* waitingApproval(yield* say("publish"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const sink: PostHogService = {
+      capture: (event) => Effect.sync(() => void captured.push(event)),
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+    };
+    yield* resume("resolved").pipe(Effect.provideService(PostHog, sink));
+
+    const traced = captured.filter(({ event }) => event.startsWith("$ai_"));
+    expect(traced[0]).toMatchObject({
+      event: "$ai_span",
+      properties: { $ai_trace_id: "run-2", $ai_parent_id: "run-2", $ai_span_name: "publish", $ai_is_error: false },
+    });
+    expect(traced.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_trace_id: "run-2", $ai_is_error: false } });
+  }), 15_000);
+
 it.live("a tool name the catalog does not have reaches PostHog as unknown_tool, not as the model wrote it", () =>
   Effect.gen(function* () {
     const { provided, caller } = yield* sidebar({ removeWeb: false });
