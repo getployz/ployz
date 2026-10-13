@@ -855,6 +855,124 @@ class VolumeMoveTests(unittest.TestCase):
                                     for failure in case["failures"]), case["failures"])
                 self.assertEqual(model.fault, {"machine-1": None, "machine-2": None})
 
+    def test_a_case_whose_last_run_did_not_end_done_fails_on_that_run_and_on_where_the_volume_ended(self):
+        kill = volume_move.KILLS[0]
+        self.assertEqual(kill["name"], "kill-snapshot")
+
+        def every_move_fails(cli):
+            def failing(args):
+                if args[:2] == ["volume", "move"]:
+                    row = dict(id=f"run-{len(model.runs)}", kind="move", state="failed")
+                    model.runs.append(row)
+                    return 0, json.dumps(row)
+                return cli(args)
+            return failing
+
+        def the_rerun_is_refused(cli):
+            def refusing(args):
+                if args[:2] == ["volume", "move"] and model.fired and not any(model.fault.values()):
+                    return 1, json.dumps(dict(error=dict(code="internal", message="placement exploded")))
+                return cli(args)
+            return refusing
+        for case, plant, last in ((volume_move.CASES[0], every_move_fails, "failed"),
+                                  (kill, the_rerun_is_refused, "refused")):
+            with self.subTest(case["name"]):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                model.cli = plant(model.cli)
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([case])
+                result = summary["cases"][0]
+                self.assertFalse(result["passed"], result)
+                self.assertFalse(summary["passed"])
+                self.assertEqual(result["final_writer"], "machine-1")
+                self.assertIn(f"the last run ended {last}", result["failures"])
+                self.assertIn("the Volume ended on machine-1, not machine-2", result["failures"])
+
+    def test_a_move_that_ends_done_without_moving_the_writer_fails_on_where_the_volume_ended(self):
+        checks, model = self.checks()
+        cli = model.cli
+
+        def stays(args):
+            if args[:2] == ["volume", "move"]:
+                row = dict(id=f"run-{len(model.runs)}", kind="move", state="done")
+                model.runs.append(row)
+                return 0, json.dumps(row)
+            return cli(args)
+        model.cli = stays
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.CASES[0]])
+        result = summary["cases"][0]
+        self.assertFalse(result["passed"], result)
+        self.assertEqual(result["failures"], ["the Volume ended on machine-1, not machine-2"])
+
+    def test_mirror_cases_and_a_released_undo_pass_ending_on_the_writer_they_started_on(self):
+        undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
+        cases = [case for case in volume_move.KILLS if case["op"] != "move"] + [undo]
+        self.assertEqual([case["name"] for case in cases],
+                         ["kill-first-pull", "kill-forget-mirror", "kill-forget-writer", "undo-after-cut"])
+        (self.root / "private").mkdir()
+        (self.root / "private" / "cloud-token").write_text("token\n")
+        checks, model = self.checks()
+        model.asks = {"release"}
+        with mock.patch.object(volume_move, "http", lambda *args, **kwargs: (200, "{}")), \
+                redirect_stdout(io.StringIO()):
+            summary = checks.run_all(cases)
+        for result in summary["cases"]:
+            self.assertEqual(result["final_writer"], "machine-1", result)
+            self.assertNotIn("the Volume ended on", " ".join(result["failures"]), result)
+        self.assertEqual(summary["cases"][-1]["recovery"], ["done"])
+
+    def test_a_release_approval_cloud_rejects_fails_the_case_and_names_the_status(self):
+        undo = next(case for case in volume_move.CASES if case["name"] == "undo-after-cut")
+        (self.root / "private").mkdir()
+        (self.root / "private" / "cloud-token").write_text("token\n")
+        checks, model = self.checks()
+        model.asks = {"release"}
+        with mock.patch.object(volume_move, "http", lambda *args, **kwargs: (403, '{"error":"forbidden"}')), \
+                redirect_stdout(io.StringIO()):
+            summary = checks.run_all([undo])
+        failures = summary["cases"][0]["failures"]
+        self.assertTrue(failures[0].startswith("RuntimeError: Cloud refused the approval approval-1 with 403"),
+                        failures)
+        self.assertFalse([args for args in model.started if "--approval" in args], model.started)
+
+    def test_an_undo_passes_only_when_its_cancel_ends_the_run(self):
+        undo = next(case for case in volume_move.CASES if case["name"] == "undo-before-cut")
+        for ended, failure in (("cancelled", None), ("lost", None),
+                               ("done", "the cancel did not land: the run ended done"),
+                               ("failed", "the cancel did not land: the run ended failed")):
+            with self.subTest(ended):
+                shutil.rmtree(self.root / "out", ignore_errors=True)
+                checks, model = self.checks()
+                cli = model.cli
+
+                def running(args, cli=cli):
+                    if args[:2] == ["volume", "move"]:
+                        model.fired = True
+                        row = dict(id=f"run-{len(model.runs)}", kind="move", state="running")
+                        model.runs.append(row)
+                        return 0, json.dumps(row)
+                    return cli(args)
+
+                def cancel(row, ended=ended):
+                    found = next(run for run in model.runs if run["id"] == row["id"])
+                    found["state"] = ended
+                    if ended == "done":
+                        model.mirror, model.writer = model.writer, model.other(model.writer)
+                    return [f"DELETE {row['id']} 200 "]
+                model.cli, checks.cancel = running, cancel
+                with redirect_stdout(io.StringIO()):
+                    summary = checks.run_all([undo])
+                result = json.loads((self.root / "out" / "undo-before-cut.json").read_text())
+                self.assertTrue(result["triggered"], result)
+                if failure:
+                    self.assertFalse(result["passed"], result)
+                    self.assertIn(failure, result["failures"])
+                else:
+                    self.assertTrue(result["passed"], result)
+                    self.assertEqual(result["final_writer"], "machine-1")
+
     def test_each_planted_defect_fails_the_run(self):
         for mutation in ("two-writers", "stopped", "snapshots", "lost"):
             with self.subTest(mutation):
