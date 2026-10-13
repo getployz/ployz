@@ -674,8 +674,12 @@ struct Planned<'p> {
     plan: &'p ployz_store::PlanView,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     domain_changes: Vec<super::store::DomainLine>,
+    /// What the ingress step would do on each Server; `None` when it couldn't check.
     #[serde(skip_serializing_if = "Option::is_none")]
     ingress: Option<Vec<ployz_store::IngressRepair>>,
+    /// Why ingress, or an ingress Server, went unchecked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ingress_unchecked: Vec<String>,
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
@@ -684,13 +688,17 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
         services,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
-    let ingress = ingress_repairs(matches);
+    let (ingress, ingress_unchecked) = match ingress_check(matches) {
+        Ok(check) => (Some(check.repairs), check.unchecked),
+        Err(cause) => (None, vec![cause]),
+    };
     let shown = Planned {
         domain_changes: super::store::domain_changes(
             plan.changes.iter().flat_map(|change| &change.settings),
         ),
         plan: &plan,
-        ingress: ingress.as_ref().ok().cloned(),
+        ingress,
+        ingress_unchecked,
     };
     crate::ui::finish(&Next::new(&shown, Some(hint.clone())), || {
         let where_ = format!("{}/{}", plan.environment.project, plan.environment.name);
@@ -710,20 +718,18 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             }
             super::review::restarts(change);
         }
-        match &ingress {
-            Ok(repairs) => {
-                for repair in repairs {
-                    crate::ui::stream(format_args!(
-                        "ingress on {}: would {}",
-                        repair.server,
-                        progress::ingress_verb(repair.action)
-                    ));
-                }
-            }
-            Err(cause) => crate::ui::stream(format_args!(
+        for repair in shown.ingress.iter().flatten() {
+            crate::ui::stream(format_args!(
+                "ingress on {}: would {}",
+                repair.server,
+                progress::ingress_verb(repair.action)
+            ));
+        }
+        for cause in &shown.ingress_unchecked {
+            crate::ui::stream(format_args!(
                 "Couldn't check ingress: {}.",
                 cause.trim_end_matches('.')
-            )),
+            ));
         }
         if !plan.unresolved.is_empty() {
             ui::stream(format_args!(
@@ -735,7 +741,7 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
     })
 }
 
-fn ingress_repairs(matches: &ArgMatches) -> Result<Vec<ployz_store::IngressRepair>, String> {
+fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, String> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
@@ -749,7 +755,6 @@ fn ingress_repairs(matches: &ArgMatches) -> Result<Vec<ployz_store::IngressRepai
                 .map_err(|error| error.to_string())?;
             crate::ingress::planned_slots(&mut client)
                 .await
-                .map(|check| check.repairs)
                 .map_err(|error| error.to_string())
         })
 }
