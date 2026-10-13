@@ -144,6 +144,9 @@ async fn departure_keeps_a_copy_this_machine_wrote() {
             "tank/ployz-mirror/data/fs@dep-100\t900\t1690000000",
         ),
         ("ployz:cut", "on"),
+        ("ployz:epoch", "3"),
+        ("ployz:promote", "on"),
+        ("ployz:seed", "77"),
     ] {
         let test = TestDir::new();
         set_property(&test, "tank/ployz-mirror/data/fs", property, value);

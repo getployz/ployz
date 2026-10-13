@@ -82,7 +82,7 @@ async fn seed_copies_the_point_into_a_slot_then_lands_it_as_a_root() {
     assert!(log.contains("zfs send tank/ployz/data@w-1-1\n"), "{log}");
     assert!(
         log.contains(
-            "zfs receive -u -s -o readonly=on -o refquota=1073741824 tank/ployz-mirror/seed/fs\n"
+            "zfs receive -u -s -o readonly=on -o refquota=1073741824 -o ployz:seed=77 tank/ployz-mirror/seed/fs\n"
         ),
         "the copy carries the source's bound: {log}"
     );
@@ -347,4 +347,23 @@ async fn departure_during_a_seed_copy_stops_it_and_destroys_the_slot() {
     assert_eq!(reply, json!({"Ok": ["data", "seed"]}));
     assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
     assert!(!test.0.join("seed-slot").exists());
+}
+
+#[tokio::test]
+async fn departure_keeps_a_seed_copy_that_has_not_landed() {
+    let test = TestDir::new();
+    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    post(&socket, "/Volume.Seed", seed(77)).await;
+    for _ in 0..200 {
+        if snapshot_names(&test, "tank/ployz-mirror/seed/fs") == ["w-1-1"] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!test.0.join("seed-volume").exists(), "nothing landed yet");
+
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(reply, json!({"Ok": ["data"]}));
+    assert!(test.0.join("seed-fs").exists(), "the seed copy is gone");
 }

@@ -369,28 +369,35 @@ case "$*" in
       rm -rf '{mirror_fs}' '{props}/tank/ployz-mirror/data/fs'
     fi
     ;;
-  'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/data/fs'|'receive -u -s -o readonly=on -o refquota='*' tank/ployz-mirror/seed/fs')
+  'receive -u -s -o readonly=on -o refquota='*)
+    eval "fs=\${{$#}}"
+    case "$fs" in
+      tank/ployz-mirror/data/fs|tank/ployz-mirror/seed/fs) ;;
+      *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
+    esac
     echo $$ > '{props}/receive-pid'
     if [ -e '{props}/stall-read' ]; then exec sleep 30; fi
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
     if [ -e '{props}/receive-fails' ]; then cat >/dev/null; echo 'cannot receive: out of space' >&2; exit 1; fi
-    case "$8" in
+    case "$fs" in
       tank/ployz-mirror/data/fs) touch '{mirror_fs}' ;;
       *) touch '{seed_fs}' ;;
     esac
-    d='{props}'/"$8"
+    d='{props}'/"$fs"
     mkdir -p "$d"
     case "$verb" in
       snapshot)
         rm -f "$d/receive_resume_token"
         count=0; [ ! -e "$d/snapshots" ] || count=$(wc -l < "$d/snapshots")
-        {{ printf '%s@%s\t%s\t%s\n' "$8" "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
+        {{ printf '%s@%s\t%s\t%s\n' "$fs" "$arg" "$guid" "$((1700000000 + count))"; [ ! -e "$d/snapshots" ] || cat "$d/snapshots"; }} > "$d/snapshots.new"
         mv "$d/snapshots.new" "$d/snapshots"
         # A first receive lands the stream's properties; a lost connection loses them.
         if [ -e '{readonly_lost}' ]; then echo off > "$d/readonly.new"; else echo on > "$d/readonly.new"; fi
         mv "$d/readonly.new" "$d/readonly"
         printf '%s\n' "${{7#refquota=}}" > "$d/refquota"
+        # Like ZFS, a property given with -o lands with the completed receive only.
+        if [ "$8" = -o ]; then printf '%s\n' "${{9#*=}}" > "$d/${{9%%=*}}"; fi
         ;;
       break)
         cat >/dev/null
