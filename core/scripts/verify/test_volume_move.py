@@ -67,6 +67,7 @@ class ClusterModel:
         self.started = []
         self.clock = None
         self.holds = []
+        self.tripped = None
         self.calls = 0
 
     def other(self, machine):
@@ -138,6 +139,11 @@ class ClusterModel:
     def guest(self, machine, script):
         if "PLOYZD_FAULT" in script:
             value = script.split("PLOYZD_FAULT=", 2)[-1].split("'", 1)[0] if "echo" in script else None
+            held = self.holder() if self.clock else None
+            if value and held:
+                # The holder crosses the armed point, so the fault fires inside it and not in the case's run.
+                self.tripped = held["id"]
+                self.fired = True
             self.fault[machine] = value
             return 0, ""
         if "fault:" in script:
@@ -466,6 +472,15 @@ class VolumeMoveTests(unittest.TestCase):
                 self.assertEqual(clean["final_writer"], "machine-2")
                 self.assertEqual([(wait["case"], wait["holder"]) for wait in summary["volume_busy_waits"]],
                                  [(skipped["name"], "sync-1"), (clean["name"], "sync-1")])
+
+    def test_a_kill_case_arms_its_fault_only_after_the_holder_ends(self):
+        checks, model = self.checks()
+        model.hold(30)
+        with redirect_stdout(io.StringIO()):
+            summary = checks.run_all([volume_move.KILLS[0]])
+        self.assertIsNone(model.tripped)
+        self.assertTrue(summary["passed"], summary)
+        self.assertEqual([wait["holder"] for wait in summary["volume_busy_waits"]], ["sync-1"])
 
     def test_a_skip_names_the_run_that_refused_last(self):
         checks, model = self.checks()

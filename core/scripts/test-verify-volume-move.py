@@ -505,7 +505,7 @@ class VolumeMove:
         _, data = self.cli("volume", "runs", VOLUME, check=False)
         return run_rows(data)
 
-    def start_op(self, op, destination):
+    def start_op(self, op, destination, arm=None):
         args = dict(move=["volume", "move", VOLUME, "--to", destination],
                     mirror=["volume", "mirror", VOLUME, "--to", destination],
                     release=["volume", "release", VOLUME])
@@ -515,6 +515,9 @@ class VolumeMove:
         holder = None
         while True:
             holder = self.wait_idle(deadline) or holder
+            if arm and self.clock() < deadline:
+                arm()
+                arm = None
             code, data = self.cli(*args[op], check=False)
             refused = busy(data)
             holder = refused or holder
@@ -664,9 +667,9 @@ echo "invocation_after=$(systemctl show -p InvocationID --value {unit})"
         self.prepare(case, other)
         started = self.clock()
         result = dict(case, writer_before=writer, destination=destination, started=started)
-        if case["fault"]:
-            self.fault(case["fault"], side.get(case.get("fault_on")))
-        row = self.start_op(case["op"], destination)
+        # Arm only once the Volume is idle: a cron sync crosses the same SetVolumeCopy points and would trip it.
+        arm = (lambda: self.fault(case["fault"], side.get(case.get("fault_on")))) if case["fault"] else None
+        row = self.start_op(case["op"], destination, arm)
         result["run"] = row
         if case["trigger"]:
             result["triggered"] = self.wait_trigger(case, row, started, side)
