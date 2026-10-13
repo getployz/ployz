@@ -29,7 +29,7 @@ const brand = {
   service: (value: string) => value as ServiceId,
 };
 
-type Buckets = { readonly step: number; readonly ts: readonly number[] };
+type Buckets = { readonly since: number; readonly until: number; readonly step: number; readonly ts: readonly number[] };
 
 function buckets(input: MetricHistoryInput): Buckets {
   const since = Number(input.since_nanos);
@@ -37,7 +37,7 @@ function buckets(input: MetricHistoryInput): Buckets {
   const step = Math.max(1, Math.floor((until - since) / 120));
   const ts: number[] = [];
   for (let at = since; at < until; at += step) ts.push(at);
-  return { step, ts };
+  return { since, until, step, ts };
 }
 
 const wave = (index: number, base: number, swing: number, seed: number) =>
@@ -90,6 +90,11 @@ function serviceReply(machine: string, points: ServicePoint[], step: number, ext
   return { machine_id: brand.machine(machine), value: { points: { service: points }, step_nanos: step, gaps: [], ...extra } };
 }
 
+/** What an up Server without the Service answers: no points and one gap over the whole range. */
+function absent(machine: string, { since, until, step }: Buckets): Answer {
+  return serviceReply(machine, [], step, { gaps: [{ from: since, to: until, reason: "not_sampled" }] });
+}
+
 function serviceHistory(answers: readonly Answer[], unanswered: readonly Failure[], step: number): MetricHistory {
   const history: MetricHistory = {
     points: { service: sumServicePoints(answers.map((answer) => "service" in answer.value.points ? answer.value.points.service : [])) },
@@ -113,7 +118,8 @@ function marker(service: string, machine: string, ts: number, kind: "oom" | "res
   };
 }
 
-function postgres(service: string, { step, ts }: Buckets): MetricHistory {
+function postgres(service: string, range: Buckets): MetricHistory {
+  const { step, ts } = range;
   const third = Math.floor(ts.length / 3);
   const gapFrom = ts[third];
   const gapTo = ts[2 * third];
@@ -121,7 +127,7 @@ function postgres(service: string, { step, ts }: Buckets): MetricHistory {
   const points = servicePoints(ts, 2, true).filter((_, index) => index < third || index >= 2 * third);
   const oomAt = ts[2 * third + 2] ?? ts.at(-1) ?? 0;
   const markers = [marker(service, NORMAL, oomAt, "oom"), marker(service, NORMAL, oomAt + Math.floor(step / 2), "restart")];
-  return serviceHistory([serviceReply(NORMAL, points, step, { gaps, markers })], [], step);
+  return serviceHistory([serviceReply(NORMAL, points, step, { gaps, markers }), absent(ONES, range)], [], step);
 }
 
 function serviceFixture(service: string, range: Buckets): MetricHistory {
@@ -132,13 +138,13 @@ function serviceFixture(service: string, range: Buckets): MetricHistory {
     case "api":
       return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 0.6, false), step)], [refusal(TWOS), down(THREES)], step);
     case "worker":
-      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 2.1, false), step), serviceReply(ONES, [], step)], [], step);
+      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 2.1, false), step), absent(ONES, range)], [], step);
     case "redis":
       return serviceHistory([], [refusal(ONES), refusal(TWOS)], step);
     case "postgres":
       return postgres(service, range);
     default:
-      return serviceHistory([serviceReply(NORMAL, [], step)], [], step);
+      return serviceHistory([absent(NORMAL, range), absent(ONES, range)], [], step);
   }
 }
 

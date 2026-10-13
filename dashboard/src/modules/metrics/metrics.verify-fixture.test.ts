@@ -36,6 +36,8 @@ describe("verifyMetricHistory", () => {
     const worker = service("worker");
     expect(worker.availability).toEqual({ type: "normal" });
     expect(worker.byServer).toHaveLength(1);
+    expect(worker.all.cpu).toHaveLength(120);
+    expect(worker.allGaps).toEqual([]);
 
     expect(service("redis").availability.type).toBe("needs_upgrade");
     expect(service("unknown").availability).toEqual({ type: "no_readings" });
